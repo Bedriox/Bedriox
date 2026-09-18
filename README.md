@@ -23,6 +23,7 @@ Bedriox gives server owners a performance-focused foundation for creating Minecr
 
 - **Playable multiplayer foundations** — synchronized players, movement, chat, inventories, block interaction, and a streamed flat world.
 - **Responsive worlds** — bounded chunk generation and streaming keep nearby terrain moving smoothly as players explore.
+- **Persistent terrain** — Mojang-compatible LevelDB storage preserves generated chunks and authoritative block changes across clean restarts.
 - **Focused Bedrock support** — one qualified modern protocol family instead of years of legacy protocol code.
 - **Modern PHP development** — strict types, Composer packages, automated tests, static analysis, and clear component boundaries.
 - **Plugin development support** — run validated PHAR plugins, develop from source with PluginTools, and extend the server through typed events, commands, lifecycle hooks, and safe player/world APIs.

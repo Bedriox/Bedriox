@@ -40,7 +40,7 @@ Protocol positions and flags are translated before commands reach this layer. Si
 
 ## World and blocks
 
-`src/World/` owns world metadata, spawn resolution, generators, chunks, subchunks, and the bounded repository. `World` coordinates the generator and cache. `FlatWorldGenerator` generates deterministic canonical terrain.
+`src/World/` owns world metadata, spawn resolution, generators, chunks, subchunks, and the bounded repository. `World` coordinates provider-first loading, generation, dirty revisions, bounded autosave, save-before-eviction, and close-time flushing. `FlatWorldGenerator` generates deterministic canonical terrain only for missing chunks. `src/World/Provider/` defines the format-independent persistence boundary and its writable LevelDB implementation; `src/World/Storage/` owns bounded `level.dat`, NBT, palette, key, and native LevelDB adapters.
 
 `src/World/Block/` owns process-local internal block-state identity. `BlockStateRegistry` resolves canonical `minecraft:*` states; `InternalBlockStateId` is never persisted or sent; `BlockNetworkTranslator` is the explicit boundary to Data's current network palette.
 

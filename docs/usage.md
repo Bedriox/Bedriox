@@ -30,7 +30,7 @@ Start the bounded protocol-2193 development server (Minecraft 1.26.50 wire autho
 php bin/bedriox serve
 ```
 
-The first successful configuration load creates `bedriox.settings` in the current working directory. It contains documented server, network, level, chunk-streaming, runtime, and diagnostic defaults. Edit that local file and restart Bedriox to apply changes. The file is intentionally ignored by Git so each installation can keep its own operator configuration.
+The first successful configuration load creates `bedriox.settings` in the current working directory. It contains documented server, network, level, chunk-streaming, persistence, runtime, and diagnostic defaults. Edit that local file and restart Bedriox to apply changes. The file is intentionally ignored by Git so each installation can keep its own operator configuration.
 
 Configuration precedence is built-in defaults, then `bedriox.settings`, then command-line overrides. For example:
 
@@ -40,7 +40,7 @@ php bin/bedriox serve --port=19133 --name="Bedriox Test" --max-players=8 --view-
 
 FULL performs trusted Minecraft JWK discovery before the UDP port is bound and fails closed if discovery is unavailable or invalid. For isolated development only, `--auth=SELF_SIGNED` enables legacy self-signed login and prints an explicit security warning; it is never a fallback from FULL.
 
-Options use exact `--name=value` syntax. Bind addresses must be literal IPv4 values, ports are 1 through 65535, names are at most 128 UTF-8 bytes, and player limits are 1 through 1024. Duplicate, unknown, empty, ambiguous, and out-of-range options fail before startup. The existing `--bind`, `--port`, `--name`, `--max-players`, and `--auth` flags remain supported; level and chunk keys have matching flags such as `--level-name`, `--seed`, `--view-distance`, `--spawn-radius`, `--chunks-send-per-tick`, and `--chunks-generate-per-tick`.
+Options use exact `--name=value` syntax. Bind addresses must be literal IPv4 values, ports are 1 through 65535, names are at most 128 UTF-8 bytes, and player limits are 1 through 1024. Duplicate, unknown, empty, ambiguous, and out-of-range options fail before startup. The existing `--bind`, `--port`, `--name`, `--max-players`, and `--auth` flags remain supported; level and chunk keys have matching flags such as `--level-name`, `--seed`, `--view-distance`, `--spawn-radius`, `--chunks-send-per-tick`, `--chunks-generate-per-tick`, `--level-autosave-interval-ticks`, and `--chunks-save-per-tick`.
 
 The settings file uses one `key=value` entry per line. Blank lines and lines beginning with `#` are ignored. Unknown keys, duplicate keys, malformed lines, noncanonical numbers, invalid booleans, and files over 64 KiB fail closed before the UDP socket is bound. Supported settings are:
 
@@ -57,11 +57,13 @@ The settings file uses one `key=value` entry per line. Blank lines and lines beg
 | `level.seed` | `0` | Signed 32-bit decimal integer; flat terrain is currently seed-independent |
 | `level.default-gamemode` | `survival` | `survival` (the only implemented game mode) |
 | `level.difficulty` | `normal` | `peaceful`, `easy`, `normal`, or `hard` |
+| `level.autosave-interval-ticks` | `6000` | 20 through 72000 ticks between autosave scheduling cycles |
 | `chunks.view-distance` | `4` | 1–32 chunks |
 | `chunks.spawn-radius` | `4` | 1 through the configured view distance |
 | `chunks.send-per-tick` | `4` | 1–64 |
 | `chunks.generate-per-tick` | `4` | 1–64 |
 | `chunks.cache-limit` | `2048` | 16–65536 chunks and large enough to hold every configured player view |
+| `chunks.save-per-tick` | `8` | 1 through 64 dirty chunks saved during each scheduled autosave tick |
 | `runtime.ticks-per-second` | `20` | 1–100 |
 | `console.enabled` | `true` | Exactly `true` or `false` |
 | `plugins.enabled` | `true` | Exactly `true` or `false` |
@@ -77,7 +79,9 @@ The settings file uses one `key=value` entry per line. Blank lines and lines beg
 
 Optional `level.spawn-x`, `level.spawn-y`, and `level.spawn-z` entries override the level spawn only when all three are populated. When all three are absent or empty, the world calculates its own safe default; the flat generator currently uses `(0, 64, 0)`. A partial override is rejected.
 
-Settings for independent query ports, world persistence, resource packs, whitelists, and other unfinished features are deliberately not accepted yet. This prevents apparently valid options from silently doing nothing.
+Settings for independent query ports, resource packs, whitelists, and other unfinished features are deliberately not accepted yet. This prevents apparently valid options from silently doing nothing.
+
+`level.autosave-interval-ticks` controls how often the runtime schedules dirty-world work. At the default 20 ticks per second, `6000` ticks is five minutes. `chunks.save-per-tick` bounds each autosave step so a large dirty queue is drained over multiple ticks rather than written all at once. Dirty chunks are still saved before eviction, and graceful shutdown performs a complete durability flush rather than applying the per-tick limit.
 
 When `console.enabled=true`, Bedriox reads commands without blocking the server loop. On Windows, a lifecycle-owned helper waits on the console handle while the server polls its bounded output; this keeps networking and simulation responsive between commands. Command lines, queued commands, arguments, and commands executed per poll are bounded. Set `console.enabled=false` for detached environments without an operator input stream. Plugin-owned console output uses the normal structured logger and therefore also appears in `logs/server.log` when file logging is enabled.
 

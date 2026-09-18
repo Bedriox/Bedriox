@@ -30,7 +30,7 @@ canonical block states, translation availability, authentication dependencies,
 protocol authority, and transport construction. A failure leaves no partially
 running server and never falls back to ambient PHP.
 
-After bind, the runtime polls bounded amounts of socket, session, packet, command, chunk-streaming, and simulation work. The process should remain responsive even when one peer sends malformed input or exhausts its session-local limits.
+After bind, the runtime polls bounded amounts of socket, session, packet, command, chunk-streaming, persistence, and simulation work. Scheduled world autosave is limited by `chunks.save-per-tick`; `level.autosave-interval-ticks` controls how often that bounded work is scheduled.
 
 ## Diagnostics
 
@@ -56,7 +56,7 @@ Distinguish a client session disconnect from a server process crash. Confirm the
 
 ## Shutdown and restart
 
-SIGINT and SIGTERM request graceful shutdown on platforms where PHP exposes process-control signals. Runtime shutdown is idempotent: it closes transport, clears login and play cryptographic state, disconnects admitted players, and releases chunk views and queues.
+SIGINT and SIGTERM request graceful shutdown on platforms where PHP exposes process-control signals. Runtime shutdown is idempotent: it stops new work, disconnects admitted players, releases chunk views and queues, flushes dirty world data, closes the world provider, and closes transport and remaining resources. A normal shutdown does not apply the per-tick autosave cap to its final durability flush.
 
 Before replacing a running development instance, identify the exact Bedriox process and bound port. Do not terminate unrelated PHP processes. After restart, query discovery and rerun the relevant [client journey](client-journey-contract.md); a listening UDP socket alone does not prove join compatibility.
 

@@ -4,15 +4,23 @@ Bedriox generates authoritative world state independently from the Bedrock netwo
 
 ## Generation and ownership
 
-`WorldMetadata` identifies the logical level and seed. `WorldSpawnResolver` supplies the level's safe spawn unless all three configured spawn coordinates override it. `World` owns a `WorldGenerator`, bounded `ChunkRepository`, and bounded process-local override store. Immutable cell replacement updates the cached chunk and records the canonical override so regeneration after eviction preserves accepted gameplay changes. Overrides are not yet persisted across a server restart.
+`WorldMetadata` identifies the logical level and seed. `WorldSpawnResolver` supplies the level's safe spawn unless all three configured spawn coordinates override it. A provider-backed `World` owns a `WorldGenerator`, bounded `ChunkRepository`, and `WorldProvider`. Immutable cell replacement creates a new authoritative chunk revision and marks it dirty. Providerless worlds retain the bounded process-local override store only as an explicit ephemeral compatibility path.
 
-The current `FlatWorldGenerator` can generate any requested chunk coordinate deterministically. It resolves canonical states through `BlockStateRegistry` and stores dense process-local `InternalBlockStateId` values in `SubChunk` and `Chunk` objects. Those IDs have no stable meaning outside the process and must never be persisted, configured, logged as a public contract, or written directly to the wire.
+The current `FlatWorldGenerator` can generate any requested chunk coordinate deterministically. It resolves canonical states through `BlockStateRegistry` and stores dense process-local `InternalBlockStateId` values in `SubChunk` and `Chunk` objects. Those IDs have no stable meaning outside the process and must never be persisted, configured, logged as a public contract, or written directly to the wire. The LevelDB provider persists canonical block-state name and property NBT and resolves fresh process-local IDs while loading.
 
 The initial flat profile is bedrock at Y=60, dirt at Y=61 and Y=62, grass at Y=63, and air elsewhere. The world spawn places the player's feet above that surface.
 
+## Persistence
+
+The provider is consulted before generation. An existing chunk is decoded and cached; only a definite missing result invokes the configured generator. Corrupt, unsupported, or unreadable data fails explicitly and is never treated as an empty coordinate that may be regenerated.
+
+`LevelDbWorldProvider` stores Mojang-compatible `level.dat` metadata and Bedrock LevelDB chunk records. Persistent palettes use canonical block-state NBT, while chunk keys, subchunk records, biome palettes, height maps, and finalization state follow the supported Bedrock storage contract. Disk XZY palette order is translated explicitly to the world's internal coordinate order.
+
+Generated and changed chunks remain dirty until their exact immutable revision is acknowledged by a successful provider write. Autosave processes the oldest dirty chunks first with the configured `chunks.save-per-tick` bound whenever `level.autosave-interval-ticks` elapses. A dirty eviction candidate is saved before removal; a failed write leaves it resident and dirty. Graceful close flushes every remaining dirty chunk and world metadata before closing the provider.
+
 ## Cache and view scheduling
 
-`ChunkRepository` generates on demand and retains a bounded shared cache. Active session views lease their chunks so an in-use column cannot be evicted. Configuration must reserve enough capacity for every maximum-size player view.
+`ChunkRepository` loads or generates on demand and retains a bounded shared cache. Active session views lease their chunks so an in-use column cannot be evicted. Configuration must reserve enough capacity for every maximum-size player view.
 
 Each play session owns one `ChunkViewManager`. It clamps the requested radius, computes a nearest-first square, queues missing coordinates, and releases coordinates that leave the view. Crossing a 16-by-16 block boundary recenters the view and schedules only the new edge. Generation and send work use independent per-tick budgets, and the staging queue is bounded. It stores coordinates rather than serialized bytes, so delivery always serializes the latest authoritative chunk and cannot overwrite an intervening block update with stale terrain.
 
@@ -29,6 +37,9 @@ Translation happens only at this boundary. The generator must not import network
 - Every generated coordinate returns the same canonical cells for the same world definition.
 - Every visible column contains the correct absolute chunk coordinates.
 - Every internal state resolves through the active network palette before sending.
+- Existing provider data is loaded before generation; storage failures never become implicit generation.
+- Dirty chunks are acknowledged only after their authoritative revision is written successfully.
+- Eviction and graceful shutdown cannot discard unsaved provider-backed changes.
 - Every section and biome cell reconstructs semantically, not merely to an expected byte length.
 - Generation, cache residency, queued packets, retained views, and per-tick work remain bounded.
 - Movement releases departed columns and queues only newly visible ones.

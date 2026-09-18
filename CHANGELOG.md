@@ -6,6 +6,8 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Added
 
+- Add Mojang-compatible LevelDB world metadata and chunk persistence with canonical block-state palettes, provider-first loading, dirty-revision autosave, save-before-eviction, and graceful close-time flushing.
+- Add bounded `level.autosave-interval-ticks` and `chunks.save-per-tick` operator settings with equivalent command-line overrides.
 - Add qualified Bedriox PHP Runtime artifacts for Windows x86-64, Linux x86-64/ARM64, and macOS x86-64/ARM64, with exact archive and manifest pins, bounded local installation, rollback, pre-autoload integrity checks, and production launchers that never fall back to system PHP.
 - Add a typed, plugin-owned command API with console/player senders, aliases, permissions, sender restrictions, cancellable pre-events, observational post-events, lifecycle cleanup, bounded cooperative jobs, and non-blocking console input, including an isolated Windows console reader that cannot pause networking between commands.
 - Add a bounded development-provider admission API while preserving native PHAR-only discovery, allowing PluginTools to own source-folder loading and cleanup.

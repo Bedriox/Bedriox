@@ -11,7 +11,7 @@ UDP → RakNet → Bedrock decode → session validation → command queue
 
 Mutable world and player state has one authoritative owner. Queues and decoded sizes are bounded. Initial development uses one non-blocking PHP process; worker processes are introduced only behind an interface and only after profiling.
 
-Block state follows the same ownership rule. `Data` supplies canonical immutable states such as `minecraft:grass_block` and the ordered network palette. The server assigns dense process-local `InternalBlockStateId` values independently of that palette, uses those IDs inside world logic, and translates only the states needed by an outgoing palette through `BlockNetworkTranslator`. Internal IDs are intentionally unstable across process starts and must never become packet values, persistence keys, configuration, or plugin API. A future persistent world format will store canonical state identity and rebuild local IDs on load.
+Block state follows the same ownership rule. `Data` supplies canonical immutable states such as `minecraft:grass_block` and the ordered network palette. The server assigns dense process-local `InternalBlockStateId` values independently of that palette, uses those IDs inside world logic, and translates only the states needed by an outgoing palette through `BlockNetworkTranslator`. Internal IDs are intentionally unstable across process starts and must never become packet values, persistence keys, configuration, or plugin API. LevelDB persistence stores canonical state identity and rebuilds local IDs on load.
 
 See the accepted architecture RFCs in `RFCs` for rationale and alternatives.
 
