@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Bedriox\Server;
 
 use Bedriox\Api\Plugin\PluginContext;
-use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Observability\CrashContextProvider;
 use Bedriox\Server\Observability\CrashContextPublisher;
 use Bedriox\Server\Observability\CrashHandler;
@@ -25,14 +24,12 @@ use Bedriox\Server\Plugin\PluginComposition;
 use Bedriox\Server\Plugin\PluginHost;
 use Bedriox\Server\Plugin\PluginManifest;
 use Bedriox\Server\Plugin\ServerPluginLogger;
-use Bedriox\Server\Runtime\BedrockPlayInitializationFactory;
+use Bedriox\Server\Runtime\PersistentWorldFactory;
 use Bedriox\Server\Runtime\RuntimeDiagnostics;
-use Bedriox\Server\Runtime\RuntimeLimits;
 use Bedriox\Server\Runtime\RuntimeRunner;
 use Bedriox\Server\Runtime\ServerBootstrap;
 use Bedriox\Server\Runtime\ServerConfig;
 use Bedriox\Server\Simulation\PluginGameplayEventBridge;
-use Bedriox\Server\World\SpawnPosition;
 use Closure;
 use Throwable;
 
@@ -107,29 +104,6 @@ final class Application
             }, $config->protocolTrace);
             $logger->info('Starting ' . $this->displayName());
             $logger->info(sprintf('Loading world "%s" using %s generator', $config->levelName, $config->levelGenerator));
-            $spawn = new SpawnPosition(
-                $config->spawnX ?? 0,
-                $config->spawnY ?? 64,
-                $config->spawnZ ?? 0,
-            );
-            $initialization = new BedrockPlayInitializationFactory(
-                BedrockDataSet::bundled(),
-                new RuntimeLimits(
-                    maximumSessions: $config->maximumPlayers,
-                    maximumChunkRadius: $config->viewDistance,
-                    preloadedChunkRadius: $config->spawnRadius,
-                    maximumStreamingPacketsPerPoll: $config->chunksSendPerTick,
-                ),
-                $config->levelName,
-                $spawn,
-                match ($config->difficulty) {
-                    'peaceful' => 0,
-                    'easy' => 1,
-                    'normal' => 2,
-                    'hard' => 3,
-                },
-                $config->levelSeed,
-            );
             $composition = new PluginComposition();
             $pluginHost = new PluginHost(
                 $workingDirectory . DIRECTORY_SEPARATOR . 'plugins',
@@ -167,14 +141,19 @@ final class Application
                     : null,
             );
             $composition->host = $pluginHost;
-            $server = (new ServerBootstrap())->create(
+            $server = (new ServerBootstrap(new PersistentWorldFactory($workingDirectory)))->create(
                 $config,
-                $initialization,
+                null,
                 $diagnostics,
                 $this->crashContextProvider instanceof CrashContextPublisher ? $this->crashContextProvider : null,
                 new PluginGameplayEventBridge($pluginHost->events()),
             );
             $composition->server = $server;
+            $logger->info(sprintf(
+                'Loaded world "%s" using %s generator',
+                $server->world->metadata->name,
+                $server->world->generatorName(),
+            ));
             if ($server->securityWarning !== null) {
                 $logger->warning($server->securityWarning);
             }
@@ -230,8 +209,8 @@ final class Application
                     return $stop;
                 });
             } finally {
-                $pluginHost->stop();
                 $server->runtime->close();
+                $pluginHost->stop();
             }
             $logger->info($result === 0 ? 'Server stopped cleanly' : 'Server runtime stopped after a failure');
 

@@ -11,6 +11,7 @@ use InvalidArgumentException;
 final readonly class LevelDatCodec
 {
     public const int CURRENT_STORAGE_VERSION = 10;
+    public const int CURRENT_NETWORK_VERSION = 2193;
     public const int MAX_NBT_BYTES = 4_194_304;
     public const int HEADER_BYTES = 8;
 
@@ -46,7 +47,13 @@ final readonly class LevelDatCodec
         if ($storageVersion > self::CURRENT_STORAGE_VERSION) {
             throw new UnsupportedWorldDataException("LevelDB storage version $storageVersion is not supported.");
         }
-        $metadata->networkVersion();
+        $networkVersion = $metadata->networkVersion();
+        if ($networkVersion < 1) {
+            throw new CorruptWorldDataException("Invalid 'NetworkVersion' tag in level.dat.");
+        }
+        if ($networkVersion > self::CURRENT_NETWORK_VERSION) {
+            throw new UnsupportedWorldDataException("Network version $networkVersion is not supported.");
+        }
 
         return $metadata;
     }
@@ -60,7 +67,10 @@ final readonly class LevelDatCodec
         if ($storageVersion < 1 || $storageVersion > self::CURRENT_STORAGE_VERSION) {
             throw new InvalidArgumentException('level.dat storage version is not supported.');
         }
-        $metadata->networkVersion();
+        $networkVersion = $metadata->networkVersion();
+        if ($networkVersion < 1 || $networkVersion > self::CURRENT_NETWORK_VERSION) {
+            throw new InvalidArgumentException('level.dat network version is not supported.');
+        }
         $payload = $this->nbt->encodeRootCompound($metadata->root);
 
         return pack('V2', $metadata->headerVersion, strlen($payload)) . $payload;

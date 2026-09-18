@@ -53,6 +53,8 @@ SETTINGS);
             self::assertSame('Bedriox Server', $values['server.name']);
             self::assertSame('flat', $values['level.generator']);
             self::assertSame('4', $values['chunks.view-distance']);
+            self::assertSame('6000', $values['level.autosave-interval-ticks']);
+            self::assertSame('8', $values['chunks.save-per-tick']);
             self::assertStringContainsString('# level.spawn-x=', (string) file_get_contents($path));
 
             file_put_contents($path, "server.name=Preserved\n");

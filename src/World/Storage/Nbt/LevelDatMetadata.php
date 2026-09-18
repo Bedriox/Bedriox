@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\World\Storage\Nbt;
 
 use Bedriox\Server\World\Storage\Exception\CorruptWorldDataException;
+use Bedriox\Server\World\Storage\Exception\UnsupportedWorldDataException;
 
 final readonly class LevelDatMetadata
 {
@@ -41,16 +42,37 @@ final readonly class LevelDatMetadata
 
     public function generatorName(): string
     {
-        $tag = $this->required('generatorName', LittleEndianNbtTag::STRING);
+        $tag = $this->root['generatorName'] ?? null;
+        if ($tag instanceof LittleEndianNbtTag && $tag->type === LittleEndianNbtTag::STRING && is_string($tag->value)) {
+            return $tag->value;
+        }
+        if ($tag !== null) {
+            throw new CorruptWorldDataException("Invalid 'generatorName' tag in level.dat.");
+        }
+        $legacy = $this->root['Generator'] ?? null;
+        if (!$legacy instanceof LittleEndianNbtTag || $legacy->type !== LittleEndianNbtTag::INT || !is_int($legacy->value)) {
+            throw new CorruptWorldDataException("Missing or invalid generator metadata in level.dat.");
+        }
+        if ($legacy->value !== 2) {
+            throw new UnsupportedWorldDataException(
+                "Legacy generator {$legacy->value} is not supported.",
+            );
+        }
 
-        return is_string($tag->value) ? $tag->value : throw new CorruptWorldDataException("Invalid 'generatorName' tag in level.dat.");
+        return 'flat';
     }
 
     public function generatorOptions(): string
     {
-        $tag = $this->required('generatorOptions', LittleEndianNbtTag::STRING);
+        $tag = $this->root['generatorOptions'] ?? null;
+        if ($tag === null) {
+            return '';
+        }
+        if ($tag->type !== LittleEndianNbtTag::STRING || !is_string($tag->value)) {
+            throw new CorruptWorldDataException("Invalid 'generatorOptions' tag in level.dat.");
+        }
 
-        return is_string($tag->value) ? $tag->value : throw new CorruptWorldDataException("Invalid 'generatorOptions' tag in level.dat.");
+        return $tag->value;
     }
 
     public function spawnX(): int
@@ -73,6 +95,19 @@ final readonly class LevelDatMetadata
         $tag = $this->root['Time'] ?? null;
         if (!$tag instanceof LittleEndianNbtTag || !in_array($tag->type, [LittleEndianNbtTag::INT, LittleEndianNbtTag::LONG], true) || !is_int($tag->value)) {
             throw new CorruptWorldDataException("Missing or invalid 'Time' tag in level.dat.");
+        }
+
+        return $tag->value;
+    }
+
+    public function difficulty(): int
+    {
+        $tag = $this->root['Difficulty'] ?? null;
+        if ($tag === null) {
+            return 2;
+        }
+        if ($tag->type !== LittleEndianNbtTag::INT || !is_int($tag->value) || $tag->value < 0 || $tag->value > 3) {
+            throw new CorruptWorldDataException("Invalid 'Difficulty' tag in level.dat.");
         }
 
         return $tag->value;

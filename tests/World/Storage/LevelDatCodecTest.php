@@ -32,6 +32,7 @@ final class LevelDatCodecTest extends TestCase
         self::assertSame('', $metadata->generatorOptions());
         self::assertSame([-1, 64, 2], [$metadata->spawnX(), $metadata->spawnY(), $metadata->spawnZ()]);
         self::assertSame(123, $metadata->time());
+        self::assertSame(2, $metadata->difficulty());
         self::assertSame(7, $metadata->root['Custom']->value);
         self::assertSame($contents, (new LevelDatCodec())->encode($metadata));
     }
@@ -106,6 +107,48 @@ final class LevelDatCodecTest extends TestCase
         } catch (UnsupportedWorldDataException $failure) {
             self::assertStringContainsString('storage version 11', $failure->getMessage());
         }
+    }
+
+    public function testRejectsFutureNetworkVersion(): void
+    {
+        $root = self::metadata()->root;
+        $root['NetworkVersion'] = LittleEndianNbtTag::int(LevelDatCodec::CURRENT_NETWORK_VERSION + 1);
+        $payload = (new LittleEndianNbtCodec())->encodeRootCompound($root);
+
+        $this->expectException(UnsupportedWorldDataException::class);
+        $this->expectExceptionMessage('Network version');
+        (new LevelDatCodec())->decode(pack('V2', 10, strlen($payload)) . $payload);
+    }
+
+    public function testLegacyFlatGeneratorAndDifficultyAreReadWithoutGeneratorName(): void
+    {
+        $root = self::metadata()->root;
+        unset($root['generatorName']);
+        unset($root['generatorOptions']);
+        $root['Generator'] = LittleEndianNbtTag::int(2);
+        $root['Difficulty'] = LittleEndianNbtTag::int(3);
+        $metadata = new LevelDatMetadata(10, $root);
+
+        self::assertSame('flat', $metadata->generatorName());
+        self::assertSame('', $metadata->generatorOptions());
+        self::assertSame(3, $metadata->difficulty());
+    }
+
+    public function testRejectsUnsupportedLegacyGeneratorAndInvalidDifficulty(): void
+    {
+        $root = self::metadata()->root;
+        unset($root['generatorName']);
+        $root['Generator'] = LittleEndianNbtTag::int(1);
+        try {
+            (new LevelDatMetadata(10, $root))->generatorName();
+            self::fail('Unsupported legacy generator was accepted.');
+        } catch (UnsupportedWorldDataException) {
+        }
+
+        $root = self::metadata()->root;
+        $root['Difficulty'] = LittleEndianNbtTag::int(4);
+        $this->expectException(CorruptWorldDataException::class);
+        (new LevelDatMetadata(10, $root))->difficulty();
     }
 
     public function testRejectsMissingRequiredVersionAndWrongRootType(): void

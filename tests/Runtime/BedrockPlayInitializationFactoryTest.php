@@ -34,31 +34,51 @@ use Bedriox\Protocol\Value\BuildPlatform;
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\Server\Login\AuthenticatedLogin;
 use Bedriox\Server\Runtime\BedrockPlayInitializationFactory;
+use Bedriox\Server\Runtime\RuntimeLimits;
+use Bedriox\Server\World\Provider\WorldData;
+use Bedriox\Server\World\SpawnPosition;
+use Bedriox\Server\World\WorldMetadata;
 use PHPUnit\Framework\TestCase;
 
 final class BedrockPlayInitializationFactoryTest extends TestCase
 {
+    public function testAuthoritativeWorldDataDrivesInitializationMetadataAndTime(): void
+    {
+        $login = $this->login();
+        $worldData = new WorldData(
+            new WorldMetadata('Persisted World', -912),
+            'flat',
+            new SpawnPosition(19, 77, -6),
+            3456,
+            3,
+        );
+        $packets = BedrockPlayInitializationFactory::forWorld(
+            BedrockDataSet::bundled(),
+            new RuntimeLimits(),
+            $worldData,
+        )->create($login, UnsignedLong::fromInt(7));
+        $expected = (new BedrockPlayInitializationFactory(
+            BedrockDataSet::bundled(),
+            new RuntimeLimits(),
+            'Persisted World',
+            new SpawnPosition(19, 77, -6),
+            3,
+            -912,
+            3456,
+        ))->create($login, UnsignedLong::fromInt(7));
+
+        self::assertSame($expected[2]->encode(), $packets[2]->encode());
+        self::assertInstanceOf(SetSpawnPositionPacket::class, $packets[7]);
+        self::assertSame([19, 77, -6], [$packets[7]->x, $packets[7]->y, $packets[7]->z]);
+        self::assertInstanceOf(SetTimePacket::class, $packets[8]);
+        self::assertSame(3456, $packets[8]->time);
+        self::assertInstanceOf(SetDifficultyPacket::class, $packets[9]);
+        self::assertSame(3, $packets[9]->difficulty);
+    }
+
     public function testExactOrderGoldenRegistryAndDefersTerrainToRuntimeStreamer(): void
     {
-        $key = (new OpenSslEphemeralKeyFactory(dirname(__DIR__) . '/Fixtures/openssl.cnf'))->generate()->publicKey;
-        $login = new AuthenticatedLogin(
-            'Player',
-            '00000000-0000-0000-0000-000000000001',
-            '1',
-            $key,
-            new VerifiedClientData(
-                64,
-                32,
-                str_repeat("\0", 64 * 32 * 4),
-                0,
-                0,
-                '',
-                '{}',
-                [],
-                skinId: 'skin',
-                skinResourcePatchJson: '{"geometry":{"default":"geometry.humanoid.custom"}}',
-            ),
-        );
+        $login = $this->login();
         $packets = (new BedrockPlayInitializationFactory(BedrockDataSet::bundled()))
             ->create($login, UnsignedLong::fromInt(7));
 
@@ -114,5 +134,29 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
         foreach ($packets as $packet) {
             self::assertNotInstanceOf(SetLocalPlayerAsInitializedPacket::class, $packet);
         }
+    }
+
+    private function login(): AuthenticatedLogin
+    {
+        $key = (new OpenSslEphemeralKeyFactory(dirname(__DIR__) . '/Fixtures/openssl.cnf'))->generate()->publicKey;
+
+        return new AuthenticatedLogin(
+            'Player',
+            '00000000-0000-0000-0000-000000000001',
+            '1',
+            $key,
+            new VerifiedClientData(
+                64,
+                32,
+                str_repeat("\0", 64 * 32 * 4),
+                0,
+                0,
+                '',
+                '{}',
+                [],
+                skinId: 'skin',
+                skinResourcePatchJson: '{"geometry":{"default":"geometry.humanoid.custom"}}',
+            ),
+        );
     }
 }

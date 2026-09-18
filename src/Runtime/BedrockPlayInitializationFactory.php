@@ -39,6 +39,7 @@ use Bedriox\Server\Player\PlayerInventory;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
+use Bedriox\Server\World\Provider\WorldData;
 use Bedriox\Server\World\SpawnPosition;
 
 /** Builds the complete bounded current-Bedrock fixed-flat initialization sequence. */
@@ -66,6 +67,7 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
         private SpawnPosition $spawn = new SpawnPosition(0, 64, 0),
         private int $difficulty = 2,
         private int $worldSeed = 0,
+        private int $worldTime = 0,
     ) {
         if ($this->difficulty < 0 || $this->difficulty > 3) {
             throw new \InvalidArgumentException('Difficulty must be a Bedrock value between 0 and 3.');
@@ -81,6 +83,22 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
             $blockProperties[] = BlockPropertyData::fromLittleEndianNbt($identifier, $littleEndianNbt);
         }
         $this->blockProperties = $blockProperties;
+    }
+
+    public static function forWorld(
+        BedrockDataSet $data,
+        RuntimeLimits $limits,
+        WorldData $world,
+    ): self {
+        return new self(
+            $data,
+            $limits,
+            $world->metadata->name,
+            $world->spawn,
+            $world->difficulty,
+            $world->metadata->seed,
+            $world->time,
+        );
     }
 
     public function create(AuthenticatedLogin $login, UnsignedLong $runtimeEntityId): array
@@ -127,7 +145,7 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
                 worldY: $this->spawn->y,
                 worldZ: $this->spawn->z,
             ),
-            new SetTimePacket(),
+            new SetTimePacket($this->worldTime),
             new SetDifficultyPacket($this->difficulty),
             new SetCommandsEnabledPacket(false),
             UpdateAbilitiesPacket::survival($runtimeEntityId->toSignedBits()),

@@ -6,6 +6,7 @@ namespace Bedriox\Server\World\Provider;
 
 use Bedriox\Data\LittleEndianBlockStateNbtCodec;
 use Bedriox\Data\PersistentBlockStateRegistry;
+use Bedriox\Protocol\ProtocolVersion;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkFinalizationState;
@@ -85,7 +86,7 @@ final class LevelDbWorldProvider implements WritableWorldProvider
 
         try {
             return new self($levelDatPath, $database, $metadata, $blockStates, $persistentBlockStates, $store);
-        } catch (CorruptWorldDataException $error) {
+        } catch (CorruptWorldDataException|UnsupportedWorldFormatException $error) {
             $database->close();
             throw $error;
         }
@@ -97,6 +98,7 @@ final class LevelDbWorldProvider implements WritableWorldProvider
         BlockStateRegistry $blockStates,
         PersistentBlockStateRegistry $persistentBlockStates,
         ?LevelDatStore $levelDatStore = null,
+        ?int $createdAt = null,
     ): self {
         self::assertNativeSupport();
         if (file_exists($worldPath)) {
@@ -106,7 +108,7 @@ final class LevelDbWorldProvider implements WritableWorldProvider
             throw new WorldStorageException('Unable to create the world directory.');
         }
         $store = $levelDatStore ?? new LevelDatStore();
-        $metadata = self::newMetadata($worldData);
+        $metadata = self::newMetadata($worldData, $createdAt ?? time());
         $levelDatPath = $worldPath . DIRECTORY_SEPARATOR . 'level.dat';
         try {
             $database = NativeLevelDbDatabase::open($worldPath . DIRECTORY_SEPARATOR . 'db', true);
@@ -195,10 +197,12 @@ final class LevelDbWorldProvider implements WritableWorldProvider
         $root['LevelName'] = LittleEndianNbtTag::string($worldData->metadata->name);
         $root['RandomSeed'] = LittleEndianNbtTag::long($worldData->metadata->seed);
         $root['generatorName'] = LittleEndianNbtTag::string($worldData->generatorName);
+        $root['Generator'] = LittleEndianNbtTag::int(2);
         $root['SpawnX'] = LittleEndianNbtTag::int($worldData->spawn->x);
         $root['SpawnY'] = LittleEndianNbtTag::int($worldData->spawn->y);
         $root['SpawnZ'] = LittleEndianNbtTag::int($worldData->spawn->z);
         $root['Time'] = LittleEndianNbtTag::long($worldData->time);
+        $root['Difficulty'] = LittleEndianNbtTag::int($worldData->difficulty);
         $metadata = new LevelDatMetadata($this->levelDat->headerVersion, $root);
         try {
             $this->levelDatStore->save($this->levelDatPath, $metadata);
@@ -288,25 +292,70 @@ final class LevelDbWorldProvider implements WritableWorldProvider
                 $metadata->generatorName(),
                 new SpawnPosition($metadata->spawnX(), $metadata->spawnY(), $metadata->spawnZ()),
                 $metadata->time(),
+                $metadata->difficulty(),
             );
+        } catch (UnsupportedWorldDataException $error) {
+            throw new UnsupportedWorldFormatException($error->getMessage(), previous: $error);
         } catch (StorageCorruptWorldDataException|\InvalidArgumentException $error) {
             throw new CorruptWorldDataException('level.dat contains invalid authoritative world metadata.', previous: $error);
         }
     }
 
-    private static function newMetadata(WorldData $data): LevelDatMetadata
+    private static function newMetadata(WorldData $data, int $createdAt): LevelDatMetadata
     {
+        if ($createdAt < 0) {
+            throw new InvalidArgumentException('World creation time must be a non-negative Unix timestamp.');
+        }
+
         return new LevelDatMetadata(LevelDatCodec::CURRENT_STORAGE_VERSION, [
             'StorageVersion' => LittleEndianNbtTag::int(LevelDatCodec::CURRENT_STORAGE_VERSION),
             'NetworkVersion' => LittleEndianNbtTag::int(self::CURRENT_NETWORK_VERSION),
             'LevelName' => LittleEndianNbtTag::string($data->metadata->name),
             'RandomSeed' => LittleEndianNbtTag::long($data->metadata->seed),
             'generatorName' => LittleEndianNbtTag::string($data->generatorName),
+            'Generator' => LittleEndianNbtTag::int(2),
             'generatorOptions' => LittleEndianNbtTag::string(''),
+            'GameType' => LittleEndianNbtTag::int(0),
+            'LastPlayed' => LittleEndianNbtTag::long($createdAt),
+            'DayCycleStopTime' => LittleEndianNbtTag::int(-1),
             'SpawnX' => LittleEndianNbtTag::int($data->spawn->x),
             'SpawnY' => LittleEndianNbtTag::int($data->spawn->y),
             'SpawnZ' => LittleEndianNbtTag::int($data->spawn->z),
             'Time' => LittleEndianNbtTag::long($data->time),
+            'Difficulty' => LittleEndianNbtTag::int($data->difficulty),
+            'commandsEnabled' => LittleEndianNbtTag::byte(0),
+            'immutableWorld' => LittleEndianNbtTag::byte(0),
+            'pvp' => LittleEndianNbtTag::byte(1),
+            'spawnMobs' => LittleEndianNbtTag::byte(1),
+            'texturePacksRequired' => LittleEndianNbtTag::byte(0),
+            'lightningLevel' => LittleEndianNbtTag::float(0.0),
+            'lightningTime' => LittleEndianNbtTag::int(0),
+            'rainLevel' => LittleEndianNbtTag::float(0.0),
+            'rainTime' => LittleEndianNbtTag::int(0),
+            'lastOpenedWithVersion' => LittleEndianNbtTag::list(
+                LittleEndianNbtTag::INT,
+                array_map(LittleEndianNbtTag::int(...), self::gameVersionParts()),
+            ),
         ]);
+    }
+
+    /** @return list<int> */
+    private static function gameVersionParts(): array
+    {
+        $parts = explode('.', ProtocolVersion::GAME_VERSION);
+        if (count($parts) !== 3) {
+            throw new \LogicException('Bedrock game version must contain three numeric components.');
+        }
+        $version = [];
+        foreach ($parts as $part) {
+            if (preg_match('/\A(?:0|[1-9][0-9]*)\z/D', $part) !== 1) {
+                throw new \LogicException('Bedrock game version must contain canonical numeric components.');
+            }
+            $version[] = (int) $part;
+        }
+        $version[] = 0;
+        $version[] = 0;
+
+        return $version;
     }
 }

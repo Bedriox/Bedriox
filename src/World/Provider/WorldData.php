@@ -16,6 +16,7 @@ final readonly class WorldData
         public string $generatorName,
         public SpawnPosition $spawn,
         public int $time = 0,
+        public int $difficulty = 2,
     ) {
         if (
             $generatorName === ''
@@ -23,6 +24,9 @@ final readonly class WorldData
             || preg_match('/^[A-Za-z0-9._-]+$/D', $generatorName) !== 1
         ) {
             throw new InvalidArgumentException('Generator name must contain 1-64 bounded identifier characters.');
+        }
+        if ($this->difficulty < 0 || $this->difficulty > 3) {
+            throw new InvalidArgumentException('Difficulty must be a Bedrock value between 0 and 3.');
         }
     }
 }

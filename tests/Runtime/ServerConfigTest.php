@@ -21,6 +21,8 @@ final class ServerConfigTest extends TestCase
         self::assertTrue($defaults->loggingFile);
         self::assertTrue($defaults->consoleEnabled);
         self::assertTrue($defaults->crashReportIncludePlayerIdentifiers);
+        self::assertSame(6_000, $defaults->levelAutosaveIntervalTicks);
+        self::assertSame(8, $defaults->chunksSavePerTick);
 
         $config = ServerConfig::fromArguments([
             '--bind=127.0.0.1',
@@ -44,6 +46,8 @@ final class ServerConfigTest extends TestCase
             '--chunks-send-per-tick=7',
             '--chunks-generate-per-tick=5',
             '--chunks-cache-limit=6000',
+            '--level-autosave-interval-ticks=1200',
+            '--chunks-save-per-tick=12',
             '--protocol-trace=true',
             '--spawn-x=-16',
             '--spawn-y=70',
@@ -61,6 +65,8 @@ final class ServerConfigTest extends TestCase
         self::assertSame(6, $streaming->spawnRadius);
         self::assertSame(7, $streaming->chunksSendPerTick);
         self::assertSame(5, $streaming->chunksGeneratePerTick);
+        self::assertSame(1_200, $streaming->levelAutosaveIntervalTicks);
+        self::assertSame(12, $streaming->chunksSavePerTick);
         self::assertTrue($streaming->protocolTrace);
         self::assertSame([-16, 70, 32], [$streaming->spawnX, $streaming->spawnY, $streaming->spawnZ]);
         self::assertSame(LogLevel::WARNING, $streaming->loggingLevel);
@@ -94,6 +100,10 @@ final class ServerConfigTest extends TestCase
         yield 'invalid console colors' => [['--log-console-colors=yes']];
         yield 'unbounded log file' => [['--log-file-max-size=65535']];
         yield 'excess log history' => [['--log-file-history=101']];
+        yield 'autosave interval below one second' => [['--level-autosave-interval-ticks=19']];
+        yield 'autosave interval above one hour' => [['--level-autosave-interval-ticks=72001']];
+        yield 'zero chunk save budget' => [['--chunks-save-per-tick=0']];
+        yield 'excess chunk save budget' => [['--chunks-save-per-tick=65']];
     }
 
     /** @param list<string> $arguments */
@@ -109,12 +119,19 @@ final class ServerConfigTest extends TestCase
         $path = tempnam(sys_get_temp_dir(), 'bedriox-settings-');
         self::assertIsString($path);
         try {
-            file_put_contents($path, "server.name=Configured name\nserver.max-players=8\nchunks.view-distance=6\nchunks.spawn-radius=5\n");
-            $config = ServerConfig::fromSettingsFile($path, ['--name=CLI name', '--view-distance=7']);
+            file_put_contents($path, "server.name=Configured name\nserver.max-players=8\nlevel.autosave-interval-ticks=8000\nchunks.view-distance=6\nchunks.spawn-radius=5\nchunks.save-per-tick=6\n");
+            $config = ServerConfig::fromSettingsFile($path, [
+                '--name=CLI name',
+                '--view-distance=7',
+                '--level-autosave-interval-ticks=9000',
+                '--chunks-save-per-tick=7',
+            ]);
             self::assertSame('CLI name', $config->serverName);
             self::assertSame(8, $config->maximumPlayers);
             self::assertSame(7, $config->viewDistance);
             self::assertSame(5, $config->spawnRadius);
+            self::assertSame(9_000, $config->levelAutosaveIntervalTicks);
+            self::assertSame(7, $config->chunksSavePerTick);
         } finally {
             @unlink($path);
         }

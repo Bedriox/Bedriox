@@ -15,6 +15,7 @@ use Bedriox\Server\World\Provider\WorldData;
 use Bedriox\Server\World\SpawnPosition;
 use Bedriox\Server\World\Storage\LevelDatStore;
 use Bedriox\Server\World\Storage\LevelDb\NativeLevelDbDatabase;
+use Bedriox\Server\World\Storage\Nbt\LittleEndianNbtTag;
 use Bedriox\Server\World\WorldMetadata;
 use PHPUnit\Framework\TestCase;
 
@@ -63,13 +64,28 @@ final class NativeLevelDbDatabaseTest extends TestCase
                 new WorldData(new WorldMetadata('Native World', 123), 'flat', new SpawnPosition(0, 64, 0)),
                 $registry,
                 $dataSet->persistentBlockStateRegistry(),
+                createdAt: 1_234_567_890,
             );
             $chunk = (new FlatWorldGenerator(FixedFlatBlockPalette::fromRegistry($registry)))
                 ->generate(new ChunkPosition(-1, -2));
             $provider->saveChunk(new ChunkSaveData($chunk));
             $provider->close();
 
-            self::assertSame(2193, (new LevelDatStore())->load($worldPath . DIRECTORY_SEPARATOR . 'level.dat')->networkVersion());
+            $metadata = (new LevelDatStore())->load($worldPath . DIRECTORY_SEPARATOR . 'level.dat');
+            self::assertSame(2193, $metadata->networkVersion());
+            self::assertSame(2, $metadata->root['Generator']->value);
+            self::assertSame(2, $metadata->difficulty());
+            self::assertSame(1_234_567_890, $metadata->root['LastPlayed']->value);
+            $versionTag = $metadata->root['lastOpenedWithVersion'];
+            self::assertSame(LittleEndianNbtTag::LIST, $versionTag->type);
+            self::assertIsArray($versionTag->value);
+            $version = [];
+            foreach ($versionTag->value as $tag) {
+                self::assertInstanceOf(LittleEndianNbtTag::class, $tag);
+                self::assertIsInt($tag->value);
+                $version[] = $tag->value;
+            }
+            self::assertSame([1, 26, 50, 0, 0], $version);
             $reopened = LevelDbWorldProvider::open(
                 $worldPath,
                 $registry,

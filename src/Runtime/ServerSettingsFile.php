@@ -83,6 +83,7 @@ level.generator=flat
 level.seed=0
 level.default-gamemode=survival
 level.difficulty=normal
+level.autosave-interval-ticks=6000
 
 # Leave all three commented to use the level's calculated default spawn.
 # level.spawn-x=
@@ -95,6 +96,7 @@ chunks.spawn-radius=4
 chunks.send-per-tick=4
 chunks.generate-per-tick=4
 chunks.cache-limit=2048
+chunks.save-per-tick=8
 
 # Runtime and diagnostics
 runtime.ticks-per-second=20

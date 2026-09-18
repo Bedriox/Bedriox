@@ -137,6 +137,7 @@ final class LevelDbWorldProviderTest extends TestCase
                 'flat',
                 new SpawnPosition(10, 70, -3),
                 123,
+                3,
             );
             $provider->saveWorldData($replacement);
             $saved = (new LevelDatStore())->load($levelDatPath);
@@ -144,6 +145,8 @@ final class LevelDbWorldProviderTest extends TestCase
             self::assertSame('Renamed World', $saved->levelName());
             self::assertSame(9876, $saved->seed());
             self::assertSame(123, $saved->time());
+            self::assertSame(3, $saved->difficulty());
+            self::assertSame(2, $saved->root['Generator']->value);
             self::assertSame('preserve-me', $saved->root['BedrioxOpaqueTest']->value);
 
             $provider->close();

@@ -22,6 +22,8 @@ final class World
 
     private readonly int $time;
 
+    private readonly int $difficulty;
+
     private bool $closed = false;
 
     public function __construct(
@@ -43,6 +45,7 @@ final class World
         }
         $this->spawnOverride = $spawnOverride ?? ($worldData === null ? null : $worldData->spawn);
         $this->time = $worldData === null ? 0 : $worldData->time;
+        $this->difficulty = $worldData === null ? 2 : $worldData->difficulty;
     }
 
     public function chunk(ChunkPosition $position): Chunk
@@ -127,6 +130,7 @@ final class World
             $this->generator->name(),
             $this->spawn(),
             $this->time,
+            $this->difficulty,
         ));
 
         return $saved;

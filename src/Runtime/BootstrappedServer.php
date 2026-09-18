@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Runtime;
 
 use Bedriox\Server\Simulation\SimulationPluginApiBackend;
+use Bedriox\Server\World\World;
 
 final readonly class BootstrappedServer
 {
@@ -14,5 +15,6 @@ final readonly class BootstrappedServer
         public int $localPort,
         public ?string $securityWarning,
         public SimulationPluginApiBackend $pluginApi,
+        public World $world,
     ) {}
 }

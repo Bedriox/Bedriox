@@ -4,12 +4,27 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Runtime;
 
+use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\Server\Login\AuthenticatedLogin;
 use Bedriox\Server\Login\AuthenticationMode;
+use Bedriox\Server\Runtime\ConfiguredWorldFactory;
+use Bedriox\Server\Runtime\OpenedWorld;
 use Bedriox\Server\Runtime\PlayInitializationFactory;
 use Bedriox\Server\Runtime\ServerBootstrap;
 use Bedriox\Server\Runtime\ServerConfig;
+use Bedriox\Server\World\Block\BlockStateRegistry;
+use Bedriox\Server\World\Block\FixedFlatBlockPalette;
+use Bedriox\Server\World\ChunkPosition;
+use Bedriox\Server\World\ChunkRepository;
+use Bedriox\Server\World\FlatWorldGenerator;
+use Bedriox\Server\World\Provider\ChunkSaveData;
+use Bedriox\Server\World\Provider\LoadedChunkData;
+use Bedriox\Server\World\Provider\WorldData;
+use Bedriox\Server\World\Provider\WritableWorldProvider;
+use Bedriox\Server\World\SpawnPosition;
+use Bedriox\Server\World\World;
+use Bedriox\Server\World\WorldMetadata;
 use PHPUnit\Framework\TestCase;
 
 final class ServerBootstrapTest extends TestCase
@@ -73,6 +88,46 @@ final class ServerBootstrapTest extends TestCase
         } finally {
             socket_close($socket);
             $server->runtime->close();
+        }
+    }
+
+    public function testConfiguredWorldIsSharedAndClosedWithRuntime(): void
+    {
+        $port = $this->availableUdpPort();
+        $worlds = new BootstrapRecordingWorldFactory();
+        $server = (new ServerBootstrap($worlds))->create(
+            new ServerConfig('127.0.0.1', $port, 'Bootstrap Test', 2, AuthenticationMode::SELF_SIGNED),
+            new BootstrapEmptyInitializationFactory(),
+        );
+
+        self::assertSame($worlds->world, $server->world);
+        self::assertFalse($worlds->provider->closed);
+        $server->runtime->close();
+        self::assertTrue($worlds->provider->closed);
+    }
+
+    public function testWorldOpenedBeforeBindFailureIsClosed(): void
+    {
+        $socket = socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
+        self::assertInstanceOf(\Socket::class, $socket);
+        self::assertTrue(socket_bind($socket, '127.0.0.1', 0));
+        $address = '';
+        $port = 0;
+        self::assertTrue(socket_getsockname($socket, $address, $port));
+        self::assertIsInt($port);
+        $worlds = new BootstrapRecordingWorldFactory();
+
+        try {
+            (new ServerBootstrap($worlds))->create(
+                new ServerConfig('127.0.0.1', $port, 'Bootstrap Test', 2, AuthenticationMode::SELF_SIGNED),
+                new BootstrapEmptyInitializationFactory(),
+            );
+            self::fail('Bootstrap unexpectedly bound an occupied UDP port.');
+        } catch (\Throwable) {
+            self::assertSame(1, $worlds->openCount);
+            self::assertTrue($worlds->provider->closed);
+        } finally {
+            socket_close($socket);
         }
     }
 
@@ -141,5 +196,69 @@ final class BootstrapEmptyInitializationFactory implements PlayInitializationFac
     public function fixedFlatRuntimeIds(): array
     {
         return ['air' => 1, 'bedrock' => 2, 'dirt' => 3, 'grass_block' => 4];
+    }
+}
+
+final class BootstrapRecordingWorldFactory implements ConfiguredWorldFactory
+{
+    public int $openCount = 0;
+
+    public readonly BootstrapRecordingWorldProvider $provider;
+
+    public readonly World $world;
+
+    public function __construct()
+    {
+        $data = BedrockDataSet::bundled();
+        $states = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($states);
+        $worldData = new WorldData(
+            new WorldMetadata('Stored Bootstrap World', 44),
+            'flat',
+            new SpawnPosition(2, 64, 3),
+        );
+        $this->provider = new BootstrapRecordingWorldProvider($worldData);
+        $this->world = new World(
+            $worldData->metadata,
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(162),
+            provider: $this->provider,
+        );
+    }
+
+    public function open(ServerConfig $config, BedrockDataSet $data): OpenedWorld
+    {
+        ++$this->openCount;
+
+        return new OpenedWorld($this->world, $this->provider->worldData());
+    }
+}
+
+final class BootstrapRecordingWorldProvider implements WritableWorldProvider
+{
+    public bool $closed = false;
+
+    public function __construct(private WorldData $data) {}
+
+    public function worldData(): WorldData
+    {
+        return $this->data;
+    }
+
+    public function loadChunk(ChunkPosition $position): ?LoadedChunkData
+    {
+        return null;
+    }
+
+    public function saveWorldData(WorldData $worldData): void
+    {
+        $this->data = $worldData;
+    }
+
+    public function saveChunk(ChunkSaveData $chunkData): void {}
+
+    public function close(): void
+    {
+        $this->closed = true;
     }
 }

@@ -36,6 +36,7 @@ use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\ChunkRepository;
 use Bedriox\Server\World\FlatWorldGenerator;
+use Bedriox\Server\World\Provider\WorldData;
 use Bedriox\Server\World\SpawnPosition;
 use Bedriox\Server\World\World;
 use Bedriox\Server\World\WorldMetadata;
@@ -46,9 +47,11 @@ final class ServerBootstrap
 {
     public const string SELF_SIGNED_WARNING = 'WARNING: SELF_SIGNED authentication is insecure and intended only for isolated development.';
 
+    public function __construct(private readonly ?ConfiguredWorldFactory $worldFactory = null) {}
+
     public function create(
         ServerConfig $config,
-        PlayInitializationFactory $initialization,
+        ?PlayInitializationFactory $initialization = null,
         ?RuntimeDiagnostics $diagnostics = null,
         ?CrashContextPublisher $crashContext = null,
         ?PluginGameplayEventBridge $pluginEvents = null,
@@ -76,58 +79,56 @@ final class ServerBootstrap
         $data = BedrockDataSet::bundled();
         $networkStates = $data->blockStateRegistry();
         $internalStates = new BlockStateRegistry($networkStates->states());
-        $spawnOverride = $config->spawnX === null ? null : new SpawnPosition(
-            $config->spawnX,
-            $config->spawnY ?? 64,
-            $config->spawnZ ?? 0,
-        );
         $flatPalette = FixedFlatBlockPalette::fromRegistry($internalStates);
-        $flatWorld = new World(
-            new WorldMetadata($config->levelName, $config->levelSeed),
-            new FlatWorldGenerator($flatPalette),
-            new ChunkRepository($config->chunkCacheLimit),
-            $spawnOverride,
-        );
-        $spawn = $flatWorld->spawn();
-        $world = new WorldSimulation(
-            $simulationLimits,
-            new Position($spawn->x, $spawn->y, $spawn->z),
-            $flatWorld,
-            $flatPalette,
-            $pluginEvents,
-        );
-        $chunkSerializer = new BedrockChunkPacketSerializer(
-            $blockTranslator = new BlockNetworkTranslator($internalStates, $networkStates),
-            $data->plainsBiomeRuntimeId(),
-        );
-        $inventoryProjector = BedrockInventoryPacketProjector::fromData($data, $blockTranslator);
-        $serverGuid = random_int(1, PHP_INT_MAX);
-        $advertisement = new BedrockServerAdvertisement(
-            motd: $config->serverName,
-            onlinePlayers: 0,
-            maximumPlayers: $config->maximumPlayers,
-            serverId: $serverGuid,
-            subMotd: $config->motd,
-            gameMode: AdvertisedGameMode::Survival,
-            nintendoLimited: false,
-            ipv4Port: $config->port,
-        );
-        $status = new DiscoveryStatus(
-            $advertisement->encode(),
-            acceptingConnections: true,
-        );
-        $discovery = DiscoveryServer::bind(
-            new TransportConfig(
-                bindAddress: $config->bindAddress,
-                port: $config->port,
-                maximumSessions: $config->maximumPlayers,
-                maximumPendingHandshakes: $config->maximumPlayers,
-                maximumSessionEvents: max($config->maximumPlayers, 1_024),
-            ),
-            $serverGuid,
-            $status,
-        );
+        $openedWorld = $this->worldFactory?->open($config, $data)
+            ?? $this->ephemeralWorld($config, $flatPalette);
+        $flatWorld = $openedWorld->world;
+        $discovery = null;
         try {
+            $initialization ??= BedrockPlayInitializationFactory::forWorld(
+                $data,
+                $runtimeLimits,
+                $openedWorld->data,
+            );
+            $spawn = $flatWorld->spawn();
+            $world = new WorldSimulation(
+                $simulationLimits,
+                new Position($spawn->x, $spawn->y, $spawn->z),
+                $flatWorld,
+                $flatPalette,
+                $pluginEvents,
+            );
+            $chunkSerializer = new BedrockChunkPacketSerializer(
+                $blockTranslator = new BlockNetworkTranslator($internalStates, $networkStates),
+                $data->plainsBiomeRuntimeId(),
+            );
+            $inventoryProjector = BedrockInventoryPacketProjector::fromData($data, $blockTranslator);
+            $serverGuid = random_int(1, PHP_INT_MAX);
+            $advertisement = new BedrockServerAdvertisement(
+                motd: $config->serverName,
+                onlinePlayers: 0,
+                maximumPlayers: $config->maximumPlayers,
+                serverId: $serverGuid,
+                subMotd: $config->motd,
+                gameMode: AdvertisedGameMode::Survival,
+                nintendoLimited: false,
+                ipv4Port: $config->port,
+            );
+            $status = new DiscoveryStatus(
+                $advertisement->encode(),
+                acceptingConnections: true,
+            );
+            $discovery = DiscoveryServer::bind(
+                new TransportConfig(
+                    bindAddress: $config->bindAddress,
+                    port: $config->port,
+                    maximumSessions: $config->maximumPlayers,
+                    maximumPendingHandshakes: $config->maximumPlayers,
+                    maximumSessionEvents: max($config->maximumPlayers, 1_024),
+                ),
+                $serverGuid,
+                $status,
+            );
             $runtime = new ServerRuntime(
                 new DiscoveryServerTransport($discovery, $diagnostics),
                 new ConfiguredLoginChannelFactory(
@@ -154,9 +155,17 @@ final class ServerBootstrap
                 $runtimeLimits,
                 diagnostics: $diagnostics,
                 crashContext: $crashContext,
+                persistentWorld: $openedWorld->world,
+                autosaveIntervalTicks: $config->levelAutosaveIntervalTicks,
+                autosaveChunkBudget: $config->chunksSavePerTick,
             );
         } catch (Throwable $exception) {
-            $discovery->close();
+            $discovery?->close();
+            try {
+                $flatWorld->close();
+            } catch (Throwable) {
+                // Preserve the composition failure while still attempting provider cleanup.
+            }
             throw $exception;
         }
 
@@ -166,7 +175,37 @@ final class ServerBootstrap
             $discovery->localPort(),
             $config->authenticationMode === AuthenticationMode::SELF_SIGNED ? self::SELF_SIGNED_WARNING : null,
             new SimulationPluginApiBackend($world, $flatWorld, $flatPalette),
+            $flatWorld,
         );
+    }
+
+    private function ephemeralWorld(ServerConfig $config, FixedFlatBlockPalette $palette): OpenedWorld
+    {
+        $spawnOverride = $config->spawnX === null ? null : new SpawnPosition(
+            $config->spawnX,
+            $config->spawnY ?? 64,
+            $config->spawnZ ?? 0,
+        );
+        $metadata = new WorldMetadata($config->levelName, $config->levelSeed);
+        $world = new World(
+            $metadata,
+            new FlatWorldGenerator($palette),
+            new ChunkRepository($config->chunkCacheLimit),
+            $spawnOverride,
+        );
+
+        return new OpenedWorld($world, new WorldData(
+            $metadata,
+            $world->generatorName(),
+            $world->spawn(),
+            difficulty: match ($config->difficulty) {
+                'peaceful' => 0,
+                'easy' => 1,
+                'normal' => 2,
+                'hard' => 3,
+                default => throw new \LogicException('Validated difficulty became unsupported.'),
+            },
+        ));
     }
 
     private function authenticator(AuthenticationMode $mode, SystemAuthenticationClock $clock): LoginAuthenticator
