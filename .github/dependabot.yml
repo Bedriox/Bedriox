@@ -1,0 +1,10 @@
+version: 2
+updates:
+  # Composer updates are intentionally disabled while production components are
+  # resolved from private sibling paths that Dependabot cannot check out safely.
+  # Re-enable them after the components are available from an authenticated
+  # Composer registry or public package source.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

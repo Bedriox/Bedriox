@@ -1,0 +1,32 @@
+{
+    "schema": 1,
+    "status": "alpha",
+    "server": "0.1.0-alpha.1",
+    "php": "^8.4",
+    "bedrock": {
+        "clientVersions": [
+            "1.26.50",
+            "1.26.51"
+        ],
+        "networkProtocols": [
+            2193
+        ]
+    },
+    "components": {
+        "raknet": {
+            "package": "bedriox/raknet",
+            "version": "0.1.0-alpha.1",
+            "commit": "aa84f71169f6401029b070af35ecb3f85b7fcac4"
+        },
+        "protocol": {
+            "package": "bedriox/protocol",
+            "version": "0.1.0-alpha.1",
+            "commit": "fb0a0da40952a4f3b5e321f0b4e3df86bb38e920"
+        },
+        "data": {
+            "package": "bedriox/data",
+            "version": "0.1.0-alpha.1",
+            "commit": "718037f5dabd25d0ce7d2e6a2517119725959c95"
+        }
+    }
+}

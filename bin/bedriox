@@ -1,0 +1,19 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use Bedriox\Server\Application;
+
+require dirname(__DIR__) . '/vendor/autoload.php';
+
+$application = new Application();
+exit($application->run(
+    array_values(array_slice($argv, 1)),
+    static function (string $message): void {
+        fwrite(STDOUT, $message);
+    },
+    static function (string $message): void {
+        fwrite(STDERR, $message);
+    },
+));

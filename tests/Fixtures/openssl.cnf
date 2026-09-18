@@ -1,0 +1,18 @@
+openssl_conf = openssl_init
+
+[openssl_init]
+providers = providers
+
+[providers]
+default = default_provider
+
+[default_provider]
+activate = 1
+
+[req]
+default_bits = 2048
+default_md = sha384
+distinguished_name = req_distinguished_name
+prompt = no
+
+[req_distinguished_name]
