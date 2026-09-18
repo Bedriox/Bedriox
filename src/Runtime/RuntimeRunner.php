@@ -19,39 +19,65 @@ final readonly class RuntimeRunner
     /** @param Closure(): bool $stopRequested */
     public function run(Closure $stopRequested): int
     {
+        $result = 0;
+        $reportedFailure = null;
         try {
             while (!$stopRequested()) {
                 if (!$this->runtime->poll()) {
+                    $result = 1;
                     if ($this->runtime instanceof RuntimeFailureSource) {
                         $failure = $this->runtime->failure();
-                        if ($failure !== null && $this->failureHandler !== null) {
-                            try {
-                                ($this->failureHandler)($failure);
-                            } catch (Throwable) {
-                                // Failure reporting must not prevent runtime cleanup.
-                            }
+                        if ($failure !== null) {
+                            $this->reportFailure($failure);
+                            $reportedFailure = $failure;
                         }
                     }
-                    return 1;
+                    break;
                 }
                 $this->sleeper->idle();
             }
-
-            return 0;
         } catch (Throwable $exception) {
             ($this->diagnostics ?? RuntimeDiagnostics::disabled())->record('runtime.runner_failed', [
                 'exception' => $exception::class,
             ]);
-            if ($this->failureHandler !== null) {
-                try {
-                    ($this->failureHandler)($exception);
-                } catch (Throwable) {
-                    // Failure reporting must not prevent runtime cleanup.
+            $this->reportFailure($exception);
+            $reportedFailure = $exception;
+            $result = 1;
+        }
+
+        try {
+            $this->runtime->close();
+        } catch (Throwable $exception) {
+            ($this->diagnostics ?? RuntimeDiagnostics::disabled())->record('runtime.runner_close_failed', [
+                'exception' => $exception::class,
+            ]);
+            $this->reportFailure($exception);
+            $reportedFailure = $exception;
+            $result = 1;
+        }
+
+        if ($this->runtime instanceof RuntimeFailureSource) {
+            $failure = $this->runtime->failure();
+            if ($failure !== null) {
+                $result = 1;
+                if ($failure !== $reportedFailure) {
+                    $this->reportFailure($failure);
                 }
             }
-            return 1;
-        } finally {
-            $this->runtime->close();
+        }
+
+        return $result;
+    }
+
+    private function reportFailure(Throwable $failure): void
+    {
+        if ($this->failureHandler === null) {
+            return;
+        }
+        try {
+            ($this->failureHandler)($failure);
+        } catch (Throwable) {
+            // Failure reporting must not prevent runtime cleanup.
         }
     }
 }

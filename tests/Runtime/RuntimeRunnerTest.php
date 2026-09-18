@@ -87,6 +87,46 @@ final class RuntimeRunnerTest extends TestCase
         self::assertSame($driver->failure, $reported);
         self::assertSame(1, $driver->closes);
     }
+
+    public function testDurabilityFailureDiscoveredDuringCloseReturnsFailure(): void
+    {
+        $driver = new ShutdownFailedRuntimeDriver();
+        $reported = null;
+
+        $result = (new RuntimeRunner(
+            $driver,
+            new FakeRuntimeSleeper(),
+            failureHandler: static function (\Throwable $failure) use (&$reported): void {
+                $reported = $failure;
+            },
+        ))->run(static fn(): bool => true);
+
+        self::assertSame(1, $result);
+        self::assertSame(1, $driver->closes);
+        self::assertSame($driver->failure(), $reported);
+    }
+}
+
+final class ShutdownFailedRuntimeDriver implements RuntimeDriver, RuntimeFailureSource
+{
+    public int $closes = 0;
+    private ?\RuntimeException $shutdownFailure = null;
+
+    public function poll(): bool
+    {
+        return true;
+    }
+
+    public function close(): void
+    {
+        ++$this->closes;
+        $this->shutdownFailure ??= new \RuntimeException('durability failure');
+    }
+
+    public function failure(): ?\Throwable
+    {
+        return $this->shutdownFailure;
+    }
 }
 
 final class FailedRuntimeDriver implements RuntimeDriver, RuntimeFailureSource

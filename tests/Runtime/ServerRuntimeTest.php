@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Runtime;
 
+use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Batch\BatchLimits;
 use Bedriox\Protocol\Batch\BedrockBatch;
 use Bedriox\Protocol\Batch\BedrockBatchCodec;
@@ -76,7 +77,17 @@ use Bedriox\Server\Simulation\PlayerSnapshot;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\Simulation\SimulationClock;
 use Bedriox\Server\Simulation\WorldSimulation;
+use Bedriox\Server\Tests\World\InMemoryWorldProvider;
 use Bedriox\Server\Transport\ConnectedTransport;
+use Bedriox\Server\World\Block\BlockStateRegistry;
+use Bedriox\Server\World\Block\FixedFlatBlockPalette;
+use Bedriox\Server\World\ChunkPosition;
+use Bedriox\Server\World\ChunkRepository;
+use Bedriox\Server\World\FlatWorldGenerator;
+use Bedriox\Server\World\Provider\WorldData;
+use Bedriox\Server\World\SpawnPosition;
+use Bedriox\Server\World\World;
+use Bedriox\Server\World\WorldMetadata;
 use PHPUnit\Framework\TestCase;
 
 final class ServerRuntimeTest extends TestCase
@@ -630,6 +641,161 @@ final class ServerRuntimeTest extends TestCase
         $runtime->close();
         self::assertTrue($runtime->isClosed());
         self::assertSame(1, $transport->closeCalls);
+    }
+
+    public function testCloseDrainsJoinedPlayerDisconnectLifecycleBeforeTransportClose(): void
+    {
+        $transport = new FakeConnectedTransport();
+        $clock = new RuntimeTestClock();
+        $simulation = new WorldSimulation();
+        $loginFactory = new RuntimeLoginFactory();
+        $runtime = new ServerRuntime(
+            $transport,
+            $loginFactory,
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $simulation,
+            new FixedRateWorldLoop($simulation, $clock),
+            new RecordingEventEncoder(),
+        );
+        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $client = $this->advanceToInitializing($runtime, $transport, $info, $loginFactory);
+        $this->receiveEncrypted(
+            $transport,
+            $info,
+            $client,
+            new SetLocalPlayerAsInitializedPacket(UnsignedLong::fromInt(1)),
+        );
+        self::assertTrue($runtime->poll());
+        $clock->advance(50_000_000);
+        self::assertTrue($runtime->poll());
+        self::assertCount(1, $simulation->snapshot()->players);
+
+        $runtime->close();
+
+        self::assertSame([], $simulation->snapshot()->players);
+        self::assertSame(0, $simulation->queuedLifecycleCommands());
+        self::assertSame(1, $transport->closeCalls);
+    }
+
+    public function testAutosavePassContinuesWithinItsPerTickChunkBudgetUntilClean(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $provider = new InMemoryWorldProvider(new WorldData(
+            new WorldMetadata('world', 0),
+            'flat',
+            new SpawnPosition(0, 64, 0),
+        ));
+        $blocks = new World(
+            new WorldMetadata('world', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+            provider: $provider,
+        );
+        $blocks->chunk(new ChunkPosition(0, 0));
+        $blocks->chunk(new ChunkPosition(1, 0));
+        $blocks->chunk(new ChunkPosition(2, 0));
+        $simulation = new WorldSimulation(blockWorld: $blocks, blockPalette: $palette);
+        $clock = new RuntimeTestClock();
+        $runtime = new ServerRuntime(
+            new FakeConnectedTransport(),
+            new RuntimeLoginFactory(),
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $simulation,
+            new FixedRateWorldLoop($simulation, $clock),
+            new RecordingEventEncoder(),
+            persistentWorld: $blocks,
+            autosaveIntervalTicks: 5,
+            autosaveChunkBudget: 1,
+        );
+
+        $clock->advance(250_000_000);
+        self::assertTrue($runtime->poll());
+        self::assertCount(1, $provider->savedRevisions);
+        self::assertSame(2, $blocks->dirtyChunkCount());
+        $clock->advance(50_000_000);
+        self::assertTrue($runtime->poll());
+        self::assertCount(2, $provider->savedRevisions);
+        self::assertSame(1, $blocks->dirtyChunkCount());
+        $clock->advance(50_000_000);
+        self::assertTrue($runtime->poll());
+        self::assertCount(3, $provider->savedRevisions);
+        self::assertSame(0, $blocks->dirtyChunkCount());
+    }
+
+    public function testCloseFlushesAndClosesPersistentWorldBeforeTransportCompletion(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $provider = new InMemoryWorldProvider(new WorldData(
+            new WorldMetadata('world', 0),
+            'flat',
+            new SpawnPosition(0, 64, 0),
+        ));
+        $blocks = new World(
+            new WorldMetadata('world', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+            provider: $provider,
+        );
+        $blocks->chunk(new ChunkPosition(0, 0));
+        $simulation = new WorldSimulation(blockWorld: $blocks, blockPalette: $palette);
+        $transport = new FakeConnectedTransport();
+        $runtime = new ServerRuntime(
+            $transport,
+            new RuntimeLoginFactory(),
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $simulation,
+            new FixedRateWorldLoop($simulation, new RuntimeTestClock()),
+            new RecordingEventEncoder(),
+            persistentWorld: $blocks,
+        );
+
+        $runtime->close();
+        $runtime->close();
+
+        self::assertTrue($provider->closed);
+        self::assertSame(1, $provider->closeCalls);
+        self::assertCount(1, $provider->chunks);
+        self::assertSame(1, $transport->closeCalls);
+        self::assertNull($runtime->failure());
+    }
+
+    public function testWorldDurabilityFailureIsRetainedWhileShutdownStillClosesResources(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $provider = new InMemoryWorldProvider(new WorldData(
+            new WorldMetadata('world', 0),
+            'flat',
+            new SpawnPosition(0, 64, 0),
+        ));
+        $blocks = new World(
+            new WorldMetadata('world', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+            provider: $provider,
+        );
+        $blocks->chunk(new ChunkPosition(0, 0));
+        $provider->failSaves = true;
+        $simulation = new WorldSimulation(blockWorld: $blocks, blockPalette: $palette);
+        $transport = new FakeConnectedTransport();
+        $runtime = new ServerRuntime(
+            $transport,
+            new RuntimeLoginFactory(),
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $simulation,
+            new FixedRateWorldLoop($simulation, new RuntimeTestClock()),
+            new RecordingEventEncoder(),
+            persistentWorld: $blocks,
+        );
+
+        $runtime->close();
+
+        self::assertNotNull($runtime->failure());
+        self::assertTrue($provider->closed);
+        self::assertSame(1, $transport->closeCalls);
+        self::assertSame(1, $blocks->dirtyChunkCount());
     }
 
     private function receive(FakeConnectedTransport $transport, SessionInfo $info, string $payload): void

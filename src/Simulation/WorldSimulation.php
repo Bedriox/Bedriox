@@ -79,6 +79,7 @@ final class WorldSimulation
     private int $queuedBytes = 0;
     private int $queuedCommandBytes = 0;
     private int $queuedLifecycleBytes = 0;
+    private bool $acceptingCommands = true;
     private int $tick = 0;
     private int $nextRuntimeActorId = 1;
     private readonly SimulationCommandFactory $validator;
@@ -116,6 +117,9 @@ final class WorldSimulation
         if ($command instanceof DisconnectPlayer) {
             return $this->enqueueDisconnect($command);
         }
+        if (!$this->acceptingCommands) {
+            return false;
+        }
         if (isset($this->pendingDisconnects[self::sessionKey($command->sessionId())])) {
             return false;
         }
@@ -139,20 +143,7 @@ final class WorldSimulation
     public function tick(): SimulationTick
     {
         ++$this->tick;
-        $events = [];
-        $processed = 0;
-        while (!$this->lifecycleCommands->isEmpty() && $processed < $this->limits->maximumCommandsPerTick) {
-            $command = $this->lifecycleCommands->dequeue();
-            $bytes = $command->estimatedBytes();
-            $this->queuedLifecycleBytes -= $bytes;
-            unset($this->pendingDisconnects[self::sessionKey($command->session)]);
-            $this->queuedBytes -= $bytes;
-            ++$processed;
-            $event = $this->apply($command);
-            if ($event !== null) {
-                $events[] = $event;
-            }
-        }
+        [$processed, $events] = $this->processLifecycleCommands($this->limits->maximumCommandsPerTick);
 
         $remaining = $this->limits->maximumCommandsPerTick - $processed;
         $reservedMovements = min(count($this->movements), $remaining);
@@ -189,6 +180,37 @@ final class WorldSimulation
         return new SimulationTick($this->tick, $processed, $events);
     }
 
+    /**
+     * Drains only bounded disconnect lifecycle work during shutdown.
+     * Gameplay and movement input intentionally remain unapplied once admission stops.
+     */
+    public function drainLifecycle(): SimulationTick
+    {
+        ++$this->tick;
+        [$processed, $events] = $this->processLifecycleCommands($this->limits->maximumCommandsPerTick);
+
+        return new SimulationTick($this->tick, $processed, $events);
+    }
+
+    /** Stops gameplay admission and discards queued non-lifecycle input before shutdown draining. */
+    public function beginShutdown(): void
+    {
+        if (!$this->acceptingCommands) {
+            return;
+        }
+        $this->acceptingCommands = false;
+        $this->commands = new SplQueue();
+        $this->movements = [];
+        $this->movementOrder = new SplQueue();
+        $this->queuedCommandBytes = 0;
+        $this->queuedBytes = $this->queuedLifecycleBytes;
+    }
+
+    public function queuedLifecycleCommands(): int
+    {
+        return $this->lifecycleCommands->count();
+    }
+
     public function snapshot(): WorldSnapshot
     {
         return new WorldSnapshot($this->tick, $this->players->snapshots());
@@ -207,6 +229,27 @@ final class WorldSimulation
     public function ticksPerSecond(): int
     {
         return $this->limits->ticksPerSecond;
+    }
+
+    /** @return array{int, list<WorldEvent>} */
+    private function processLifecycleCommands(int $maximumCommands): array
+    {
+        $events = [];
+        $processed = 0;
+        while (!$this->lifecycleCommands->isEmpty() && $processed < $maximumCommands) {
+            $command = $this->lifecycleCommands->dequeue();
+            $bytes = $command->estimatedBytes();
+            $this->queuedLifecycleBytes -= $bytes;
+            unset($this->pendingDisconnects[self::sessionKey($command->session)]);
+            $this->queuedBytes -= $bytes;
+            ++$processed;
+            $event = $this->apply($command);
+            if ($event !== null) {
+                $events[] = $event;
+            }
+        }
+
+        return [$processed, $events];
     }
 
     /** @return list<\Bedriox\Api\Player\Player> */

@@ -33,6 +33,8 @@ use Bedriox\Server\Simulation\FixedRateWorldLoop;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
 use Bedriox\Server\Simulation\WorldSimulation;
 use Bedriox\Server\Transport\ConnectedTransport;
+use Bedriox\Server\World\World;
+use InvalidArgumentException;
 use RuntimeException;
 use Throwable;
 
@@ -52,6 +54,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
     private readonly PlayerActorVisibilityRegistry $actorVisibility;
     private ?Throwable $failure = null;
     private ?string $involvedSessionId = null;
+    private bool $autosaveActive = false;
 
     public function __construct(
         private readonly ConnectedTransport $transport,
@@ -64,7 +67,13 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         ?SimulationCommandFactory $commands = null,
         ?RuntimeDiagnostics $diagnostics = null,
         private readonly ?CrashContextPublisher $crashContext = null,
+        private readonly ?World $persistentWorld = null,
+        private readonly int $autosaveIntervalTicks = 6_000,
+        private readonly int $autosaveChunkBudget = 8,
     ) {
+        if ($this->autosaveIntervalTicks < 1 || $this->autosaveChunkBudget < 1) {
+            throw new InvalidArgumentException('Autosave interval and chunk budget must be positive.');
+        }
         $this->commands = $commands ?? new SimulationCommandFactory();
         $this->diagnostics = $diagnostics ?? RuntimeDiagnostics::disabled();
         $this->actorVisibility = new PlayerActorVisibilityRegistry($this->limits->maximumSessions);
@@ -299,6 +308,18 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                         return false;
                     }
                 }
+                if ($this->persistentWorld !== null && $tick->number % $this->autosaveIntervalTicks === 0) {
+                    $this->autosaveActive = true;
+                }
+                if ($this->persistentWorld !== null && $this->autosaveActive) {
+                    $saved = $this->persistentWorld->autosave($this->autosaveChunkBudget);
+                    $remaining = $this->persistentWorld->dirtyChunkCount();
+                    $this->autosaveActive = $remaining > 0;
+                    $this->diagnostics->record('world.autosaved', [
+                        'saved_chunks' => $saved,
+                        'remaining_dirty_chunks' => $remaining,
+                    ]);
+                }
             }
             foreach (array_keys($this->sessions) as $key) {
                 $this->flush($key, $this->sessions[$key]);
@@ -327,15 +348,24 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         return $this->failure;
     }
 
-    /** Idempotently closes transport and protocol state and queues simulation disconnects. */
+    /** Idempotently drains player lifecycle and durable world state before closing transport. */
     public function close(): void
     {
         if ($this->closed) {
             return;
         }
         $this->closed = true;
+        $this->world->beginShutdown();
         foreach (array_keys($this->sessions) as $key) {
             $this->removeRuntimeSession($key);
+        }
+        $this->drainShutdownLifecycle();
+        if ($this->persistentWorld !== null) {
+            try {
+                $this->persistentWorld->close();
+            } catch (Throwable $exception) {
+                $this->recordShutdownFailure('runtime.world_close_failed', $exception);
+            }
         }
         try {
             $this->transport->close();
@@ -559,10 +589,47 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         }
         unset($this->sessions[$key], $this->sessionEndpoints[$session->id]);
         if ($session->joined || $session->phase === SessionPhase::ADMISSION_PENDING) {
-            $this->world->enqueue($this->commands->disconnect($session->id));
+            if (!$this->world->enqueue($this->commands->disconnect($session->id)) && $this->closed) {
+                $this->recordShutdownFailure(
+                    'runtime.lifecycle_enqueue_failed',
+                    new RuntimeException('Unable to enqueue a player disconnect during shutdown.'),
+                );
+            }
             $session->joined = false;
         }
         $session->close();
+    }
+
+    private function drainShutdownLifecycle(): void
+    {
+        while ($this->world->queuedLifecycleCommands() > 0) {
+            $before = $this->world->queuedLifecycleCommands();
+            try {
+                $tick = $this->world->drainLifecycle();
+                foreach ($tick->events as $event) {
+                    if ($event instanceof PlayerDisconnected) {
+                        $this->actorVisibility->remove($event->sessionId);
+                    }
+                }
+            } catch (Throwable $exception) {
+                $this->recordShutdownFailure('runtime.lifecycle_drain_failed', $exception);
+            }
+            if ($this->world->queuedLifecycleCommands() >= $before) {
+                $this->recordShutdownFailure(
+                    'runtime.lifecycle_drain_stalled',
+                    new RuntimeException('Player disconnect lifecycle made no progress during shutdown.'),
+                );
+
+                return;
+            }
+        }
+    }
+
+    private function recordShutdownFailure(string $event, Throwable $exception): void
+    {
+        $this->failure ??= $exception;
+        $this->diagnostics->record($event, ['exception' => $exception::class]);
+        $this->publishCrashContext();
     }
 
     private function failRuntime(string $reason, ?Throwable $exception = null): bool

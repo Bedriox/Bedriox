@@ -1274,6 +1274,35 @@ final class WorldSimulationTest extends TestCase
         self::assertEquals($first->snapshot(), $second->snapshot());
     }
 
+    public function testShutdownLifecycleDrainDoesNotApplyQueuedGameplay(): void
+    {
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation();
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        self::assertTrue($world->enqueue($factory->join('two', 'identity-two', 'Two')));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->chat('two', 1, 'must not run during shutdown')));
+        self::assertTrue($world->enqueue($factory->disconnect('one')));
+        self::assertSame(2, $world->queuedCommands());
+
+        $world->beginShutdown();
+        $world->beginShutdown();
+        self::assertSame(1, $world->queuedCommands(), 'Queued gameplay is discarded when shutdown begins.');
+        self::assertFalse($world->enqueue($factory->chat('two', 2, 'must be rejected during shutdown')));
+
+        $tick = $world->drainLifecycle();
+
+        self::assertSame(1, $tick->processedCommands);
+        self::assertCount(1, $tick->events);
+        self::assertInstanceOf(PlayerDisconnected::class, $tick->events[0]);
+        self::assertSame(0, $world->queuedLifecycleCommands());
+        self::assertSame(0, $world->queuedCommands());
+        self::assertSame(
+            ['two'],
+            array_map(static fn($player): string => $player->sessionId, $world->snapshot()->players),
+        );
+    }
+
     public function testHundredPlayerJoinMoveChatDisconnectStressLeavesNoGhosts(): void
     {
         $factory = new SimulationCommandFactory();
