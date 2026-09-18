@@ -1,0 +1,312 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Bedriox\Server\World\Provider;
+
+use Bedriox\Data\LittleEndianBlockStateNbtCodec;
+use Bedriox\Data\PersistentBlockStateRegistry;
+use Bedriox\Server\World\Block\BlockStateRegistry;
+use Bedriox\Server\World\Chunk;
+use Bedriox\Server\World\ChunkFinalizationState;
+use Bedriox\Server\World\ChunkPosition;
+use Bedriox\Server\World\Provider\Exception\CorruptChunkException;
+use Bedriox\Server\World\Provider\Exception\CorruptWorldDataException;
+use Bedriox\Server\World\Provider\Exception\UnsupportedWorldFormatException;
+use Bedriox\Server\World\Provider\Exception\WorldProviderClosedException;
+use Bedriox\Server\World\Provider\Exception\WorldStorageException;
+use Bedriox\Server\World\SpawnPosition;
+use Bedriox\Server\World\Storage\Exception\CorruptWorldDataException as StorageCorruptWorldDataException;
+use Bedriox\Server\World\Storage\Exception\UnsupportedWorldDataException;
+use Bedriox\Server\World\Storage\Exception\WorldDataWriteException;
+use Bedriox\Server\World\Storage\LevelDatStore;
+use Bedriox\Server\World\Storage\LevelDb\Data3dCodec;
+use Bedriox\Server\World\Storage\LevelDb\LevelDbChunkKey;
+use Bedriox\Server\World\Storage\LevelDb\LevelDbDatabase;
+use Bedriox\Server\World\Storage\LevelDb\LevelDbIoException;
+use Bedriox\Server\World\Storage\LevelDb\LevelDbStorageException;
+use Bedriox\Server\World\Storage\LevelDb\NativeLevelDbDatabase;
+use Bedriox\Server\World\Storage\LevelDb\PersistentChunkMapper;
+use Bedriox\Server\World\Storage\LevelDb\PersistentSubChunkCodec;
+use Bedriox\Server\World\Storage\Nbt\LevelDatCodec;
+use Bedriox\Server\World\Storage\Nbt\LevelDatMetadata;
+use Bedriox\Server\World\Storage\Nbt\LittleEndianNbtTag;
+use Bedriox\Server\World\WorldMetadata;
+use InvalidArgumentException;
+use Throwable;
+
+/** Mojang-compatible overworld provider backed by the qualified Bedriox LevelDB runtime. */
+final class LevelDbWorldProvider implements WritableWorldProvider
+{
+    private const int CURRENT_CHUNK_VERSION = 42;
+    private const int CURRENT_NETWORK_VERSION = 2193;
+
+    private bool $closed = false;
+
+    private WorldData $data;
+
+    public function __construct(
+        private readonly string $levelDatPath,
+        private readonly LevelDbDatabase $database,
+        private LevelDatMetadata $levelDat,
+        BlockStateRegistry $blockStates,
+        PersistentBlockStateRegistry $persistentBlockStates,
+        private readonly LevelDatStore $levelDatStore = new LevelDatStore(),
+    ) {
+        $this->data = self::worldDataFromMetadata($levelDat);
+        $stateCodec = new LittleEndianBlockStateNbtCodec($persistentBlockStates);
+        $this->subChunks = new PersistentSubChunkCodec($stateCodec);
+        $this->mapper = new PersistentChunkMapper($blockStates, $persistentBlockStates);
+    }
+
+    private readonly PersistentSubChunkCodec $subChunks;
+
+    private readonly PersistentChunkMapper $mapper;
+
+    public static function open(
+        string $worldPath,
+        BlockStateRegistry $blockStates,
+        PersistentBlockStateRegistry $persistentBlockStates,
+        ?LevelDatStore $levelDatStore = null,
+    ): self {
+        self::assertNativeSupport();
+        $store = $levelDatStore ?? new LevelDatStore();
+        $levelDatPath = $worldPath . DIRECTORY_SEPARATOR . 'level.dat';
+        try {
+            $metadata = $store->load($levelDatPath);
+            $database = NativeLevelDbDatabase::open($worldPath . DIRECTORY_SEPARATOR . 'db', false);
+        } catch (UnsupportedWorldDataException $error) {
+            throw new UnsupportedWorldFormatException($error->getMessage(), previous: $error);
+        } catch (StorageCorruptWorldDataException $error) {
+            throw new CorruptWorldDataException($error->getMessage(), previous: $error);
+        } catch (LevelDbIoException|LevelDbStorageException $error) {
+            throw new WorldStorageException($error->getMessage(), previous: $error);
+        }
+
+        try {
+            return new self($levelDatPath, $database, $metadata, $blockStates, $persistentBlockStates, $store);
+        } catch (CorruptWorldDataException $error) {
+            $database->close();
+            throw $error;
+        }
+    }
+
+    public static function create(
+        string $worldPath,
+        WorldData $worldData,
+        BlockStateRegistry $blockStates,
+        PersistentBlockStateRegistry $persistentBlockStates,
+        ?LevelDatStore $levelDatStore = null,
+    ): self {
+        self::assertNativeSupport();
+        if (file_exists($worldPath)) {
+            throw new WorldStorageException('Refusing to create a world over an existing path.');
+        }
+        if (!@mkdir($worldPath, 0775, true) && !is_dir($worldPath)) {
+            throw new WorldStorageException('Unable to create the world directory.');
+        }
+        $store = $levelDatStore ?? new LevelDatStore();
+        $metadata = self::newMetadata($worldData);
+        $levelDatPath = $worldPath . DIRECTORY_SEPARATOR . 'level.dat';
+        try {
+            $database = NativeLevelDbDatabase::open($worldPath . DIRECTORY_SEPARATOR . 'db', true);
+            $store->save($levelDatPath, $metadata);
+        } catch (WorldDataWriteException|LevelDbIoException|LevelDbStorageException $error) {
+            if (isset($database)) {
+                $database->close();
+            }
+            throw new WorldStorageException('Unable to create the LevelDB world.', previous: $error);
+        }
+
+        return new self($levelDatPath, $database, $metadata, $blockStates, $persistentBlockStates, $store);
+    }
+
+    public function worldData(): WorldData
+    {
+        $this->assertOpen();
+
+        return $this->data;
+    }
+
+    public function loadChunk(ChunkPosition $position): ?LoadedChunkData
+    {
+        $this->assertOpen();
+        try {
+            $versionKey = LevelDbChunkKey::version($position->x, $position->z);
+            $version = $this->database->get($versionKey);
+            if ($version === null) {
+                if ($this->hasOrphanedChunkData($position)) {
+                    throw new CorruptChunkException('Chunk records exist without the required version record.');
+                }
+
+                return null;
+            }
+            if (strlen($version) !== 1) {
+                throw new CorruptChunkException('Chunk version record must contain exactly one byte.');
+            }
+            $chunkVersion = ord($version);
+            if ($chunkVersion !== self::CURRENT_CHUNK_VERSION) {
+                throw new UnsupportedWorldFormatException("Chunk format version $chunkVersion is not supported.");
+            }
+
+            $data3d = $this->database->get(LevelDbChunkKey::data3d($position->x, $position->z));
+            if ($data3d === null) {
+                throw new CorruptChunkException('Current chunk is missing its required Data3D record.');
+            }
+            $biomes = $this->mapper->runtimeBiomes((new Data3dCodec())->decode($data3d));
+
+            $sections = [];
+            $upgraded = false;
+            for ($sectionY = Chunk::MIN_SECTION_Y; $sectionY <= Chunk::MAX_SECTION_Y; ++$sectionY) {
+                $record = $this->database->get(LevelDbChunkKey::subChunk($position->x, $position->z, $sectionY));
+                if ($record === null) {
+                    continue;
+                }
+                $stored = $this->subChunks->decode($record, $sectionY);
+                $upgraded = $upgraded || $stored->sourceVersion !== PersistentSubChunkCodec::WRITE_VERSION;
+                $sections[] = $this->mapper->runtimeSubChunk($stored);
+            }
+
+            $finalizationBytes = $this->database->get(LevelDbChunkKey::finalization($position->x, $position->z));
+            if ($finalizationBytes === null || strlen($finalizationBytes) !== 1) {
+                throw new CorruptChunkException('Current chunk is missing a valid finalization record.');
+            }
+            $finalization = ChunkFinalizationState::tryFrom(ord($finalizationBytes));
+            if ($finalization === null) {
+                throw new CorruptChunkException('Chunk finalization state is outside the supported range.');
+            }
+
+            return new LoadedChunkData($this->mapper->chunk($position, $sections, $biomes, $finalization), $upgraded);
+        } catch (CorruptChunkException|UnsupportedWorldFormatException $error) {
+            throw $error;
+        } catch (LevelDbIoException $error) {
+            throw new WorldStorageException('Unable to read the chunk from LevelDB.', previous: $error);
+        } catch (LevelDbStorageException|InvalidArgumentException $error) {
+            throw new CorruptChunkException('Chunk storage is malformed or cannot be represented safely.', previous: $error);
+        } catch (Throwable $error) {
+            throw new WorldStorageException('Unable to load the chunk from LevelDB.', previous: $error);
+        }
+    }
+
+    public function saveWorldData(WorldData $worldData): void
+    {
+        $this->assertOpen();
+        $root = $this->levelDat->root;
+        $root['LevelName'] = LittleEndianNbtTag::string($worldData->metadata->name);
+        $root['RandomSeed'] = LittleEndianNbtTag::long($worldData->metadata->seed);
+        $root['generatorName'] = LittleEndianNbtTag::string($worldData->generatorName);
+        $root['SpawnX'] = LittleEndianNbtTag::int($worldData->spawn->x);
+        $root['SpawnY'] = LittleEndianNbtTag::int($worldData->spawn->y);
+        $root['SpawnZ'] = LittleEndianNbtTag::int($worldData->spawn->z);
+        $root['Time'] = LittleEndianNbtTag::long($worldData->time);
+        $metadata = new LevelDatMetadata($this->levelDat->headerVersion, $root);
+        try {
+            $this->levelDatStore->save($this->levelDatPath, $metadata);
+        } catch (WorldDataWriteException $error) {
+            throw new WorldStorageException('Unable to atomically save level.dat.', previous: $error);
+        }
+        $this->levelDat = $metadata;
+        $this->data = $worldData;
+    }
+
+    public function saveChunk(ChunkSaveData $chunkData): void
+    {
+        $this->assertOpen();
+        $chunk = $chunkData->chunk;
+        $x = $chunk->position->x;
+        $z = $chunk->position->z;
+        try {
+            $puts = [
+                LevelDbChunkKey::version($x, $z) => chr(self::CURRENT_CHUNK_VERSION),
+                LevelDbChunkKey::data3d($x, $z) => (new Data3dCodec())->encode($this->mapper->data3d($chunk)),
+                LevelDbChunkKey::finalization($x, $z) => chr($chunk->finalizationState->value),
+            ];
+            $deletes = [];
+            for ($sectionY = Chunk::MIN_SECTION_Y; $sectionY <= Chunk::MAX_SECTION_Y; ++$sectionY) {
+                $key = LevelDbChunkKey::subChunk($x, $z, $sectionY);
+                $section = $chunk->section($sectionY);
+                if ($section === null) {
+                    $deletes[] = $key;
+                } else {
+                    $puts[$key] = $this->subChunks->encode($this->mapper->storedSubChunk($section));
+                }
+            }
+            $this->database->writeBatch($puts, $deletes);
+        } catch (LevelDbIoException|LevelDbStorageException|InvalidArgumentException $error) {
+            throw new WorldStorageException('Unable to atomically save the chunk.', previous: $error);
+        }
+    }
+
+    public function close(): void
+    {
+        if ($this->closed) {
+            return;
+        }
+        try {
+            $this->database->close();
+        } catch (LevelDbIoException $error) {
+            $this->closed = true;
+            throw new WorldStorageException('Unable to close the world LevelDB database.', previous: $error);
+        }
+        $this->closed = true;
+    }
+
+    private function hasOrphanedChunkData(ChunkPosition $position): bool
+    {
+        if ($this->database->get(LevelDbChunkKey::data3d($position->x, $position->z)) !== null
+            || $this->database->get(LevelDbChunkKey::finalization($position->x, $position->z)) !== null) {
+            return true;
+        }
+        for ($sectionY = Chunk::MIN_SECTION_Y; $sectionY <= Chunk::MAX_SECTION_Y; ++$sectionY) {
+            if ($this->database->get(LevelDbChunkKey::subChunk($position->x, $position->z, $sectionY)) !== null) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function assertOpen(): void
+    {
+        if ($this->closed) {
+            throw new WorldProviderClosedException('World provider is closed.');
+        }
+    }
+
+    private static function assertNativeSupport(): void
+    {
+        if (!extension_loaded('leveldb')) {
+            throw new UnsupportedWorldFormatException('The qualified Bedriox leveldb extension is required.');
+        }
+    }
+
+    private static function worldDataFromMetadata(LevelDatMetadata $metadata): WorldData
+    {
+        try {
+            return new WorldData(
+                new WorldMetadata($metadata->levelName(), $metadata->seed()),
+                $metadata->generatorName(),
+                new SpawnPosition($metadata->spawnX(), $metadata->spawnY(), $metadata->spawnZ()),
+                $metadata->time(),
+            );
+        } catch (StorageCorruptWorldDataException|\InvalidArgumentException $error) {
+            throw new CorruptWorldDataException('level.dat contains invalid authoritative world metadata.', previous: $error);
+        }
+    }
+
+    private static function newMetadata(WorldData $data): LevelDatMetadata
+    {
+        return new LevelDatMetadata(LevelDatCodec::CURRENT_STORAGE_VERSION, [
+            'StorageVersion' => LittleEndianNbtTag::int(LevelDatCodec::CURRENT_STORAGE_VERSION),
+            'NetworkVersion' => LittleEndianNbtTag::int(self::CURRENT_NETWORK_VERSION),
+            'LevelName' => LittleEndianNbtTag::string($data->metadata->name),
+            'RandomSeed' => LittleEndianNbtTag::long($data->metadata->seed),
+            'generatorName' => LittleEndianNbtTag::string($data->generatorName),
+            'generatorOptions' => LittleEndianNbtTag::string(''),
+            'SpawnX' => LittleEndianNbtTag::int($data->spawn->x),
+            'SpawnY' => LittleEndianNbtTag::int($data->spawn->y),
+            'SpawnZ' => LittleEndianNbtTag::int($data->spawn->z),
+            'Time' => LittleEndianNbtTag::long($data->time),
+        ]);
+    }
+}
