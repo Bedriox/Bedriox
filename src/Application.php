@@ -13,7 +13,14 @@ use Bedriox\Server\Observability\CrashReporter;
 use Bedriox\Server\Observability\MutableCrashContextProvider;
 use Bedriox\Server\Observability\RotatingFileLog;
 use Bedriox\Server\Observability\ServerLogger;
+use Bedriox\Server\Plugin\Command\ConsoleCommandDriver;
+use Bedriox\Server\Plugin\Command\NullConsoleInput;
+use Bedriox\Server\Plugin\Command\OwnedCommandRegistrar;
+use Bedriox\Server\Plugin\Command\ServerConsoleCommandSender;
+use Bedriox\Server\Plugin\Command\StreamConsoleInput;
+use Bedriox\Server\Plugin\Command\WindowsConsoleInput;
 use Bedriox\Server\Plugin\Event\OwnedEventRegistrar;
+use Bedriox\Server\Plugin\OwnedSourcePluginRegistrar;
 use Bedriox\Server\Plugin\PluginComposition;
 use Bedriox\Server\Plugin\PluginHost;
 use Bedriox\Server\Plugin\PluginManifest;
@@ -132,6 +139,8 @@ final class Application
                     PluginManifest $manifest,
                     string $dataFolder,
                     OwnedEventRegistrar $events,
+                    OwnedCommandRegistrar $commands,
+                    OwnedSourcePluginRegistrar $sourcePlugins,
                     ServerPluginLogger $pluginLogger,
                 ) use ($composition): PluginContext {
                     if ($composition->server === null || $composition->host === null) {
@@ -142,6 +151,8 @@ final class Application
                         $manifest->name,
                         $pluginLogger,
                         $events,
+                        $commands,
+                        $sourcePlugins,
                         $composition->server->pluginApi->serverFor(
                             $manifest->name,
                             $composition->host->manager(),
@@ -187,8 +198,30 @@ final class Application
                 } else {
                     $logger->notice('Plugin loading is disabled', 'Plugins');
                 }
-                $result = (new RuntimeRunner(
+                $consoleInput = new NullConsoleInput();
+                if ($config->consoleEnabled && defined('STDIN') && is_resource(STDIN)) {
+                    if (PHP_OS_FAMILY === 'Windows') {
+                        try {
+                            $consoleInput = WindowsConsoleInput::start(STDIN, $logger);
+                        } catch (Throwable $failure) {
+                            $logger->warning(sprintf(
+                                'Windows console input could not start (%s); console commands are disabled',
+                                $failure::class,
+                            ), 'Command');
+                        }
+                    } else {
+                        $consoleInput = new StreamConsoleInput(STDIN, $logger);
+                    }
+                }
+                $runtimeDriver = new ConsoleCommandDriver(
                     $server->runtime,
+                    $consoleInput,
+                    $pluginHost->commands(),
+                    new ServerConsoleCommandSender($logger),
+                    $logger,
+                );
+                $result = (new RuntimeRunner(
+                    $runtimeDriver,
                     diagnostics: $diagnostics,
                     failureHandler: static function (Throwable $failure) use ($crashHandler): void {
                         $crashHandler->capture($failure);

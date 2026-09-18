@@ -49,6 +49,10 @@ Runtime serialization and view scheduling live under `src/Runtime/` because they
 
 `src/Transport/ConnectedTransport.php` is the application-facing transport contract. `DiscoveryServerTransport` adapts RakNet without exposing application code to socket or reliability internals. `RakNetHandshakeDiagnosticReporter` maps the component's bounded pre-ready metadata into protocol-trace events and never receives packet bodies or authentication data. Transport callbacks produce bounded events; they never mutate simulation state.
 
+## Plugins and commands
+
+`src/Api/` is the immutable public plugin surface. `src/Plugin/` owns PHAR lifecycle, source-definition admission, failure attribution, owned event and command registrations, and cleanup. Bedriox never scans source-plugin directories; an enabled development provider such as PluginTools performs discovery and submits one bounded definition batch during its PHAR load phase. `src/Plugin/Command/` parses and dispatches bounded command input, models console and future player senders, and polls cooperative plugin jobs without giving plugins runtime or transport access. Unix-like systems poll `StreamConsoleInput` directly. Windows uses a lifecycle-owned helper process for the blocking console-handle read and polls only an authenticated non-blocking loopback channel, preventing idle operator input from pausing networking or simulation. `ConsoleCommandDriver` composes either input around the existing runtime without changing network or simulation behavior.
+
 ## Tests and tools
 
 `tests/` mirrors production ownership. Unit tests stay near a subsystem contract; runtime tests exercise composition; tool tests protect manifests and repository rules. `tools/` validates documentation, licenses, component pins, and the six-repository workspace.

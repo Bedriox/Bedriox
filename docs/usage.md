@@ -45,8 +45,9 @@ The settings file uses one `key=value` entry per line. Blank lines and lines beg
 | `chunks.generate-per-tick` | `4` | 1–64 |
 | `chunks.cache-limit` | `2048` | 16–65536 chunks and large enough to hold every configured player view |
 | `runtime.ticks-per-second` | `20` | 1–100 |
+| `console.enabled` | `true` | Exactly `true` or `false` |
 | `plugins.enabled` | `true` | Exactly `true` or `false` |
-| `plugins.maximum` | `64` | 0–256 PHAR plugins |
+| `plugins.maximum` | `64` | 0–256 total admitted plugins |
 | `logging.level` | `INFO` | `DEBUG`, `INFO`, `NOTICE`, `WARNING`, `ERROR`, or `CRITICAL` |
 | `logging.console` | `true` | Exactly `true` or `false` |
 | `logging.console-colors` | `auto` | `auto`, `true`, or `false` |
@@ -60,10 +61,12 @@ Optional `level.spawn-x`, `level.spawn-y`, and `level.spawn-z` entries override 
 
 Settings for independent query ports, world persistence, resource packs, whitelists, and other unfinished features are deliberately not accepted yet. This prevents apparently valid options from silently doing nothing.
 
-The qualified protocol family remains alpha software. Unsupported commands intentionally fail.
+When `console.enabled=true`, Bedriox reads commands without blocking the server loop. On Windows, a lifecycle-owned helper waits on the console handle while the server polls its bounded output; this keeps networking and simulation responsive between commands. Command lines, queued commands, arguments, and commands executed per poll are bounded. Set `console.enabled=false` for detached environments without an operator input stream. Plugin-owned console output uses the normal structured logger and therefore also appears in `logs/server.log` when file logging is enabled.
+
+The qualified protocol family remains alpha software. Unknown commands fail with a bounded console response.
 
 ## Plugins
 
-Production plugins are strongly signed `.phar` files placed directly in `plugins/`. Bedriox creates this directory on first start, validates every archive and dependency plan before executing entry points, and ignores source directories. Plugin-owned writable data is stored separately under `plugin_data/<PluginName>/`.
+Production plugins are strongly signed `.phar` files placed directly in `plugins/`. Bedriox creates this directory on first start, validates every archive and dependency plan before executing entry points, and never scans source directories. Installing PluginTools adds its separate development source loader; PluginTools owns folder discovery and submits validated definitions through the public admission boundary. Plugin-owned writable data is stored separately under `plugin_data/<PluginName>/`.
 
-Build plugin PHARs with [Bedriox PluginTools](https://github.com/Bedriox/PluginTools). Loading a plugin does not require changing `phar.readonly`; that PHP setting is needed only by the packaging process. See the [plugin guide](plugins.md) for the manifest, lifecycle, events, priorities, failure behavior, and public API.
+Build discovered source plugins with `makeplugin <PluginName> [--overwrite]` from [Bedriox PluginTools](https://github.com/Bedriox/PluginTools). Loading a plugin does not require changing `phar.readonly`; PluginTools applies that setting only to its isolated packaging process. See the [plugin guide](plugins.md) for source development, standalone CLI usage, the manifest, lifecycle, events, commands, priorities, failure behavior, and public API.

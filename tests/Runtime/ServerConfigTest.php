@@ -19,6 +19,7 @@ final class ServerConfigTest extends TestCase
         self::assertSame(AuthenticationMode::FULL, $defaults->authenticationMode);
         self::assertSame(LogLevel::INFO, $defaults->loggingLevel);
         self::assertTrue($defaults->loggingFile);
+        self::assertTrue($defaults->consoleEnabled);
         self::assertTrue($defaults->crashReportIncludePlayerIdentifiers);
 
         $config = ServerConfig::fromArguments([
@@ -51,6 +52,7 @@ final class ServerConfigTest extends TestCase
             '--log-console-colors=false',
             '--log-file-history=4',
             '--crash-report-player-identifiers=false',
+            '--console-enabled=false',
         ]);
         self::assertSame('Flat development world', $streaming->motd);
         self::assertSame('flatland', $streaming->levelName);
@@ -65,6 +67,7 @@ final class ServerConfigTest extends TestCase
         self::assertSame('false', $streaming->loggingConsoleColors);
         self::assertSame(4, $streaming->loggingFileHistory);
         self::assertFalse($streaming->crashReportIncludePlayerIdentifiers);
+        self::assertFalse($streaming->consoleEnabled);
     }
 
     /** @return iterable<string, array{list<string>}> */

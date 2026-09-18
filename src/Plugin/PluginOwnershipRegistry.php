@@ -42,4 +42,13 @@ final class PluginOwnershipRegistry
     {
         return count($this->cleanup[strtolower($plugin)] ?? []);
     }
+
+    public function forget(string $plugin, string $resourceId): void
+    {
+        $key = strtolower($plugin);
+        unset($this->cleanup[$key][$resourceId]);
+        if (($this->cleanup[$key] ?? []) === []) {
+            unset($this->cleanup[$key]);
+        }
+    }
 }

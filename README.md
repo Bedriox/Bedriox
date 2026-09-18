@@ -25,7 +25,7 @@ Bedriox gives server owners a performance-focused foundation for creating Minecr
 - **Responsive worlds** — bounded chunk generation and streaming keep nearby terrain moving smoothly as players explore.
 - **Focused Bedrock support** — one qualified modern protocol family instead of years of legacy protocol code.
 - **Modern PHP development** — strict types, Composer packages, automated tests, static analysis, and clear component boundaries.
-- **PHAR plugin support** — install validated single-file plugins with typed events, lifecycle hooks, priorities, and safe player/world APIs.
+- **Plugin development support** — run validated PHAR plugins, develop from source with PluginTools, and extend the server through typed events, commands, lifecycle hooks, and safe player/world APIs.
 
 ## Where Bedriox is headed
 
@@ -70,7 +70,7 @@ The exact component revisions are recorded in [`bedriox.lock.json`](bedriox.lock
 - [Data](https://github.com/Bedriox/Data) — versioned Bedrock registries and generated data
 - [Docs](https://github.com/Bedriox/Docs) — installation, administration, and plugin documentation
 - [ExamplePlugin](https://github.com/Bedriox/ExamplePlugin) — minimal plugin project and API examples
-- [PluginTools](https://github.com/Bedriox/PluginTools) — development-only PHAR packaging tools
+- [PluginTools](https://github.com/Bedriox/PluginTools) — source-plugin loading and secure PHAR packaging tools
 
 ## Contributing
 

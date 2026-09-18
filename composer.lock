@@ -111,7 +111,7 @@
             "dist": {
                 "type": "path",
                 "url": "../RakNet",
-                "reference": "aa84f71169f6401029b070af35ecb3f85b7fcac4"
+                "reference": "258c8773b4ff1e7095576ae091f10945bbeb31ee"
             },
             "require": {
                 "ext-sockets": "*",

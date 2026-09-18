@@ -98,6 +98,7 @@ chunks.cache-limit=2048
 
 # Runtime and diagnostics
 runtime.ticks-per-second=20
+console.enabled=true
 
 # Plugins
 plugins.enabled=true

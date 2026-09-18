@@ -12,7 +12,7 @@ require_once dirname(__DIR__, 2) . '/tools/IntegrationManifestValidator.php';
 final class IntegrationManifestValidatorTest extends TestCase
 {
     private const string PROTOCOL_COMMIT = 'fb0a0da40952a4f3b5e321f0b4e3df86bb38e920';
-    private const string RAKNET_COMMIT = 'aa84f71169f6401029b070af35ecb3f85b7fcac4';
+    private const string RAKNET_COMMIT = '258c8773b4ff1e7095576ae091f10945bbeb31ee';
     private const string DATA_COMMIT = '718037f5dabd25d0ce7d2e6a2517119725959c95';
 
     public function testExactPrivateWorkspaceFixtureIsAccepted(): void

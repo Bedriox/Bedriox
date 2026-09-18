@@ -6,6 +6,9 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Added
 
+- Add a typed, plugin-owned command API with console/player senders, aliases, permissions, sender restrictions, cancellable pre-events, observational post-events, lifecycle cleanup, bounded cooperative jobs, and non-blocking console input, including an isolated Windows console reader that cannot pause networking between commands.
+- Add a bounded development-provider admission API while preserving native PHAR-only discovery, allowing PluginTools to own source-folder loading and cleanup.
+- Pin the RakNet transport update that keeps transient Windows UDP resets from stopping discovery.
 - Add structured colored operator logging in the Bedriox console format, bounded rotating `logs/server.log` output, configurable levels and sinks, and redaction of credential-bearing text.
 - Add atomic UTC crash reports with fatal shutdown capture, emergency memory reserve, normalized private paths, bounded recent logs, and configurable inclusion of player identifiers through an injectable crash-context provider.
 - Add authoritative player AABB collision against current canonical terrain with vertical/horizontal resolution, wall sliding, bounded stepping, terrain-derived grounding, owner prediction reset, visible-peer reconciliation, and immediate break/place support refresh.

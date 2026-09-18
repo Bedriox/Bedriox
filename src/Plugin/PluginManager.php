@@ -36,28 +36,60 @@ final class PluginManager implements PluginRuntimeControl
     public function loadAll(): void
     {
         foreach ($this->orderedRecords() as $record) {
-            if (!$this->dependenciesAvailable($record)) {
-                $record->state = PluginLifecycleState::FAILED;
-                continue;
-            }
-            if ($this->invokeLifecycle($record, 'load', $record->plugin->onLoad(...))) {
-                $record->state = PluginLifecycleState::LOADED;
-            }
+            $this->load($record->manifest->name);
         }
     }
 
     public function enableAll(): void
     {
         foreach ($this->orderedRecords() as $record) {
-            if ($record->state !== PluginLifecycleState::LOADED || !$this->dependenciesEnabled($record)) {
-                if ($record->state === PluginLifecycleState::LOADED) {
-                    $record->state = PluginLifecycleState::FAILED;
-                }
-                continue;
-            }
-            $record->state = PluginLifecycleState::ENABLED;
-            $this->invokeLifecycle($record, 'enable', $record->plugin->onEnable(...));
+            $this->enable($record->manifest->name);
         }
+    }
+
+    public function load(string $plugin): bool
+    {
+        $record = $this->record($plugin);
+        if ($record->state !== PluginLifecycleState::VALIDATED) {
+            return $record->state === PluginLifecycleState::LOADED || $record->state === PluginLifecycleState::ENABLED;
+        }
+        if (!$this->dependenciesAvailable($record)) {
+            $record->state = PluginLifecycleState::FAILED;
+
+            return false;
+        }
+        if (!$this->invokeLifecycle($record, 'load', $record->plugin->onLoad(...))) {
+            return false;
+        }
+        $record->state = PluginLifecycleState::LOADED;
+
+        return true;
+    }
+
+    public function enable(string $plugin): bool
+    {
+        $record = $this->record($plugin);
+        if ($record->state === PluginLifecycleState::ENABLED) {
+            return true;
+        }
+        if ($record->state !== PluginLifecycleState::LOADED || !$this->dependenciesEnabled($record)) {
+            if ($record->state === PluginLifecycleState::LOADED) {
+                $record->state = PluginLifecycleState::FAILED;
+            }
+
+            return false;
+        }
+        $record->state = PluginLifecycleState::ENABLED;
+        if (!$this->invokeLifecycle($record, 'enable', $record->plugin->onEnable(...))) {
+            return false;
+        }
+
+        return true;
+    }
+
+    public function has(string $plugin): bool
+    {
+        return isset($this->records[strtolower($plugin)]);
     }
 
     public function disable(string $plugin): void

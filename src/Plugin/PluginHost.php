@@ -5,8 +5,11 @@ declare(strict_types=1);
 namespace Bedriox\Server\Plugin;
 
 use Bedriox\Api\Plugin\PluginContext;
+use Bedriox\Api\Plugin\SourcePluginDefinition;
 use Bedriox\Server\Observability\CrashContextPublisher;
 use Bedriox\Server\Observability\ServerLogger;
+use Bedriox\Server\Plugin\Command\CommandRegistry;
+use Bedriox\Server\Plugin\Command\OwnedCommandRegistrar;
 use Bedriox\Server\Plugin\Event\EventDispatcher;
 use Bedriox\Server\Plugin\Event\OwnedEventRegistrar;
 use Closure;
@@ -19,12 +22,16 @@ final class PluginHost
     private readonly PluginExecutionContext $execution;
     private readonly PluginManager $manager;
     private readonly EventDispatcher $events;
+    private readonly CommandRegistry $commands;
     /** @var list<PluginPackage> */
     private array $packages = [];
+    /** @var array<string, array{provider: string, definitions: list<SourcePluginDefinition>}> */
+    private array $sourceBatches = [];
+    private bool $acceptingSourcePlugins = false;
     private bool $started = false;
 
     /**
-     * @param Closure(PluginManifest, string, OwnedEventRegistrar, ServerPluginLogger): PluginContext $contextFactory
+     * @param Closure(PluginManifest, string, OwnedEventRegistrar, OwnedCommandRegistrar, OwnedSourcePluginRegistrar, ServerPluginLogger): PluginContext $contextFactory
      */
     public function __construct(
         private readonly string $pluginsDirectory,
@@ -46,6 +53,13 @@ final class PluginHost
             ), 'Plugins');
         });
         $this->events = new EventDispatcher($this->manager, $this->execution, $this->actions, $this->ownership);
+        $this->commands = new CommandRegistry(
+            $this->manager,
+            $this->execution,
+            $this->actions,
+            $this->ownership,
+            $this->events,
+        );
     }
 
     public function start(): void
@@ -70,6 +84,10 @@ final class PluginHost
             $this->logger->error("Plugin {$name} was rejected: {$reason}", 'Plugins');
         }
         $accepted = [];
+        $pluginsRoot = realpath($this->pluginsDirectory);
+        if ($pluginsRoot === false) {
+            throw new PluginException('Unable to resolve the plugins directory.');
+        }
         foreach ($plan->ordered as $package) {
             $dependenciesReady = true;
             foreach ($package->manifest->dependencies as $dependency) {
@@ -85,8 +103,21 @@ final class PluginHost
             try {
                 $dataFolder = $this->dataFolder($package->manifest->name);
                 $registrar = new OwnedEventRegistrar($package->manifest->name, $this->events);
+                $commands = new OwnedCommandRegistrar($package->manifest->name, $this->commands);
+                $sourcePlugins = new OwnedSourcePluginRegistrar(
+                    $package->manifest->name,
+                    $pluginsRoot,
+                    $this->stageSourcePlugins(...),
+                );
                 $pluginLogger = new ServerPluginLogger($package->manifest->name, $this->logger);
-                $context = ($this->contextFactory)($package->manifest, $dataFolder, $registrar, $pluginLogger);
+                $context = ($this->contextFactory)(
+                    $package->manifest,
+                    $dataFolder,
+                    $registrar,
+                    $commands,
+                    $sourcePlugins,
+                    $pluginLogger,
+                );
                 $plugin = ($package->instantiate)($context);
                 $this->manager->add($package->manifest, $plugin);
             } catch (Throwable $failure) {
@@ -106,13 +137,19 @@ final class PluginHost
             }
         }
         $this->logger->info(sprintf('Discovered %d plugin%s', count($this->packages), count($this->packages) === 1 ? '' : 's'), 'Plugins');
-        $this->manager->loadAll();
-        $this->manager->enableAll();
+        $this->acceptingSourcePlugins = true;
+        try {
+            $this->manager->loadAll();
+            $this->manager->enableAll();
+        } finally {
+            $this->acceptingSourcePlugins = false;
+        }
         foreach ($this->packages as $package) {
             if ($this->manager->isEnabled($package->manifest->name)) {
                 $this->logger->info("Enabled {$package->manifest->name} {$package->manifest->version}", 'Plugins');
             }
         }
+        $this->admitSourcePlugins($pluginsRoot);
     }
 
     public function stop(): void
@@ -125,6 +162,7 @@ final class PluginHost
             spl_autoload_unregister($package->autoloader);
         }
         $this->packages = [];
+        $this->sourceBatches = [];
         $this->started = false;
     }
 
@@ -136,6 +174,11 @@ final class PluginHost
     public function manager(): PluginManager
     {
         return $this->manager;
+    }
+
+    public function commands(): CommandRegistry
+    {
+        return $this->commands;
     }
 
     /** @internal Used by the simulation-backed public API composition. */
@@ -168,5 +211,185 @@ final class PluginHost
         }
 
         return $resolved;
+    }
+
+    /** @param list<SourcePluginDefinition> $definitions */
+    private function stageSourcePlugins(string $provider, array $definitions): void
+    {
+        $key = strtolower($provider);
+        $frame = $this->execution->current();
+        if (!$this->acceptingSourcePlugins || $frame === null || strcasecmp($frame->plugin, $provider) !== 0 || $frame->operation !== 'load') {
+            throw new PluginException('Source plugins may be registered only by their provider during onLoad.');
+        }
+        if (isset($this->sourceBatches[$key])) {
+            throw new PluginException("Plugin {$provider} already registered a source batch.");
+        }
+        if (count($definitions) > $this->maximumPlugins || count($this->packages) + count($definitions) > $this->maximumPlugins) {
+            throw new PluginException('Source plugin registrations exceed the configured plugin limit.');
+        }
+        $this->sourceBatches[$key] = ['provider' => $provider, 'definitions' => $definitions];
+        $this->ownership->own($provider, 'source-provider-batch', function () use ($key): void {
+            unset($this->sourceBatches[$key]);
+        });
+    }
+
+    private function admitSourcePlugins(string $pluginsRoot): void
+    {
+        $packages = [];
+        /** @var array<string, array{definition: SourcePluginDefinition, provider: string}> $sources */
+        $sources = [];
+        $external = [];
+        foreach ($this->packages as $package) {
+            if ($this->manager->isEnabled($package->manifest->name)) {
+                $external[] = $package->manifest->name;
+            }
+        }
+        foreach ($this->sourceBatches as $key => $batch) {
+            $this->ownership->forget($batch['provider'], 'source-provider-batch');
+            unset($this->sourceBatches[$key]);
+            if (!$this->manager->isEnabled($batch['provider'])) {
+                foreach ($batch['definitions'] as $definition) {
+                    $this->releaseSourceDefinition($definition);
+                }
+                continue;
+            }
+            foreach ($batch['definitions'] as $definition) {
+                try {
+                    if (count($this->packages) + count($packages) >= $this->maximumPlugins) {
+                        throw new PluginException('Source plugin registrations exceed the configured plugin limit.');
+                    }
+                    $manifest = $this->sourceManifest($batch['provider'], $definition);
+                    $sourceKey = strtolower($manifest->name);
+                    if ($this->manager->has($manifest->name) || isset($sources[$sourceKey])) {
+                        throw new PluginException("Duplicate plugin: {$manifest->name}");
+                    }
+                    $package = new PluginPackage(
+                        "source:{$batch['provider']}:{$manifest->name}",
+                        $manifest,
+                        static function (string $class): void {},
+                        $definition->instantiate(...),
+                    );
+                    $packages[] = $package;
+                    $sources[$sourceKey] = ['definition' => $definition, 'provider' => $batch['provider']];
+                } catch (Throwable $failure) {
+                    $this->logger->error(sprintf(
+                        'Source plugin %s from %s was rejected (%s)',
+                        $definition->name,
+                        $batch['provider'],
+                        $failure::class,
+                    ), 'Plugins');
+                    $this->releaseSourceDefinition($definition);
+                }
+            }
+        }
+        if ($packages === []) {
+            return;
+        }
+        $plan = (new PluginDependencyPlanner())->plan($packages, $external);
+        foreach ($plan->rejectedByName as $name => $reason) {
+            $source = $sources[strtolower($name)] ?? null;
+            if ($source !== null) {
+                $this->logger->error("Source plugin {$name} was rejected: {$reason}", 'Plugins');
+                $this->releaseSourceDefinition($source['definition']);
+                unset($sources[strtolower($name)]);
+            }
+        }
+        $prepared = [];
+        foreach ($plan->ordered as $package) {
+            $source = $sources[strtolower($package->manifest->name)] ?? null;
+            if ($source === null) {
+                continue;
+            }
+            try {
+                $dataFolder = $this->dataFolder($package->manifest->name);
+                $events = new OwnedEventRegistrar($package->manifest->name, $this->events);
+                $commands = new OwnedCommandRegistrar($package->manifest->name, $this->commands);
+                $sourcePlugins = new OwnedSourcePluginRegistrar(
+                    $package->manifest->name,
+                    $pluginsRoot,
+                    $this->stageSourcePlugins(...),
+                );
+                $pluginLogger = new ServerPluginLogger($package->manifest->name, $this->logger);
+                $context = ($this->contextFactory)(
+                    $package->manifest,
+                    $dataFolder,
+                    $events,
+                    $commands,
+                    $sourcePlugins,
+                    $pluginLogger,
+                );
+                $plugin = ($package->instantiate)($context);
+                $this->manager->add($package->manifest, $plugin);
+                $this->ownership->own(
+                    $package->manifest->name,
+                    'source-plugin-loader',
+                    $source['definition']->release(...),
+                );
+                $prepared[] = $package;
+            } catch (Throwable $failure) {
+                $this->logger->error(sprintf(
+                    'Source plugin %s could not be prepared (%s)',
+                    $package->manifest->name,
+                    $failure::class,
+                ), 'Plugins');
+                $this->releaseSourceDefinition($source['definition']);
+            }
+        }
+        foreach ($prepared as $package) {
+            if ($this->manager->load($package->manifest->name) && $this->manager->enable($package->manifest->name)) {
+                $this->logger->info("Enabled source plugin {$package->manifest->name} {$package->manifest->version}", 'Plugins');
+            }
+        }
+    }
+
+    private function sourceManifest(string $provider, SourcePluginDefinition $definition): PluginManifest
+    {
+        $dependencies = $definition->dependencies;
+        if (!$this->containsName($dependencies, $provider)) {
+            $dependencies[] = $provider;
+        }
+        $softDependencies = array_values(array_filter(
+            $definition->softDependencies,
+            static fn(string $dependency): bool => strcasecmp($dependency, $provider) !== 0,
+        ));
+        $json = json_encode([
+            'schema' => $definition->schema,
+            'name' => $definition->name,
+            'version' => $definition->version,
+            'api' => $definition->api,
+            'main' => $definition->main,
+            'namespace' => $definition->namespace,
+            'authors' => $definition->authors,
+            'dependencies' => $dependencies,
+            'softDependencies' => $softDependencies,
+            'load' => $definition->load,
+        ], JSON_THROW_ON_ERROR);
+        $manifest = (new PluginManifestParser())->parse($json);
+        if (!in_array($manifest->api, ['0.1', '0.1.0', '^0.1', '^0.1.0', '~0.1', '~0.1.0'], true)) {
+            throw new PluginException("Plugin {$manifest->name} requires unsupported API {$manifest->api}.");
+        }
+
+        return $manifest;
+    }
+
+    private function releaseSourceDefinition(SourcePluginDefinition $definition): void
+    {
+        try {
+            $definition->release();
+        } catch (Throwable) {
+            // Rejected source cleanup cannot change admission of unrelated plugins.
+        }
+    }
+
+    /** @param list<string> $names */
+    private function containsName(array $names, string $name): bool
+    {
+        foreach ($names as $candidate) {
+            if (strcasecmp($candidate, $name) === 0) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

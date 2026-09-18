@@ -11,7 +11,22 @@ plugins/
 `-- ExamplePlugin.phar
 ```
 
-Source directories are not production plugins. Use [PluginTools](https://github.com/Bedriox/PluginTools) to validate and package a project. Bedriox bounds archive size, entry count, individual and expanded entry sizes, rejects links and serialized metadata, checks the embedded strong signature, validates all manifests and dependencies, and only then executes accepted entry points.
+Source directories are not native Bedriox plugins. Installing [PluginTools](https://github.com/Bedriox/PluginTools) adds the development workflow: PluginTools discovers and validates direct source-project children under `plugins/`, supplies their bounded definitions through the public admission API, and owns their namespace-restricted loading. Bedriox itself continues to scan only PHAR files. Removing PluginTools restores PHAR-only startup.
+
+With `PluginTools.phar` installed, a development project may use this layout:
+
+```text
+plugins/
+|-- PluginTools.phar
+`-- MyPlugin/
+    |-- plugin.json
+    |-- src/
+    `-- resources/
+```
+
+Restart after changing PHP source because loaded classes cannot be replaced safely. Package a discovered project from the server console with `makeplugin MyPlugin`; add `--overwrite` only when replacing an existing build. PluginTools writes the archive and checksum under `plugin_data/PluginTools/`. Its standalone CLI remains available for offline builds and automation.
+
+For PHARs, Bedriox bounds archive size, entry count, individual and expanded entry sizes, rejects links and serialized metadata, checks the embedded strong signature, validates all manifests and dependencies, and only then executes accepted entry points.
 
 Every PHAR contains `plugin.json` at its root and namespaced code under `src/`. Schema 1 uses this shape:
 
@@ -64,3 +79,13 @@ Cancellable pre-events cover join, movement, chat, block breaking, block placeme
 Blocks and items use canonical identifiers such as `minecraft:grass_block`; process-local numeric IDs never enter the public API. The current flat-world preview exposes `minecraft:air`, `minecraft:bedrock`, `minecraft:dirt`, and `minecraft:grass_block`. Inventory writes currently support `minecraft:grass_block` or an empty slot.
 
 The [ExamplePlugin repository](https://github.com/Bedriox/ExamplePlugin) contains a complete minimal project. API `0.1` is a preview contract and may make documented breaking changes before `1.0`.
+
+## Commands
+
+Plugins register typed commands through `PluginContext::commands()`. A `CommandDefinition` declares the lowercase name, description, usage, aliases, optional permission, and whether console, players, or either sender type may invoke it. Bedriox resolves names and aliases case-insensitively, provides the deterministic `<plugin>:<command>` fallback, checks sender and permission policy centrally, and removes every command when its owner disables.
+
+Handlers receive a `CommandContext` and return `CommandResult::SUCCESS`, `FAILURE`, or `USAGE`. Use `ConsoleCommandSender` and `PlayerCommandSender` type checks when behavior depends on the caller; a player sender exposes only the immutable public player view. Console senders have console authority. Persistent player permissions and Bedrock slash-command packet admission are future milestones, but use the same sender contract when introduced.
+
+`CommandPreDispatchEvent` is cancellable after command resolution, sender policy, and permission validation. `CommandDispatchedEvent` observes successful handler completion. A throwing handler is attributed to its owning plugin, its staged API work is discarded, and that plugin's commands and listeners are released without stopping the server.
+
+Long-running external work must never block a handler or simulation poll. A plugin may submit a cooperative `CommandJob` through its registrar; Bedriox bounds live jobs and polls per server iteration, while the plugin owns task-specific process, timeout, and output limits. Job resources are cancelled automatically when their plugin disables.

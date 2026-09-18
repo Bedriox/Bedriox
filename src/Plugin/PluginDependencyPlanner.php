@@ -6,21 +6,28 @@ namespace Bedriox\Server\Plugin;
 
 final class PluginDependencyPlanner
 {
-    /** @param list<PluginPackage> $packages */
-    public function plan(array $packages): PluginDependencyPlan
+    /**
+     * @param list<PluginPackage> $packages
+     * @param list<string> $externalDependencies
+     */
+    public function plan(array $packages, array $externalDependencies = []): PluginDependencyPlan
     {
         $available = [];
         foreach ($packages as $package) {
             $available[strtolower($package->manifest->name)] = $package;
         }
         ksort($available, SORT_STRING);
+        $external = [];
+        foreach ($externalDependencies as $dependency) {
+            $external[strtolower($dependency)] = true;
+        }
         $rejected = [];
         do {
             $changed = false;
             foreach ($available as $key => $package) {
                 foreach ($package->manifest->dependencies as $dependency) {
                     $dependencyKey = strtolower($dependency);
-                    if (!isset($available[$dependencyKey])) {
+                    if (!isset($available[$dependencyKey]) && !isset($external[$dependencyKey])) {
                         $rejected[$key] = isset($rejected[$dependencyKey])
                             ? "required dependency {$dependency} was rejected"
                             : "required dependency {$dependency} is missing";

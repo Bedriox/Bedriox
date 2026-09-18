@@ -4,6 +4,11 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Plugin;
 
+use Bedriox\Api\Command\CommandDefinition;
+use Bedriox\Api\Command\CommandJob;
+use Bedriox\Api\Command\CommandJobSubscription;
+use Bedriox\Api\Command\CommandRegistrar;
+use Bedriox\Api\Command\CommandSubscription;
 use Bedriox\Api\Event\Event;
 use Bedriox\Api\Event\EventPriority;
 use Bedriox\Api\Event\EventRegistrar;
@@ -11,6 +16,7 @@ use Bedriox\Api\Event\ListenerSubscription;
 use Bedriox\Api\Plugin\Plugin;
 use Bedriox\Api\Plugin\PluginContext;
 use Bedriox\Api\Plugin\PluginLogger;
+use Bedriox\Api\Plugin\SourcePluginRegistrar;
 use Bedriox\Api\Server;
 use Bedriox\Server\Plugin\PluginExecutionContext;
 use Bedriox\Server\Plugin\PluginLifecycleState;
@@ -78,6 +84,8 @@ final class PluginManagerTest extends TestCase
             $name,
             new NullPluginLogger(),
             new NullEventRegistrar(),
+            new NullCommandRegistrar(),
+            new NullSourcePluginRegistrar(),
             $this->createStub(Server::class),
             sys_get_temp_dir(),
         );
@@ -158,6 +166,32 @@ final class NullEventRegistrar implements EventRegistrar
     }
 
     public function registerSubscriber(object $subscriber): void
+    {
+        throw new RuntimeException('Not used by this fixture.');
+    }
+}
+
+final class NullCommandRegistrar implements CommandRegistrar
+{
+    public function register(CommandDefinition $definition, callable $handler): CommandSubscription
+    {
+        throw new RuntimeException('Not used by this fixture.');
+    }
+
+    public function submitJob(CommandJob $job): CommandJobSubscription
+    {
+        throw new RuntimeException('Not used by this fixture.');
+    }
+}
+
+final class NullSourcePluginRegistrar implements SourcePluginRegistrar
+{
+    public function pluginsDirectory(): string
+    {
+        return sys_get_temp_dir();
+    }
+
+    public function register(array $definitions): void
     {
         throw new RuntimeException('Not used by this fixture.');
     }
