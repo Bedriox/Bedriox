@@ -147,7 +147,7 @@ final class LittleEndianNbtCodec
         $result = '';
         foreach ($tags as $name => $tag) {
             $this->countEncodeEntries(1);
-            $result .= chr($tag->type) . $this->writeString($name) . $this->writePayload($tag, $depth + 1);
+            $result .= self::writeByte($tag->type) . $this->writeString($name) . $this->writePayload($tag, $depth + 1);
         }
 
         return $result . chr(LittleEndianNbtTag::END);
@@ -183,7 +183,7 @@ final class LittleEndianNbtCodec
             throw new InvalidArgumentException('A non-empty NBT list cannot use the end tag type.');
         }
         $this->countEncodeEntries(count($items));
-        $result = chr($elementType) . $this->writeLength(count($items));
+        $result = self::writeByte($elementType) . $this->writeLength(count($items));
         foreach ($items as $item) {
             if ($item->type !== $elementType) {
                 throw new InvalidArgumentException('NBT list contains a mismatched element type.');
@@ -442,5 +442,14 @@ final class LittleEndianNbtCodec
         }
 
         return $result['value'];
+    }
+
+    private static function writeByte(int $value): string
+    {
+        if ($value < 0 || $value > 255) {
+            throw new InvalidArgumentException('NBT type identifier must fit an unsigned byte.');
+        }
+
+        return chr($value);
     }
 }

@@ -14,7 +14,7 @@ final class Data3dCodec
         foreach ($record->biomes() as $storage) {
             $palette = $storage->palette();
             $bits = PaletteIndexCodec::bitsForPaletteSize(count($palette));
-            $output .= chr($bits << 1);
+            $output .= self::writeByte($bits << 1);
             $output .= PaletteIndexCodec::encodeWords($bits, $storage->indexAt(...));
             if ($bits !== 0) {
                 $output .= pack('V', count($palette));
@@ -64,5 +64,14 @@ final class Data3dCodec
             throw new LevelDbStorageException('Data3D record contains trailing bytes.');
         }
         return new Data3dRecord($heightmap, $biomes);
+    }
+
+    private static function writeByte(int $value): string
+    {
+        if ($value < 0 || $value > 255) {
+            throw new LevelDbStorageException('Data3D byte value is outside the unsigned byte range.');
+        }
+
+        return chr($value);
     }
 }

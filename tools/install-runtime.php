@@ -8,7 +8,8 @@ use Bedriox\Server\Environment\RuntimeArtifactExpectation;
 require dirname(__DIR__) . '/vendor/autoload.php';
 
 $root = dirname(__DIR__);
-if ($argc !== 2 || !is_string($argv[1] ?? null) || $argv[1] === '') {
+$arguments = $_SERVER['argv'] ?? null;
+if (!is_array($arguments) || count($arguments) !== 2 || !is_string($arguments[1] ?? null) || $arguments[1] === '') {
     fwrite(STDERR, 'Usage: php tools/install-runtime.php <local-runtime-archive>' . PHP_EOL);
     exit(64);
 }
@@ -33,7 +34,7 @@ $target = $platform . '-' . $architecture;
 
 try {
     $expected = RuntimeArtifactExpectation::fromLockFile($root . '/bedriox.lock.json', $target);
-    (new RuntimeArchiveInstaller())->install($argv[1], $root, $expected);
+    (new RuntimeArchiveInstaller())->install($arguments[1], $root, $expected);
 } catch (Throwable $exception) {
     fwrite(STDERR, 'Runtime installation failed: ' . $exception->getMessage() . PHP_EOL);
     exit(1);

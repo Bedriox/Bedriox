@@ -100,7 +100,7 @@ final readonly class BiomeStorage
             $palette[] = $biome;
         }
         $indices = $this->paletteIndices;
-        $indices[$offset] = chr($paletteIndex);
+        $indices[$offset] = self::encodePaletteIndex($paletteIndex);
 
         return new self($palette, $indices);
     }
@@ -119,5 +119,14 @@ final readonly class BiomeStorage
         if ($coordinate < 0 || $coordinate >= 16) {
             throw new InvalidArgumentException('Local biome coordinates must be between 0 and 15.');
         }
+    }
+
+    private static function encodePaletteIndex(int $index): string
+    {
+        if ($index < 0 || $index >= self::MAX_PALETTE_SIZE) {
+            throw new InvalidArgumentException('Biome palette index must fit an unsigned byte.');
+        }
+
+        return chr($index);
     }
 }

@@ -71,7 +71,7 @@ final readonly class PersistentChunkMapper
             }
             $indices = '';
             foreach ($storage->indices() as $index) {
-                if ($index > 255) {
+                if ($index < 0 || $index > 255) {
                     throw new LevelDbStorageException('Persistent block palette index exceeds the authoritative in-memory range.');
                 }
                 $indices .= chr($index);
@@ -116,7 +116,7 @@ final readonly class PersistentChunkMapper
             }
             $indices = '';
             foreach ($storage->indices() as $index) {
-                if ($index > 255) {
+                if ($index < 0 || $index > 255) {
                     throw new LevelDbStorageException('Persistent biome palette index exceeds the authoritative in-memory range.');
                 }
                 $indices .= chr($index);

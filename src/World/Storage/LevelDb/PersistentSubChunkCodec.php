@@ -18,11 +18,11 @@ final readonly class PersistentSubChunkCodec
     public function encode(StoredSubChunk $subChunk): string
     {
         $storages = $subChunk->storages();
-        $output = chr(self::WRITE_VERSION) . chr(count($storages));
+        $output = self::writeByte(self::WRITE_VERSION) . self::writeByte(count($storages));
         foreach ($storages as $storage) {
             $palette = $storage->palette();
             $bits = PaletteIndexCodec::bitsForPaletteSize(count($palette));
-            $output .= chr($bits << 1);
+            $output .= self::writeByte($bits << 1);
             $output .= PaletteIndexCodec::encodeWords($bits, $storage->indexAt(...));
             if ($bits !== 0) {
                 $output .= pack('V', count($palette));
@@ -93,5 +93,14 @@ final readonly class PersistentSubChunkCodec
             throw new LevelDbStorageException('Subchunk record contains trailing bytes.');
         }
         return new StoredSubChunk($sectionY, $storages, $version);
+    }
+
+    private static function writeByte(int $value): string
+    {
+        if ($value < 0 || $value > 255) {
+            throw new LevelDbStorageException('Subchunk byte value is outside the unsigned byte range.');
+        }
+
+        return chr($value);
     }
 }

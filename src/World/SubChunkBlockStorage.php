@@ -69,7 +69,7 @@ final readonly class SubChunkBlockStorage
                 $palette[] = $state;
                 $indicesByStateId[$stateKey] = $paletteIndex;
             }
-            $indices .= str_repeat(chr($paletteIndex), SubChunk::EDGE_LENGTH * SubChunk::EDGE_LENGTH);
+            $indices .= str_repeat(self::encodePaletteIndex($paletteIndex), SubChunk::EDGE_LENGTH * SubChunk::EDGE_LENGTH);
         }
 
         return new self($palette, $indices);
@@ -136,7 +136,7 @@ final readonly class SubChunkBlockStorage
             $palette[] = $state;
         }
         $indices = $this->paletteIndices;
-        $indices[$offset] = chr($paletteIndex);
+        $indices[$offset] = self::encodePaletteIndex($paletteIndex);
 
         return new self($palette, $indices);
     }
@@ -146,5 +146,14 @@ final readonly class SubChunkBlockStorage
         if ($coordinate < 0 || $coordinate >= SubChunk::EDGE_LENGTH) {
             throw new InvalidArgumentException('Local block-storage coordinates must be between 0 and 15.');
         }
+    }
+
+    private static function encodePaletteIndex(int $index): string
+    {
+        if ($index < 0 || $index >= self::MAX_PALETTE_SIZE) {
+            throw new InvalidArgumentException('Block-storage palette index must fit an unsigned byte.');
+        }
+
+        return chr($index);
     }
 }
