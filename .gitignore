@@ -12,3 +12,7 @@ composer.phar
 /crashes/
 /plugins/
 /plugin_data/
+/bin/*
+!/bin/bedriox
+/.runtime-stage-*/
+/.runtime-backup-*/

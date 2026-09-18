@@ -9,8 +9,14 @@ From the repository root:
 ```shell
 composer install
 composer check
-php bin/bedriox serve
+php tools/install-runtime.php path/to/the-locked-runtime-archive
 ```
+
+Start production with `bedriox.cmd serve` on Windows or `./bedriox serve` on
+Linux and macOS. Direct `php bin/bedriox serve` remains a development command.
+The packaged launchers validate the adjacent PHP binary, configuration,
+platform ABI, exact extension set, manifest hash, and complete runtime file
+inventory before Composer autoload executes.
 
 The first successful configuration load creates `bedriox.settings` in the current working directory. Built-in defaults load first, the settings file second, and explicit command-line overrides last. Invalid, duplicate, unknown, partial, or out-of-range settings fail before socket bind.
 
@@ -18,7 +24,11 @@ The default game port is UDP `19132`. Bedriox does not currently provide a separ
 
 ## Startup sequence
 
-Before accepting clients, startup verifies configuration, PHP/platform requirements, the pinned Data artifacts, canonical block states, translation availability, authentication dependencies, protocol authority, and transport construction. A failure leaves no partially running server.
+Before accepting clients, startup verifies the locked packaged Runtime before
+Composer autoload, then verifies configuration, the pinned Data artifacts,
+canonical block states, translation availability, authentication dependencies,
+protocol authority, and transport construction. A failure leaves no partially
+running server and never falls back to ambient PHP.
 
 After bind, the runtime polls bounded amounts of socket, session, packet, command, chunk-streaming, and simulation work. The process should remain responsive even when one peer sends malformed input or exhausts its session-local limits.
 
@@ -52,6 +62,9 @@ Before replacing a running development instance, identify the exact Bedriox proc
 
 ## Qualification and deployment
 
-This private-alpha path uses exact sibling component checkouts and is not yet a standalone distribution. Operate only from a clean, verified workspace. Do not deploy from a dirty tree, patched `vendor/`, failed CI revision, or unqualified component combination.
+This private-alpha path uses exact sibling component checkouts and exact
+qualified Runtime archives. Operate only from a clean, verified workspace. Do
+not deploy from a dirty tree, patched `vendor/`, failed CI revision, modified
+runtime files, or an unqualified component combination.
 
 Performance and production claims require reproducible hardware, runtime, workload, duration, raw measurements, resource bounds, and correctness checks. Preserve no private client data in operational evidence.

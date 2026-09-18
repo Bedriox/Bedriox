@@ -14,7 +14,7 @@ composer analyse
 composer test
 ```
 
-The complete gate also validates Composer metadata and advisories, the integration manifest, relative documentation links, and dependency licenses. PHPUnit treats warnings, risky tests, and tests without assertions as failures.
+The complete gate also validates Composer metadata and advisories, the integration manifest, relative documentation links, and dependency licenses. PHPUnit treats warnings, risky tests, and tests without assertions as failures. Environment tests verify locked archive parsing, hostile archive rejection, staged rollback, pre-autoload Runtime identity and inventory checks, launcher argument forwarding, and the absence of any system-PHP fallback.
 
 Private CI checks out Protocol, RakNet, and Data at the exact commits recorded in the integration manifest. A pre-install exporter reads and validates those immutable pins directly from `bedriox.lock.json`; the workflow contains no second set of component commit hashes to drift. The manifest gate also validates that the workflow consumes all three derived outputs, alongside the exact package-to-component mapping, normalized sibling repository paths, path type, disabled symlinks, explicit versions, locked dist paths and references, and matching sibling Git HEADs when those repositories are present. Its negative tests cover malformed CI pins, literal workflow refs, path substitution, source overrides, pin drift, and premature support claims without invoking fixture-controlled paths. Component pins do not declare any Bedrock client or network protocol supported; those compatibility arrays remain empty until retail qualification is complete.
 
@@ -34,7 +34,7 @@ The initialization integration test reads Data through its public hash-verifying
 
 ## Cross-repository verification
 
-When all six sibling repositories are checked out beneath the same parent
+When all sibling repositories are checked out beneath the same parent
 directory, run the workspace gate from the Bedriox repository:
 
 ```powershell
@@ -43,12 +43,16 @@ powershell.exe -NoProfile -File tools/verify-workspace.ps1
 
 PowerShell 7 users may substitute `pwsh` for `powershell.exe`.
 
-The gate resolves only the explicit `Bedriox`, `RakNet`,
-`Protocol`, `Data`, `Docs`, and `RFCs` siblings and
+The gate resolves only the explicit `Bedriox`, `RakNet`, `Protocol`, `Data`,
+`Runtime`, `ExamplePlugin`, `PluginTools`, `Docs`, and `RFCs` siblings and
 rejects paths outside their shared parent. It checks clean Git state, required
 project documents, Bedriox branding, license declarations, prohibited
 legacy license language, Composer validation/tests/audits for code repositories,
-and the PHP documentation validators.
+and the PHP documentation validators. Runtime is validated through its native
+`php tools/validate.php` gate rather than Composer. The Runtime commit in
+`bedriox.lock.json` identifies the source revision that produced the pinned
+archives; a newer clean Runtime documentation checkout does not rewrite that
+artifact provenance.
 
 During initial scaffolding, when expected files have not yet been committed, Git
 cleanliness alone may be bypassed while retaining every other check:

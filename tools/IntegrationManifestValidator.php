@@ -12,6 +12,28 @@ final class IntegrationManifestValidator
     /** @var list<int> */
     private const array QUALIFIED_NETWORK_PROTOCOLS = [2193];
 
+    private const string QUALIFIED_RUNTIME_PHP = '8.4.25';
+
+    /** @var list<string> */
+    private const array REQUIRED_RUNTIME_EXTENSIONS = [
+        'Core', 'ctype', 'curl', 'date', 'dom', 'fileinfo', 'filter', 'gmp', 'hash', 'iconv', 'json', 'leveldb',
+        'libxml', 'mbstring', 'openssl', 'pcre', 'PDO', 'pdo_sqlite', 'Phar', 'random', 'Reflection', 'session', 'SimpleXML',
+        'sockets', 'sodium', 'SPL', 'sqlite3', 'standard', 'tokenizer', 'xml', 'xmlreader', 'xmlwriter',
+        'Zend OPcache', 'zip', 'zlib',
+    ];
+
+    /** @var list<string> */
+    private const array REQUIRED_UNIX_RUNTIME_EXTENSIONS = ['pcntl', 'posix'];
+
+    /** @var array<string, array{filename: string, threadSafe: bool}> */
+    private const array RUNTIME_TARGETS = [
+        'windows-x86_64' => ['filename' => 'bedriox-runtime-windows-x86_64.zip', 'threadSafe' => true],
+        'linux-x86_64' => ['filename' => 'bedriox-runtime-linux-x86_64.tar.gz', 'threadSafe' => false],
+        'linux-arm64' => ['filename' => 'bedriox-runtime-linux-arm64.tar.gz', 'threadSafe' => false],
+        'macos-arm64' => ['filename' => 'bedriox-runtime-macos-arm64.tar.gz', 'threadSafe' => false],
+        'macos-x86_64' => ['filename' => 'bedriox-runtime-macos-x86_64.tar.gz', 'threadSafe' => false],
+    ];
+
     /** @var array<string, array{directory: string, package: string, url: string}> */
     private const array COMPONENTS = [
         'protocol' => ['directory' => 'Protocol', 'package' => 'bedriox/protocol', 'url' => '../Protocol'],
@@ -29,8 +51,8 @@ final class IntegrationManifestValidator
     public static function validate(array $manifest, array $composer, array $composerLock, string $applicationVersion, array $siblingHeads = []): array
     {
         $errors = [];
-        if (($manifest['schema'] ?? null) !== 1) {
-            $errors[] = 'Manifest schema must be 1.';
+        if (($manifest['schema'] ?? null) !== 2) {
+            $errors[] = 'Manifest schema must be 2.';
         }
         if (($manifest['server'] ?? null) !== $applicationVersion) {
             $errors[] = 'Manifest and Application versions differ.';
@@ -161,7 +183,78 @@ final class IntegrationManifestValidator
             }
         }
 
+        self::validateRuntime($manifest['runtime'] ?? null, $errors);
+
         return $errors;
+    }
+
+    /**
+     * @param list<string> $errors
+     */
+    private static function validateRuntime(mixed $runtime, array &$errors): void
+    {
+        if (!is_array($runtime) || array_is_list($runtime)) {
+            $errors[] = 'Manifest runtime must be an object.';
+            return;
+        }
+        if (!self::hasExactKeys($runtime, ['commit', 'manifestSchema', 'phpVersion', 'extensions', 'artifacts'])) {
+            $errors[] = 'Manifest runtime has unexpected or missing fields.';
+        }
+        $commit = $runtime['commit'] ?? null;
+        if (!is_string($commit) || preg_match('/^[0-9a-f]{40}$/D', $commit) !== 1) {
+            $errors[] = 'Manifest runtime commit must be an immutable lowercase SHA-1.';
+        }
+        if (($runtime['manifestSchema'] ?? null) !== 2) {
+            $errors[] = 'Manifest runtime package schema must be 2.';
+        }
+        if (($runtime['phpVersion'] ?? null) !== self::QUALIFIED_RUNTIME_PHP) {
+            $errors[] = 'Manifest runtime PHP version is not the qualified version.';
+        }
+        $extensions = $runtime['extensions'] ?? null;
+        if (!is_array($extensions) || array_is_list($extensions)
+            || !self::hasExactKeys($extensions, ['all', 'unix'])
+            || !self::sameValue($extensions['all'] ?? null, self::REQUIRED_RUNTIME_EXTENSIONS)
+            || !self::sameValue($extensions['unix'] ?? null, self::REQUIRED_UNIX_RUNTIME_EXTENSIONS)) {
+            $errors[] = 'Manifest runtime extensions must match the qualified common and Unix sets.';
+        }
+
+        $artifacts = $runtime['artifacts'] ?? null;
+        if (!is_array($artifacts) || array_is_list($artifacts)) {
+            $errors[] = 'Manifest runtime artifacts must be an object.';
+            return;
+        }
+        $expectedTargets = array_keys(self::RUNTIME_TARGETS);
+        $actualTargets = array_keys($artifacts);
+        sort($expectedTargets);
+        sort($actualTargets);
+        if ($actualTargets !== $expectedTargets) {
+            $errors[] = 'Manifest runtime artifact set differs from the qualified target set.';
+        }
+        foreach (self::RUNTIME_TARGETS as $target => $expected) {
+            $artifact = $artifacts[$target] ?? null;
+            if (!is_array($artifact) || array_is_list($artifact)) {
+                $errors[] = "Manifest runtime artifact {$target} must be pinned.";
+                continue;
+            }
+            if (!self::hasExactKeys($artifact, ['filename', 'size', 'sha256', 'manifestSha256', 'threadSafe'])) {
+                $errors[] = "Manifest runtime artifact {$target} has unexpected or missing fields.";
+            }
+            if (($artifact['filename'] ?? null) !== $expected['filename']) {
+                $errors[] = "Manifest runtime artifact {$target} has an invalid filename.";
+            }
+            if (!is_int($artifact['size'] ?? null) || $artifact['size'] < 1) {
+                $errors[] = "Manifest runtime artifact {$target} has an invalid size.";
+            }
+            foreach (['sha256', 'manifestSha256'] as $digestField) {
+                $digest = $artifact[$digestField] ?? null;
+                if (!is_string($digest) || preg_match('/^[0-9a-f]{64}$/D', $digest) !== 1) {
+                    $errors[] = "Manifest runtime artifact {$target} has an invalid {$digestField}.";
+                }
+            }
+            if (($artifact['threadSafe'] ?? null) !== $expected['threadSafe']) {
+                $errors[] = "Manifest runtime artifact {$target} has an invalid thread-safety ABI.";
+            }
+        }
     }
 
     /**

@@ -33,11 +33,15 @@ Bedriox is being designed for vanilla-style survival, custom game modes, minigam
 
 Bedriox is under active development. These expansion features are roadmap direction, not finished APIs, and behavior may change before the first stable release.
 
-## Requirements
+## Supported platforms
 
-- 64-bit PHP 8.4 or newer (PHP 9 is not yet supported)
-- Composer 2
-- Windows x86-64 or Linux x86-64
+Bedriox publishes its own qualified PHP 8.4 runtime with LevelDB, SQLite,
+OpenSSL, cURL, ZIP, sodium, GMP, and the other required extensions. Qualified
+targets are Windows x86-64, Linux x86-64 and ARM64, and macOS x86-64 and
+ARM64. Production startup never falls back to a system PHP installation.
+
+Composer 2 and a local PHP 8.4 installation are needed only for source
+development.
 
 ## Development quick start
 
@@ -60,6 +64,11 @@ php bin/bedriox --version
 php bin/bedriox serve
 ```
 
+The commands above are the explicit development path. For a packaged server,
+install the exact local Runtime archive recorded in
+[`bedriox.lock.json`](bedriox.lock.json), then run `bedriox.cmd` on Windows or
+`./bedriox` on Linux and macOS. See the [usage guide](docs/usage.md).
+
 The exact component revisions are recorded in [`bedriox.lock.json`](bedriox.lock.json). See the [development guide](docs/development.md), [usage and configuration guide](docs/usage.md), [plugin guide](docs/plugins.md), [architecture](docs/architecture.md), and [testing guide](docs/testing.md) for contributor details.
 
 ## Project family
@@ -68,6 +77,7 @@ The exact component revisions are recorded in [`bedriox.lock.json`](bedriox.lock
 - [RakNet](https://github.com/Bedriox/RakNet) — UDP and RakNet transport
 - [Protocol](https://github.com/Bedriox/Protocol) — Bedrock packet codecs and protocol behavior
 - [Data](https://github.com/Bedriox/Data) — versioned Bedrock registries and generated data
+- [Runtime](https://github.com/Bedriox/Runtime) — qualified PHP binaries and native dependencies
 - [Docs](https://github.com/Bedriox/Docs) — installation, administration, and plugin documentation
 - [ExamplePlugin](https://github.com/Bedriox/ExamplePlugin) — minimal plugin project and API examples
 - [PluginTools](https://github.com/Bedriox/PluginTools) — source-plugin loading and secure PHAR packaging tools

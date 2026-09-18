@@ -36,7 +36,7 @@ final class ComponentPinExporterTest extends TestCase
     public static function invalidManifestProvider(): iterable
     {
         $manifest = self::manifest();
-        $manifest['schema'] = 2;
+        $manifest['schema'] = 1;
         yield 'wrong schema' => [$manifest];
 
         $manifest = self::manifest();
@@ -73,7 +73,7 @@ final class ComponentPinExporterTest extends TestCase
     private static function manifest(): array
     {
         return [
-            'schema' => 1,
+            'schema' => 2,
             'components' => [
                 'protocol' => ['package' => 'bedriox/protocol', 'commit' => self::COMMIT],
                 'raknet' => ['package' => 'bedriox/raknet', 'commit' => self::COMMIT],

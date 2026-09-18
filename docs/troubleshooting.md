@@ -4,6 +4,15 @@
 
 Confirm that `php -v` reports a 64-bit PHP version of at least 8.4 and that Composer 2 is using the same PHP executable.
 
+## Packaged startup reports runtime validation failed
+
+Do not work around this by invoking a PHP executable from `PATH`. Reinstall the
+exact target archive named in `bedriox.lock.json` with
+`php tools/install-runtime.php <local-archive>`. A wrong archive digest,
+modified runtime file, missing extension, wrong CPU/OS target, additional PHP
+configuration, or launch through a different PHP binary intentionally fails
+before Composer autoload.
+
 ## The executable says pre-alpha
 
 That is expected during M0. There is no playable server until the transport, login, and flat-world milestones pass their acceptance gates.

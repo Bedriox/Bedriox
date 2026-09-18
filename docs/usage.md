@@ -1,6 +1,24 @@
 # Usage
 
-Inspect the current build with:
+Install the qualified archive for this machine from a local file. The archive
+name and digest must exactly match `bedriox.lock.json`:
+
+```shell
+php tools/install-runtime.php path/to/bedriox-runtime-windows-x86_64.zip
+```
+
+Use the matching `.tar.gz` archive on Linux or macOS. The installer accepts no
+URLs, extracts into a bounded same-volume staging directory, verifies the
+archive and inner manifest hashes, probes the packaged PHP, and restores the
+previous `bin/` if activation fails.
+
+Inspect the packaged server with `bedriox.cmd --version` on Windows or
+`./bedriox --version` on Linux and macOS. Start it with `bedriox.cmd serve` or
+`./bedriox serve`. These launchers use only the adjacent `bin/php(.exe)` and
+`bin/php.ini`; there is no `PATH` or system-PHP fallback. They preserve the
+operator's working directory.
+
+For source development only, inspect the current build with:
 
 ```shell
 php bin/bedriox --version

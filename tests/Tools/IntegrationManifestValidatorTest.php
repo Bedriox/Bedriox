@@ -13,7 +13,8 @@ final class IntegrationManifestValidatorTest extends TestCase
 {
     private const string PROTOCOL_COMMIT = 'fb0a0da40952a4f3b5e321f0b4e3df86bb38e920';
     private const string RAKNET_COMMIT = '258c8773b4ff1e7095576ae091f10945bbeb31ee';
-    private const string DATA_COMMIT = '718037f5dabd25d0ce7d2e6a2517119725959c95';
+    private const string DATA_COMMIT = '2b75cc671a6f6a3c143c525e86ef83f115e4b715';
+    private const string RUNTIME_COMMIT = '4d5fefdd1eb1080581b54bd30c91bc5e619c8496';
 
     public function testExactPrivateWorkspaceFixtureIsAccepted(): void
     {
@@ -22,7 +23,7 @@ final class IntegrationManifestValidatorTest extends TestCase
             self::composer(),
             self::lock(),
             '0.1.0-alpha.1',
-            ['protocol' => self::PROTOCOL_COMMIT, 'raknet' => self::RAKNET_COMMIT, 'data' => self::DATA_COMMIT],
+            ['protocol' => self::PROTOCOL_COMMIT, 'raknet' => self::RAKNET_COMMIT, 'data' => self::DATA_COMMIT, 'runtime' => self::RUNTIME_COMMIT],
         ));
     }
 
@@ -91,6 +92,29 @@ final class IntegrationManifestValidatorTest extends TestCase
         self::assertInvalid(self::composer(), self::lock(), 'component set differs', $manifest);
     }
 
+    public function testRuntimeTargetIdentityAndIntegrityMetadataAreExact(): void
+    {
+        $manifest = self::manifest();
+        $manifest['runtime']['manifestSchema'] = 3;
+        self::assertInvalid(self::composer(), self::lock(), 'package schema must be 2', $manifest);
+
+        $manifest = self::manifest();
+        $manifest['runtime']['artifacts']['windows-x86_64']['filename'] = 'runtime.zip';
+        self::assertInvalid(self::composer(), self::lock(), 'invalid filename', $manifest);
+
+        $manifest = self::manifest();
+        $manifest['runtime']['artifacts']['linux-x86_64']['sha256'] = 'invalid';
+        self::assertInvalid(self::composer(), self::lock(), 'invalid sha256', $manifest);
+
+        $manifest = self::manifest();
+        $manifest['runtime']['artifacts']['windows-x86_64']['threadSafe'] = false;
+        self::assertInvalid(self::composer(), self::lock(), 'thread-safety ABI', $manifest);
+
+        $manifest = self::manifest();
+        unset($manifest['runtime']['artifacts']['macos-arm64']);
+        self::assertInvalid(self::composer(), self::lock(), 'qualified target set', $manifest);
+    }
+
     /**
      * @param array<string, mixed> $composer
      * @param array<string, mixed> $lock
@@ -103,7 +127,7 @@ final class IntegrationManifestValidatorTest extends TestCase
             $composer,
             $lock,
             '0.1.0-alpha.1',
-            ['protocol' => self::PROTOCOL_COMMIT, 'raknet' => self::RAKNET_COMMIT, 'data' => self::DATA_COMMIT],
+            ['protocol' => self::PROTOCOL_COMMIT, 'raknet' => self::RAKNET_COMMIT, 'data' => self::DATA_COMMIT, 'runtime' => self::RUNTIME_COMMIT],
         );
         self::assertNotSame([], $errors);
         self::assertStringContainsString($message, implode("\n", $errors));
@@ -116,13 +140,20 @@ final class IntegrationManifestValidatorTest extends TestCase
      *   server: string,
      *   php: string,
      *   bedrock: array{clientVersions: list<string>, networkProtocols: list<int>},
-     *   components: array<string, array{package: string, version: string, commit: string}|null>
+     *   components: array<string, array{package: string, version: string, commit: string}|null>,
+     *   runtime: array{
+     *     commit: string,
+     *     manifestSchema: int,
+     *     phpVersion: string,
+     *     extensions: array{all: list<string>, unix: list<string>},
+     *     artifacts: array<string, array{filename: string, size: int, sha256: string, manifestSha256: string, threadSafe: bool}>
+     *   }
      * }
      */
     private static function manifest(): array
     {
         return [
-            'schema' => 1,
+            'schema' => 2,
             'status' => 'alpha',
             'server' => '0.1.0-alpha.1',
             'php' => '^8.4',
@@ -132,6 +163,39 @@ final class IntegrationManifestValidatorTest extends TestCase
                 'raknet' => ['package' => 'bedriox/raknet', 'version' => '0.1.0-alpha.1', 'commit' => self::RAKNET_COMMIT],
                 'data' => ['package' => 'bedriox/data', 'version' => '0.1.0-alpha.1', 'commit' => self::DATA_COMMIT],
             ],
+            'runtime' => [
+                'commit' => self::RUNTIME_COMMIT,
+                'manifestSchema' => 2,
+                'phpVersion' => '8.4.25',
+                'extensions' => [
+                    'all' => [
+                        'Core', 'ctype', 'curl', 'date', 'dom', 'fileinfo', 'filter', 'gmp', 'hash', 'iconv', 'json',
+                        'leveldb', 'libxml', 'mbstring', 'openssl', 'pcre', 'PDO', 'pdo_sqlite', 'Phar', 'random', 'Reflection',
+                        'session', 'SimpleXML', 'sockets', 'sodium', 'SPL', 'sqlite3', 'standard', 'tokenizer', 'xml',
+                        'xmlreader', 'xmlwriter', 'Zend OPcache', 'zip', 'zlib',
+                    ],
+                    'unix' => ['pcntl', 'posix'],
+                ],
+                'artifacts' => [
+                    'windows-x86_64' => self::runtimeArtifact('bedriox-runtime-windows-x86_64.zip', true),
+                    'linux-x86_64' => self::runtimeArtifact('bedriox-runtime-linux-x86_64.tar.gz', false),
+                    'linux-arm64' => self::runtimeArtifact('bedriox-runtime-linux-arm64.tar.gz', false),
+                    'macos-arm64' => self::runtimeArtifact('bedriox-runtime-macos-arm64.tar.gz', false),
+                    'macos-x86_64' => self::runtimeArtifact('bedriox-runtime-macos-x86_64.tar.gz', false),
+                ],
+            ],
+        ];
+    }
+
+    /** @return array{filename: string, size: int, sha256: string, manifestSha256: string, threadSafe: bool} */
+    private static function runtimeArtifact(string $filename, bool $threadSafe): array
+    {
+        return [
+            'filename' => $filename,
+            'size' => 1,
+            'sha256' => str_repeat('a', 64),
+            'manifestSha256' => str_repeat('b', 64),
+            'threadSafe' => $threadSafe,
         ];
     }
 

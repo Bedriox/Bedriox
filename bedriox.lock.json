@@ -1,5 +1,5 @@
 {
-    "schema": 1,
+    "schema": 2,
     "status": "alpha",
     "server": "0.1.0-alpha.1",
     "php": "^8.4",
@@ -26,7 +26,92 @@
         "data": {
             "package": "bedriox/data",
             "version": "0.1.0-alpha.1",
-            "commit": "718037f5dabd25d0ce7d2e6a2517119725959c95"
+            "commit": "2b75cc671a6f6a3c143c525e86ef83f115e4b715"
+        }
+    },
+    "runtime": {
+        "commit": "4d5fefdd1eb1080581b54bd30c91bc5e619c8496",
+        "manifestSchema": 2,
+        "phpVersion": "8.4.25",
+        "extensions": {
+            "all": [
+                "Core",
+                "ctype",
+                "curl",
+                "date",
+                "dom",
+                "fileinfo",
+                "filter",
+                "gmp",
+                "hash",
+                "iconv",
+                "json",
+                "leveldb",
+                "libxml",
+                "mbstring",
+                "openssl",
+                "pcre",
+                "PDO",
+                "pdo_sqlite",
+                "Phar",
+                "random",
+                "Reflection",
+                "session",
+                "SimpleXML",
+                "sockets",
+                "sodium",
+                "SPL",
+                "sqlite3",
+                "standard",
+                "tokenizer",
+                "xml",
+                "xmlreader",
+                "xmlwriter",
+                "Zend OPcache",
+                "zip",
+                "zlib"
+            ],
+            "unix": [
+                "pcntl",
+                "posix"
+            ]
+        },
+        "artifacts": {
+            "windows-x86_64": {
+                "filename": "bedriox-runtime-windows-x86_64.zip",
+                "size": 10932364,
+                "sha256": "8989ab72af0d7dc0b25873ccfda7ec202c485c37f9ba3fe32c14b22b97d169b1",
+                "manifestSha256": "8461f0a454dba2248b4a6efb6ab5328abf5871691f63ab78f6aedf676042b359",
+                "threadSafe": true
+            },
+            "linux-x86_64": {
+                "filename": "bedriox-runtime-linux-x86_64.tar.gz",
+                "size": 12703009,
+                "sha256": "da93040191f74da5f915468ebe817ca040a93cada987e3f83d57b58c41bf8b67",
+                "manifestSha256": "7fcf44d971f654fc27f00fd64b29a4c7f6ca5d61bde081bb46bd64b8c52f3ff9",
+                "threadSafe": false
+            },
+            "linux-arm64": {
+                "filename": "bedriox-runtime-linux-arm64.tar.gz",
+                "size": 12629167,
+                "sha256": "de36bab7972422aadd8d52787a2752672c6108c3b6b296059a65552cbe3edc8f",
+                "manifestSha256": "40c887cbd3884865da2132281b000acc03906e34f1fda605ef759a23eb2ebf05",
+                "threadSafe": false
+            },
+            "macos-arm64": {
+                "filename": "bedriox-runtime-macos-arm64.tar.gz",
+                "size": 10782007,
+                "sha256": "cecf7828df18e3de96cda0f46014c23f00b273238c337e9b9eb2b36ca4880831",
+                "manifestSha256": "0684c1ea9e67d8f810f46ed9cc1b461fddf329c7ef09009a94c4efa48474549d",
+                "threadSafe": false
+            },
+            "macos-x86_64": {
+                "filename": "bedriox-runtime-macos-x86_64.tar.gz",
+                "size": 11033690,
+                "sha256": "63ff9d469601a67e09e87197af0233e8f674fa3bd523f4b3ff11723a723e3cf4",
+                "manifestSha256": "94b1f04a0bb84408b52b9109b289af09df6bc5a831306eab83ff32f03ac48923",
+                "threadSafe": false
+            }
         }
     }
 }

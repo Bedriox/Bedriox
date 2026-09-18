@@ -1,5 +1,11 @@
 # Server runtime
 
+Production startup is owned by the root `bedriox.cmd` and `bedriox` launchers.
+They invoke only the adjacent qualified PHP Runtime. Before Composer autoload,
+`bootstrap/bedriox.php` verifies the external manifest trust pin, target ABI,
+PHP configuration, exact extension set, and complete runtime inventory. This is
+an installation-integrity boundary, not a sandbox for a malicious local binary.
+
 `ServerRuntime` is the bounded, non-blocking composition boundary between RakNet, the protocol-2193 session, and the authoritative simulation. Each call to `poll()` performs at most the configured datagram, lifecycle-event, payload, packet, command, streaming, and world-tick work. Older protocol requests fail during network negotiation.
 
 The runtime accepts application payloads only from a ready RakNet session using `ReliableOrdered` delivery on ordering channel zero. A `SessionOpenedEvent` creates one login channel. Successful login transfers the authenticated identity, verified client appearance, and both live cipher directions exactly once to a play channel. Once the initialization bootstrap has been released, the player is admitted when the client returns `SetLocalPlayerAsInitialized` with the assigned runtime entity ID and the authoritative simulation accepts the queued join. A duplicate acknowledgement for that entity is an idempotent no-op. Terrain delivery continues independently, so valid movement and chat received after that acknowledgement cannot be rejected merely because SubChunk responses remain queued. Duplicate identity, duplicate session, and full-world rejections close only that pending peer.

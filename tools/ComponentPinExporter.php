@@ -21,8 +21,8 @@ final class ComponentPinExporter
      */
     public static function export(array $manifest): array
     {
-        if (($manifest['schema'] ?? null) !== 1) {
-            throw new InvalidArgumentException('Manifest schema must be 1.');
+        if (($manifest['schema'] ?? null) !== 2) {
+            throw new InvalidArgumentException('Manifest schema must be 2.');
         }
 
         $components = $manifest['components'] ?? null;

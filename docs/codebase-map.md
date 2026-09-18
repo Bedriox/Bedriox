@@ -4,7 +4,10 @@ This repository is the executable server and composition root. Code belongs here
 
 ## Entry and composition
 
-- `bin/bedriox` is the thin executable entry point.
+- `bedriox.cmd` and `bedriox` are production launchers that select only the adjacent qualified Runtime.
+- `bootstrap/bedriox.php` and `src/Environment/` validate Runtime identity and integrity before Composer autoload.
+- `tools/install-runtime.php` installs one local archive through the bounded staged installer.
+- `bin/bedriox` remains the thin PHP application entry point and is preserved across Runtime installation.
 - `src/Application.php` parses the command and delegates server construction and execution.
 - `src/Runtime/ServerSettingsFile.php` loads and validates `bedriox.settings`.
 - `src/Runtime/ServerConfig.php` is the immutable effective configuration.

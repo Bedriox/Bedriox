@@ -8,8 +8,9 @@ $ErrorActionPreference = 'Stop'
 
 $failures = [System.Collections.Generic.List[string]]::new()
 $codeRepositories = @('Bedriox', 'RakNet', 'Protocol', 'Data', 'ExamplePlugin', 'PluginTools')
+$runtimeRepositories = @('Runtime')
 $documentationRepositories = @('Docs', 'RFCs')
-$repositoryNames = $codeRepositories + $documentationRepositories
+$repositoryNames = $codeRepositories + $runtimeRepositories + $documentationRepositories
 $requiredDocuments = @(
     'AGENTS.md',
     'README.md',
@@ -206,6 +207,21 @@ foreach ($repositoryName in $documentationRepositories) {
     Invoke-VerificationCommand $repository 'php' @('tools/validate-docs.php') | Out-Null
 }
 
+foreach ($repositoryName in $runtimeRepositories) {
+    if (-not $resolvedRepositories.ContainsKey($repositoryName)) {
+        continue
+    }
+
+    $repository = $resolvedRepositories[$repositoryName]
+    $validator = Join-Path $repository 'tools\validate.php'
+    if (-not (Test-Path -LiteralPath $validator -PathType Leaf)) {
+        Add-VerificationFailure "$repositoryName is missing tools/validate.php."
+        continue
+    }
+
+    Invoke-VerificationCommand $repository 'php' @('tools/validate.php') | Out-Null
+}
+
 if ($failures.Count -gt 0) {
     Write-Host "Workspace verification failed with $($failures.Count) problem(s)." -ForegroundColor Red
     foreach ($failure in $failures) {
@@ -215,4 +231,4 @@ if ($failures.Count -gt 0) {
 }
 
 $cleanMessage = if ($SkipClean) { ' Git cleanliness was intentionally skipped.' } else { '' }
-Write-Host "Workspace verification passed for all eight repositories.$cleanMessage" -ForegroundColor Green
+Write-Host "Workspace verification passed for all nine repositories.$cleanMessage" -ForegroundColor Green
