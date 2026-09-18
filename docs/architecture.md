@@ -19,6 +19,7 @@ The bounded protocol-2193 pre-spawn state machine is documented in [`login-sessi
 The independently composed FULL Token verifier is documented in [`authentication.md`](authentication.md).
 The deterministic fixed-rate world and player domain is documented in [`simulation.md`](simulation.md).
 The bounded transport-to-simulation composition loop is documented in [`runtime.md`](runtime.md).
+The PHAR plugin lifecycle, typed event boundary, and public API are documented in [`plugins.md`](plugins.md).
 The repository and class ownership map is documented in [`codebase-map.md`](codebase-map.md).
 The packet path from UDP input to authoritative state and back is documented in [`packet-lifecycle.md`](packet-lifecycle.md).
 The generated-world and chunk-streaming path is documented in [`world-chunk-pipeline.md`](world-chunk-pipeline.md).

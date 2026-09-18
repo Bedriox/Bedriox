@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Runtime;
 
 use Bedriox\Server\Login\AuthenticationMode;
+use Bedriox\Server\Observability\LogLevel;
 use InvalidArgumentException;
 
 final readonly class ServerConfig
@@ -30,7 +31,16 @@ final readonly class ServerConfig
         'chunks.generate-per-tick' => '4',
         'chunks.cache-limit' => '2048',
         'runtime.ticks-per-second' => '20',
+        'plugins.enabled' => 'true',
+        'plugins.maximum' => '64',
+        'logging.level' => 'INFO',
+        'logging.console' => 'true',
+        'logging.console-colors' => 'auto',
+        'logging.file' => 'true',
+        'logging.file-max-size' => '16777216',
+        'logging.file-history' => '10',
         'logging.protocol-trace' => 'false',
+        'crash-report.include-player-identifiers' => 'true',
     ];
 
     private const array CLI_KEYS = [
@@ -51,7 +61,16 @@ final readonly class ServerConfig
         'chunks-generate-per-tick' => 'chunks.generate-per-tick',
         'chunks-cache-limit' => 'chunks.cache-limit',
         'ticks-per-second' => 'runtime.ticks-per-second',
+        'plugins-enabled' => 'plugins.enabled',
+        'maximum-plugins' => 'plugins.maximum',
+        'log-level' => 'logging.level',
+        'log-console' => 'logging.console',
+        'log-console-colors' => 'logging.console-colors',
+        'log-file' => 'logging.file',
+        'log-file-max-size' => 'logging.file-max-size',
+        'log-file-history' => 'logging.file-history',
         'protocol-trace' => 'logging.protocol-trace',
+        'crash-report-player-identifiers' => 'crash-report.include-player-identifiers',
         'spawn-x' => 'level.spawn-x',
         'spawn-y' => 'level.spawn-y',
         'spawn-z' => 'level.spawn-z',
@@ -75,10 +94,19 @@ final readonly class ServerConfig
         public int $chunksGeneratePerTick = 4,
         public int $chunkCacheLimit = 2_048,
         public int $ticksPerSecond = 20,
+        public bool $pluginsEnabled = true,
+        public int $maximumPlugins = 64,
         public bool $protocolTrace = false,
         public ?int $spawnX = null,
         public ?int $spawnY = null,
         public ?int $spawnZ = null,
+        public LogLevel $loggingLevel = LogLevel::INFO,
+        public bool $loggingConsole = true,
+        public string $loggingConsoleColors = 'auto',
+        public bool $loggingFile = true,
+        public int $loggingFileMaxSize = 16_777_216,
+        public int $loggingFileHistory = 10,
+        public bool $crashReportIncludePlayerIdentifiers = true,
     ) {
         if (filter_var($this->bindAddress, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
             throw new InvalidArgumentException('Bind address must be a literal IPv4 address.');
@@ -112,6 +140,12 @@ final readonly class ServerConfig
         self::range($this->chunksGeneratePerTick, 1, 64, 'Chunks generated per tick');
         self::range($this->chunkCacheLimit, 16, 65_536, 'Chunk cache limit');
         self::range($this->ticksPerSecond, 1, 100, 'Ticks per second');
+        self::range($this->maximumPlugins, 0, 256, 'Maximum plugins');
+        if (!in_array($this->loggingConsoleColors, ['auto', 'true', 'false'], true)) {
+            throw new InvalidArgumentException('Console colors must be exactly auto, true, or false.');
+        }
+        self::range($this->loggingFileMaxSize, 65_536, 1_073_741_824, 'Log file maximum size');
+        self::range($this->loggingFileHistory, 0, 100, 'Log file history');
         $maximumRetainedChunks = $this->maximumPlayers * (2 * $this->viewDistance + 1) ** 2;
         if ($maximumRetainedChunks > 65_536 || $this->chunkCacheLimit < $maximumRetainedChunks) {
             throw new InvalidArgumentException('Chunk cache limit must hold every configured player view within 65536 chunks.');
@@ -194,10 +228,19 @@ final readonly class ServerConfig
             chunksGeneratePerTick: self::integer($values['chunks.generate-per-tick'], 'chunks.generate-per-tick', 1, 64),
             chunkCacheLimit: self::integer($values['chunks.cache-limit'], 'chunks.cache-limit', 16, 65_536),
             ticksPerSecond: self::integer($values['runtime.ticks-per-second'], 'runtime.ticks-per-second', 1, 100),
+            pluginsEnabled: self::boolean($values['plugins.enabled'], 'plugins.enabled'),
+            maximumPlugins: self::integer($values['plugins.maximum'], 'plugins.maximum', 0, 256),
             protocolTrace: self::boolean($values['logging.protocol-trace'], 'logging.protocol-trace'),
             spawnX: $spawn[0],
             spawnY: $spawn[1],
             spawnZ: $spawn[2],
+            loggingLevel: LogLevel::parse($values['logging.level']),
+            loggingConsole: self::boolean($values['logging.console'], 'logging.console'),
+            loggingConsoleColors: $values['logging.console-colors'],
+            loggingFile: self::boolean($values['logging.file'], 'logging.file'),
+            loggingFileMaxSize: self::integer($values['logging.file-max-size'], 'logging.file-max-size', 65_536, 1_073_741_824),
+            loggingFileHistory: self::integer($values['logging.file-history'], 'logging.file-history', 0, 100),
+            crashReportIncludePlayerIdentifiers: self::boolean($values['crash-report.include-player-identifiers'], 'crash-report.include-player-identifiers'),
         );
     }
 

@@ -4,6 +4,10 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Simulation;
 
+use Bedriox\Server\Player\InventoryContainer;
+use Bedriox\Server\Player\InventoryResponseMode;
+use Bedriox\Server\Player\InventorySlotReference;
+use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Player\InventoryStackRequestResult;
 use Bedriox\Server\Player\Player;
 use Bedriox\Server\Player\PlayerIdentity;
@@ -18,6 +22,10 @@ use Bedriox\Server\Simulation\Command\PerformEmote;
 use Bedriox\Server\Simulation\Command\PlaceBlock;
 use Bedriox\Server\Simulation\Command\SelectHotbarSlot;
 use Bedriox\Server\Simulation\Command\SendChat;
+use Bedriox\Server\Simulation\Command\SendPluginMessage;
+use Bedriox\Server\Simulation\Command\SetPluginBlock;
+use Bedriox\Server\Simulation\Command\SetPluginInventorySlot;
+use Bedriox\Server\Simulation\Command\TeleportPlayer;
 use Bedriox\Server\Simulation\Command\WorldCommand;
 use Bedriox\Server\Simulation\Event\BlockBreakStarted;
 use Bedriox\Server\Simulation\Event\BlockBreakStopped;
@@ -84,6 +92,7 @@ final class WorldSimulation
         private readonly Position $spawn = new Position(0.0, 64.0, 0.0),
         private readonly ?World $blockWorld = null,
         private readonly ?FixedFlatBlockPalette $blockPalette = null,
+        private readonly ?PluginGameplayEventBridge $pluginEvents = null,
     ) {
         $this->commands = new SplQueue();
         $this->lifecycleCommands = new SplQueue();
@@ -200,6 +209,59 @@ final class WorldSimulation
         return $this->limits->ticksPerSecond;
     }
 
+    /** @return list<\Bedriox\Api\Player\Player> */
+    public function pluginPlayers(): array
+    {
+        $views = [];
+        foreach ($this->players->snapshots() as $snapshot) {
+            $player = $this->players->player($snapshot->sessionId);
+            if ($player !== null) {
+                $views[] = PluginGameplayEventBridge::playerView($player);
+            }
+        }
+
+        return $views;
+    }
+
+    public function pluginPlayer(string $identity): ?\Bedriox\Api\Player\Player
+    {
+        $player = $this->players->playerByIdentity($identity);
+
+        return $player === null ? null : PluginGameplayEventBridge::playerView($player);
+    }
+
+    public function enqueuePluginMessage(string $identity, string $message): bool
+    {
+        $player = $this->players->playerByIdentity($identity);
+
+        return $player !== null && $this->enqueue($this->validator->pluginMessage($player->sessionId, $message));
+    }
+
+    public function enqueuePluginTeleport(string $identity, Position $position): bool
+    {
+        $player = $this->players->playerByIdentity($identity);
+
+        return $player !== null && $this->enqueue($this->validator->teleport(
+            $player->sessionId,
+            $position->x,
+            $position->y,
+            $position->z,
+        ));
+    }
+
+    public function enqueuePluginBlock(string $plugin, BlockPosition $position, string $identifier): bool
+    {
+        return $this->enqueue($this->validator->pluginBlock($plugin, $position, $identifier));
+    }
+
+    public function enqueuePluginInventorySlot(string $identity, int $slot, ?InventoryStack $stack): bool
+    {
+        $player = $this->players->playerByIdentity($identity);
+
+        return $player !== null
+            && $this->enqueue($this->validator->pluginInventorySlot($player->sessionId, $slot, $stack));
+    }
+
     private function apply(WorldCommand $command): ?WorldEvent
     {
         return match (true) {
@@ -211,6 +273,10 @@ final class WorldSimulation
             $command instanceof ApplyInventoryStackRequest => $this->inventoryStackRequest($command),
             $command instanceof SelectHotbarSlot => $this->selectHotbarSlot($command),
             $command instanceof DisconnectPlayer => $this->disconnect($command),
+            $command instanceof SendPluginMessage => $this->pluginMessage($command),
+            $command instanceof TeleportPlayer => $this->pluginTeleport($command),
+            $command instanceof SetPluginBlock => $this->pluginBlock($command),
+            $command instanceof SetPluginInventorySlot => $this->pluginInventorySlot($command),
             default => null,
         };
     }
@@ -229,6 +295,9 @@ final class WorldSimulation
         }
         if ($this->players->isFull()) {
             return new CommandRejected($command->session, 'world_full');
+        }
+        if ($this->pluginEvents !== null && !$this->pluginEvents->allowJoin($command->displayName, $command->identity)) {
+            return new CommandRejected($command->session, 'plugin_cancelled');
         }
 
         $peers = $this->players->snapshots();
@@ -251,6 +320,7 @@ final class WorldSimulation
         if ($runtimeActorId >= $this->nextRuntimeActorId && $runtimeActorId < PHP_INT_MAX) {
             $this->nextRuntimeActorId = $runtimeActorId + 1;
         }
+        $this->pluginEvents?->joined($player);
 
         return new PlayerJoined($player->snapshot(), $peers, $this->players->recipients());
     }
@@ -327,6 +397,9 @@ final class WorldSimulation
         $sneaking = $command->sneaking ?? ($command->mode === MovementMode::CROUCHING);
         $sprinting = $command->sprinting ?? ($command->mode === MovementMode::SPRINTING);
         $postureChanged = $movement->sneaking !== $sneaking || $movement->sprinting !== $sprinting;
+        if ($this->pluginEvents !== null && !$this->pluginEvents->allowMove($player, $position)) {
+            return new MovementCorrected($player->snapshot(), 'plugin_cancelled');
+        }
         $movement->position = $position;
         $movement->yaw = $command->yaw;
         $movement->headYaw = $command->headYaw ?? $command->yaw;
@@ -340,6 +413,7 @@ final class WorldSimulation
         $movement->lastTick = $this->tick;
 
         $snapshot = $player->snapshot();
+        $this->pluginEvents?->moved($player);
         if ($terrainConstrained) {
             return new MovementCorrected(
                 $snapshot,
@@ -372,15 +446,30 @@ final class WorldSimulation
             return new CommandRejected($command->session, 'chat_rate');
         }
 
+        $message = $command->message;
+        if ($this->pluginEvents !== null) {
+            $message = $this->pluginEvents->chat($player, $message);
+            if ($message === null) {
+                return new CommandRejected($command->session, 'plugin_cancelled');
+            }
+            try {
+                $this->validator->chat($command->session, $command->sequence, $message);
+            } catch (CommandValidationException) {
+                return new CommandRejected($command->session, 'plugin_invalid_chat');
+            }
+        }
         --$player->chatTokens;
-        return new ChatBroadcast(
+        $event = new ChatBroadcast(
             $player->sessionId,
             $player->identity->uuid,
             $player->identity->displayName,
             $command->sequence,
-            $command->message,
+            $message,
             $this->players->recipients(),
         );
+        $this->pluginEvents?->chatBroadcast($player, $message);
+
+        return $event;
     }
 
     private function emote(PerformEmote $command): WorldEvent
@@ -410,6 +499,7 @@ final class WorldSimulation
         if ($player === null) {
             return new CommandRejected($command->session, 'not_joined');
         }
+        $this->pluginEvents?->quit($player);
 
         return new PlayerDisconnected(
             $player->sessionId,
@@ -480,6 +570,26 @@ final class WorldSimulation
                 $command instanceof SelectHotbarSlot => $this->validator->selectHotbarSlot(
                     $command->session,
                     $command->hotbarSlot,
+                ),
+                $command instanceof SendPluginMessage => $this->validator->pluginMessage(
+                    $command->session,
+                    $command->message,
+                ),
+                $command instanceof TeleportPlayer => $this->validator->teleport(
+                    $command->session,
+                    $command->position->x,
+                    $command->position->y,
+                    $command->position->z,
+                ),
+                $command instanceof SetPluginBlock => $this->validator->pluginBlock(
+                    $command->plugin,
+                    $command->position,
+                    $command->identifier,
+                ),
+                $command instanceof SetPluginInventorySlot => $this->validator->pluginInventorySlot(
+                    $command->session,
+                    $command->slot,
+                    $command->stack,
                 ),
                 default => throw new CommandValidationException('Unsupported world command.'),
             };
@@ -659,6 +769,10 @@ final class WorldSimulation
             );
         }
         unset($this->breakingBlocks[$key]);
+        $identifier = $this->blockIdentifier($state->value);
+        if ($this->pluginEvents !== null && !$this->pluginEvents->allowBlockBreak($player, $position, $identifier)) {
+            return new BlockChanged($command->session, $position, $state, [$command->session], $stopsActiveBreak);
+        }
         try {
             $this->blockWorld->setBlockState($position->x, $position->y, $position->z, $this->blockPalette->air);
         } catch (OverflowException) {
@@ -671,6 +785,7 @@ final class WorldSimulation
             );
         }
         $this->refreshPlayerGroundStates();
+        $this->pluginEvents?->blockBroken($player, $position, $identifier);
 
         return new BlockChanged(
             $command->session,
@@ -695,7 +810,25 @@ final class WorldSimulation
         if ($player === null) {
             return new CommandRejected($command->session, 'not_joined');
         }
+        $before = null;
+        if ($this->pluginEvents !== null) {
+            $before = clone $player->inventory;
+            $proposed = clone $player->inventory;
+            $proposed->selectHotbarSlot($command->hotbarSlot);
+            if (!$this->pluginEvents->allowInventoryChange($player, $before, $proposed)) {
+                return new HeldItemChanged(
+                    $player->sessionId,
+                    $player->runtimeActorId,
+                    $player->inventory->selectedHotbarSlot(),
+                    $player->inventory->selectedStack(),
+                    $this->players->recipients($player->sessionId),
+                );
+            }
+        }
         $player->inventory->selectHotbarSlot($command->hotbarSlot);
+        if ($this->pluginEvents !== null) {
+            $this->pluginEvents->inventoryChanged($player, $before);
+        }
 
         return new HeldItemChanged(
             $player->sessionId,
@@ -712,9 +845,25 @@ final class WorldSimulation
         if ($player === null) {
             return new CommandRejected($command->session, 'not_joined');
         }
-        $result = $command->rejectionReason === null
-            ? $player->inventory->applyStackRequest($command->requestId, $command->actions)
-            : new InventoryStackRequestResult(false, reason: $command->rejectionReason);
+        if ($this->pluginEvents === null) {
+            $result = $command->rejectionReason === null
+                ? $player->inventory->applyStackRequest($command->requestId, $command->actions)
+                : new InventoryStackRequestResult(false, reason: $command->rejectionReason);
+        } else {
+            $before = clone $player->inventory;
+            $proposed = clone $player->inventory;
+            $result = $command->rejectionReason === null
+                ? $proposed->applyStackRequest($command->requestId, $command->actions)
+                : new InventoryStackRequestResult(false, reason: $command->rejectionReason);
+            if ($result->success && !$this->pluginEvents->allowInventoryChange($player, $before, $proposed)) {
+                $result = new InventoryStackRequestResult(false, reason: 'plugin_cancelled');
+            } elseif ($result->success) {
+                $result = $player->inventory->applyStackRequest($command->requestId, $command->actions);
+                if ($result->success) {
+                    $this->pluginEvents->inventoryChanged($player, $before);
+                }
+            }
+        }
 
         return new InventoryStackRequestProcessed(
             $player->sessionId,
@@ -781,6 +930,20 @@ final class WorldSimulation
                 $correctionReason,
             );
         }
+        if ($this->pluginEvents !== null
+            && !$this->pluginEvents->allowBlockPlace($player, $placedPosition, 'minecraft:grass_block')) {
+            return new BlockPlacementCorrected(
+                $command->session,
+                $command->clickedPosition,
+                $clickedState,
+                $placedPosition,
+                $placedState,
+                $player->inventory->selectedHotbarSlot(),
+                $held,
+                $activeBreak['position'] ?? null,
+                'plugin_cancelled',
+            );
+        }
         try {
             $this->blockWorld->setBlockState(
                 $placedPosition->x,
@@ -803,6 +966,7 @@ final class WorldSimulation
         }
         $this->refreshPlayerGroundStates();
         $remaining = $player->inventory->decrementSelectedOne();
+        $this->pluginEvents?->blockPlaced($player, $placedPosition, 'minecraft:grass_block');
 
         return new BlockPlaced(
             $command->session,
@@ -844,6 +1008,129 @@ final class WorldSimulation
                 $player->movement->verticalVelocity = 0.0;
             }
         }
+    }
+
+    private function pluginMessage(SendPluginMessage $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        if ($player === null) {
+            return new CommandRejected($command->session, 'not_joined');
+        }
+
+        return new ChatBroadcast(
+            $player->sessionId,
+            '00000000-0000-0000-0000-000000000000',
+            'Bedriox',
+            0,
+            $command->message,
+            [$player->sessionId],
+        );
+    }
+
+    private function pluginTeleport(TeleportPlayer $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        if ($player === null) {
+            return new CommandRejected($command->session, 'not_joined');
+        }
+        if ($this->blockWorld !== null && $this->blockPalette !== null
+            && (new BlockCollisionQuery($this->blockWorld, $this->blockPalette->air))
+                ->hasCollision(PlayerCollisionShape::at($command->position))) {
+            return new MovementCorrected($player->snapshot(), 'plugin_teleport_collision');
+        }
+        $player->movement->position = $command->position;
+        $player->movement->mode = MovementMode::STOPPED;
+        $player->movement->verticalVelocity = 0.0;
+        $player->movement->jumpAuthorizedUntilTick = -1;
+        $player->movement->lastTick = $this->tick;
+        $player->movement->verticalState = $this->collisionResolver?->isGrounded($command->position) === true
+            ? VerticalState::GROUNDED
+            : VerticalState::AIRBORNE;
+
+        return new MovementCorrected(
+            $player->snapshot(),
+            'plugin_teleport',
+            $this->players->recipients($player->sessionId),
+            true,
+        );
+    }
+
+    private function pluginBlock(SetPluginBlock $command): WorldEvent
+    {
+        if ($this->blockWorld === null || $this->blockPalette === null) {
+            return new CommandRejected($command->sessionId(), 'block_world_unavailable');
+        }
+        $state = match ($command->identifier) {
+            'minecraft:air' => $this->blockPalette->air,
+            'minecraft:bedrock' => $this->blockPalette->bedrock,
+            'minecraft:dirt' => $this->blockPalette->dirt,
+            'minecraft:grass_block' => $this->blockPalette->grassBlock,
+            default => null,
+        };
+        if ($state === null) {
+            return new CommandRejected($command->sessionId(), 'unsupported_block');
+        }
+        try {
+            $this->blockWorld->setBlockState(
+                $command->position->x,
+                $command->position->y,
+                $command->position->z,
+                $state,
+            );
+        } catch (OverflowException) {
+            return new CommandRejected($command->sessionId(), 'block_capacity');
+        }
+        $this->refreshPlayerGroundStates();
+
+        return new BlockChanged(
+            $command->sessionId(),
+            $command->position,
+            $state,
+            $this->players->recipients(),
+            false,
+        );
+    }
+
+    private function pluginInventorySlot(SetPluginInventorySlot $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        if ($player === null) {
+            return new CommandRejected($command->session, 'not_joined');
+        }
+        $selectedBefore = $player->inventory->selectedStack();
+        $player->inventory->replaceSlot($command->slot, $command->stack);
+        $selectedAfter = $player->inventory->selectedStack();
+        $selectedChanged = $command->slot === $player->inventory->selectedHotbarSlot();
+
+        return new InventoryStackRequestProcessed(
+            $player->sessionId,
+            0,
+            true,
+            [new InventorySlotReference(InventoryContainer::Main, $command->slot, 0)],
+            $player->inventory->slots(),
+            $player->inventory->cursorStack(),
+            $player->inventory->selectedHotbarSlot(),
+            $selectedAfter,
+            $selectedChanged && $selectedBefore !== $selectedAfter,
+            $player->runtimeActorId,
+            $this->players->recipients($player->sessionId),
+            responseMode: InventoryResponseMode::LegacySlotSync,
+        );
+    }
+
+    private function blockIdentifier(int $state): string
+    {
+        if ($this->blockPalette === null) {
+            return 'minecraft:air';
+        }
+
+        return match ($state) {
+            $this->blockPalette->air->value => 'minecraft:air',
+            $this->blockPalette->bedrock->value => 'minecraft:bedrock',
+            $this->blockPalette->dirt->value => 'minecraft:dirt',
+            $this->blockPalette->grassBlock->value => 'minecraft:grass_block',
+            default => 'minecraft:air',
+        };
     }
 
     private static function adjacentBlock(BlockPosition $position, int $face): ?BlockPosition

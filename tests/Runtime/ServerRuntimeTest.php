@@ -55,6 +55,7 @@ use Bedriox\Server\Login\HandshakeMaterialFactory;
 use Bedriox\Server\Login\LoginAuthenticator;
 use Bedriox\Server\Login\LoginSession;
 use Bedriox\Server\Login\MonotonicClock;
+use Bedriox\Server\Observability\MutableCrashContextProvider;
 use Bedriox\Server\Runtime\BedrockPlayChannelFactory;
 use Bedriox\Server\Runtime\DirectedPacket;
 use Bedriox\Server\Runtime\LoginChannelFactory;
@@ -87,6 +88,7 @@ final class ServerRuntimeTest extends TestCase
         $world = new WorldSimulation();
         $loginFactory = new RuntimeLoginFactory();
         $events = new RecordingEventEncoder();
+        $crashContext = new MutableCrashContextProvider();
         $runtime = new ServerRuntime(
             $transport,
             $loginFactory,
@@ -94,6 +96,7 @@ final class ServerRuntimeTest extends TestCase
             $world,
             new FixedRateWorldLoop($world, $clock),
             $events,
+            crashContext: $crashContext,
         );
         $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
         $clientEncryptor = $this->advanceToInitializing($runtime, $transport, $info, $loginFactory);
@@ -106,6 +109,13 @@ final class ServerRuntimeTest extends TestCase
         self::assertTrue($runtime->poll());
         self::assertCount(1, $world->snapshot()->players);
         self::assertSame([PlayerJoined::class], $events->classes);
+        self::assertSame(1, $crashContext->current()->tick);
+        self::assertCount(1, $crashContext->current()->players);
+        self::assertSame('Player', $crashContext->current()->players[0]->name);
+        self::assertSame('00000000-0000-0000-0000-000000000001', $crashContext->current()->players[0]->uuid);
+        self::assertSame('1', $crashContext->current()->players[0]->xuid);
+        self::assertSame('127.0.0.1:20001', $crashContext->current()->players[0]->remoteAddress);
+        self::assertSame('SPAWNED', $crashContext->current()->players[0]->sessionPhase);
 
         // Regression: consuming the one-shot spawn acknowledgement must not revoke gameplay admission.
         $this->receiveEncrypted($transport, $info, $clientEncryptor, new PlayerAuthInputPacket(

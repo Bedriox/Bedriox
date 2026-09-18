@@ -24,7 +24,23 @@ After bind, the runtime polls bounded amounts of socket, session, packet, comman
 
 ## Diagnostics
 
+Normal server activity is rendered in a consistent operator format and is mirrored without terminal color codes to `logs/server.log`:
+
+```text
+[17-Sep-2026 21:42:10] Bedriox INFO > Starting Bedriox 0.1.0-alpha.1
+```
+
+`logging.level` accepts `DEBUG`, `INFO`, `NOTICE`, `WARNING`, `ERROR`, or `CRITICAL`. Console and file output may be enabled independently. `logging.console-colors` accepts `auto`, `true`, or `false`; `auto` colors only an interactive terminal. The file rotates into `logs/archive/` at `logging.file-max-size` and retains at most `logging.file-history` archives. Logging failures are contained and never alter simulation state.
+
 `logging.protocol-trace` is disabled by default. Enable it only for a bounded reproduction and disable it afterward. Diagnostics may contain event names, phase, packet ID, rejection category, and exception class. They must not contain credentials, JWTs, keys, raw encrypted payloads, account identifiers, client GUIDs, or unbounded packet bodies.
+
+## Crash reports
+
+Unexpected runtime failures and supported PHP fatal errors produce an atomically published UTC report under `crashes/`. A report contains bounded runtime, failure, recent-log, plugin-attribution, and player-session sections. Reports are local only and are never uploaded automatically.
+
+`crash-report.include-player-identifiers=true` includes the bounded player name, UUID, XUID, remote address, platform, and phase supplied by the active crash context. This is enabled by default for diagnosis. Crash reports are therefore sensitive: review and redact them before sharing. Set the option to `false` to retain only a session phase. Tokens, JWT contents, encryption material, credentials, raw packets, full configuration, `phpinfo()` output, source excerpts, and the private server root remain excluded regardless of this setting.
+
+The crash context is a bounded provider owned by the composition root so later plugin and player lifecycle boundaries can publish exact involvement without granting the reporter access to mutable runtime internals. Native-process crashes, forced termination, power loss, and a permanently blocked extension may prevent PHP from writing a report.
 
 Distinguish a client session disconnect from a server process crash. Confirm the process and UDP listener separately, then inspect the last accepted boundary as described in [packet lifecycle](packet-lifecycle.md).
 

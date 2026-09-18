@@ -98,7 +98,19 @@ chunks.cache-limit=2048
 
 # Runtime and diagnostics
 runtime.ticks-per-second=20
+
+# Plugins
+plugins.enabled=true
+plugins.maximum=64
+
+logging.level=INFO
+logging.console=true
+logging.console-colors=auto
+logging.file=true
+logging.file-max-size=16777216
+logging.file-history=10
 logging.protocol-trace=false
+crash-report.include-player-identifiers=true
 SETTINGS
             . PHP_EOL;
     }

@@ -8,3 +8,7 @@
 /bedriox.settings
 composer.phar
 *.log
+/logs/
+/crashes/
+/plugins/
+/plugin_data/

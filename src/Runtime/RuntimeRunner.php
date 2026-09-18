@@ -13,6 +13,7 @@ final readonly class RuntimeRunner
         private RuntimeDriver $runtime,
         private RuntimeSleeper $sleeper = new SystemRuntimeSleeper(),
         private ?RuntimeDiagnostics $diagnostics = null,
+        private ?Closure $failureHandler = null,
     ) {}
 
     /** @param Closure(): bool $stopRequested */
@@ -21,6 +22,16 @@ final readonly class RuntimeRunner
         try {
             while (!$stopRequested()) {
                 if (!$this->runtime->poll()) {
+                    if ($this->runtime instanceof RuntimeFailureSource) {
+                        $failure = $this->runtime->failure();
+                        if ($failure !== null && $this->failureHandler !== null) {
+                            try {
+                                ($this->failureHandler)($failure);
+                            } catch (Throwable) {
+                                // Failure reporting must not prevent runtime cleanup.
+                            }
+                        }
+                    }
                     return 1;
                 }
                 $this->sleeper->idle();
@@ -31,6 +42,13 @@ final readonly class RuntimeRunner
             ($this->diagnostics ?? RuntimeDiagnostics::disabled())->record('runtime.runner_failed', [
                 'exception' => $exception::class,
             ]);
+            if ($this->failureHandler !== null) {
+                try {
+                    ($this->failureHandler)($exception);
+                } catch (Throwable) {
+                    // Failure reporting must not prevent runtime cleanup.
+                }
+            }
             return 1;
         } finally {
             $this->runtime->close();

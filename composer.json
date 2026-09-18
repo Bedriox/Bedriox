@@ -51,6 +51,7 @@
     },
     "autoload": {
         "psr-4": {
+            "Bedriox\\Api\\": "src/Api/",
             "Bedriox\\Server\\": "src/"
         }
     },

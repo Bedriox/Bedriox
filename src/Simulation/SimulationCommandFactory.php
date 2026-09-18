@@ -6,6 +6,7 @@ namespace Bedriox\Server\Simulation;
 
 use Bedriox\Server\Player\InventoryContainer;
 use Bedriox\Server\Player\InventoryResponseMode;
+use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Player\InventoryStackRequestAction;
 use Bedriox\Server\Simulation\Command\ApplyInventoryStackRequest;
 use Bedriox\Server\Simulation\Command\BreakBlock;
@@ -16,6 +17,10 @@ use Bedriox\Server\Simulation\Command\PerformEmote;
 use Bedriox\Server\Simulation\Command\PlaceBlock;
 use Bedriox\Server\Simulation\Command\SelectHotbarSlot;
 use Bedriox\Server\Simulation\Command\SendChat;
+use Bedriox\Server\Simulation\Command\SendPluginMessage;
+use Bedriox\Server\Simulation\Command\SetPluginBlock;
+use Bedriox\Server\Simulation\Command\SetPluginInventorySlot;
+use Bedriox\Server\Simulation\Command\TeleportPlayer;
 use Bedriox\Server\World\BlockPosition;
 
 final readonly class SimulationCommandFactory
@@ -107,6 +112,56 @@ final readonly class SimulationCommandFactory
         }
 
         return new SendChat($session, $sequence, $message);
+    }
+
+    public function pluginMessage(string $session, string $message): SendPluginMessage
+    {
+        $this->assertOpaqueId($session, 128, 'session');
+        $this->assertUtf8Text($message, $this->limits->maximumChatCharacters, $this->limits->maximumChatBytes, 'message');
+
+        return new SendPluginMessage($session, $message);
+    }
+
+    public function teleport(string $session, float $x, float $y, float $z): TeleportPlayer
+    {
+        $this->assertOpaqueId($session, 128, 'session');
+        foreach (['x' => $x, 'y' => $y, 'z' => $z] as $name => $value) {
+            if (!is_finite($value)) {
+                throw new CommandValidationException("Teleport {$name} must be finite.");
+            }
+        }
+        if (abs($x) > $this->limits->maximumCoordinate || abs($z) > $this->limits->maximumCoordinate
+            || $y < -64.0 || $y > 319.0) {
+            throw new CommandValidationException('Teleport position exceeds the world boundary.');
+        }
+
+        return new TeleportPlayer($session, new Position($x, $y, $z));
+    }
+
+    public function pluginBlock(string $plugin, BlockPosition $position, string $identifier): SetPluginBlock
+    {
+        $this->assertOpaqueId($plugin, 64, 'plugin');
+        if (preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $identifier) !== 1
+            || abs($position->x) > $this->limits->maximumCoordinate
+            || abs($position->z) > $this->limits->maximumCoordinate
+            || $position->y < -64 || $position->y > 319) {
+            throw new CommandValidationException('Plugin block change is invalid.');
+        }
+
+        return new SetPluginBlock($plugin, $position, $identifier);
+    }
+
+    public function pluginInventorySlot(
+        string $session,
+        int $slot,
+        ?InventoryStack $stack,
+    ): SetPluginInventorySlot {
+        $this->assertOpaqueId($session, 128, 'session');
+        if ($slot < 0 || $slot >= 36) {
+            throw new CommandValidationException('Plugin inventory slot is invalid.');
+        }
+
+        return new SetPluginInventorySlot($session, $slot, $stack);
     }
 
     public function emote(string $session, string $emoteId): PerformEmote

@@ -17,7 +17,7 @@
   <img alt="PHP 8.4+" src="https://img.shields.io/badge/PHP-8.4%2B-777BB4.svg">
 </p>
 
-Bedriox gives server owners a performance-focused foundation for creating Minecraft: Bedrock Edition experiences. The current playable foundation supports core multiplayer survival interactions while the project grows toward richer customization and a public plugin ecosystem.
+Bedriox gives server owners a performance-focused foundation for creating Minecraft: Bedrock Edition experiences. The current playable foundation supports core multiplayer survival interactions and an experimental PHP plugin API for building custom experiences.
 
 ## What Bedriox offers today
 
@@ -25,10 +25,11 @@ Bedriox gives server owners a performance-focused foundation for creating Minecr
 - **Responsive worlds** — bounded chunk generation and streaming keep nearby terrain moving smoothly as players explore.
 - **Focused Bedrock support** — one qualified modern protocol family instead of years of legacy protocol code.
 - **Modern PHP development** — strict types, Composer packages, automated tests, static analysis, and clear component boundaries.
+- **PHAR plugin support** — install validated single-file plugins with typed events, lifecycle hooks, priorities, and safe player/world APIs.
 
 ## Where Bedriox is headed
 
-Bedriox is being designed for vanilla-style survival, custom game modes, minigames, hubs, and modded experiences. The planned plugin API will let communities add commands, permissions, economies, moderation, custom mechanics, mobs, NPCs, and other server features without changing Bedrock protocol internals.
+Bedriox is being designed for vanilla-style survival, custom game modes, minigames, hubs, and modded experiences. The experimental plugin API already provides lifecycle hooks, typed gameplay events, player/world snapshots, messages, teleports, block changes, and bounded inventory changes. Commands, permissions, economies, richer mechanics, mobs, and NPCs remain planned expansions.
 
 Bedriox is under active development. These expansion features are roadmap direction, not finished APIs, and behavior may change before the first stable release.
 
@@ -59,7 +60,7 @@ php bin/bedriox --version
 php bin/bedriox serve
 ```
 
-The exact component revisions are recorded in [`bedriox.lock.json`](bedriox.lock.json). See the [development guide](docs/development.md), [usage and configuration guide](docs/usage.md), [architecture](docs/architecture.md), and [testing guide](docs/testing.md) for contributor details.
+The exact component revisions are recorded in [`bedriox.lock.json`](bedriox.lock.json). See the [development guide](docs/development.md), [usage and configuration guide](docs/usage.md), [plugin guide](docs/plugins.md), [architecture](docs/architecture.md), and [testing guide](docs/testing.md) for contributor details.
 
 ## Project family
 
@@ -68,6 +69,8 @@ The exact component revisions are recorded in [`bedriox.lock.json`](bedriox.lock
 - [Protocol](https://github.com/Bedriox/Protocol) — Bedrock packet codecs and protocol behavior
 - [Data](https://github.com/Bedriox/Data) — versioned Bedrock registries and generated data
 - [Docs](https://github.com/Bedriox/Docs) — installation, administration, and plugin documentation
+- [ExamplePlugin](https://github.com/Bedriox/ExamplePlugin) — minimal plugin project and API examples
+- [PluginTools](https://github.com/Bedriox/PluginTools) — development-only PHAR packaging tools
 
 ## Contributing
 

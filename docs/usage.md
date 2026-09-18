@@ -45,10 +45,25 @@ The settings file uses one `key=value` entry per line. Blank lines and lines beg
 | `chunks.generate-per-tick` | `4` | 1–64 |
 | `chunks.cache-limit` | `2048` | 16–65536 chunks and large enough to hold every configured player view |
 | `runtime.ticks-per-second` | `20` | 1–100 |
+| `plugins.enabled` | `true` | Exactly `true` or `false` |
+| `plugins.maximum` | `64` | 0–256 PHAR plugins |
+| `logging.level` | `INFO` | `DEBUG`, `INFO`, `NOTICE`, `WARNING`, `ERROR`, or `CRITICAL` |
+| `logging.console` | `true` | Exactly `true` or `false` |
+| `logging.console-colors` | `auto` | `auto`, `true`, or `false` |
+| `logging.file` | `true` | Exactly `true` or `false` |
+| `logging.file-max-size` | `16777216` | 65536–1073741824 bytes |
+| `logging.file-history` | `10` | 0–100 archives |
 | `logging.protocol-trace` | `false` | Exactly `true` or `false` |
+| `crash-report.include-player-identifiers` | `true` | Exactly `true` or `false` |
 
 Optional `level.spawn-x`, `level.spawn-y`, and `level.spawn-z` entries override the level spawn only when all three are populated. When all three are absent or empty, the world calculates its own safe default; the flat generator currently uses `(0, 64, 0)`. A partial override is rejected.
 
 Settings for independent query ports, world persistence, resource packs, whitelists, and other unfinished features are deliberately not accepted yet. This prevents apparently valid options from silently doing nothing.
 
 The qualified protocol family remains alpha software. Unsupported commands intentionally fail.
+
+## Plugins
+
+Production plugins are strongly signed `.phar` files placed directly in `plugins/`. Bedriox creates this directory on first start, validates every archive and dependency plan before executing entry points, and ignores source directories. Plugin-owned writable data is stored separately under `plugin_data/<PluginName>/`.
+
+Build plugin PHARs with [Bedriox PluginTools](https://github.com/Bedriox/PluginTools). Loading a plugin does not require changing `phar.readonly`; that PHP setting is needed only by the packaging process. See the [plugin guide](plugins.md) for the manifest, lifecycle, events, priorities, failure behavior, and public API.

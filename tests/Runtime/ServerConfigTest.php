@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Tests\Runtime;
 
 use Bedriox\Server\Login\AuthenticationMode;
+use Bedriox\Server\Observability\LogLevel;
 use Bedriox\Server\Runtime\ServerConfig;
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -16,6 +17,9 @@ final class ServerConfigTest extends TestCase
     {
         $defaults = ServerConfig::fromArguments([]);
         self::assertSame(AuthenticationMode::FULL, $defaults->authenticationMode);
+        self::assertSame(LogLevel::INFO, $defaults->loggingLevel);
+        self::assertTrue($defaults->loggingFile);
+        self::assertTrue($defaults->crashReportIncludePlayerIdentifiers);
 
         $config = ServerConfig::fromArguments([
             '--bind=127.0.0.1',
@@ -43,6 +47,10 @@ final class ServerConfigTest extends TestCase
             '--spawn-x=-16',
             '--spawn-y=70',
             '--spawn-z=32',
+            '--log-level=WARNING',
+            '--log-console-colors=false',
+            '--log-file-history=4',
+            '--crash-report-player-identifiers=false',
         ]);
         self::assertSame('Flat development world', $streaming->motd);
         self::assertSame('flatland', $streaming->levelName);
@@ -53,6 +61,10 @@ final class ServerConfigTest extends TestCase
         self::assertSame(5, $streaming->chunksGeneratePerTick);
         self::assertTrue($streaming->protocolTrace);
         self::assertSame([-16, 70, 32], [$streaming->spawnX, $streaming->spawnY, $streaming->spawnZ]);
+        self::assertSame(LogLevel::WARNING, $streaming->loggingLevel);
+        self::assertSame('false', $streaming->loggingConsoleColors);
+        self::assertSame(4, $streaming->loggingFileHistory);
+        self::assertFalse($streaming->crashReportIncludePlayerIdentifiers);
     }
 
     /** @return iterable<string, array{list<string>}> */
@@ -75,6 +87,10 @@ final class ServerConfigTest extends TestCase
         ]];
         yield 'unimplemented gamemode' => [['--default-gamemode=creative']];
         yield 'noncanonical boolean' => [['--protocol-trace=TRUE']];
+        yield 'unknown log level' => [['--log-level=TRACE']];
+        yield 'invalid console colors' => [['--log-console-colors=yes']];
+        yield 'unbounded log file' => [['--log-file-max-size=65535']];
+        yield 'excess log history' => [['--log-file-history=101']];
     }
 
     /** @param list<string> $arguments */

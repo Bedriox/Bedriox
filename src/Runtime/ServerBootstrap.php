@@ -22,9 +22,12 @@ use Bedriox\Server\Login\FullLoginAuthenticatorAdapter;
 use Bedriox\Server\Login\LoginAuthenticator;
 use Bedriox\Server\Login\SecureHandshakeMaterialFactory;
 use Bedriox\Server\Login\SystemMonotonicClock;
+use Bedriox\Server\Observability\CrashContextPublisher;
 use Bedriox\Server\Simulation\FixedRateWorldLoop;
+use Bedriox\Server\Simulation\PluginGameplayEventBridge;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\Simulation\SimulationLimits;
+use Bedriox\Server\Simulation\SimulationPluginApiBackend;
 use Bedriox\Server\Simulation\SystemSimulationClock;
 use Bedriox\Server\Simulation\WorldSimulation;
 use Bedriox\Server\Transport\DiscoveryServerTransport;
@@ -47,6 +50,8 @@ final class ServerBootstrap
         ServerConfig $config,
         PlayInitializationFactory $initialization,
         ?RuntimeDiagnostics $diagnostics = null,
+        ?CrashContextPublisher $crashContext = null,
+        ?PluginGameplayEventBridge $pluginEvents = null,
     ): BootstrappedServer {
         $diagnostics ??= RuntimeDiagnostics::disabled();
         $authenticationClock = new SystemAuthenticationClock();
@@ -89,6 +94,7 @@ final class ServerBootstrap
             new Position($spawn->x, $spawn->y, $spawn->z),
             $flatWorld,
             $flatPalette,
+            $pluginEvents,
         );
         $chunkSerializer = new BedrockChunkPacketSerializer(
             $blockTranslator = new BlockNetworkTranslator($internalStates, $networkStates),
@@ -147,6 +153,7 @@ final class ServerBootstrap
                 new BedrockWorldEventPacketEncoder($chunkSerializer, $inventoryProjector),
                 $runtimeLimits,
                 diagnostics: $diagnostics,
+                crashContext: $crashContext,
             );
         } catch (Throwable $exception) {
             $discovery->close();
@@ -158,6 +165,7 @@ final class ServerBootstrap
             $discovery->localAddress(),
             $discovery->localPort(),
             $config->authenticationMode === AuthenticationMode::SELF_SIGNED ? self::SELF_SIGNED_WARNING : null,
+            new SimulationPluginApiBackend($world, $flatWorld, $flatPalette),
         );
     }
 

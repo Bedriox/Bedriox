@@ -6,6 +6,8 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Added
 
+- Add structured colored operator logging in the Bedriox console format, bounded rotating `logs/server.log` output, configurable levels and sinks, and redaction of credential-bearing text.
+- Add atomic UTC crash reports with fatal shutdown capture, emergency memory reserve, normalized private paths, bounded recent logs, and configurable inclusion of player identifiers through an injectable crash-context provider.
 - Add authoritative player AABB collision against current canonical terrain with vertical/horizontal resolution, wall sliding, bounded stepping, terrain-derived grounding, owner prediction reset, visible-peer reconciliation, and immediate break/place support refresh.
 - Add protocol-trace-only, payload-free diagnostics for bounded inventory-request actions and authoritative reconciliation outcomes.
 - Add an authoritative `Player` aggregate, separated movement and authenticated identity values, and a capacity-bounded `PlayerRegistry` with deterministic peer snapshots and complete session/identity cleanup.

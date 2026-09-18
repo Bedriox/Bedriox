@@ -1,0 +1,74 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Bedriox\Server\Plugin;
+
+final class PluginDependencyPlanner
+{
+    /** @param list<PluginPackage> $packages */
+    public function plan(array $packages): PluginDependencyPlan
+    {
+        $available = [];
+        foreach ($packages as $package) {
+            $available[strtolower($package->manifest->name)] = $package;
+        }
+        ksort($available, SORT_STRING);
+        $rejected = [];
+        do {
+            $changed = false;
+            foreach ($available as $key => $package) {
+                foreach ($package->manifest->dependencies as $dependency) {
+                    $dependencyKey = strtolower($dependency);
+                    if (!isset($available[$dependencyKey])) {
+                        $rejected[$key] = isset($rejected[$dependencyKey])
+                            ? "required dependency {$dependency} was rejected"
+                            : "required dependency {$dependency} is missing";
+                        unset($available[$key]);
+                        $changed = true;
+                        break;
+                    }
+                }
+            }
+        } while ($changed);
+
+        $incoming = array_fill_keys(array_keys($available), 0);
+        $outgoing = array_fill_keys(array_keys($available), []);
+        foreach ($available as $key => $package) {
+            $dependencies = [];
+            foreach ([...$package->manifest->dependencies, ...$package->manifest->softDependencies] as $dependency) {
+                $dependencyKey = strtolower($dependency);
+                if ($dependencyKey !== $key && isset($available[$dependencyKey])) {
+                    $dependencies[$dependencyKey] = true;
+                }
+            }
+            foreach (array_keys($dependencies) as $dependencyKey) {
+                ++$incoming[$key];
+                $outgoing[$dependencyKey][] = $key;
+            }
+        }
+        $ready = array_keys(array_filter($incoming, static fn(int $count): bool => $count === 0));
+        sort($ready, SORT_STRING);
+        $ordered = [];
+        while ($ready !== []) {
+            $key = array_shift($ready);
+            $ordered[] = $available[$key];
+            foreach ($outgoing[$key] as $dependent) {
+                --$incoming[$dependent];
+                if ($incoming[$dependent] === 0) {
+                    $ready[] = $dependent;
+                    sort($ready, SORT_STRING);
+                }
+            }
+        }
+        if (count($ordered) !== count($available)) {
+            foreach ($incoming as $key => $count) {
+                if ($count > 0) {
+                    $rejected[$key] = 'dependency ordering contains a cycle';
+                }
+            }
+        }
+
+        return new PluginDependencyPlan($ordered, $rejected);
+    }
+}

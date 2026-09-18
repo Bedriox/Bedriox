@@ -6,6 +6,7 @@ namespace Bedriox\Server\Tests\Runtime;
 
 use Bedriox\Server\Runtime\RuntimeDiagnostics;
 use Bedriox\Server\Runtime\RuntimeDriver;
+use Bedriox\Server\Runtime\RuntimeFailureSource;
 use Bedriox\Server\Runtime\RuntimeRunner;
 use Bedriox\Server\Runtime\RuntimeSleeper;
 use PHPUnit\Framework\TestCase;
@@ -51,6 +52,66 @@ final class RuntimeRunnerTest extends TestCase
         self::assertStringContainsString('"event":"runtime.runner_failed"', $lines[0]);
         self::assertStringContainsString('RuntimeException', $lines[0]);
         self::assertStringNotContainsString('top-secret-message', $lines[0]);
+    }
+
+    public function testThrownRuntimeFailureIsReportedBeforeCleanupCompletes(): void
+    {
+        $driver = new ThrowingRuntimeDriver();
+        $reported = null;
+        $result = (new RuntimeRunner(
+            $driver,
+            new FakeRuntimeSleeper(),
+            failureHandler: static function (\Throwable $failure) use (&$reported): void {
+                $reported = $failure;
+            },
+        ))->run(static fn(): bool => false);
+
+        self::assertSame(1, $result);
+        self::assertInstanceOf(\RuntimeException::class, $reported);
+        self::assertSame(1, $driver->closes);
+    }
+
+    public function testContainedRuntimeFailureIsReportedBeforeCleanupCompletes(): void
+    {
+        $driver = new FailedRuntimeDriver();
+        $reported = null;
+        $result = (new RuntimeRunner(
+            $driver,
+            new FakeRuntimeSleeper(),
+            failureHandler: static function (\Throwable $failure) use (&$reported): void {
+                $reported = $failure;
+            },
+        ))->run(static fn(): bool => false);
+
+        self::assertSame(1, $result);
+        self::assertSame($driver->failure, $reported);
+        self::assertSame(1, $driver->closes);
+    }
+}
+
+final class FailedRuntimeDriver implements RuntimeDriver, RuntimeFailureSource
+{
+    public int $closes = 0;
+    public readonly \RuntimeException $failure;
+
+    public function __construct()
+    {
+        $this->failure = new \RuntimeException('contained failure');
+    }
+
+    public function poll(): bool
+    {
+        return false;
+    }
+
+    public function close(): void
+    {
+        ++$this->closes;
+    }
+
+    public function failure(): \Throwable
+    {
+        return $this->failure;
     }
 }
 

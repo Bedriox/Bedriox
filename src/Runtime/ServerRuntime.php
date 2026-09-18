@@ -10,6 +10,8 @@ use Bedriox\RakNet\Protocol\Reliability;
 use Bedriox\RakNet\ReceivedPayload;
 use Bedriox\RakNet\SessionInfo;
 use Bedriox\RakNet\SessionOpenedEvent;
+use Bedriox\Server\Observability\CrashContextPublisher;
+use Bedriox\Server\Observability\CrashPlayer;
 use Bedriox\Server\Simulation\Event\BlockBreakStarted;
 use Bedriox\Server\Simulation\Event\BlockBreakStopped;
 use Bedriox\Server\Simulation\Event\BlockChanged;
@@ -31,10 +33,11 @@ use Bedriox\Server\Simulation\FixedRateWorldLoop;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
 use Bedriox\Server\Simulation\WorldSimulation;
 use Bedriox\Server\Transport\ConnectedTransport;
+use RuntimeException;
 use Throwable;
 
 /** Bounded single-threaded composition root for transport, protocol, and simulation. */
-final class ServerRuntime implements RuntimeDriver
+final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
 {
     /** @var array<string, RuntimeSession> endpoint key => session */
     private array $sessions = [];
@@ -47,6 +50,8 @@ final class ServerRuntime implements RuntimeDriver
     private readonly SimulationCommandFactory $commands;
     private readonly RuntimeDiagnostics $diagnostics;
     private readonly PlayerActorVisibilityRegistry $actorVisibility;
+    private ?Throwable $failure = null;
+    private ?string $involvedSessionId = null;
 
     public function __construct(
         private readonly ConnectedTransport $transport,
@@ -58,6 +63,7 @@ final class ServerRuntime implements RuntimeDriver
         private readonly RuntimeLimits $limits = new RuntimeLimits(),
         ?SimulationCommandFactory $commands = null,
         ?RuntimeDiagnostics $diagnostics = null,
+        private readonly ?CrashContextPublisher $crashContext = null,
     ) {
         $this->commands = $commands ?? new SimulationCommandFactory();
         $this->diagnostics = $diagnostics ?? RuntimeDiagnostics::disabled();
@@ -76,6 +82,7 @@ final class ServerRuntime implements RuntimeDriver
             return false;
         }
         try {
+            $this->publishCrashContext();
             $this->transport->poll($this->limits->maximumDatagramsPerPoll);
             $events = $this->transport->drainSessionEvents();
             $payloads = $this->transport->drainReceivedPayloads();
@@ -91,7 +98,10 @@ final class ServerRuntime implements RuntimeDriver
                 }
             }
             foreach ($payloads as $payload) {
+                $this->involvedSessionId = $this->sessions[self::rawEndpointKey($payload->remoteAddress, $payload->remotePort)]->id ?? null;
+                $this->publishCrashContext();
                 $this->accept($payload);
+                $this->involvedSessionId = null;
             }
             foreach (array_keys($this->sessions) as $key) {
                 $session = $this->sessions[$key];
@@ -294,6 +304,8 @@ final class ServerRuntime implements RuntimeDriver
                 $this->flush($key, $this->sessions[$key]);
             }
 
+            $this->publishCrashContext();
+
             return !$this->closed;
         } catch (Throwable $exception) {
             return $this->failRuntime('poll_failed', $exception);
@@ -308,6 +320,11 @@ final class ServerRuntime implements RuntimeDriver
     public function isClosed(): bool
     {
         return $this->closed;
+    }
+
+    public function failure(): ?Throwable
+    {
+        return $this->failure;
     }
 
     /** Idempotently closes transport and protocol state and queues simulation disconnects. */
@@ -555,9 +572,37 @@ final class ServerRuntime implements RuntimeDriver
             $fields['exception'] = $exception::class;
         }
         $this->diagnostics->record('runtime.failed', $fields);
+        $this->failure = $exception ?? new RuntimeException('Server runtime failed: ' . $reason);
+        $this->publishCrashContext();
         $this->close();
 
         return false;
+    }
+
+    private function publishCrashContext(): void
+    {
+        if ($this->crashContext === null) {
+            return;
+        }
+        $players = [];
+        $involved = null;
+        foreach ($this->sessions as $session) {
+            $login = $session->play?->login();
+            $player = new CrashPlayer(
+                $login->displayName ?? '',
+                $login->identity ?? '',
+                $login->xuid ?? '',
+                $session->transport->remoteAddress . ':' . $session->transport->remotePort,
+                $login?->clientData->deviceOs->name ?? 'Unknown',
+                $session->phase->name,
+            );
+            $players[] = $player;
+            if ($session->id === $this->involvedSessionId) {
+                $involved = $player;
+            }
+        }
+        $snapshot = $this->world->snapshot();
+        $this->crashContext->publishRuntime($snapshot->tick, $players, $involved);
     }
 
     /** Reconciles the asynchronous authoritative join result before any event is encoded. */
@@ -573,7 +618,7 @@ final class ServerRuntime implements RuntimeDriver
             return true;
         }
         if ($event instanceof CommandRejected
-            && in_array($event->reason, ['duplicate_session', 'duplicate_identity', 'world_full'], true)) {
+            && in_array($event->reason, ['duplicate_session', 'duplicate_identity', 'world_full', 'plugin_cancelled'], true)) {
             $session = $this->sessionById($event->sessionId);
             if ($session?->phase === SessionPhase::ADMISSION_PENDING) {
                 $this->disconnect(self::endpointKey($session->transport));

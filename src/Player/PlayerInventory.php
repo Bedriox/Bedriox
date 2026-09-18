@@ -6,6 +6,7 @@ namespace Bedriox\Server\Player;
 
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use InvalidArgumentException;
+use OverflowException;
 
 /** Fixed-size survival inventory owned by the authoritative Player aggregate. */
 final class PlayerInventory
@@ -80,6 +81,28 @@ final class PlayerInventory
     {
         self::validateHotbarSlot($slot);
         $this->selectedHotbarSlot = $slot;
+    }
+
+    public function replaceSlot(int $slot, ?InventoryStack $stack): void
+    {
+        self::validateSlot($slot);
+        if ($stack === null) {
+            unset($this->stacks[$slot]);
+
+            return;
+        }
+        $usedIds = [];
+        foreach ($this->stacks as $existing) {
+            $usedIds[$existing->stackNetworkId] = true;
+        }
+        if ($this->cursor !== null) {
+            $usedIds[$this->cursor->stackNetworkId] = true;
+        }
+        $networkId = self::allocateStackNetworkId($this->nextStackNetworkId, $usedIds);
+        if ($networkId === null) {
+            throw new OverflowException('Inventory stack network ID space is exhausted.');
+        }
+        $this->stacks[$slot] = $stack->withCountAndNetworkId($stack->count, $networkId);
     }
 
     public function decrementSelectedOne(): ?InventoryStack

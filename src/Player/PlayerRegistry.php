@@ -46,6 +46,13 @@ final class PlayerRegistry
         return $this->bySession[self::sessionKey($sessionId)] ?? null;
     }
 
+    public function playerByIdentity(string $identity): ?Player
+    {
+        $sessionId = $this->sessionByIdentity[self::identityKey($identity)] ?? null;
+
+        return $sessionId === null ? null : $this->player($sessionId);
+    }
+
     public function hasActorId(int $runtimeActorId): bool
     {
         return isset($this->sessionByActorId[$runtimeActorId]);

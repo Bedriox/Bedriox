@@ -7,7 +7,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $failures = [System.Collections.Generic.List[string]]::new()
-$codeRepositories = @('Bedriox', 'RakNet', 'Protocol', 'Data')
+$codeRepositories = @('Bedriox', 'RakNet', 'Protocol', 'Data', 'ExamplePlugin', 'PluginTools')
 $documentationRepositories = @('Docs', 'RFCs')
 $repositoryNames = $codeRepositories + $documentationRepositories
 $requiredDocuments = @(
@@ -215,4 +215,4 @@ if ($failures.Count -gt 0) {
 }
 
 $cleanMessage = if ($SkipClean) { ' Git cleanliness was intentionally skipped.' } else { '' }
-Write-Host "Workspace verification passed for all six repositories.$cleanMessage" -ForegroundColor Green
+Write-Host "Workspace verification passed for all eight repositories.$cleanMessage" -ForegroundColor Green

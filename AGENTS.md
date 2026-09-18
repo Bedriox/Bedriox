@@ -18,6 +18,7 @@ Do not implement RakNet wire behavior, Bedrock packet codecs, or versioned Bedro
 
 - `bin/bedriox`: executable CLI entry point.
 - `src/`: production server code under `Bedriox\Server\`.
+- `src/Api/`: experimental public plugin API under `Bedriox\Api\`; never expose protocol, transport, registry, queue, or process-local block-state objects here.
 - `tests/`: PHPUnit tests under `Bedriox\Server\Tests\`.
 - `docs/`: repository-specific architecture, development, usage, testing, security, compatibility, and troubleshooting documentation.
 - `tools/`: manifest, documentation, license, and cross-repository validation tools.
@@ -41,6 +42,11 @@ Do not commit `vendor/`, credentials, access tokens, Minecraft client assets, pe
 - Treat predicted block-break completion like PocketMine-MP: revalidate reach, the current server-owned block, and breakability when completion arrives, and derive any tool effects from the current server-held item. Break timing drives progress feedback but is not a strict packet-arrival authorization gate; client/server tick phase must not restore an otherwise valid break. A continue action starts the next authoritative target, and late stop/abort input remains benign.
 - Generate complete fixed-flat LevelChunk columns on demand through the world model and stream each player's bounded configured view nearest-first. Keep generation, sending, caching, and retained views bounded; translate internal state IDs only at serialization. Validate any compatibility SubChunk requests through Protocol and serve only the configured radius and section range.
 - Do not introduce worker processes, native extensions, global mutable state, or new cross-repository abstractions without an accepted RFC and measured need.
+- Load production plugins only from bounded `plugins/*.phar` archives. Require a strong embedded PHAR signature, validate the complete archive and dependency plan before entry-point execution, and never deserialize PHAR metadata. Source-directory loading belongs only in explicit development tooling.
+- Keep plugin lifecycle and event work attributed through `PluginExecutionContext`. A plugin exception must discard that listener's staged work, restore controlled event state, disable the plugin, clean its owned resources, and leave the server and unrelated players running.
+- Dispatch cancellable pre-events only after core validation and before authoritative gameplay mutation. Cancellation must use the existing correction or reconciliation path. Post-events are observational. `MONITOR` listeners may not mutate events or stage server actions.
+- Public plugin operations are bounded intent. Revalidate them in the authoritative simulation and express blocks/items with canonical `minecraft:*` identifiers; never hand plugins mutable server objects or internal numeric IDs.
+- Keep console lines in `[DD-Mon-YYYY HH:mm:ss] Bedriox LEVEL > message` format. File logs must contain no ANSI codes. Crash reports stay local, bounded, atomic, and free of tokens, JWT contents, key material, credentials, raw packets, complete configuration, source excerpts, and private workspace paths. Player names, UUIDs, XUIDs, and remote addresses are intentionally included when the documented setting is enabled.
 
 ## Quality commands
 
@@ -69,6 +75,8 @@ Update repository-local documentation and `CHANGELOG.md` with behavior changes. 
 Do not copy implementation code or data with unknown or incompatible rights. Record required third-party copyright and license attribution in `THIRD_PARTY_NOTICES.md` and `NOTICE`, and keep dependency versions and immutable component revisions in Composer's lock file and `bedriox.lock.json`.
 
 Treat UDP, protocol data, paths, configuration, logs, and credentials as untrusted. Add negative tests for malformed and oversized input. Never log authentication tokens, JWT chains, encryption keys, raw credentials, or unrelated personal information. Follow `SECURITY.md` for private vulnerability reporting; do not disclose suspected vulnerabilities in public issues.
+
+Crash reports are sensitive local diagnostics. They may include the configured player identity and network fields needed to reproduce a failure; do not copy them into issues without operator review and redaction.
 
 ## Cross-repository coordination
 
