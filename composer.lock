@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "dfb012741ee50b75c94bd276b72463a5",
+    "content-hash": "5902d549dc3cbfd68c1661add5de5f34",
     "packages": [
         {
             "name": "bedriox/data",
@@ -4834,6 +4834,7 @@
     "prefer-lowest": false,
     "platform": {
         "ext-curl": "*",
+        "ext-leveldb": "*",
         "php": "^8.4"
     },
     "platform-dev": {},

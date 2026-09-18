@@ -58,7 +58,8 @@ jobs:
           path: Data
           token: ${{ secrets.BEDRIOX_COMPONENTS_TOKEN }}
           persist-credentials: false
-      - run: composer install --no-interaction --prefer-dist --no-progress
+      # Static/unit CI uses stock PHP; native LevelDB interoperability is qualified by the pinned Bedriox Runtime job.
+      - run: composer install --no-interaction --prefer-dist --no-progress --ignore-platform-req=ext-leveldb
         working-directory: Bedriox
       - run: composer check
         working-directory: Bedriox

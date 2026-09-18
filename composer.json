@@ -38,6 +38,7 @@
     ],
     "require": {
         "ext-curl": "*",
+        "ext-leveldb": "*",
         "firebase/php-jwt": "^7.1",
         "bedriox/data": "0.1.0-alpha.1",
         "bedriox/protocol": "0.1.0-alpha.1",
