@@ -56,6 +56,8 @@ SETTINGS);
             self::assertSame('1', $values['chunks.generate-per-tick']);
             self::assertSame('6000', $values['level.autosave-interval-ticks']);
             self::assertSame('8', $values['chunks.save-per-tick']);
+            self::assertSame('6000', $values['players.autosave-interval-ticks']);
+            self::assertSame('8', $values['players.save-per-tick']);
             self::assertStringContainsString('# level.spawn-x=', (string) file_get_contents($path));
 
             file_put_contents($path, "server.name=Preserved\n");

@@ -44,6 +44,40 @@ final class PlayerInventory
         ]);
     }
 
+    /** Restores canonical content while assigning fresh play-session stack network IDs. */
+    public static function restore(PlayerInventoryState $state, FixedFlatBlockPalette $palette): self
+    {
+        $stacks = [];
+        $nextStackNetworkId = 1;
+        foreach ($state->entries as $entry) {
+            $stacks[$entry->slot] = self::restoreStack($entry->stack, $palette, $nextStackNetworkId++);
+        }
+        $cursor = $state->cursor === null
+            ? null
+            : self::restoreStack($state->cursor, $palette, $nextStackNetworkId++);
+
+        return new self($stacks, $state->selectedHotbarSlot, $cursor, $nextStackNetworkId);
+    }
+
+    public function exportState(): PlayerInventoryState
+    {
+        $entries = [];
+        foreach ($this->stacks as $slot => $stack) {
+            $entries[] = new PlayerInventoryEntry(
+                $slot,
+                new PlayerInventoryStackState($stack->identifier, $stack->count),
+            );
+        }
+
+        return new PlayerInventoryState(
+            $entries,
+            $this->selectedHotbarSlot,
+            $this->cursor === null
+                ? null
+                : new PlayerInventoryStackState($this->cursor->identifier, $this->cursor->count),
+        );
+    }
+
     public function selectedHotbarSlot(): int
     {
         return $this->selectedHotbarSlot;
@@ -351,6 +385,18 @@ final class PlayerInventory
     {
         return $left->identifier === $right->identifier
             && $left->placedBlockState?->value === $right->placedBlockState?->value;
+    }
+
+    private static function restoreStack(
+        PlayerInventoryStackState $state,
+        FixedFlatBlockPalette $palette,
+        int $stackNetworkId,
+    ): InventoryStack {
+        if ($state->identifier !== 'minecraft:grass_block') {
+            throw new InvalidArgumentException('Inventory state contains an unsupported item.');
+        }
+
+        return new InventoryStack($state->identifier, $state->count, $stackNetworkId, $palette->grassBlock);
     }
 
     private static function sameContent(?InventoryStack $left, ?InventoryStack $right): bool

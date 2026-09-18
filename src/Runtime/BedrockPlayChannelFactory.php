@@ -6,6 +6,7 @@ namespace Bedriox\Server\Runtime;
 
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\Server\Login\LoginChannelReady;
+use Bedriox\Server\Player\PlayerBootstrap;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
 use Bedriox\Server\World\World;
 
@@ -25,7 +26,7 @@ final readonly class BedrockPlayChannelFactory implements PlayChannelFactory
         private ?BedrockInventoryPacketProjector $inventoryProjector = null,
     ) {}
 
-    public function create(LoginChannelReady $ready, string $sessionId, UnsignedLong $runtimeEntityId): BedrockPlayChannel
+    public function create(LoginChannelReady $ready, string $sessionId, UnsignedLong $runtimeEntityId, ?PlayerBootstrap $bootstrap = null): BedrockPlayChannel
     {
         $spawnX = 0.0;
         $spawnY = 64.0;
@@ -36,12 +37,17 @@ final readonly class BedrockPlayChannelFactory implements PlayChannelFactory
             $spawnY = (float) $spawn->y;
             $spawnZ = (float) $spawn->z;
         }
+        if ($bootstrap !== null) {
+            $spawnX = $bootstrap->position->x;
+            $spawnY = $bootstrap->position->y;
+            $spawnZ = $bootstrap->position->z;
+        }
 
         return new BedrockPlayChannel(
             $ready,
             $sessionId,
             $runtimeEntityId,
-            $this->initialization->create($ready->login, $runtimeEntityId),
+            $this->initialization->create($ready->login, $runtimeEntityId, $bootstrap),
             $this->initialization->fixedFlatRuntimeIds(),
             $this->commands,
             $this->limits,

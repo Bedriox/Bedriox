@@ -10,6 +10,11 @@ use Bedriox\Server\Player\InventoryResponseMode;
 use Bedriox\Server\Player\InventorySlotReference;
 use Bedriox\Server\Player\InventoryStackRequestAction;
 use Bedriox\Server\Player\InventoryStackRequestActionType;
+use Bedriox\Server\Player\PlayerBootstrap;
+use Bedriox\Server\Player\PlayerIdentity;
+use Bedriox\Server\Player\PlayerInventoryEntry;
+use Bedriox\Server\Player\PlayerInventoryStackState;
+use Bedriox\Server\Player\PlayerInventoryState;
 use Bedriox\Server\Simulation\BlockBreakAction;
 use Bedriox\Server\Simulation\Command\JoinPlayer as UnvalidatedJoinPlayer;
 use Bedriox\Server\Simulation\Event\BlockBreakStarted;
@@ -498,6 +503,43 @@ final class WorldSimulationTest extends TestCase
         self::assertSame(['a-session', 'b-session'], $second->recipients());
         self::assertSame(2, $second->player->runtimeActorId);
         self::assertSame(['a-session', 'b-session'], array_map(static fn($player): string => $player->sessionId, $world->snapshot()->players));
+    }
+
+    public function testApprovedBootstrapBecomesTheExactAuthoritativeJoinState(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation(blockPalette: $palette);
+        $bootstrap = new PlayerBootstrap(
+            new PlayerIdentity('00000000-0000-0000-0000-000000000001', 'Player', '99'),
+            'world',
+            new Position(25.5, 70.25, -12.75),
+            145.0,
+            -30.0,
+            new PlayerInventoryState([
+                new PlayerInventoryEntry(4, new PlayerInventoryStackState('minecraft:grass_block', 12)),
+            ], 4),
+            100,
+            200,
+        );
+
+        self::assertTrue($world->enqueue($factory->join(
+            'session',
+            $bootstrap->identity->uuid,
+            $bootstrap->identity->displayName,
+            7,
+            $bootstrap,
+            true,
+        )));
+        $joined = $world->tick()->events[0];
+
+        self::assertInstanceOf(PlayerJoined::class, $joined);
+        self::assertEquals($bootstrap->position, $joined->player->position);
+        self::assertSame(145.0, $joined->player->yaw);
+        self::assertSame(-30.0, $joined->player->pitch);
+        self::assertSame(7, $joined->player->runtimeActorId);
+        self::assertSame($bootstrap->identity->uuid, $joined->player->identity);
     }
 
     public function testExplicitRuntimeActorIdsAreUniqueAndSurviveDisconnectEvents(): void

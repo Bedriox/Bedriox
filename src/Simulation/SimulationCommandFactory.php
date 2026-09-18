@@ -8,6 +8,7 @@ use Bedriox\Server\Player\InventoryContainer;
 use Bedriox\Server\Player\InventoryResponseMode;
 use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Player\InventoryStackRequestAction;
+use Bedriox\Server\Player\PlayerBootstrap;
 use Bedriox\Server\Simulation\Command\ApplyInventoryStackRequest;
 use Bedriox\Server\Simulation\Command\BreakBlock;
 use Bedriox\Server\Simulation\Command\DisconnectPlayer;
@@ -27,8 +28,14 @@ final readonly class SimulationCommandFactory
 {
     public function __construct(private SimulationLimits $limits = new SimulationLimits()) {}
 
-    public function join(string $session, string $identity, string $displayName, ?int $runtimeActorId = null): JoinPlayer
-    {
+    public function join(
+        string $session,
+        string $identity,
+        string $displayName,
+        ?int $runtimeActorId = null,
+        ?PlayerBootstrap $bootstrap = null,
+        bool $loginApproved = false,
+    ): JoinPlayer {
         $this->assertOpaqueId($session, 128, 'session');
         $this->assertOpaqueId($identity, 128, 'identity');
         $this->assertUtf8Text($displayName, 16, 64, 'display name');
@@ -36,7 +43,12 @@ final readonly class SimulationCommandFactory
             throw new CommandValidationException('Runtime actor ID must be positive.');
         }
 
-        return new JoinPlayer($session, $identity, $displayName, $runtimeActorId);
+        if ($bootstrap !== null && ($bootstrap->identity->uuid !== $identity
+            || $bootstrap->identity->displayName !== $displayName)) {
+            throw new CommandValidationException('Player bootstrap identity does not match the join command.');
+        }
+
+        return new JoinPlayer($session, $identity, $displayName, $runtimeActorId, $bootstrap, $loginApproved);
     }
 
     public function move(

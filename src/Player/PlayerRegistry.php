@@ -110,6 +110,15 @@ final class PlayerRegistry
         return array_values(array_map(static fn(Player $player): PlayerSnapshot => $player->snapshot(), $players));
     }
 
+    /** @return list<Player> */
+    public function players(): array
+    {
+        $players = $this->bySession;
+        ksort($players, SORT_STRING);
+
+        return array_values($players);
+    }
+
     private static function sessionKey(string $sessionId): string
     {
         return 'session:' . $sessionId;

@@ -64,6 +64,8 @@ The settings file uses one `key=value` entry per line. Blank lines and lines beg
 | `chunks.generate-per-tick` | `1` | 1–64 |
 | `chunks.cache-limit` | `2048` | 16–65536 chunks and large enough to hold every configured player view |
 | `chunks.save-per-tick` | `8` | 1 through 64 dirty chunks saved during each scheduled autosave tick |
+| `players.autosave-interval-ticks` | `6000` | 20 through 72000 ticks between player autosave scheduling cycles |
+| `players.save-per-tick` | `8` | 1 through 64 dirty player profiles saved during each autosave tick |
 | `runtime.ticks-per-second` | `20` | 1–100 |
 | `console.enabled` | `true` | Exactly `true` or `false` |
 | `plugins.enabled` | `true` | Exactly `true` or `false` |
@@ -84,6 +86,8 @@ The generator, generator algorithm version, and seed recorded in an existing wor
 Settings for independent query ports, resource packs, whitelists, and other unfinished features are deliberately not accepted yet. This prevents apparently valid options from silently doing nothing.
 
 `level.autosave-interval-ticks` controls how often the runtime schedules dirty-world work. At the default 20 ticks per second, `6000` ticks is five minutes. `chunks.save-per-tick` bounds each autosave step so a large dirty queue is drained over multiple ticks rather than written all at once. Dirty chunks are still saved before eviction, and graceful shutdown performs a complete durability flush rather than applying the per-tick limit.
+
+`players.autosave-interval-ticks` and `players.save-per-tick` independently bound UUID-keyed player profile work. See [player persistence](player-persistence.md) for the stored fields, exact restore behavior, and recovery rules.
 
 When `console.enabled=true`, Bedriox reads commands without blocking the server loop. On Windows, a lifecycle-owned helper waits on the console handle while the server polls its bounded output; this keeps networking and simulation responsive between commands. Command lines, queued commands, arguments, and commands executed per poll are bounded. Set `console.enabled=false` for detached environments without an operator input stream. Plugin-owned console output uses the normal structured logger and therefore also appears in `logs/server.log` when file logging is enabled.
 

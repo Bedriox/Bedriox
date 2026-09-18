@@ -33,8 +33,14 @@ use Bedriox\Protocol\Security\OpenSslEphemeralKeyFactory;
 use Bedriox\Protocol\Value\BuildPlatform;
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\Server\Login\AuthenticatedLogin;
+use Bedriox\Server\Player\PlayerBootstrap;
+use Bedriox\Server\Player\PlayerIdentity;
+use Bedriox\Server\Player\PlayerInventoryEntry;
+use Bedriox\Server\Player\PlayerInventoryStackState;
+use Bedriox\Server\Player\PlayerInventoryState;
 use Bedriox\Server\Runtime\BedrockPlayInitializationFactory;
 use Bedriox\Server\Runtime\RuntimeLimits;
+use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\Provider\WorldData;
 use Bedriox\Server\World\SpawnPosition;
 use Bedriox\Server\World\WorldMetadata;
@@ -134,6 +140,37 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
         foreach ($packets as $packet) {
             self::assertNotInstanceOf(SetLocalPlayerAsInitializedPacket::class, $packet);
         }
+    }
+
+    public function testRestoredBootstrapDrivesTheInitialInventoryAndEquipmentPackets(): void
+    {
+        $login = $this->login();
+        $bootstrap = new PlayerBootstrap(
+            new PlayerIdentity($login->identity, $login->displayName, $login->xuid),
+            'world',
+            new Position(32.5, 80.0, -18.25),
+            90.0,
+            5.0,
+            new PlayerInventoryState([
+                new PlayerInventoryEntry(3, new PlayerInventoryStackState('minecraft:grass_block', 11)),
+            ], 3),
+            100,
+            200,
+        );
+
+        $packets = (new BedrockPlayInitializationFactory(BedrockDataSet::bundled()))
+            ->create($login, UnsignedLong::fromInt(7), $bootstrap);
+
+        $inventory = $packets[17];
+        self::assertInstanceOf(InventoryContentPacket::class, $inventory);
+        self::assertSame(0, $inventory->items[0]->runtimeId);
+        self::assertSame(11, $inventory->items[3]->count);
+        self::assertSame(1, $inventory->items[3]->stackNetworkId);
+        $equipment = $packets[20];
+        self::assertInstanceOf(MobEquipmentPacket::class, $equipment);
+        self::assertSame(3, $equipment->inventorySlot);
+        self::assertSame(3, $equipment->hotbarSlot);
+        self::assertEquals($inventory->items[3], $equipment->item);
     }
 
     private function login(): AuthenticatedLogin

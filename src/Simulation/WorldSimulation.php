@@ -9,7 +9,9 @@ use Bedriox\Server\Player\InventoryResponseMode;
 use Bedriox\Server\Player\InventorySlotReference;
 use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Player\InventoryStackRequestResult;
+use Bedriox\Server\Player\Persistence\PlayerPersistenceManager;
 use Bedriox\Server\Player\Player;
+use Bedriox\Server\Player\PlayerBootstrap;
 use Bedriox\Server\Player\PlayerIdentity;
 use Bedriox\Server\Player\PlayerInventory;
 use Bedriox\Server\Player\PlayerRegistry;
@@ -97,6 +99,7 @@ final class WorldSimulation
         private readonly ?PluginGameplayEventBridge $pluginEvents = null,
         private readonly ?InternalBlockStateId $waterState = null,
         private readonly ?InternalBlockStateId $lavaState = null,
+        private readonly ?PlayerPersistenceManager $playerPersistence = null,
     ) {
         $this->commands = new SplQueue();
         $this->lifecycleCommands = new SplQueue();
@@ -114,6 +117,91 @@ final class WorldSimulation
         if ($blockWorld === null && $spawn->y < $this->limits->flatGroundY) {
             throw new InvalidArgumentException('Spawn cannot be below the flat-world surface.');
         }
+    }
+
+    /** Runs authenticated plugin admission before StartGame and chunk scheduling. */
+    public function prepareLogin(string $sessionId, int $runtimeActorId, PlayerBootstrap $bootstrap): ?PlayerBootstrap
+    {
+        if ($this->players->hasSession($sessionId)
+            || $this->players->hasIdentity($bootstrap->identity->uuid)
+            || $this->players->hasActorId($runtimeActorId)
+            || $this->players->isFull()
+            || ($this->pluginEvents !== null
+                && !$this->pluginEvents->allowJoin($bootstrap->identity->displayName, $bootstrap->identity->uuid))) {
+            return null;
+        }
+        if ($this->blockPalette === null) {
+            return null;
+        }
+        $candidate = new Player(
+            $sessionId,
+            $runtimeActorId,
+            $bootstrap->identity,
+            $bootstrap->position,
+            $this->limits->chatBucketCapacity,
+            $this->tick,
+            $this->limits->flatGroundY,
+            PlayerInventory::restore($bootstrap->inventory, $this->blockPalette),
+            $bootstrap->worldName,
+            $bootstrap->firstPlayedAt,
+            $bootstrap->gamemode,
+        );
+        $candidate->movement->yaw = $bootstrap->yaw;
+        $candidate->movement->headYaw = $bootstrap->yaw;
+        $candidate->movement->pitch = $bootstrap->pitch;
+        $decision = $this->pluginEvents?->login(PluginGameplayEventBridge::playerView($candidate));
+        if ($decision !== null && !$decision->allowed) {
+            return null;
+        }
+
+        $destination = $bootstrap->position;
+        $yaw = $bootstrap->yaw;
+        $pitch = $bootstrap->pitch;
+        if ($decision !== null) {
+            $destination = $decision->destination;
+            $yaw = $decision->yaw;
+            $pitch = $decision->pitch;
+        }
+
+        return new PlayerBootstrap(
+            $bootstrap->identity,
+            $bootstrap->worldName,
+            $destination,
+            $yaw,
+            $pitch,
+            $bootstrap->inventory,
+            $bootstrap->firstPlayedAt,
+            $bootstrap->lastPlayedAt,
+            $bootstrap->gamemode,
+        );
+    }
+
+    /**
+     * Saves a deterministic bounded set of dirty online players and queued failed snapshots.
+     *
+     * @return array{saved: int, remaining: int}
+     */
+    public function autosavePlayers(int $budget): array
+    {
+        if ($this->playerPersistence === null || $budget < 1) {
+            return ['saved' => 0, 'remaining' => 0];
+        }
+        $saved = $this->playerPersistence->retryPending($budget);
+        foreach ($this->players->players() as $player) {
+            if ($saved >= $budget) {
+                break;
+            }
+            if ($player->isDirty() && $this->playerPersistence->save($player)) {
+                ++$saved;
+            }
+        }
+
+        $remaining = $this->playerPersistence->pendingCount();
+        foreach ($this->players->players() as $player) {
+            $remaining += (int) $player->isDirty();
+        }
+
+        return ['saved' => $saved, 'remaining' => $remaining];
     }
 
     public function enqueue(WorldCommand $command): bool
@@ -346,26 +434,52 @@ final class WorldSimulation
         if ($this->players->isFull()) {
             return new CommandRejected($command->session, 'world_full');
         }
-        if ($this->pluginEvents !== null && !$this->pluginEvents->allowJoin($command->displayName, $command->identity)) {
+        if (!$command->loginApproved && $this->pluginEvents !== null
+            && !$this->pluginEvents->allowJoin($command->displayName, $command->identity)) {
             return new CommandRejected($command->session, 'plugin_cancelled');
         }
 
         $peers = $this->players->snapshots();
+        $bootstrap = $command->bootstrap;
+        $position = $this->spawn;
+        $identity = new PlayerIdentity($command->identity, $command->displayName);
+        $worldName = 'world';
+        $firstPlayedAt = 0;
+        $gamemode = 'survival';
+        if ($bootstrap !== null) {
+            $position = $bootstrap->position;
+            $identity = $bootstrap->identity;
+            $worldName = $bootstrap->worldName;
+            $firstPlayedAt = $bootstrap->firstPlayedAt;
+            $gamemode = $bootstrap->gamemode;
+        }
+        $inventory = $bootstrap !== null && $this->blockPalette !== null
+            ? PlayerInventory::restore($bootstrap->inventory, $this->blockPalette)
+            : ($this->blockPalette === null ? PlayerInventory::empty() : PlayerInventory::starter($this->blockPalette));
         $player = new Player(
             $command->session,
             $runtimeActorId,
-            new PlayerIdentity($command->identity, $command->displayName),
-            $this->spawn,
+            $identity,
+            $position,
             $this->limits->chatBucketCapacity,
             $this->tick,
             $this->limits->flatGroundY,
-            $this->blockPalette === null ? PlayerInventory::empty() : PlayerInventory::starter($this->blockPalette),
+            $inventory,
+            $worldName,
+            $firstPlayedAt,
+            $gamemode,
         );
+        if ($bootstrap !== null) {
+            $player->movement->yaw = $bootstrap->yaw;
+            $player->movement->headYaw = $bootstrap->yaw;
+            $player->movement->pitch = $bootstrap->pitch;
+        }
         if ($this->collisionResolver !== null) {
-            $player->movement->verticalState = $this->collisionResolver->isGrounded($this->spawn)
+            $player->movement->verticalState = $this->collisionResolver->isGrounded($position)
                 ? VerticalState::GROUNDED
                 : VerticalState::AIRBORNE;
         }
+        $player->markDirty();
         $this->players->add($player);
         if ($runtimeActorId >= $this->nextRuntimeActorId && $runtimeActorId < PHP_INT_MAX) {
             $this->nextRuntimeActorId = $runtimeActorId + 1;
@@ -461,6 +575,7 @@ final class WorldSimulation
         $movement->verticalVelocity = $grounded || $collidedVertically ? 0.0 : $command->deltaY;
         $movement->distanceThisTick += $distance;
         $movement->lastTick = $this->tick;
+        $player->markDirty();
 
         $snapshot = $player->snapshot();
         $this->pluginEvents?->moved($player);
@@ -545,11 +660,13 @@ final class WorldSimulation
     private function disconnect(DisconnectPlayer $command): WorldEvent
     {
         unset($this->breakingBlocks[self::sessionKey($command->session)]);
-        $player = $this->players->remove($command->session);
+        $player = $this->players->player($command->session);
         if ($player === null) {
             return new CommandRejected($command->session, 'not_joined');
         }
         $this->pluginEvents?->quit($player);
+        $this->playerPersistence?->save($player);
+        $this->players->remove($command->session);
 
         return new PlayerDisconnected(
             $player->sessionId,
@@ -568,6 +685,8 @@ final class WorldSimulation
                     $command->identity,
                     $command->displayName,
                     $command->runtimeActorId,
+                    $command->bootstrap,
+                    $command->loginApproved,
                 ),
                 $command instanceof MovePlayer => $this->validator->move(
                     $command->session,
@@ -881,6 +1000,7 @@ final class WorldSimulation
             }
         }
         $player->inventory->selectHotbarSlot($command->hotbarSlot);
+        $player->markDirty();
         if ($this->pluginEvents !== null) {
             $this->pluginEvents->inventoryChanged($player, $before);
         }
@@ -918,6 +1038,9 @@ final class WorldSimulation
                     $this->pluginEvents->inventoryChanged($player, $before);
                 }
             }
+        }
+        if ($result->success) {
+            $player->markDirty();
         }
 
         return new InventoryStackRequestProcessed(
@@ -1021,6 +1144,7 @@ final class WorldSimulation
         }
         $this->refreshPlayerGroundStates();
         $remaining = $player->inventory->decrementSelectedOne();
+        $player->markDirty();
         $this->pluginEvents?->blockPlaced($player, $placedPosition, 'minecraft:grass_block');
 
         return new BlockPlaced(
@@ -1101,6 +1225,7 @@ final class WorldSimulation
         $player->movement->verticalState = $this->collisionResolver?->isGrounded($command->position) === true
             ? VerticalState::GROUNDED
             : VerticalState::AIRBORNE;
+        $player->markDirty();
 
         return new MovementCorrected(
             $player->snapshot(),
@@ -1154,6 +1279,7 @@ final class WorldSimulation
         }
         $selectedBefore = $player->inventory->selectedStack();
         $player->inventory->replaceSlot($command->slot, $command->stack);
+        $player->markDirty();
         $selectedAfter = $player->inventory->selectedStack();
         $selectedChanged = $command->slot === $player->inventory->selectedHotbarSlot();
 

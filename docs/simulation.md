@@ -2,7 +2,7 @@
 
 Bedriox's initial world domain is a deterministic, in-memory flat-world model. It owns all mutable player state and advances at 20 ticks per second by default. Network callbacks cannot access player state: an adapter must first use `SimulationCommandFactory` to convert authenticated, decoded input into one of the immutable join, movement, chat, emote, or disconnect commands, then enqueue it on `WorldSimulation`.
 
-This model does not implement Bedrock packet encoding, chunk serialization, combat, mobs, commands, or persistence. It does own player inventory, canonical world block mutation, break timing, and placement validation; protocol adapters translate the resulting version-neutral events at a separate boundary.
+This model does not implement Bedrock packet encoding, chunk serialization, combat, mobs, or commands. It owns player inventory, canonical world block mutation, break timing, placement validation, and the authoritative snapshots consumed by player persistence; protocol adapters translate the resulting version-neutral events at a separate boundary.
 
 ## Ordering and limits
 

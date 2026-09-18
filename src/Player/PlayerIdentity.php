@@ -10,5 +10,6 @@ final readonly class PlayerIdentity
     public function __construct(
         public string $uuid,
         public string $displayName,
+        public string $xuid = '',
     ) {}
 }

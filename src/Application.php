@@ -141,7 +141,10 @@ final class Application
                     : null,
             );
             $composition->host = $pluginHost;
-            $server = (new ServerBootstrap(new PersistentWorldFactory($workingDirectory)))->create(
+            $server = (new ServerBootstrap(
+                new PersistentWorldFactory($workingDirectory),
+                playerDataDirectory: $workingDirectory . DIRECTORY_SEPARATOR . 'player_data',
+            ))->create(
                 $config,
                 null,
                 $diagnostics,

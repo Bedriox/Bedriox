@@ -32,6 +32,8 @@ final readonly class ServerConfig
         'chunks.generate-per-tick' => '1',
         'chunks.cache-limit' => '2048',
         'chunks.save-per-tick' => '8',
+        'players.autosave-interval-ticks' => '6000',
+        'players.save-per-tick' => '8',
         'runtime.ticks-per-second' => '20',
         'console.enabled' => 'true',
         'plugins.enabled' => 'true',
@@ -65,6 +67,8 @@ final readonly class ServerConfig
         'chunks-generate-per-tick' => 'chunks.generate-per-tick',
         'chunks-cache-limit' => 'chunks.cache-limit',
         'chunks-save-per-tick' => 'chunks.save-per-tick',
+        'players-autosave-interval-ticks' => 'players.autosave-interval-ticks',
+        'players-save-per-tick' => 'players.save-per-tick',
         'ticks-per-second' => 'runtime.ticks-per-second',
         'console-enabled' => 'console.enabled',
         'plugins-enabled' => 'plugins.enabled',
@@ -101,6 +105,8 @@ final readonly class ServerConfig
         public int $chunksGeneratePerTick = 1,
         public int $chunkCacheLimit = 2_048,
         public int $chunksSavePerTick = 8,
+        public int $playersAutosaveIntervalTicks = 6_000,
+        public int $playersSavePerTick = 8,
         public int $ticksPerSecond = 20,
         public bool $consoleEnabled = true,
         public bool $pluginsEnabled = true,
@@ -150,6 +156,8 @@ final readonly class ServerConfig
         self::range($this->chunksGeneratePerTick, 1, 64, 'Chunks generated per tick');
         self::range($this->chunkCacheLimit, 16, 65_536, 'Chunk cache limit');
         self::range($this->chunksSavePerTick, 1, 64, 'Chunks saved per tick');
+        self::range($this->playersAutosaveIntervalTicks, 20, 72_000, 'Player autosave interval');
+        self::range($this->playersSavePerTick, 1, 64, 'Players saved per tick');
         self::range($this->ticksPerSecond, 1, 100, 'Ticks per second');
         self::range($this->maximumPlugins, 0, 256, 'Maximum plugins');
         if (!in_array($this->loggingConsoleColors, ['auto', 'true', 'false'], true)) {
@@ -240,6 +248,8 @@ final readonly class ServerConfig
             chunksGeneratePerTick: self::integer($values['chunks.generate-per-tick'], 'chunks.generate-per-tick', 1, 64),
             chunkCacheLimit: self::integer($values['chunks.cache-limit'], 'chunks.cache-limit', 16, 65_536),
             chunksSavePerTick: self::integer($values['chunks.save-per-tick'], 'chunks.save-per-tick', 1, 64),
+            playersAutosaveIntervalTicks: self::integer($values['players.autosave-interval-ticks'], 'players.autosave-interval-ticks', 20, 72_000),
+            playersSavePerTick: self::integer($values['players.save-per-tick'], 'players.save-per-tick', 1, 64),
             ticksPerSecond: self::integer($values['runtime.ticks-per-second'], 'runtime.ticks-per-second', 1, 100),
             consoleEnabled: self::boolean($values['console.enabled'], 'console.enabled'),
             pluginsEnabled: self::boolean($values['plugins.enabled'], 'plugins.enabled'),

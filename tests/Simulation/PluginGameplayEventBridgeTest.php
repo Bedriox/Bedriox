@@ -12,8 +12,12 @@ use Bedriox\Api\Event\Inventory\InventoryChangeEvent;
 use Bedriox\Api\Event\Player\PlayerChatBroadcastEvent;
 use Bedriox\Api\Event\Player\PlayerChatEvent;
 use Bedriox\Api\Event\Player\PlayerJoinEvent;
+use Bedriox\Api\Event\Player\PlayerLoginEvent;
 use Bedriox\Api\Event\Player\PlayerMoveEvent;
 use Bedriox\Api\Event\Player\PlayerPreJoinEvent;
+use Bedriox\Api\Inventory\Inventory as ApiInventory;
+use Bedriox\Api\Player\Player as ApiPlayer;
+use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Plugin\Event\EventDispatcher;
@@ -47,6 +51,54 @@ use Throwable;
 
 final class PluginGameplayEventBridgeTest extends TestCase
 {
+    public function testLoginEventReturnsTheFinalSynchronousBootstrapDestination(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $dispatcher->register('Example', PlayerLoginEvent::class, static function (PlayerLoginEvent $event): void {
+            $event->setDestination(new ApiPosition(24.5, 70.0, -18.25));
+            $event->setOrientation(135.0, -15.0);
+        });
+        $decision = $bridge->login(self::loginPlayerView());
+
+        self::assertTrue($decision->allowed);
+        self::assertSame(24.5, $decision->destination->x);
+        self::assertSame(70.0, $decision->destination->y);
+        self::assertSame(-18.25, $decision->destination->z);
+        self::assertSame(135.0, $decision->yaw);
+        self::assertSame(-15.0, $decision->pitch);
+    }
+
+    public function testCancelledLoginReturnsARejectedDecisionWithoutPublishingJoin(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $joined = 0;
+        $dispatcher->register('Example', PlayerLoginEvent::class, static function (PlayerLoginEvent $event): void {
+            $event->cancel();
+        });
+        $dispatcher->register('Example', PlayerJoinEvent::class, static function () use (&$joined): void {
+            ++$joined;
+        });
+        $decision = $bridge->login(self::loginPlayerView());
+
+        self::assertFalse($decision->allowed);
+        self::assertSame(0, $joined);
+    }
+
+    public function testLoginEventRejectsInvalidPluginDestinationAndRestoresEarlierState(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $dispatcher->register('Example', PlayerLoginEvent::class, static function (PlayerLoginEvent $event): void {
+            $event->setDestination(new ApiPosition(INF, 64.0, 0.0));
+        });
+        $view = self::loginPlayerView();
+        $decision = $bridge->login($view);
+
+        self::assertTrue($decision->allowed);
+        self::assertSame($view->position->x, $decision->destination->x);
+        self::assertSame($view->position->y, $decision->destination->y);
+        self::assertSame($view->position->z, $decision->destination->z);
+    }
+
     public function testCancelledJoinUsesTheExistingAuthoritativeRejection(): void
     {
         [$dispatcher, $bridge] = self::bridge();
@@ -247,6 +299,20 @@ final class PluginGameplayEventBridgeTest extends TestCase
         );
 
         return [$dispatcher, new PluginGameplayEventBridge($dispatcher)];
+    }
+
+    private static function loginPlayerView(): ApiPlayer
+    {
+        return new ApiPlayer(
+            'One',
+            'identity-one',
+            new ApiPosition(0.0, 64.0, 0.0),
+            0.0,
+            0.0,
+            false,
+            false,
+            new ApiInventory(array_fill(0, 36, null), 0),
+        );
     }
 
     /** @return array{WorldSimulation, SimulationCommandFactory, World, FixedFlatBlockPalette} */

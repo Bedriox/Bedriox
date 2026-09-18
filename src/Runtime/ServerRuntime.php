@@ -12,6 +12,7 @@ use Bedriox\RakNet\SessionInfo;
 use Bedriox\RakNet\SessionOpenedEvent;
 use Bedriox\Server\Observability\CrashContextPublisher;
 use Bedriox\Server\Observability\CrashPlayer;
+use Bedriox\Server\Player\Persistence\PlayerPersistenceManager;
 use Bedriox\Server\Simulation\Event\BlockBreakStarted;
 use Bedriox\Server\Simulation\Event\BlockBreakStopped;
 use Bedriox\Server\Simulation\Event\BlockChanged;
@@ -55,6 +56,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
     private ?Throwable $failure = null;
     private ?string $involvedSessionId = null;
     private bool $autosaveActive = false;
+    private bool $playerAutosaveActive = false;
 
     public function __construct(
         private readonly ConnectedTransport $transport,
@@ -70,8 +72,12 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         private readonly ?World $persistentWorld = null,
         private readonly int $autosaveIntervalTicks = 6_000,
         private readonly int $autosaveChunkBudget = 8,
+        private readonly ?PlayerPersistenceManager $playerPersistence = null,
+        private readonly int $playerAutosaveIntervalTicks = 6_000,
+        private readonly int $playerAutosaveBudget = 8,
     ) {
-        if ($this->autosaveIntervalTicks < 1 || $this->autosaveChunkBudget < 1) {
+        if ($this->autosaveIntervalTicks < 1 || $this->autosaveChunkBudget < 1
+            || $this->playerAutosaveIntervalTicks < 1 || $this->playerAutosaveBudget < 1) {
             throw new InvalidArgumentException('Autosave interval and chunk budget must be positive.');
         }
         $this->commands = $commands ?? new SimulationCommandFactory();
@@ -320,6 +326,17 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                         'remaining_dirty_chunks' => $remaining,
                     ]);
                 }
+                if ($this->playerPersistence !== null && $tick->number % $this->playerAutosaveIntervalTicks === 0) {
+                    $this->playerAutosaveActive = true;
+                }
+                if ($this->playerPersistence !== null && $this->playerAutosaveActive) {
+                    $result = $this->world->autosavePlayers($this->playerAutosaveBudget);
+                    $this->playerAutosaveActive = $result['remaining'] > 0;
+                    $this->diagnostics->record('players.autosaved', [
+                        'saved_players' => $result['saved'],
+                        'remaining_dirty_players' => $result['remaining'],
+                    ]);
+                }
             }
             foreach (array_keys($this->sessions) as $key) {
                 $this->flush($key, $this->sessions[$key]);
@@ -360,6 +377,15 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
             $this->removeRuntimeSession($key);
         }
         $this->drainShutdownLifecycle();
+        if ($this->playerPersistence !== null && $this->playerPersistence->pendingCount() > 0) {
+            $this->playerPersistence->retryPending($this->limits->maximumSessions);
+            if ($this->playerPersistence->pendingCount() > 0) {
+                $this->recordShutdownFailure(
+                    'runtime.player_save_failed',
+                    new RuntimeException('One or more player profiles could not be saved during shutdown.'),
+                );
+            }
+        }
         if ($this->persistentWorld !== null) {
             try {
                 $this->persistentWorld->close();
@@ -490,7 +516,35 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
             return;
         }
         try {
-            $play = $this->playChannels->create($ready, $session->id, $session->runtimeEntityId);
+            $bootstrap = null;
+            if ($this->playerPersistence !== null) {
+                $loaded = $this->playerPersistence->load($ready->login);
+                foreach ($this->sessions as $other) {
+                    if ($other !== $session && $other->bootstrap?->identity->uuid === $loaded->identity->uuid) {
+                        $this->diagnostics->record('play.duplicate_identity_rejected');
+                        $ready->encryptor->close();
+                        $ready->decryptor->close();
+                        $this->disconnect($key);
+
+                        return;
+                    }
+                }
+                $bootstrap = $this->world->prepareLogin(
+                    $session->id,
+                    $session->runtimeEntityId->toSignedBits(),
+                    $loaded,
+                );
+                if ($bootstrap === null) {
+                    $this->diagnostics->record('play.login_cancelled');
+                    $ready->encryptor->close();
+                    $ready->decryptor->close();
+                    $this->disconnect($key);
+
+                    return;
+                }
+            }
+            $play = $this->playChannels->create($ready, $session->id, $session->runtimeEntityId, $bootstrap);
+            $session->bootstrap = $bootstrap;
             $session->promote($play);
             $this->flush($key, $session);
         } catch (Throwable $exception) {
@@ -510,11 +564,19 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         }
         $login = $session->play->login();
         try {
+            $identityUuid = $login->identity;
+            $identityName = $login->displayName;
+            if ($session->bootstrap !== null) {
+                $identityUuid = $session->bootstrap->identity->uuid;
+                $identityName = $session->bootstrap->identity->displayName;
+            }
             $join = $this->commands->join(
                 $session->id,
-                $login->identity,
-                $login->displayName,
+                $identityUuid,
+                $identityName,
                 $session->runtimeEntityId->toSignedBits(),
+                $session->bootstrap,
+                $session->bootstrap !== null,
             );
         } catch (Throwable $exception) {
             $this->diagnostics->record('play.admission_command_failed', ['exception' => $exception::class]);

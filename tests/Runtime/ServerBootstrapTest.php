@@ -10,6 +10,7 @@ use Bedriox\Protocol\Security\P384KeyPair;
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\Server\Login\AuthenticatedLogin;
 use Bedriox\Server\Login\AuthenticationMode;
+use Bedriox\Server\Player\PlayerBootstrap;
 use Bedriox\Server\Runtime\ConfiguredWorldFactory;
 use Bedriox\Server\Runtime\OpenedWorld;
 use Bedriox\Server\Runtime\PlayInitializationFactory;
@@ -223,7 +224,7 @@ final class BootstrapFailingEphemeralKeyFactory implements EphemeralKeyFactory
 
 final class BootstrapEmptyInitializationFactory implements PlayInitializationFactory
 {
-    public function create(AuthenticatedLogin $login, UnsignedLong $runtimeEntityId): array
+    public function create(AuthenticatedLogin $login, UnsignedLong $runtimeEntityId, ?PlayerBootstrap $bootstrap = null): array
     {
         return [];
     }

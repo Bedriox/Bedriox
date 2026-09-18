@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace Bedriox\Server\Tests\Player;
 
 use Bedriox\Server\Player\Player;
+use Bedriox\Server\Player\PlayerBootstrap;
 use Bedriox\Server\Player\PlayerIdentity;
+use Bedriox\Server\Player\PlayerInventoryState;
 use Bedriox\Server\Simulation\MovementMode;
 use Bedriox\Server\Simulation\Position;
 use PHPUnit\Framework\TestCase;
@@ -38,5 +40,56 @@ final class PlayerTest extends TestCase
         self::assertSame(35.0, $after->headYaw);
         self::assertTrue($after->sneaking);
         self::assertFalse($after->sprinting);
+    }
+
+    public function testIdentityAddsXuidWithoutBreakingExistingConstruction(): void
+    {
+        $legacy = new PlayerIdentity('identity', 'Player');
+        $authenticated = new PlayerIdentity('identity', 'Player', '123456789');
+
+        self::assertSame('', $legacy->xuid);
+        self::assertSame('123456789', $authenticated->xuid);
+    }
+
+    public function testDirtyRevisionAcknowledgementDoesNotHideNewerState(): void
+    {
+        $player = new Player(
+            'session',
+            17,
+            new PlayerIdentity('identity', 'Player'),
+            new Position(0.0, 64.0, 0.0),
+            4,
+            10,
+            64.0,
+        );
+
+        self::assertFalse($player->isDirty());
+        self::assertSame(1, $player->markDirty());
+        self::assertSame(2, $player->markDirty());
+        self::assertTrue($player->acknowledgeSaved(1));
+        self::assertTrue($player->isDirty());
+        self::assertSame(1, $player->savedRevision());
+        self::assertTrue($player->acknowledgeSaved(2));
+        self::assertFalse($player->isDirty());
+        self::assertFalse($player->acknowledgeSaved(1));
+    }
+
+    public function testBootstrapCarriesExactReturningPlayerState(): void
+    {
+        $bootstrap = new PlayerBootstrap(
+            new PlayerIdentity('identity', 'Player', '123'),
+            'world',
+            new Position(-20.5, 80.25, 11.75),
+            180.0,
+            -35.0,
+            new PlayerInventoryState([], 4),
+            100,
+            200,
+        );
+
+        self::assertSame(-20.5, $bootstrap->position->x);
+        self::assertSame(180.0, $bootstrap->yaw);
+        self::assertSame(4, $bootstrap->inventory->selectedHotbarSlot);
+        self::assertSame('survival', $bootstrap->gamemode);
     }
 }

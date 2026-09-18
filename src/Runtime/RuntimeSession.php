@@ -7,6 +7,7 @@ namespace Bedriox\Server\Runtime;
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\RakNet\SessionInfo;
 use Bedriox\Server\Login\BedrockLoginChannel;
+use Bedriox\Server\Player\PlayerBootstrap;
 use LogicException;
 
 final class RuntimeSession
@@ -14,6 +15,7 @@ final class RuntimeSession
     public SessionPhase $phase = SessionPhase::LOGIN;
     public ?BedrockPlayChannel $play = null;
     public bool $joined = false;
+    public ?PlayerBootstrap $bootstrap = null;
 
     public function __construct(
         public readonly SessionInfo $transport,
@@ -42,5 +44,6 @@ final class RuntimeSession
         $this->play?->close();
         $this->login = null;
         $this->play = null;
+        $this->bootstrap = null;
     }
 }

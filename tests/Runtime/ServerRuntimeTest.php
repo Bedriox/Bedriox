@@ -57,6 +57,7 @@ use Bedriox\Server\Login\LoginAuthenticator;
 use Bedriox\Server\Login\LoginSession;
 use Bedriox\Server\Login\MonotonicClock;
 use Bedriox\Server\Observability\MutableCrashContextProvider;
+use Bedriox\Server\Player\PlayerBootstrap;
 use Bedriox\Server\Runtime\BedrockPlayChannelFactory;
 use Bedriox\Server\Runtime\DirectedPacket;
 use Bedriox\Server\Runtime\LoginChannelFactory;
@@ -1038,7 +1039,7 @@ final readonly class EmptyInitializationFactory implements PlayInitializationFac
     /** @param list<Packet> $packets */
     public function __construct(private array $packets = []) {}
 
-    public function create(AuthenticatedLogin $login, UnsignedLong $runtimeEntityId): array
+    public function create(AuthenticatedLogin $login, UnsignedLong $runtimeEntityId, ?PlayerBootstrap $bootstrap = null): array
     {
         return $this->packets;
     }

@@ -24,6 +24,8 @@ use Bedriox\Server\Login\LoginAuthenticator;
 use Bedriox\Server\Login\SecureHandshakeMaterialFactory;
 use Bedriox\Server\Login\SystemMonotonicClock;
 use Bedriox\Server\Observability\CrashContextPublisher;
+use Bedriox\Server\Player\Persistence\FilePlayerDataStore;
+use Bedriox\Server\Player\Persistence\PlayerPersistenceManager;
 use Bedriox\Server\Simulation\FixedRateWorldLoop;
 use Bedriox\Server\Simulation\PluginGameplayEventBridge;
 use Bedriox\Server\Simulation\Position;
@@ -52,6 +54,7 @@ final class ServerBootstrap
     public function __construct(
         private readonly ?ConfiguredWorldFactory $worldFactory = null,
         private readonly ?EphemeralKeyFactory $ephemeralKeys = null,
+        private readonly ?string $playerDataDirectory = null,
     ) {}
 
     public function create(
@@ -101,6 +104,12 @@ final class ServerBootstrap
                 $openedWorld->data,
             );
             $spawn = $flatWorld->spawn();
+            $playerPersistence = $this->playerDataDirectory === null ? null : new PlayerPersistenceManager(
+                new FilePlayerDataStore($this->playerDataDirectory),
+                $flatWorld->metadata->name,
+                new Position($spawn->x, $spawn->y, $spawn->z),
+                $flatPalette,
+            );
             $world = new WorldSimulation(
                 $simulationLimits,
                 new Position($spawn->x, $spawn->y, $spawn->z),
@@ -109,6 +118,7 @@ final class ServerBootstrap
                 $pluginEvents,
                 $defaultPalette->water,
                 $defaultPalette->lava,
+                $playerPersistence,
             );
             $chunkSerializer = new BedrockChunkPacketSerializer(
                 $blockTranslator = new BlockNetworkTranslator($internalStates, $networkStates),
@@ -170,6 +180,9 @@ final class ServerBootstrap
                 persistentWorld: $openedWorld->world,
                 autosaveIntervalTicks: $config->levelAutosaveIntervalTicks,
                 autosaveChunkBudget: $config->chunksSavePerTick,
+                playerPersistence: $playerPersistence,
+                playerAutosaveIntervalTicks: $config->playersAutosaveIntervalTicks,
+                playerAutosaveBudget: $config->playersSavePerTick,
             );
         } catch (Throwable $exception) {
             $discovery?->close();

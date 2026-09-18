@@ -35,6 +35,7 @@ use Bedriox\Protocol\ProtocolVersion;
 use Bedriox\Protocol\Value\BuildPlatform;
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\Server\Login\AuthenticatedLogin;
+use Bedriox\Server\Player\PlayerBootstrap;
 use Bedriox\Server\Player\PlayerInventory;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Block\BlockStateRegistry;
@@ -106,26 +107,37 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
         );
     }
 
-    public function create(AuthenticatedLogin $login, UnsignedLong $runtimeEntityId): array
+    public function create(AuthenticatedLogin $login, UnsignedLong $runtimeEntityId, ?PlayerBootstrap $bootstrap = null): array
     {
         $radius = $this->limits->preloadedChunkRadius;
-        $starterInventory = PlayerInventory::starter($this->fixedFlatBlockPalette);
+        $initialInventory = $bootstrap === null
+            ? PlayerInventory::starter($this->fixedFlatBlockPalette)
+            : PlayerInventory::restore($bootstrap->inventory, $this->fixedFlatBlockPalette);
+        if ($bootstrap === null) {
+            $positionX = (float) $this->spawn->x;
+            $positionY = (float) $this->spawn->y;
+            $positionZ = (float) $this->spawn->z;
+        } else {
+            $positionX = $bootstrap->position->x;
+            $positionY = $bootstrap->position->y;
+            $positionZ = $bootstrap->position->z;
+        }
         $mainInventory = array_map(
             fn($stack) => $stack === null
                 ? InventoryContentPacket::emptySlot()
                 : $this->inventoryProjector->toProtocol($stack),
-            $starterInventory->slots(),
+            $initialInventory->slots(),
         );
-        $heldItem = $this->inventoryProjector->toProtocol($starterInventory->selectedStack());
+        $heldItem = $this->inventoryProjector->toProtocol($initialInventory->selectedStack());
         $packets = [
             new JigsawStructureDataPacket(),
             new VoxelShapesPacket(),
             StartGamePacket::fixedFlat(
                 $runtimeEntityId->toSignedBits(),
                 $runtimeEntityId,
-                (float) $this->spawn->x,
-                PlayerPositionProjection::feetToWireY((float) $this->spawn->y),
-                (float) $this->spawn->z,
+                $positionX,
+                PlayerPositionProjection::feetToWireY($positionY),
+                $positionZ,
                 'bedriox:' . $this->generatorName,
                 $this->levelName,
                 gameVersion: ProtocolVersion::GAME_VERSION,
@@ -171,7 +183,13 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
             new InventoryContentPacket(0, $mainInventory),
             new InventoryContentPacket(120, 4),
             new InventoryContentPacket(119, 1),
-            new MobEquipmentPacket($runtimeEntityId, 0, 0, 0, $heldItem),
+            new MobEquipmentPacket(
+                $runtimeEntityId,
+                $initialInventory->selectedHotbarSlot(),
+                $initialInventory->selectedHotbarSlot(),
+                0,
+                $heldItem,
+            ),
             new TrimDataPacket(),
             new CraftingDataPacket(),
             SetActorDataPacket::baselinePlayer($runtimeEntityId, UnsignedLong::fromInt(0), $login->displayName),

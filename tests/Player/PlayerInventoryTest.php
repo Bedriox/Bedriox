@@ -11,6 +11,9 @@ use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Player\InventoryStackRequestAction;
 use Bedriox\Server\Player\InventoryStackRequestActionType;
 use Bedriox\Server\Player\PlayerInventory;
+use Bedriox\Server\Player\PlayerInventoryEntry;
+use Bedriox\Server\Player\PlayerInventoryStackState;
+use Bedriox\Server\Player\PlayerInventoryState;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use InvalidArgumentException;
@@ -222,6 +225,45 @@ final class PlayerInventoryTest extends TestCase
         self::assertSame('stack_count', $result->reason);
         self::assertSame(64, $inventory->stackAt(0)?->count);
         self::assertNull($inventory->stackAt(1));
+    }
+
+    public function testCanonicalStateRestoresWithFreshOrderedSessionIds(): void
+    {
+        $state = new PlayerInventoryState([
+            new PlayerInventoryEntry(8, new PlayerInventoryStackState('minecraft:grass_block', 12)),
+            new PlayerInventoryEntry(2, new PlayerInventoryStackState('minecraft:grass_block', 7)),
+        ], 8, new PlayerInventoryStackState('minecraft:grass_block', 3));
+
+        $inventory = PlayerInventory::restore($state, $this->palette());
+
+        self::assertSame(1, $inventory->stackAt(2)?->stackNetworkId);
+        self::assertSame(2, $inventory->stackAt(8)?->stackNetworkId);
+        self::assertSame(3, $inventory->cursorStack()?->stackNetworkId);
+        self::assertSame(8, $inventory->selectedHotbarSlot());
+        self::assertEquals($state, $inventory->exportState());
+    }
+
+    public function testRestoreRejectsItemsWithoutAnAuthoritativeProjection(): void
+    {
+        $state = new PlayerInventoryState([
+            new PlayerInventoryEntry(0, new PlayerInventoryStackState('minecraft:diamond', 1)),
+        ], 0);
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('unsupported item');
+        PlayerInventory::restore($state, $this->palette());
+    }
+
+    public function testInventoryStateRejectsDuplicateSlots(): void
+    {
+        $stack = new PlayerInventoryStackState('minecraft:grass_block', 1);
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('duplicate slot');
+        new PlayerInventoryState([
+            new PlayerInventoryEntry(4, $stack),
+            new PlayerInventoryEntry(4, $stack),
+        ], 0);
     }
 
     private function palette(): FixedFlatBlockPalette

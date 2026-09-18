@@ -13,6 +13,7 @@ use Bedriox\Api\Event\Inventory\InventoryChangeEvent;
 use Bedriox\Api\Event\Player\PlayerChatBroadcastEvent;
 use Bedriox\Api\Event\Player\PlayerChatEvent;
 use Bedriox\Api\Event\Player\PlayerJoinEvent;
+use Bedriox\Api\Event\Player\PlayerLoginEvent;
 use Bedriox\Api\Event\Player\PlayerMovedEvent;
 use Bedriox\Api\Event\Player\PlayerMoveEvent;
 use Bedriox\Api\Event\Player\PlayerPreJoinEvent;
@@ -45,6 +46,20 @@ final readonly class PluginGameplayEventBridge
     public function joined(Player $player): void
     {
         $this->events->dispatch(new PlayerJoinEvent(self::playerView($player)));
+    }
+
+    public function login(ApiPlayer $player): PlayerLoginDecision
+    {
+        $event = new PlayerLoginEvent($player, $player->position, $player->yaw, $player->pitch);
+        $this->events->dispatch($event);
+        $destination = $event->destination();
+
+        return new PlayerLoginDecision(
+            !$event->isCancelled(),
+            new Position($destination->x, $destination->y, $destination->z),
+            $event->yaw(),
+            $event->pitch(),
+        );
     }
 
     public function quit(Player $player): void
