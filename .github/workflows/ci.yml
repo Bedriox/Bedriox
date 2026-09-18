@@ -23,7 +23,7 @@ jobs:
         php: ['8.4', '8.5']
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: Bedriox
           persist-credentials: false
@@ -37,7 +37,7 @@ jobs:
         shell: pwsh
         working-directory: Bedriox
         run: php tools/export-component-pins.php | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Bedriox/Protocol
           ref: ${{ steps.component-pins.outputs.protocol_commit }}
@@ -45,7 +45,7 @@ jobs:
           ssh-key: ${{ secrets.BEDRIOX_PROTOCOL_DEPLOY_KEY }}
           ssh-strict: true
           persist-credentials: false
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Bedriox/RakNet
           ref: ${{ steps.component-pins.outputs.raknet_commit }}
@@ -53,7 +53,7 @@ jobs:
           ssh-key: ${{ secrets.BEDRIOX_RAKNET_DEPLOY_KEY }}
           ssh-strict: true
           persist-credentials: false
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Bedriox/Data
           ref: ${{ steps.component-pins.outputs.data_commit }}
