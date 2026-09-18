@@ -65,7 +65,7 @@
         "bin/bedriox"
     ],
     "scripts": {
-        "test": "phpunit",
+        "test": "@php -d memory_limit=512M vendor/bin/phpunit",
         "analyse": "phpstan analyse --no-progress --memory-limit=512M",
         "verify:composer": "composer validate --strict",
         "verify:audit": "composer audit --locked",
