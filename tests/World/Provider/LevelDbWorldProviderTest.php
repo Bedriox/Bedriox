@@ -111,6 +111,7 @@ final class LevelDbWorldProviderTest extends TestCase
         $chunk = (new FlatWorldGenerator(FixedFlatBlockPalette::fromRegistry($registry)))->generate($position);
         $provider->saveChunk(new ChunkSaveData($chunk));
 
+        $persistentRegistry = BedrockDataSet::bundled()->persistentBlockStateRegistry();
         $stateCodec = new LittleEndianBlockStateNbtCodec($persistentRegistry);
         $knownBytes = $stateCodec->encode($persistentRegistry->knownState(\Bedriox\Data\CanonicalBlockState::from('minecraft:air')));
         $unknownBytes = str_replace('minecraft:air', 'minecraft:bad', $knownBytes);
