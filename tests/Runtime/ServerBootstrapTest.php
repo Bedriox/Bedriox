@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Bedriox\Server\Tests\Runtime;
 
 use Bedriox\Data\BedrockDataSet;
+use Bedriox\Protocol\Security\EphemeralKeyFactory;
+use Bedriox\Protocol\Security\P384KeyPair;
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\Server\Login\AuthenticatedLogin;
 use Bedriox\Server\Login\AuthenticationMode;
@@ -131,6 +133,31 @@ final class ServerBootstrapTest extends TestCase
         }
     }
 
+    public function testHandshakeKeyPreflightFailsBeforeWorldOpenOrUdpBind(): void
+    {
+        $port = $this->availableUdpPort();
+        $worlds = new BootstrapRecordingWorldFactory();
+
+        try {
+            (new ServerBootstrap($worlds, new BootstrapFailingEphemeralKeyFactory()))->create(
+                new ServerConfig('127.0.0.1', $port, 'Bootstrap Test', 2, AuthenticationMode::SELF_SIGNED),
+                new BootstrapEmptyInitializationFactory(),
+            );
+            self::fail('Bootstrap unexpectedly accepted a handshake key factory that cannot generate P-384 keys.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('P-384 unavailable for test', $exception->getMessage());
+            self::assertSame(0, $worlds->openCount);
+        }
+
+        $socket = socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
+        self::assertInstanceOf(\Socket::class, $socket);
+        try {
+            self::assertTrue(socket_bind($socket, '127.0.0.1', $port));
+        } finally {
+            socket_close($socket);
+        }
+    }
+
     private function independentPing(int $identifier, int $timestamp, int $clientGuid): string
     {
         $identifierByte = match ($identifier) {
@@ -183,6 +210,14 @@ final class ServerBootstrapTest extends TestCase
         }
 
         return $port;
+    }
+}
+
+final class BootstrapFailingEphemeralKeyFactory implements EphemeralKeyFactory
+{
+    public function generate(): P384KeyPair
+    {
+        throw new \RuntimeException('P-384 unavailable for test');
     }
 }
 

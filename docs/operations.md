@@ -17,6 +17,11 @@ Linux and macOS. Direct `php bin/bedriox serve` remains a development command.
 The packaged launchers validate the adjacent PHP binary, configuration,
 platform ABI, exact extension set, manifest hash, and complete runtime file
 inventory before Composer autoload executes.
+They set `OPENSSL_CONF` to the adjacent Runtime's `config/openssl.cnf` and do
+not inherit a provider configuration from a system PHP installation.
+They also create `cache/runtime/opcache` and export it through
+`BEDRIOX_RUNTIME_CACHE`, allowing Windows OPcache to fall back safely when ASLR
+prevents shared-memory attachment without changing immutable files in `bin`.
 
 The first successful configuration load creates `bedriox.settings` in the current working directory. Built-in defaults load first, the settings file second, and explicit command-line overrides last. Invalid, duplicate, unknown, partial, or out-of-range settings fail before socket bind.
 
@@ -25,7 +30,8 @@ The default game port is UDP `19132`. Bedriox does not currently provide a separ
 ## Startup sequence
 
 Before accepting clients, startup verifies the locked packaged Runtime before
-Composer autoload, then verifies configuration, the pinned Data artifacts,
+Composer autoload, qualifies P-384 key generation through its packaged OpenSSL
+configuration, then verifies configuration, the pinned Data artifacts,
 canonical block states, translation availability, authentication dependencies,
 protocol authority, and transport construction. A failure leaves no partially
 running server and never falls back to ambient PHP.

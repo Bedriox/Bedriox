@@ -9,6 +9,7 @@
 composer.phar
 *.log
 /logs/
+/cache/
 /crashes/
 /plugins/
 /plugin_data/

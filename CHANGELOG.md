@@ -40,6 +40,8 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Fixed
 
+- Bind every packaged launch and staged-runtime probe to Runtime's relocatable OpenSSL provider configuration, and qualify the exact Bedrock P-384 key path before world access or UDP bind.
+- Create an external Runtime OPcache directory from packaged launchers and staged probes so Windows ASLR fallback cannot make an otherwise qualified server unstartable.
 - Accept the protocol-2193 hotbar-to-cursor container pair used by retail authoritative move and split requests.
 - Advertise the authoritative inventory system during StartGame so retail inventory moves and splits use validated item-stack requests instead of immediately reverted legacy predictions.
 - Reconcile both dedicated/embedded item-stack requests and bounded legacy packet-30 inventory predictions through server-owned inventory state; preserve same-tick embedded actions, validate predicted counts and stack IDs atomically, synchronize changed slots with fresh server IDs, and keep split destination stacks usable for later placement.

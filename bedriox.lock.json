@@ -30,7 +30,7 @@
         }
     },
     "runtime": {
-        "commit": "4d5fefdd1eb1080581b54bd30c91bc5e619c8496",
+        "commit": "463f08f8cb835aa262a9372e5d0d7d7efa25cf4b",
         "manifestSchema": 2,
         "phpVersion": "8.4.25",
         "extensions": {
@@ -79,37 +79,37 @@
         "artifacts": {
             "windows-x86_64": {
                 "filename": "bedriox-runtime-windows-x86_64.zip",
-                "size": 10932364,
-                "sha256": "8989ab72af0d7dc0b25873ccfda7ec202c485c37f9ba3fe32c14b22b97d169b1",
-                "manifestSha256": "8461f0a454dba2248b4a6efb6ab5328abf5871691f63ab78f6aedf676042b359",
+                "size": 10932744,
+                "sha256": "69ebc91ce9b6a2c9ea63bb8aa618235f563799a6d94851bbe2b01cd6b07ec4eb",
+                "manifestSha256": "5b92028b2bce052b6dcd6af21b0722f146fc59c6860192f90d56626a354a802c",
                 "threadSafe": true
             },
             "linux-x86_64": {
                 "filename": "bedriox-runtime-linux-x86_64.tar.gz",
-                "size": 12703009,
-                "sha256": "da93040191f74da5f915468ebe817ca040a93cada987e3f83d57b58c41bf8b67",
-                "manifestSha256": "7fcf44d971f654fc27f00fd64b29a4c7f6ca5d61bde081bb46bd64b8c52f3ff9",
+                "size": 12703246,
+                "sha256": "6ff1eed53c06f43252568af87684e038cfef85a4c716506f068c32c2cfc2c03d",
+                "manifestSha256": "8feee1030022cf6d2bc4e49564219d16185cdc9c7a0331517830e68e0d386426",
                 "threadSafe": false
             },
             "linux-arm64": {
                 "filename": "bedriox-runtime-linux-arm64.tar.gz",
-                "size": 12629167,
-                "sha256": "de36bab7972422aadd8d52787a2752672c6108c3b6b296059a65552cbe3edc8f",
-                "manifestSha256": "40c887cbd3884865da2132281b000acc03906e34f1fda605ef759a23eb2ebf05",
+                "size": 12629820,
+                "sha256": "19766f6d7089cb18f2712b66420379e276527f8d4efc9747da2a873b234e54db",
+                "manifestSha256": "655f2e7ee5f302bed91b0bdade6809030282869b054c078246108b8658b386be",
                 "threadSafe": false
             },
             "macos-arm64": {
                 "filename": "bedriox-runtime-macos-arm64.tar.gz",
-                "size": 10782007,
-                "sha256": "cecf7828df18e3de96cda0f46014c23f00b273238c337e9b9eb2b36ca4880831",
-                "manifestSha256": "0684c1ea9e67d8f810f46ed9cc1b461fddf329c7ef09009a94c4efa48474549d",
+                "size": 10782448,
+                "sha256": "f8bb9249cf994532f700c68970e350f939f6694af4062b50f5ec53778a0d3733",
+                "manifestSha256": "799d6db5f17d80b7249f718ce5f29996fccad1e95db72c88f7b0be791e921439",
                 "threadSafe": false
             },
             "macos-x86_64": {
                 "filename": "bedriox-runtime-macos-x86_64.tar.gz",
-                "size": 11033690,
-                "sha256": "63ff9d469601a67e09e87197af0233e8f674fa3bd523f4b3ff11723a723e3cf4",
-                "manifestSha256": "94b1f04a0bb84408b52b9109b289af09df6bc5a831306eab83ff32f03ac48923",
+                "size": 11033664,
+                "sha256": "f887d6a09acc6722bd6a484cbc168bc091be956e52f700f32efe63f7abbdd6fb",
+                "manifestSha256": "3dd8a52c960026b92fc1cf2fa583d39c484c93a38f1879e287df25db3fbbf7d9",
                 "threadSafe": false
             }
         }

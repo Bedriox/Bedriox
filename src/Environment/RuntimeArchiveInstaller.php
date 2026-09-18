@@ -621,10 +621,16 @@ final class RuntimeArchiveInstaller
             throw new RuntimeException('The staged runtime executable or configuration is missing.');
         }
         $environment = getenv();
+        $cacheRoot = dirname($runtimeRoot) . DIRECTORY_SEPARATOR . 'runtime-cache';
+        $opcodeCache = $cacheRoot . DIRECTORY_SEPARATOR . 'opcache';
+        if (!is_dir($opcodeCache) && !mkdir($opcodeCache, 0700, true)) {
+            throw new RuntimeException('The staged runtime opcode cache could not be created.');
+        }
         $environment['BEDRIOX_RUNTIME_ROOT'] = $runtimeRoot;
+        $environment['BEDRIOX_RUNTIME_CACHE'] = $cacheRoot;
         $environment['PHPRC'] = '';
         $environment['PHP_INI_SCAN_DIR'] = '';
-        $environment['OPENSSL_CONF'] = '';
+        $environment['OPENSSL_CONF'] = $runtimeRoot . DIRECTORY_SEPARATOR . 'config' . DIRECTORY_SEPARATOR . 'openssl.cnf';
         $environment['OPENSSL_MODULES'] = '';
         $environment['SSL_CERT_DIR'] = '';
         $environment['SSL_CERT_FILE'] = '';

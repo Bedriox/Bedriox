@@ -25,7 +25,10 @@ final class PackagedLauncherTest extends TestCase
 
         self::assertStringContainsString('%~dp0', $launcher);
         self::assertStringContainsString('%BEDRIOX_RUNTIME_ROOT%\\php.exe', $launcher);
+        self::assertStringContainsString('BEDRIOX_RUNTIME_CACHE=%BEDRIOX_ROOT%cache\\runtime', $launcher);
+        self::assertStringContainsString('mkdir "%BEDRIOX_RUNTIME_CACHE%\\opcache"', $launcher);
         self::assertStringContainsString('-c "%BEDRIOX_RUNTIME_ROOT%\\php.ini"', $launcher);
+        self::assertStringContainsString('OPENSSL_CONF=%BEDRIOX_RUNTIME_ROOT%\\config\\openssl.cnf', $launcher);
         self::assertStringContainsString('%*', $launcher);
         self::assertStringNotContainsString('where php', strtolower($launcher));
         self::assertStringNotContainsString(' php ', strtolower($launcher));
@@ -37,6 +40,9 @@ final class PackagedLauncherTest extends TestCase
 
         self::assertStringContainsString('BEDRIOX_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)', $launcher);
         self::assertStringContainsString('exec "$BEDRIOX_RUNTIME_ROOT/php"', $launcher);
+        self::assertStringContainsString('BEDRIOX_RUNTIME_CACHE="$BEDRIOX_ROOT/cache/runtime"', $launcher);
+        self::assertStringContainsString('mkdir -p -- "$BEDRIOX_RUNTIME_CACHE/opcache"', $launcher);
+        self::assertStringContainsString('OPENSSL_CONF="$BEDRIOX_RUNTIME_ROOT/config/openssl.cnf"', $launcher);
         self::assertStringContainsString('"$@"', $launcher);
         self::assertStringNotContainsString('cd "$BEDRIOX_ROOT"', $launcher);
         self::assertStringNotContainsString('command -v php', $launcher);

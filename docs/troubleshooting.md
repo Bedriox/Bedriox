@@ -13,6 +13,15 @@ modified runtime file, missing extension, wrong CPU/OS target, additional PHP
 configuration, or launch through a different PHP binary intentionally fails
 before Composer autoload.
 
+If startup reports that handshake material is unavailable, reinstall the exact
+locked Runtime archive. Do not point `OPENSSL_CONF` at a system PHP tree; the
+packaged launchers require `bin/config/openssl.cnf`, and startup verifies the
+same P-384 operation used by Bedrock login before binding the server port.
+
+If Windows reports unusable opcode handlers due to ASLR, start Bedriox through
+`bedriox.cmd`. It creates the ignored `cache/runtime/opcache` directory and
+provides the packaged Runtime's required file-cache fallback environment.
+
 ## The executable says pre-alpha
 
 That is expected during M0. There is no playable server until the transport, login, and flat-world milestones pass their acceptance gates.

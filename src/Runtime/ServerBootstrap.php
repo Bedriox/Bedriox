@@ -8,6 +8,7 @@ use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Discovery\AdvertisedGameMode;
 use Bedriox\Protocol\Discovery\BedrockServerAdvertisement;
 use Bedriox\Protocol\Identity\ClientDataJwtVerifier;
+use Bedriox\Protocol\Security\EphemeralKeyFactory;
 use Bedriox\Protocol\Security\OpenSslEphemeralKeyFactory;
 use Bedriox\RakNet\DiscoveryServer;
 use Bedriox\RakNet\DiscoveryStatus;
@@ -47,7 +48,10 @@ final class ServerBootstrap
 {
     public const string SELF_SIGNED_WARNING = 'WARNING: SELF_SIGNED authentication is insecure and intended only for isolated development.';
 
-    public function __construct(private readonly ?ConfiguredWorldFactory $worldFactory = null) {}
+    public function __construct(
+        private readonly ?ConfiguredWorldFactory $worldFactory = null,
+        private readonly ?EphemeralKeyFactory $ephemeralKeys = null,
+    ) {}
 
     public function create(
         ServerConfig $config,
@@ -64,6 +68,10 @@ final class ServerBootstrap
             PHP_BINARY,
             is_string($configuredOpenSsl) && $configuredOpenSsl !== '' ? $configuredOpenSsl : null,
         );
+        $ephemeralKeys = $this->ephemeralKeys ?? new OpenSslEphemeralKeyFactory($openSslConfiguration);
+        // A listener that cannot complete Bedrock's P-384 handshake is not joinable.
+        // Qualify the exact production key factory before opening the world or binding UDP.
+        $ephemeralKeys->generate();
         $runtimeLimits = new RuntimeLimits(
             maximumSessions: $config->maximumPlayers,
             maximumChunkRadius: $config->viewDistance,
@@ -134,7 +142,7 @@ final class ServerBootstrap
                 new ConfiguredLoginChannelFactory(
                     new SystemMonotonicClock(),
                     $authenticator,
-                    new SecureHandshakeMaterialFactory(new OpenSslEphemeralKeyFactory($openSslConfiguration)),
+                    new SecureHandshakeMaterialFactory($ephemeralKeys),
                     $config->authenticationMode,
                 ),
                 new BedrockPlayChannelFactory(

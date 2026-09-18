@@ -19,9 +19,18 @@ final class OpenSslConfiguration
             return $configuredPath;
         }
 
-        $bundled = dirname($phpBinary) . DIRECTORY_SEPARATOR . 'extras' . DIRECTORY_SEPARATOR . 'ssl' . DIRECTORY_SEPARATOR . 'openssl.cnf';
+        $runtimeRoot = dirname($phpBinary);
+        $candidates = [
+            $runtimeRoot . DIRECTORY_SEPARATOR . 'config' . DIRECTORY_SEPARATOR . 'openssl.cnf',
+            $runtimeRoot . DIRECTORY_SEPARATOR . 'extras' . DIRECTORY_SEPARATOR . 'ssl' . DIRECTORY_SEPARATOR . 'openssl.cnf',
+        ];
+        foreach ($candidates as $bundled) {
+            if (is_file($bundled) && is_readable($bundled)) {
+                return $bundled;
+            }
+        }
 
-        return is_file($bundled) && is_readable($bundled) ? $bundled : null;
+        return null;
     }
 
     private function __construct() {}

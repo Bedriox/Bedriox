@@ -5,6 +5,10 @@ They invoke only the adjacent qualified PHP Runtime. Before Composer autoload,
 `bootstrap/bedriox.php` verifies the external manifest trust pin, target ABI,
 PHP configuration, exact extension set, and complete runtime inventory. This is
 an installation-integrity boundary, not a sandbox for a malicious local binary.
+The launchers also bind `OPENSSL_CONF` to the adjacent relocatable provider
+configuration. Server composition generates one P-384 key before opening the
+world or binding UDP, then reuses that qualified key factory for retail
+handshakes so an unjoinable listener cannot appear online.
 
 `ServerRuntime` is the bounded, non-blocking composition boundary between RakNet, the protocol-2193 session, and the authoritative simulation. Each call to `poll()` performs at most the configured datagram, lifecycle-event, payload, packet, command, streaming, and world-tick work. Older protocol requests fail during network negotiation.
 
