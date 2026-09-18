@@ -90,6 +90,19 @@ final readonly class LevelDatMetadata
         return $tag->value;
     }
 
+    public function generatorVersion(): int
+    {
+        $tag = $this->root['BedrioxGeneratorVersion'] ?? null;
+        if ($tag === null) {
+            return 1;
+        }
+        if ($tag->type !== LittleEndianNbtTag::INT || !is_int($tag->value) || $tag->value < 1) {
+            throw new CorruptWorldDataException("Invalid 'BedrioxGeneratorVersion' tag in level.dat.");
+        }
+
+        return $tag->value;
+    }
+
     public function spawnX(): int
     {
         return $this->requiredInteger('SpawnX', LittleEndianNbtTag::INT);

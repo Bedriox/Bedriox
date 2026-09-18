@@ -21,6 +21,21 @@ final readonly class DefaultBlockPalette
         public InternalBlockStateId $ironOre,
         public InternalBlockStateId $oakLog,
         public InternalBlockStateId $oakLeaves,
+        public InternalBlockStateId $clay,
+        public InternalBlockStateId $ice,
+        public InternalBlockStateId $snow,
+        public InternalBlockStateId $coarseDirt,
+        public InternalBlockStateId $podzol,
+        public InternalBlockStateId $deepslate,
+        public InternalBlockStateId $lava,
+        public InternalBlockStateId $copperOre,
+        public InternalBlockStateId $goldOre,
+        public InternalBlockStateId $redstoneOre,
+        public InternalBlockStateId $diamondOre,
+        public InternalBlockStateId $birchLog,
+        public InternalBlockStateId $birchLeaves,
+        public InternalBlockStateId $spruceLog,
+        public InternalBlockStateId $spruceLeaves,
     ) {}
 
     public static function fromRegistry(BlockStateRegistry $registry): self
@@ -39,6 +54,21 @@ final readonly class DefaultBlockPalette
             $registry->internalId(VanillaBlockStates::ironOre()),
             $registry->internalId(VanillaBlockStates::oakLog()),
             $registry->internalId(VanillaBlockStates::oakLeaves()),
+            $registry->internalId(VanillaBlockStates::clay()),
+            $registry->internalId(VanillaBlockStates::ice()),
+            $registry->internalId(VanillaBlockStates::snow()),
+            $registry->internalId(VanillaBlockStates::coarseDirt()),
+            $registry->internalId(VanillaBlockStates::podzol()),
+            $registry->internalId(VanillaBlockStates::deepslate()),
+            $registry->internalId(VanillaBlockStates::lava()),
+            $registry->internalId(VanillaBlockStates::copperOre()),
+            $registry->internalId(VanillaBlockStates::goldOre()),
+            $registry->internalId(VanillaBlockStates::redstoneOre()),
+            $registry->internalId(VanillaBlockStates::diamondOre()),
+            $registry->internalId(VanillaBlockStates::birchLog()),
+            $registry->internalId(VanillaBlockStates::birchLeaves()),
+            $registry->internalId(VanillaBlockStates::spruceLog()),
+            $registry->internalId(VanillaBlockStates::spruceLeaves()),
         );
     }
 }

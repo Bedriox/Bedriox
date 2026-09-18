@@ -38,7 +38,7 @@ final class BlockCollisionQueryTest extends TestCase
         self::assertTrue($query->hasCollision($cell->offset(0.0, 1.0, 0.0)));
     }
 
-    public function testSourceWaterIsPassableButStoneRemainsSolid(): void
+    public function testSourceFluidsArePassableButStoneRemainsSolid(): void
     {
         $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
         $flat = FixedFlatBlockPalette::fromRegistry($registry);
@@ -48,10 +48,12 @@ final class BlockCollisionQueryTest extends TestCase
             new FlatWorldGenerator($flat),
             new ChunkRepository(4),
         );
-        $query = new BlockCollisionQuery($world, $flat->air, [$default->water]);
+        $query = new BlockCollisionQuery($world, $flat->air, [$default->water, $default->lava]);
         $cell = new AxisAlignedBox(0.1, 64.1, 0.1, 0.9, 64.9, 0.9);
 
         $world->setBlockState(0, 64, 0, $default->water);
+        self::assertFalse($query->hasCollision($cell));
+        $world->setBlockState(0, 64, 0, $default->lava);
         self::assertFalse($query->hasCollision($cell));
         $world->setBlockState(0, 64, 0, $default->stone);
         self::assertTrue($query->hasCollision($cell));

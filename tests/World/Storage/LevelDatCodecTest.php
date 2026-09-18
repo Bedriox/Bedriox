@@ -30,6 +30,7 @@ final class LevelDatCodecTest extends TestCase
         self::assertSame(42, $metadata->seed());
         self::assertSame('flat', $metadata->generatorName());
         self::assertSame('', $metadata->generatorOptions());
+        self::assertSame(1, $metadata->generatorVersion());
         self::assertSame([-1, 64, 2], [$metadata->spawnX(), $metadata->spawnY(), $metadata->spawnZ()]);
         self::assertSame(123, $metadata->time());
         self::assertSame(2, $metadata->difficulty());
@@ -49,6 +50,18 @@ final class LevelDatCodecTest extends TestCase
 
         self::assertSame(321, $decoded->time());
         self::assertSame(LittleEndianNbtTag::INT, $decoded->root['Time']->type);
+    }
+
+    public function testGeneratorVersionDefaultsToOneAndRejectsInvalidStoredValues(): void
+    {
+        $root = self::metadata()->root;
+        self::assertSame(1, (new LevelDatMetadata(10, $root))->generatorVersion());
+        $root['BedrioxGeneratorVersion'] = LittleEndianNbtTag::int(7);
+        self::assertSame(7, (new LevelDatMetadata(10, $root))->generatorVersion());
+        $root['BedrioxGeneratorVersion'] = LittleEndianNbtTag::int(0);
+
+        $this->expectException(CorruptWorldDataException::class);
+        (new LevelDatMetadata(10, $root))->generatorVersion();
     }
 
     /** @return iterable<string, array{string}> */

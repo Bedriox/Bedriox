@@ -53,6 +53,7 @@ final class PersistentWorldFactoryTest extends TestCase
         self::assertSame('Fresh World', $opened->data->metadata->name);
         self::assertSame(91, $opened->data->metadata->seed);
         self::assertSame(3, $opened->data->difficulty);
+        self::assertSame(1, $opened->data->generatorVersion);
         self::assertSame('default', $opened->world->generatorName());
         self::assertGreaterThanOrEqual(63, $opened->world->spawn()->y);
         $opened->world->close();
@@ -122,6 +123,29 @@ final class PersistentWorldFactoryTest extends TestCase
             self::fail('Unsupported persisted generator was accepted.');
         } catch (\RuntimeException $failure) {
             self::assertStringContainsString('not supported', $failure->getMessage());
+            self::assertTrue($providers->provider?->closed);
+        }
+    }
+
+    public function testUnsupportedPersistedGeneratorVersionFailsClosed(): void
+    {
+        $path = $this->workingDirectory . DIRECTORY_SEPARATOR . 'worlds' . DIRECTORY_SEPARATOR . 'world';
+        self::assertTrue(mkdir($path, 0775, true));
+        $providers = new RecordingWorldProviderFactory(new WorldData(
+            new WorldMetadata('Future Terrain', 1),
+            'default',
+            new SpawnPosition(0, 80, 0),
+            generatorVersion: 2,
+        ));
+
+        try {
+            (new PersistentWorldFactory($this->workingDirectory, $providers))->open(
+                self::config(),
+                BedrockDataSet::bundled(),
+            );
+            self::fail('An unsupported persisted generator version was accepted.');
+        } catch (\RuntimeException $failure) {
+            self::assertStringContainsString('version 2 is not supported', $failure->getMessage());
             self::assertTrue($providers->provider?->closed);
         }
     }

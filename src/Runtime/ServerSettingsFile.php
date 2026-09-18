@@ -94,7 +94,7 @@ level.autosave-interval-ticks=6000
 chunks.view-distance=4
 chunks.spawn-radius=4
 chunks.send-per-tick=4
-chunks.generate-per-tick=4
+chunks.generate-per-tick=1
 chunks.cache-limit=2048
 chunks.save-per-tick=8
 

@@ -22,7 +22,7 @@ Bedriox gives server owners a performance-focused foundation for creating Minecr
 ## What Bedriox offers today
 
 - **Playable multiplayer foundations** — synchronized players, movement, chat, inventories, block interaction, and persistent streamed worlds.
-- **Worlds to explore and shape** — deterministic hills, valleys, forests, deserts, oceans, caves, ores, and the classic flat-world option.
+- **Worlds to explore and shape** — seeded continents, mountain ranges, valleys, rivers, climate-driven forests and deserts, oceans, caves, ore veins, snowy highlands, and the classic flat-world option.
 - **Responsive exploration** — bounded generation and streaming keep nearby terrain moving smoothly as players travel.
 - **Persistent terrain** — Mojang-compatible LevelDB storage preserves generated chunks and authoritative block changes across clean restarts.
 - **Focused Bedrock support** — one qualified modern protocol family instead of years of legacy protocol code.

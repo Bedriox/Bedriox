@@ -96,6 +96,7 @@ final class WorldSimulation
         private readonly ?FixedFlatBlockPalette $blockPalette = null,
         private readonly ?PluginGameplayEventBridge $pluginEvents = null,
         private readonly ?InternalBlockStateId $waterState = null,
+        private readonly ?InternalBlockStateId $lavaState = null,
     ) {
         $this->commands = new SplQueue();
         $this->lifecycleCommands = new SplQueue();
@@ -106,7 +107,7 @@ final class WorldSimulation
             ? new PlayerCollisionResolver(new BlockCollisionQuery(
                 $blockWorld,
                 $blockPalette->air,
-                $waterState === null ? [] : [$waterState],
+                array_values(array_filter([$waterState, $lavaState])),
             ))
             : null;
         $this->validator->move('spawn', 0, $spawn->x, $spawn->y, $spawn->z, 0.0, 0.0, MovementMode::STOPPED);
@@ -785,7 +786,8 @@ final class WorldSimulation
         if ($command->action === BlockBreakAction::Start) {
             if ($state->value === $this->blockPalette->air->value
                 || $state->value === $this->blockPalette->bedrock->value
-                || $state->value === $this->waterState?->value) {
+                || $state->value === $this->waterState?->value
+                || $state->value === $this->lavaState?->value) {
                 return new CommandRejected($command->session, 'block_not_breakable');
             }
             if ($active !== null && $command->sequence <= $active['sequence']) {
@@ -809,6 +811,7 @@ final class WorldSimulation
         if ($state->value === $this->blockPalette->air->value
             || $state->value === $this->blockPalette->bedrock->value
             || $state->value === $this->waterState?->value
+            || $state->value === $this->lavaState?->value
             || ($stopsActiveBreak && $command->sequence <= $active['sequence'])) {
             unset($this->breakingBlocks[$key]);
 

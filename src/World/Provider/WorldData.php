@@ -17,6 +17,7 @@ final readonly class WorldData
         public SpawnPosition $spawn,
         public int $time = 0,
         public int $difficulty = 2,
+        public int $generatorVersion = 1,
     ) {
         if (
             $generatorName === ''
@@ -27,6 +28,9 @@ final readonly class WorldData
         }
         if ($this->difficulty < 0 || $this->difficulty > 3) {
             throw new InvalidArgumentException('Difficulty must be a Bedrock value between 0 and 3.');
+        }
+        if ($this->generatorVersion < 1 || $this->generatorVersion > 2_147_483_647) {
+            throw new InvalidArgumentException('Generator version must be a positive bounded integer.');
         }
     }
 }

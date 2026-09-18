@@ -7,13 +7,19 @@ namespace Bedriox\Server\World;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 
 /** Deterministic fixed-flat generator: bedrock at 60, dirt at 61-62, grass at 63. */
-final readonly class FlatWorldGenerator implements WorldGenerator
+final readonly class FlatWorldGenerator implements VersionedWorldGenerator
 {
+    public const int VERSION = 1;
     public function __construct(private FixedFlatBlockPalette $palette) {}
 
     public function name(): string
     {
         return 'flat';
+    }
+
+    public function version(): int
+    {
+        return self::VERSION;
     }
 
     public function generate(ChunkPosition $position): Chunk

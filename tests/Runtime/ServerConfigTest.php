@@ -24,6 +24,7 @@ final class ServerConfigTest extends TestCase
         self::assertSame(6_000, $defaults->levelAutosaveIntervalTicks);
         self::assertSame(8, $defaults->chunksSavePerTick);
         self::assertSame('default', $defaults->levelGenerator);
+        self::assertSame(1, $defaults->chunksGeneratePerTick);
 
         $config = ServerConfig::fromArguments([
             '--bind=127.0.0.1',

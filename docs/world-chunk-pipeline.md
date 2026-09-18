@@ -10,7 +10,7 @@ Bedriox generates authoritative world state independently from the Bedrock netwo
 
 The initial flat profile is bedrock at Y=60, dirt at Y=61 and Y=62, grass at Y=63, and air elsewhere. The world spawn places the player's feet above that surface.
 
-The default profile combines deterministic integer value noise at several scales to form continuous hills, valleys, oceans, and biome regions across chunk boundaries. It applies biome-specific grass, dirt, sand, sandstone, and gravel surfaces; source water through sea level; bounded caves and ore attempts; and deterministic cross-border oak trees. Water occupies only the primary block layer and is non-solid for collision. Spawn selection searches a bounded area for dry terrain with two air blocks of headroom. The algorithm is Bedriox-defined and does not promise vanilla seed parity.
+The default profile combines deterministic smooth noise at continental, regional, and local scales to form coastlines, lowlands, mountain ranges, valleys, rivers, oceans, and climate regions across chunk boundaries. It applies slope- and biome-specific surfaces, source water through sea level, cold-region ice, cross-chunk caves, regional ore veins, boulders, and biome-specific forests. Source fluids occupy only the primary block layer and are non-solid for collision. Spawn selection searches a bounded area for dry, low-slope terrain with two air blocks of headroom. The algorithm is Bedriox-defined and does not promise Minecraft seed parity.
 
 ## Persistence
 
@@ -34,9 +34,14 @@ The configured spawn-radius square is delivered before `PlayerSpawn`. Remaining 
 
 Translation happens only at this boundary. The generator must not import network IDs, and the serializer must not invent world state. Full streamed columns currently do not require client SubChunk requests; unexpected requests are validated and rejected by policy.
 
+The version-one `default` pipeline derives independent seed channels for coordinate warping, continentalness, erosion, temperature, humidity, ridges, uplift, rivers, and local detail. Those fields determine elevation and biome before surface rules, cave carving, regional ore placement, boulders, and biome-specific tree decoration run. Regional coordinate sampling is cached under a fixed bound, while every feature anchor is derived from world coordinates so generation order cannot change a chunk.
+
+`level.dat` stores the generator name and `BedrioxGeneratorVersion`. Missing version metadata is interpreted as version one for native compatibility. A stored version that the selected generator cannot reproduce is rejected before any missing chunk can be generated. Generator upgrades therefore require a new explicit version rather than silently creating seams beside established terrain.
+
 ## Required invariants
 
 - Every generated coordinate returns the same canonical cells for the same world definition.
+- Generator output is independent of chunk request order and sign of the coordinates.
 - Every visible column contains the correct absolute chunk coordinates.
 - Every internal state resolves through the active network palette before sending.
 - Existing provider data is loaded before generation; storage failures never become implicit generation.

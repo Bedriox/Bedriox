@@ -16,6 +16,14 @@ use PHPUnit\Framework\TestCase;
 
 final class DefaultWorldGeneratorTest extends TestCase
 {
+    public function testDefaultGeneratorIsOfficialVersionOne(): void
+    {
+        [$generator] = self::generator(0);
+
+        self::assertSame('default', $generator->name());
+        self::assertSame(1, $generator->version());
+    }
+
     /** @return iterable<string, array{int}> */
     public static function seeds(): iterable
     {
@@ -37,7 +45,7 @@ final class DefaultWorldGeneratorTest extends TestCase
         self::assertSame(self::signature($first), self::signature($second));
         self::assertLessThanOrEqual(12, count($first->populatedSections()));
         foreach ($first->populatedSections() as $section) {
-            self::assertLessThanOrEqual(13, count($section->palette()));
+            self::assertLessThanOrEqual(32, count($section->palette()));
         }
 
         $spawn = $generator->defaultSpawn();
@@ -61,6 +69,22 @@ final class DefaultWorldGeneratorTest extends TestCase
             BiomeRuntimeIdMap::id($west->biomeAt(15, $westHeight, $z));
             BiomeRuntimeIdMap::id($east->biomeAt(0, $eastHeight, $z));
         }
+    }
+
+    public function testChunkOutputDoesNotDependOnGenerationOrder(): void
+    {
+        [$westFirst] = self::generator(77_031);
+        [$eastFirst] = self::generator(77_031);
+        $westPosition = new ChunkPosition(-1, 2);
+        $eastPosition = new ChunkPosition(0, 2);
+
+        $westA = $westFirst->generate($westPosition);
+        $eastA = $westFirst->generate($eastPosition);
+        $eastB = $eastFirst->generate($eastPosition);
+        $westB = $eastFirst->generate($westPosition);
+
+        self::assertSame(self::signature($westA), self::signature($westB));
+        self::assertSame(self::signature($eastA), self::signature($eastB));
     }
 
     /** @return array{DefaultWorldGenerator, DefaultBlockPalette} */

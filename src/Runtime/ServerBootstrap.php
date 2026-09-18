@@ -108,6 +108,7 @@ final class ServerBootstrap
                 $flatPalette,
                 $pluginEvents,
                 $defaultPalette->water,
+                $defaultPalette->lava,
             );
             $chunkSerializer = new BedrockChunkPacketSerializer(
                 $blockTranslator = new BlockNetworkTranslator($internalStates, $networkStates),

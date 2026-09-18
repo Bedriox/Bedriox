@@ -72,4 +72,79 @@ final class VanillaBlockStates
     {
         return CanonicalBlockState::from('minecraft:oak_leaves', ['persistent_bit' => 0, 'update_bit' => 0]);
     }
+
+    public static function clay(): CanonicalBlockState
+    {
+        return CanonicalBlockState::from('minecraft:clay');
+    }
+
+    public static function ice(): CanonicalBlockState
+    {
+        return CanonicalBlockState::from('minecraft:ice');
+    }
+
+    public static function snow(): CanonicalBlockState
+    {
+        return CanonicalBlockState::from('minecraft:snow');
+    }
+
+    public static function coarseDirt(): CanonicalBlockState
+    {
+        return CanonicalBlockState::from('minecraft:coarse_dirt');
+    }
+
+    public static function podzol(): CanonicalBlockState
+    {
+        return CanonicalBlockState::from('minecraft:podzol');
+    }
+
+    public static function deepslate(): CanonicalBlockState
+    {
+        return CanonicalBlockState::from('minecraft:deepslate', ['pillar_axis' => 'y']);
+    }
+
+    public static function lava(): CanonicalBlockState
+    {
+        return CanonicalBlockState::from('minecraft:lava', ['liquid_depth' => 0]);
+    }
+
+    public static function copperOre(): CanonicalBlockState
+    {
+        return CanonicalBlockState::from('minecraft:copper_ore');
+    }
+
+    public static function goldOre(): CanonicalBlockState
+    {
+        return CanonicalBlockState::from('minecraft:gold_ore');
+    }
+
+    public static function redstoneOre(): CanonicalBlockState
+    {
+        return CanonicalBlockState::from('minecraft:redstone_ore');
+    }
+
+    public static function diamondOre(): CanonicalBlockState
+    {
+        return CanonicalBlockState::from('minecraft:diamond_ore');
+    }
+
+    public static function birchLog(): CanonicalBlockState
+    {
+        return CanonicalBlockState::from('minecraft:birch_log', ['pillar_axis' => 'y']);
+    }
+
+    public static function birchLeaves(): CanonicalBlockState
+    {
+        return CanonicalBlockState::from('minecraft:birch_leaves', ['persistent_bit' => 0, 'update_bit' => 0]);
+    }
+
+    public static function spruceLog(): CanonicalBlockState
+    {
+        return CanonicalBlockState::from('minecraft:spruce_log', ['pillar_axis' => 'y']);
+    }
+
+    public static function spruceLeaves(): CanonicalBlockState
+    {
+        return CanonicalBlockState::from('minecraft:spruce_leaves', ['persistent_bit' => 0, 'update_bit' => 0]);
+    }
 }

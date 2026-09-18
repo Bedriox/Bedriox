@@ -176,6 +176,7 @@ final class LevelDbWorldProviderTest extends TestCase
             self::assertSame(123, $saved->time());
             self::assertSame(3, $saved->difficulty());
             self::assertSame(2, $saved->root['Generator']->value);
+            self::assertSame(1, $saved->root['BedrioxGeneratorVersion']->value);
             self::assertSame('preserve-me', $saved->root['BedrioxOpaqueTest']->value);
 
             $provider->close();

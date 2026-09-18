@@ -61,7 +61,7 @@ The settings file uses one `key=value` entry per line. Blank lines and lines beg
 | `chunks.view-distance` | `4` | 1–32 chunks |
 | `chunks.spawn-radius` | `4` | 1 through the configured view distance |
 | `chunks.send-per-tick` | `4` | 1–64 |
-| `chunks.generate-per-tick` | `4` | 1–64 |
+| `chunks.generate-per-tick` | `1` | 1–64 |
 | `chunks.cache-limit` | `2048` | 16–65536 chunks and large enough to hold every configured player view |
 | `chunks.save-per-tick` | `8` | 1 through 64 dirty chunks saved during each scheduled autosave tick |
 | `runtime.ticks-per-second` | `20` | 1–100 |
@@ -79,7 +79,7 @@ The settings file uses one `key=value` entry per line. Blank lines and lines beg
 
 Optional `level.spawn-x`, `level.spawn-y`, and `level.spawn-z` entries override the level spawn only when all three are populated. When all three are absent or empty, the selected generator calculates a safe default. `default` performs a bounded dry-land search over generated terrain; `flat` uses `(0, 64, 0)`. A partial override is rejected.
 
-The generator and seed recorded in an existing world's `level.dat` remain authoritative when it is reopened. Changing `level.generator` or `level.seed` does not silently convert stored chunks. New worlds use the configured values and create the native `level.dat`, `levelname.txt`, and `db/` layout.
+The generator, generator algorithm version, and seed recorded in an existing world's `level.dat` remain authoritative when it is reopened. Changing `level.generator` or `level.seed` does not silently convert stored chunks. Unsupported future generator versions fail before missing terrain can be created. New worlds use the configured values and create the native `level.dat`, `levelname.txt`, and `db/` layout. `default` currently selects the version-one continental overworld; `flat` retains its fixed bedrock, dirt, and grass profile.
 
 Settings for independent query ports, resource packs, whitelists, and other unfinished features are deliberately not accepted yet. This prevents apparently valid options from silently doing nothing.
 

@@ -211,6 +211,7 @@ final class LevelDbWorldProvider implements WritableWorldProvider
         $root['RandomSeed'] = LittleEndianNbtTag::long($worldData->metadata->seed);
         $root['generatorName'] = LittleEndianNbtTag::string($worldData->generatorName);
         $root['Generator'] = LittleEndianNbtTag::int(self::legacyGeneratorId($worldData->generatorName));
+        $root['BedrioxGeneratorVersion'] = LittleEndianNbtTag::int($worldData->generatorVersion);
         $root['SpawnX'] = LittleEndianNbtTag::int($worldData->spawn->x);
         $root['SpawnY'] = LittleEndianNbtTag::int($worldData->spawn->y);
         $root['SpawnZ'] = LittleEndianNbtTag::int($worldData->spawn->z);
@@ -314,6 +315,7 @@ final class LevelDbWorldProvider implements WritableWorldProvider
                 new SpawnPosition($metadata->spawnX(), $metadata->spawnY(), $metadata->spawnZ()),
                 $metadata->time(),
                 $metadata->difficulty(),
+                $metadata->generatorVersion(),
             );
         } catch (UnsupportedWorldDataException $error) {
             throw new UnsupportedWorldFormatException($error->getMessage(), previous: $error);
@@ -335,6 +337,7 @@ final class LevelDbWorldProvider implements WritableWorldProvider
             'RandomSeed' => LittleEndianNbtTag::long($data->metadata->seed),
             'generatorName' => LittleEndianNbtTag::string($data->generatorName),
             'Generator' => LittleEndianNbtTag::int(self::legacyGeneratorId($data->generatorName)),
+            'BedrioxGeneratorVersion' => LittleEndianNbtTag::int($data->generatorVersion),
             'generatorOptions' => LittleEndianNbtTag::string(''),
             'GameType' => LittleEndianNbtTag::int(0),
             'LastPlayed' => LittleEndianNbtTag::long($createdAt),

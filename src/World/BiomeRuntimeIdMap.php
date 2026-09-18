@@ -15,6 +15,16 @@ final class BiomeRuntimeIdMap
         'minecraft:desert' => 2,
         'minecraft:extreme_hills' => 3,
         'minecraft:forest' => 4,
+        'minecraft:taiga' => 5,
+        'minecraft:river' => 7,
+        'minecraft:ice_plains' => 12,
+        'minecraft:beach' => 16,
+        'minecraft:deep_ocean' => 24,
+        'minecraft:stone_beach' => 25,
+        'minecraft:birch_forest' => 27,
+        'minecraft:savanna' => 35,
+        'minecraft:jagged_peaks' => 182,
+        'minecraft:snowy_slopes' => 184,
     ];
 
     private function __construct() {}

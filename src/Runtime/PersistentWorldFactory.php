@@ -12,6 +12,7 @@ use Bedriox\Server\World\Provider\WorldData;
 use Bedriox\Server\World\Provider\WorldProviderFactory;
 use Bedriox\Server\World\Provider\WritableWorldProvider;
 use Bedriox\Server\World\SpawnPosition;
+use Bedriox\Server\World\VersionedWorldGenerator;
 use Bedriox\Server\World\World;
 use Bedriox\Server\World\WorldGeneratorFactory;
 use Bedriox\Server\World\WorldMetadata;
@@ -61,6 +62,9 @@ final readonly class PersistentWorldFactory implements ConfiguredWorldFactory
                     $config->levelGenerator,
                     $defaultSpawn,
                     difficulty: self::difficulty($config->difficulty),
+                    generatorVersion: $configuredGenerator instanceof VersionedWorldGenerator
+                        ? $configuredGenerator->version()
+                        : 1,
                 ),
                 $internalStates,
                 $persistentStates,
@@ -86,6 +90,14 @@ final readonly class PersistentWorldFactory implements ConfiguredWorldFactory
             $stored->metadata->seed,
             $internalStates,
         );
+        $generatorVersion = $generator instanceof VersionedWorldGenerator
+            ? $generator->version()
+            : 1;
+        if ($stored->generatorVersion !== $generatorVersion) {
+            throw new RuntimeException(
+                "World generator {$stored->generatorName} version {$stored->generatorVersion} is not supported; expected version $generatorVersion.",
+            );
+        }
         $world = new World(
             $stored->metadata,
             $generator,
@@ -99,6 +111,7 @@ final readonly class PersistentWorldFactory implements ConfiguredWorldFactory
             $world->spawn(),
             $stored->time,
             $stored->difficulty,
+            $stored->generatorVersion,
         );
 
         return new OpenedWorld($world, $effectiveData);

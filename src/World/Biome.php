@@ -40,4 +40,54 @@ final readonly class Biome
     {
         return new self('minecraft:extreme_hills');
     }
+
+    public static function deepOcean(): self
+    {
+        return new self('minecraft:deep_ocean');
+    }
+
+    public static function river(): self
+    {
+        return new self('minecraft:river');
+    }
+
+    public static function beach(): self
+    {
+        return new self('minecraft:beach');
+    }
+
+    public static function stonyShore(): self
+    {
+        return new self('minecraft:stone_beach');
+    }
+
+    public static function taiga(): self
+    {
+        return new self('minecraft:taiga');
+    }
+
+    public static function birchForest(): self
+    {
+        return new self('minecraft:birch_forest');
+    }
+
+    public static function savanna(): self
+    {
+        return new self('minecraft:savanna');
+    }
+
+    public static function snowyPlains(): self
+    {
+        return new self('minecraft:ice_plains');
+    }
+
+    public static function snowySlopes(): self
+    {
+        return new self('minecraft:snowy_slopes');
+    }
+
+    public static function jaggedPeaks(): self
+    {
+        return new self('minecraft:jagged_peaks');
+    }
 }

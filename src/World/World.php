@@ -40,6 +40,7 @@ final class World
             $worldData->metadata->name !== $metadata->name
             || $worldData->metadata->seed !== $metadata->seed
             || $worldData->generatorName !== $generator->name()
+            || $worldData->generatorVersion !== ($generator instanceof VersionedWorldGenerator ? $generator->version() : 1)
         )) {
             throw new InvalidArgumentException('Provider world data does not match the configured world.');
         }
@@ -131,6 +132,7 @@ final class World
             $this->spawn(),
             $this->time,
             $this->difficulty,
+            $this->generator instanceof VersionedWorldGenerator ? $this->generator->version() : 1,
         ));
 
         return $saved;

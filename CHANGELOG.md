@@ -6,7 +6,9 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Added
 
-- Add deterministic default overworld generation with rolling terrain, five biome profiles, oceans, caves, ores, cross-chunk oak trees, terrain-safe spawn selection, canonical block/biome persistence, and bounded one-pass chunk construction while retaining the fixed flat generator.
+- Add the version-one default overworld generator with domain-warped continents, erosion-shaped mountain ranges and valleys, climate-driven biomes, rivers, deep oceans, slope-aware surfaces, snow and ice, cross-chunk caves, regional ore veins, biome-specific forests, safe spawn selection, bounded regional caching, and deterministic LevelDB persistence while retaining the fixed flat generator.
+- Persist and validate the Bedriox generator algorithm version in `level.dat`, failing closed before terrain generation when a stored world requires an unsupported version.
+- Add deterministic terrain diagnostics for height and biome maps plus regional distribution, negative-coordinate, generation-order, seam, spawn, and noise-continuity coverage.
 - Add native `levelname.txt` creation and stale/missing mirror repair with `level.dat` remaining authoritative.
 - Add Mojang-compatible LevelDB world metadata and chunk persistence with canonical block-state palettes, provider-first loading, dirty-revision autosave, save-before-eviction, and graceful close-time flushing.
 - Add bounded `level.autosave-interval-ticks` and `chunks.save-per-tick` operator settings with equivalent command-line overrides.
