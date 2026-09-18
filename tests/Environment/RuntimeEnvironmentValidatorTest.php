@@ -11,6 +11,8 @@ use PHPUnit\Framework\TestCase;
 
 final class RuntimeEnvironmentValidatorTest extends TestCase
 {
+    private const string QUALIFIED_PHP_VERSION = '8.4.2';
+
     private string $root;
 
     protected function setUp(): void
@@ -30,7 +32,7 @@ final class RuntimeEnvironmentValidatorTest extends TestCase
 
         $manifest = RuntimeEnvironmentValidator::validate($this->root, $this->root . DIRECTORY_SEPARATOR . 'bin', $process);
 
-        self::assertSame(PHP_VERSION, $manifest->phpVersion);
+        self::assertSame(self::QUALIFIED_PHP_VERSION, $manifest->phpVersion);
         self::assertMatchesRegularExpression('/^[0-9a-f]{64}$/D', $manifest->sha256);
     }
 
@@ -184,12 +186,12 @@ final class RuntimeEnvironmentValidatorTest extends TestCase
             'schemaVersion' => 2,
             'target' => $this->target(),
             'architecture' => php_uname('m'),
-            'phpVersion' => PHP_VERSION,
+            'phpVersion' => self::QUALIFIED_PHP_VERSION,
             'threadSafe' => (bool) PHP_ZTS,
             'compiler' => 'test compiler',
             'linker' => 'test linker',
             'buildPolicy' => ['qualified'],
-            'sources' => ['php' => ['version' => PHP_VERSION]],
+            'sources' => ['php' => ['version' => self::QUALIFIED_PHP_VERSION]],
             'files' => $files,
         ];
         $manifestJson = json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n";
@@ -204,7 +206,7 @@ final class RuntimeEnvironmentValidatorTest extends TestCase
             'runtime' => [
                 'commit' => str_repeat('a', 40),
                 'manifestSchema' => 2,
-                'phpVersion' => PHP_VERSION,
+                'phpVersion' => self::QUALIFIED_PHP_VERSION,
                 'extensions' => ['all' => $extensions, 'unix' => []],
                 'artifacts' => [
                     $this->target() => [
@@ -220,7 +222,7 @@ final class RuntimeEnvironmentValidatorTest extends TestCase
 
         return new RuntimeProcessIdentity(
             $executable,
-            PHP_VERSION,
+            self::QUALIFIED_PHP_VERSION,
             (bool) PHP_ZTS,
             PHP_OS_FAMILY,
             php_uname('m'),

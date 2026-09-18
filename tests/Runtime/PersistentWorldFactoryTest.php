@@ -28,6 +28,9 @@ final class PersistentWorldFactoryTest extends TestCase
     {
         $this->workingDirectory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'bedriox-world-open-' . bin2hex(random_bytes(8));
         self::assertTrue(mkdir($this->workingDirectory));
+        $resolved = realpath($this->workingDirectory);
+        self::assertIsString($resolved);
+        $this->workingDirectory = $resolved;
     }
 
     protected function tearDown(): void

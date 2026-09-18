@@ -31,7 +31,7 @@ jobs:
         with:
           php-version: ${{ matrix.php }}
           coverage: none
-          extensions: curl, openssl, sockets, sodium
+          extensions: curl, openssl, sockets, sodium, zip
       - name: Read immutable component pins
         id: component-pins
         shell: pwsh
