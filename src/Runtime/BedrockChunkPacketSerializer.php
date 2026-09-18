@@ -9,6 +9,7 @@ use Bedriox\Protocol\Packet\ChunkSectionData;
 use Bedriox\Protocol\Packet\ChunkSerializer;
 use Bedriox\Protocol\Packet\LevelChunkPacket;
 use Bedriox\Protocol\Packet\PalettedStorage;
+use Bedriox\Server\World\BiomeRuntimeIdMap;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Chunk;
 use InvalidArgumentException;
@@ -53,11 +54,25 @@ final readonly class BedrockChunkPacketSerializer
             $sections[] = ChunkSectionData::fromRuntimeIds($sectionY, $runtimeIds);
         }
 
-        $biomes = array_fill(
-            0,
-            Chunk::SECTION_COUNT,
-            PalettedStorage::singleton($this->plainsBiomeRuntimeId, ChunkColumnData::BIOME_CELL_COUNT, 2),
-        );
+        $biomes = [];
+        for ($sectionY = Chunk::MIN_SECTION_Y; $sectionY <= Chunk::MAX_SECTION_Y; ++$sectionY) {
+            $storage = $chunk->biomeStorage($sectionY);
+            $runtimeIds = [];
+            for ($x = 0; $x < 16; ++$x) {
+                for ($z = 0; $z < 16; ++$z) {
+                    for ($y = 0; $y < 16; ++$y) {
+                        $biome = $storage->biomeAt($x, $y, $z);
+                        $runtimeIds[] = $biome->identifier === 'minecraft:plains'
+                            ? $this->plainsBiomeRuntimeId
+                            : BiomeRuntimeIdMap::id($biome);
+                    }
+                }
+            }
+            $uniqueRuntimeIds = array_values(array_unique($runtimeIds, SORT_REGULAR));
+            $biomes[] = count($uniqueRuntimeIds) === 1
+                ? PalettedStorage::singleton($uniqueRuntimeIds[0], ChunkColumnData::BIOME_CELL_COUNT, 2)
+                : PalettedStorage::fromValues($runtimeIds, ChunkColumnData::BIOME_CELL_COUNT);
+        }
 
         return ChunkSerializer::fullColumn(new ChunkColumnData(
             $chunk->position->x,

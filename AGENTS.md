@@ -1,5 +1,9 @@
 # Repository Instructions
 
+## Local instruction overrides
+
+Repository users may define additional machine-local working rules in `AGENTS.override.md`. Read that file after this one whenever it exists and apply its instructions with the repository rules. Keep `AGENTS.override.md` untracked so personal workflow preferences and private local context are never published.
+
 ## Purpose and boundaries
 
 This repository is the Bedriox executable server and composition root. It owns startup, configuration, session orchestration, the authoritative simulation, players, worlds, commands, and observability.
@@ -40,7 +44,7 @@ Do not commit `vendor/`, credentials, access tokens, Minecraft client assets, pe
 - World state uses Bedriox-owned process-local block-state IDs resolved from canonical `minecraft:*` states. Never persist, expose, or send those IDs; translate through `BlockNetworkTranslator` only at the Bedrock packet boundary.
 - Follow the proven PocketMine-MP authority model for gameplay interactions: decoded client item descriptors, counts, stack-network IDs, block runtime IDs, and prediction fields are bounded intent or reconciliation hints only. The server-selected inventory slot, server-owned stack, and authoritative world state alone authorize and determine a placement. Apply a transaction's valid hotbar selection before evaluating its placement, and correct rejected predictions instead of accepting client-owned state.
 - Treat predicted block-break completion like PocketMine-MP: revalidate reach, the current server-owned block, and breakability when completion arrives, and derive any tool effects from the current server-held item. Break timing drives progress feedback but is not a strict packet-arrival authorization gate; client/server tick phase must not restore an otherwise valid break. A continue action starts the next authoritative target, and late stop/abort input remains benign.
-- Generate complete fixed-flat LevelChunk columns on demand through the world model and stream each player's bounded configured view nearest-first. Keep generation, sending, caching, and retained views bounded; translate internal state IDs only at serialization. Validate any compatibility SubChunk requests through Protocol and serve only the configured radius and section range.
+- Generate complete LevelChunk columns on demand through the selected `default` or `flat` world generator and stream each player's bounded configured view nearest-first. Keep generation deterministic for a persisted generator algorithm and seed; keep generation, sending, caching, and retained views bounded; translate internal state and biome identities only at serialization. Validate any compatibility SubChunk requests through Protocol and serve only the configured radius and section range.
 - Treat the world provider as the persistence authority. Load before generating, generate only on an explicit missing result, and never replace corrupt, unsupported, or unreadable storage with new terrain. Persist canonical block-state identity rather than process-local or network runtime IDs. A dirty chunk remains dirty until its exact revision is acknowledged by a successful write; save dirty eviction candidates, bound routine autosave work, and flush world data before closing its provider.
 - Do not introduce worker processes, native extensions, global mutable state, or new cross-repository abstractions without an accepted RFC and measured need.
 - Load production plugins only from bounded `plugins/*.phar` archives. Require a strong embedded PHAR signature, validate the complete archive and dependency plan before entry-point execution, and never deserialize PHAR metadata. Source-directory loading belongs only in explicit development tooling.
@@ -116,7 +120,7 @@ Follow [`docs/change-safety.md`](docs/change-safety.md) for the working procedur
 
 ## Commits
 
-Keep commits focused and use an imperative, descriptive subject, preferably with the established `type: summary` form. Commit messages must not contain personal email addresses or identity trailers. Do not rewrite or discard unrelated contributor work.
+Keep commits focused and use an imperative, descriptive subject. Commit messages must not contain personal email addresses or identity trailers. Do not rewrite or discard unrelated contributor work. Apply any more specific local subject-style rules from `AGENTS.override.md` when that file exists.
 
 ## Definition of done
 

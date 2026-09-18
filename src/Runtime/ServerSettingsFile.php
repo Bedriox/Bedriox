@@ -79,7 +79,7 @@ network.authentication=FULL
 
 # Level
 level.name=world
-level.generator=flat
+level.generator=default
 level.seed=0
 level.default-gamemode=survival
 level.difficulty=normal

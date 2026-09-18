@@ -11,10 +11,21 @@ use Bedriox\Server\World\World;
 /** Queries the current authoritative world. All admitted MVP solid states are full cubes. */
 final readonly class BlockCollisionQuery implements CollisionBoxQuery
 {
+    /** @var array<int, true> */
+    private array $nonSolid;
+
+    /** @param list<InternalBlockStateId> $additionalNonSolid */
     public function __construct(
         private World $world,
         private InternalBlockStateId $air,
-    ) {}
+        array $additionalNonSolid = [],
+    ) {
+        $nonSolid = [$air->value => true];
+        foreach ($additionalNonSolid as $state) {
+            $nonSolid[$state->value] = true;
+        }
+        $this->nonSolid = $nonSolid;
+    }
 
     /** @return list<AxisAlignedBox> */
     public function boxesIntersecting(AxisAlignedBox $area): array
@@ -28,7 +39,7 @@ final readonly class BlockCollisionQuery implements CollisionBoxQuery
         for ($z = (int) floor($area->minZ); $z <= (int) floor($area->maxZ); ++$z) {
             for ($x = (int) floor($area->minX); $x <= (int) floor($area->maxX); ++$x) {
                 for ($y = $minY; $y <= $maxY; ++$y) {
-                    if ($this->world->blockStateAt($x, $y, $z)->value === $this->air->value) {
+                    if (isset($this->nonSolid[$this->world->blockStateAt($x, $y, $z)->value])) {
                         continue;
                     }
                     $box = AxisAlignedBox::unitAt($x, $y, $z);

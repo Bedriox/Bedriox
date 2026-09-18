@@ -44,6 +44,21 @@ final readonly class LevelDatMetadata
     {
         $tag = $this->root['generatorName'] ?? null;
         if ($tag instanceof LittleEndianNbtTag && $tag->type === LittleEndianNbtTag::STRING && is_string($tag->value)) {
+            if ($tag->value === '' || strlen($tag->value) > 64
+                || preg_match('/^[A-Za-z0-9._-]+$/D', $tag->value) !== 1) {
+                throw new CorruptWorldDataException("Invalid 'generatorName' tag in level.dat.");
+            }
+            $legacy = $this->root['Generator'] ?? null;
+            if ($legacy instanceof LittleEndianNbtTag && $legacy->type === LittleEndianNbtTag::INT && is_int($legacy->value)) {
+                $expected = match ($tag->value) {
+                    'default' => 1,
+                    'flat' => 2,
+                    default => null,
+                };
+                if ($expected !== null && $legacy->value !== $expected) {
+                    throw new CorruptWorldDataException('Generator metadata in level.dat is contradictory.');
+                }
+            }
             return $tag->value;
         }
         if ($tag !== null) {
@@ -53,13 +68,13 @@ final readonly class LevelDatMetadata
         if (!$legacy instanceof LittleEndianNbtTag || $legacy->type !== LittleEndianNbtTag::INT || !is_int($legacy->value)) {
             throw new CorruptWorldDataException("Missing or invalid generator metadata in level.dat.");
         }
-        if ($legacy->value !== 2) {
-            throw new UnsupportedWorldDataException(
+        return match ($legacy->value) {
+            1 => 'default',
+            2 => 'flat',
+            default => throw new UnsupportedWorldDataException(
                 "Legacy generator {$legacy->value} is not supported.",
-            );
-        }
-
-        return 'flat';
+            ),
+        };
     }
 
     public function generatorOptions(): string

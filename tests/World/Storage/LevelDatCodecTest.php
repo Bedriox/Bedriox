@@ -134,11 +134,24 @@ final class LevelDatCodecTest extends TestCase
         self::assertSame(3, $metadata->difficulty());
     }
 
-    public function testRejectsUnsupportedLegacyGeneratorAndInvalidDifficulty(): void
+    public function testRecognizedGeneratorMetadataMustNotContradictNativeGenerator(): void
+    {
+        $root = self::metadata()->root;
+        $root['Generator'] = LittleEndianNbtTag::int(1);
+
+        $this->expectException(CorruptWorldDataException::class);
+        $this->expectExceptionMessage('contradictory');
+        (new LevelDatMetadata(10, $root))->generatorName();
+    }
+
+    public function testReadsDefaultLegacyGeneratorAndRejectsUnsupportedGeneratorAndInvalidDifficulty(): void
     {
         $root = self::metadata()->root;
         unset($root['generatorName']);
         $root['Generator'] = LittleEndianNbtTag::int(1);
+        self::assertSame('default', (new LevelDatMetadata(10, $root))->generatorName());
+
+        $root['Generator'] = LittleEndianNbtTag::int(0);
         try {
             (new LevelDatMetadata(10, $root))->generatorName();
             self::fail('Unsupported legacy generator was accepted.');

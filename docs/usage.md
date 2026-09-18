@@ -53,8 +53,8 @@ The settings file uses one `key=value` entry per line. Blank lines and lines beg
 | `network.port` | `19132` | 1–65535 |
 | `network.authentication` | `FULL` | `FULL` or explicit development-only `SELF_SIGNED` |
 | `level.name` | `world` | 1–64 bytes of UTF-8 without control characters |
-| `level.generator` | `flat` | `flat` (the only implemented generator) |
-| `level.seed` | `0` | Signed 32-bit decimal integer; flat terrain is currently seed-independent |
+| `level.generator` | `default` | `default` for seeded terrain or `flat` for the fixed classic profile |
+| `level.seed` | `0` | Signed 32-bit decimal integer; `default` is deterministic and `flat` is seed-independent |
 | `level.default-gamemode` | `survival` | `survival` (the only implemented game mode) |
 | `level.difficulty` | `normal` | `peaceful`, `easy`, `normal`, or `hard` |
 | `level.autosave-interval-ticks` | `6000` | 20 through 72000 ticks between autosave scheduling cycles |
@@ -77,7 +77,9 @@ The settings file uses one `key=value` entry per line. Blank lines and lines beg
 | `logging.protocol-trace` | `false` | Exactly `true` or `false` |
 | `crash-report.include-player-identifiers` | `true` | Exactly `true` or `false` |
 
-Optional `level.spawn-x`, `level.spawn-y`, and `level.spawn-z` entries override the level spawn only when all three are populated. When all three are absent or empty, the world calculates its own safe default; the flat generator currently uses `(0, 64, 0)`. A partial override is rejected.
+Optional `level.spawn-x`, `level.spawn-y`, and `level.spawn-z` entries override the level spawn only when all three are populated. When all three are absent or empty, the selected generator calculates a safe default. `default` performs a bounded dry-land search over generated terrain; `flat` uses `(0, 64, 0)`. A partial override is rejected.
+
+The generator and seed recorded in an existing world's `level.dat` remain authoritative when it is reopened. Changing `level.generator` or `level.seed` does not silently convert stored chunks. New worlds use the configured values and create the native `level.dat`, `levelname.txt`, and `db/` layout.
 
 Settings for independent query ports, resource packs, whitelists, and other unfinished features are deliberately not accepted yet. This prevents apparently valid options from silently doing nothing.
 

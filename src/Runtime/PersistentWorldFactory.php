@@ -6,15 +6,14 @@ namespace Bedriox\Server\Runtime;
 
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\World\Block\BlockStateRegistry;
-use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\ChunkRepository;
-use Bedriox\Server\World\FlatWorldGenerator;
 use Bedriox\Server\World\Provider\LevelDbWorldProviderFactory;
 use Bedriox\Server\World\Provider\WorldData;
 use Bedriox\Server\World\Provider\WorldProviderFactory;
 use Bedriox\Server\World\Provider\WritableWorldProvider;
 use Bedriox\Server\World\SpawnPosition;
 use Bedriox\Server\World\World;
+use Bedriox\Server\World\WorldGeneratorFactory;
 use Bedriox\Server\World\WorldMetadata;
 use InvalidArgumentException;
 use RuntimeException;
@@ -50,7 +49,8 @@ final readonly class PersistentWorldFactory implements ConfiguredWorldFactory
             $config->spawnY ?? 64,
             $config->spawnZ ?? 0,
         );
-        $defaultSpawn = $configuredSpawn ?? new SpawnPosition(0, 64, 0);
+        $configuredGenerator = WorldGeneratorFactory::create($config->levelGenerator, $config->levelSeed, $internalStates);
+        $defaultSpawn = $configuredSpawn ?? $configuredGenerator->defaultSpawn();
 
         $provider = file_exists($worldPath)
             ? $this->providers->open($worldPath, $internalStates, $persistentStates)
@@ -81,13 +81,14 @@ final readonly class PersistentWorldFactory implements ConfiguredWorldFactory
         ?SpawnPosition $configuredSpawn,
     ): OpenedWorld {
         $stored = $provider->worldData();
-        if ($stored->generatorName !== 'flat') {
-            throw new RuntimeException(sprintf('World generator "%s" is not supported.', $stored->generatorName));
-        }
-        $palette = FixedFlatBlockPalette::fromRegistry($internalStates);
+        $generator = WorldGeneratorFactory::create(
+            $stored->generatorName,
+            $stored->metadata->seed,
+            $internalStates,
+        );
         $world = new World(
             $stored->metadata,
-            new FlatWorldGenerator($palette),
+            $generator,
             new ChunkRepository($config->chunkCacheLimit),
             $configuredSpawn,
             provider: $provider,

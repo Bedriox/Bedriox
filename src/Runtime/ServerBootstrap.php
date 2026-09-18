@@ -34,12 +34,13 @@ use Bedriox\Server\Simulation\WorldSimulation;
 use Bedriox\Server\Transport\DiscoveryServerTransport;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Block\BlockStateRegistry;
+use Bedriox\Server\World\Block\DefaultBlockPalette;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\ChunkRepository;
-use Bedriox\Server\World\FlatWorldGenerator;
 use Bedriox\Server\World\Provider\WorldData;
 use Bedriox\Server\World\SpawnPosition;
 use Bedriox\Server\World\World;
+use Bedriox\Server\World\WorldGeneratorFactory;
 use Bedriox\Server\World\WorldMetadata;
 use Throwable;
 
@@ -88,8 +89,9 @@ final class ServerBootstrap
         $networkStates = $data->blockStateRegistry();
         $internalStates = new BlockStateRegistry($networkStates->states());
         $flatPalette = FixedFlatBlockPalette::fromRegistry($internalStates);
+        $defaultPalette = DefaultBlockPalette::fromRegistry($internalStates);
         $openedWorld = $this->worldFactory?->open($config, $data)
-            ?? $this->ephemeralWorld($config, $flatPalette);
+            ?? $this->ephemeralWorld($config, $internalStates);
         $flatWorld = $openedWorld->world;
         $discovery = null;
         try {
@@ -105,6 +107,7 @@ final class ServerBootstrap
                 $flatWorld,
                 $flatPalette,
                 $pluginEvents,
+                $defaultPalette->water,
             );
             $chunkSerializer = new BedrockChunkPacketSerializer(
                 $blockTranslator = new BlockNetworkTranslator($internalStates, $networkStates),
@@ -187,7 +190,7 @@ final class ServerBootstrap
         );
     }
 
-    private function ephemeralWorld(ServerConfig $config, FixedFlatBlockPalette $palette): OpenedWorld
+    private function ephemeralWorld(ServerConfig $config, BlockStateRegistry $states): OpenedWorld
     {
         $spawnOverride = $config->spawnX === null ? null : new SpawnPosition(
             $config->spawnX,
@@ -195,9 +198,10 @@ final class ServerBootstrap
             $config->spawnZ ?? 0,
         );
         $metadata = new WorldMetadata($config->levelName, $config->levelSeed);
+        $generator = WorldGeneratorFactory::create($config->levelGenerator, $config->levelSeed, $states);
         $world = new World(
             $metadata,
-            new FlatWorldGenerator($palette),
+            $generator,
             new ChunkRepository($config->chunkCacheLimit),
             $spawnOverride,
         );

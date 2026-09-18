@@ -68,9 +68,13 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
         private int $difficulty = 2,
         private int $worldSeed = 0,
         private int $worldTime = 0,
+        private string $generatorName = 'flat',
     ) {
         if ($this->difficulty < 0 || $this->difficulty > 3) {
             throw new \InvalidArgumentException('Difficulty must be a Bedrock value between 0 and 3.');
+        }
+        if (!in_array($this->generatorName, ['default', 'flat'], true)) {
+            throw new \InvalidArgumentException('Play initialization received an unsupported world generator.');
         }
         $this->biomeDefinitions = $data->biomeDefinitions();
         $networkBlockStates = $data->blockStateRegistry();
@@ -98,6 +102,7 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
             $world->difficulty,
             $world->metadata->seed,
             $world->time,
+            $world->generatorName,
         );
     }
 
@@ -121,7 +126,7 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
                 (float) $this->spawn->x,
                 PlayerPositionProjection::feetToWireY((float) $this->spawn->y),
                 (float) $this->spawn->z,
-                'bedriox:flat',
+                'bedriox:' . $this->generatorName,
                 $this->levelName,
                 gameVersion: ProtocolVersion::GAME_VERSION,
                 blockProperties: $this->blockProperties,

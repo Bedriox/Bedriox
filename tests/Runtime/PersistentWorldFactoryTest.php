@@ -53,7 +53,8 @@ final class PersistentWorldFactoryTest extends TestCase
         self::assertSame('Fresh World', $opened->data->metadata->name);
         self::assertSame(91, $opened->data->metadata->seed);
         self::assertSame(3, $opened->data->difficulty);
-        self::assertSame([0, 64, 0], [$opened->world->spawn()->x, $opened->world->spawn()->y, $opened->world->spawn()->z]);
+        self::assertSame('default', $opened->world->generatorName());
+        self::assertGreaterThanOrEqual(63, $opened->world->spawn()->y);
         $opened->world->close();
         self::assertTrue($providers->provider?->closed);
     }

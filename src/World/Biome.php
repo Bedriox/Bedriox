@@ -20,4 +20,24 @@ final readonly class Biome
     {
         return new self('minecraft:plains');
     }
+
+    public static function forest(): self
+    {
+        return new self('minecraft:forest');
+    }
+
+    public static function desert(): self
+    {
+        return new self('minecraft:desert');
+    }
+
+    public static function ocean(): self
+    {
+        return new self('minecraft:ocean');
+    }
+
+    public static function hills(): self
+    {
+        return new self('minecraft:extreme_hills');
+    }
 }

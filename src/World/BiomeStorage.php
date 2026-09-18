@@ -52,6 +52,35 @@ final readonly class BiomeStorage
         return new self($palette, $paletteIndices);
     }
 
+    /** @param list<mixed> $columns 256 biomes in x + z * 16 order. */
+    public static function fromColumns(array $columns): self
+    {
+        if (count($columns) !== 256) {
+            throw new InvalidArgumentException('Biome columns must contain exactly 256 entries.');
+        }
+        $palette = [];
+        $byIdentifier = [];
+        $columnIndices = '';
+        foreach ($columns as $biome) {
+            if (!$biome instanceof Biome) {
+                throw new InvalidArgumentException('Biome columns contain an invalid biome.');
+            }
+            $index = $byIdentifier[$biome->identifier] ?? null;
+            if (!is_int($index)) {
+                $index = count($palette);
+                $palette[] = $biome;
+                $byIdentifier[$biome->identifier] = $index;
+            }
+            $columnIndices .= self::encodePaletteIndex($index);
+        }
+        $indices = '';
+        for ($y = 0; $y < 16; ++$y) {
+            $indices .= $columnIndices;
+        }
+
+        return new self($palette, $indices);
+    }
+
     public function biomeAt(int $localX, int $localY, int $localZ): Biome
     {
         return $this->palette[$this->paletteIndexAt($localX, $localY, $localZ)];

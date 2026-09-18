@@ -8,9 +8,11 @@ use Bedriox\Data\BedrockDataSet;
 use Bedriox\Data\LittleEndianBlockStateNbtCodec;
 use Bedriox\Data\OpaquePersistentBlockState;
 use Bedriox\Server\World\Block\BlockStateRegistry;
+use Bedriox\Server\World\Block\DefaultBlockPalette;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkPosition;
+use Bedriox\Server\World\DefaultWorldGenerator;
 use Bedriox\Server\World\FlatWorldGenerator;
 use Bedriox\Server\World\Provider\ChunkSaveData;
 use Bedriox\Server\World\Provider\Exception\CorruptChunkException;
@@ -57,6 +59,32 @@ final class LevelDbWorldProviderTest extends TestCase
         );
         self::assertSame('minecraft:plains', $loaded->chunk->biomeAt(2, 63, 5)->identifier);
         self::assertSame($chunk->finalizationState, $loaded->chunk->finalizationState);
+    }
+
+    public function testDefaultTerrainBlocksAndBiomesRoundTripThroughLevelDbMapping(): void
+    {
+        [$provider, , $registry] = self::provider();
+        $chunk = (new DefaultWorldGenerator(44, DefaultBlockPalette::fromRegistry($registry)))
+            ->generate(new ChunkPosition(-3, 5));
+
+        $provider->saveChunk(new ChunkSaveData($chunk));
+        $loaded = $provider->loadChunk($chunk->position);
+
+        self::assertNotNull($loaded);
+        for ($z = 0; $z < 16; $z += 5) {
+            for ($x = 0; $x < 16; $x += 5) {
+                foreach ([-64, 0, 32, 62, 80] as $y) {
+                    self::assertSame(
+                        $chunk->blockStateAt($x, $y, $z)->value,
+                        $loaded->chunk->blockStateAt($x, $y, $z)->value,
+                    );
+                    self::assertSame(
+                        $chunk->biomeAt($x, $y, $z)->identifier,
+                        $loaded->chunk->biomeAt($x, $y, $z)->identifier,
+                    );
+                }
+            }
+        }
     }
 
     public function testMissingChunkIsDistinctFromOrphanedAndMalformedChunkData(): void
@@ -143,6 +171,7 @@ final class LevelDbWorldProviderTest extends TestCase
             $saved = (new LevelDatStore())->load($levelDatPath);
 
             self::assertSame('Renamed World', $saved->levelName());
+            self::assertSame('Renamed World', file_get_contents($directory . DIRECTORY_SEPARATOR . 'levelname.txt'));
             self::assertSame(9876, $saved->seed());
             self::assertSame(123, $saved->time());
             self::assertSame(3, $saved->difficulty());

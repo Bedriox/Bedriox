@@ -43,6 +43,7 @@ use Bedriox\Server\Simulation\Event\PlayerJoined;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
 use Bedriox\Server\Simulation\Event\WorldEvent;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
+use Bedriox\Server\World\Block\InternalBlockStateId;
 use Bedriox\Server\World\BlockPosition;
 use Bedriox\Server\World\Collision\AxisAlignedBox;
 use Bedriox\Server\World\Collision\BlockCollisionQuery;
@@ -94,6 +95,7 @@ final class WorldSimulation
         private readonly ?World $blockWorld = null,
         private readonly ?FixedFlatBlockPalette $blockPalette = null,
         private readonly ?PluginGameplayEventBridge $pluginEvents = null,
+        private readonly ?InternalBlockStateId $waterState = null,
     ) {
         $this->commands = new SplQueue();
         $this->lifecycleCommands = new SplQueue();
@@ -101,10 +103,14 @@ final class WorldSimulation
         $this->validator = new SimulationCommandFactory($this->limits);
         $this->players = new PlayerRegistry($this->limits->maximumPlayers);
         $this->collisionResolver = $blockWorld !== null && $blockPalette !== null
-            ? new PlayerCollisionResolver(new BlockCollisionQuery($blockWorld, $blockPalette->air))
+            ? new PlayerCollisionResolver(new BlockCollisionQuery(
+                $blockWorld,
+                $blockPalette->air,
+                $waterState === null ? [] : [$waterState],
+            ))
             : null;
         $this->validator->move('spawn', 0, $spawn->x, $spawn->y, $spawn->z, 0.0, 0.0, MovementMode::STOPPED);
-        if ($spawn->y < $this->limits->flatGroundY) {
+        if ($blockWorld === null && $spawn->y < $this->limits->flatGroundY) {
             throw new InvalidArgumentException('Spawn cannot be below the flat-world surface.');
         }
     }
@@ -777,7 +783,9 @@ final class WorldSimulation
         }
         $state = $this->blockWorld->blockStateAt($position->x, $position->y, $position->z);
         if ($command->action === BlockBreakAction::Start) {
-            if ($state->value === $this->blockPalette->air->value || $state->value === $this->blockPalette->bedrock->value) {
+            if ($state->value === $this->blockPalette->air->value
+                || $state->value === $this->blockPalette->bedrock->value
+                || $state->value === $this->waterState?->value) {
                 return new CommandRejected($command->session, 'block_not_breakable');
             }
             if ($active !== null && $command->sequence <= $active['sequence']) {
@@ -800,6 +808,7 @@ final class WorldSimulation
         $stopsActiveBreak = $active !== null && $active['position']->equals($position);
         if ($state->value === $this->blockPalette->air->value
             || $state->value === $this->blockPalette->bedrock->value
+            || $state->value === $this->waterState?->value
             || ($stopsActiveBreak && $command->sequence <= $active['sequence'])) {
             unset($this->breakingBlocks[$key]);
 

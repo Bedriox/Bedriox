@@ -23,6 +23,7 @@ final class ServerConfigTest extends TestCase
         self::assertTrue($defaults->crashReportIncludePlayerIdentifiers);
         self::assertSame(6_000, $defaults->levelAutosaveIntervalTicks);
         self::assertSame(8, $defaults->chunksSavePerTick);
+        self::assertSame('default', $defaults->levelGenerator);
 
         $config = ServerConfig::fromArguments([
             '--bind=127.0.0.1',
@@ -95,6 +96,8 @@ final class ServerConfigTest extends TestCase
             '--max-players=16', '--view-distance=32', '--spawn-radius=4', '--chunks-cache-limit=65536',
         ]];
         yield 'unimplemented gamemode' => [['--default-gamemode=creative']];
+        yield 'unknown generator' => [['--generator=normal']];
+        yield 'wrong-case generator' => [['--generator=DEFAULT']];
         yield 'noncanonical boolean' => [['--protocol-trace=TRUE']];
         yield 'unknown log level' => [['--log-level=TRACE']];
         yield 'invalid console colors' => [['--log-console-colors=yes']];

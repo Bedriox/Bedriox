@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\World\Storage\LevelDb;
 
 use Bedriox\Server\World\Biome;
+use Bedriox\Server\World\BiomeRuntimeIdMap;
 use InvalidArgumentException;
 
 /** Explicitly bounded mapping between Bedrock persistent biome IDs and canonical world identities. */
@@ -17,8 +18,9 @@ final readonly class PersistentBiomeRegistry
     private array $idsByIdentifier;
 
     /** @param array<int, string> $identifiersById */
-    public function __construct(array $identifiersById = [1 => 'minecraft:plains', 2 => 'minecraft:desert'])
+    public function __construct(array $identifiersById = [])
     {
+        $identifiersById = $identifiersById === [] ? BiomeRuntimeIdMap::identifiersById() : $identifiersById;
         if ($identifiersById === [] || count($identifiersById) > 4_096) {
             throw new InvalidArgumentException('Persistent biome registry must be non-empty and bounded.');
         }

@@ -18,7 +18,7 @@ final readonly class ServerConfig
         'network.port' => '19132',
         'network.authentication' => 'FULL',
         'level.name' => 'world',
-        'level.generator' => 'flat',
+        'level.generator' => 'default',
         'level.seed' => '0',
         'level.default-gamemode' => 'survival',
         'level.difficulty' => 'normal',
@@ -90,7 +90,7 @@ final readonly class ServerConfig
         public AuthenticationMode $authenticationMode = AuthenticationMode::FULL,
         public string $motd = 'Powered by Bedriox',
         public string $levelName = 'world',
-        public string $levelGenerator = 'flat',
+        public string $levelGenerator = 'default',
         public int $levelSeed = 0,
         public string $defaultGamemode = 'survival',
         public string $difficulty = 'normal',
@@ -134,8 +134,8 @@ final readonly class ServerConfig
         if ($this->levelSeed < -2_147_483_648 || $this->levelSeed > 2_147_483_647) {
             throw new InvalidArgumentException('Level seed must fit a signed 32-bit integer.');
         }
-        if ($this->levelGenerator !== 'flat') {
-            throw new InvalidArgumentException('Level generator must currently be exactly flat.');
+        if (!in_array($this->levelGenerator, ['default', 'flat'], true)) {
+            throw new InvalidArgumentException('Level generator must be exactly default or flat.');
         }
         if ($this->defaultGamemode !== 'survival') {
             throw new InvalidArgumentException('Default gamemode must currently be exactly survival.');

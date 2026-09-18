@@ -29,6 +29,7 @@ use Bedriox\Server\World\Storage\LevelDb\LevelDbStorageException;
 use Bedriox\Server\World\Storage\LevelDb\NativeLevelDbDatabase;
 use Bedriox\Server\World\Storage\LevelDb\PersistentChunkMapper;
 use Bedriox\Server\World\Storage\LevelDb\PersistentSubChunkCodec;
+use Bedriox\Server\World\Storage\LevelNameStore;
 use Bedriox\Server\World\Storage\Nbt\LevelDatCodec;
 use Bedriox\Server\World\Storage\Nbt\LevelDatMetadata;
 use Bedriox\Server\World\Storage\Nbt\LittleEndianNbtTag;
@@ -53,6 +54,7 @@ final class LevelDbWorldProvider implements WritableWorldProvider
         BlockStateRegistry $blockStates,
         PersistentBlockStateRegistry $persistentBlockStates,
         private readonly LevelDatStore $levelDatStore = new LevelDatStore(),
+        private readonly LevelNameStore $levelNameStore = new LevelNameStore(),
     ) {
         $this->data = self::worldDataFromMetadata($levelDat);
         $stateCodec = new LittleEndianBlockStateNbtCodec($persistentBlockStates);
@@ -69,9 +71,11 @@ final class LevelDbWorldProvider implements WritableWorldProvider
         BlockStateRegistry $blockStates,
         PersistentBlockStateRegistry $persistentBlockStates,
         ?LevelDatStore $levelDatStore = null,
+        ?LevelNameStore $levelNameStore = null,
     ): self {
         self::assertNativeSupport();
         $store = $levelDatStore ?? new LevelDatStore();
+        $nameStore = $levelNameStore ?? new LevelNameStore();
         $levelDatPath = $worldPath . DIRECTORY_SEPARATOR . 'level.dat';
         try {
             $metadata = $store->load($levelDatPath);
@@ -80,14 +84,20 @@ final class LevelDbWorldProvider implements WritableWorldProvider
             throw new UnsupportedWorldFormatException($error->getMessage(), previous: $error);
         } catch (StorageCorruptWorldDataException $error) {
             throw new CorruptWorldDataException($error->getMessage(), previous: $error);
-        } catch (LevelDbIoException|LevelDbStorageException $error) {
+        } catch (WorldDataWriteException|LevelDbIoException|LevelDbStorageException $error) {
             throw new WorldStorageException($error->getMessage(), previous: $error);
         }
 
         try {
-            return new self($levelDatPath, $database, $metadata, $blockStates, $persistentBlockStates, $store);
-        } catch (CorruptWorldDataException|UnsupportedWorldFormatException $error) {
+            $provider = new self($levelDatPath, $database, $metadata, $blockStates, $persistentBlockStates, $store, $nameStore);
+            $nameStore->synchronize($worldPath . DIRECTORY_SEPARATOR . 'levelname.txt', $metadata->levelName());
+
+            return $provider;
+        } catch (CorruptWorldDataException|UnsupportedWorldFormatException|WorldDataWriteException $error) {
             $database->close();
+            if ($error instanceof WorldDataWriteException) {
+                throw new WorldStorageException('Unable to synchronize levelname.txt.', previous: $error);
+            }
             throw $error;
         }
     }
@@ -98,6 +108,7 @@ final class LevelDbWorldProvider implements WritableWorldProvider
         BlockStateRegistry $blockStates,
         PersistentBlockStateRegistry $persistentBlockStates,
         ?LevelDatStore $levelDatStore = null,
+        ?LevelNameStore $levelNameStore = null,
         ?int $createdAt = null,
     ): self {
         self::assertNativeSupport();
@@ -108,11 +119,13 @@ final class LevelDbWorldProvider implements WritableWorldProvider
             throw new WorldStorageException('Unable to create the world directory.');
         }
         $store = $levelDatStore ?? new LevelDatStore();
+        $nameStore = $levelNameStore ?? new LevelNameStore();
         $metadata = self::newMetadata($worldData, $createdAt ?? time());
         $levelDatPath = $worldPath . DIRECTORY_SEPARATOR . 'level.dat';
         try {
             $database = NativeLevelDbDatabase::open($worldPath . DIRECTORY_SEPARATOR . 'db', true);
             $store->save($levelDatPath, $metadata);
+            $nameStore->synchronize($worldPath . DIRECTORY_SEPARATOR . 'levelname.txt', $worldData->metadata->name);
         } catch (WorldDataWriteException|LevelDbIoException|LevelDbStorageException $error) {
             if (isset($database)) {
                 $database->close();
@@ -120,7 +133,7 @@ final class LevelDbWorldProvider implements WritableWorldProvider
             throw new WorldStorageException('Unable to create the LevelDB world.', previous: $error);
         }
 
-        return new self($levelDatPath, $database, $metadata, $blockStates, $persistentBlockStates, $store);
+        return new self($levelDatPath, $database, $metadata, $blockStates, $persistentBlockStates, $store, $nameStore);
     }
 
     public function worldData(): WorldData
@@ -197,7 +210,7 @@ final class LevelDbWorldProvider implements WritableWorldProvider
         $root['LevelName'] = LittleEndianNbtTag::string($worldData->metadata->name);
         $root['RandomSeed'] = LittleEndianNbtTag::long($worldData->metadata->seed);
         $root['generatorName'] = LittleEndianNbtTag::string($worldData->generatorName);
-        $root['Generator'] = LittleEndianNbtTag::int(2);
+        $root['Generator'] = LittleEndianNbtTag::int(self::legacyGeneratorId($worldData->generatorName));
         $root['SpawnX'] = LittleEndianNbtTag::int($worldData->spawn->x);
         $root['SpawnY'] = LittleEndianNbtTag::int($worldData->spawn->y);
         $root['SpawnZ'] = LittleEndianNbtTag::int($worldData->spawn->z);
@@ -211,6 +224,14 @@ final class LevelDbWorldProvider implements WritableWorldProvider
         }
         $this->levelDat = $metadata;
         $this->data = $worldData;
+        try {
+            $this->levelNameStore->synchronize(
+                dirname($this->levelDatPath) . DIRECTORY_SEPARATOR . 'levelname.txt',
+                $worldData->metadata->name,
+            );
+        } catch (WorldDataWriteException $error) {
+            throw new WorldStorageException('level.dat was saved, but levelname.txt could not be synchronized.', previous: $error);
+        }
     }
 
     public function saveChunk(ChunkSaveData $chunkData): void
@@ -313,7 +334,7 @@ final class LevelDbWorldProvider implements WritableWorldProvider
             'LevelName' => LittleEndianNbtTag::string($data->metadata->name),
             'RandomSeed' => LittleEndianNbtTag::long($data->metadata->seed),
             'generatorName' => LittleEndianNbtTag::string($data->generatorName),
-            'Generator' => LittleEndianNbtTag::int(2),
+            'Generator' => LittleEndianNbtTag::int(self::legacyGeneratorId($data->generatorName)),
             'generatorOptions' => LittleEndianNbtTag::string(''),
             'GameType' => LittleEndianNbtTag::int(0),
             'LastPlayed' => LittleEndianNbtTag::long($createdAt),
@@ -357,5 +378,14 @@ final class LevelDbWorldProvider implements WritableWorldProvider
         $version[] = 0;
 
         return $version;
+    }
+
+    private static function legacyGeneratorId(string $generatorName): int
+    {
+        return match ($generatorName) {
+            'default' => 1,
+            'flat' => 2,
+            default => throw new InvalidArgumentException("World generator \"$generatorName\" is not supported."),
+        };
     }
 }
