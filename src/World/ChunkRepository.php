@@ -20,7 +20,12 @@ final class ChunkRepository
     /** @var array<string, int> */
     private array $retainCounts = [];
 
+    /** @var array<string, int> Monotonic order in which cached chunks first became dirty. */
+    private array $dirtySince = [];
+
     private int $accessSequence = 0;
+
+    private int $dirtySequence = 0;
 
     public function __construct(private readonly int $capacity)
     {
@@ -29,8 +34,11 @@ final class ChunkRepository
         }
     }
 
-    /** @param callable(ChunkPosition): Chunk $loader */
-    public function get(ChunkPosition $position, callable $loader): Chunk
+    /**
+     * @param callable(ChunkPosition): Chunk $loader
+     * @param null|callable(Chunk): void $saver
+     */
+    public function get(ChunkPosition $position, callable $loader, ?callable $saver = null): Chunk
     {
         $key = $position->key();
         $cached = $this->chunks[$key] ?? null;
@@ -48,18 +56,24 @@ final class ChunkRepository
             throw new UnexpectedValueException('Chunk loader returned a chunk for the wrong position.');
         }
         if ($evictionCandidate !== null) {
+            $this->saveForEviction($evictionCandidate, $saver);
             unset($this->chunks[$evictionCandidate], $this->lastAccess[$evictionCandidate]);
+            unset($this->dirtySince[$evictionCandidate]);
         }
         $this->chunks[$key] = $chunk;
+        $this->trackDirtyState($key, $chunk);
         $this->touch($key);
 
         return $chunk;
     }
 
-    /** @param callable(ChunkPosition): Chunk $loader */
-    public function retain(ChunkPosition $position, callable $loader): Chunk
+    /**
+     * @param callable(ChunkPosition): Chunk $loader
+     * @param null|callable(Chunk): void $saver
+     */
+    public function retain(ChunkPosition $position, callable $loader, ?callable $saver = null): Chunk
     {
-        $chunk = $this->get($position, $loader);
+        $chunk = $this->get($position, $loader, $saver);
         $key = $position->key();
         $this->retainCounts[$key] = ($this->retainCounts[$key] ?? 0) + 1;
 
@@ -94,7 +108,57 @@ final class ChunkRepository
             throw new InvalidArgumentException('Cannot replace a chunk which has not been generated.');
         }
         $this->chunks[$key] = $chunk;
+        $this->trackDirtyState($key, $chunk);
         $this->touch($key);
+    }
+
+    /**
+     * Saves at most the requested number of dirty chunks, oldest-dirty first.
+     *
+     * The saver receives an immutable revision snapshot. Its successful return acknowledges exactly that revision;
+     * a newer replacement installed during the save remains dirty.
+     *
+     * @param callable(Chunk): void $saver
+     */
+    public function saveDirty(int $maximumChunks, callable $saver): int
+    {
+        if ($maximumChunks < 1 || $maximumChunks > $this->capacity) {
+            throw new InvalidArgumentException('Dirty chunk save limit must be between 1 and the cache capacity.');
+        }
+
+        $keys = array_keys($this->dirtySince);
+        usort($keys, fn(string $left, string $right): int => $this->dirtySince[$left] <=> $this->dirtySince[$right]);
+        $saved = 0;
+        foreach ($keys as $key) {
+            if ($saved >= $maximumChunks) {
+                break;
+            }
+            if ($this->saveKey($key, $saver)) {
+                ++$saved;
+            }
+        }
+
+        return $saved;
+    }
+
+    /** @param callable(Chunk): void $saver */
+    public function flush(callable $saver): int
+    {
+        $saved = 0;
+        while ($this->dirtySince !== []) {
+            $before = count($this->dirtySince);
+            $saved += $this->saveDirty($this->capacity, $saver);
+            if (count($this->dirtySince) >= $before) {
+                throw new UnexpectedValueException('Chunk revisions changed while the cache was being flushed.');
+            }
+        }
+
+        return $saved;
+    }
+
+    public function dirtyCount(): int
+    {
+        return count($this->dirtySince);
     }
 
     public function count(): int
@@ -109,7 +173,9 @@ final class ChunkRepository
         }
         $this->chunks = [];
         $this->lastAccess = [];
+        $this->dirtySince = [];
         $this->accessSequence = 0;
+        $this->dirtySequence = 0;
     }
 
     private function touch(string $key): void
@@ -132,5 +198,57 @@ final class ChunkRepository
         }
 
         return $candidate;
+    }
+
+    /** @param null|callable(Chunk): void $saver */
+    private function saveForEviction(string $key, ?callable $saver): void
+    {
+        $chunk = $this->chunks[$key];
+        if (!$chunk->isDirty()) {
+            return;
+        }
+        if ($saver === null) {
+            throw new OverflowException('Cannot evict a dirty chunk without a persistence saver.');
+        }
+        $this->saveKey($key, $saver);
+        if (($this->chunks[$key] ?? null)?->isDirty() === true) {
+            throw new OverflowException('Cannot evict a chunk which changed while it was being saved.');
+        }
+    }
+
+    /** @param callable(Chunk): void $saver */
+    private function saveKey(string $key, callable $saver): bool
+    {
+        $snapshot = $this->chunks[$key] ?? null;
+        if (!$snapshot instanceof Chunk || !$snapshot->isDirty()) {
+            unset($this->dirtySince[$key]);
+
+            return false;
+        }
+
+        $saver($snapshot);
+        if (!array_key_exists($key, $this->chunks)) {
+            throw new UnexpectedValueException('A chunk disappeared while its save was in progress.');
+        }
+        $current = $this->chunks[$key];
+        if ($current->revision < $snapshot->revision) {
+            throw new UnexpectedValueException('A chunk revision moved backwards while its save was in progress.');
+        }
+
+        $acknowledged = $current->withPersistedRevision($snapshot->revision);
+        $this->chunks[$key] = $acknowledged;
+        $this->trackDirtyState($key, $acknowledged);
+
+        return true;
+    }
+
+    private function trackDirtyState(string $key, Chunk $chunk): void
+    {
+        if (!$chunk->isDirty()) {
+            unset($this->dirtySince[$key]);
+
+            return;
+        }
+        $this->dirtySince[$key] ??= ++$this->dirtySequence;
     }
 }

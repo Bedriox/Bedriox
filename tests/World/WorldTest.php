@@ -9,9 +9,13 @@ use Bedriox\Server\World\Biome;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\BlockOverrideStore;
+use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\ChunkRepository;
 use Bedriox\Server\World\FlatWorldGenerator;
+use Bedriox\Server\World\Provider\Exception\CorruptChunkException;
+use Bedriox\Server\World\Provider\Exception\WorldStorageException;
+use Bedriox\Server\World\Provider\WorldData;
 use Bedriox\Server\World\SpawnPosition;
 use Bedriox\Server\World\World;
 use Bedriox\Server\World\WorldMetadata;
@@ -112,11 +116,160 @@ final class WorldTest extends TestCase
         new Biome('plains');
     }
 
+    public function testProviderChunkLoadsBeforeGeneration(): void
+    {
+        [$palette, $generator] = $this->flatWorldDependencies();
+        $position = new ChunkPosition(3, -2);
+        $persisted = $generator->generate($position)->withBlockState(0, 63, 0, $palette->air);
+        $persisted = $persisted->withPersistedRevision($persisted->revision);
+        $provider = $this->provider();
+        $provider->seed($persisted);
+        $world = new World(
+            new WorldMetadata('world', 0),
+            $generator,
+            new ChunkRepository(4),
+            provider: $provider,
+        );
+
+        self::assertSame($palette->air->value, $world->chunk($position)->blockStateAt(0, 63, 0)->value);
+        self::assertSame(0, $world->dirtyChunkCount());
+    }
+
+    public function testGeneratedAndChangedChunksPersistAcrossEviction(): void
+    {
+        [$palette, $generator] = $this->flatWorldDependencies();
+        $provider = $this->provider();
+        $world = new World(
+            new WorldMetadata('world', 0),
+            $generator,
+            new ChunkRepository(1),
+            provider: $provider,
+        );
+        $first = new ChunkPosition(0, 0);
+
+        self::assertSame($palette->grassBlock->value, $world->blockStateAt(0, 63, 0)->value);
+        $world->setBlockState(0, 63, 0, $palette->air);
+        $world->chunk(new ChunkPosition(1, 0));
+
+        self::assertArrayHasKey($first->key(), $provider->chunks);
+        self::assertSame($palette->air->value, $world->blockStateAt(0, 63, 0)->value);
+    }
+
+    public function testUpgradedProviderChunkIsScheduledForPersistence(): void
+    {
+        [, $generator] = $this->flatWorldDependencies();
+        $position = new ChunkPosition(2, 3);
+        $provider = $this->provider();
+        $provider->seed($generator->generate($position));
+        $provider->upgradedChunks[$position->key()] = true;
+        $world = new World(
+            new WorldMetadata('world', 0),
+            $generator,
+            new ChunkRepository(4),
+            provider: $provider,
+        );
+
+        $loaded = $world->chunk($position);
+
+        self::assertSame(Chunk::DIRTY_ALL, $loaded->dirtyFlags);
+        self::assertSame(1, $loaded->revision);
+        self::assertSame(1, $world->dirtyChunkCount());
+    }
+
+    public function testProviderCorruptionPropagatesWithoutGenerationFallback(): void
+    {
+        [, $generator] = $this->flatWorldDependencies();
+        $provider = $this->provider();
+        $position = new ChunkPosition(-4, 7);
+        $provider->corruptChunks[$position->key()] = true;
+        $world = new World(
+            new WorldMetadata('world', 0),
+            $generator,
+            new ChunkRepository(4),
+            provider: $provider,
+        );
+
+        $this->expectException(CorruptChunkException::class);
+        $world->chunk($position);
+    }
+
+    public function testAutosaveIsBoundedAndFailedSavesRemainDirty(): void
+    {
+        [, $generator] = $this->flatWorldDependencies();
+        $provider = $this->provider();
+        $world = new World(
+            new WorldMetadata('world', 0),
+            $generator,
+            new ChunkRepository(4),
+            provider: $provider,
+        );
+        $world->chunk(new ChunkPosition(0, 0));
+        $world->chunk(new ChunkPosition(1, 0));
+
+        self::assertSame(1, $world->autosave(1));
+        self::assertSame(1, $world->dirtyChunkCount());
+        $provider->failSaves = true;
+        try {
+            $world->autosave(1);
+            self::fail('Injected provider failure was ignored.');
+        } catch (WorldStorageException) {
+            self::assertSame(1, $world->dirtyChunkCount());
+        }
+    }
+
+    public function testCloseFlushesChunksAndWorldMetadataBeforeClosingProvider(): void
+    {
+        [, $generator] = $this->flatWorldDependencies();
+        $persistedSpawn = new SpawnPosition(12, 80, -7);
+        $provider = new InMemoryWorldProvider(new WorldData(
+            new WorldMetadata('world', 0),
+            'flat',
+            $persistedSpawn,
+            9001,
+        ));
+        $world = new World(
+            new WorldMetadata('world', 0),
+            $generator,
+            new ChunkRepository(4),
+            provider: $provider,
+        );
+        $world->chunk(new ChunkPosition(0, 0));
+        self::assertSame($persistedSpawn, $world->spawn());
+
+        $world->close();
+        $world->close();
+
+        self::assertTrue($provider->closed);
+        self::assertSame(1, $provider->closeCalls);
+        self::assertCount(1, $provider->chunks);
+        self::assertSame(0, $world->dirtyChunkCount());
+        self::assertSame('flat', $provider->data->generatorName);
+        self::assertSame(9001, $provider->data->time);
+    }
+
     private function world(?SpawnPosition $override = null): World
     {
         $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
         $generator = new FlatWorldGenerator(FixedFlatBlockPalette::fromRegistry($registry));
 
         return new World(new WorldMetadata('world', 0), $generator, new ChunkRepository(4), $override);
+    }
+
+    /** @return array{FixedFlatBlockPalette, FlatWorldGenerator} */
+    private function flatWorldDependencies(): array
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+
+        return [$palette, new FlatWorldGenerator($palette)];
+    }
+
+    private function provider(): InMemoryWorldProvider
+    {
+        return new InMemoryWorldProvider(new WorldData(
+            new WorldMetadata('world', 0),
+            'flat',
+            new SpawnPosition(0, 64, 0),
+        ));
     }
 }

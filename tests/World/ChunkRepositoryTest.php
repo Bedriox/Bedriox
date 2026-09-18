@@ -83,4 +83,104 @@ final class ChunkRepositoryTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
         (new ChunkRepository(1))->release(new ChunkPosition(0, 0));
     }
+
+    public function testDirtyChunkIsSavedBeforeEviction(): void
+    {
+        $air = new InternalBlockStateId(0);
+        $solid = new InternalBlockStateId(1);
+        $repository = new ChunkRepository(1);
+        $first = new ChunkPosition(0, 0);
+        $repository->get($first, static fn(ChunkPosition $position): Chunk => new Chunk($position, $air, []));
+        $repository->replace($repository->get($first, self::failLoader(...))->withBlockState(1, 0, 1, $solid));
+        $saved = [];
+
+        $repository->get(
+            new ChunkPosition(1, 0),
+            static fn(ChunkPosition $position): Chunk => new Chunk($position, $air, []),
+            static function (Chunk $chunk) use (&$saved): void {
+                $saved[] = [$chunk->position->key(), $chunk->revision];
+            },
+        );
+
+        self::assertSame([['0:0', 1]], $saved);
+        self::assertFalse($repository->contains($first));
+    }
+
+    public function testFailedEvictionSavePreservesCachedChunk(): void
+    {
+        $air = new InternalBlockStateId(0);
+        $solid = new InternalBlockStateId(1);
+        $repository = new ChunkRepository(1);
+        $first = new ChunkPosition(0, 0);
+        $second = new ChunkPosition(1, 0);
+        $repository->get($first, static fn(ChunkPosition $position): Chunk => new Chunk($position, $air, []));
+        $repository->replace($repository->get($first, self::failLoader(...))->withBlockState(1, 0, 1, $solid));
+
+        try {
+            $repository->get(
+                $second,
+                static fn(ChunkPosition $position): Chunk => new Chunk($position, $air, []),
+                static function (): never {
+                    throw new \RuntimeException('Injected save failure.');
+                },
+            );
+            self::fail('A failed save allowed dirty eviction.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('Injected save failure.', $exception->getMessage());
+        }
+
+        self::assertTrue($repository->contains($first));
+        self::assertFalse($repository->contains($second));
+        self::assertSame(1, $repository->dirtyCount());
+    }
+
+    public function testBoundedAutosaveUsesOldestDirtyOrder(): void
+    {
+        $air = new InternalBlockStateId(0);
+        $solid = new InternalBlockStateId(1);
+        $repository = new ChunkRepository(2);
+        $first = new ChunkPosition(0, 0);
+        $second = new ChunkPosition(1, 0);
+        foreach ([$first, $second] as $position) {
+            $repository->get($position, static fn(ChunkPosition $requested): Chunk => new Chunk($requested, $air, []));
+            $repository->replace(
+                $repository->get($position, self::failLoader(...))->withBlockState(1, 0, 1, $solid),
+            );
+        }
+        $saved = [];
+
+        self::assertSame(1, $repository->saveDirty(1, static function (Chunk $chunk) use (&$saved): void {
+            $saved[] = $chunk->position->key();
+        }));
+
+        self::assertSame(['0:0'], $saved);
+        self::assertSame(1, $repository->dirtyCount());
+    }
+
+    public function testSaveAcknowledgesOnlyTheCapturedRevision(): void
+    {
+        $air = new InternalBlockStateId(0);
+        $firstState = new InternalBlockStateId(1);
+        $secondState = new InternalBlockStateId(2);
+        $position = new ChunkPosition(0, 0);
+        $repository = new ChunkRepository(1);
+        $repository->get($position, static fn(ChunkPosition $requested): Chunk => new Chunk($requested, $air, []));
+        $repository->replace(
+            $repository->get($position, self::failLoader(...))->withBlockState(1, 0, 1, $firstState),
+        );
+
+        $repository->saveDirty(1, function (Chunk $snapshot) use ($repository, $secondState): void {
+            $repository->replace($snapshot->withBlockState(2, 0, 2, $secondState));
+        });
+
+        $current = $repository->get($position, self::failLoader(...));
+        self::assertSame(2, $current->revision);
+        self::assertSame(1, $current->persistedRevision);
+        self::assertTrue($current->isDirty());
+    }
+
+    private static function failLoader(ChunkPosition $_position): never
+    {
+        throw new \LogicException('Cached chunk unexpectedly invoked its loader.');
+    }
 }
