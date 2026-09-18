@@ -12,6 +12,7 @@ use Bedriox\Server\World\Provider\WritableWorldProvider;
 use Closure;
 use InvalidArgumentException;
 use LogicException;
+use Throwable;
 
 final class World
 {
@@ -136,11 +137,25 @@ final class World
         if ($this->closed) {
             return;
         }
-        if ($this->provider instanceof WritableWorldProvider) {
-            $this->flush();
+
+        $failure = null;
+        try {
+            if ($this->provider instanceof WritableWorldProvider) {
+                $this->flush();
+            }
+        } catch (Throwable $error) {
+            $failure = $error;
         }
-        $this->provider?->close();
-        $this->closed = true;
+        try {
+            $this->provider?->close();
+        } catch (Throwable $error) {
+            $failure ??= $error;
+        } finally {
+            $this->closed = true;
+        }
+        if ($failure !== null) {
+            throw $failure;
+        }
     }
 
     public function dirtyChunkCount(): int

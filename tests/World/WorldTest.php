@@ -247,6 +247,31 @@ final class WorldTest extends TestCase
         self::assertSame(9001, $provider->data->time);
     }
 
+    public function testCloseReleasesProviderAfterDurabilityFailureAndRemainsIdempotent(): void
+    {
+        [, $generator] = $this->flatWorldDependencies();
+        $provider = $this->provider();
+        $world = new World(
+            new WorldMetadata('world', 0),
+            $generator,
+            new ChunkRepository(4),
+            provider: $provider,
+        );
+        $world->chunk(new ChunkPosition(0, 0));
+        $provider->failSaves = true;
+
+        try {
+            $world->close();
+            self::fail('A failed durability flush was ignored.');
+        } catch (WorldStorageException) {
+            self::assertTrue($provider->closed);
+            self::assertSame(1, $provider->closeCalls);
+        }
+
+        $world->close();
+        self::assertSame(1, $provider->closeCalls);
+    }
+
     private function world(?SpawnPosition $override = null): World
     {
         $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
