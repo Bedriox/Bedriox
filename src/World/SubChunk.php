@@ -12,49 +12,36 @@ final readonly class SubChunk
 {
     public const EDGE_LENGTH = 16;
     public const BLOCK_COUNT = 4096;
-    private const MAX_PALETTE_SIZE = 256;
+    private const MAX_STORAGE_LAYERS = 255;
 
-    /** @var list<InternalBlockStateId> */
-    private array $palette;
-
-    /** One unsigned byte per block, indexed as x + (z * 16) + (y * 256). */
-    private string $paletteIndices;
+    /** @var non-empty-list<SubChunkBlockStorage> */
+    private array $blockStorageLayers;
 
     /**
-     * @param list<mixed> $palette
+     * @param list<mixed> $blockStorageLayers
      */
     private function __construct(
         public int $sectionY,
-        array $palette,
-        string $paletteIndices,
+        array $blockStorageLayers,
     ) {
         if ($sectionY < Chunk::MIN_SECTION_Y || $sectionY > Chunk::MAX_SECTION_Y) {
             throw new InvalidArgumentException('Subchunk Y is outside the supported overworld height.');
         }
-        if ($palette === [] || count($palette) > self::MAX_PALETTE_SIZE) {
-            throw new InvalidArgumentException('Subchunk palette must contain between 1 and 256 states.');
+        if ($blockStorageLayers === [] || count($blockStorageLayers) > self::MAX_STORAGE_LAYERS) {
+            throw new InvalidArgumentException('Subchunk must contain between 1 and 255 block-storage layers.');
         }
-        if (strlen($paletteIndices) !== self::BLOCK_COUNT) {
-            throw new InvalidArgumentException('Subchunk palette-index storage must contain exactly 4096 bytes.');
-        }
-        foreach ($palette as $state) {
-            if (!$state instanceof InternalBlockStateId) {
-                throw new InvalidArgumentException('Subchunk palette contains an invalid internal state ID.');
+        foreach ($blockStorageLayers as $storage) {
+            if (!$storage instanceof SubChunkBlockStorage) {
+                throw new InvalidArgumentException('Subchunk contains an invalid block-storage layer.');
             }
         }
-        $paletteSize = count($palette);
-        for ($offset = 0; $offset < self::BLOCK_COUNT; ++$offset) {
-            if (ord($paletteIndices[$offset]) >= $paletteSize) {
-                throw new InvalidArgumentException('Subchunk contains an out-of-range palette index.');
-            }
-        }
-        $this->palette = $palette;
-        $this->paletteIndices = $paletteIndices;
+        /** @var non-empty-list<SubChunkBlockStorage> $blockStorageLayers */
+        $this->blockStorageLayers = $blockStorageLayers;
     }
 
     public static function uniform(int $sectionY, InternalBlockStateId $state): self
     {
-        return new self($sectionY, [$state], str_repeat("\x00", self::BLOCK_COUNT));
+        return new self($sectionY, [SubChunkBlockStorage::uniform($state)]);
     }
 
     /**
@@ -68,49 +55,41 @@ final readonly class SubChunk
             throw new InvalidArgumentException('A layered subchunk must define exactly 16 layers.');
         }
 
-        $palette = [];
-        $indicesByStateId = [];
-        $indices = '';
-        foreach ($layers as $state) {
-            if (!$state instanceof InternalBlockStateId) {
-                throw new InvalidArgumentException('A subchunk layer contains an invalid internal state ID.');
-            }
-            $stateKey = (string) $state->value;
-            $paletteIndex = $indicesByStateId[$stateKey] ?? null;
-            if (!is_int($paletteIndex)) {
-                $paletteIndex = count($palette);
-                $palette[] = $state;
-                $indicesByStateId[$stateKey] = $paletteIndex;
-            }
-            $indices .= str_repeat(chr($paletteIndex), self::EDGE_LENGTH * self::EDGE_LENGTH);
-        }
+        return new self($sectionY, [SubChunkBlockStorage::layered($layers)]);
+    }
 
-        return new self($sectionY, $palette, $indices);
+    /** @param list<mixed> $blockStorageLayers */
+    public static function fromBlockStorageLayers(int $sectionY, array $blockStorageLayers): self
+    {
+        return new self($sectionY, $blockStorageLayers);
     }
 
     public function blockStateAt(int $localX, int $localY, int $localZ): InternalBlockStateId
     {
-        self::validateLocalCoordinate($localX);
-        self::validateLocalCoordinate($localY);
-        self::validateLocalCoordinate($localZ);
-        $offset = $localX + ($localZ * self::EDGE_LENGTH) + ($localY * self::EDGE_LENGTH * self::EDGE_LENGTH);
-
-        return $this->palette[ord($this->paletteIndices[$offset])];
+        return $this->blockStorageLayers[0]->blockStateAt($localX, $localY, $localZ);
     }
 
     /** @return list<InternalBlockStateId> */
     public function palette(): array
     {
-        return $this->palette;
+        return $this->blockStorageLayers[0]->palette();
     }
 
     public function paletteIndexAt(int $localX, int $localY, int $localZ): int
     {
-        self::validateLocalCoordinate($localX);
-        self::validateLocalCoordinate($localY);
-        self::validateLocalCoordinate($localZ);
+        return $this->blockStorageLayers[0]->paletteIndexAt($localX, $localY, $localZ);
+    }
 
-        return ord($this->paletteIndices[$localX + ($localZ * self::EDGE_LENGTH) + ($localY * 256)]);
+    /** @return non-empty-list<SubChunkBlockStorage> */
+    public function blockStorageLayers(): array
+    {
+        return $this->blockStorageLayers;
+    }
+
+    public function blockStorageLayer(int $index): SubChunkBlockStorage
+    {
+        return $this->blockStorageLayers[$index]
+            ?? throw new InvalidArgumentException('Subchunk block-storage layer does not exist.');
     }
 
     /** Returns a new immutable section with exactly one cell replaced. */
@@ -120,42 +99,24 @@ final readonly class SubChunk
         int $localZ,
         InternalBlockStateId $state,
     ): self {
-        self::validateLocalCoordinate($localX);
-        self::validateLocalCoordinate($localY);
-        self::validateLocalCoordinate($localZ);
-        $offset = $localX + ($localZ * self::EDGE_LENGTH) + ($localY * 256);
-        if ($this->palette[ord($this->paletteIndices[$offset])]->value === $state->value) {
-            return $this;
-        }
-
-        $palette = $this->palette;
-        $paletteIndex = null;
-        foreach ($palette as $index => $candidate) {
-            if ($candidate->value === $state->value) {
-                $paletteIndex = $index;
-                break;
-            }
-        }
-        if ($paletteIndex === null) {
-            if (count($palette) >= self::MAX_PALETTE_SIZE) {
-                throw new InvalidArgumentException('Subchunk palette cannot accept another state.');
-            }
-            $paletteIndex = count($palette);
-            $palette[] = $state;
-        }
-        if ($paletteIndex > 0xff) {
-            throw new InvalidArgumentException('Subchunk palette index cannot fit its byte storage.');
-        }
-        $indices = $this->paletteIndices;
-        $indices[$offset] = chr($paletteIndex);
-
-        return new self($this->sectionY, $palette, $indices);
+        return $this->withBlockStateInLayer(0, $localX, $localY, $localZ, $state);
     }
 
-    private static function validateLocalCoordinate(int $coordinate): void
-    {
-        if ($coordinate < 0 || $coordinate >= self::EDGE_LENGTH) {
-            throw new InvalidArgumentException('Local subchunk coordinates must be between 0 and 15.');
+    public function withBlockStateInLayer(
+        int $layer,
+        int $localX,
+        int $localY,
+        int $localZ,
+        InternalBlockStateId $state,
+    ): self {
+        $storage = $this->blockStorageLayer($layer);
+        $replacement = $storage->withBlockState($localX, $localY, $localZ, $state);
+        if ($replacement === $storage) {
+            return $this;
         }
+        $layers = $this->blockStorageLayers;
+        $layers[$layer] = $replacement;
+
+        return new self($this->sectionY, array_values($layers));
     }
 }
