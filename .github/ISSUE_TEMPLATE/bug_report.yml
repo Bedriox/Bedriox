@@ -1,0 +1,31 @@
+name: Bug report
+description: Report a reproducible Bedriox defect. Do not disclose security vulnerabilities here.
+body:
+  - type: markdown
+    attributes:
+      value: Security issues must follow SECURITY.md instead of this public template.
+  - type: input
+    id: revision
+    attributes:
+      label: Bedriox version or revision
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, PHP version, Bedrock client version, and configuration relevant to the problem.
+    validations:
+      required: true

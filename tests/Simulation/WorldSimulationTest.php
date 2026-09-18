@@ -1,0 +1,1299 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Bedriox\Server\Tests\Simulation;
+
+use Bedriox\Data\BedrockDataSet;
+use Bedriox\Server\Player\InventoryContainer;
+use Bedriox\Server\Player\InventoryResponseMode;
+use Bedriox\Server\Player\InventorySlotReference;
+use Bedriox\Server\Player\InventoryStackRequestAction;
+use Bedriox\Server\Player\InventoryStackRequestActionType;
+use Bedriox\Server\Simulation\BlockBreakAction;
+use Bedriox\Server\Simulation\Command\JoinPlayer as UnvalidatedJoinPlayer;
+use Bedriox\Server\Simulation\Event\BlockBreakStarted;
+use Bedriox\Server\Simulation\Event\BlockChanged;
+use Bedriox\Server\Simulation\Event\BlockPlaced;
+use Bedriox\Server\Simulation\Event\BlockPlacementCorrected;
+use Bedriox\Server\Simulation\Event\ChatBroadcast;
+use Bedriox\Server\Simulation\Event\CommandRejected;
+use Bedriox\Server\Simulation\Event\HeldItemChanged;
+use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
+use Bedriox\Server\Simulation\Event\MovementCorrected;
+use Bedriox\Server\Simulation\Event\PlayerDisconnected;
+use Bedriox\Server\Simulation\Event\PlayerJoined;
+use Bedriox\Server\Simulation\Event\PlayerMoved;
+use Bedriox\Server\Simulation\MovementMode;
+use Bedriox\Server\Simulation\Position;
+use Bedriox\Server\Simulation\SimulationCommandFactory;
+use Bedriox\Server\Simulation\SimulationLimits;
+use Bedriox\Server\Simulation\VerticalState;
+use Bedriox\Server\Simulation\WorldSimulation;
+use Bedriox\Server\World\Block\BlockStateRegistry;
+use Bedriox\Server\World\Block\FixedFlatBlockPalette;
+use Bedriox\Server\World\BlockOverrideStore;
+use Bedriox\Server\World\BlockPosition;
+use Bedriox\Server\World\ChunkRepository;
+use Bedriox\Server\World\FlatWorldGenerator;
+use Bedriox\Server\World\World;
+use Bedriox\Server\World\WorldMetadata;
+use PHPUnit\Framework\TestCase;
+
+final class WorldSimulationTest extends TestCase
+{
+    public function testGrassBreakRevalidatesAuthoritativeWorldWhenTheClientPredictsCompletion(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $blocks = new World(
+            new WorldMetadata('break-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+        );
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation(blockWorld: $blocks, blockPalette: $palette);
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        self::assertTrue($world->enqueue($factory->join('two', 'identity-two', 'Two')));
+        $world->tick();
+        $position = new BlockPosition(1, 63, 0);
+
+        self::assertTrue($world->enqueue($factory->breakBlock('one', 1, BlockBreakAction::Start, $position, 1)));
+        $started = $world->tick()->events[0];
+        self::assertInstanceOf(BlockBreakStarted::class, $started);
+        self::assertSame(3640, $started->breakRate);
+        self::assertSame(['one', 'two'], $started->recipients());
+
+        self::assertTrue($world->enqueue($factory->breakBlock('one', 2, BlockBreakAction::Complete, $position, 1)));
+        $changed = $world->tick()->events[0];
+        self::assertInstanceOf(BlockChanged::class, $changed);
+        self::assertSame(['one', 'two'], $changed->recipients());
+        self::assertSame($palette->air->value, $changed->state->value);
+        self::assertSame($palette->air->value, $blocks->blockStateAt(1, 63, 0)->value);
+
+        $withoutStart = new BlockPosition(2, 63, 0);
+        self::assertTrue($world->enqueue($factory->breakBlock('one', 3, BlockBreakAction::Complete, $withoutStart, 1)));
+        $predicted = $world->tick()->events[0];
+        self::assertInstanceOf(BlockChanged::class, $predicted);
+        self::assertFalse($predicted->stopBreaking);
+        self::assertSame($palette->air->value, $predicted->state->value);
+        self::assertSame($palette->air->value, $blocks->blockStateAt(2, 63, 0)->value);
+    }
+
+    public function testConcurrentBreakCompletionCorrectsThePlayerWhoLostTheRace(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $blocks = new World(
+            new WorldMetadata('break-race-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+        );
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation(blockWorld: $blocks, blockPalette: $palette);
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        self::assertTrue($world->enqueue($factory->join('two', 'identity-two', 'Two')));
+        $world->tick();
+        $position = new BlockPosition(1, 63, 0);
+        self::assertTrue($world->enqueue($factory->breakBlock('one', 1, BlockBreakAction::Start, $position, 1)));
+        self::assertTrue($world->enqueue($factory->breakBlock('two', 1, BlockBreakAction::Start, $position, 1)));
+        self::assertCount(2, $world->tick()->events);
+        for ($tick = 0; $tick < 17; ++$tick) {
+            $world->tick();
+        }
+
+        self::assertTrue($world->enqueue($factory->breakBlock('one', 2, BlockBreakAction::Complete, $position, 1)));
+        self::assertTrue($world->enqueue($factory->breakBlock('two', 2, BlockBreakAction::Complete, $position, 1)));
+        $events = $world->tick()->events;
+        self::assertCount(2, $events);
+        self::assertInstanceOf(BlockChanged::class, $events[0]);
+        self::assertSame(['one', 'two'], $events[0]->recipients());
+        self::assertSame($palette->air->value, $events[0]->state->value);
+        self::assertInstanceOf(BlockChanged::class, $events[1]);
+        self::assertSame(['two'], $events[1]->recipients());
+        self::assertSame($palette->air->value, $events[1]->state->value);
+    }
+
+    public function testBlockOverrideExhaustionCorrectsOnlyTheOwnerWithoutCrashingTheWorld(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $blocks = new World(
+            new WorldMetadata('break-capacity-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+            overrides: new BlockOverrideStore(1),
+        );
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation(blockWorld: $blocks, blockPalette: $palette);
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        $world->tick();
+
+        foreach ([new BlockPosition(1, 63, 0), new BlockPosition(2, 63, 0)] as $index => $position) {
+            $sequence = ($index * 2) + 1;
+            self::assertTrue($world->enqueue($factory->breakBlock('one', $sequence, BlockBreakAction::Start, $position, 1)));
+            $world->tick();
+            for ($tick = 0; $tick < 17; ++$tick) {
+                $world->tick();
+            }
+            self::assertTrue($world->enqueue($factory->breakBlock('one', $sequence + 1, BlockBreakAction::Complete, $position, 1)));
+            $events = $world->tick()->events;
+            self::assertCount(1, $events);
+            self::assertInstanceOf(BlockChanged::class, $events[0]);
+        }
+
+        self::assertSame($palette->air->value, $blocks->blockStateAt(1, 63, 0)->value);
+        self::assertSame($palette->grassBlock->value, $blocks->blockStateAt(2, 63, 0)->value);
+    }
+
+    public function testGrassPlacementUsesAuthoritativeServerInventoryAndDecrementsOnlyTheOwnersStack(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $blocks = new World(
+            new WorldMetadata('placement-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+        );
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation(blockWorld: $blocks, blockPalette: $palette);
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        self::assertTrue($world->enqueue($factory->join('two', 'identity-two', 'Two')));
+        $world->tick();
+        $clicked = new BlockPosition(1, 63, 0);
+        $breaking = new BlockPosition(3, 63, 0);
+        self::assertTrue($world->enqueue($factory->breakBlock('one', 1, BlockBreakAction::Start, $breaking, 1)));
+        $started = $world->tick()->events[0];
+        self::assertInstanceOf(BlockBreakStarted::class, $started);
+
+        self::assertTrue($world->enqueue($factory->placeBlock(
+            'one',
+            1,
+            $clicked,
+            1,
+            0,
+            0,
+            0.5,
+            1.0,
+            0.5,
+        )));
+        $event = $world->tick()->events[0];
+        self::assertInstanceOf(BlockPlaced::class, $event);
+        self::assertSame(['one', 'two'], $event->recipients());
+        self::assertSame([1, 64, 0], [$event->position->x, $event->position->y, $event->position->z]);
+        self::assertSame(63, $event->remainingStack?->count);
+        self::assertEquals($breaking, $event->stoppedBreakingPosition);
+        self::assertSame($palette->grassBlock->value, $blocks->blockStateAt(1, 64, 0)->value);
+
+        self::assertTrue($world->enqueue($factory->placeBlock(
+            'two',
+            1,
+            new BlockPosition(2, 63, 0),
+            1,
+            0,
+            0,
+            0.5,
+            1.0,
+            0.5,
+        )));
+        $second = $world->tick()->events[0];
+        self::assertInstanceOf(BlockPlaced::class, $second);
+        self::assertSame(63, $second->remainingStack?->count);
+    }
+
+    public function testPlacementRejectsCollisionAndRepairsBothBlocksAndInventory(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $blocks = new World(
+            new WorldMetadata('placement-collision-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+        );
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation(blockWorld: $blocks, blockPalette: $palette);
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        $world->tick();
+
+        self::assertTrue($world->enqueue($factory->placeBlock(
+            'one',
+            1,
+            new BlockPosition(0, 63, 0),
+            1,
+            0,
+            0,
+            0.5,
+            1.0,
+            0.5,
+        )));
+        $event = $world->tick()->events[0];
+        self::assertInstanceOf(BlockPlacementCorrected::class, $event);
+        self::assertSame('collision', $event->reason);
+        self::assertSame(['one'], $event->recipients());
+        self::assertSame($palette->grassBlock->value, $event->clickedState->value);
+        self::assertSame($palette->air->value, $event->placedState->value);
+        self::assertSame(64, $event->heldStack?->count);
+        self::assertSame($palette->air->value, $blocks->blockStateAt(0, 64, 0)->value);
+    }
+
+    public function testPlacementUsesTheCanonicalOffsetForEveryBlockFace(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $blocks = new World(
+            new WorldMetadata('placement-faces-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+        );
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation(blockWorld: $blocks, blockPalette: $palette);
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        $world->tick();
+        $cases = [
+            [0, new BlockPosition(2, 65, 0), [2, 64, 0]],
+            [1, new BlockPosition(2, 63, 2), [2, 64, 2]],
+            [2, new BlockPosition(-2, 64, 2), [-2, 64, 1]],
+            [3, new BlockPosition(-2, 64, -2), [-2, 64, -1]],
+            [4, new BlockPosition(2, 64, -2), [1, 64, -2]],
+            [5, new BlockPosition(-3, 65, 0), [-2, 65, 0]],
+        ];
+        foreach ($cases as [, $clicked]) {
+            $blocks->setBlockState($clicked->x, $clicked->y, $clicked->z, $palette->grassBlock);
+        }
+
+        foreach ($cases as $index => [$face, $clicked, $expected]) {
+            self::assertTrue($world->enqueue($factory->placeBlock(
+                'one',
+                $index + 1,
+                $clicked,
+                $face,
+                0,
+                0,
+                0.5,
+                0.5,
+                0.5,
+            )));
+            $event = $world->tick()->events[0];
+            self::assertInstanceOf(BlockPlaced::class, $event);
+            self::assertSame($expected, [$event->position->x, $event->position->y, $event->position->z]);
+            self::assertSame(63 - $index, $event->remainingStack?->count);
+        }
+    }
+
+    public function testPlacementCapacityFailureDoesNotConsumeTheHeldStack(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $blocks = new World(
+            new WorldMetadata('placement-capacity-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+            overrides: new BlockOverrideStore(1),
+        );
+        $blocks->setBlockState(3, 63, 0, $palette->air);
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation(blockWorld: $blocks, blockPalette: $palette);
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->placeBlock(
+            'one',
+            1,
+            new BlockPosition(2, 63, 0),
+            1,
+            0,
+            0,
+            0.5,
+            1.0,
+            0.5,
+        )));
+
+        $event = $world->tick()->events[0];
+        self::assertInstanceOf(BlockPlacementCorrected::class, $event);
+        self::assertSame('capacity', $event->reason);
+        self::assertSame(64, $event->heldStack?->count);
+        self::assertSame($palette->air->value, $blocks->blockStateAt(2, 64, 0)->value);
+    }
+
+    public function testPerfectClientPredictionCannotPlaceFromAnEmptyServerSlot(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $blocks = new World(
+            new WorldMetadata('placement-empty-slot-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+        );
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation(blockWorld: $blocks, blockPalette: $palette);
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        self::assertTrue($world->enqueue($factory->selectHotbarSlot('one', 8)));
+        $world->tick();
+
+        self::assertTrue($world->enqueue($factory->placeBlock(
+            'one',
+            1,
+            new BlockPosition(2, 63, 0),
+            1,
+            8,
+            0,
+            0.5,
+            1.0,
+            0.5,
+        )));
+        $event = $world->tick()->events[0];
+        self::assertInstanceOf(BlockPlacementCorrected::class, $event);
+        self::assertSame('empty_hand', $event->reason);
+        self::assertNull($event->heldStack);
+        self::assertSame($palette->air->value, $blocks->blockStateAt(2, 64, 0)->value);
+    }
+
+    public function testHotbarSelectionChangesOnlyAuthoritativeInventoryAndNotifiesPeers(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $blocks = new World(
+            new WorldMetadata('selection-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+        );
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation(blockWorld: $blocks, blockPalette: $palette);
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        self::assertTrue($world->enqueue($factory->join('two', 'identity-two', 'Two')));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->selectHotbarSlot('one', 8)));
+
+        $event = $world->tick()->events[0];
+        self::assertInstanceOf(HeldItemChanged::class, $event);
+        self::assertSame(['two'], $event->recipients());
+        self::assertSame(8, $event->hotbarSlot);
+        self::assertNull($event->stack);
+    }
+
+    public function testInventoryRequestCommitsAtomicallyBeforeSelectingAndPlacingSplitStack(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $blocks = new World(
+            new WorldMetadata('inventory-placement-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+        );
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation(blockWorld: $blocks, blockPalette: $palette);
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        self::assertTrue($world->enqueue($factory->join('two', 'identity-two', 'Two')));
+        $world->tick();
+
+        self::assertTrue($world->enqueue($factory->inventoryStackRequest('one', -5, [
+            new InventoryStackRequestAction(
+                InventoryStackRequestActionType::Take,
+                new InventorySlotReference(InventoryContainer::Main, 0, 1),
+                new InventorySlotReference(InventoryContainer::Cursor, 0, 0),
+                32,
+            ),
+            new InventoryStackRequestAction(
+                InventoryStackRequestActionType::Place,
+                new InventorySlotReference(InventoryContainer::Cursor, 0, -5),
+                new InventorySlotReference(InventoryContainer::Main, 1, 0),
+                32,
+            ),
+        ])));
+        $processed = $world->tick()->events[0];
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $processed);
+        self::assertTrue($processed->success);
+        self::assertSame(32, $processed->mainInventory[0]?->count);
+        self::assertSame(32, $processed->mainInventory[1]?->count);
+        self::assertNull($processed->cursorStack);
+        self::assertTrue($processed->selectedStackChanged);
+        self::assertSame(['two'], $processed->peerSessionIds);
+
+        self::assertTrue($world->enqueue($factory->selectHotbarSlot('one', 1)));
+        self::assertTrue($world->enqueue($factory->placeBlock(
+            'one',
+            1,
+            new BlockPosition(2, 63, 0),
+            1,
+            1,
+            0,
+            0.5,
+            1.0,
+            0.5,
+        )));
+        $events = $world->tick()->events;
+        self::assertInstanceOf(HeldItemChanged::class, $events[0]);
+        self::assertSame(32, $events[0]->stack?->count);
+        self::assertInstanceOf(BlockPlaced::class, $events[1]);
+        self::assertSame(31, $events[1]->remainingStack?->count);
+        self::assertSame($palette->grassBlock->value, $blocks->blockStateAt(2, 64, 0)->value);
+    }
+
+    public function testLegacyPredictedSplitCommitsBeforeSelectingAndUsingDestinationSlot(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $blocks = new World(
+            new WorldMetadata('legacy-inventory-placement-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+        );
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation(blockWorld: $blocks, blockPalette: $palette);
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        $world->tick();
+
+        self::assertTrue($world->enqueue($factory->inventoryStackRequest('one', 0, [
+            new InventoryStackRequestAction(
+                InventoryStackRequestActionType::Take,
+                new InventorySlotReference(InventoryContainer::Main, 0, 1, expectedCount: 64),
+                new InventorySlotReference(InventoryContainer::Main, 1, 0, expectedCount: 0),
+                32,
+            ),
+        ], responseMode: InventoryResponseMode::LegacySlotSync)));
+        $processed = $world->tick()->events[0];
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $processed);
+        self::assertTrue($processed->success);
+        self::assertSame(InventoryResponseMode::LegacySlotSync, $processed->responseMode);
+        self::assertSame(32, $processed->mainInventory[0]?->count);
+        self::assertSame(32, $processed->mainInventory[1]?->count);
+
+        self::assertTrue($world->enqueue($factory->selectHotbarSlot('one', 1)));
+        self::assertTrue($world->enqueue($factory->placeBlock(
+            'one',
+            1,
+            new BlockPosition(2, 63, 0),
+            1,
+            1,
+            0,
+            0.5,
+            1.0,
+            0.5,
+        )));
+        $events = $world->tick()->events;
+        self::assertInstanceOf(BlockPlaced::class, $events[1]);
+        self::assertSame(31, $events[1]->remainingStack?->count);
+    }
+
+    public function testJoinPublishesDeterministicPeerVisibilityAndFixedSpawn(): void
+    {
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation();
+        self::assertTrue($world->enqueue($factory->join('b-session', 'identity-b', 'Bravo')));
+        self::assertTrue($world->enqueue($factory->join('a-session', 'identity-a', 'Alpha')));
+
+        $tick = $world->tick();
+        self::assertSame(1, $tick->number);
+        self::assertSame(2, $tick->processedCommands);
+        self::assertCount(2, $tick->events);
+        $first = $tick->events[0];
+        self::assertInstanceOf(PlayerJoined::class, $first);
+        self::assertSame([], $first->existingPeers);
+        self::assertSame(['b-session'], $first->recipients());
+        self::assertSame(64.0, $first->player->position->y);
+        self::assertSame(1, $first->player->runtimeActorId);
+
+        $second = $tick->events[1];
+        self::assertInstanceOf(PlayerJoined::class, $second);
+        self::assertSame(['b-session'], array_map(static fn($peer): string => $peer->sessionId, $second->existingPeers));
+        self::assertSame(['a-session', 'b-session'], $second->recipients());
+        self::assertSame(2, $second->player->runtimeActorId);
+        self::assertSame(['a-session', 'b-session'], array_map(static fn($player): string => $player->sessionId, $world->snapshot()->players));
+    }
+
+    public function testExplicitRuntimeActorIdsAreUniqueAndSurviveDisconnectEvents(): void
+    {
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation();
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One', 41)));
+        self::assertTrue($world->enqueue($factory->join('two', 'identity-two', 'Two', 41)));
+
+        $joined = $world->tick()->events;
+        self::assertInstanceOf(PlayerJoined::class, $joined[0]);
+        self::assertSame(41, $joined[0]->player->runtimeActorId);
+        self::assertInstanceOf(CommandRejected::class, $joined[1]);
+        self::assertSame('duplicate_actor_id', $joined[1]->reason);
+
+        self::assertTrue($world->enqueue($factory->disconnect('one')));
+        $left = $world->tick()->events[0];
+        self::assertInstanceOf(PlayerDisconnected::class, $left);
+        self::assertSame(41, $left->runtimeActorId);
+        self::assertTrue($world->enqueue($factory->join('two', 'identity-two', 'Two', 41)));
+        $rejoined = $world->tick()->events[0];
+        self::assertInstanceOf(PlayerJoined::class, $rejoined);
+        self::assertSame(41, $rejoined->player->runtimeActorId);
+    }
+
+    public function testDuplicateSessionIdentityAndCapacityAreRejectedWithoutGhosts(): void
+    {
+        $limits = new SimulationLimits(maximumPlayers: 1);
+        $factory = new SimulationCommandFactory($limits);
+        $world = new WorldSimulation($limits);
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-two', 'Two')));
+        self::assertTrue($world->enqueue($factory->join('two', 'identity-one', 'Two')));
+        self::assertTrue($world->enqueue($factory->join('three', 'identity-three', 'Three')));
+
+        $events = $world->tick()->events;
+        $reasons = [];
+        foreach (array_slice($events, 1) as $event) {
+            self::assertInstanceOf(CommandRejected::class, $event);
+            $reasons[] = $event->reason;
+        }
+        self::assertSame(['duplicate_session', 'duplicate_identity', 'world_full'], $reasons);
+        self::assertCount(1, $world->snapshot()->players);
+    }
+
+    public function testImpossiblePredictedMovementIsCorrectedWithoutChangingState(): void
+    {
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation();
+        self::assertTrue($world->enqueue($factory->join('session', 'identity', 'Player')));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->move(
+            'session',
+            1,
+            1000.0,
+            64.0,
+            -1000.0,
+            0.0,
+            10.0,
+            MovementMode::SPRINTING,
+        )));
+
+        $events = $world->tick()->events;
+        self::assertCount(1, $events);
+        self::assertInstanceOf(MovementCorrected::class, $events[0]);
+        self::assertSame('movement_rate', $events[0]->reason);
+        self::assertSame(0.0, $world->snapshot()->players[0]->position->x);
+        self::assertSame(1, $world->snapshot()->players[0]->movementSequence);
+
+        self::assertTrue($world->enqueue($factory->move('session', 1, 0.0, 64.0, 0.0, 0.0, 0.0, MovementMode::STOPPED)));
+        $staleEvents = $world->tick()->events;
+        self::assertCount(1, $staleEvents);
+        $stale = $staleEvents[0];
+        self::assertInstanceOf(MovementCorrected::class, $stale);
+        self::assertSame('stale_sequence', $stale->reason);
+    }
+
+    public function testMovementSafetyBoundRejectsBeforeLoadingRemoteCollisionTerrain(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $repository = new ChunkRepository(16);
+        $blocks = new World(
+            new WorldMetadata('movement-query-bound-test', 0),
+            new FlatWorldGenerator($palette),
+            $repository,
+        );
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation(blockWorld: $blocks, blockPalette: $palette);
+        $world->enqueue($factory->join('session', 'identity', 'Player'));
+        $world->tick();
+        $loadedAtJoin = $repository->count();
+        self::assertGreaterThan(0, $loadedAtJoin);
+
+        $world->enqueue($factory->move(
+            'session',
+            1,
+            1000.0,
+            64.0,
+            1000.0,
+            0.0,
+            0.0,
+            MovementMode::SPRINTING,
+        ));
+        $event = $world->tick()->events[0];
+
+        self::assertInstanceOf(MovementCorrected::class, $event);
+        self::assertSame('movement_rate', $event->reason);
+        self::assertSame($loadedAtJoin, $repository->count());
+    }
+
+    public function testWorldBackedMovementStopsAtCanonicalWallAndSlidesAlongIt(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $blocks = new World(
+            new WorldMetadata('movement-wall-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+        );
+        $blocks->setBlockState(1, 64, 0, $palette->grassBlock);
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation(blockWorld: $blocks, blockPalette: $palette);
+        $world->enqueue($factory->join('session', 'identity', 'Player'));
+        $world->enqueue($factory->join('peer', 'peer-identity', 'Peer'));
+        $world->tick();
+        $world->enqueue($factory->move(
+            'session',
+            1,
+            2.0,
+            64.0,
+            1.0,
+            0.0,
+            0.0,
+            MovementMode::WALKING,
+        ));
+
+        $event = $world->tick()->events[0];
+        self::assertInstanceOf(MovementCorrected::class, $event);
+        self::assertSame('terrain_collision', $event->reason);
+        self::assertSame(['peer'], $event->peerSessionIds);
+        self::assertEqualsWithDelta(0.7, $event->authoritativePlayer->position->x, 0.000001);
+        self::assertEqualsWithDelta(1.0, $event->authoritativePlayer->position->z, 0.000001);
+        self::assertSame(VerticalState::GROUNDED, $event->authoritativePlayer->verticalState);
+    }
+
+    public function testWorldBackedMovementFallsIntoAChangedTerrainCell(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $blocks = new World(
+            new WorldMetadata('movement-hole-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+        );
+        $blocks->setBlockState(0, 63, 0, $palette->air);
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation(
+            spawn: new Position(0.5, 64.0, 0.5),
+            blockWorld: $blocks,
+            blockPalette: $palette,
+        );
+        $world->enqueue($factory->join('session', 'identity', 'Player'));
+        $joined = $world->tick()->events[0];
+        self::assertInstanceOf(PlayerJoined::class, $joined);
+        self::assertSame(VerticalState::AIRBORNE, $joined->player->verticalState);
+
+        $world->enqueue($factory->move(
+            'session',
+            1,
+            0.5,
+            62.0,
+            0.5,
+            0.0,
+            0.0,
+            MovementMode::WALKING,
+            deltaY: -2.0,
+        ));
+        $event = $world->tick()->events[0];
+        self::assertInstanceOf(MovementCorrected::class, $event);
+        self::assertSame('terrain_collision', $event->reason);
+        self::assertEqualsWithDelta(63.0, $event->authoritativePlayer->position->y, 0.000001);
+        self::assertSame(VerticalState::GROUNDED, $event->authoritativePlayer->verticalState);
+    }
+
+    public function testBreakingSupportImmediatelyMarksPlayerAirborne(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $blocks = new World(
+            new WorldMetadata('break-support-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+        );
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation(
+            spawn: new Position(0.5, 64.0, 0.5),
+            blockWorld: $blocks,
+            blockPalette: $palette,
+        );
+        $world->enqueue($factory->join('session', 'identity', 'Player'));
+        $world->tick();
+        $support = new BlockPosition(0, 63, 0);
+        $world->enqueue($factory->breakBlock('session', 1, BlockBreakAction::Start, $support, 1));
+        $world->tick();
+        $world->enqueue($factory->breakBlock('session', 2, BlockBreakAction::Complete, $support, 1));
+        $world->tick();
+
+        self::assertSame(VerticalState::AIRBORNE, $world->snapshot()->players[0]->verticalState);
+    }
+
+    public function testPlacingSupportImmediatelyMarksTouchingPlayerGrounded(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $blocks = new World(
+            new WorldMetadata('place-support-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+        );
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation(
+            spawn: new Position(0.5, 65.0, 0.5),
+            blockWorld: $blocks,
+            blockPalette: $palette,
+        );
+        $world->enqueue($factory->join('session', 'identity', 'Player'));
+        $world->tick();
+        self::assertSame(VerticalState::AIRBORNE, $world->snapshot()->players[0]->verticalState);
+        $world->enqueue($factory->placeBlock(
+            'session',
+            1,
+            new BlockPosition(0, 63, 0),
+            1,
+            0,
+            0,
+            0.5,
+            1.0,
+            0.5,
+        ));
+        $event = $world->tick()->events[0];
+
+        self::assertInstanceOf(BlockPlaced::class, $event);
+        self::assertSame(VerticalState::GROUNDED, $world->snapshot()->players[0]->verticalState);
+    }
+
+    public function testAcceptedMovementIsPublishedOnlyToPeers(): void
+    {
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation();
+        self::assertTrue($world->enqueue($factory->join('sender', 'identity-sender', 'Sender')));
+        self::assertTrue($world->enqueue($factory->join('peer', 'identity-peer', 'Peer')));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->move(
+            'sender',
+            1,
+            1.0,
+            64.0,
+            0.0,
+            0.0,
+            0.0,
+            MovementMode::WALKING,
+            deltaX: 1.0,
+        )));
+
+        $event = $world->tick()->events[0];
+        self::assertInstanceOf(PlayerMoved::class, $event);
+        self::assertSame(['peer'], $event->recipients());
+    }
+
+    public function testMovementRetainsHeadYawAndReportsOnlyPostureTransitions(): void
+    {
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation();
+        self::assertTrue($world->enqueue($factory->join('sender', 'identity-sender', 'Sender')));
+        $world->tick();
+
+        self::assertTrue($world->enqueue($factory->move(
+            'sender',
+            1,
+            0.0,
+            64.0,
+            0.0,
+            20.0,
+            0.0,
+            MovementMode::CROUCHING,
+            headYaw: 35.0,
+            sneaking: true,
+            sprinting: false,
+        )));
+        $startedSneaking = $world->tick()->events[0];
+        self::assertInstanceOf(PlayerMoved::class, $startedSneaking);
+        self::assertTrue($startedSneaking->postureChanged);
+        self::assertSame(35.0, $startedSneaking->player->headYaw);
+        self::assertTrue($startedSneaking->player->sneaking);
+        self::assertFalse($startedSneaking->player->sprinting);
+
+        self::assertTrue($world->enqueue($factory->move(
+            'sender',
+            2,
+            0.0,
+            64.0,
+            0.0,
+            21.0,
+            0.0,
+            MovementMode::JUMPING,
+            headYaw: 36.0,
+            sneaking: true,
+            sprinting: false,
+        )));
+        $samePosture = $world->tick()->events[0];
+        self::assertInstanceOf(PlayerMoved::class, $samePosture);
+        self::assertFalse($samePosture->postureChanged);
+        self::assertTrue($samePosture->player->sneaking);
+
+        self::assertTrue($world->enqueue($factory->move(
+            'sender',
+            3,
+            0.0,
+            64.0,
+            0.0,
+            22.0,
+            0.0,
+            MovementMode::SPRINTING,
+            headYaw: 37.0,
+            sneaking: false,
+            sprinting: true,
+        )));
+        $startedSprinting = $world->tick()->events[0];
+        self::assertInstanceOf(PlayerMoved::class, $startedSprinting);
+        self::assertTrue($startedSprinting->postureChanged);
+        self::assertFalse($startedSprinting->player->sneaking);
+        self::assertTrue($startedSprinting->player->sprinting);
+    }
+
+    public function testRotationOnlyPredictedFramesReachPeers(): void
+    {
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation();
+        $world->enqueue($factory->join('sender', 'identity-sender', 'Sender'));
+        $world->enqueue($factory->join('peer', 'identity-peer', 'Peer'));
+        $world->tick();
+        $world->enqueue($factory->move(
+            'sender',
+            1,
+            0.0,
+            64.0,
+            0.0,
+            90.0,
+            0.0,
+            MovementMode::WALKING,
+        ));
+
+        $event = $world->tick()->events[0];
+        self::assertInstanceOf(PlayerMoved::class, $event);
+        self::assertSame(0.0, $event->player->position->x);
+        self::assertSame(90.0, $event->player->yaw);
+        self::assertSame(['peer'], $event->recipients());
+
+        $world->enqueue($factory->move(
+            'sender',
+            2,
+            0.0,
+            64.0,
+            0.0,
+            180.0,
+            15.0,
+            MovementMode::STOPPED,
+        ));
+        $rotation = $world->tick()->events[0];
+        self::assertInstanceOf(PlayerMoved::class, $rotation);
+        self::assertSame(180.0, $rotation->player->yaw);
+        self::assertSame(15.0, $rotation->player->pitch);
+    }
+
+    public function testMovementCreditIsCappedAfterIdleTicks(): void
+    {
+        $limits = new SimulationLimits(maximumMovementPerTick: 2.0, maximumMovementCreditTicks: 3);
+        $factory = new SimulationCommandFactory($limits);
+        $world = new WorldSimulation($limits);
+        $world->enqueue($factory->join('session', 'identity', 'Player'));
+        $world->tick();
+        for ($i = 0; $i < 20; ++$i) {
+            $world->tick();
+        }
+        $world->enqueue($factory->move('session', 1, 7.0, 64.0, 0.0, 0.0, 0.0, MovementMode::WALKING));
+        self::assertInstanceOf(MovementCorrected::class, $world->tick()->events[0]);
+    }
+
+    public function testNormalClientPredictionDoesNotCauseCorrectionFlood(): void
+    {
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation();
+        $world->enqueue($factory->join('session', 'identity', 'Player'));
+        $world->tick();
+        for ($sequence = 1; $sequence <= 20; ++$sequence) {
+            $world->enqueue($factory->move(
+                'session',
+                $sequence,
+                $sequence * 0.3,
+                64.0,
+                0.0,
+                0.0,
+                0.0,
+                MovementMode::WALKING,
+            ));
+            $events = $world->tick()->events;
+            self::assertCount(1, $events);
+            self::assertInstanceOf(PlayerMoved::class, $events[0]);
+        }
+        self::assertEqualsWithDelta(6.0, $world->snapshot()->players[0]->position->x, 0.000001);
+    }
+
+    public function testJumpAndLandingTransitionsComeFromValidatedPredictedFrames(): void
+    {
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation();
+        $world->enqueue($factory->join('session', 'identity', 'Player'));
+        $world->tick();
+        $world->enqueue($factory->move(
+            'session',
+            1,
+            0.0,
+            64.42,
+            0.0,
+            0.0,
+            0.0,
+            MovementMode::JUMPING,
+            deltaY: 0.34,
+            jumpRequested: true,
+        ));
+        $world->tick();
+        $jumped = $world->snapshot()->players[0];
+        self::assertSame(VerticalState::AIRBORNE, $jumped->verticalState);
+        self::assertEqualsWithDelta(64.42, $jumped->position->y, 0.000001);
+        self::assertEqualsWithDelta(0.34, $jumped->verticalVelocity, 0.000001);
+
+        $world->tick();
+        self::assertEqualsWithDelta(64.42, $world->snapshot()->players[0]->position->y, 0.000001);
+        $world->enqueue($factory->move(
+            'session',
+            2,
+            0.0,
+            64.0005,
+            0.0,
+            0.0,
+            0.0,
+            MovementMode::STOPPED,
+            deltaY: -0.4,
+        ));
+        $world->tick();
+        $landed = $world->snapshot()->players[0];
+        self::assertSame(VerticalState::GROUNDED, $landed->verticalState);
+        self::assertSame(64.0, $landed->position->y);
+        self::assertSame(0.0, $landed->verticalVelocity);
+    }
+
+    public function testBelowFloorAndUngroundedJumpFramesAreCorrected(): void
+    {
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation();
+        $world->enqueue($factory->join('session', 'identity', 'Player'));
+        $world->tick();
+
+        $world->enqueue($factory->move('session', 1, 0.0, 63.9, 0.0, 0.0, 0.0, MovementMode::WALKING, deltaY: -0.1));
+        $below = $world->tick()->events[0];
+        self::assertInstanceOf(MovementCorrected::class, $below);
+        self::assertSame('terrain_collision', $below->reason);
+        self::assertSame(64.0, $below->authoritativePlayer->position->y);
+
+        $world->enqueue($factory->move('session', 2, 0.0, 64.2, 0.0, 0.0, 0.0, MovementMode::WALKING, deltaY: 0.2));
+        $unannounced = $world->tick()->events[0];
+        self::assertInstanceOf(MovementCorrected::class, $unannounced);
+        self::assertSame('jump_required', $unannounced->reason);
+        self::assertSame(64.0, $unannounced->authoritativePlayer->position->y);
+    }
+
+    public function testGroundedJumpEdgeAuthorizesTheFollowingUpwardFrame(): void
+    {
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation();
+        $world->enqueue($factory->join('session', 'identity', 'Player'));
+        $world->tick();
+        $world->enqueue($factory->move(
+            'session',
+            1,
+            0.0,
+            64.0,
+            0.0,
+            0.0,
+            0.0,
+            MovementMode::JUMPING,
+            jumpRequested: true,
+        ));
+        self::assertInstanceOf(PlayerMoved::class, $world->tick()->events[0]);
+
+        $world->enqueue($factory->move(
+            'session',
+            2,
+            0.0,
+            64.3,
+            0.0,
+            0.0,
+            0.0,
+            MovementMode::JUMPING,
+            deltaY: 0.3,
+        ));
+        $upward = $world->tick()->events[0];
+        self::assertInstanceOf(PlayerMoved::class, $upward);
+        self::assertSame(VerticalState::AIRBORNE, $upward->player->verticalState);
+        self::assertEqualsWithDelta(64.3, $upward->player->position->y, 0.000001);
+    }
+
+    public function testAirborneJumpInputCannotResetVerticalVelocity(): void
+    {
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation();
+        $world->enqueue($factory->join('session', 'identity', 'Player'));
+        $world->tick();
+        $world->enqueue($factory->move('session', 1, 0.0, 64.42, 0.0, 0.0, 0.0, MovementMode::JUMPING, deltaY: 0.34, jumpRequested: true));
+        $world->tick();
+        $world->enqueue($factory->move('session', 2, 0.0, 64.76, 0.0, 0.0, 0.0, MovementMode::JUMPING, deltaY: 0.26, jumpRequested: true));
+        $world->tick();
+        $player = $world->snapshot()->players[0];
+        self::assertEqualsWithDelta(64.76, $player->position->y, 0.000001);
+        self::assertEqualsWithDelta(0.26, $player->verticalVelocity, 0.000001);
+    }
+
+    public function testFallingPlayerLandsWithoutPenetratingFlatTerrain(): void
+    {
+        $world = new WorldSimulation(spawn: new Position(0.0, 66.0, 0.0));
+        $world->enqueue((new SimulationCommandFactory())->join('session', 'identity', 'Player'));
+        $world->tick();
+        self::assertSame(66.0, $world->snapshot()->players[0]->position->y, 'No client frame means no invented gravity step.');
+        $world->enqueue((new SimulationCommandFactory())->move(
+            'session',
+            1,
+            0.0,
+            64.0,
+            0.0,
+            0.0,
+            0.0,
+            MovementMode::STOPPED,
+            deltaY: -2.0,
+        ));
+        $world->tick();
+        $player = $world->snapshot()->players[0];
+        self::assertSame(VerticalState::GROUNDED, $player->verticalState);
+        self::assertSame(64.0, $player->position->y);
+        self::assertSame(0.0, $player->verticalVelocity);
+    }
+
+    public function testMovementQueueCoalescesLatestInputAndLatchesJumpEdge(): void
+    {
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation();
+        $world->enqueue($factory->join('session', 'identity', 'Player'));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->move(
+            'session',
+            1,
+            0.0,
+            64.42,
+            0.0,
+            0.0,
+            0.0,
+            MovementMode::JUMPING,
+            deltaY: 0.34,
+            jumpRequested: true,
+        )));
+        $queuedBytes = $world->queuedBytes();
+        for ($sequence = 2; $sequence <= 100; ++$sequence) {
+            self::assertTrue($world->enqueue($factory->move(
+                'session',
+                $sequence,
+                0.0,
+                64.6,
+                0.0,
+                0.0,
+                0.0,
+                MovementMode::WALKING,
+                deltaY: 0.2,
+            )));
+        }
+        self::assertSame(1, $world->queuedCommands());
+        self::assertSame($queuedBytes, $world->queuedBytes());
+        self::assertSame(1, $world->tick()->processedCommands);
+        $player = $world->snapshot()->players[0];
+        self::assertSame(100, $player->movementSequence);
+        self::assertSame(VerticalState::AIRBORNE, $player->verticalState);
+        self::assertEqualsWithDelta(64.6, $player->position->y, 0.000001);
+    }
+
+    public function testQueuedJoinCannotBeStarvedByReservedMovementSlot(): void
+    {
+        $limits = new SimulationLimits(maximumCommandsPerTick: 1);
+        $factory = new SimulationCommandFactory($limits);
+        $world = new WorldSimulation($limits);
+        $world->enqueue($factory->join('session', 'identity', 'Player'));
+        $world->enqueue($factory->move('session', 1, 0.0, 64.0, 0.0, 0.0, 0.0, MovementMode::STOPPED));
+        $tick = $world->tick();
+        self::assertSame(1, $tick->processedCommands);
+        self::assertInstanceOf(PlayerJoined::class, $tick->events[0]);
+        self::assertSame(1, $world->queuedCommands());
+    }
+
+    public function testChatIsAttributedOrderedAndRateLimitedPerSender(): void
+    {
+        $limits = new SimulationLimits(chatBucketCapacity: 2, chatRefillTicks: 3);
+        $factory = new SimulationCommandFactory($limits);
+        $world = new WorldSimulation($limits);
+        $world->enqueue($factory->join('one', 'trusted-identity', 'Trusted Name'));
+        $world->enqueue($factory->join('two', 'identity-two', 'Two'));
+        $world->tick();
+        $world->enqueue($factory->chat('one', 1, 'first'));
+        $world->enqueue($factory->chat('one', 2, 'second'));
+        $world->enqueue($factory->chat('one', 3, 'limited'));
+
+        $events = $world->tick()->events;
+        self::assertInstanceOf(ChatBroadcast::class, $events[0]);
+        self::assertSame('one', $events[0]->senderSessionId);
+        self::assertSame('trusted-identity', $events[0]->senderIdentity);
+        self::assertSame('Trusted Name', $events[0]->senderDisplayName);
+        self::assertSame(['one', 'two'], $events[0]->recipients());
+        $messages = [];
+        foreach (array_slice($events, 0, 2) as $event) {
+            self::assertInstanceOf(ChatBroadcast::class, $event);
+            $messages[] = $event->message;
+        }
+        self::assertSame(['first', 'second'], $messages);
+        self::assertInstanceOf(CommandRejected::class, $events[2]);
+        self::assertSame('chat_rate', $events[2]->reason);
+
+        for ($i = 0; $i < 2; ++$i) {
+            $world->tick();
+        }
+        $world->enqueue($factory->chat('one', 3, 'replay'));
+        $stale = $world->tick()->events[0];
+        self::assertInstanceOf(CommandRejected::class, $stale);
+        self::assertSame('stale_chat_sequence', $stale->reason);
+        $world->enqueue($factory->chat('one', 4, 'refilled'));
+        self::assertInstanceOf(ChatBroadcast::class, $world->tick()->events[0]);
+    }
+
+    public function testDisconnectRemovesPlayerAndNotifiesOnlyRemainingPeers(): void
+    {
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation();
+        $world->enqueue($factory->join('one', 'identity-one', 'One'));
+        $world->enqueue($factory->join('two', 'identity-two', 'Two'));
+        $world->tick();
+        $world->enqueue($factory->disconnect('one'));
+
+        $event = $world->tick()->events[0];
+        self::assertInstanceOf(PlayerDisconnected::class, $event);
+        self::assertSame('one', $event->sessionId);
+        self::assertSame('identity-one', $event->identity);
+        self::assertSame(['two'], $event->recipients());
+        self::assertSame(['two'], array_map(static fn($player): string => $player->sessionId, $world->snapshot()->players));
+    }
+
+    public function testDisconnectHasReservedCapacityAndRejectsFurtherSessionWork(): void
+    {
+        $limits = new SimulationLimits(maximumQueuedCommands: 2);
+        $factory = new SimulationCommandFactory($limits);
+        $world = new WorldSimulation($limits);
+        self::assertTrue($world->enqueue($factory->join('victim', 'identity', 'Victim')));
+        self::assertTrue($world->enqueue($factory->join('attacker', 'other-identity', 'Attacker')));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->chat('attacker', 1, 'first')));
+        self::assertTrue($world->enqueue($factory->chat('attacker', 2, 'second')));
+
+        self::assertTrue($world->enqueue($factory->disconnect('victim')));
+        self::assertFalse($world->enqueue($factory->chat('victim', 1, 'late')));
+        self::assertSame(3, $world->queuedCommands());
+        $events = $world->tick()->events;
+        self::assertInstanceOf(PlayerDisconnected::class, $events[0]);
+        self::assertSame(['attacker'], array_map(static fn($player): string => $player->sessionId, $world->snapshot()->players));
+        self::assertSame(0, $world->queuedCommands());
+        self::assertSame(0, $world->queuedBytes());
+    }
+
+    public function testUnknownDisconnectsCannotConsumeReservedLifecycleCapacity(): void
+    {
+        $limits = new SimulationLimits(
+            maximumPlayers: 1,
+            maximumQueuedLifecycleCommands: 1,
+            maximumQueuedLifecycleBytes: 144,
+        );
+        $factory = new SimulationCommandFactory($limits);
+        $world = new WorldSimulation($limits);
+        for ($i = 0; $i < 100; ++$i) {
+            self::assertTrue($world->enqueue($factory->disconnect("unknown-$i")));
+        }
+        self::assertSame(0, $world->queuedCommands());
+        self::assertSame(0, $world->queuedBytes());
+
+        self::assertTrue($world->enqueue($factory->join('one', 'identity', 'One')));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->disconnect('one')));
+        self::assertTrue($world->enqueue($factory->disconnect('one')));
+        self::assertSame(1, $world->queuedCommands());
+        self::assertSame($factory->disconnect('one')->estimatedBytes(), $world->queuedBytes());
+    }
+
+    public function testDisconnectCancelsAQueuedJoinBeforeItCanCreateAGhost(): void
+    {
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation();
+        self::assertTrue($world->enqueue($factory->join('session', 'identity', 'Player')));
+        self::assertTrue($world->enqueue($factory->disconnect('session')));
+
+        self::assertSame([], $world->tick()->events);
+        self::assertSame([], $world->snapshot()->players);
+        self::assertSame(0, $world->queuedCommands());
+        self::assertSame(0, $world->queuedBytes());
+    }
+
+    public function testNumericSessionIdsRemainStringsInRecipientContracts(): void
+    {
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation();
+        self::assertTrue($world->enqueue($factory->join('123', 'identity', 'Player')));
+
+        $event = $world->tick()->events[0];
+        self::assertInstanceOf(PlayerJoined::class, $event);
+        self::assertSame(['123'], $event->recipients());
+    }
+
+    public function testQueueCountByteAndPerTickDrainLimitsAreExplicit(): void
+    {
+        $limits = new SimulationLimits(maximumQueuedCommands: 2, maximumQueuedBytes: 100, maximumCommandsPerTick: 1);
+        $factory = new SimulationCommandFactory($limits);
+        $world = new WorldSimulation($limits);
+        self::assertTrue($world->enqueue($factory->join('a', 'identity-a', 'A')));
+        self::assertTrue($world->enqueue($factory->join('b', 'identity-b', 'B')));
+        self::assertFalse($world->enqueue($factory->join('c', 'identity-c', 'C')));
+        self::assertSame(2, $world->queuedCommands());
+        self::assertGreaterThan(0, $world->queuedBytes());
+        self::assertSame(1, $world->tick()->processedCommands);
+        self::assertSame(1, $world->queuedCommands());
+        $world->tick();
+        self::assertSame(0, $world->queuedBytes());
+
+        $tiny = new WorldSimulation(new SimulationLimits(maximumQueuedBytes: 10));
+        self::assertFalse($tiny->enqueue($factory->join('a', 'identity-a', 'A')));
+    }
+
+    public function testQueueRevalidatesCommandsCreatedOutsideTheBoundary(): void
+    {
+        $world = new WorldSimulation();
+        self::assertFalse($world->enqueue(new UnvalidatedJoinPlayer('', 'identity', 'Player')));
+        self::assertSame(0, $world->queuedCommands());
+    }
+
+    public function testDeterministicReplayProducesIdenticalSnapshotsAndEvents(): void
+    {
+        $factory = new SimulationCommandFactory();
+        $commands = [
+            $factory->join('two', 'identity-two', 'Two'),
+            $factory->join('one', 'identity-one', 'One'),
+            $factory->move('one', 1, 2.0, 64.0, 0.0, 45.0, 0.0, MovementMode::WALKING),
+            $factory->chat('two', 1, 'hello'),
+            $factory->disconnect('one'),
+        ];
+        $first = new WorldSimulation();
+        $second = new WorldSimulation();
+        foreach ($commands as $command) {
+            self::assertTrue($first->enqueue($command));
+            self::assertTrue($second->enqueue($command));
+        }
+
+        self::assertEquals($first->tick(), $second->tick());
+        self::assertEquals($first->snapshot(), $second->snapshot());
+    }
+
+    public function testHundredPlayerJoinMoveChatDisconnectStressLeavesNoGhosts(): void
+    {
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation();
+        for ($i = 0; $i < 100; ++$i) {
+            self::assertTrue($world->enqueue($factory->join("session-$i", "identity-$i", "Player$i")));
+        }
+        self::assertCount(100, $world->tick()->events);
+        for ($i = 0; $i < 100; ++$i) {
+            self::assertTrue($world->enqueue($factory->move("session-$i", 1, 1.0, 64.0, 0.0, 0.0, 0.0, MovementMode::WALKING)));
+            self::assertTrue($world->enqueue($factory->chat("session-$i", 1, "message-$i")));
+            self::assertTrue($world->enqueue($factory->disconnect("session-$i")));
+        }
+        $events = $world->tick()->events;
+        self::assertCount(100, $events);
+        foreach ($events as $event) {
+            self::assertInstanceOf(PlayerDisconnected::class, $event);
+        }
+        self::assertSame([], $world->snapshot()->players);
+        self::assertSame(0, $world->queuedCommands());
+        self::assertSame(0, $world->queuedBytes());
+    }
+}

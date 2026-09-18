@@ -1,0 +1,10 @@
+/.idea/
+/.phpunit.cache/
+/.php-cs-fixer.cache
+/.vscode/
+/build/
+/coverage/
+/vendor/
+/bedriox.settings
+composer.phar
+*.log

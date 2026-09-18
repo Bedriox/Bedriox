@@ -1,0 +1,116 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Bedriox\Server\Tests\Runtime;
+
+use Bedriox\Server\Login\AuthenticationMode;
+use Bedriox\Server\Runtime\ServerConfig;
+use InvalidArgumentException;
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\TestCase;
+
+final class ServerConfigTest extends TestCase
+{
+    public function testDefaultsToFullAuthenticationAndAcceptsBoundedOverrides(): void
+    {
+        $defaults = ServerConfig::fromArguments([]);
+        self::assertSame(AuthenticationMode::FULL, $defaults->authenticationMode);
+
+        $config = ServerConfig::fromArguments([
+            '--bind=127.0.0.1',
+            '--port=19133',
+            '--name=Private Test',
+            '--max-players=12',
+            '--auth=SELF_SIGNED',
+        ]);
+        self::assertSame('127.0.0.1', $config->bindAddress);
+        self::assertSame(19_133, $config->port);
+        self::assertSame('Private Test', $config->serverName);
+        self::assertSame(12, $config->maximumPlayers);
+        self::assertSame(AuthenticationMode::SELF_SIGNED, $config->authenticationMode);
+
+        $streaming = ServerConfig::fromArguments([
+            '--motd=Flat development world',
+            '--level-name=flatland',
+            '--seed=-42',
+            '--view-distance=8',
+            '--spawn-radius=6',
+            '--chunks-send-per-tick=7',
+            '--chunks-generate-per-tick=5',
+            '--chunks-cache-limit=6000',
+            '--protocol-trace=true',
+            '--spawn-x=-16',
+            '--spawn-y=70',
+            '--spawn-z=32',
+        ]);
+        self::assertSame('Flat development world', $streaming->motd);
+        self::assertSame('flatland', $streaming->levelName);
+        self::assertSame(-42, $streaming->levelSeed);
+        self::assertSame(8, $streaming->viewDistance);
+        self::assertSame(6, $streaming->spawnRadius);
+        self::assertSame(7, $streaming->chunksSendPerTick);
+        self::assertSame(5, $streaming->chunksGeneratePerTick);
+        self::assertTrue($streaming->protocolTrace);
+        self::assertSame([-16, 70, 32], [$streaming->spawnX, $streaming->spawnY, $streaming->spawnZ]);
+    }
+
+    /** @return iterable<string, array{list<string>}> */
+    public static function invalidArguments(): iterable
+    {
+        yield 'unknown option' => [['--token=secret']];
+        yield 'duplicate option' => [['--port=19132', '--port=19133']];
+        yield 'bare option' => [['--port']];
+        yield 'hostname bind' => [['--bind=localhost']];
+        yield 'zero port' => [['--port=0']];
+        yield 'signed integer' => [['--max-players=+2']];
+        yield 'excess players' => [['--max-players=1025']];
+        yield 'implicit insecure auth' => [['--auth=self_signed']];
+        yield 'partial spawn' => [['--spawn-x=0']];
+        yield 'noncanonical seed' => [['--seed=-0']];
+        yield 'spawn radius exceeds view' => [['--view-distance=2', '--spawn-radius=3']];
+        yield 'cache cannot hold all player views' => [['--chunks-cache-limit=1024']];
+        yield 'configured views exceed hard cache ceiling' => [[
+            '--max-players=16', '--view-distance=32', '--spawn-radius=4', '--chunks-cache-limit=65536',
+        ]];
+        yield 'unimplemented gamemode' => [['--default-gamemode=creative']];
+        yield 'noncanonical boolean' => [['--protocol-trace=TRUE']];
+    }
+
+    /** @param list<string> $arguments */
+    #[DataProvider('invalidArguments')]
+    public function testRejectsUnboundedAmbiguousAndUnknownInput(array $arguments): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        ServerConfig::fromArguments($arguments);
+    }
+
+    public function testSettingsFileIsLoadedBeforeCliOverrides(): void
+    {
+        $path = tempnam(sys_get_temp_dir(), 'bedriox-settings-');
+        self::assertIsString($path);
+        try {
+            file_put_contents($path, "server.name=Configured name\nserver.max-players=8\nchunks.view-distance=6\nchunks.spawn-radius=5\n");
+            $config = ServerConfig::fromSettingsFile($path, ['--name=CLI name', '--view-distance=7']);
+            self::assertSame('CLI name', $config->serverName);
+            self::assertSame(8, $config->maximumPlayers);
+            self::assertSame(7, $config->viewDistance);
+            self::assertSame(5, $config->spawnRadius);
+        } finally {
+            @unlink($path);
+        }
+    }
+
+    public function testSettingsSpawnMustBeAllEmptyOrAllPopulated(): void
+    {
+        $path = tempnam(sys_get_temp_dir(), 'bedriox-settings-');
+        self::assertIsString($path);
+        try {
+            file_put_contents($path, "level.spawn-x=0\nlevel.spawn-y=\nlevel.spawn-z=0\n");
+            $this->expectException(InvalidArgumentException::class);
+            ServerConfig::fromSettingsFile($path, []);
+        } finally {
+            @unlink($path);
+        }
+    }
+}

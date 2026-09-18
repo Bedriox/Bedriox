@@ -1,0 +1,92 @@
+{
+    "name": "bedriox/bedriox",
+    "description": "Performance-focused Minecraft: Bedrock Edition server software written in modern PHP.",
+    "type": "project",
+    "license": "GPL-3.0-only",
+    "homepage": "https://bedriox.com/",
+    "repositories": [
+        {
+            "type": "path",
+            "url": "../Protocol",
+            "options": {
+                "symlink": false,
+                "versions": {
+                    "bedriox/protocol": "0.1.0-alpha.1"
+                }
+            }
+        },
+        {
+            "type": "path",
+            "url": "../RakNet",
+            "options": {
+                "symlink": false,
+                "versions": {
+                    "bedriox/raknet": "0.1.0-alpha.1"
+                }
+            }
+        },
+        {
+            "type": "path",
+            "url": "../Data",
+            "options": {
+                "symlink": false,
+                "versions": {
+                    "bedriox/data": "0.1.0-alpha.1"
+                }
+            }
+        }
+    ],
+    "require": {
+        "ext-curl": "*",
+        "firebase/php-jwt": "^7.1",
+        "bedriox/data": "0.1.0-alpha.1",
+        "bedriox/protocol": "0.1.0-alpha.1",
+        "bedriox/raknet": "0.1.0-alpha.1",
+        "php": "^8.4"
+    },
+    "require-dev": {
+        "friendsofphp/php-cs-fixer": "^3.0",
+        "phpstan/phpstan": "^2.1",
+        "phpunit/phpunit": "^11.5"
+    },
+    "autoload": {
+        "psr-4": {
+            "Bedriox\\Server\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Bedriox\\Server\\Tests\\": "tests/"
+        }
+    },
+    "bin": [
+        "bin/bedriox"
+    ],
+    "scripts": {
+        "test": "phpunit",
+        "analyse": "phpstan analyse --no-progress --memory-limit=512M",
+        "verify:composer": "composer validate --strict",
+        "verify:audit": "composer audit --locked",
+        "validate:manifest": "@php tools/validate-manifest.php",
+        "validate:docs": "@php tools/validate-docs.php",
+        "validate:licenses": "@php tools/validate-licenses.php",
+        "format:check": "php-cs-fixer fix --dry-run --diff",
+        "format": "php-cs-fixer fix",
+        "check": [
+            "@verify:composer",
+            "@verify:audit",
+            "@validate:manifest",
+            "@validate:docs",
+            "@validate:licenses",
+            "@format:check",
+            "@analyse",
+            "@test"
+        ]
+    },
+    "config": {
+        "allow-plugins": {},
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
