@@ -12,6 +12,7 @@ composer.phar
 /crashes/
 /plugins/
 /plugin_data/
+/worlds/
 /bin/*
 !/bin/bedriox
 /.runtime-stage-*/
