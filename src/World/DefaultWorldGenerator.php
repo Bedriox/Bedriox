@@ -449,7 +449,13 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
         }
         $compacted = '';
         for ($offset = 0; $offset < SubChunkBlockStorage::BLOCK_COUNT; ++$offset) {
-            $compacted .= chr($translation[ord($states[$offset])]);
+            $translated = $translation[ord($states[$offset])] ?? throw new \LogicException(
+                'Generated storage references a state outside its compact palette.',
+            );
+            if ($translated > 255) {
+                throw new \LogicException('Generated compact palette exceeds the byte-indexed storage limit.');
+            }
+            $compacted .= chr($translated);
         }
 
         return SubChunkBlockStorage::fromPaletteIndices($palette, $compacted);
