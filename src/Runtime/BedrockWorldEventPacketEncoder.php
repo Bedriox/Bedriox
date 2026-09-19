@@ -5,9 +5,12 @@ declare(strict_types=1);
 namespace Bedriox\Server\Runtime;
 
 use Bedriox\Protocol\Packet\AbilityLayer;
+use Bedriox\Protocol\Packet\ActorEventPacket;
+use Bedriox\Protocol\Packet\ActorEventType;
 use Bedriox\Protocol\Packet\AddPlayerPacket;
 use Bedriox\Protocol\Packet\BlockPosition as ProtocolBlockPosition;
 use Bedriox\Protocol\Packet\ChatPacket;
+use Bedriox\Protocol\Packet\DeathInfoPacket;
 use Bedriox\Protocol\Packet\EmoteFlag;
 use Bedriox\Protocol\Packet\EmotePacket;
 use Bedriox\Protocol\Packet\FullContainerName;
@@ -26,6 +29,7 @@ use Bedriox\Protocol\Packet\MovePlayerMode;
 use Bedriox\Protocol\Packet\MovePlayerPacket;
 use Bedriox\Protocol\Packet\PlayerAbilities;
 use Bedriox\Protocol\Packet\PlayerActorMetadata;
+use Bedriox\Protocol\Packet\PlayerAttribute;
 use Bedriox\Protocol\Packet\PlayerListAddEntry;
 use Bedriox\Protocol\Packet\PlayerListAddPacket;
 use Bedriox\Protocol\Packet\PlayerListRemovePacket;
@@ -33,7 +37,10 @@ use Bedriox\Protocol\Packet\PlayerPositionProjection;
 use Bedriox\Protocol\Packet\PlayerSkin;
 use Bedriox\Protocol\Packet\PlayerSkinPacket;
 use Bedriox\Protocol\Packet\RemoveActorPacket;
+use Bedriox\Protocol\Packet\RespawnPacket;
+use Bedriox\Protocol\Packet\RespawnState;
 use Bedriox\Protocol\Packet\SetActorDataPacket;
+use Bedriox\Protocol\Packet\UpdateAttributesPacket;
 use Bedriox\Protocol\Packet\UpdateBlockFlag;
 use Bedriox\Protocol\Packet\UpdateBlockPacket;
 use Bedriox\Protocol\Value\BuildPlatform;
@@ -52,9 +59,13 @@ use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
 use Bedriox\Server\Simulation\Event\MovementCorrected;
 use Bedriox\Server\Simulation\Event\PlayerBecameHidden;
 use Bedriox\Server\Simulation\Event\PlayerBecameVisible;
+use Bedriox\Server\Simulation\Event\PlayerDamaged;
+use Bedriox\Server\Simulation\Event\PlayerDied;
 use Bedriox\Server\Simulation\Event\PlayerDisconnected;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
+use Bedriox\Server\Simulation\Event\PlayerRespawned;
+use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
 use Bedriox\Server\Simulation\Event\WorldEvent;
 use Bedriox\Server\Simulation\PlayerSnapshot;
 use Bedriox\Server\Simulation\VerticalState;
@@ -103,8 +114,127 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
             $event instanceof BlockPlacementCorrected => $this->blockPlacementCorrected($event),
             $event instanceof HeldItemChanged => $this->heldItemChanged($event),
             $event instanceof InventoryStackRequestProcessed => $this->inventoryStackRequestProcessed($event),
+            $event instanceof PlayerDamaged => $this->damaged($event),
+            $event instanceof PlayerDied => $this->died($event),
+            $event instanceof PlayerRespawned => $this->respawned($event),
+            $event instanceof RespawnAcknowledged => [new DirectedPacket(
+                $event->player->sessionId,
+                $this->respawnPacket($event->player, RespawnState::ServerReady),
+            )],
             default => [],
         };
+    }
+
+    /** @return list<DirectedPacket> */
+    private function damaged(PlayerDamaged $event): array
+    {
+        $packets = [new DirectedPacket(
+            $event->player->sessionId,
+            $this->healthPacket($event->player),
+        )];
+        $animation = new ActorEventPacket(
+            UnsignedLong::fromInt($event->player->runtimeActorId),
+            ActorEventType::Hurt,
+        );
+        foreach ($event->recipientSessionIds as $recipient) {
+            $packets[] = new DirectedPacket($recipient, $animation);
+        }
+
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function died(PlayerDied $event): array
+    {
+        $animation = new ActorEventPacket(
+            UnsignedLong::fromInt($event->player->runtimeActorId),
+            ActorEventType::Death,
+        );
+        $packets = [];
+        foreach ($event->recipientSessionIds as $recipient) {
+            $packets[] = new DirectedPacket($recipient, $animation);
+        }
+        $packets[] = new DirectedPacket(
+            $event->player->sessionId,
+            $this->respawnPacket($event->player, RespawnState::ServerSearching),
+        );
+        $message = $event->cause === \Bedriox\Server\Simulation\DamageCause::Fall
+            ? 'death.fell.accident.generic'
+            : 'death.attack.generic';
+        $packets[] = new DirectedPacket(
+            $event->player->sessionId,
+            new DeathInfoPacket($message, [$event->player->displayName]),
+        );
+
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function respawned(PlayerRespawned $event): array
+    {
+        $player = $event->player;
+        $packets = [
+            new DirectedPacket($player->sessionId, $this->healthPacket($player)),
+            new DirectedPacket($player->sessionId, new MovePlayerPacket(
+                UnsignedLong::fromInt($player->runtimeActorId),
+                $player->position->x,
+                PlayerPositionProjection::feetToWireY($player->position->y),
+                $player->position->z,
+                $player->pitch,
+                $player->yaw,
+                $player->headYaw,
+                MovePlayerMode::RESET,
+                $player->verticalState === VerticalState::GROUNDED,
+                UnsignedLong::fromInt(0),
+                UnsignedLong::fromInt(max(0, $player->movementSequence)),
+            )),
+        ];
+        $animation = new ActorEventPacket(UnsignedLong::fromInt($player->runtimeActorId), ActorEventType::Respawn);
+        foreach ($event->recipientSessionIds as $recipient) {
+            $packets[] = new DirectedPacket($recipient, $animation);
+        }
+        foreach ($this->peerMovement(new PlayerMoved($player, array_values(array_filter(
+            $event->recipientSessionIds,
+            static fn(string $recipient): bool => $recipient !== $player->sessionId,
+        )))) as $packet) {
+            $packets[] = $packet;
+        }
+        if ($this->inventory !== null) {
+            $owner = array_map(
+                fn(?\Bedriox\Server\Player\InventoryStack $stack) => $this->inventory->toProtocol($stack),
+                $event->inventory,
+            );
+            $packets[] = new DirectedPacket($player->sessionId, new InventoryContentPacket(0, $owner));
+            $packets[] = new DirectedPacket($player->sessionId, new MobEquipmentPacket(
+                UnsignedLong::fromInt($player->runtimeActorId),
+                $event->selectedHotbarSlot,
+                $event->selectedHotbarSlot,
+                0,
+                $this->inventory->toProtocol($event->selectedStack),
+            ));
+        }
+
+        return $packets;
+    }
+
+    private function healthPacket(PlayerSnapshot $player): UpdateAttributesPacket
+    {
+        return new UpdateAttributesPacket(
+            UnsignedLong::fromInt($player->runtimeActorId),
+            [new PlayerAttribute('minecraft:health', 0.0, 20.0, $player->health, 0.0, 20.0, 20.0)],
+            UnsignedLong::fromInt(max(0, $player->movementSequence)),
+        );
+    }
+
+    private function respawnPacket(PlayerSnapshot $player, RespawnState $state): RespawnPacket
+    {
+        return new RespawnPacket(
+            $player->position->x,
+            PlayerPositionProjection::feetToWireY($player->position->y),
+            $player->position->z,
+            $state,
+            UnsignedLong::fromInt($player->runtimeActorId),
+        );
     }
 
     /**

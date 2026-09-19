@@ -61,6 +61,8 @@ use Bedriox\Protocol\Packet\PlayerSkin;
 use Bedriox\Protocol\Packet\PlayerSkinPacket;
 use Bedriox\Protocol\Packet\RequestAbilityPacket;
 use Bedriox\Protocol\Packet\RequestChunkRadiusPacket;
+use Bedriox\Protocol\Packet\RespawnPacket;
+use Bedriox\Protocol\Packet\RespawnState;
 use Bedriox\Protocol\Packet\ServerSettingsRequestPacket;
 use Bedriox\Protocol\Packet\SetLocalPlayerAsInitializedPacket;
 use Bedriox\Protocol\Packet\SetPlayerInventoryOptionsPacket;
@@ -83,11 +85,13 @@ use Bedriox\Server\Runtime\BedrockPlayChannel;
 use Bedriox\Server\Runtime\RuntimeDiagnostics;
 use Bedriox\Server\Runtime\RuntimeLimits;
 use Bedriox\Server\Simulation\BlockBreakAction;
+use Bedriox\Server\Simulation\Command\AcknowledgeRespawn;
 use Bedriox\Server\Simulation\Command\ApplyInventoryStackRequest;
 use Bedriox\Server\Simulation\Command\BreakBlock;
 use Bedriox\Server\Simulation\Command\MovePlayer;
 use Bedriox\Server\Simulation\Command\PerformEmote;
 use Bedriox\Server\Simulation\Command\PlaceBlock;
+use Bedriox\Server\Simulation\Command\RespawnPlayer;
 use Bedriox\Server\Simulation\Command\SelectHotbarSlot;
 use Bedriox\Server\Simulation\Command\SendChat;
 use Bedriox\Server\Simulation\Event\BlockPlaced;
@@ -1927,6 +1931,46 @@ final class BedrockPlayChannelTest extends TestCase
         $channel->close();
         self::assertFalse($channel->queuePacket(new ChunkRadiusUpdatedPacket(1)));
         self::assertSame([], $channel->drainOutgoing());
+    }
+
+    public function testInitializedDeathConversationAcceptsBothRetailRespawnInputs(): void
+    {
+        [$channel, $client, $server, $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([
+                new RespawnPacket(100.0, -20.0, 100.0, RespawnState::ClientReady, UnsignedLong::fromInt(0)),
+                new PlayerActionPacket(
+                    $entityId,
+                    PlayerActionType::Respawn,
+                    new BlockPosition(0, 0, 0),
+                    new BlockPosition(0, 0, 0),
+                    0,
+                ),
+            ])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        $commands = $channel->drainCommands();
+        self::assertCount(2, $commands);
+        self::assertInstanceOf(AcknowledgeRespawn::class, $commands[0]);
+        self::assertInstanceOf(RespawnPlayer::class, $commands[1]);
+        $response = new RespawnPacket(0.0, 65.621, 0.0, RespawnState::ServerReady, $entityId);
+        self::assertTrue($channel->queuePacket($response));
+        $outgoing = $channel->drainOutgoing();
+        self::assertCount(1, $outgoing);
+        $frame = $this->decodeFrame($server->decryptEnvelope($outgoing[0]->payload));
+        self::assertSame(PacketIds::RESPAWN, $frame->header->packetId);
+        self::assertSame($response->encode(), BedrockPacketCodec::decode(
+            $frame->header->packetId,
+            $frame->payload,
+        )->encode());
+        self::assertFalse($channel->isClosed());
     }
 
     /**

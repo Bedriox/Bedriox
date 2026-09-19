@@ -20,6 +20,7 @@ final readonly class PlayerBootstrap
         public int $firstPlayedAt,
         public int $lastPlayedAt,
         public string $gamemode = 'survival',
+        public float $health = 20.0,
     ) {
         if ($this->worldName === '' || strlen($this->worldName) > 64
             || preg_match('//u', $this->worldName) !== 1
@@ -44,6 +45,9 @@ final readonly class PlayerBootstrap
         }
         if ($this->gamemode !== 'survival') {
             throw new InvalidArgumentException('Player gamemode must currently be exactly survival.');
+        }
+        if (!is_finite($this->health) || $this->health < 0.0 || $this->health > PlayerVitals::MAX_HEALTH) {
+            throw new InvalidArgumentException('Player health must be finite and inside its authoritative range.');
         }
     }
 }

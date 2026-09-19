@@ -31,6 +31,42 @@ final class PlayerDataCodecTest extends TestCase
         self::assertSame('minecraft:grass_block', $decoded->inventory->cursor?->identifier);
     }
 
+    public function testPersistsHealthAndMigratesSchemaOneProfilesAtFullHealth(): void
+    {
+        $profile = self::profile();
+        $profile = new PlayerBootstrap(
+            $profile->identity,
+            $profile->worldName,
+            $profile->position,
+            $profile->yaw,
+            $profile->pitch,
+            $profile->inventory,
+            $profile->firstPlayedAt,
+            $profile->lastPlayedAt,
+            $profile->gamemode,
+            7.5,
+        );
+        $codec = new PlayerDataCodec();
+        self::assertSame(7.5, $codec->decode($codec->encode($profile))->health);
+
+        $legacy = self::root();
+        $legacy['SchemaVersion'] = LittleEndianNbtTag::int(1);
+        unset($legacy['Health']);
+        self::assertSame(
+            20.0,
+            $codec->decode((new LittleEndianNbtCodec())->encodeRootCompound($legacy))->health,
+        );
+    }
+
+    public function testRejectsHealthOutsideTheAuthoritativeRange(): void
+    {
+        $root = self::root();
+        $root['Health'] = LittleEndianNbtTag::float(20.5);
+
+        $this->expectException(CorruptPlayerDataException::class);
+        (new PlayerDataCodec())->decode((new LittleEndianNbtCodec())->encodeRootCompound($root));
+    }
+
     public function testRejectsFutureSchemaWithoutTreatingItAsMissingData(): void
     {
         $root = self::root();

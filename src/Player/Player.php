@@ -20,6 +20,7 @@ final class Player
     public int $placementSequence = -1;
     public readonly PlayerMovement $movement;
     public readonly PlayerInventory $inventory;
+    public readonly PlayerVitals $vitals;
     public readonly string $worldName;
     public readonly int $firstPlayedAt;
     public readonly string $gamemode;
@@ -38,6 +39,7 @@ final class Player
         string $worldName = 'world',
         int $firstPlayedAt = 0,
         string $gamemode = 'survival',
+        float $health = PlayerVitals::MAX_HEALTH,
     ) {
         $this->chatTokens = $chatTokens;
         $this->lastChatRefillTick = $tick;
@@ -51,6 +53,7 @@ final class Player
         $this->worldName = $worldName;
         $this->firstPlayedAt = $firstPlayedAt;
         $this->gamemode = $gamemode;
+        $this->vitals = new PlayerVitals($health);
     }
 
     public function snapshot(): PlayerSnapshot
@@ -70,6 +73,8 @@ final class Player
             $this->movement->headYaw,
             $this->movement->sneaking,
             $this->movement->sprinting,
+            $this->vitals->health,
+            $this->vitals->isAlive(),
         );
     }
 

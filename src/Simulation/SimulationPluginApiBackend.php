@@ -61,6 +61,9 @@ final readonly class SimulationPluginApiBackend
                 $internal = $stack === null ? null : $this->inventoryStack($stack);
                 $this->requireQueued($this->simulation->enqueuePluginInventorySlot($identity, $slot, $internal));
             },
+            function (string $identity, float $amount): void {
+                $this->requireQueued($this->simulation->enqueuePluginDamage($identity, $amount));
+            },
         );
     }
 

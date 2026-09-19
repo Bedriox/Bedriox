@@ -29,6 +29,7 @@ final readonly class SimulationPluginServer implements Server
      * @param Closure(string, Position): void                   $teleport
      * @param Closure(BlockPosition, string): void              $setBlock
      * @param Closure(string, int, ItemStack|null): void        $setInventorySlot
+     * @param null|Closure(string, float): void                 $damage
      */
     public function __construct(
         private string $plugin,
@@ -42,6 +43,7 @@ final readonly class SimulationPluginServer implements Server
         private Closure $teleport,
         private Closure $setBlock,
         private Closure $setInventorySlot,
+        private ?Closure $damage = null,
     ) {}
 
     public function world(): World
@@ -96,6 +98,17 @@ final readonly class SimulationPluginServer implements Server
             throw new InvalidArgumentException('Block identifier must be canonical and namespaced.');
         }
         $this->defer(fn() => ($this->setBlock)($position, $identifier));
+    }
+
+    public function damage(Player $player, float $amount): void
+    {
+        if (!is_finite($amount) || $amount <= 0.0 || $amount > 1_000_000.0) {
+            throw new InvalidArgumentException('Damage must be finite, positive, and bounded.');
+        }
+        if ($this->damage === null) {
+            throw new \LogicException('The damage capability is unavailable.');
+        }
+        $this->defer(fn() => ($this->damage)($player->uuid, $amount));
     }
 
     public function setInventorySlot(Player $player, int $slot, ?ItemStack $stack): void

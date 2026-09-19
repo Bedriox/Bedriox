@@ -70,11 +70,11 @@ public function onJoin(PlayerJoinEvent $event): void
 
 `#[EventHandler]` defaults to `EventPriority::NORMAL`. Dispatch order is `LOWEST`, `LOW`, `NORMAL`, `HIGH`, `HIGHEST`, then `MONITOR`, with registration order as the tie-breaker. Programmatic registration is available through `PluginContext::events()`.
 
-Cancellable pre-events cover join, movement, chat, block breaking, block placement, and inventory changes. A cancelled client prediction receives the authoritative correction. Immutable post-events describe committed changes. `MONITOR` observes the final result and cannot cancel, mutate, or stage server actions.
+Cancellable pre-events cover join, movement, chat, damage, block breaking, block placement, and inventory changes. `PlayerDamageEvent` may cancel damage or set a bounded final amount. `PlayerRespawnEvent` may select a bounded destination before respawn commits. A cancelled client prediction receives the authoritative correction. Immutable post-events, including `PlayerDamagedEvent`, `PlayerDeathEvent`, and `PlayerRespawnedEvent`, describe committed changes. `MONITOR` observes the final result and cannot cancel, mutate, or stage server actions.
 
 ## Public server API
 
-`PluginContext::server()` supplies immutable player, inventory, world, position, block, and item views. It supports bounded requests to send a player message, teleport a player, read or change a canonical block, and change a supported inventory slot. Mutations requested by an event listener are staged until that listener returns successfully, then enter the authoritative simulation queue for validation and synchronization.
+`PluginContext::server()` supplies immutable player, inventory, world, position, block, item, health, and alive-state views. It supports bounded requests to send a player message, teleport or damage a player, read or change a canonical block, and change a supported inventory slot. Damage enters the same cancellable authoritative event path as built-in causes. Mutations requested by an event listener are staged until that listener returns successfully, then enter the authoritative simulation queue for validation and synchronization.
 
 Blocks and items use canonical identifiers such as `minecraft:grass_block`; process-local numeric IDs never enter the public API. The current flat-world preview exposes `minecraft:air`, `minecraft:bedrock`, `minecraft:dirt`, and `minecraft:grass_block`. Inventory writes currently support `minecraft:grass_block` or an empty slot.
 

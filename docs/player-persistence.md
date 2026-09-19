@@ -8,6 +8,7 @@ Profiles use schema-versioned little-endian NBT and are limited to 64 KiB.
 The current schema stores the authenticated identity metadata, first and last
 played timestamps, world name, exact position and rotation, survival game
 mode, the 36-slot main inventory, selected hotbar slot, and cursor stack.
+Current health is stored as a bounded float from 0 through 20.
 Inventory entries contain canonical names such as `minecraft:grass_block` and
 counts. Bedrock stack network IDs are never persisted and are allocated again
 for each play session.
@@ -17,6 +18,10 @@ restored exactly when its world is the active world; Bedriox does not move the
 player because of collision, headroom, liquid, or terrain checks. A missing
 profile starts at the world's calculated spawn. A saved unavailable world also
 uses that spawn without discarding the saved inventory or identity history.
+A profile saved at zero health is restored alive at full health at the active
+world spawn rather than reopening an incomplete death conversation. Schema-one
+profiles migrate in memory with 20 health and are written as schema two on the
+next successful save.
 
 `PlayerLoginEvent` runs after restoration and before StartGame, inventory
 bootstrap, or chunk scheduling. A plugin may cancel admission or choose a

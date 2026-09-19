@@ -21,5 +21,7 @@ final readonly class PlayerSnapshot
         public float $headYaw = 0.0,
         public bool $sneaking = false,
         public bool $sprinting = false,
+        public float $health = 20.0,
+        public bool $alive = true,
     ) {}
 }

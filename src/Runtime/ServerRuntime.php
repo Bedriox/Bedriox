@@ -26,9 +26,13 @@ use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
 use Bedriox\Server\Simulation\Event\MovementCorrected;
 use Bedriox\Server\Simulation\Event\PlayerBecameHidden;
 use Bedriox\Server\Simulation\Event\PlayerBecameVisible;
+use Bedriox\Server\Simulation\Event\PlayerDamaged;
+use Bedriox\Server\Simulation\Event\PlayerDied;
 use Bedriox\Server\Simulation\Event\PlayerDisconnected;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
+use Bedriox\Server\Simulation\Event\PlayerRespawned;
+use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
 use Bedriox\Server\Simulation\Event\WorldEvent;
 use Bedriox\Server\Simulation\FixedRateWorldLoop;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
@@ -169,7 +173,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                             'reason' => $event->reason,
                         ]);
                     }
-                    if (($event instanceof PlayerJoined || $event instanceof PlayerMoved)
+                    if (($event instanceof PlayerJoined || $event instanceof PlayerMoved || $event instanceof PlayerRespawned)
                         && !$this->updateAuthoritativeChunkView($event->player)) {
                         continue;
                     }
@@ -257,6 +261,52 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                             return false;
                         }
                         continue;
+                    }
+                    if ($event instanceof PlayerRespawned) {
+                        $this->actorVisibility->upsert($event->player);
+                        foreach ($this->reconcileActorVisibility($event->player->sessionId) as $visibilityEvent) {
+                            if (!$this->dispatchWorldEvent($visibilityEvent, $directedCount)) {
+                                return false;
+                            }
+                        }
+                        $event = new PlayerRespawned(
+                            $event->player,
+                            array_values(array_unique([
+                                $event->player->sessionId,
+                                ...array_intersect(
+                                    $event->recipientSessionIds,
+                                    $this->actorVisibility->viewersOf($event->player->sessionId),
+                                ),
+                            ])),
+                            $event->inventory,
+                            $event->selectedHotbarSlot,
+                            $event->selectedStack,
+                        );
+                    } elseif ($event instanceof PlayerDamaged) {
+                        $event = new PlayerDamaged(
+                            $event->player,
+                            $event->damage,
+                            $event->cause,
+                            array_values(array_unique([
+                                $event->player->sessionId,
+                                ...array_intersect(
+                                    $event->recipientSessionIds,
+                                    $this->actorVisibility->viewersOf($event->player->sessionId),
+                                ),
+                            ])),
+                        );
+                    } elseif ($event instanceof PlayerDied) {
+                        $event = new PlayerDied(
+                            $event->player,
+                            $event->cause,
+                            array_values(array_unique([
+                                $event->player->sessionId,
+                                ...array_intersect(
+                                    $event->recipientSessionIds,
+                                    $this->actorVisibility->viewersOf($event->player->sessionId),
+                                ),
+                            ])),
+                        );
                     }
                     if ($event instanceof PlayerDisconnected) {
                         foreach ($this->actorVisibility->remove($event->sessionId) as $visibilityEvent) {
@@ -792,7 +842,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
             $event instanceof PlayerDisconnected => $event->sessionId,
             $event instanceof PlayerBecameHidden => $event->playerSessionId,
             $event instanceof PlayerBecameVisible => $event->player->sessionId,
-            $event instanceof PlayerJoined, $event instanceof PlayerMoved => $event->player->sessionId,
+            $event instanceof PlayerJoined, $event instanceof PlayerMoved, $event instanceof PlayerDamaged,
+            $event instanceof PlayerDied, $event instanceof PlayerRespawned, $event instanceof RespawnAcknowledged => $event->player->sessionId,
             default => null,
         };
     }

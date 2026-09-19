@@ -22,7 +22,7 @@ use InvalidArgumentException;
 /** Bounded schema-versioned player profile encoding with no session-local identifiers. */
 final readonly class PlayerDataCodec
 {
-    public const int SCHEMA_VERSION = 1;
+    public const int SCHEMA_VERSION = 2;
     public const int MAX_BYTES = 65_536;
 
     private const array REQUIRED_ROOT_TAGS = [
@@ -38,6 +38,7 @@ final readonly class PlayerDataCodec
         'GameMode',
         'Inventory',
         'SelectedHotbarSlot',
+        'Health',
     ];
 
     public function __construct(private LittleEndianNbtCodec $nbt = new LittleEndianNbtCodec()) {}
@@ -83,6 +84,7 @@ final readonly class PlayerDataCodec
             'GameMode' => LittleEndianNbtTag::string($player->gamemode),
             'Inventory' => LittleEndianNbtTag::list(LittleEndianNbtTag::COMPOUND, $inventory),
             'SelectedHotbarSlot' => LittleEndianNbtTag::byte($player->inventory->selectedHotbarSlot),
+            'Health' => LittleEndianNbtTag::float($player->health),
         ];
         if ($player->inventory->cursor !== null) {
             $root['Cursor'] = LittleEndianNbtTag::compound([
@@ -112,25 +114,31 @@ final readonly class PlayerDataCodec
         } catch (CorruptWorldDataException|InvalidArgumentException $error) {
             throw new CorruptPlayerDataException('Player profile contains malformed NBT.', previous: $error);
         }
-        $allowed = array_fill_keys([...self::REQUIRED_ROOT_TAGS, 'Cursor'], true);
+        $schemaTag = $root['SchemaVersion'] ?? null;
+        if (!$schemaTag instanceof LittleEndianNbtTag) {
+            throw new CorruptPlayerDataException("Player profile is missing tag 'SchemaVersion'.");
+        }
+        $schemaVersion = self::integer($schemaTag, LittleEndianNbtTag::INT, 'SchemaVersion');
+        if ($schemaVersion > self::SCHEMA_VERSION) {
+            throw new UnsupportedPlayerDataException("Player profile schema version $schemaVersion is not supported.");
+        }
+        if ($schemaVersion < 1) {
+            throw new CorruptPlayerDataException('Player profile schema version must be positive and supported.');
+        }
+        $required = $schemaVersion === 1
+            ? array_filter(self::REQUIRED_ROOT_TAGS, static fn(string $name): bool => $name !== 'Health')
+            : self::REQUIRED_ROOT_TAGS;
+        $allowed = array_fill_keys([...$required, 'Cursor'], true);
         foreach ($root as $name => $_tag) {
             if (!isset($allowed[$name])) {
                 throw new CorruptPlayerDataException("Player profile contains unknown tag '$name'.");
             }
         }
-        foreach (self::REQUIRED_ROOT_TAGS as $name) {
+        foreach ($required as $name) {
             if (!isset($root[$name])) {
                 throw new CorruptPlayerDataException("Player profile is missing tag '$name'.");
             }
         }
-        $schemaVersion = self::integer($root['SchemaVersion'], LittleEndianNbtTag::INT, 'SchemaVersion');
-        if ($schemaVersion > self::SCHEMA_VERSION) {
-            throw new UnsupportedPlayerDataException("Player profile schema version $schemaVersion is not supported.");
-        }
-        if ($schemaVersion !== self::SCHEMA_VERSION) {
-            throw new CorruptPlayerDataException('Player profile schema version must be positive and supported.');
-        }
-
         try {
             $uuid = self::string($root['Uuid'], 'Uuid');
             $xuid = self::string($root['Xuid'], 'Xuid');
@@ -176,6 +184,7 @@ final readonly class PlayerDataCodec
                 self::integer($root['FirstPlayed'], LittleEndianNbtTag::LONG, 'FirstPlayed'),
                 self::integer($root['LastPlayed'], LittleEndianNbtTag::LONG, 'LastPlayed'),
                 self::string($root['GameMode'], 'GameMode'),
+                isset($root['Health']) ? self::floating($root['Health'], 'Health') : 20.0,
             );
         } catch (CorruptPlayerDataException $error) {
             throw $error;
@@ -236,6 +245,16 @@ final readonly class PlayerDataCodec
         $value = self::tag($tag, LittleEndianNbtTag::STRING, $name)->value;
         if (!is_string($value)) {
             throw new CorruptPlayerDataException("Player profile tag '$name' is not a string.");
+        }
+
+        return $value;
+    }
+
+    private static function floating(LittleEndianNbtTag $tag, string $name): float
+    {
+        $value = self::tag($tag, LittleEndianNbtTag::FLOAT, $name)->value;
+        if (!is_float($value) || !is_finite($value)) {
+            throw new CorruptPlayerDataException("Player profile tag '$name' is not a finite float.");
         }
 
         return $value;

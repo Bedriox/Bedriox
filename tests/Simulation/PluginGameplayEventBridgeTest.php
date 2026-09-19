@@ -11,10 +11,15 @@ use Bedriox\Api\Event\Inventory\InventoryChangedEvent;
 use Bedriox\Api\Event\Inventory\InventoryChangeEvent;
 use Bedriox\Api\Event\Player\PlayerChatBroadcastEvent;
 use Bedriox\Api\Event\Player\PlayerChatEvent;
+use Bedriox\Api\Event\Player\PlayerDamagedEvent;
+use Bedriox\Api\Event\Player\PlayerDamageEvent;
+use Bedriox\Api\Event\Player\PlayerDeathEvent;
 use Bedriox\Api\Event\Player\PlayerJoinEvent;
 use Bedriox\Api\Event\Player\PlayerLoginEvent;
 use Bedriox\Api\Event\Player\PlayerMoveEvent;
 use Bedriox\Api\Event\Player\PlayerPreJoinEvent;
+use Bedriox\Api\Event\Player\PlayerRespawnedEvent;
+use Bedriox\Api\Event\Player\PlayerRespawnEvent;
 use Bedriox\Api\Inventory\Inventory as ApiInventory;
 use Bedriox\Api\Player\Player as ApiPlayer;
 use Bedriox\Api\World\Position as ApiPosition;
@@ -34,6 +39,8 @@ use Bedriox\Server\Simulation\Event\CommandRejected;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
 use Bedriox\Server\Simulation\Event\MovementCorrected;
+use Bedriox\Server\Simulation\Event\PlayerDamaged;
+use Bedriox\Server\Simulation\Event\PlayerRespawned;
 use Bedriox\Server\Simulation\MovementMode;
 use Bedriox\Server\Simulation\PluginGameplayEventBridge;
 use Bedriox\Server\Simulation\Position;
@@ -285,6 +292,81 @@ final class PluginGameplayEventBridgeTest extends TestCase
         self::assertSame($palette->air->value, $world->blockStateAt(1, 63, 0)->value);
         self::assertInstanceOf(InventoryStackRequestProcessed::class, $events[3]);
         self::assertSame(3, $events[3]->mainInventory[1]?->count);
+    }
+
+    public function testDamageCanBeChangedBeforeCommitAndPublishesHealthPostEvents(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $postDamage = null;
+        $dispatcher->register('Example', PlayerDamageEvent::class, static function (PlayerDamageEvent $event): void {
+            $event->setDamage(4.0);
+        });
+        $dispatcher->register('Example', PlayerDamagedEvent::class, static function (PlayerDamagedEvent $event) use (&$postDamage): void {
+            $postDamage = [$event->damage, $event->player->health];
+        });
+        [$simulation, $factory] = self::simulation($bridge);
+        $simulation->enqueue($factory->join('one', 'identity-one', 'One'));
+        $simulation->tick();
+
+        self::assertTrue($simulation->enqueue($factory->damage('one', 8.0)));
+        $event = $simulation->tick()->events[0];
+
+        self::assertInstanceOf(PlayerDamaged::class, $event);
+        self::assertSame(4.0, $event->damage);
+        self::assertSame(16.0, $event->player->health);
+        self::assertSame([4.0, 16.0], $postDamage);
+    }
+
+    public function testCancelledDamageDoesNotMutateHealthOrPublishPostEvent(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $postEvents = 0;
+        $dispatcher->register('Example', PlayerDamageEvent::class, static function (PlayerDamageEvent $event): void {
+            $event->cancel();
+        });
+        $dispatcher->register('Example', PlayerDamagedEvent::class, static function () use (&$postEvents): void {
+            ++$postEvents;
+        });
+        [$simulation, $factory] = self::simulation($bridge);
+        $simulation->enqueue($factory->join('one', 'identity-one', 'One'));
+        $simulation->tick();
+        $simulation->enqueue($factory->damage('one', 8.0));
+
+        $event = $simulation->tick()->events[0];
+
+        self::assertInstanceOf(CommandRejected::class, $event);
+        self::assertSame('plugin_cancelled', $event->reason);
+        self::assertSame(20.0, $simulation->snapshot()->players[0]->health);
+        self::assertSame(0, $postEvents);
+    }
+
+    public function testDeathAndRespawnEventsObserveCommittedStateAndMaySelectDestination(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $deathHealth = null;
+        $respawnHealth = null;
+        $dispatcher->register('Example', PlayerDeathEvent::class, static function (PlayerDeathEvent $event) use (&$deathHealth): void {
+            $deathHealth = $event->player->health;
+        });
+        $dispatcher->register('Example', PlayerRespawnEvent::class, static function (PlayerRespawnEvent $event): void {
+            $event->setPosition(new ApiPosition(2.0, 64.0, 3.0));
+        });
+        $dispatcher->register('Example', PlayerRespawnedEvent::class, static function (PlayerRespawnedEvent $event) use (&$respawnHealth): void {
+            $respawnHealth = $event->player->health;
+        });
+        [$simulation, $factory] = self::simulation($bridge);
+        $simulation->enqueue($factory->join('one', 'identity-one', 'One'));
+        $simulation->tick();
+        $simulation->enqueue($factory->damage('one', 20.0));
+        $simulation->tick();
+
+        self::assertSame(0.0, $deathHealth);
+        $simulation->enqueue($factory->respawn('one'));
+        $event = $simulation->tick()->events[0];
+        self::assertInstanceOf(PlayerRespawned::class, $event);
+        self::assertSame(2.0, $event->player->position->x);
+        self::assertSame(3.0, $event->player->position->z);
+        self::assertSame(20.0, $respawnHealth);
     }
 
     /** @return array{EventDispatcher, PluginGameplayEventBridge} */

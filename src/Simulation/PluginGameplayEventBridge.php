@@ -12,12 +12,17 @@ use Bedriox\Api\Event\Inventory\InventoryChangedEvent;
 use Bedriox\Api\Event\Inventory\InventoryChangeEvent;
 use Bedriox\Api\Event\Player\PlayerChatBroadcastEvent;
 use Bedriox\Api\Event\Player\PlayerChatEvent;
+use Bedriox\Api\Event\Player\PlayerDamagedEvent;
+use Bedriox\Api\Event\Player\PlayerDamageEvent;
+use Bedriox\Api\Event\Player\PlayerDeathEvent;
 use Bedriox\Api\Event\Player\PlayerJoinEvent;
 use Bedriox\Api\Event\Player\PlayerLoginEvent;
 use Bedriox\Api\Event\Player\PlayerMovedEvent;
 use Bedriox\Api\Event\Player\PlayerMoveEvent;
 use Bedriox\Api\Event\Player\PlayerPreJoinEvent;
 use Bedriox\Api\Event\Player\PlayerQuitEvent;
+use Bedriox\Api\Event\Player\PlayerRespawnedEvent;
+use Bedriox\Api\Event\Player\PlayerRespawnEvent;
 use Bedriox\Api\Inventory\Inventory as ApiInventory;
 use Bedriox\Api\Inventory\ItemStack as ApiItemStack;
 use Bedriox\Api\Player\Player as ApiPlayer;
@@ -27,6 +32,7 @@ use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Player\Player;
 use Bedriox\Server\Player\PlayerInventory;
+use Bedriox\Server\Player\PlayerVitals;
 use Bedriox\Server\Plugin\Event\EventDispatcher;
 use Bedriox\Server\World\BlockPosition;
 
@@ -82,6 +88,38 @@ final readonly class PluginGameplayEventBridge
     public function moved(Player $player): void
     {
         $this->events->dispatch(new PlayerMovedEvent(self::playerView($player)));
+    }
+
+    public function damage(Player $player, DamageCause $cause, float $damage): ?float
+    {
+        $event = new PlayerDamageEvent(self::playerView($player), $cause->value, $damage);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->damage();
+    }
+
+    public function damaged(Player $player, DamageCause $cause, float $damage): void
+    {
+        $this->events->dispatch(new PlayerDamagedEvent(self::playerView($player), $cause->value, $damage));
+    }
+
+    public function died(Player $player, DamageCause $cause): void
+    {
+        $this->events->dispatch(new PlayerDeathEvent(self::playerView($player), $cause->value));
+    }
+
+    public function respawn(Player $player, Position $position): Position
+    {
+        $event = new PlayerRespawnEvent(self::playerView($player), self::position($position));
+        $this->events->dispatch($event);
+        $destination = $event->position();
+
+        return new Position($destination->x, $destination->y, $destination->z);
+    }
+
+    public function respawned(Player $player): void
+    {
+        $this->events->dispatch(new PlayerRespawnedEvent(self::playerView($player)));
     }
 
     public function chat(Player $player, string $message): ?string
@@ -153,6 +191,9 @@ final readonly class PluginGameplayEventBridge
             $snapshot->sneaking,
             $snapshot->sprinting,
             self::inventory($inventory ?? $player->inventory),
+            $player->vitals->health,
+            PlayerVitals::MAX_HEALTH,
+            $player->vitals->isAlive(),
         );
     }
 

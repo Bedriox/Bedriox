@@ -15,13 +15,16 @@ use Bedriox\Server\Player\PlayerBootstrap;
 use Bedriox\Server\Player\PlayerIdentity;
 use Bedriox\Server\Player\PlayerInventory;
 use Bedriox\Server\Player\PlayerRegistry;
+use Bedriox\Server\Simulation\Command\AcknowledgeRespawn;
 use Bedriox\Server\Simulation\Command\ApplyInventoryStackRequest;
 use Bedriox\Server\Simulation\Command\BreakBlock;
+use Bedriox\Server\Simulation\Command\DamagePlayer;
 use Bedriox\Server\Simulation\Command\DisconnectPlayer;
 use Bedriox\Server\Simulation\Command\JoinPlayer;
 use Bedriox\Server\Simulation\Command\MovePlayer;
 use Bedriox\Server\Simulation\Command\PerformEmote;
 use Bedriox\Server\Simulation\Command\PlaceBlock;
+use Bedriox\Server\Simulation\Command\RespawnPlayer;
 use Bedriox\Server\Simulation\Command\SelectHotbarSlot;
 use Bedriox\Server\Simulation\Command\SendChat;
 use Bedriox\Server\Simulation\Command\SendPluginMessage;
@@ -40,9 +43,13 @@ use Bedriox\Server\Simulation\Event\EmotePerformed;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
 use Bedriox\Server\Simulation\Event\MovementCorrected;
+use Bedriox\Server\Simulation\Event\PlayerDamaged;
+use Bedriox\Server\Simulation\Event\PlayerDied;
 use Bedriox\Server\Simulation\Event\PlayerDisconnected;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
+use Bedriox\Server\Simulation\Event\PlayerRespawned;
+use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
 use Bedriox\Server\Simulation\Event\WorldEvent;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\Block\InternalBlockStateId;
@@ -87,6 +94,9 @@ final class WorldSimulation
     private int $nextRuntimeActorId = 1;
     private readonly SimulationCommandFactory $validator;
     private readonly ?PlayerCollisionResolver $collisionResolver;
+
+    /** @var list<WorldEvent> */
+    private array $deferredEvents = [];
 
     /** @var array<string, array{position: BlockPosition, state: int, sequence: int}> */
     private array $breakingBlocks = [];
@@ -145,6 +155,7 @@ final class WorldSimulation
             $bootstrap->worldName,
             $bootstrap->firstPlayedAt,
             $bootstrap->gamemode,
+            $bootstrap->health,
         );
         $candidate->movement->yaw = $bootstrap->yaw;
         $candidate->movement->headYaw = $bootstrap->yaw;
@@ -173,6 +184,7 @@ final class WorldSimulation
             $bootstrap->firstPlayedAt,
             $bootstrap->lastPlayedAt,
             $bootstrap->gamemode,
+            $bootstrap->health,
         );
     }
 
@@ -256,6 +268,7 @@ final class WorldSimulation
             if ($event !== null) {
                 $events[] = $event;
             }
+            array_push($events, ...$this->drainDeferredEvents());
         }
 
         while (!$this->movementOrder->isEmpty() && $processed < $this->limits->maximumCommandsPerTick) {
@@ -270,6 +283,7 @@ final class WorldSimulation
             $this->queuedBytes -= $bytes;
             ++$processed;
             $events[] = $this->acceptMovementInput($command);
+            array_push($events, ...$this->drainDeferredEvents());
         }
 
         return new SimulationTick($this->tick, $processed, $events);
@@ -387,6 +401,14 @@ final class WorldSimulation
         ));
     }
 
+    public function enqueuePluginDamage(string $identity, float $amount): bool
+    {
+        $player = $this->players->playerByIdentity($identity);
+
+        return $player !== null
+            && $this->enqueue($this->validator->damage($player->sessionId, $amount, DamageCause::Plugin));
+    }
+
     public function enqueuePluginBlock(string $plugin, BlockPosition $position, string $identifier): bool
     {
         return $this->enqueue($this->validator->pluginBlock($plugin, $position, $identifier));
@@ -402,6 +424,14 @@ final class WorldSimulation
 
     private function apply(WorldCommand $command): ?WorldEvent
     {
+        $player = $this->players->player($command->sessionId());
+        if ($player !== null && !$player->vitals->isAlive()
+            && !$command instanceof RespawnPlayer
+            && !$command instanceof AcknowledgeRespawn
+            && !$command instanceof DisconnectPlayer) {
+            return new CommandRejected($command->sessionId(), 'player_dead');
+        }
+
         return match (true) {
             $command instanceof JoinPlayer => $this->join($command),
             $command instanceof SendChat => $this->chat($command),
@@ -415,6 +445,9 @@ final class WorldSimulation
             $command instanceof TeleportPlayer => $this->pluginTeleport($command),
             $command instanceof SetPluginBlock => $this->pluginBlock($command),
             $command instanceof SetPluginInventorySlot => $this->pluginInventorySlot($command),
+            $command instanceof DamagePlayer => $this->damage($command),
+            $command instanceof RespawnPlayer => $this->respawn($command),
+            $command instanceof AcknowledgeRespawn => $this->acknowledgeRespawn($command),
             default => null,
         };
     }
@@ -468,6 +501,7 @@ final class WorldSimulation
             $worldName,
             $firstPlayedAt,
             $gamemode,
+            $bootstrap === null ? \Bedriox\Server\Player\PlayerVitals::MAX_HEALTH : $bootstrap->health,
         );
         if ($bootstrap !== null) {
             $player->movement->yaw = $bootstrap->yaw;
@@ -494,6 +528,9 @@ final class WorldSimulation
         $player = $this->players->player($command->session);
         if ($player === null) {
             return new CommandRejected($command->session, 'not_joined');
+        }
+        if (!$player->vitals->isAlive()) {
+            return new MovementCorrected($player->snapshot(), 'player_dead');
         }
         $movement = $player->movement;
         if ($command->sequence <= $movement->sequence) {
@@ -564,6 +601,7 @@ final class WorldSimulation
         if ($this->pluginEvents !== null && !$this->pluginEvents->allowMove($player, $position)) {
             return new MovementCorrected($player->snapshot(), 'plugin_cancelled');
         }
+        $verticalDistance = $position->y - $movement->position->y;
         $movement->position = $position;
         $movement->yaw = $command->yaw;
         $movement->headYaw = $command->headYaw ?? $command->yaw;
@@ -579,6 +617,21 @@ final class WorldSimulation
 
         $snapshot = $player->snapshot();
         $this->pluginEvents?->moved($player);
+        if ($verticalDistance < $movement->fallDistance) {
+            $movement->fallDistance -= $verticalDistance;
+        } else {
+            $movement->fallDistance = 0.0;
+        }
+        if ($grounded && $movement->fallDistance > 0.0) {
+            $damage = ceil($movement->fallDistance - 3.0);
+            $movement->fallDistance = 0.0;
+            if ($damage > 0.0) {
+                $damageEvent = $this->damage(new DamagePlayer($player->sessionId, $damage, DamageCause::Fall));
+                $deathEvents = $this->drainDeferredEvents();
+                $this->deferredEvents[] = $damageEvent;
+                array_push($this->deferredEvents, ...$deathEvents);
+            }
+        }
         if ($terrainConstrained) {
             return new MovementCorrected(
                 $snapshot,
@@ -589,6 +642,99 @@ final class WorldSimulation
         }
 
         return new PlayerMoved($snapshot, $this->players->recipients($player->sessionId), $postureChanged);
+    }
+
+    private function damage(DamagePlayer $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        if ($player === null) {
+            return new CommandRejected($command->session, 'not_joined');
+        }
+        if (!$player->vitals->isAlive()) {
+            return new CommandRejected($command->session, 'player_dead');
+        }
+        if ($this->tick <= $player->vitals->invulnerableUntilTick) {
+            return new CommandRejected($command->session, 'damage_cooldown');
+        }
+        $damage = $this->pluginEvents === null
+            ? $command->amount
+            : $this->pluginEvents->damage($player, $command->cause, $command->amount);
+        if ($damage === null) {
+            return new CommandRejected($command->session, 'plugin_cancelled');
+        }
+        if ($damage <= 0.0) {
+            return new CommandRejected($command->session, 'plugin_cancelled');
+        }
+        $applied = min($damage, $player->vitals->health);
+        $player->vitals->health -= $applied;
+        $player->vitals->invulnerableUntilTick = $this->tick + 10;
+        $player->markDirty();
+        $this->pluginEvents?->damaged($player, $command->cause, $applied);
+        if (!$player->vitals->isAlive()) {
+            $player->movement->fallDistance = 0.0;
+            $this->pluginEvents?->died($player, $command->cause);
+            $this->deferredEvents[] = new PlayerDied(
+                $player->snapshot(),
+                $command->cause,
+                $this->players->recipients(),
+            );
+        }
+
+        return new PlayerDamaged($player->snapshot(), $applied, $command->cause, $this->players->recipients());
+    }
+
+    private function respawn(RespawnPlayer $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        if ($player === null) {
+            return new CommandRejected($command->session, 'not_joined');
+        }
+        if ($player->vitals->isAlive()) {
+            return new CommandRejected($command->session, 'already_alive');
+        }
+        $position = $this->pluginEvents?->respawn($player, $this->spawn) ?? $this->spawn;
+        $player->movement->position = $position;
+        $player->movement->yaw = 0.0;
+        $player->movement->headYaw = 0.0;
+        $player->movement->pitch = 0.0;
+        $player->movement->verticalVelocity = 0.0;
+        $player->movement->fallDistance = 0.0;
+        $player->movement->verticalState = $this->collisionResolver?->isGrounded($position) === false
+            ? VerticalState::AIRBORNE
+            : VerticalState::GROUNDED;
+        $player->vitals->health = \Bedriox\Server\Player\PlayerVitals::MAX_HEALTH;
+        $player->vitals->invulnerableUntilTick = $this->tick + 60;
+        $player->markDirty();
+        $this->pluginEvents?->respawned($player);
+
+        return new PlayerRespawned(
+            $player->snapshot(),
+            $this->players->recipients(),
+            $player->inventory->slots(),
+            $player->inventory->selectedHotbarSlot(),
+            $player->inventory->selectedStack(),
+        );
+    }
+
+    private function acknowledgeRespawn(AcknowledgeRespawn $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        if ($player !== null && !$player->vitals->isAlive()) {
+            $this->deferredEvents[] = $this->respawn(new RespawnPlayer($command->session));
+        }
+
+        return $player === null
+            ? new CommandRejected($command->session, 'not_joined')
+            : new RespawnAcknowledged($player->snapshot());
+    }
+
+    /** @return list<WorldEvent> */
+    private function drainDeferredEvents(): array
+    {
+        $events = $this->deferredEvents;
+        $this->deferredEvents = [];
+
+        return $events;
     }
 
     private function chat(SendChat $command): WorldEvent
@@ -760,6 +906,13 @@ final class WorldSimulation
                     $command->slot,
                     $command->stack,
                 ),
+                $command instanceof DamagePlayer => $this->validator->damage(
+                    $command->session,
+                    $command->amount,
+                    $command->cause,
+                ),
+                $command instanceof RespawnPlayer => $this->validator->respawn($command->session),
+                $command instanceof AcknowledgeRespawn => $this->validator->acknowledgeRespawn($command->session),
                 default => throw new CommandValidationException('Unsupported world command.'),
             };
         } catch (CommandValidationException) {

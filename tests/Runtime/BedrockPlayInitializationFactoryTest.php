@@ -156,6 +156,7 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
             ], 3),
             100,
             200,
+            health: 7.5,
         );
 
         $packets = (new BedrockPlayInitializationFactory(BedrockDataSet::bundled()))
@@ -170,6 +171,9 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
         self::assertIsArray($yaw);
         self::assertEqualsWithDelta(5.0, $pitch['value'], 0.0001);
         self::assertEqualsWithDelta(90.0, $yaw['value'], 0.0001);
+        $attributes = $packets[15];
+        self::assertInstanceOf(UpdateAttributesPacket::class, $attributes);
+        self::assertSame(7.5, $attributes->attributes[0]->value);
         $inventory = $packets[17];
         self::assertInstanceOf(InventoryContentPacket::class, $inventory);
         self::assertSame(0, $inventory->items[0]->runtimeId);

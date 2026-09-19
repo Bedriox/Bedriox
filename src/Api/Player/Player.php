@@ -19,5 +19,8 @@ final readonly class Player
         public bool $sneaking,
         public bool $sprinting,
         public Inventory $inventory,
+        public float $health = 20.0,
+        public float $maxHealth = 20.0,
+        public bool $alive = true,
     ) {}
 }

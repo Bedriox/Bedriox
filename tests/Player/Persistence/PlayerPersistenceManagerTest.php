@@ -83,6 +83,37 @@ final class PlayerPersistenceManagerTest extends TestCase
         self::assertEquals($stored->inventory, $loaded->inventory);
     }
 
+    public function testDeadSavedProfileReturnsAtSpawnAliveWithoutDiscardingInventory(): void
+    {
+        $palette = self::palette();
+        $stored = new PlayerBootstrap(
+            new PlayerIdentity(self::UUID, 'Player', '1'),
+            'world',
+            new Position(20.0, 90.0, 20.0),
+            40.0,
+            15.0,
+            PlayerInventory::starter($palette)->exportState(),
+            100,
+            200,
+            health: 0.0,
+        );
+        $manager = new PlayerPersistenceManager(
+            new MemoryPlayerDataStore($stored),
+            'world',
+            $spawn = new Position(4.0, 72.0, -3.0),
+            $palette,
+            static fn(): int => 300,
+        );
+
+        $loaded = $manager->load(self::login());
+
+        self::assertEquals($spawn, $loaded->position);
+        self::assertSame(0.0, $loaded->yaw);
+        self::assertSame(0.0, $loaded->pitch);
+        self::assertSame(20.0, $loaded->health);
+        self::assertEquals($stored->inventory, $loaded->inventory);
+    }
+
     public function testFailedSaveRemainsPendingUntilAConfirmedRetry(): void
     {
         $palette = self::palette();
@@ -118,6 +149,7 @@ final class PlayerPersistenceManagerTest extends TestCase
         self::assertFalse($player->isDirty());
         self::assertSame(0, $manager->pendingCount());
         self::assertEquals(new Position(5.0, 70.0, 6.0), $store->profile?->position);
+        self::assertSame(20.0, $store->profile?->health);
     }
 
     private const string UUID = '00000000-0000-0000-0000-000000000001';

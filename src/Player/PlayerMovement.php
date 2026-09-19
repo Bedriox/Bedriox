@@ -21,6 +21,7 @@ final class PlayerMovement
     public float $verticalVelocity = 0.0;
     public float $distanceThisTick = 0.0;
     public int $jumpAuthorizedUntilTick = -1;
+    public float $fallDistance = 0.0;
 
     public function __construct(
         public Position $position,

@@ -52,6 +52,27 @@ final class SimulationPluginServerTest extends TestCase
         $server->onlinePlayers();
     }
 
+    public function testDamageIsBoundedAndStagedLikeOtherAuthoritativeMutations(): void
+    {
+        $actions = new PluginActionBuffer();
+        $damages = [];
+        $player = self::player();
+        $server = self::server(
+            $actions,
+            $player,
+            static function (): void {},
+            damage: static function (string $uuid, float $amount) use (&$damages): void {
+                $damages[] = [$uuid, $amount];
+            },
+        );
+
+        $actions->begin();
+        $server->damage($player, 3.5);
+        self::assertSame([], $damages);
+        $actions->commit();
+        self::assertSame([['identity-one', 3.5]], $damages);
+    }
+
     private static function player(): Player
     {
         return new Player(
@@ -71,6 +92,7 @@ final class SimulationPluginServerTest extends TestCase
         Player $player,
         Closure $sendMessage,
         ?FacadeRuntimeControl $control = null,
+        ?Closure $damage = null,
     ): SimulationPluginServer {
         $control ??= new FacadeRuntimeControl(true);
 
@@ -86,6 +108,7 @@ final class SimulationPluginServerTest extends TestCase
             static function (): void {},
             static function (): void {},
             static function (): void {},
+            $damage,
         );
     }
 }

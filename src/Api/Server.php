@@ -26,6 +26,9 @@ interface Server
 
     public function teleport(Player $player, Position $position): void;
 
+    /** Queues bounded server-authoritative damage; PlayerDamageEvent may cancel or modify it. */
+    public function damage(Player $player, float $amount): void;
+
     public function setBlock(BlockPosition $position, string $identifier): void;
 
     public function setInventorySlot(Player $player, int $slot, ?ItemStack $stack): void;

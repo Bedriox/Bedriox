@@ -16,6 +16,7 @@ use Bedriox\Protocol\Packet\InventoryContentPacket;
 use Bedriox\Protocol\Packet\ItemRegistryPacket;
 use Bedriox\Protocol\Packet\JigsawStructureDataPacket;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
+use Bedriox\Protocol\Packet\PlayerAttribute;
 use Bedriox\Protocol\Packet\PlayerListAddEntry;
 use Bedriox\Protocol\Packet\PlayerListAddPacket;
 use Bedriox\Protocol\Packet\PlayerPositionProjection;
@@ -184,7 +185,7 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
                 PlayerSkin::fromVerifiedClientData($login->clientData),
                 colorArgb: 0xffffffff,
             )]),
-            UpdateAttributesPacket::survival($runtimeEntityId),
+            $this->survivalAttributes($runtimeEntityId, $bootstrap === null ? 20.0 : $bootstrap->health),
             new CreativeContentPacket(),
             new InventoryContentPacket(0, $mainInventory),
             new InventoryContentPacket(120, 4),
@@ -207,5 +208,18 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
     public function fixedFlatRuntimeIds(): array
     {
         return $this->fixedFlatBlockPalette->toNetworkRuntimeIds($this->blockNetworkTranslator);
+    }
+
+    private function survivalAttributes(UnsignedLong $runtimeEntityId, float $health): UpdateAttributesPacket
+    {
+        $maximum = 3.4028234663852886e38;
+
+        return new UpdateAttributesPacket($runtimeEntityId, [
+            new PlayerAttribute('minecraft:health', 0.0, 20.0, $health, 0.0, 20.0, 20.0),
+            new PlayerAttribute('minecraft:player.hunger', 0.0, 20.0, 20.0, 0.0, 20.0, 20.0),
+            new PlayerAttribute('minecraft:movement', 0.0, $maximum, 0.1, 0.0, $maximum, 0.1),
+            new PlayerAttribute('minecraft:player.level', 0.0, 24_791.0, 0.0, 0.0, 24_791.0, 0.0),
+            new PlayerAttribute('minecraft:player.experience', 0.0, 1.0, 0.0, 0.0, 1.0, 0.0),
+        ], UnsignedLong::fromInt(0));
     }
 }

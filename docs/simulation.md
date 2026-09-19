@@ -2,7 +2,7 @@
 
 Bedriox's initial world domain is a deterministic, in-memory flat-world model. It owns all mutable player state and advances at 20 ticks per second by default. Network callbacks cannot access player state: an adapter must first use `SimulationCommandFactory` to convert authenticated, decoded input into one of the immutable join, movement, chat, emote, or disconnect commands, then enqueue it on `WorldSimulation`.
 
-This model does not implement Bedrock packet encoding, chunk serialization, combat, mobs, or commands. It owns player inventory, canonical world block mutation, break timing, placement validation, and the authoritative snapshots consumed by player persistence; protocol adapters translate the resulting version-neutral events at a separate boundary.
+This model does not implement Bedrock packet encoding, chunk serialization, combat, or mobs. It owns player health, fall distance, death and respawn state, inventory, canonical world block mutation, break timing, placement validation, and the authoritative snapshots consumed by player persistence; protocol adapters translate the resulting version-neutral events at a separate boundary.
 
 ## Ordering and limits
 
@@ -40,6 +40,14 @@ Main-inventory and cursor moves follow the same boundary. A decoded Take, Place,
 Break state is likewise server-owned. Start and continuation actions carry a validated target, while the retail abort sentinel is normalized into a targetless command with a neutral face before it reaches the simulation. Aborting clears the active break without interpreting sentinel coordinates as a world position. The advertised 18-tick grass rate drives crack progress. Following PocketMine-MP's retail-compatible path, predicted completion revalidates reach and current canonical block state and does not fail only because client and server tick boundaries observed different elapsed counts.
 
 Disconnect removes both session and identity indexes before producing `PlayerDisconnected` for the remaining peers. Repeated disconnects cannot leave a ghost player.
+
+## Health, death, and respawn
+
+Health is a server-owned value from 0 through 20. Authoritative vertical movement accumulates fall distance using the same apex-and-landing shape as PocketMine-MP; landing damage is `ceil(distance - 3)` after collision resolution. A cancellable `PlayerDamageEvent` runs before mutation and may reduce, increase, or cancel bounded damage. `PlayerDamagedEvent` and `PlayerDeathEvent` observe committed state. Damage updates are synchronized to the owner and hurt/death animations only to players with the actor in view.
+
+A dead player cannot move, chat, emote, change inventory, or mutate blocks. Those valid but inapplicable inputs are corrected or rejected without disconnecting the session. Bedriox accepts both current retail respawn forms: `PlayerAction::Respawn` and `RespawnPacket::ClientReady`. Either ordering is harmless, and the client-ready form can complete respawn by itself. Respawn runs `PlayerRespawnEvent`, restores 20 health at the selected bounded destination, resets fall and vertical state, grants 60 ticks of damage protection, retains the authoritative inventory, and publishes `PlayerRespawnedEvent`. The adapter completes the searching/ready handshake and resynchronizes health, position, actor animation, inventory, and held equipment.
+
+Inventory is intentionally retained on death until the item-entity milestone can represent drops without deleting or duplicating server-owned items.
 
 ## Chat security
 

@@ -6,6 +6,7 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Added
 
+- Add authoritative player health, PMMP-aligned fall damage, cancellable damage and respawn plugin events, death-state gameplay isolation, complete retail respawn packet handling, 60-tick respawn protection, inventory-retaining respawn synchronization, and schema-two health persistence with schema-one migration.
 - Add the version-one default overworld generator with domain-warped continents, erosion-shaped mountain ranges and valleys, climate-driven biomes, rivers, deep oceans, slope-aware surfaces, snow and ice, cross-chunk caves, regional ore veins, biome-specific forests, safe spawn selection, bounded regional caching, and deterministic LevelDB persistence while retaining the fixed flat generator.
 - Persist and validate the Bedriox generator algorithm version in `level.dat`, failing closed before terrain generation when a stored world requires an unsupported version.
 - Add deterministic terrain diagnostics for height and biome maps plus regional distribution, negative-coordinate, generation-order, seam, spawn, and noise-continuity coverage.

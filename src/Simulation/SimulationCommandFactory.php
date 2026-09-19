@@ -9,13 +9,16 @@ use Bedriox\Server\Player\InventoryResponseMode;
 use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Player\InventoryStackRequestAction;
 use Bedriox\Server\Player\PlayerBootstrap;
+use Bedriox\Server\Simulation\Command\AcknowledgeRespawn;
 use Bedriox\Server\Simulation\Command\ApplyInventoryStackRequest;
 use Bedriox\Server\Simulation\Command\BreakBlock;
+use Bedriox\Server\Simulation\Command\DamagePlayer;
 use Bedriox\Server\Simulation\Command\DisconnectPlayer;
 use Bedriox\Server\Simulation\Command\JoinPlayer;
 use Bedriox\Server\Simulation\Command\MovePlayer;
 use Bedriox\Server\Simulation\Command\PerformEmote;
 use Bedriox\Server\Simulation\Command\PlaceBlock;
+use Bedriox\Server\Simulation\Command\RespawnPlayer;
 use Bedriox\Server\Simulation\Command\SelectHotbarSlot;
 use Bedriox\Server\Simulation\Command\SendChat;
 use Bedriox\Server\Simulation\Command\SendPluginMessage;
@@ -191,6 +194,30 @@ final readonly class SimulationCommandFactory
         $this->assertOpaqueId($session, 128, 'session');
 
         return new DisconnectPlayer($session);
+    }
+
+    public function damage(string $session, float $amount, DamageCause $cause = DamageCause::Plugin): DamagePlayer
+    {
+        $this->assertOpaqueId($session, 128, 'session');
+        if (!is_finite($amount) || $amount <= 0.0 || $amount > 1_000_000.0) {
+            throw new CommandValidationException('Damage must be finite, positive, and bounded.');
+        }
+
+        return new DamagePlayer($session, $amount, $cause);
+    }
+
+    public function respawn(string $session): RespawnPlayer
+    {
+        $this->assertOpaqueId($session, 128, 'session');
+
+        return new RespawnPlayer($session);
+    }
+
+    public function acknowledgeRespawn(string $session): AcknowledgeRespawn
+    {
+        $this->assertOpaqueId($session, 128, 'session');
+
+        return new AcknowledgeRespawn($session);
     }
 
     public function breakBlock(

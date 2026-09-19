@@ -53,6 +53,8 @@ use Bedriox\Protocol\Packet\PlayStatus;
 use Bedriox\Protocol\Packet\PlayStatusPacket;
 use Bedriox\Protocol\Packet\RequestAbilityPacket;
 use Bedriox\Protocol\Packet\RequestChunkRadiusPacket;
+use Bedriox\Protocol\Packet\RespawnPacket;
+use Bedriox\Protocol\Packet\RespawnState;
 use Bedriox\Protocol\Packet\ServerboundLoadingScreenPacket;
 use Bedriox\Protocol\Packet\ServerSettingsRequestPacket;
 use Bedriox\Protocol\Packet\SetLocalPlayerAsInitializedPacket;
@@ -573,6 +575,14 @@ final class BedrockPlayChannel
                 || $packet->action === PlayerActionType::StopFlying) {
                 return $this->queueSurvivalAbilities();
             }
+            if ($packet->action === PlayerActionType::Respawn) {
+                if ($this->commands->count() >= $this->limits->maximumCommandsPerPayload) {
+                    return false;
+                }
+                $this->commands->enqueue($this->commandFactory->respawn($this->sessionId));
+
+                return true;
+            }
             if (in_array($packet->action, [
                 PlayerActionType::StartDestroyBlock,
                 PlayerActionType::AbortDestroyBlock,
@@ -587,6 +597,20 @@ final class BedrockPlayChannel
                     $packet->action === PlayerActionType::StopDestroyBlock ? null : $packet->face,
                 )]);
             }
+
+            return true;
+        }
+        if ($packet instanceof RespawnPacket) {
+            if (!$this->initialized) {
+                return false;
+            }
+            if ($packet->state !== RespawnState::ClientReady) {
+                return true;
+            }
+            if ($this->commands->count() >= $this->limits->maximumCommandsPerPayload) {
+                return false;
+            }
+            $this->commands->enqueue($this->commandFactory->acknowledgeRespawn($this->sessionId));
 
             return true;
         }
