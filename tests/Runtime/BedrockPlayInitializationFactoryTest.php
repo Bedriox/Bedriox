@@ -161,6 +161,15 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
         $packets = (new BedrockPlayInitializationFactory(BedrockDataSet::bundled()))
             ->create($login, UnsignedLong::fromInt(7), $bootstrap);
 
+        $startGame = $packets[2];
+        self::assertInstanceOf(StartGamePacket::class, $startGame);
+        $startBytes = $startGame->encode();
+        $pitch = unpack('gvalue', substr($startBytes, 15, 4));
+        $yaw = unpack('gvalue', substr($startBytes, 19, 4));
+        self::assertIsArray($pitch);
+        self::assertIsArray($yaw);
+        self::assertEqualsWithDelta(5.0, $pitch['value'], 0.0001);
+        self::assertEqualsWithDelta(90.0, $yaw['value'], 0.0001);
         $inventory = $packets[17];
         self::assertInstanceOf(InventoryContentPacket::class, $inventory);
         self::assertSame(0, $inventory->items[0]->runtimeId);

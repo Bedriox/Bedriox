@@ -117,10 +117,14 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
             $positionX = (float) $this->spawn->x;
             $positionY = (float) $this->spawn->y;
             $positionZ = (float) $this->spawn->z;
+            $playerPitch = 0.0;
+            $playerYaw = 0.0;
         } else {
             $positionX = $bootstrap->position->x;
             $positionY = $bootstrap->position->y;
             $positionZ = $bootstrap->position->z;
+            $playerPitch = $bootstrap->pitch;
+            $playerYaw = $bootstrap->yaw;
         }
         $mainInventory = array_map(
             fn($stack) => $stack === null
@@ -146,6 +150,8 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
                 worldSpawnX: $this->spawn->x,
                 worldSpawnY: $this->spawn->y,
                 worldSpawnZ: $this->spawn->z,
+                playerPitch: $playerPitch,
+                playerYaw: $playerYaw,
             ),
             ItemRegistryPacket::fromRequiredItems($this->data->requiredItems()),
             // Everything after this marker is emitted as one radius-negotiated bootstrap.
