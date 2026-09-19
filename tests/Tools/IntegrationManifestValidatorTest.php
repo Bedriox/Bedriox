@@ -11,7 +11,7 @@ require_once dirname(__DIR__, 2) . '/tools/IntegrationManifestValidator.php';
 
 final class IntegrationManifestValidatorTest extends TestCase
 {
-    private const string PROTOCOL_COMMIT = 'b7ac12a4d229b1b422fb2de16c3a5899e0adf29b';
+    private const string PROTOCOL_COMMIT = 'ac967a5de0948ef0b6b8ac430069f4459c9bc022';
     private const string RAKNET_COMMIT = '258c8773b4ff1e7095576ae091f10945bbeb31ee';
     private const string DATA_COMMIT = '2b75cc671a6f6a3c143c525e86ef83f115e4b715';
     private const string RUNTIME_COMMIT = '4d5fefdd1eb1080581b54bd30c91bc5e619c8496';

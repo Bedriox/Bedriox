@@ -44,7 +44,7 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Fixed
 
-- Restore a returning player's saved camera direction with an authoritative post-initialization movement reset, ignoring stale movement bundled with the initialization acknowledgement.
+- Restore a returning player's saved camera direction with a correctly framed authoritative post-initialization movement reset, ignoring stale movement bundled with the initialization acknowledgement.
 - Bind every packaged launch and staged-runtime probe to Runtime's relocatable OpenSSL provider configuration, and qualify the exact Bedrock P-384 key path before world access or UDP bind.
 - Create an external Runtime OPcache directory from packaged launchers and staged probes so Windows ASLR fallback cannot make an otherwise qualified server unstartable.
 - Accept the protocol-2193 hotbar-to-cursor container pair used by retail authoritative move and split requests.

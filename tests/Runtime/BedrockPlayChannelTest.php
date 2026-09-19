@@ -327,7 +327,12 @@ final class BedrockPlayChannelTest extends TestCase
 
         $outgoing = $channel->drainOutgoing();
         self::assertCount(1, $outgoing);
-        $reset = $this->decode($server->decryptEnvelope($outgoing[0]->payload));
+        $resetFrame = $this->decodeFrame($server->decryptEnvelope($outgoing[0]->payload));
+        self::assertSame(
+            '070000ec41f43d814200408d42008080420080a9c20080a9c201010000',
+            bin2hex($resetFrame->payload),
+        );
+        $reset = BedrockPacketCodec::decode($resetFrame->header->packetId, $resetFrame->payload);
         self::assertInstanceOf(MovePlayerPacket::class, $reset);
         self::assertTrue($reset->runtimeEntityId->equals($entityId));
         self::assertEqualsWithDelta(29.5, $reset->x, 0.000_01);
