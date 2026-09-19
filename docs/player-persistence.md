@@ -21,8 +21,12 @@ uses that spawn without discarding the saved inventory or identity history.
 `PlayerLoginEvent` runs after restoration and before StartGame, inventory
 bootstrap, or chunk scheduling. A plugin may cancel admission or choose a
 bounded destination and orientation. The resulting state is used consistently
-by the client bootstrap and the authoritative `Player`. `PlayerJoinEvent`
-continues to mean that the client completed initialization and entered play.
+by the client bootstrap and the authoritative `Player`. After the client
+acknowledges initialization, Bedriox sends one authoritative movement reset so
+terrain loading cannot replace the restored camera direction. Movement bundled
+with that acknowledgement remains pre-initialization input; later movement is
+handled normally. `PlayerJoinEvent` continues to mean that the client completed
+initialization and entered play.
 
 Writes use a temporary sibling file, flush it, and atomically replace the
 profile. Corrupt, oversized, unreadable, and unsupported profiles are kept in

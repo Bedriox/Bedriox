@@ -34,6 +34,8 @@ use Bedriox\Protocol\Packet\ItemStackRequestSlot;
 use Bedriox\Protocol\Packet\ItemUseActionType;
 use Bedriox\Protocol\Packet\ItemUseInventoryTransaction;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
+use Bedriox\Protocol\Packet\MovePlayerMode;
+use Bedriox\Protocol\Packet\MovePlayerPacket;
 use Bedriox\Protocol\Packet\NetworkChunkPublisherUpdatePacket;
 use Bedriox\Protocol\Packet\NetworkStackLatencyPacket;
 use Bedriox\Protocol\Packet\Packet;
@@ -47,6 +49,7 @@ use Bedriox\Protocol\Packet\PlayerAuthInputFlag;
 use Bedriox\Protocol\Packet\PlayerAuthInputPacket;
 use Bedriox\Protocol\Packet\PlayerBlockAction;
 use Bedriox\Protocol\Packet\PlayerItemUseTransaction;
+use Bedriox\Protocol\Packet\PlayerPositionProjection;
 use Bedriox\Protocol\Packet\PlayerSkinPacket;
 use Bedriox\Protocol\Packet\PlayStatus;
 use Bedriox\Protocol\Packet\PlayStatusPacket;
@@ -172,6 +175,9 @@ final class BedrockPlayChannel
         private readonly float $spawnY = 64.0,
         private readonly float $spawnZ = 0.0,
         private readonly ?BedrockInventoryPacketProjector $inventoryProjector = null,
+        private readonly float $spawnYaw = 0.0,
+        private readonly float $spawnPitch = 0.0,
+        private readonly bool $synchronizeInitialView = false,
     ) {
         $this->login = $ready->login;
         $this->encryptor = $ready->encryptor;
@@ -197,6 +203,11 @@ final class BedrockPlayChannel
                 || $this->chunksGeneratePerTick < 1 || $this->chunksGeneratePerTick > 64
                 || $this->chunksSendPerTick < 1 || $this->chunksSendPerTick > 64) {
                 throw new \InvalidArgumentException('Chunk streaming configuration is invalid.');
+            }
+            if (!is_finite($this->spawnYaw) || !is_finite($this->spawnPitch)
+                || $this->spawnYaw < -360.0 || $this->spawnYaw > 360.0
+                || $this->spawnPitch < -90.0 || $this->spawnPitch > 90.0) {
+                throw new \InvalidArgumentException('Initial player orientation is invalid.');
             }
             if (count($initializationPackets) > $this->limits->maximumOutgoingPayloadsPerSession) {
                 throw new \OverflowException('Initial play packet count exceeded its configured limit.');
@@ -236,6 +247,7 @@ final class BedrockPlayChannel
         }
         $packetId = null;
         try {
+            $initializedAtEnvelopeStart = $this->initialized;
             $envelope = $this->decryptor->decryptEnvelope($event->payload);
             $batch = BedrockBatchCodec::decode(
                 $envelope,
@@ -253,7 +265,9 @@ final class BedrockPlayChannel
                     $this->diagnose("rejected packet {$packetId}: non-zero subclient routing");
                     return $this->fail('subclient_routing', $packetId);
                 }
-                if (!$this->initialized && $frame->header->packetId === PacketIds::PLAYER_AUTH_INPUT) {
+                if ((!$this->initialized
+                    || ($this->synchronizeInitialView && !$initializedAtEnvelopeStart))
+                    && $frame->header->packetId === PacketIds::PLAYER_AUTH_INPUT) {
                     continue;
                 }
                 $packet = BedrockPacketCodec::decode($packetId, $frame->payload, $this->protocolVersion);
@@ -664,6 +678,21 @@ final class BedrockPlayChannel
             }
             if ($this->pendingHotbarSlot !== null
                 && $this->commands->count() >= $this->limits->maximumCommandsPerPayload) {
+                return false;
+            }
+            if ($this->synchronizeInitialView && !$this->queuePacket(new MovePlayerPacket(
+                $this->runtimeEntityId,
+                $this->spawnX,
+                PlayerPositionProjection::feetToWireY($this->spawnY),
+                $this->spawnZ,
+                $this->spawnPitch,
+                $this->spawnYaw,
+                $this->spawnYaw,
+                MovePlayerMode::RESET,
+                true,
+                UnsignedLong::fromInt(0),
+                UnsignedLong::fromInt(0),
+            ))) {
                 return false;
             }
             $this->initialized = true;

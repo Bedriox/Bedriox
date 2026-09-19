@@ -45,6 +45,8 @@ use Bedriox\Protocol\Packet\ItemUsePredictedResult;
 use Bedriox\Protocol\Packet\ItemUseTriggerType;
 use Bedriox\Protocol\Packet\LevelChunkPacket;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
+use Bedriox\Protocol\Packet\MovePlayerMode;
+use Bedriox\Protocol\Packet\MovePlayerPacket;
 use Bedriox\Protocol\Packet\NetworkChunkPublisherUpdatePacket;
 use Bedriox\Protocol\Packet\NetworkStackLatencyPacket;
 use Bedriox\Protocol\Packet\Packet;
@@ -300,6 +302,49 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertFalse($channel->isClosed());
         self::assertTrue($channel->takeSpawnAcknowledged());
         self::assertFalse($channel->takeSpawnAcknowledged());
+    }
+
+    public function testInitializationRestoresAuthoritativeViewAfterDiscardingSameEnvelopeMovement(): void
+    {
+        [$channel, $client, $server, $entityId] = $this->channel(
+            spawnX: 29.5,
+            spawnY: 63.0,
+            spawnZ: 70.625,
+            spawnYaw: -84.75,
+            spawnPitch: 64.25,
+            synchronizeInitialView: true,
+        );
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([
+                new SetLocalPlayerAsInitializedPacket($entityId),
+                $this->movementPacket(UnsignedLong::fromInt(1)),
+            ])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        self::assertSame([], $channel->drainCommands(), 'Movement queued before the view reset must remain pre-initialization input.');
+
+        $outgoing = $channel->drainOutgoing();
+        self::assertCount(1, $outgoing);
+        $reset = $this->decode($server->decryptEnvelope($outgoing[0]->payload));
+        self::assertInstanceOf(MovePlayerPacket::class, $reset);
+        self::assertTrue($reset->runtimeEntityId->equals($entityId));
+        self::assertEqualsWithDelta(29.5, $reset->x, 0.000_01);
+        self::assertEqualsWithDelta(PlayerPositionProjection::feetToWireY(63.0), $reset->y, 0.000_01);
+        self::assertEqualsWithDelta(70.625, $reset->z, 0.000_01);
+        self::assertEqualsWithDelta(64.25, $reset->pitch, 0.000_01);
+        self::assertEqualsWithDelta(-84.75, $reset->yaw, 0.000_01);
+        self::assertEqualsWithDelta(-84.75, $reset->headYaw, 0.000_01);
+        self::assertSame(MovePlayerMode::RESET, $reset->mode);
+        self::assertTrue($reset->onGround);
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([$this->movementPacket(UnsignedLong::fromInt(2))])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        self::assertCount(1, $channel->drainCommands(), 'Movement from a later envelope must enter normal gameplay processing.');
     }
 
     public function testRetailEquipmentNotificationBeforeInitializationIsDeferredUntilAdmission(): void
@@ -1906,6 +1951,12 @@ final class BedrockPlayChannelTest extends TestCase
         int $spawnRadius = 4,
         ?array $fixedFlatRuntimeIds = null,
         ?BedrockInventoryPacketProjector $inventoryProjector = null,
+        float $spawnX = 0.0,
+        float $spawnY = 64.0,
+        float $spawnZ = 0.0,
+        float $spawnYaw = 0.0,
+        float $spawnPitch = 0.0,
+        bool $synchronizeInitialView = false,
     ): array {
         $key = str_repeat("\x42", 32);
         $keys = (new OpenSslEphemeralKeyFactory(dirname(__DIR__) . '/Fixtures/openssl.cnf'))->generate();
@@ -1934,7 +1985,13 @@ final class BedrockPlayChannelTest extends TestCase
                 spawnRadius: $world === null ? 1 : $spawnRadius,
                 chunksGeneratePerTick: $world === null ? 1 : $generatePerTick,
                 chunksSendPerTick: $world === null ? 1 : $sendPerTick,
+                spawnX: $spawnX,
+                spawnY: $spawnY,
+                spawnZ: $spawnZ,
                 inventoryProjector: $inventoryProjector,
+                spawnYaw: $spawnYaw,
+                spawnPitch: $spawnPitch,
+                synchronizeInitialView: $synchronizeInitialView,
             ),
             new BedrockEncryptor($key),
             new BedrockDecryptor($key),
