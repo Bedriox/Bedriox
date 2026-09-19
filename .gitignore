@@ -13,6 +13,7 @@ composer.phar
 /crashes/
 /plugins/
 /plugin_data/
+/player_data/
 /worlds/
 /bin/*
 !/bin/bedriox
