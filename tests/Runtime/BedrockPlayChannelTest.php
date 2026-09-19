@@ -45,8 +45,6 @@ use Bedriox\Protocol\Packet\ItemUsePredictedResult;
 use Bedriox\Protocol\Packet\ItemUseTriggerType;
 use Bedriox\Protocol\Packet\LevelChunkPacket;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
-use Bedriox\Protocol\Packet\MovePlayerMode;
-use Bedriox\Protocol\Packet\MovePlayerPacket;
 use Bedriox\Protocol\Packet\NetworkChunkPublisherUpdatePacket;
 use Bedriox\Protocol\Packet\NetworkStackLatencyPacket;
 use Bedriox\Protocol\Packet\Packet;
@@ -304,16 +302,9 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertFalse($channel->takeSpawnAcknowledged());
     }
 
-    public function testInitializationRestoresAuthoritativeViewAfterDiscardingSameEnvelopeMovement(): void
+    public function testInitializationUsesStartGameOrientationWithoutSendingMovementReset(): void
     {
-        [$channel, $client, $server, $entityId] = $this->channel(
-            spawnX: 29.5,
-            spawnY: 63.0,
-            spawnZ: 70.625,
-            spawnYaw: -84.75,
-            spawnPitch: 64.25,
-            synchronizeInitialView: true,
-        );
+        [$channel, $client, , $entityId] = $this->channel();
 
         self::assertTrue($channel->accept(new ConnectedPayloadEvent(
             $client->encryptEnvelope($this->encode([
@@ -323,33 +314,32 @@ final class BedrockPlayChannelTest extends TestCase
             Reliability::ReliableOrdered,
             0,
         )));
-        self::assertSame([], $channel->drainCommands(), 'Movement queued before the view reset must remain pre-initialization input.');
+        self::assertSame([], $channel->drainOutgoing(), 'Initialization must not override StartGame orientation.');
+        self::assertCount(1, $channel->drainCommands(), 'Movement after initialization enters normal gameplay processing.');
+    }
 
-        $outgoing = $channel->drainOutgoing();
-        self::assertCount(1, $outgoing);
-        $resetFrame = $this->decodeFrame($server->decryptEnvelope($outgoing[0]->payload));
-        self::assertSame(
-            '070000ec41f43d814200408d42008080420080a9c20080a9c201010000',
-            bin2hex($resetFrame->payload),
-        );
-        $reset = BedrockPacketCodec::decode($resetFrame->header->packetId, $resetFrame->payload);
-        self::assertInstanceOf(MovePlayerPacket::class, $reset);
-        self::assertTrue($reset->runtimeEntityId->equals($entityId));
-        self::assertEqualsWithDelta(29.5, $reset->x, 0.000_01);
-        self::assertEqualsWithDelta(PlayerPositionProjection::feetToWireY(63.0), $reset->y, 0.000_01);
-        self::assertEqualsWithDelta(70.625, $reset->z, 0.000_01);
-        self::assertEqualsWithDelta(64.25, $reset->pitch, 0.000_01);
-        self::assertEqualsWithDelta(-84.75, $reset->yaw, 0.000_01);
-        self::assertEqualsWithDelta(-84.75, $reset->headYaw, 0.000_01);
-        self::assertSame(MovePlayerMode::RESET, $reset->mode);
-        self::assertTrue($reset->onGround);
-
+    public function testClientRotationUsesPmmpNormalizationBeforeEnteringSimulation(): void
+    {
+        [$channel, $client, , $entityId] = $this->channel();
         self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([$this->movementPacket(UnsignedLong::fromInt(2))])),
+            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
             Reliability::ReliableOrdered,
             0,
         )));
-        self::assertCount(1, $channel->drainCommands(), 'Movement from a later envelope must enter normal gameplay processing.');
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([
+                $this->movementPacket(UnsignedLong::fromInt(1), -84.75, -45.25),
+            ])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(MovePlayer::class, $commands[0]);
+        self::assertSame(275.25, $commands[0]->yaw);
+        self::assertSame(-45.25, $commands[0]->pitch);
+        self::assertSame(275.25, $commands[0]->headYaw);
     }
 
     public function testRetailEquipmentNotificationBeforeInitializationIsDeferredUntilAdmission(): void
@@ -1959,9 +1949,6 @@ final class BedrockPlayChannelTest extends TestCase
         float $spawnX = 0.0,
         float $spawnY = 64.0,
         float $spawnZ = 0.0,
-        float $spawnYaw = 0.0,
-        float $spawnPitch = 0.0,
-        bool $synchronizeInitialView = false,
     ): array {
         $key = str_repeat("\x42", 32);
         $keys = (new OpenSslEphemeralKeyFactory(dirname(__DIR__) . '/Fixtures/openssl.cnf'))->generate();
@@ -1994,9 +1981,6 @@ final class BedrockPlayChannelTest extends TestCase
                 spawnY: $spawnY,
                 spawnZ: $spawnZ,
                 inventoryProjector: $inventoryProjector,
-                spawnYaw: $spawnYaw,
-                spawnPitch: $spawnPitch,
-                synchronizeInitialView: $synchronizeInitialView,
             ),
             new BedrockEncryptor($key),
             new BedrockDecryptor($key),
@@ -2004,34 +1988,34 @@ final class BedrockPlayChannelTest extends TestCase
         ];
     }
 
-    private function movementPacket(UnsignedLong $tick): PlayerAuthInputPacket
+    private function movementPacket(UnsignedLong $tick, float $yaw = 0.0, float $pitch = 0.0): PlayerAuthInputPacket
     {
         return new PlayerAuthInputPacket(
-            0.0,
-            0.0,
-            0.0,
-            PlayerPositionProjection::feetToWireY(64.0),
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            [],
-            1,
-            0,
-            0,
-            0.0,
-            0.0,
-            $tick,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
+            pitch: $pitch,
+            yaw: $yaw,
+            wireX: 0.0,
+            wireY: PlayerPositionProjection::feetToWireY(64.0),
+            wireZ: 0.0,
+            moveX: 0.0,
+            moveZ: 0.0,
+            headYaw: $yaw,
+            inputFlags: [],
+            inputMode: 1,
+            playMode: 0,
+            interactionMode: 0,
+            interactPitch: 0.0,
+            interactYaw: 0.0,
+            tick: $tick,
+            deltaX: 0.0,
+            deltaY: 0.0,
+            deltaZ: 0.0,
+            analogMoveX: 0.0,
+            analogMoveZ: 0.0,
+            cameraX: 0.0,
+            cameraY: 0.0,
+            cameraZ: 0.0,
+            rawMoveX: 0.0,
+            rawMoveZ: 0.0,
         );
     }
 

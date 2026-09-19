@@ -34,8 +34,6 @@ use Bedriox\Protocol\Packet\ItemStackRequestSlot;
 use Bedriox\Protocol\Packet\ItemUseActionType;
 use Bedriox\Protocol\Packet\ItemUseInventoryTransaction;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
-use Bedriox\Protocol\Packet\MovePlayerMode;
-use Bedriox\Protocol\Packet\MovePlayerPacket;
 use Bedriox\Protocol\Packet\NetworkChunkPublisherUpdatePacket;
 use Bedriox\Protocol\Packet\NetworkStackLatencyPacket;
 use Bedriox\Protocol\Packet\Packet;
@@ -175,9 +173,6 @@ final class BedrockPlayChannel
         private readonly float $spawnY = 64.0,
         private readonly float $spawnZ = 0.0,
         private readonly ?BedrockInventoryPacketProjector $inventoryProjector = null,
-        private readonly float $spawnYaw = 0.0,
-        private readonly float $spawnPitch = 0.0,
-        private readonly bool $synchronizeInitialView = false,
     ) {
         $this->login = $ready->login;
         $this->encryptor = $ready->encryptor;
@@ -203,11 +198,6 @@ final class BedrockPlayChannel
                 || $this->chunksGeneratePerTick < 1 || $this->chunksGeneratePerTick > 64
                 || $this->chunksSendPerTick < 1 || $this->chunksSendPerTick > 64) {
                 throw new \InvalidArgumentException('Chunk streaming configuration is invalid.');
-            }
-            if (!is_finite($this->spawnYaw) || !is_finite($this->spawnPitch)
-                || $this->spawnYaw < -360.0 || $this->spawnYaw > 360.0
-                || $this->spawnPitch < -90.0 || $this->spawnPitch > 90.0) {
-                throw new \InvalidArgumentException('Initial player orientation is invalid.');
             }
             if (count($initializationPackets) > $this->limits->maximumOutgoingPayloadsPerSession) {
                 throw new \OverflowException('Initial play packet count exceeded its configured limit.');
@@ -247,7 +237,6 @@ final class BedrockPlayChannel
         }
         $packetId = null;
         try {
-            $initializedAtEnvelopeStart = $this->initialized;
             $envelope = $this->decryptor->decryptEnvelope($event->payload);
             $batch = BedrockBatchCodec::decode(
                 $envelope,
@@ -265,9 +254,7 @@ final class BedrockPlayChannel
                     $this->diagnose("rejected packet {$packetId}: non-zero subclient routing");
                     return $this->fail('subclient_routing', $packetId);
                 }
-                if ((!$this->initialized
-                    || ($this->synchronizeInitialView && !$initializedAtEnvelopeStart))
-                    && $frame->header->packetId === PacketIds::PLAYER_AUTH_INPUT) {
+                if (!$this->initialized && $frame->header->packetId === PacketIds::PLAYER_AUTH_INPUT) {
                     continue;
                 }
                 $packet = BedrockPacketCodec::decode($packetId, $frame->payload, $this->protocolVersion);
@@ -680,21 +667,6 @@ final class BedrockPlayChannel
                 && $this->commands->count() >= $this->limits->maximumCommandsPerPayload) {
                 return false;
             }
-            if ($this->synchronizeInitialView && !$this->queuePacket(new MovePlayerPacket(
-                $this->runtimeEntityId,
-                $this->spawnX,
-                PlayerPositionProjection::feetToWireY($this->spawnY),
-                $this->spawnZ,
-                $this->spawnPitch,
-                $this->spawnYaw,
-                $this->spawnYaw,
-                MovePlayerMode::RESET,
-                true,
-                UnsignedLong::fromInt(0),
-                UnsignedLong::fromInt(0),
-            ))) {
-                return false;
-            }
             $this->initialized = true;
             if ($this->pendingHotbarSlot !== null) {
                 $this->commands->enqueue($this->commandFactory->selectHotbarSlot(
@@ -840,20 +812,22 @@ final class BedrockPlayChannel
                     $magnitude < 0.000_001 => MovementMode::STOPPED,
                     default => MovementMode::WALKING,
                 };
+                $yaw = self::normalizeYaw($packet->yaw);
+                $pitch = fmod($packet->pitch, 360.0);
                 $this->commands->enqueue($this->commandFactory->move(
                     $this->sessionId,
                     $this->movementSequence,
                     $packet->wireX,
                     $packet->feetY(),
                     $packet->wireZ,
-                    $packet->yaw,
-                    $packet->pitch,
+                    $yaw,
+                    $pitch,
                     $mode,
                     $packet->deltaX,
                     $packet->deltaY,
                     $packet->deltaZ,
                     $packet->jumpHeld() || $packet->jumpPressed(),
-                    $packet->headYaw,
+                    $yaw,
                     $this->sneaking,
                     $this->sprinting,
                 ));
@@ -888,6 +862,13 @@ final class BedrockPlayChannel
         }
 
         return false;
+    }
+
+    private static function normalizeYaw(float $yaw): float
+    {
+        $normalized = fmod($yaw, 360.0);
+
+        return $normalized < 0.0 ? $normalized + 360.0 : $normalized;
     }
 
     private function handleLegacyInventoryTransaction(InventoryTransactionPacket $packet): bool

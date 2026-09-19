@@ -31,8 +31,6 @@ final readonly class BedrockPlayChannelFactory implements PlayChannelFactory
         $spawnX = 0.0;
         $spawnY = 64.0;
         $spawnZ = 0.0;
-        $spawnYaw = 0.0;
-        $spawnPitch = 0.0;
         if ($this->world !== null) {
             $spawn = $this->world->spawn();
             $spawnX = (float) $spawn->x;
@@ -43,8 +41,6 @@ final readonly class BedrockPlayChannelFactory implements PlayChannelFactory
             $spawnX = $bootstrap->position->x;
             $spawnY = $bootstrap->position->y;
             $spawnZ = $bootstrap->position->z;
-            $spawnYaw = $bootstrap->yaw;
-            $spawnPitch = $bootstrap->pitch;
         }
 
         return new BedrockPlayChannel(
@@ -66,9 +62,6 @@ final readonly class BedrockPlayChannelFactory implements PlayChannelFactory
             $spawnY,
             $spawnZ,
             $this->inventoryProjector,
-            $spawnYaw,
-            $spawnPitch,
-            $bootstrap !== null,
         );
     }
 }
