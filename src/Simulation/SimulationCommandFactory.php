@@ -70,6 +70,7 @@ final readonly class SimulationCommandFactory
         ?float $headYaw = null,
         ?bool $sneaking = null,
         ?bool $sprinting = null,
+        ?ClientInputTick $clientTick = null,
     ): MovePlayer {
         $this->assertOpaqueId($session, 128, 'session');
         if ($sequence < 0) {
@@ -107,6 +108,7 @@ final readonly class SimulationCommandFactory
             $headYaw,
             $sneaking,
             $sprinting,
+            $clientTick ?? ClientInputTick::fromInt($sequence),
         );
     }
 

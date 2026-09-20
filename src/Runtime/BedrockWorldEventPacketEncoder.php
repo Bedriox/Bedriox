@@ -10,6 +10,7 @@ use Bedriox\Protocol\Packet\ActorEventType;
 use Bedriox\Protocol\Packet\AddPlayerPacket;
 use Bedriox\Protocol\Packet\BlockPosition as ProtocolBlockPosition;
 use Bedriox\Protocol\Packet\ChatPacket;
+use Bedriox\Protocol\Packet\CorrectPlayerMovePredictionPacket;
 use Bedriox\Protocol\Packet\DeathInfoPacket;
 use Bedriox\Protocol\Packet\EmoteFlag;
 use Bedriox\Protocol\Packet\EmotePacket;
@@ -36,6 +37,7 @@ use Bedriox\Protocol\Packet\PlayerListRemovePacket;
 use Bedriox\Protocol\Packet\PlayerPositionProjection;
 use Bedriox\Protocol\Packet\PlayerSkin;
 use Bedriox\Protocol\Packet\PlayerSkinPacket;
+use Bedriox\Protocol\Packet\PredictionType;
 use Bedriox\Protocol\Packet\RemoveActorPacket;
 use Bedriox\Protocol\Packet\RespawnPacket;
 use Bedriox\Protocol\Packet\RespawnState;
@@ -89,7 +91,7 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
             $event instanceof PlayerMoved => $this->peerMovement($event),
             $event instanceof MovementCorrected => [
                 ...$this->movementCorrection(
-                    $event->authoritativePlayer,
+                    $event,
                     [$event->authoritativePlayer->sessionId],
                 ),
                 ...$this->peerMovement(new PlayerMoved(
@@ -183,7 +185,7 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
                 $player->pitch,
                 $player->yaw,
                 $player->headYaw,
-                MovePlayerMode::RESET,
+                MovePlayerMode::RESPAWN,
                 $player->verticalState === VerticalState::GROUNDED,
                 UnsignedLong::fromInt(0),
                 UnsignedLong::fromInt(max(0, $player->movementSequence)),
@@ -335,8 +337,35 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
      * @param list<string> $recipients
      * @return list<DirectedPacket>
      */
-    private function movementCorrection(PlayerSnapshot $player, array $recipients): array
+    private function movementCorrection(MovementCorrected $event, array $recipients): array
     {
+        $player = $event->authoritativePlayer;
+        if ($event->clientTick !== null) {
+            $packet = new CorrectPlayerMovePredictionPacket(
+                PredictionType::Player,
+                $player->position->x,
+                PlayerPositionProjection::feetToWireY($player->position->y),
+                $player->position->z,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                $player->verticalState === VerticalState::GROUNDED,
+                new UnsignedLong($event->clientTick->high, $event->clientTick->low),
+            );
+
+            return array_map(
+                static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
+                $recipients,
+            );
+        }
+
+        if ($event->reason !== 'plugin_teleport') {
+            return [];
+        }
+
         $packet = new MovePlayerPacket(
             UnsignedLong::fromInt($player->runtimeActorId),
             $player->position->x,
@@ -345,7 +374,7 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
             $player->pitch,
             $player->yaw,
             $player->headYaw,
-            MovePlayerMode::RESET,
+            MovePlayerMode::TELEPORT,
             $player->verticalState === VerticalState::GROUNDED,
             UnsignedLong::fromInt(0),
             UnsignedLong::fromInt(max(0, $player->movementSequence)),

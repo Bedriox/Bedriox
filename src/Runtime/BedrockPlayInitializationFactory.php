@@ -71,12 +71,16 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
         private int $worldSeed = 0,
         private int $worldTime = 0,
         private string $generatorName = 'flat',
+        private int $rewindHistorySize = 40,
     ) {
         if ($this->difficulty < 0 || $this->difficulty > 3) {
             throw new \InvalidArgumentException('Difficulty must be a Bedrock value between 0 and 3.');
         }
         if (!in_array($this->generatorName, ['default', 'flat'], true)) {
             throw new \InvalidArgumentException('Play initialization received an unsupported world generator.');
+        }
+        if ($this->rewindHistorySize < 1 || $this->rewindHistorySize > 1_200) {
+            throw new \InvalidArgumentException('Movement rewind history size must be between 1 and 1200 ticks.');
         }
         $this->biomeDefinitions = $data->biomeDefinitions();
         $networkBlockStates = $data->blockStateRegistry();
@@ -95,6 +99,7 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
         BedrockDataSet $data,
         RuntimeLimits $limits,
         WorldData $world,
+        int $rewindHistorySize = 40,
     ): self {
         return new self(
             $data,
@@ -105,6 +110,7 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
             $world->metadata->seed,
             $world->time,
             $world->generatorName,
+            $rewindHistorySize,
         );
     }
 
@@ -153,6 +159,7 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
                 worldSpawnZ: $this->spawn->z,
                 playerPitch: $playerPitch,
                 playerYaw: $playerYaw,
+                rewindHistorySize: $this->rewindHistorySize,
             ),
             ItemRegistryPacket::fromRequiredItems($this->data->requiredItems()),
             // Everything after this marker is emitted as one radius-negotiated bootstrap.

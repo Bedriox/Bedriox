@@ -16,6 +16,7 @@ use Bedriox\Server\Player\PlayerInventoryEntry;
 use Bedriox\Server\Player\PlayerInventoryStackState;
 use Bedriox\Server\Player\PlayerInventoryState;
 use Bedriox\Server\Simulation\BlockBreakAction;
+use Bedriox\Server\Simulation\ClientInputTick;
 use Bedriox\Server\Simulation\Command\JoinPlayer as UnvalidatedJoinPlayer;
 use Bedriox\Server\Simulation\Event\BlockBreakStarted;
 use Bedriox\Server\Simulation\Event\BlockChanged;
@@ -600,12 +601,16 @@ final class WorldSimulationTest extends TestCase
             0.0,
             10.0,
             MovementMode::SPRINTING,
+            clientTick: new ClientInputTick(0x80000000, 25),
         )));
 
         $events = $world->tick()->events;
         self::assertCount(1, $events);
         self::assertInstanceOf(MovementCorrected::class, $events[0]);
         self::assertSame('movement_rate', $events[0]->reason);
+        self::assertInstanceOf(ClientInputTick::class, $events[0]->clientTick);
+        self::assertSame(0x80000000, $events[0]->clientTick->high);
+        self::assertSame(25, $events[0]->clientTick->low);
         self::assertSame(0.0, $world->snapshot()->players[0]->position->x);
         self::assertSame(1, $world->snapshot()->players[0]->movementSequence);
 
@@ -613,7 +618,7 @@ final class WorldSimulationTest extends TestCase
         $staleEvents = $world->tick()->events;
         self::assertCount(1, $staleEvents);
         $stale = $staleEvents[0];
-        self::assertInstanceOf(MovementCorrected::class, $stale);
+        self::assertInstanceOf(CommandRejected::class, $stale);
         self::assertSame('stale_sequence', $stale->reason);
     }
 

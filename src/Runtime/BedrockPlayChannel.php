@@ -76,6 +76,7 @@ use Bedriox\Server\Player\InventorySlotReference;
 use Bedriox\Server\Player\InventoryStackRequestAction;
 use Bedriox\Server\Player\InventoryStackRequestActionType;
 use Bedriox\Server\Simulation\BlockBreakAction;
+use Bedriox\Server\Simulation\ClientInputTick;
 use Bedriox\Server\Simulation\Command\WorldCommand;
 use Bedriox\Server\Simulation\MovementMode;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
@@ -854,6 +855,7 @@ final class BedrockPlayChannel
                     $yaw,
                     $this->sneaking,
                     $this->sprinting,
+                    new ClientInputTick($packet->tick->high, $packet->tick->low),
                 ));
             }
 

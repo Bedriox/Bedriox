@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Simulation\Command;
 
+use Bedriox\Server\Simulation\ClientInputTick;
 use Bedriox\Server\Simulation\MovementMode;
 use Bedriox\Server\Simulation\Position;
 
@@ -23,6 +24,7 @@ final readonly class MovePlayer implements WorldCommand
         public ?float $headYaw = null,
         public ?bool $sneaking = null,
         public ?bool $sprinting = null,
+        public ClientInputTick $clientTick = new ClientInputTick(0, 0),
     ) {}
 
     public function sessionId(): string

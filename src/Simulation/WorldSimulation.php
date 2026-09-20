@@ -530,11 +530,11 @@ final class WorldSimulation
             return new CommandRejected($command->session, 'not_joined');
         }
         if (!$player->vitals->isAlive()) {
-            return new MovementCorrected($player->snapshot(), 'player_dead');
+            return new MovementCorrected($player->snapshot(), 'player_dead', clientTick: $command->clientTick);
         }
         $movement = $player->movement;
         if ($command->sequence <= $movement->sequence) {
-            return new MovementCorrected($player->snapshot(), 'stale_sequence');
+            return new CommandRejected($command->session, 'stale_sequence');
         }
         $movement->sequence = $command->sequence;
         if ($movement->budgetTick !== $this->tick) {
@@ -548,7 +548,7 @@ final class WorldSimulation
         $distance = $movement->position->distanceTo($command->position);
         $budget = $this->limits->maximumMovementPerTick * $elapsed;
         if ($distance > $budget - $movement->distanceThisTick) {
-            return new MovementCorrected($player->snapshot(), 'movement_rate');
+            return new MovementCorrected($player->snapshot(), 'movement_rate', clientTick: $command->clientTick);
         }
 
         $wasGrounded = $movement->verticalState === VerticalState::GROUNDED;
@@ -556,7 +556,7 @@ final class WorldSimulation
         $terrainConstrained = false;
         if ($this->collisionResolver === null) {
             if ($command->position->y < $this->limits->flatGroundY - $this->limits->flatGroundTolerance) {
-                return new MovementCorrected($player->snapshot(), 'terrain_collision');
+                return new MovementCorrected($player->snapshot(), 'terrain_collision', clientTick: $command->clientTick);
             }
             $position = $command->position->y <= $this->limits->flatGroundY + $this->limits->flatGroundTolerance
                 ? new Position($command->position->x, $this->limits->flatGroundY, $command->position->z)
@@ -582,7 +582,7 @@ final class WorldSimulation
             && !$command->jumpRequested
             && $this->tick > $movement->jumpAuthorizedUntilTick
         ) {
-            return new MovementCorrected($player->snapshot(), 'jump_required');
+            return new MovementCorrected($player->snapshot(), 'jump_required', clientTick: $command->clientTick);
         }
 
         if (
@@ -599,7 +599,7 @@ final class WorldSimulation
         $sprinting = $command->sprinting ?? ($command->mode === MovementMode::SPRINTING);
         $postureChanged = $movement->sneaking !== $sneaking || $movement->sprinting !== $sprinting;
         if ($this->pluginEvents !== null && !$this->pluginEvents->allowMove($player, $position)) {
-            return new MovementCorrected($player->snapshot(), 'plugin_cancelled');
+            return new MovementCorrected($player->snapshot(), 'plugin_cancelled', clientTick: $command->clientTick);
         }
         $verticalDistance = $position->y - $movement->position->y;
         $movement->position = $position;
@@ -638,6 +638,7 @@ final class WorldSimulation
                 'terrain_collision',
                 $this->players->recipients($player->sessionId),
                 $postureChanged,
+                $command->clientTick,
             );
         }
 
@@ -988,6 +989,10 @@ final class WorldSimulation
                 $command->deltaY,
                 $command->deltaZ,
                 true,
+                $command->headYaw,
+                $command->sneaking,
+                $command->sprinting,
+                $command->clientTick,
             );
             $bytes = $command->estimatedBytes();
         }
@@ -1373,6 +1378,7 @@ final class WorldSimulation
         $player->movement->position = $command->position;
         $player->movement->mode = MovementMode::STOPPED;
         $player->movement->verticalVelocity = 0.0;
+        $player->movement->fallDistance = 0.0;
         $player->movement->jumpAuthorizedUntilTick = -1;
         $player->movement->lastTick = $this->tick;
         $player->movement->verticalState = $this->collisionResolver?->isGrounded($command->position) === true

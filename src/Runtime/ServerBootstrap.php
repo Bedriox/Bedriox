@@ -102,6 +102,7 @@ final class ServerBootstrap
                 $data,
                 $runtimeLimits,
                 $openedWorld->data,
+                $config->movementRewindHistorySize,
             );
             $spawn = $flatWorld->spawn();
             $playerPersistence = $this->playerDataDirectory === null ? null : new PlayerPersistenceManager(

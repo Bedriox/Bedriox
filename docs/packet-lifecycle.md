@@ -29,7 +29,7 @@ Malformed, unknown, out-of-phase, wrong-actor, oversized, or queue-exhausting in
 
 `ServerRuntime` drains only configured amounts of transport, session, command, streaming, and tick work per poll. `WorldSimulation` is the sole owner of mutable player state. Commands are revalidated at that boundary and produce immutable events such as join, movement, correction, chat, damage, death, respawn, emote, and disconnect.
 
-Client position, collision, actor, attribution, timing, inventory, and block-state claims are hints until validated. Stale or invalid predictions cannot modify state, and item or block claims cannot replace server-owned inventory or world authority. Network input never receives a mutable reference to players, worlds, queues, or cryptographic state.
+Client position, collision, actor, attribution, timing, inventory, and block-state claims are hints until validated. Stale or invalid predictions cannot modify state, and item or block claims cannot replace server-owned inventory or world authority. A routine movement disagreement preserves the complete unsigned input tick and returns `CorrectPlayerMovePrediction` with authoritative position, grounded state, and zero player delta. `MovePlayer` remains limited to teleport and respawn lifecycle projection. Harmless stale input is a bounded no-op rather than another correction. Network input never receives a mutable reference to players, worlds, queues, or cryptographic state. The advertised rewind history defaults to 40 ticks and is bounded by `movement.rewind-history-size`.
 
 ## Outbound path
 

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Simulation\Event;
 
+use Bedriox\Server\Simulation\ClientInputTick;
 use Bedriox\Server\Simulation\PlayerSnapshot;
 
 final readonly class MovementCorrected implements WorldEvent
@@ -14,6 +15,7 @@ final readonly class MovementCorrected implements WorldEvent
         public string $reason,
         public array $peerSessionIds = [],
         public bool $postureChanged = false,
+        public ?ClientInputTick $clientTick = null,
     ) {}
 
     public function recipients(): array

@@ -62,6 +62,7 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
             BedrockDataSet::bundled(),
             new RuntimeLimits(),
             $worldData,
+            300,
         )->create($login, UnsignedLong::fromInt(7));
         $expected = (new BedrockPlayInitializationFactory(
             BedrockDataSet::bundled(),
@@ -71,6 +72,8 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
             3,
             -912,
             3456,
+            'flat',
+            300,
         ))->create($login, UnsignedLong::fromInt(7));
 
         self::assertSame($expected[2]->encode(), $packets[2]->encode());
@@ -93,7 +96,7 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
         self::assertInstanceOf(VoxelShapesPacket::class, $packets[1]);
         self::assertInstanceOf(StartGamePacket::class, $packets[2]);
         self::assertSame(76_835, strlen($packets[2]->encode()));
-        self::assertSame('f3c1650fac98ba4653d3bb2a26d20e7f86e400af65847c286fc8cc7347d7d634', hash('sha256', $packets[2]->encode()));
+        self::assertSame('ad94c7ca05df5c37938e06e05d34b11729d56c2319e9fa87a70811d1a6595e0e', hash('sha256', $packets[2]->encode()));
         self::assertInstanceOf(ItemRegistryPacket::class, $packets[3]);
         self::assertSame(166_607, strlen($packets[3]->encode()));
         self::assertSame('0cbe4e9e93a3003e8f8cf4f322ed36a18a373b2000fbaac8c164c5320ba2e7af', hash('sha256', $packets[3]->encode()));

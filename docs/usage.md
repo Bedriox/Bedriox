@@ -40,7 +40,7 @@ php bin/bedriox serve --port=19133 --name="Bedriox Test" --max-players=8 --view-
 
 FULL performs trusted Minecraft JWK discovery before the UDP port is bound and fails closed if discovery is unavailable or invalid. For isolated development only, `--auth=SELF_SIGNED` enables legacy self-signed login and prints an explicit security warning; it is never a fallback from FULL.
 
-Options use exact `--name=value` syntax. Bind addresses must be literal IPv4 values, ports are 1 through 65535, names are at most 128 UTF-8 bytes, and player limits are 1 through 1024. Duplicate, unknown, empty, ambiguous, and out-of-range options fail before startup. The existing `--bind`, `--port`, `--name`, `--max-players`, and `--auth` flags remain supported; level and chunk keys have matching flags such as `--level-name`, `--seed`, `--view-distance`, `--spawn-radius`, `--chunks-send-per-tick`, `--chunks-generate-per-tick`, `--level-autosave-interval-ticks`, and `--chunks-save-per-tick`.
+Options use exact `--name=value` syntax. Bind addresses must be literal IPv4 values, ports are 1 through 65535, names are at most 128 UTF-8 bytes, and player limits are 1 through 1024. Duplicate, unknown, empty, ambiguous, and out-of-range options fail before startup. The existing `--bind`, `--port`, `--name`, `--max-players`, and `--auth` flags remain supported; level, chunk, and movement keys have matching flags such as `--level-name`, `--seed`, `--view-distance`, `--spawn-radius`, `--chunks-send-per-tick`, `--chunks-generate-per-tick`, `--level-autosave-interval-ticks`, `--chunks-save-per-tick`, and `--movement-rewind-history-size`.
 
 The settings file uses one `key=value` entry per line. Blank lines and lines beginning with `#` are ignored. Unknown keys, duplicate keys, malformed lines, noncanonical numbers, invalid booleans, and files over 64 KiB fail closed before the UDP socket is bound. Supported settings are:
 
@@ -66,6 +66,7 @@ The settings file uses one `key=value` entry per line. Blank lines and lines beg
 | `chunks.save-per-tick` | `8` | 1 through 64 dirty chunks saved during each scheduled autosave tick |
 | `players.autosave-interval-ticks` | `6000` | 20 through 72000 ticks between player autosave scheduling cycles |
 | `players.save-per-tick` | `8` | 1 through 64 dirty player profiles saved during each autosave tick |
+| `movement.rewind-history-size` | `40` | 1 through 1200 processed input ticks retained by the client for authoritative movement correction |
 | `runtime.ticks-per-second` | `20` | 1–100 |
 | `console.enabled` | `true` | Exactly `true` or `false` |
 | `plugins.enabled` | `true` | Exactly `true` or `false` |

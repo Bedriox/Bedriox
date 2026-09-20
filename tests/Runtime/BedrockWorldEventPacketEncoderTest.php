@@ -11,6 +11,7 @@ use Bedriox\Protocol\Identity\VerifiedClientData;
 use Bedriox\Protocol\Packet\ActorFlag;
 use Bedriox\Protocol\Packet\AddPlayerPacket;
 use Bedriox\Protocol\Packet\ChatPacket;
+use Bedriox\Protocol\Packet\CorrectPlayerMovePredictionPacket;
 use Bedriox\Protocol\Packet\EmoteFlag;
 use Bedriox\Protocol\Packet\EmotePacket;
 use Bedriox\Protocol\Packet\FullContainerName;
@@ -24,10 +25,12 @@ use Bedriox\Protocol\Packet\LevelEventPacket;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
 use Bedriox\Protocol\Packet\MoveActorAbsoluteFlag;
 use Bedriox\Protocol\Packet\MoveActorAbsolutePacket;
+use Bedriox\Protocol\Packet\MovePlayerMode;
 use Bedriox\Protocol\Packet\MovePlayerPacket;
 use Bedriox\Protocol\Packet\PlayerListAddPacket;
 use Bedriox\Protocol\Packet\PlayerListRemovePacket;
 use Bedriox\Protocol\Packet\PlayerSkinPacket;
+use Bedriox\Protocol\Packet\PredictionType;
 use Bedriox\Protocol\Packet\RemoveActorPacket;
 use Bedriox\Protocol\Packet\SetActorDataPacket;
 use Bedriox\Protocol\Packet\UpdateBlockPacket;
@@ -46,6 +49,7 @@ use Bedriox\Server\Runtime\BedrockInventoryPacketProjector;
 use Bedriox\Server\Runtime\BedrockPlayChannel;
 use Bedriox\Server\Runtime\BedrockWorldEventPacketEncoder;
 use Bedriox\Server\Runtime\RuntimeSession;
+use Bedriox\Server\Simulation\ClientInputTick;
 use Bedriox\Server\Simulation\Event\BlockBreakStarted;
 use Bedriox\Server\Simulation\Event\BlockChanged;
 use Bedriox\Server\Simulation\Event\BlockPlaced;
@@ -503,7 +507,7 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         self::assertSame(0, $postureFlags & ActorFlag::Sprinting->mask());
     }
 
-    public function testCorrectionTargetsOnlySenderWithPredictionResetMode(): void
+    public function testCorrectionTargetsOnlySenderWithExactClientInputTick(): void
     {
         $session = new RuntimeSession(
             new SessionInfo('127.0.0.1', 20_001, 1, 1_400, 11),
@@ -526,13 +530,22 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         );
 
         $packets = (new BedrockWorldEventPacketEncoder())->encode(
-            new MovementCorrected($player, 'movement_rate'),
+            new MovementCorrected(
+                $player,
+                'movement_rate',
+                clientTick: new ClientInputTick(0x80000000, 5),
+            ),
             ['session' => $session],
         );
         self::assertCount(1, $packets);
         self::assertSame('session', $packets[0]->sessionId);
-        self::assertInstanceOf(MovePlayerPacket::class, $packets[0]->packet);
-        self::assertSame(1, $packets[0]->packet->mode);
+        self::assertInstanceOf(CorrectPlayerMovePredictionPacket::class, $packets[0]->packet);
+        self::assertSame(PredictionType::Player, $packets[0]->packet->predictionType);
+        self::assertSame(0x80000000, $packets[0]->packet->tick->high);
+        self::assertSame(5, $packets[0]->packet->tick->low);
+        self::assertSame(0.0, $packets[0]->packet->deltaX);
+        self::assertSame(0.0, $packets[0]->packet->deltaY);
+        self::assertSame(0.0, $packets[0]->packet->deltaZ);
         self::assertTrue($packets[0]->packet->onGround);
     }
 
@@ -553,17 +566,44 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         );
 
         $packets = (new BedrockWorldEventPacketEncoder())->encode(
-            new MovementCorrected($player, 'terrain_collision', ['peer']),
+            new MovementCorrected(
+                $player,
+                'terrain_collision',
+                ['peer'],
+                clientTick: ClientInputTick::fromInt(123),
+            ),
             [],
         );
 
         self::assertCount(2, $packets);
         self::assertSame('owner', $packets[0]->sessionId);
-        self::assertInstanceOf(MovePlayerPacket::class, $packets[0]->packet);
+        self::assertInstanceOf(CorrectPlayerMovePredictionPacket::class, $packets[0]->packet);
+        self::assertTrue($packets[0]->packet->tick->equals(UnsignedLong::fromInt(123)));
         self::assertSame('peer', $packets[1]->sessionId);
         self::assertInstanceOf(MoveActorAbsolutePacket::class, $packets[1]->packet);
         self::assertEqualsWithDelta(0.7, $packets[1]->packet->x, 0.000001);
         self::assertEqualsWithDelta(1.0, $packets[1]->packet->z, 0.000001);
+    }
+
+    public function testPluginTeleportUsesLifecycleMoveAndRejectedTeleportNeedsNoCorrection(): void
+    {
+        $player = $this->player(
+            'owner',
+            7,
+            '00000000-0000-0000-0000-000000000001',
+            'Player',
+        );
+        $encoder = new BedrockWorldEventPacketEncoder();
+
+        $teleport = $encoder->encode(new MovementCorrected($player, 'plugin_teleport'), []);
+        self::assertCount(1, $teleport);
+        self::assertInstanceOf(MovePlayerPacket::class, $teleport[0]->packet);
+        self::assertSame(MovePlayerMode::TELEPORT, $teleport[0]->packet->mode);
+
+        self::assertSame([], $encoder->encode(
+            new MovementCorrected($player, 'plugin_teleport_collision'),
+            [],
+        ));
     }
 
     private function player(

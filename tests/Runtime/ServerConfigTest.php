@@ -25,6 +25,7 @@ final class ServerConfigTest extends TestCase
         self::assertSame(8, $defaults->chunksSavePerTick);
         self::assertSame(6_000, $defaults->playersAutosaveIntervalTicks);
         self::assertSame(8, $defaults->playersSavePerTick);
+        self::assertSame(40, $defaults->movementRewindHistorySize);
         self::assertSame('default', $defaults->levelGenerator);
         self::assertSame(1, $defaults->chunksGeneratePerTick);
 
@@ -54,6 +55,7 @@ final class ServerConfigTest extends TestCase
             '--chunks-save-per-tick=12',
             '--players-autosave-interval-ticks=1400',
             '--players-save-per-tick=9',
+            '--movement-rewind-history-size=300',
             '--protocol-trace=true',
             '--spawn-x=-16',
             '--spawn-y=70',
@@ -75,6 +77,7 @@ final class ServerConfigTest extends TestCase
         self::assertSame(12, $streaming->chunksSavePerTick);
         self::assertSame(1_400, $streaming->playersAutosaveIntervalTicks);
         self::assertSame(9, $streaming->playersSavePerTick);
+        self::assertSame(300, $streaming->movementRewindHistorySize);
         self::assertTrue($streaming->protocolTrace);
         self::assertSame([-16, 70, 32], [$streaming->spawnX, $streaming->spawnY, $streaming->spawnZ]);
         self::assertSame(LogLevel::WARNING, $streaming->loggingLevel);
@@ -118,6 +121,8 @@ final class ServerConfigTest extends TestCase
         yield 'player autosave interval above one hour' => [['--players-autosave-interval-ticks=72001']];
         yield 'zero player save budget' => [['--players-save-per-tick=0']];
         yield 'excess player save budget' => [['--players-save-per-tick=65']];
+        yield 'zero movement rewind history' => [['--movement-rewind-history-size=0']];
+        yield 'excess movement rewind history' => [['--movement-rewind-history-size=1201']];
     }
 
     /** @param list<string> $arguments */

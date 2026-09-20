@@ -34,6 +34,7 @@ final readonly class ServerConfig
         'chunks.save-per-tick' => '8',
         'players.autosave-interval-ticks' => '6000',
         'players.save-per-tick' => '8',
+        'movement.rewind-history-size' => '40',
         'runtime.ticks-per-second' => '20',
         'console.enabled' => 'true',
         'plugins.enabled' => 'true',
@@ -69,6 +70,7 @@ final readonly class ServerConfig
         'chunks-save-per-tick' => 'chunks.save-per-tick',
         'players-autosave-interval-ticks' => 'players.autosave-interval-ticks',
         'players-save-per-tick' => 'players.save-per-tick',
+        'movement-rewind-history-size' => 'movement.rewind-history-size',
         'ticks-per-second' => 'runtime.ticks-per-second',
         'console-enabled' => 'console.enabled',
         'plugins-enabled' => 'plugins.enabled',
@@ -107,6 +109,7 @@ final readonly class ServerConfig
         public int $chunksSavePerTick = 8,
         public int $playersAutosaveIntervalTicks = 6_000,
         public int $playersSavePerTick = 8,
+        public int $movementRewindHistorySize = 40,
         public int $ticksPerSecond = 20,
         public bool $consoleEnabled = true,
         public bool $pluginsEnabled = true,
@@ -158,6 +161,7 @@ final readonly class ServerConfig
         self::range($this->chunksSavePerTick, 1, 64, 'Chunks saved per tick');
         self::range($this->playersAutosaveIntervalTicks, 20, 72_000, 'Player autosave interval');
         self::range($this->playersSavePerTick, 1, 64, 'Players saved per tick');
+        self::range($this->movementRewindHistorySize, 1, 1_200, 'Movement rewind history size');
         self::range($this->ticksPerSecond, 1, 100, 'Ticks per second');
         self::range($this->maximumPlugins, 0, 256, 'Maximum plugins');
         if (!in_array($this->loggingConsoleColors, ['auto', 'true', 'false'], true)) {
@@ -250,6 +254,12 @@ final readonly class ServerConfig
             chunksSavePerTick: self::integer($values['chunks.save-per-tick'], 'chunks.save-per-tick', 1, 64),
             playersAutosaveIntervalTicks: self::integer($values['players.autosave-interval-ticks'], 'players.autosave-interval-ticks', 20, 72_000),
             playersSavePerTick: self::integer($values['players.save-per-tick'], 'players.save-per-tick', 1, 64),
+            movementRewindHistorySize: self::integer(
+                $values['movement.rewind-history-size'],
+                'movement.rewind-history-size',
+                1,
+                1_200,
+            ),
             ticksPerSecond: self::integer($values['runtime.ticks-per-second'], 'runtime.ticks-per-second', 1, 100),
             consoleEnabled: self::boolean($values['console.enabled'], 'console.enabled'),
             pluginsEnabled: self::boolean($values['plugins.enabled'], 'plugins.enabled'),

@@ -22,6 +22,7 @@ use Bedriox\Protocol\Packet\ChunkRadiusUpdatedPacket;
 use Bedriox\Protocol\Packet\ClientCacheStatusPacket;
 use Bedriox\Protocol\Packet\ContainerClosePacket;
 use Bedriox\Protocol\Packet\ContainerOpenPacket;
+use Bedriox\Protocol\Packet\CorrectPlayerMovePredictionPacket;
 use Bedriox\Protocol\Packet\EmoteFlag;
 use Bedriox\Protocol\Packet\EmoteListPacket;
 use Bedriox\Protocol\Packet\EmotePacket;
@@ -82,6 +83,7 @@ use Bedriox\Server\Player\InventoryStackRequestActionType;
 use Bedriox\Server\Runtime\BedrockChunkPacketSerializer;
 use Bedriox\Server\Runtime\BedrockInventoryPacketProjector;
 use Bedriox\Server\Runtime\BedrockPlayChannel;
+use Bedriox\Server\Runtime\BedrockWorldEventPacketEncoder;
 use Bedriox\Server\Runtime\RuntimeDiagnostics;
 use Bedriox\Server\Runtime\RuntimeLimits;
 use Bedriox\Server\Simulation\BlockBreakAction;
@@ -199,6 +201,8 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertCount(2, $commands);
         self::assertInstanceOf(MovePlayer::class, $commands[0]);
         self::assertSame(1, $commands[0]->sequence);
+        self::assertSame(0, $commands[0]->clientTick->high);
+        self::assertSame(5, $commands[0]->clientTick->low);
         self::assertEqualsWithDelta(64.0, $commands[0]->position->y, 0.000_01);
         self::assertSame(MovementMode::SPRINTING, $commands[0]->mode);
         self::assertSame(90.0, $commands[0]->headYaw);
@@ -276,6 +280,44 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertCount(1, $commands);
         self::assertInstanceOf(MovePlayer::class, $commands[0]);
         self::assertSame(1, $commands[0]->sequence);
+        self::assertSame(0x80000000, $commands[0]->clientTick->high);
+        self::assertSame(1, $commands[0]->clientTick->low);
+    }
+
+    public function testEncryptedMovementCorrectionReturnsTheExactRetailInputTick(): void
+    {
+        [$channel, $client, $server, $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([
+                new SetLocalPlayerAsInitializedPacket($entityId),
+                $this->movementPacket(new UnsignedLong(0x80000000, 17), x: 1000.0, z: 1000.0),
+            ])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(MovePlayer::class, $commands[0]);
+        $simulation = new WorldSimulation();
+        $factory = new SimulationCommandFactory();
+        self::assertTrue($simulation->enqueue($factory->join('session', 'identity', 'Player')));
+        $simulation->tick();
+        self::assertTrue($simulation->enqueue($commands[0]));
+        $events = $simulation->tick()->events;
+        self::assertCount(1, $events);
+
+        $directed = (new BedrockWorldEventPacketEncoder())->encode($events[0], []);
+        self::assertCount(1, $directed);
+        self::assertTrue($channel->queuePacket($directed[0]->packet));
+        $outgoing = $channel->drainOutgoing();
+        self::assertCount(1, $outgoing);
+        $packet = $this->decode($server->decryptEnvelope($outgoing[0]->payload));
+        self::assertInstanceOf(CorrectPlayerMovePredictionPacket::class, $packet);
+        self::assertSame(0x80000000, $packet->tick->high);
+        self::assertSame(17, $packet->tick->low);
+        self::assertTrue($packet->onGround);
+        self::assertFalse($channel->isClosed());
     }
 
     public function testGameplayBeforeInitializationFailsClosed(): void
@@ -2032,14 +2074,20 @@ final class BedrockPlayChannelTest extends TestCase
         ];
     }
 
-    private function movementPacket(UnsignedLong $tick, float $yaw = 0.0, float $pitch = 0.0): PlayerAuthInputPacket
-    {
+    private function movementPacket(
+        UnsignedLong $tick,
+        float $yaw = 0.0,
+        float $pitch = 0.0,
+        float $x = 0.0,
+        float $y = 64.0,
+        float $z = 0.0,
+    ): PlayerAuthInputPacket {
         return new PlayerAuthInputPacket(
             pitch: $pitch,
             yaw: $yaw,
-            wireX: 0.0,
-            wireY: PlayerPositionProjection::feetToWireY(64.0),
-            wireZ: 0.0,
+            wireX: $x,
+            wireY: PlayerPositionProjection::feetToWireY($y),
+            wireZ: $z,
             moveX: 0.0,
             moveZ: 0.0,
             headYaw: $yaw,

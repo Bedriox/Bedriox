@@ -36,6 +36,7 @@ use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
 use Bedriox\Server\Simulation\Event\WorldEvent;
 use Bedriox\Server\Simulation\FixedRateWorldLoop;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
+use Bedriox\Server\Simulation\VerticalState;
 use Bedriox\Server\Simulation\WorldSimulation;
 use Bedriox\Server\Transport\ConnectedTransport;
 use Bedriox\Server\World\World;
@@ -173,6 +174,20 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                             'reason' => $event->reason,
                         ]);
                     }
+                    if ($event instanceof MovementCorrected) {
+                        $this->diagnostics->record('world.protocol_trace', [
+                            'kind' => 'movement_corrected',
+                            'reason' => $event->reason,
+                            'packet' => match (true) {
+                                $event->clientTick !== null => 'correct_player_move_prediction',
+                                $event->reason === 'plugin_teleport' => 'move_player',
+                                default => 'none',
+                            },
+                            'on_ground' => $event->authoritativePlayer->verticalState === VerticalState::GROUNDED,
+                            'client_tick_high' => $event->clientTick?->high,
+                            'client_tick_low' => $event->clientTick?->low,
+                        ]);
+                    }
                     if (($event instanceof PlayerJoined || $event instanceof PlayerMoved || $event instanceof PlayerRespawned)
                         && !$this->updateAuthoritativeChunkView($event->player)) {
                         continue;
@@ -257,6 +272,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                             $event->reason,
                             $visibleRecipients,
                             $event->postureChanged,
+                            $event->clientTick,
                         ), $directedCount)) {
                             return false;
                         }

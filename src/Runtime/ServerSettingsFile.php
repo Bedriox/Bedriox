@@ -103,6 +103,7 @@ players.autosave-interval-ticks=6000
 players.save-per-tick=8
 
 # Runtime and diagnostics
+movement.rewind-history-size=40
 runtime.ticks-per-second=20
 console.enabled=true
 
