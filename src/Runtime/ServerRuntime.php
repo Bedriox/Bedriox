@@ -37,6 +37,7 @@ use Bedriox\Server\Simulation\Event\PlayerDamaged;
 use Bedriox\Server\Simulation\Event\PlayerDied;
 use Bedriox\Server\Simulation\Event\PlayerDisconnected;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
+use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
 use Bedriox\Server\Simulation\Event\PlayerRespawned;
 use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
@@ -318,6 +319,20 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                             $event->player,
                             $event->damage,
                             $event->cause,
+                            array_values(array_unique([
+                                $event->player->sessionId,
+                                ...array_intersect(
+                                    $event->recipientSessionIds,
+                                    $this->actorVisibility->viewersOf($event->player->sessionId),
+                                ),
+                            ])),
+                        );
+                    } elseif ($event instanceof PlayerKnockedBack) {
+                        $event = new PlayerKnockedBack(
+                            $event->player,
+                            $event->motionX,
+                            $event->motionY,
+                            $event->motionZ,
                             array_values(array_unique([
                                 $event->player->sessionId,
                                 ...array_intersect(

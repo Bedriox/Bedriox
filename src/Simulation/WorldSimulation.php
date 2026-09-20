@@ -17,6 +17,7 @@ use Bedriox\Server\Player\PlayerInventory;
 use Bedriox\Server\Player\PlayerRegistry;
 use Bedriox\Server\Simulation\Command\AcknowledgeRespawn;
 use Bedriox\Server\Simulation\Command\ApplyInventoryStackRequest;
+use Bedriox\Server\Simulation\Command\AttackPlayer;
 use Bedriox\Server\Simulation\Command\BreakBlock;
 use Bedriox\Server\Simulation\Command\DamagePlayer;
 use Bedriox\Server\Simulation\Command\DisconnectPlayer;
@@ -47,6 +48,7 @@ use Bedriox\Server\Simulation\Event\PlayerDamaged;
 use Bedriox\Server\Simulation\Event\PlayerDied;
 use Bedriox\Server\Simulation\Event\PlayerDisconnected;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
+use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
 use Bedriox\Server\Simulation\Event\PlayerRespawned;
 use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
@@ -110,6 +112,7 @@ final class WorldSimulation
         private readonly ?InternalBlockStateId $waterState = null,
         private readonly ?InternalBlockStateId $lavaState = null,
         private readonly ?PlayerPersistenceManager $playerPersistence = null,
+        private readonly bool $pvp = true,
     ) {
         $this->commands = new SplQueue();
         $this->lifecycleCommands = new SplQueue();
@@ -439,6 +442,7 @@ final class WorldSimulation
             $command instanceof BreakBlock => $this->breakBlock($command),
             $command instanceof PlaceBlock => $this->placeBlock($command),
             $command instanceof ApplyInventoryStackRequest => $this->inventoryStackRequest($command),
+            $command instanceof AttackPlayer => $this->attack($command),
             $command instanceof SelectHotbarSlot => $this->selectHotbarSlot($command),
             $command instanceof DisconnectPlayer => $this->disconnect($command),
             $command instanceof SendPluginMessage => $this->pluginMessage($command),
@@ -668,7 +672,7 @@ final class WorldSimulation
         }
         $applied = min($damage, $player->vitals->health);
         $player->vitals->health -= $applied;
-        $player->vitals->invulnerableUntilTick = $this->tick + 10;
+        $player->vitals->invulnerableUntilTick = $this->tick + CombatRules::DAMAGE_IMMUNITY_TICKS;
         $player->markDirty();
         $this->pluginEvents?->damaged($player, $command->cause, $applied);
         if (!$player->vitals->isAlive()) {
@@ -682,6 +686,111 @@ final class WorldSimulation
         }
 
         return new PlayerDamaged($player->snapshot(), $applied, $command->cause, $this->players->recipients());
+    }
+
+    private function attack(AttackPlayer $command): WorldEvent
+    {
+        $attacker = $this->players->player($command->session);
+        if ($attacker === null) {
+            return new CommandRejected($command->session, 'not_joined');
+        }
+        $target = $this->players->playerByActorId($command->targetRuntimeActorId);
+        $reason = match (true) {
+            !$this->pvp => 'pvp_disabled',
+            $target === null => 'target_unavailable',
+            $target->sessionId === $attacker->sessionId => 'self_attack',
+            !$target->vitals->isAlive() => 'target_dead',
+            $command->hotbarSlot !== $attacker->inventory->selectedHotbarSlot() => 'selected_slot',
+            !$this->entityIsReachable($attacker, $target) => 'reach',
+            $this->tick <= $target->vitals->invulnerableUntilTick => 'damage_cooldown',
+            default => null,
+        };
+        if ($reason !== null) {
+            return new CommandRejected($command->session, $reason);
+        }
+
+        $damage = $this->pluginEvents?->attack($attacker, $target, CombatRules::EMPTY_HAND_DAMAGE)
+            ?? ($this->pluginEvents === null ? CombatRules::EMPTY_HAND_DAMAGE : null);
+        if ($damage === null || $damage <= 0.0) {
+            return new CommandRejected($command->session, 'plugin_cancelled');
+        }
+
+        $applied = min($damage, $target->vitals->health);
+        $target->vitals->health -= $applied;
+        $target->vitals->invulnerableUntilTick = $this->tick + CombatRules::DAMAGE_IMMUNITY_TICKS;
+        [$motionX, $motionZ] = $this->knockbackDirection($attacker, $target);
+        $target->movement->verticalVelocity = CombatRules::KNOCKBACK_VERTICAL_LIMIT;
+        $target->movement->verticalState = VerticalState::AIRBORNE;
+        $target->movement->jumpAuthorizedUntilTick = $this->tick + CombatRules::DAMAGE_IMMUNITY_TICKS;
+        $target->markDirty();
+
+        $this->pluginEvents?->damaged($target, DamageCause::Attack, $applied);
+        $this->pluginEvents?->attacked($attacker, $target, $applied);
+        $this->deferredEvents[] = new PlayerKnockedBack(
+            $target->snapshot(),
+            $motionX,
+            CombatRules::KNOCKBACK_VERTICAL_LIMIT,
+            $motionZ,
+            $this->players->recipients(),
+        );
+        if (!$target->vitals->isAlive()) {
+            $target->movement->fallDistance = 0.0;
+            $this->pluginEvents?->died($target, DamageCause::Attack);
+            $this->deferredEvents[] = new PlayerDied(
+                $target->snapshot(),
+                DamageCause::Attack,
+                $this->players->recipients(),
+            );
+        }
+
+        return new PlayerDamaged(
+            $target->snapshot(),
+            $applied,
+            DamageCause::Attack,
+            $this->players->recipients(),
+        );
+    }
+
+    private function entityIsReachable(Player $attacker, Player $target): bool
+    {
+        $from = $attacker->movement->position;
+        $to = $target->movement->position;
+        $eyeX = $from->x;
+        $eyeY = $from->y + 1.62;
+        $eyeZ = $from->z;
+        if (hypot(hypot($to->x - $eyeX, $to->z - $eyeZ), $to->y - $eyeY) > CombatRules::MAXIMUM_ENTITY_REACH) {
+            return false;
+        }
+
+        $yaw = deg2rad($attacker->movement->yaw);
+        $pitch = deg2rad($attacker->movement->pitch);
+        $directionX = -sin($yaw) * cos($pitch);
+        $directionY = -sin($pitch);
+        $directionZ = cos($yaw) * cos($pitch);
+        $forward = $directionX * ($to->x - $eyeX)
+            + $directionY * ($to->y - $eyeY)
+            + $directionZ * ($to->z - $eyeZ);
+
+        return $forward >= -(sqrt(3.0) / 2.0);
+    }
+
+    /** @return array{float, float} */
+    private function knockbackDirection(Player $attacker, Player $target): array
+    {
+        $deltaX = $target->movement->position->x - $attacker->movement->position->x;
+        $deltaZ = $target->movement->position->z - $attacker->movement->position->z;
+        $length = hypot($deltaX, $deltaZ);
+        if ($length <= 0.000001) {
+            $yaw = deg2rad($attacker->movement->yaw);
+            $deltaX = -sin($yaw);
+            $deltaZ = cos($yaw);
+            $length = 1.0;
+        }
+
+        return [
+            ($deltaX / $length) * CombatRules::KNOCKBACK_FORCE,
+            ($deltaZ / $length) * CombatRules::KNOCKBACK_FORCE,
+        ];
     }
 
     private function respawn(RespawnPlayer $command): WorldEvent
@@ -882,6 +991,11 @@ final class WorldSimulation
                     $command->requestId,
                     $command->actions,
                     $command->rejectionReason,
+                ),
+                $command instanceof AttackPlayer => $this->validator->attack(
+                    $command->session,
+                    $command->targetRuntimeActorId,
+                    $command->hotbarSlot,
                 ),
                 $command instanceof SelectHotbarSlot => $this->validator->selectHotbarSlot(
                     $command->session,

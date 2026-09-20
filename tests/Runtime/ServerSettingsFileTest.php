@@ -52,6 +52,7 @@ SETTINGS);
             $values = $settings->loadOrCreate($path);
             self::assertSame('Bedriox Server', $values['server.name']);
             self::assertSame('default', $values['level.generator']);
+            self::assertSame('true', $values['pvp']);
             self::assertSame('4', $values['chunks.view-distance']);
             self::assertSame('1', $values['chunks.generate-per-tick']);
             self::assertSame('6000', $values['level.autosave-interval-ticks']);

@@ -33,6 +33,7 @@ use Bedriox\Protocol\Packet\PlayerSkinPacket;
 use Bedriox\Protocol\Packet\PredictionType;
 use Bedriox\Protocol\Packet\RemoveActorPacket;
 use Bedriox\Protocol\Packet\SetActorDataPacket;
+use Bedriox\Protocol\Packet\SetActorMotionPacket;
 use Bedriox\Protocol\Packet\UpdateBlockPacket;
 use Bedriox\Protocol\Security\OpenSslEphemeralKeyFactory;
 use Bedriox\Protocol\Value\BuildPlatform;
@@ -63,6 +64,7 @@ use Bedriox\Server\Simulation\Event\PlayerBecameHidden;
 use Bedriox\Server\Simulation\Event\PlayerBecameVisible;
 use Bedriox\Server\Simulation\Event\PlayerDisconnected;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
+use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
 use Bedriox\Server\Simulation\MovementMode;
 use Bedriox\Server\Simulation\PlayerSnapshot;
@@ -76,6 +78,38 @@ use PHPUnit\Framework\TestCase;
 
 final class BedrockWorldEventPacketEncoderTest extends TestCase
 {
+    public function testAuthoritativeKnockbackProjectsMotionToEachVisibleRecipient(): void
+    {
+        $encoder = new BedrockWorldEventPacketEncoder();
+        $player = new PlayerSnapshot(
+            'target',
+            'identity-target',
+            'Target',
+            new Position(0.0, 64.0, 2.0),
+            0.0,
+            0.0,
+            MovementMode::WALKING,
+            1,
+            VerticalState::AIRBORNE,
+            0.4,
+            22,
+            0.0,
+            false,
+            false,
+            19.0,
+            true,
+        );
+
+        $packets = $encoder->encode(new PlayerKnockedBack($player, 0.0, 0.4, 0.4, ['target', 'viewer']), []);
+
+        self::assertCount(2, $packets);
+        self::assertSame(['target', 'viewer'], array_map(static fn($packet): string => $packet->sessionId, $packets));
+        self::assertInstanceOf(SetActorMotionPacket::class, $packets[0]->packet);
+        self::assertSame(22, $packets[0]->packet->runtimeEntityId->low);
+        self::assertSame(0.4, $packets[0]->packet->motionY);
+        self::assertSame(0.4, $packets[0]->packet->motionZ);
+    }
+
     public function testAuthoritativeBlockEventsProjectOrderedCrackAndUpdatePackets(): void
     {
         $data = BedrockDataSet::bundled();

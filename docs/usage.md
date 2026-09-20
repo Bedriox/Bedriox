@@ -57,6 +57,7 @@ The settings file uses one `key=value` entry per line. Blank lines and lines beg
 | `level.seed` | `0` | Signed 32-bit decimal integer; `default` is deterministic and `flat` is seed-independent |
 | `level.default-gamemode` | `survival` | `survival` (the only implemented game mode) |
 | `level.difficulty` | `normal` | `peaceful`, `easy`, `normal`, or `hard` |
+| `pvp` | `true` | Exactly `true` or `false`; controls player-versus-player damage |
 | `level.autosave-interval-ticks` | `6000` | 20 through 72000 ticks between autosave scheduling cycles |
 | `chunks.view-distance` | `4` | 1–32 chunks |
 | `chunks.spawn-radius` | `4` | 1 through the configured view distance |

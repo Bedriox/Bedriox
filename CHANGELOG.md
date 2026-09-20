@@ -6,6 +6,7 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Added
 
+- Add server-authoritative player-versus-player combat with a single `pvp` setting, PMMP-aligned reach, hurt cooldown and knockback, typed plugin attack events, and visibility-scoped health, animation, motion, death, and respawn synchronization.
 - Add Bedrock player slash-command admission and feedback, server-owned `version`, `help`, `list`, `stop`, `op`, `deop`, and `permission` commands, and atomic UUID-keyed operator and permission persistence.
 - Advertise only commands available to each joining player through the complete current command packet conversation, with client-provided command identity rebound to the authenticated session.
 - Add one read-only build-information view for server, Minecraft, protocol, plugin API, and PHP versions.

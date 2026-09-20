@@ -45,6 +45,8 @@ use Bedriox\Protocol\Packet\ItemStackRequestSlot;
 use Bedriox\Protocol\Packet\ItemUseActionType;
 use Bedriox\Protocol\Packet\ItemUseClientCooldownState;
 use Bedriox\Protocol\Packet\ItemUseInventoryTransaction;
+use Bedriox\Protocol\Packet\ItemUseOnEntityActionType;
+use Bedriox\Protocol\Packet\ItemUseOnEntityInventoryTransaction;
 use Bedriox\Protocol\Packet\ItemUsePredictedResult;
 use Bedriox\Protocol\Packet\ItemUseTriggerType;
 use Bedriox\Protocol\Packet\LevelChunkPacket;
@@ -93,6 +95,7 @@ use Bedriox\Server\Runtime\RuntimeLimits;
 use Bedriox\Server\Simulation\BlockBreakAction;
 use Bedriox\Server\Simulation\Command\AcknowledgeRespawn;
 use Bedriox\Server\Simulation\Command\ApplyInventoryStackRequest;
+use Bedriox\Server\Simulation\Command\AttackPlayer;
 use Bedriox\Server\Simulation\Command\BreakBlock;
 use Bedriox\Server\Simulation\Command\MovePlayer;
 use Bedriox\Server\Simulation\Command\PerformEmote;
@@ -922,6 +925,37 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertFalse($channel->isClosed());
         self::assertSame([], $channel->drainOutgoing());
         self::assertSame([], $channel->drainCommands());
+    }
+
+    public function testEncryptedEntityAttackBecomesBoundedGameplayIntent(): void
+    {
+        [$channel, $client, , $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $packet = new InventoryTransactionPacket(0, [], [], new ItemUseOnEntityInventoryTransaction(
+            UnsignedLong::fromInt(22),
+            ItemUseOnEntityActionType::Attack,
+            0,
+            InventoryItemStack::empty(),
+            new InventoryVector3(9_999.0, 9_999.0, 9_999.0),
+            new InventoryVector3(9_999.0, 9_999.0, 9_999.0),
+        ));
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([$packet])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(AttackPlayer::class, $commands[0]);
+        self::assertSame(22, $commands[0]->targetRuntimeActorId);
+        self::assertSame(0, $commands[0]->hotbarSlot);
+        self::assertFalse($channel->isClosed());
     }
 
     public function testRetailEmptyMobEquipmentDescriptorKeepsInitializedSessionOpen(): void

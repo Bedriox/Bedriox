@@ -42,6 +42,7 @@ use Bedriox\Protocol\Packet\RemoveActorPacket;
 use Bedriox\Protocol\Packet\RespawnPacket;
 use Bedriox\Protocol\Packet\RespawnState;
 use Bedriox\Protocol\Packet\SetActorDataPacket;
+use Bedriox\Protocol\Packet\SetActorMotionPacket;
 use Bedriox\Protocol\Packet\UpdateAttributesPacket;
 use Bedriox\Protocol\Packet\UpdateBlockFlag;
 use Bedriox\Protocol\Packet\UpdateBlockPacket;
@@ -65,6 +66,7 @@ use Bedriox\Server\Simulation\Event\PlayerDamaged;
 use Bedriox\Server\Simulation\Event\PlayerDied;
 use Bedriox\Server\Simulation\Event\PlayerDisconnected;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
+use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
 use Bedriox\Server\Simulation\Event\PlayerRespawned;
 use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
@@ -117,6 +119,18 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
             $event instanceof HeldItemChanged => $this->heldItemChanged($event),
             $event instanceof InventoryStackRequestProcessed => $this->inventoryStackRequestProcessed($event),
             $event instanceof PlayerDamaged => $this->damaged($event),
+            $event instanceof PlayerKnockedBack => array_map(
+                static fn(string $recipient): DirectedPacket => new DirectedPacket(
+                    $recipient,
+                    new SetActorMotionPacket(
+                        UnsignedLong::fromInt($event->player->runtimeActorId),
+                        $event->motionX,
+                        $event->motionY,
+                        $event->motionZ,
+                    ),
+                ),
+                $event->recipientSessionIds,
+            ),
             $event instanceof PlayerDied => $this->died($event),
             $event instanceof PlayerRespawned => $this->respawned($event),
             $event instanceof RespawnAcknowledged => [new DirectedPacket(

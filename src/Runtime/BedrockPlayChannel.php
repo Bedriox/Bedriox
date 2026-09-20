@@ -36,6 +36,8 @@ use Bedriox\Protocol\Packet\ItemStackRequestPacket;
 use Bedriox\Protocol\Packet\ItemStackRequestSlot;
 use Bedriox\Protocol\Packet\ItemUseActionType;
 use Bedriox\Protocol\Packet\ItemUseInventoryTransaction;
+use Bedriox\Protocol\Packet\ItemUseOnEntityActionType;
+use Bedriox\Protocol\Packet\ItemUseOnEntityInventoryTransaction;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
 use Bedriox\Protocol\Packet\MovementPredictionSyncPacket;
 use Bedriox\Protocol\Packet\NetworkChunkPublisherUpdatePacket;
@@ -663,6 +665,28 @@ final class BedrockPlayChannel
             $transaction = $packet->transaction;
             if ($transaction instanceof BasicInventoryTransaction) {
                 return $this->handleLegacyInventoryTransaction($packet);
+            }
+            if ($transaction instanceof ItemUseOnEntityInventoryTransaction) {
+                if ($transaction->action !== ItemUseOnEntityActionType::Attack) {
+                    return true;
+                }
+                if ($transaction->runtimeEntityId->high !== 0 || $transaction->runtimeEntityId->low < 1) {
+                    return true;
+                }
+                if ($this->commands->count() >= $this->limits->maximumCommandsPerPayload) {
+                    return false;
+                }
+                try {
+                    $this->commands->enqueue($this->commandFactory->attack(
+                        $this->sessionId,
+                        $transaction->runtimeEntityId->low,
+                        $transaction->hotbarSlot,
+                    ));
+                } catch (\Bedriox\Server\Simulation\CommandValidationException) {
+                    return true;
+                }
+
+                return true;
             }
             if (!$transaction instanceof ItemUseInventoryTransaction || $transaction->action !== ItemUseActionType::Place) {
                 return true;

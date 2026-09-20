@@ -28,6 +28,7 @@ final class ServerConfigTest extends TestCase
         self::assertSame(40, $defaults->movementRewindHistorySize);
         self::assertSame('default', $defaults->levelGenerator);
         self::assertSame(1, $defaults->chunksGeneratePerTick);
+        self::assertTrue($defaults->pvp);
 
         $config = ServerConfig::fromArguments([
             '--bind=127.0.0.1',
@@ -65,6 +66,7 @@ final class ServerConfigTest extends TestCase
             '--log-file-history=4',
             '--crash-report-player-identifiers=false',
             '--console-enabled=false',
+            '--pvp=false',
         ]);
         self::assertSame('Flat development world', $streaming->motd);
         self::assertSame('flatland', $streaming->levelName);
@@ -85,6 +87,7 @@ final class ServerConfigTest extends TestCase
         self::assertSame(4, $streaming->loggingFileHistory);
         self::assertFalse($streaming->crashReportIncludePlayerIdentifiers);
         self::assertFalse($streaming->consoleEnabled);
+        self::assertFalse($streaming->pvp);
     }
 
     /** @return iterable<string, array{list<string>}> */
@@ -98,6 +101,7 @@ final class ServerConfigTest extends TestCase
         yield 'signed integer' => [['--max-players=+2']];
         yield 'excess players' => [['--max-players=1025']];
         yield 'implicit insecure auth' => [['--auth=self_signed']];
+        yield 'invalid pvp boolean' => [['--pvp=1']];
         yield 'partial spawn' => [['--spawn-x=0']];
         yield 'noncanonical seed' => [['--seed=-0']];
         yield 'spawn radius exceeds view' => [['--view-distance=2', '--spawn-radius=3']];

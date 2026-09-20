@@ -10,6 +10,8 @@ use Bedriox\Api\Event\Block\BlockPlacedEvent;
 use Bedriox\Api\Event\Block\BlockPlaceEvent;
 use Bedriox\Api\Event\Inventory\InventoryChangedEvent;
 use Bedriox\Api\Event\Inventory\InventoryChangeEvent;
+use Bedriox\Api\Event\Player\PlayerAttackedEvent;
+use Bedriox\Api\Event\Player\PlayerAttackEvent;
 use Bedriox\Api\Event\Player\PlayerChatBroadcastEvent;
 use Bedriox\Api\Event\Player\PlayerChatEvent;
 use Bedriox\Api\Event\Player\PlayerDamagedEvent;
@@ -101,6 +103,23 @@ final readonly class PluginGameplayEventBridge
     public function damaged(Player $player, DamageCause $cause, float $damage): void
     {
         $this->events->dispatch(new PlayerDamagedEvent(self::playerView($player), $cause->value, $damage));
+    }
+
+    public function attack(Player $attacker, Player $target, float $damage): ?float
+    {
+        $event = new PlayerAttackEvent(self::playerView($attacker), self::playerView($target), $damage);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->damage();
+    }
+
+    public function attacked(Player $attacker, Player $target, float $damage): void
+    {
+        $this->events->dispatch(new PlayerAttackedEvent(
+            self::playerView($attacker),
+            self::playerView($target),
+            $damage,
+        ));
     }
 
     public function died(Player $player, DamageCause $cause): void

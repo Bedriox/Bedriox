@@ -58,6 +58,13 @@ final class PlayerRegistry
         return isset($this->sessionByActorId[$runtimeActorId]);
     }
 
+    public function playerByActorId(int $runtimeActorId): ?Player
+    {
+        $sessionId = $this->sessionByActorId[$runtimeActorId] ?? null;
+
+        return $sessionId === null ? null : $this->player($sessionId);
+    }
+
     public function add(Player $player): void
     {
         if ($this->hasSession($player->sessionId)

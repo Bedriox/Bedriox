@@ -11,6 +11,7 @@ use Bedriox\Server\Player\InventoryStackRequestAction;
 use Bedriox\Server\Player\PlayerBootstrap;
 use Bedriox\Server\Simulation\Command\AcknowledgeRespawn;
 use Bedriox\Server\Simulation\Command\ApplyInventoryStackRequest;
+use Bedriox\Server\Simulation\Command\AttackPlayer;
 use Bedriox\Server\Simulation\Command\BreakBlock;
 use Bedriox\Server\Simulation\Command\DamagePlayer;
 use Bedriox\Server\Simulation\Command\DisconnectPlayer;
@@ -206,6 +207,16 @@ final readonly class SimulationCommandFactory
         }
 
         return new DamagePlayer($session, $amount, $cause);
+    }
+
+    public function attack(string $session, int $targetRuntimeActorId, int $hotbarSlot): AttackPlayer
+    {
+        $this->assertOpaqueId($session, 128, 'session');
+        if ($targetRuntimeActorId < 1 || $hotbarSlot < 0 || $hotbarSlot > 8) {
+            throw new CommandValidationException('Player attack intent is invalid.');
+        }
+
+        return new AttackPlayer($session, $targetRuntimeActorId, $hotbarSlot);
     }
 
     public function respawn(string $session): RespawnPlayer

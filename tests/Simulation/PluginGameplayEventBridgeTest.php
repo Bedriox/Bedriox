@@ -9,6 +9,8 @@ use Bedriox\Api\Event\Block\BlockBrokenEvent;
 use Bedriox\Api\Event\Block\BlockPlaceEvent;
 use Bedriox\Api\Event\Inventory\InventoryChangedEvent;
 use Bedriox\Api\Event\Inventory\InventoryChangeEvent;
+use Bedriox\Api\Event\Player\PlayerAttackedEvent;
+use Bedriox\Api\Event\Player\PlayerAttackEvent;
 use Bedriox\Api\Event\Player\PlayerChatBroadcastEvent;
 use Bedriox\Api\Event\Player\PlayerChatEvent;
 use Bedriox\Api\Event\Player\PlayerDamagedEvent;
@@ -22,6 +24,7 @@ use Bedriox\Api\Event\Player\PlayerRespawnedEvent;
 use Bedriox\Api\Event\Player\PlayerRespawnEvent;
 use Bedriox\Api\Inventory\Inventory as ApiInventory;
 use Bedriox\Api\Player\Player as ApiPlayer;
+use Bedriox\Api\Player\PlayerInteractionType;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Player\InventoryStack;
@@ -315,6 +318,55 @@ final class PluginGameplayEventBridgeTest extends TestCase
         self::assertSame(4.0, $event->damage);
         self::assertSame(16.0, $event->player->health);
         self::assertSame([4.0, 16.0], $postDamage);
+    }
+
+    public function testAttackEventsCanChangeDamageAndObserveCommittedTargetState(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $post = null;
+        $dispatcher->register('Example', PlayerAttackEvent::class, static function (PlayerAttackEvent $event): void {
+            self::assertSame(PlayerInteractionType::ATTACK, $event->interaction);
+            self::assertSame('One', $event->attacker->name);
+            self::assertSame('Two', $event->target->name);
+            $event->setDamage(3.0);
+        });
+        $dispatcher->register('Example', PlayerAttackedEvent::class, static function (PlayerAttackedEvent $event) use (&$post): void {
+            $post = [$event->damage, $event->target->health, $event->interaction];
+        });
+        [$simulation, $factory] = self::simulation($bridge);
+        $simulation->enqueue($factory->join('one', 'identity-one', 'One', 1));
+        $simulation->enqueue($factory->join('two', 'identity-two', 'Two', 2));
+        $simulation->tick();
+        $simulation->enqueue($factory->move('two', 1, 0.0, 64.0, 2.0, 180.0, 0.0, MovementMode::WALKING));
+        $simulation->tick();
+
+        $simulation->enqueue($factory->attack('one', 2, 0));
+        $event = $simulation->tick()->events[0];
+
+        self::assertInstanceOf(PlayerDamaged::class, $event);
+        self::assertSame(3.0, $event->damage);
+        self::assertSame([3.0, 17.0, PlayerInteractionType::ATTACK], $post);
+    }
+
+    public function testCancelledAttackLeavesTargetHealthUntouched(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $dispatcher->register('Example', PlayerAttackEvent::class, static function (PlayerAttackEvent $event): void {
+            $event->cancel();
+        });
+        [$simulation, $factory] = self::simulation($bridge);
+        $simulation->enqueue($factory->join('one', 'identity-one', 'One', 1));
+        $simulation->enqueue($factory->join('two', 'identity-two', 'Two', 2));
+        $simulation->tick();
+        $simulation->enqueue($factory->move('two', 1, 0.0, 64.0, 2.0, 180.0, 0.0, MovementMode::WALKING));
+        $simulation->tick();
+        $simulation->enqueue($factory->attack('one', 2, 0));
+
+        $event = $simulation->tick()->events[0];
+
+        self::assertInstanceOf(CommandRejected::class, $event);
+        self::assertSame('plugin_cancelled', $event->reason);
+        self::assertSame(20.0, $simulation->snapshot()->players[1]->health);
     }
 
     public function testCancelledDamageDoesNotMutateHealthOrPublishPostEvent(): void

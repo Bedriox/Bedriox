@@ -2,7 +2,7 @@
 
 Bedriox's initial world domain is a deterministic, in-memory flat-world model. It owns all mutable player state and advances at 20 ticks per second by default. Network callbacks cannot access player state: an adapter must first use `SimulationCommandFactory` to convert authenticated, decoded input into one of the immutable join, movement, chat, emote, or disconnect commands, then enqueue it on `WorldSimulation`.
 
-This model does not implement Bedrock packet encoding, chunk serialization, combat, or mobs. It owns player health, fall distance, death and respawn state, inventory, canonical world block mutation, break timing, placement validation, and the authoritative snapshots consumed by player persistence; protocol adapters translate the resulting version-neutral events at a separate boundary.
+This model does not implement Bedrock packet encoding, chunk serialization, or mobs. It owns player health, fall distance, player-versus-player combat, death and respawn state, inventory, canonical world block mutation, break timing, placement validation, and the authoritative snapshots consumed by player persistence; protocol adapters translate the resulting version-neutral events at a separate boundary.
 
 ## Ordering and limits
 
@@ -44,6 +44,8 @@ Disconnect removes both session and identity indexes before producing `PlayerDis
 ## Health, death, and respawn
 
 Health is a server-owned value from 0 through 20. Authoritative vertical movement accumulates fall distance using the same apex-and-landing shape as PocketMine-MP; landing damage is `ceil(distance - 3)` after collision resolution. A cancellable `PlayerDamageEvent` runs before mutation and may reduce, increase, or cancel bounded damage. `PlayerDamagedEvent` and `PlayerDeathEvent` observe committed state. Damage updates are synchronized to the owner and hurt/death animations only to players with the actor in view.
+
+Player attacks arrive as bounded intent containing only the authenticated attacker, target runtime actor ID, and selected hotbar slot. The simulation resolves both players from server-owned indexes, then validates `pvp`, alive state, self-targeting, selected slot, PMMP-aligned reach and hurt cooldown before plugin code. `PlayerAttackEvent` may cancel or adjust the base one-point damage only after those checks. An accepted hit atomically commits health and deterministic 0.4-strength knockback, publishes `PlayerAttackedEvent`, and emits motion only to the target and current viewers. Client-reported positions, click vectors, items, counts, and stack IDs never determine damage or authority. Ordinary invalid attack intent is rejected without disconnecting the player.
 
 A dead player cannot move, chat, emote, change inventory, or mutate blocks. Those valid but inapplicable inputs are corrected or rejected without disconnecting the session. Bedriox accepts both current retail respawn forms: `PlayerAction::Respawn` and `RespawnPacket::ClientReady`. Either ordering is harmless, and the client-ready form can complete respawn by itself. Respawn runs `PlayerRespawnEvent`, restores 20 health at the selected bounded destination, resets fall and vertical state, grants 60 ticks of damage protection, retains the authoritative inventory, and publishes `PlayerRespawnedEvent`. The adapter completes the searching/ready handshake and resynchronizes health, position, actor animation, inventory, and held equipment.
 

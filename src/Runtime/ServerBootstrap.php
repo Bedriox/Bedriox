@@ -124,6 +124,7 @@ final class ServerBootstrap
                 $defaultPalette->water,
                 $defaultPalette->lava,
                 $playerPersistence,
+                $config->pvp,
             );
             $chunkSerializer = new BedrockChunkPacketSerializer(
                 $blockTranslator = new BlockNetworkTranslator($internalStates, $networkStates),

@@ -70,7 +70,7 @@ public function onJoin(PlayerJoinEvent $event): void
 
 `#[EventHandler]` defaults to `EventPriority::NORMAL`. Dispatch order is `LOWEST`, `LOW`, `NORMAL`, `HIGH`, `HIGHEST`, then `MONITOR`, with registration order as the tie-breaker. Programmatic registration is available through `PluginContext::events()`.
 
-Cancellable pre-events cover join, movement, chat, damage, block breaking, block placement, and inventory changes. `PlayerDamageEvent` may cancel damage or set a bounded final amount. `PlayerRespawnEvent` may select a bounded destination before respawn commits. A cancelled client prediction receives the authoritative correction. Immutable post-events, including `PlayerDamagedEvent`, `PlayerDeathEvent`, and `PlayerRespawnedEvent`, describe committed changes. `MONITOR` observes the final result and cannot cancel, mutate, or stage server actions.
+Cancellable pre-events cover join, movement, chat, player attacks, damage, block breaking, block placement, and inventory changes. `PlayerAttackEvent` exposes immutable attacker and target snapshots and may cancel the intent or set its bounded damage; its `PlayerInteractionType::ATTACK` value is independent of Bedrock wire IDs. `PlayerDamageEvent` performs the same role for non-attack damage. `PlayerRespawnEvent` may select a bounded destination before respawn commits. A cancelled client prediction receives the authoritative correction. Immutable post-events, including `PlayerAttackedEvent`, `PlayerDamagedEvent`, `PlayerDeathEvent`, and `PlayerRespawnedEvent`, describe committed changes. `MONITOR` observes the final result and cannot cancel, mutate, or stage server actions.
 
 ## Public server API
 

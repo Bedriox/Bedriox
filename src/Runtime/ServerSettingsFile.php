@@ -83,6 +83,7 @@ level.generator=default
 level.seed=0
 level.default-gamemode=survival
 level.difficulty=normal
+pvp=true
 level.autosave-interval-ticks=6000
 
 # Leave all three commented to use the level's calculated default spawn.
