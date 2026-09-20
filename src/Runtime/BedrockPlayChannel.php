@@ -501,11 +501,8 @@ final class BedrockPlayChannel
     private function handle(Packet $packet): bool
     {
         if ($packet instanceof MovementPredictionSyncPacket) {
-            if (!$packet->runtimeActorId->equals($this->runtimeEntityId)) {
-                return false;
-            }
             $this->diagnostics->record('play.movement_prediction_sync.protocol_trace', [
-                'actor_verified' => true,
+                'advisory_consumed' => true,
                 'reported_flying' => $packet->flying,
                 'actor_flag_count' => count($packet->actorFlags),
             ]);

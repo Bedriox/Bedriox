@@ -371,7 +371,7 @@ final class BedrockPlayChannelTest extends TestCase
 
         $diagnostic = implode('', $lines);
         self::assertStringContainsString('"event":"play.movement_prediction_sync.protocol_trace"', $diagnostic);
-        self::assertStringContainsString('"actor_verified":true', $diagnostic);
+        self::assertStringContainsString('"advisory_consumed":true', $diagnostic);
         self::assertStringContainsString('"reported_flying":true', $diagnostic);
         self::assertStringContainsString('"actor_flag_count":8', $diagnostic);
 
@@ -388,7 +388,7 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertNotEmpty($channel->drainCommands());
     }
 
-    public function testEncryptedMovementPredictionSyncForAnotherActorFailsClosed(): void
+    public function testEncryptedMovementPredictionSyncDoesNotTreatReportedActorAsAuthority(): void
     {
         [$channel, $client, , $entityId] = $this->channel();
         self::assertTrue($channel->accept(new ConnectedPayloadEvent(
@@ -397,7 +397,7 @@ final class BedrockPlayChannelTest extends TestCase
             0,
         )));
 
-        self::assertFalse($channel->accept(new ConnectedPayloadEvent(
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
             $client->encryptEnvelope($this->encode([
                 $this->movementPredictionSync(UnsignedLong::fromInt(99), false),
             ])),
@@ -405,7 +405,7 @@ final class BedrockPlayChannelTest extends TestCase
             0,
         )));
 
-        self::assertTrue($channel->isClosed());
+        self::assertFalse($channel->isClosed());
         self::assertSame([], $channel->drainOutgoing());
         self::assertSame([], $channel->drainCommands());
     }
