@@ -11,7 +11,7 @@ The client journey is Bedriox's cumulative user-visible regression baseline. A m
 5. The spawn-radius terrain contains the expected grass, dirt, bedrock, air, biome, and height semantics.
 6. The negotiated view continues loading nearest-first beyond the spawn column.
 7. Walking across positive and negative chunk boundaries loads only the new edge without voids, stalls, excessive resend, or unbounded memory.
-8. Standing, looking, walking, jumping, landing, sprinting, and crouching preserve authoritative position, gravity, collision, and breathing state; a bounded authoritative correction returns the exact processed client input tick and leaves later movement playable.
+8. Standing, looking, walking, jumping, landing, sprinting, and crouching preserve authoritative position, gravity, collision, and breathing state; bounded correction and movement-prediction synchronization leave later movement and block interaction playable without importing client-reported authority.
 9. Chat is attributed by the server and delivered in order.
 10. Routine bounded actions appropriate to the implemented milestone, including authoritative grass breaking and placement, hotbar selection, inventory open or close, splitting a stack between hotbar slots, selecting the resulting stack, and placing from it, do not lose items, crash the process, or unexpectedly disconnect the session.
 11. Disconnect releases player, session, chunk-view, queue, and cryptographic resources.

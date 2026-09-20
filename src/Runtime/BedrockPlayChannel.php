@@ -34,6 +34,7 @@ use Bedriox\Protocol\Packet\ItemStackRequestSlot;
 use Bedriox\Protocol\Packet\ItemUseActionType;
 use Bedriox\Protocol\Packet\ItemUseInventoryTransaction;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
+use Bedriox\Protocol\Packet\MovementPredictionSyncPacket;
 use Bedriox\Protocol\Packet\NetworkChunkPublisherUpdatePacket;
 use Bedriox\Protocol\Packet\NetworkStackLatencyPacket;
 use Bedriox\Protocol\Packet\Packet;
@@ -499,6 +500,18 @@ final class BedrockPlayChannel
 
     private function handle(Packet $packet): bool
     {
+        if ($packet instanceof MovementPredictionSyncPacket) {
+            if (!$packet->runtimeActorId->equals($this->runtimeEntityId)) {
+                return false;
+            }
+            $this->diagnostics->record('play.movement_prediction_sync.protocol_trace', [
+                'actor_verified' => true,
+                'reported_flying' => $packet->flying,
+                'actor_flag_count' => count($packet->actorFlags),
+            ]);
+
+            return true;
+        }
         if ($packet instanceof EmotePacket) {
             if (!$this->initialized
                 || !$packet->runtimeEntityId->equals($this->runtimeEntityId)

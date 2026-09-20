@@ -45,6 +45,7 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Fixed
 
+- Accept the current serverbound movement-prediction sync notification as validated advisory data without importing client-reported movement, collision, ability, health, or hunger state, preventing a legitimate packet 322 from disconnecting a spawned player.
 - Preserve the full unsigned `PlayerAuthInput` tick through authoritative simulation, advertise a bounded 40-tick rewind history by default, and use the current prediction-correction packet for routine movement reconciliation while keeping teleport and respawn movement on their lifecycle path.
 - Restore a returning player's saved camera direction through `StartGame` without a second post-initialization movement reset, and normalize gameplay rotation before it enters the simulation.
 - Bind every packaged launch and staged-runtime probe to Runtime's relocatable OpenSSL provider configuration, and qualify the exact Bedrock P-384 key path before world access or UDP bind.

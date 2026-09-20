@@ -46,6 +46,7 @@ use Bedriox\Protocol\Packet\ItemUsePredictedResult;
 use Bedriox\Protocol\Packet\ItemUseTriggerType;
 use Bedriox\Protocol\Packet\LevelChunkPacket;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
+use Bedriox\Protocol\Packet\MovementPredictionSyncPacket;
 use Bedriox\Protocol\Packet\NetworkChunkPublisherUpdatePacket;
 use Bedriox\Protocol\Packet\NetworkStackLatencyPacket;
 use Bedriox\Protocol\Packet\Packet;
@@ -329,6 +330,98 @@ final class BedrockPlayChannelTest extends TestCase
             0,
         )));
         self::assertTrue($channel->isClosed());
+        self::assertSame([], $channel->drainCommands());
+    }
+
+    public function testEncryptedMovementPredictionSyncIsConsumedWithoutTrustingReportedState(): void
+    {
+        $lines = [];
+        $diagnostics = new RuntimeDiagnostics(static function (string $line) use (&$lines): void {
+            $lines[] = $line;
+        });
+        [$channel, $client, , $entityId] = $this->channel([], $diagnostics);
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $channel->drainOutgoing();
+        $channel->drainCommands();
+
+        $sync = $this->movementPredictionSync($entityId, true);
+        self::assertSame(58, strlen(BedrockPacketCodec::encode($sync)));
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([$sync])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        self::assertFalse($channel->isClosed());
+        self::assertSame([], $channel->drainOutgoing());
+        self::assertSame([], $channel->drainCommands());
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([$sync])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        self::assertFalse($channel->isClosed());
+        self::assertSame([], $channel->drainOutgoing());
+        self::assertSame([], $channel->drainCommands());
+
+        $diagnostic = implode('', $lines);
+        self::assertStringContainsString('"event":"play.movement_prediction_sync.protocol_trace"', $diagnostic);
+        self::assertStringContainsString('"actor_verified":true', $diagnostic);
+        self::assertStringContainsString('"reported_flying":true', $diagnostic);
+        self::assertStringContainsString('"actor_flag_count":8', $diagnostic);
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([$this->blockActionPacket(new PlayerBlockAction(
+                PlayerActionType::StartDestroyBlock,
+                new BlockPosition(0, 63, 0),
+                1,
+            ), 91)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        self::assertFalse($channel->isClosed());
+        self::assertNotEmpty($channel->drainCommands());
+    }
+
+    public function testEncryptedMovementPredictionSyncForAnotherActorFailsClosed(): void
+    {
+        [$channel, $client, , $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        self::assertFalse($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([
+                $this->movementPredictionSync(UnsignedLong::fromInt(99), false),
+            ])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        self::assertTrue($channel->isClosed());
+        self::assertSame([], $channel->drainOutgoing());
+        self::assertSame([], $channel->drainCommands());
+    }
+
+    public function testEncryptedMovementPredictionSyncBeforeInitializationIsHarmless(): void
+    {
+        [$channel, $client, , $entityId] = $this->channel();
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([$this->movementPredictionSync($entityId, false)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        self::assertFalse($channel->isClosed());
+        self::assertSame([], $channel->drainOutgoing());
         self::assertSame([], $channel->drainCommands());
     }
 
@@ -2108,6 +2201,29 @@ final class BedrockPlayChannelTest extends TestCase
             cameraZ: 0.0,
             rawMoveX: 0.0,
             rawMoveZ: 0.0,
+        );
+    }
+
+    private function movementPredictionSync(
+        UnsignedLong $runtimeActorId,
+        bool $flying,
+    ): MovementPredictionSyncPacket {
+        return new MovementPredictionSyncPacket(
+            [1, 3, 14, 19, 35, 47, 48, 49],
+            0.6,
+            1.8,
+            0.6,
+            0.1,
+            0.02,
+            0.02,
+            0.42,
+            1.0,
+            1.0,
+            123.0,
+            456.0,
+            789.0,
+            $runtimeActorId,
+            $flying,
         );
     }
 
