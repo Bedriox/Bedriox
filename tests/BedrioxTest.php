@@ -4,17 +4,17 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests;
 
-use Bedriox\Server\Application;
+use Bedriox\Server\Bedriox;
 use PHPUnit\Framework\TestCase;
 
-final class ApplicationTest extends TestCase
+final class BedrioxTest extends TestCase
 {
-    public function testDisplayNameContainsProductVersionAndCompany(): void
+    public function testDisplayNameContainsProductAndVersion(): void
     {
-        $displayName = (new Application())->displayName();
+        $displayName = (new Bedriox())->displayName();
 
         self::assertStringContainsString('Bedriox', $displayName);
-        self::assertStringContainsString(Application::VERSION, $displayName);
+        self::assertStringContainsString(Bedriox::VERSION, $displayName);
         self::assertSame('Bedriox 0.1.0-alpha.1', $displayName);
     }
 
@@ -22,7 +22,7 @@ final class ApplicationTest extends TestCase
     {
         $stdout = '';
         $stderr = '';
-        $exitCode = (new Application())->run(
+        $exitCode = (new Bedriox())->run(
             ['serve', '--auth=secret-value'],
             static function (string $message) use (&$stdout): void {
                 $stdout .= $message;

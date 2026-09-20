@@ -74,6 +74,8 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Changed
 
+- Name the server composition root `Bedriox` and make its product version the shared authority for CLI output, crash reports, and integration validation.
+
 - Pin RakNet commit `aa84f71169f6401029b070af35ecb3f85b7fcac4` and surface its bounded pre-ready rejection metadata only through protocol-trace diagnostics.
 - Move Bedrock discovery advertisement semantics into Protocol while RakNet transports only the bounded opaque payload and accepting-connections policy, preserving the qualified `Survival;1` wire output.
 - Keep commit messages free of personal-email sign-off trailers.

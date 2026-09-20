@@ -33,7 +33,7 @@ use Bedriox\Server\Simulation\PluginGameplayEventBridge;
 use Closure;
 use Throwable;
 
-final class Application
+final class Bedriox
 {
     public const NAME = 'Bedriox';
     public const VERSION = '0.1.0-alpha.1';

@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use Bedriox\Server\Application;
+use Bedriox\Server\Bedriox;
 use Bedriox\Tools\CiWorkflowValidator;
 use Bedriox\Tools\IntegrationManifestValidator;
 
@@ -71,7 +71,7 @@ $errors = IntegrationManifestValidator::validate(
     $manifest,
     $composer,
     $composerLock,
-    Application::VERSION,
+    Bedriox::VERSION,
     $siblingHeads,
 );
 $workflow = file_get_contents($root . '/.github/workflows/ci.yml');

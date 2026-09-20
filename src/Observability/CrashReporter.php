@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Observability;
 
-use Bedriox\Server\Application;
+use Bedriox\Server\Bedriox;
 use DateTimeImmutable;
 use DateTimeZone;
 use RuntimeException;
@@ -84,7 +84,7 @@ final readonly class CrashReporter
             'Do not publish this report without reviewing player identifiers and network addresses.',
             '',
             'Time (UTC): ' . $timestamp->format(DATE_ATOM),
-            'Bedriox: ' . Application::VERSION,
+            'Bedriox: ' . Bedriox::VERSION,
             'PHP: ' . PHP_VERSION,
             'Operating system: ' . PHP_OS_FAMILY . ' (' . php_uname('m') . ')',
             'Uptime/tick: tick ' . $context->tick,

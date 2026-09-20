@@ -55,7 +55,7 @@ final class IntegrationManifestValidator
             $errors[] = 'Manifest schema must be 2.';
         }
         if (($manifest['server'] ?? null) !== $applicationVersion) {
-            $errors[] = 'Manifest and Application versions differ.';
+            $errors[] = 'Manifest and Bedriox versions differ.';
         }
 
         $requirements = $composer['require'] ?? null;
