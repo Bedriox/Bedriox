@@ -4,14 +4,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
-use Bedriox\Api\Command\CommandSenderType;
-use Bedriox\Protocol\Packet\AvailableCommandsPacket;
-use Bedriox\Protocol\Packet\CommandArgumentType;
-use Bedriox\Protocol\Packet\CommandDefinition as ProtocolCommandDefinition;
-use Bedriox\Protocol\Packet\CommandOverload;
-use Bedriox\Protocol\Packet\CommandParameter;
-use Bedriox\Protocol\Packet\CommandPermission;
 use Bedriox\Protocol\Packet\SetCommandsEnabledPacket;
+use Bedriox\Protocol\Packet\UpdateAbilitiesPacket;
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\Server\Login\LoginChannelReady;
 use Bedriox\Server\Permission\PermissionStore;
@@ -57,25 +51,15 @@ final readonly class BedrockPlayChannelFactory implements PlayChannelFactory
 
         $initializationPackets = $this->initialization->create($ready->login, $runtimeEntityId, $bootstrap);
         if ($this->commandRegistry !== null && $this->permissionStore !== null) {
-            $initializationPackets = array_values(array_filter(
+            $projector = new BedrockCommandPacketProjector($this->commandRegistry, $this->permissionStore);
+            $initializationPackets = array_values(array_filter(array_map(
+                fn($packet) => $packet instanceof UpdateAbilitiesPacket
+                    ? $projector->abilities($ready->login->identity, $runtimeEntityId->toSignedBits())
+                    : $packet,
                 $initializationPackets,
-                static fn($packet): bool => !$packet instanceof SetCommandsEnabledPacket,
-            ));
-            $definitions = $this->commandRegistry->availableDefinitions(
-                CommandSenderType::PLAYER,
-                fn(string $permission): bool => $this->permissionStore->hasPermission($ready->login->identity, $permission),
-            );
-            $commands = array_map(
-                static fn($definition): ProtocolCommandDefinition => new ProtocolCommandDefinition(
-                    $definition->name,
-                    $definition->description,
-                    CommandPermission::Any,
-                    [new CommandOverload([new CommandParameter('args', CommandArgumentType::RawText, true)])],
-                ),
-                $definitions,
-            );
+            ), static fn($packet): bool => !$packet instanceof SetCommandsEnabledPacket));
             $initializationPackets[] = new SetCommandsEnabledPacket(true);
-            $initializationPackets[] = new AvailableCommandsPacket($commands);
+            $initializationPackets[] = $projector->availableCommands($ready->login->identity);
         }
 
         return new BedrockPlayChannel(

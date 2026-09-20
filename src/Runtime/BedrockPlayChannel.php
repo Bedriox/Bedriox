@@ -527,7 +527,12 @@ final class BedrockPlayChannel
             }
             $this->playerCommands->enqueue(new CommandRequestPacket(
                 $packet->command,
-                new CommandOrigin(CommandOriginType::Player, $this->login->identity, $packet->origin->requestId),
+                new CommandOrigin(
+                    CommandOriginType::Player,
+                    $this->login->identity,
+                    $packet->origin->requestId,
+                    $packet->origin->playerId,
+                ),
                 false,
                 $packet->version,
             ));

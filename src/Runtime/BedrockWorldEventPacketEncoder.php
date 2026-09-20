@@ -10,6 +10,7 @@ use Bedriox\Protocol\Packet\ActorEventType;
 use Bedriox\Protocol\Packet\AddPlayerPacket;
 use Bedriox\Protocol\Packet\BlockPosition as ProtocolBlockPosition;
 use Bedriox\Protocol\Packet\ChatPacket;
+use Bedriox\Protocol\Packet\CommandPermissionLevel;
 use Bedriox\Protocol\Packet\CorrectPlayerMovePredictionPacket;
 use Bedriox\Protocol\Packet\DeathInfoPacket;
 use Bedriox\Protocol\Packet\EmoteFlag;
@@ -34,6 +35,7 @@ use Bedriox\Protocol\Packet\PlayerAttribute;
 use Bedriox\Protocol\Packet\PlayerListAddEntry;
 use Bedriox\Protocol\Packet\PlayerListAddPacket;
 use Bedriox\Protocol\Packet\PlayerListRemovePacket;
+use Bedriox\Protocol\Packet\PlayerPermission;
 use Bedriox\Protocol\Packet\PlayerPositionProjection;
 use Bedriox\Protocol\Packet\PlayerSkin;
 use Bedriox\Protocol\Packet\PlayerSkinPacket;
@@ -435,8 +437,8 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
     {
         $abilities = new PlayerAbilities(
             $player->runtimeActorId,
-            1,
-            0,
+            PlayerPermission::Member,
+            CommandPermissionLevel::Normal,
             [new AbilityLayer(1, 0x000fffff, 0x0000003f, 0.05, 1.0, 0.1)],
         );
 

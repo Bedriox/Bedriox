@@ -152,6 +152,9 @@ final class Bedriox
                 static function () use (&$stop): void {
                     $stop = true;
                 },
+                static function (\Bedriox\Api\Player\Player $player, bool $includeAbilities) use ($composition): void {
+                    $composition->server?->runtime->refreshPlayerAuthority($player->uuid, $includeAbilities);
+                },
             ))->register();
             $server = (new ServerBootstrap(
                 new PersistentWorldFactory($workingDirectory),

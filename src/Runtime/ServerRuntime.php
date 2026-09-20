@@ -111,6 +111,32 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         return $this->world->pluginPlayers();
     }
 
+    /** Refreshes one connected player's command authority after a persisted permission change. */
+    public function refreshPlayerAuthority(string $uuid, bool $includeAbilities): void
+    {
+        if ($this->commandRegistry === null || $this->permissionStore === null) {
+            return;
+        }
+        $projector = new BedrockCommandPacketProjector($this->commandRegistry, $this->permissionStore);
+        foreach ($this->sessions as $key => $session) {
+            if ($session->play === null || strcasecmp($session->play->login()->identity, $uuid) !== 0) {
+                continue;
+            }
+            if ($includeAbilities && !$session->play->queuePacket(
+                $projector->abilities($uuid, $session->runtimeEntityId->toSignedBits()),
+            )) {
+                $this->disconnect($key);
+
+                return;
+            }
+            if (!$session->play->queuePacket($projector->availableCommands($uuid))) {
+                $this->disconnect($key);
+            }
+
+            return;
+        }
+    }
+
     /** Runs one non-blocking, explicitly bounded network and simulation iteration. */
     public function poll(): bool
     {

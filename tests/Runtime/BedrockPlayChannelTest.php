@@ -20,8 +20,6 @@ use Bedriox\Protocol\Packet\BlockPosition;
 use Bedriox\Protocol\Packet\ChatPacket;
 use Bedriox\Protocol\Packet\ChunkRadiusUpdatedPacket;
 use Bedriox\Protocol\Packet\ClientCacheStatusPacket;
-use Bedriox\Protocol\Packet\CommandOrigin;
-use Bedriox\Protocol\Packet\CommandOriginType;
 use Bedriox\Protocol\Packet\CommandRequestPacket;
 use Bedriox\Protocol\Packet\ContainerClosePacket;
 use Bedriox\Protocol\Packet\ContainerOpenPacket;
@@ -142,12 +140,21 @@ final class BedrockPlayChannelTest extends TestCase
             Reliability::ReliableOrdered,
             0,
         )));
-        $request = new CommandRequestPacket(
-            '/version',
-            new CommandOrigin(CommandOriginType::Player, 'ffffffff-ffff-ffff-ffff-ffffffffffff', 'request'),
+        $literal = hex2bin(
+            '082f76657273696f6e' .
+            '06706c61796572' .
+            '7766554433221100ffeeddccbbaa9988' .
+            '067265712d3432' .
+            '0807060504030201' .
+            '00' .
+            '066c6174657374',
         );
+        self::assertIsString($literal);
+        $payload = BedrockBatchCodec::encode(new BedrockBatch([
+            new PacketFrame(new PacketHeader(PacketIds::COMMAND_REQUEST), $literal),
+        ], CompressionMode::NegotiatedZlib, 256), new BatchLimits());
         self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([$request])),
+            $client->encryptEnvelope($payload),
             Reliability::ReliableOrdered,
             0,
         )));
@@ -155,7 +162,8 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertCount(1, $commands);
         self::assertSame('/version', $commands[0]->command);
         self::assertSame($channel->login()->identity, $commands[0]->origin->uuid);
-        self::assertSame('request', $commands[0]->origin->requestId);
+        self::assertSame('req-42', $commands[0]->origin->requestId);
+        self::assertSame(0x0102030405060708, $commands[0]->origin->playerId);
     }
 
     public function testCipherTransferInitializationAndSpoofProofChatInput(): void

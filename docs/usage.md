@@ -99,7 +99,7 @@ The qualified protocol family remains alpha software. Unknown commands fail with
 
 The console and Bedrock slash-command input share one bounded dispatcher. Built-in commands are `version`, `help`, `list`, `stop`, `op`, `deop`, and `permission`. The console always has administrative authority. Players receive only the commands currently available to their UUID when joining.
 
-`op <online-player>` and `deop <online-player>` change operator authority. `permission list <online-player>`, `permission grant <online-player> <node>`, and `permission revoke <online-player> <node>` manage explicit grants. A grant such as `example.*` covers descendants such as `example.build`; operators satisfy every permission. Targets must be online so Bedriox resolves the authenticated UUID instead of trusting a mutable name.
+`op <online-player>` and `deop <online-player>` change operator authority. `permission list <online-player>`, `permission grant <online-player> <node>`, and `permission revoke <online-player> <node>` manage explicit grants. A grant such as `example.*` covers descendants such as `example.build`; operators satisfy every permission. Targets must be online so Bedriox resolves the authenticated UUID instead of trusting a mutable name. Effective changes are projected to the connected client immediately: operator changes refresh abilities and command visibility, while grant/revoke refreshes the available command list. Repeating an already-effective assignment produces no redundant network update.
 
 Assignments are atomically stored in the ignored local `permissions.json` file. Back up that file with other server data. Invalid, oversized, linked, or corrupt permission data fails startup instead of silently discarding authority rules.
 

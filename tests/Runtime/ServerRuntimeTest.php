@@ -4,18 +4,28 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Runtime;
 
+use Bedriox\Api\Command\CommandDefinition;
+use Bedriox\Api\Command\CommandResult;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Batch\BatchLimits;
 use Bedriox\Protocol\Batch\BedrockBatch;
 use Bedriox\Protocol\Batch\BedrockBatchCodec;
 use Bedriox\Protocol\Batch\CompressionMode;
+use Bedriox\Protocol\Codec\ByteBufferReader;
+use Bedriox\Protocol\Encryption\BedrockDecryptor;
 use Bedriox\Protocol\Encryption\BedrockEncryptor;
 use Bedriox\Protocol\Identity\VerifiedClientData;
 use Bedriox\Protocol\Packet\AuthenticationType;
+use Bedriox\Protocol\Packet\AvailableCommandsPacket;
 use Bedriox\Protocol\Packet\BedrockPacketCodec;
 use Bedriox\Protocol\Packet\ChatPacket;
 use Bedriox\Protocol\Packet\ChunkRadiusUpdatedPacket;
 use Bedriox\Protocol\Packet\ClientToServerHandshakePacket;
+use Bedriox\Protocol\Packet\CommandOrigin;
+use Bedriox\Protocol\Packet\CommandOriginType;
+use Bedriox\Protocol\Packet\CommandOutputPacket;
+use Bedriox\Protocol\Packet\CommandPermissionLevel;
+use Bedriox\Protocol\Packet\CommandRequestPacket;
 use Bedriox\Protocol\Packet\FullContainerName;
 use Bedriox\Protocol\Packet\ItemStackRequest;
 use Bedriox\Protocol\Packet\ItemStackRequestPacket;
@@ -26,7 +36,10 @@ use Bedriox\Protocol\Packet\MobEquipmentPacket;
 use Bedriox\Protocol\Packet\Packet;
 use Bedriox\Protocol\Packet\PacketFrame;
 use Bedriox\Protocol\Packet\PacketHeader;
+use Bedriox\Protocol\Packet\PacketIds;
+use Bedriox\Protocol\Packet\PlayerAbilities;
 use Bedriox\Protocol\Packet\PlayerAuthInputPacket;
+use Bedriox\Protocol\Packet\PlayerPermission;
 use Bedriox\Protocol\Packet\PlayerPositionProjection;
 use Bedriox\Protocol\Packet\RequestChunkRadiusPacket;
 use Bedriox\Protocol\Packet\RequestNetworkSettingsPacket;
@@ -36,6 +49,7 @@ use Bedriox\Protocol\Packet\ServerToClientHandshakePacket;
 use Bedriox\Protocol\Packet\SetLocalPlayerAsInitializedPacket;
 use Bedriox\Protocol\Packet\SubChunkRequestPacket;
 use Bedriox\Protocol\Packet\SwapItemStackRequestAction;
+use Bedriox\Protocol\Packet\UpdateAbilitiesPacket;
 use Bedriox\Protocol\Packet\VoxelShapesPacket;
 use Bedriox\Protocol\ProtocolVersion;
 use Bedriox\Protocol\Security\HandshakeJwt;
@@ -57,7 +71,15 @@ use Bedriox\Server\Login\LoginAuthenticator;
 use Bedriox\Server\Login\LoginSession;
 use Bedriox\Server\Login\MonotonicClock;
 use Bedriox\Server\Observability\MutableCrashContextProvider;
+use Bedriox\Server\Permission\PermissionStore;
 use Bedriox\Server\Player\PlayerBootstrap;
+use Bedriox\Server\Plugin\Command\CommandRegistry;
+use Bedriox\Server\Plugin\Event\EventDispatcher;
+use Bedriox\Server\Plugin\PluginActionBuffer;
+use Bedriox\Server\Plugin\PluginExecutionContext;
+use Bedriox\Server\Plugin\PluginExecutionFrame;
+use Bedriox\Server\Plugin\PluginOwnershipRegistry;
+use Bedriox\Server\Plugin\PluginRuntimeControl;
 use Bedriox\Server\Runtime\BedrockPlayChannelFactory;
 use Bedriox\Server\Runtime\DirectedPacket;
 use Bedriox\Server\Runtime\LoginChannelFactory;
@@ -90,6 +112,7 @@ use Bedriox\Server\World\SpawnPosition;
 use Bedriox\Server\World\World;
 use Bedriox\Server\World\WorldMetadata;
 use PHPUnit\Framework\TestCase;
+use Throwable;
 
 final class ServerRuntimeTest extends TestCase
 {
@@ -799,6 +822,246 @@ final class ServerRuntimeTest extends TestCase
         self::assertSame(1, $blocks->dirtyChunkCount());
     }
 
+    public function testExistingOperatorReceivesOperatorAbilitiesAndPermittedCommandsDuringLogin(): void
+    {
+        $directory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'bedriox-runtime-authority-' . bin2hex(random_bytes(8));
+        $permissions = new PermissionStore($directory . DIRECTORY_SEPARATOR . 'permissions.json');
+        $permissions->setOperator('00000000-0000-0000-0000-000000000001', 'Player', true);
+        $commands = $this->authorityCommands();
+        $transport = new FakeConnectedTransport();
+        $clock = new RuntimeTestClock();
+        $world = new WorldSimulation();
+        $loginFactory = new RuntimeLoginFactory();
+        $runtime = new ServerRuntime(
+            $transport,
+            $loginFactory,
+            new BedrockPlayChannelFactory(
+                new EmptyInitializationFactory([UpdateAbilitiesPacket::survival(1)]),
+                commandRegistry: $commands,
+                permissionStore: $permissions,
+            ),
+            $world,
+            new FixedRateWorldLoop($world, $clock),
+            new RecordingEventEncoder(),
+            commandRegistry: $commands,
+            permissionStore: $permissions,
+        );
+
+        try {
+            $this->advanceToInitializing(
+                $runtime,
+                $transport,
+                new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11),
+                $loginFactory,
+            );
+            $packets = $this->decodeEncryptedPackets($transport->sent, $loginFactory->clientDecryptor());
+            $abilities = array_values(array_filter($packets, static fn(Packet $packet): bool => $packet instanceof UpdateAbilitiesPacket));
+            $available = array_values(array_filter($packets, static fn(Packet $packet): bool => $packet instanceof AvailableCommandsPacket));
+
+            self::assertCount(1, $abilities);
+            self::assertInstanceOf(UpdateAbilitiesPacket::class, $abilities[0]);
+            self::assertSame(PlayerPermission::Operator, $abilities[0]->abilities->playerPermission);
+            self::assertSame(CommandPermissionLevel::Operator, $abilities[0]->abilities->commandPermission);
+            self::assertSame(0xff, $abilities[0]->abilities->layers[0]->abilityValues);
+            self::assertCount(1, $available);
+            self::assertInstanceOf(AvailableCommandsPacket::class, $available[0]);
+            self::assertSame(['public', 'protected'], array_map(
+                static fn($definition): string => $definition->name,
+                $available[0]->commands,
+            ));
+        } finally {
+            $runtime->close();
+            foreach (glob($directory . DIRECTORY_SEPARATOR . '*') ?: [] as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
+            if (is_dir($directory)) {
+                rmdir($directory);
+            }
+        }
+    }
+
+    public function testLiveAuthorityRefreshUsesAbilitiesThenCommandsForOperatorAndCommandsOnlyForGrant(): void
+    {
+        $directory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'bedriox-runtime-authority-' . bin2hex(random_bytes(8));
+        $permissions = new PermissionStore($directory . DIRECTORY_SEPARATOR . 'permissions.json');
+        $commands = $this->authorityCommands();
+        $transport = new FakeConnectedTransport();
+        $clock = new RuntimeTestClock();
+        $world = new WorldSimulation();
+        $loginFactory = new RuntimeLoginFactory();
+        $runtime = new ServerRuntime(
+            $transport,
+            $loginFactory,
+            new BedrockPlayChannelFactory(
+                new EmptyInitializationFactory(),
+                commandRegistry: $commands,
+                permissionStore: $permissions,
+            ),
+            $world,
+            new FixedRateWorldLoop($world, $clock),
+            new RecordingEventEncoder(),
+            commandRegistry: $commands,
+            permissionStore: $permissions,
+        );
+
+        try {
+            $this->advanceToInitializing(
+                $runtime,
+                $transport,
+                new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11),
+                $loginFactory,
+            );
+            $decryptor = $loginFactory->clientDecryptor();
+            $this->decodeEncryptedPackets($transport->sent, $decryptor);
+            $transport->sent = [];
+
+            $permissions->setOperator('00000000-0000-0000-0000-000000000001', 'Player', true);
+            $runtime->refreshPlayerAuthority('00000000-0000-0000-0000-000000000001', true);
+            self::assertTrue($runtime->poll());
+            $operatorPackets = $this->decodeEncryptedPackets($transport->sent, $decryptor);
+            self::assertSame([UpdateAbilitiesPacket::class, AvailableCommandsPacket::class], array_map(
+                static fn(Packet $packet): string => $packet::class,
+                $operatorPackets,
+            ));
+            $transport->sent = [];
+
+            $permissions->grant('00000000-0000-0000-0000-000000000001', 'Player', 'example.use');
+            $runtime->refreshPlayerAuthority('00000000-0000-0000-0000-000000000001', false);
+            self::assertTrue($runtime->poll());
+            $grantPackets = $this->decodeEncryptedPackets($transport->sent, $decryptor);
+            self::assertCount(1, $grantPackets);
+            self::assertInstanceOf(AvailableCommandsPacket::class, $grantPackets[0]);
+        } finally {
+            $runtime->close();
+            foreach (glob($directory . DIRECTORY_SEPARATOR . '*') ?: [] as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
+            if (is_dir($directory)) {
+                rmdir($directory);
+            }
+        }
+    }
+
+    public function testCommandOutputEchoesAuthenticatedUuidRequestIdAndActorId(): void
+    {
+        $directory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'bedriox-runtime-authority-' . bin2hex(random_bytes(8));
+        $permissions = new PermissionStore($directory . DIRECTORY_SEPARATOR . 'permissions.json');
+        $commands = $this->authorityCommands();
+        $transport = new FakeConnectedTransport();
+        $clock = new RuntimeTestClock();
+        $world = new WorldSimulation();
+        $loginFactory = new RuntimeLoginFactory();
+        $runtime = new ServerRuntime(
+            $transport,
+            $loginFactory,
+            new BedrockPlayChannelFactory(
+                new EmptyInitializationFactory(),
+                commandRegistry: $commands,
+                permissionStore: $permissions,
+            ),
+            $world,
+            new FixedRateWorldLoop($world, $clock),
+            new RecordingEventEncoder(),
+            commandRegistry: $commands,
+            permissionStore: $permissions,
+        );
+        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+
+        try {
+            $client = $this->advanceToInitializing($runtime, $transport, $info, $loginFactory);
+            $decryptor = $loginFactory->clientDecryptor();
+            $this->decodeEncryptedPackets($transport->sent, $decryptor);
+            $transport->sent = [];
+            $this->receiveEncrypted($transport, $info, $client, new SetLocalPlayerAsInitializedPacket(UnsignedLong::fromInt(1)));
+            self::assertTrue($runtime->poll());
+            $clock->advance(50_000_000);
+            self::assertTrue($runtime->poll());
+            $this->decodeEncryptedPackets($transport->sent, $decryptor);
+            $transport->sent = [];
+
+            $this->receiveEncrypted($transport, $info, $client, new CommandRequestPacket(
+                '/public',
+                new CommandOrigin(
+                    CommandOriginType::Player,
+                    'ffffffff-ffff-ffff-ffff-ffffffffffff',
+                    'retail-request',
+                    0x0102030405060708,
+                ),
+            ));
+            self::assertTrue($runtime->poll());
+            $packets = $this->decodeEncryptedPackets($transport->sent, $decryptor);
+            self::assertCount(1, $packets);
+            self::assertInstanceOf(CommandOutputPacket::class, $packets[0]);
+            self::assertSame('00000000-0000-0000-0000-000000000001', $packets[0]->origin->uuid);
+            self::assertSame('retail-request', $packets[0]->origin->requestId);
+            self::assertSame(0x0102030405060708, $packets[0]->origin->playerId);
+        } finally {
+            $runtime->close();
+            foreach (glob($directory . DIRECTORY_SEPARATOR . '*') ?: [] as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
+            if (is_dir($directory)) {
+                rmdir($directory);
+            }
+        }
+    }
+
+    private function authorityCommands(): CommandRegistry
+    {
+        $plugins = new AuthorityPluginControl();
+        $execution = new PluginExecutionContext();
+        $actions = new PluginActionBuffer();
+        $ownership = new PluginOwnershipRegistry();
+        $events = new EventDispatcher($plugins, $execution, $actions, $ownership);
+        $commands = new CommandRegistry($plugins, $execution, $actions, $ownership, $events);
+        $commands->registerServer(
+            new CommandDefinition('public', 'Public command', 'public'),
+            static fn(): CommandResult => CommandResult::SUCCESS,
+        );
+        $commands->registerServer(
+            new CommandDefinition('protected', 'Protected command', 'protected', permission: 'example.use'),
+            static fn(): CommandResult => CommandResult::SUCCESS,
+        );
+
+        return $commands;
+    }
+
+    /**
+     * @param list<array{string, int, string, Reliability, int}> $sent
+     * @return list<Packet>
+     */
+    private function decodeEncryptedPackets(array $sent, BedrockDecryptor $decryptor): array
+    {
+        $packets = [];
+        foreach ($sent as $payload) {
+            $batch = BedrockBatchCodec::decode(
+                $decryptor->decryptEnvelope($payload[2]),
+                CompressionMode::NegotiatedZlib,
+                new BatchLimits(),
+                256,
+            );
+            foreach ($batch->packets as $frame) {
+                if ($frame->header->packetId === PacketIds::UPDATE_ABILITIES) {
+                    [$abilities, $reader] = PlayerAbilities::read(ByteBufferReader::fromString($frame->payload, strlen($frame->payload)));
+                    self::assertSame(0, $reader->remaining());
+                    $packets[] = new UpdateAbilitiesPacket($abilities);
+                } elseif ($frame->header->packetId === PacketIds::AVAILABLE_COMMANDS) {
+                    $packets[] = AvailableCommandsPacket::decode($frame->payload);
+                } elseif ($frame->header->packetId === PacketIds::COMMAND_OUTPUT) {
+                    $packets[] = CommandOutputPacket::decode($frame->payload);
+                }
+            }
+        }
+
+        return $packets;
+    }
+
     private function receive(FakeConnectedTransport $transport, SessionInfo $info, string $payload): void
     {
         $transport->payloads[] = new ReceivedPayload(
@@ -959,6 +1222,7 @@ final class RuntimeLoginFactory implements LoginChannelFactory
 {
     private readonly OpenSslEphemeralKeyFactory $keys;
     private readonly P384KeyPair $client;
+    private ?string $lastSessionKey = null;
     public function __construct(
         private readonly ?int $failPort = null,
         private readonly string $displayName = 'Player',
@@ -1004,7 +1268,18 @@ final class RuntimeLoginFactory implements LoginChannelFactory
             throw new \RuntimeException('salt');
         }
         $server = P384::importPublicDerBase64($encodedKey);
-        return new BedrockEncryptor(P384::deriveSessionKey($salt, P384::deriveSharedSecret($this->client->privateKey, $server)));
+        $this->lastSessionKey = P384::deriveSessionKey($salt, P384::deriveSharedSecret($this->client->privateKey, $server));
+
+        return new BedrockEncryptor($this->lastSessionKey);
+    }
+
+    public function clientDecryptor(): BedrockDecryptor
+    {
+        if ($this->lastSessionKey === null) {
+            throw new \RuntimeException('Client session key has not been established.');
+        }
+
+        return new BedrockDecryptor($this->lastSessionKey);
     }
 }
 
@@ -1048,6 +1323,21 @@ final readonly class EmptyInitializationFactory implements PlayInitializationFac
     {
         return ['air' => 1, 'bedrock' => 2, 'dirt' => 3, 'grass_block' => 4];
     }
+}
+
+final class AuthorityPluginControl implements PluginRuntimeControl
+{
+    public function isEnabled(string $plugin): bool
+    {
+        return true;
+    }
+
+    public function version(string $plugin): string
+    {
+        return '1.0.0';
+    }
+
+    public function disableAfterFailure(string $plugin, Throwable $failure, ?PluginExecutionFrame $frame): void {}
 }
 
 final class RecordingEventEncoder implements WorldEventPacketEncoder
