@@ -44,7 +44,7 @@ final class Bedriox
 
     public function displayName(): string
     {
-        return sprintf('%s %s', self::NAME, self::VERSION);
+        return BuildInfo::current()->displayName();
     }
 
     /**
