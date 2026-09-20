@@ -68,7 +68,11 @@ final class BuiltinCommandRegistrarTest extends TestCase
 
         $sender = new BuiltinCommandSender();
         self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'ver'));
-        self::assertStringStartsWith('Bedriox ', $sender->messages[0]);
+        self::assertSame(
+            'This server is running Bedriox version 0.1.0-alpha.1 (protocol 2193).',
+            $sender->messages[0],
+        );
+        self::assertSame('Visit https://bedriox.com', $sender->messages[1]);
         self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'commands'));
         self::assertContains('Available commands (7):', $sender->messages);
     }
@@ -87,7 +91,8 @@ final class BuiltinCommandRegistrarTest extends TestCase
         $sender = new BuiltinCommandSender();
 
         self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'list'));
-        self::assertSame('2 online: Amy, zed', array_pop($sender->messages));
+        self::assertSame('There are 2 players online.', $sender->messages[0]);
+        self::assertSame('Players: Amy, zed', $sender->messages[1]);
         self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'op aMY'));
         self::assertSame('Amy is now an operator.', array_pop($sender->messages));
         self::assertTrue($permissions->isOperator($amy->uuid));
@@ -148,6 +153,31 @@ final class BuiltinCommandRegistrarTest extends TestCase
         self::assertSame('Second', $resolver->find('second')?->name);
     }
 
+    public function testPlayerFacingListAndVersionMessagesUseSeparateColors(): void
+    {
+        [$registry, $permissions] = $this->registry();
+        $player = $this->player('Amy', '00000000-0000-0000-0000-000000000001');
+        (new BuiltinCommandRegistrar(
+            $registry,
+            $permissions,
+            static fn(): array => [$player],
+            static function (): void {},
+        ))->register();
+        $sender = new BuiltinCommandSender(CommandSenderType::PLAYER);
+
+        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'list'));
+        self::assertSame("\u{00a7}aThere is 1 player online.\u{00a7}r", $sender->messages[0]);
+        self::assertSame("\u{00a7}bPlayers: Amy\u{00a7}r", $sender->messages[1]);
+
+        $versionSender = new BuiltinCommandSender(CommandSenderType::PLAYER);
+        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($versionSender, 'version'));
+        self::assertSame(
+            "\u{00a7}aThis server is running Bedriox version 0.1.0-alpha.1 (protocol 2193).\u{00a7}r",
+            $versionSender->messages[0],
+        );
+        self::assertSame("\u{00a7}bVisit https://bedriox.com\u{00a7}r", $versionSender->messages[1]);
+    }
+
     /** @return array{CommandRegistry, PermissionStore} */
     private function registry(): array
     {
@@ -185,9 +215,11 @@ final class BuiltinCommandSender implements CommandSender
     /** @var list<string> */
     public array $messages = [];
 
+    public function __construct(private readonly CommandSenderType $senderType = CommandSenderType::CONSOLE) {}
+
     public function type(): CommandSenderType
     {
-        return CommandSenderType::CONSOLE;
+        return $this->senderType;
     }
 
     public function name(): string

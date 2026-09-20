@@ -999,6 +999,9 @@ final class ServerRuntimeTest extends TestCase
             self::assertSame('00000000-0000-0000-0000-000000000001', $packets[0]->origin->uuid);
             self::assertSame('retail-request', $packets[0]->origin->requestId);
             self::assertSame(0x0102030405060708, $packets[0]->origin->playerId);
+            self::assertSame(1, $packets[0]->successCount);
+            self::assertCount(1, $packets[0]->messages);
+            self::assertSame('Command completed.', $packets[0]->messages[0]->messageId);
         } finally {
             $runtime->close();
             foreach (glob($directory . DIRECTORY_SEPARATOR . '*') ?: [] as $file) {

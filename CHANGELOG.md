@@ -10,6 +10,7 @@ All notable changes will be documented here. The project follows Semantic Versio
 - Add Bedrock player slash-command admission and feedback, server-owned `version`, `help`, `list`, `stop`, `op`, `deop`, and `permission` commands, and atomic UUID-keyed operator and permission persistence.
 - Advertise only commands available to each joining player through the complete current command packet conversation, with client-provided command identity rebound to the authenticated session.
 - Refresh a connected player's typed ability authority and available command list immediately after an effective operator or permission change.
+- Add a public `TextFormat` API covering every current Bedrock color and supported style, including Minecoin Gold and Quartz-through-Resin material colors.
 - Add one read-only build-information view for server, Minecraft, protocol, plugin API, and PHP versions.
 - Add authoritative player health, PMMP-aligned fall damage, cancellable damage and respawn plugin events, death-state gameplay isolation, complete retail respawn packet handling, 60-tick respawn protection, inventory-retaining respawn synchronization, and schema-two health persistence with schema-one migration.
 - Add the version-one default overworld generator with domain-warped continents, erosion-shaped mountain ranges and valleys, climate-driven biomes, rivers, deep oceans, slope-aware surfaces, snow and ice, cross-chunk caves, regional ore veins, biome-specific forests, safe spawn selection, bounded regional caching, and deterministic LevelDB persistence while retaining the fixed flat generator.
@@ -50,6 +51,7 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Fixed
 
+- Resolve player command senders through their authenticated UUID so spawned players execute advertised commands instead of receiving a premature availability response.
 - Encode current command origins with their string tag and unconditional signed actor ID, preserve authenticated player correlation through dispatch, and echo that complete origin in command output.
 - Accept the current serverbound movement-prediction sync notification as validated advisory data without importing client-reported movement, collision, ability, health, or hunger state, preventing a legitimate packet 322 from disconnecting a spawned player.
 - Preserve the full unsigned `PlayerAuthInput` tick through authoritative simulation, advertise a bounded 40-tick rewind history by default, and use the current prediction-correction packet for routine movement reconciliation while keeping teleport and respawn movement on their lifecycle path.
@@ -80,6 +82,7 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Changed
 
+- Present `/list` and `/version` as concise, separately colored player-facing messages while retaining plain console output.
 - Keep each server-owned default command in its own class while retaining `BuiltinCommandRegistrar` as the central registration coordinator.
 
 - Name the server composition root `Bedriox` and make its product version the shared authority for CLI output, crash reports, and integration validation.

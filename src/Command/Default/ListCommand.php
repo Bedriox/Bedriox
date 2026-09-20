@@ -8,6 +8,7 @@ use Bedriox\Api\Command\CommandContext;
 use Bedriox\Api\Command\CommandDefinition;
 use Bedriox\Api\Command\CommandResult;
 use Bedriox\Api\Player\Player;
+use Bedriox\Api\TextFormat;
 
 final readonly class ListCommand implements BuiltinCommand
 {
@@ -25,7 +26,17 @@ final readonly class ListCommand implements BuiltinCommand
         }
         $names = array_map(static fn(Player $player): string => $player->name, $this->players->all());
         sort($names, SORT_NATURAL | SORT_FLAG_CASE);
-        $context->sender()->sendMessage(count($names) . ' online: ' . ($names === [] ? 'none' : implode(', ', $names)));
+        $count = count($names);
+        $context->sender()->sendMessage(CommandMessageStyle::line(
+            $context->sender(),
+            TextFormat::GREEN,
+            $count === 1 ? 'There is 1 player online.' : "There are {$count} players online.",
+        ));
+        $context->sender()->sendMessage(CommandMessageStyle::line(
+            $context->sender(),
+            TextFormat::AQUA,
+            'Players: ' . ($names === [] ? 'none' : implode(', ', $names)),
+        ));
 
         return CommandResult::SUCCESS;
     }

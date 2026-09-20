@@ -7,6 +7,7 @@ namespace Bedriox\Server\Command\Default;
 use Bedriox\Api\Command\CommandContext;
 use Bedriox\Api\Command\CommandDefinition;
 use Bedriox\Api\Command\CommandResult;
+use Bedriox\Api\TextFormat;
 use Bedriox\Server\BuildInfo;
 
 final readonly class VersionCommand implements BuiltinCommand
@@ -21,9 +22,17 @@ final readonly class VersionCommand implements BuiltinCommand
         if ($context->arguments() !== []) {
             return CommandResult::USAGE;
         }
-        foreach (BuildInfo::current()->publicSummary() as $line) {
-            $context->sender()->sendMessage($line);
-        }
+        $build = BuildInfo::current();
+        $context->sender()->sendMessage(CommandMessageStyle::line(
+            $context->sender(),
+            TextFormat::GREEN,
+            "This server is running Bedriox version {$build->serverVersion} (protocol {$build->protocolVersion}).",
+        ));
+        $context->sender()->sendMessage(CommandMessageStyle::line(
+            $context->sender(),
+            TextFormat::AQUA,
+            'Visit https://bedriox.com',
+        ));
 
         return CommandResult::SUCCESS;
     }

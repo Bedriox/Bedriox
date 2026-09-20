@@ -641,7 +641,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
             $messages = [];
             $result = CommandResult::FAILURE;
             $player = $session->phase === SessionPhase::SPAWNED
-                ? $this->world->pluginPlayer($session->id)
+                ? $this->world->pluginPlayer($session->play->login()->identity)
                 : null;
             if ($this->commandRegistry !== null && $player !== null) {
                 $sender = new ServerPlayerCommandSender(
