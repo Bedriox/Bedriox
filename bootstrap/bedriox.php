@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use Bedriox\Server\Application;
+use Bedriox\Server\Bedriox;
 use Bedriox\Server\Environment\RuntimeEnvironmentValidator;
 
 $projectRoot = dirname(__DIR__);
@@ -16,7 +16,7 @@ try {
     RuntimeEnvironmentValidator::validate($projectRoot, getenv('BEDRIOX_RUNTIME_ROOT'));
     require $projectRoot . '/vendor/autoload.php';
 
-    $application = new Application();
+    $application = new Bedriox();
     exit($application->run(
         array_values(array_slice($argv, 1)),
         static function (string $message): void {
