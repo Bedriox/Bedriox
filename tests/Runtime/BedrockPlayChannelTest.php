@@ -20,6 +20,9 @@ use Bedriox\Protocol\Packet\BlockPosition;
 use Bedriox\Protocol\Packet\ChatPacket;
 use Bedriox\Protocol\Packet\ChunkRadiusUpdatedPacket;
 use Bedriox\Protocol\Packet\ClientCacheStatusPacket;
+use Bedriox\Protocol\Packet\CommandOrigin;
+use Bedriox\Protocol\Packet\CommandOriginType;
+use Bedriox\Protocol\Packet\CommandRequestPacket;
 use Bedriox\Protocol\Packet\ContainerClosePacket;
 use Bedriox\Protocol\Packet\ContainerOpenPacket;
 use Bedriox\Protocol\Packet\CorrectPlayerMovePredictionPacket;
@@ -126,6 +129,31 @@ final class BedrockPlayChannelTest extends TestCase
     private const string RETAIL_EMPTY_MOB_EQUIPMENT = '070000000000000000000000';
     /** Not produced by ChatPacket: untranslated AuthorAndMessage/CHAT, spoofed attribution, no filtered text. */
     private const string LITERAL_CHAT = '0001010753706f6f666564076c69746572616c0178017000';
+
+    public function testPlayerCommandIntentIsBoundedAndBoundToAuthenticatedIdentity(): void
+    {
+        [$channel, $client, , $entityId] = $this->channel();
+        $channel->drainOutgoing();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $request = new CommandRequestPacket(
+            '/version',
+            new CommandOrigin(CommandOriginType::Player, 'ffffffff-ffff-ffff-ffff-ffffffffffff', 'request'),
+        );
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([$request])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $commands = $channel->drainPlayerCommands();
+        self::assertCount(1, $commands);
+        self::assertSame('/version', $commands[0]->command);
+        self::assertSame($channel->login()->identity, $commands[0]->origin->uuid);
+        self::assertSame('request', $commands[0]->origin->requestId);
+    }
 
     public function testCipherTransferInitializationAndSpoofProofChatInput(): void
     {

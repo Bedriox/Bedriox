@@ -172,6 +172,31 @@ final class CommandRegistryTest extends TestCase
         self::assertSame(0, $ownership->count('Tools'));
     }
 
+    public function testServerCommandsShareDispatchWithoutPluginLifecycleOwnership(): void
+    {
+        [$registry, , $plugins] = $this->registry();
+        $subscription = $registry->registerServer(
+            new CommandDefinition('version', 'Version', 'version', permission: 'bedriox.command.version'),
+            static function (CommandContext $context): CommandResult {
+                $context->sender()->sendMessage('Bedriox test');
+                return CommandResult::SUCCESS;
+            },
+        );
+        $denied = new RecordingCommandSender(CommandSenderType::PLAYER);
+        $allowed = new RecordingCommandSender(CommandSenderType::PLAYER, ['bedriox.command.version']);
+
+        self::assertSame(CommandResult::FAILURE, $registry->dispatch($denied, '/version'));
+        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($allowed, '/bedriox:version'));
+        self::assertSame(['Bedriox test'], $allowed->messages);
+        self::assertSame(['version'], array_map(
+            static fn(CommandDefinition $definition): string => $definition->name,
+            $registry->availableTo($allowed),
+        ));
+        self::assertSame([], $plugins->disabled);
+        $subscription->unregister();
+        self::assertSame(0, $registry->count());
+    }
+
     /** @return array{CommandRegistry, EventDispatcher, RecordingPluginControl, PluginOwnershipRegistry} */
     private function registry(int $maximumCommands = 1024): array
     {

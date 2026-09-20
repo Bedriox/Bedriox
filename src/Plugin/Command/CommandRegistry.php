@@ -10,6 +10,7 @@ use Bedriox\Api\Command\CommandJob;
 use Bedriox\Api\Command\CommandJobSubscription;
 use Bedriox\Api\Command\CommandResult;
 use Bedriox\Api\Command\CommandSender;
+use Bedriox\Api\Command\CommandSenderType;
 use Bedriox\Api\Command\CommandSubscription;
 use Bedriox\Api\Event\Command\CommandDispatchedEvent;
 use Bedriox\Api\Event\Command\CommandPreDispatchEvent;
@@ -65,7 +66,7 @@ final class CommandRegistry
         }
         $owned = 0;
         foreach ($this->commands as $registered) {
-            if (strcasecmp($registered->plugin, $plugin) === 0) {
+            if ($registered->pluginOwned && strcasecmp($registered->owner, $plugin) === 0) {
                 ++$owned;
             }
         }
@@ -90,7 +91,7 @@ final class CommandRegistry
 
             return $result;
         };
-        $command = new RegisteredCommand($id, $this->sequence++, $plugin, $definition, $callback);
+        $command = new RegisteredCommand($id, $this->sequence++, $plugin, true, $definition, $callback);
         $this->commands[$id] = $command;
         $this->labels[$primary] = $id;
         $this->labels[strtolower($plugin . ':' . $definition->name)] = $id;
@@ -99,6 +100,31 @@ final class CommandRegistry
         }
         $this->ownership->own($plugin, "command:{$id}", fn() => $this->unregister($id));
 
+        return new OwnedCommandSubscription($this, $id);
+    }
+
+    /** @param callable(CommandContext): CommandResult $handler */
+    public function registerServer(CommandDefinition $definition, callable $handler): CommandSubscription
+    {
+        if (count($this->commands) >= $this->maximumCommands) {
+            throw new PluginException('The command registration limit has been reached.');
+        }
+        $id = $this->nextId++;
+        $primary = strtolower($definition->name);
+        $labels = [$primary, 'bedriox:' . $primary];
+        foreach ($definition->aliases as $alias) {
+            $labels[] = strtolower($alias);
+        }
+        foreach ($labels as $label) {
+            if (isset($this->labels[$label])) {
+                throw new PluginException("Command label already registered: {$label}");
+            }
+        }
+        $callback = Closure::fromCallable($handler);
+        $this->commands[$id] = new RegisteredCommand($id, $this->sequence++, 'Bedriox', false, $definition, $callback);
+        foreach ($labels as $label) {
+            $this->labels[$label] = $id;
+        }
         return new OwnedCommandSubscription($this, $id);
     }
 
@@ -121,7 +147,7 @@ final class CommandRegistry
         }
         $label = strtolower($rawLabel);
         $command = isset($this->labels[$label]) ? ($this->commands[$this->labels[$label]] ?? null) : null;
-        if (!$command instanceof RegisteredCommand || !$this->plugins->isEnabled($command->plugin)) {
+        if (!$command instanceof RegisteredCommand || ($command->pluginOwned && !$this->plugins->isEnabled($command->owner))) {
             $sender->sendMessage('Unknown command.');
 
             return CommandResult::FAILURE;
@@ -136,37 +162,47 @@ final class CommandRegistry
 
             return CommandResult::FAILURE;
         }
-        $pre = new CommandPreDispatchEvent($sender, $command->definition->name, $tokens, $command->plugin);
+        $pre = new CommandPreDispatchEvent($sender, $command->definition->name, $tokens, $command->owner);
         $this->events->dispatch($pre);
         if ($pre->isCancelled() || !$this->has($command->id)) {
             return CommandResult::FAILURE;
         }
-        $frame = new PluginExecutionFrame(
-            $command->plugin,
-            $this->plugins->version($command->plugin),
+        $frame = $command->pluginOwned ? new PluginExecutionFrame(
+            $command->owner,
+            $this->plugins->version($command->owner),
             'command',
             listener: $command->definition->name,
             startedAtNanoseconds: hrtime(true),
-        );
-        $this->execution->enter($frame);
-        $this->actions->begin();
+        ) : null;
+        if ($frame !== null) {
+            $this->execution->enter($frame);
+            $this->actions->begin();
+        }
         try {
             $result = ($command->handler)(new CommandContext($sender, $label, $tokens));
-            if (!$this->plugins->isEnabled($command->plugin)) {
+            if ($command->pluginOwned && !$this->plugins->isEnabled($command->owner)) {
                 $this->actions->discard();
 
                 return CommandResult::FAILURE;
             }
-            $this->actions->commit();
+            if ($frame !== null) {
+                $this->actions->commit();
+            }
         } catch (Throwable $failure) {
-            if ($this->actions->isCapturing()) {
+            if ($frame !== null && $this->actions->isCapturing()) {
                 $this->actions->discard();
             }
-            $this->plugins->disableAfterFailure($command->plugin, $failure, $frame);
+            if ($command->pluginOwned) {
+                $this->plugins->disableAfterFailure($command->owner, $failure, $frame);
+            } else {
+                $sender->sendMessage('The command failed internally.');
+            }
 
             return CommandResult::FAILURE;
         } finally {
-            $this->execution->leave();
+            if ($frame !== null) {
+                $this->execution->leave();
+            }
         }
         if ($result === CommandResult::USAGE) {
             $sender->sendMessage('Usage: ' . $command->definition->usage);
@@ -175,7 +211,7 @@ final class CommandRegistry
             $sender,
             $command->definition->name,
             $tokens,
-            $command->plugin,
+            $command->owner,
             $result,
         ));
 
@@ -279,7 +315,9 @@ final class CommandRegistry
             }
         }
         unset($this->commands[$id]);
-        $this->ownership->forget($command->plugin, "command:{$id}");
+        if ($command->pluginOwned) {
+            $this->ownership->forget($command->owner, "command:{$id}");
+        }
     }
 
     public function has(int $id): bool
@@ -290,5 +328,29 @@ final class CommandRegistry
     public function count(): int
     {
         return count($this->commands);
+    }
+
+    /** @return list<CommandDefinition> */
+    public function availableTo(CommandSender $sender): array
+    {
+        return $this->availableDefinitions($sender->type(), $sender->hasPermission(...));
+    }
+
+    /**
+     * @param callable(string): bool $permissionResolver
+     * @return list<CommandDefinition>
+     */
+    public function availableDefinitions(CommandSenderType $senderType, callable $permissionResolver): array
+    {
+        $definitions = [];
+        foreach ($this->commands as $command) {
+            if (($command->pluginOwned && !$this->plugins->isEnabled($command->owner))
+                || !$command->definition->allowedSenders->allows($senderType)
+                || ($command->definition->permission !== null && !$permissionResolver($command->definition->permission))) {
+                continue;
+            }
+            $definitions[] = $command->definition;
+        }
+        return $definitions;
     }
 }

@@ -15,7 +15,8 @@ final readonly class RegisteredCommand
     public function __construct(
         public int $id,
         public int $sequence,
-        public string $plugin,
+        public string $owner,
+        public bool $pluginOwned,
         public CommandDefinition $definition,
         public Closure $handler,
     ) {}

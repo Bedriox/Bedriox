@@ -25,6 +25,8 @@ The current game mode is authoritative survival. Explicit start/stop-flight inpu
 
 Malformed, unknown, out-of-phase, wrong-actor, oversized, or queue-exhausting input fails deterministically and closes only the affected session unless the transport itself cannot continue safely. Unsupported gameplay must be explicitly rejected or represented as a narrow typed no-op; it must not be registered as unbounded opaque input.
 
+The command path is a complete current-client conversation: initialization advertises enabled commands and bounded raw-text overloads, spawned clients submit typed command requests, and Bedriox returns typed command output. Network origin identity is correlation data only; authorization always uses the authenticated session UUID and server-owned operator/permission state. Plugins receive the version-independent command sender and event APIs, never command packet IDs or wire enums.
+
 ## Authoritative processing
 
 `ServerRuntime` drains only configured amounts of transport, session, command, streaming, and tick work per poll. `WorldSimulation` is the sole owner of mutable player state. Commands are revalidated at that boundary and produce immutable events such as join, movement, correction, chat, damage, death, respawn, emote, and disconnect.

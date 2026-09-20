@@ -6,6 +6,8 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Added
 
+- Add Bedrock player slash-command admission and feedback, server-owned `version`, `help`, `list`, `stop`, `op`, `deop`, and `permission` commands, and atomic UUID-keyed operator and permission persistence.
+- Advertise only commands available to each joining player through the complete current command packet conversation, with client-provided command identity rebound to the authenticated session.
 - Add one read-only build-information view for server, Minecraft, protocol, plugin API, and PHP versions.
 - Add authoritative player health, PMMP-aligned fall damage, cancellable damage and respawn plugin events, death-state gameplay isolation, complete retail respawn packet handling, 60-tick respawn protection, inventory-retaining respawn synchronization, and schema-two health persistence with schema-one migration.
 - Add the version-one default overworld generator with domain-warped continents, erosion-shaped mountain ranges and valleys, climate-driven biomes, rivers, deep oceans, slope-aware surfaces, snow and ice, cross-chunk caves, regional ore veins, biome-specific forests, safe spawn selection, bounded regional caching, and deterministic LevelDB persistence while retaining the fixed flat generator.

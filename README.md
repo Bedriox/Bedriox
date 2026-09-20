@@ -31,7 +31,7 @@ Bedriox gives server owners a performance-focused foundation for creating Minecr
 
 ## Where Bedriox is headed
 
-Bedriox is being designed for vanilla-style survival, custom game modes, minigames, hubs, and modded experiences. The experimental plugin API already provides lifecycle hooks, typed gameplay events, player/world snapshots, messages, teleports, block changes, and bounded inventory changes. Commands, permissions, economies, richer mechanics, mobs, and NPCs remain planned expansions.
+Bedriox is being designed for vanilla-style survival, custom game modes, minigames, hubs, and modded experiences. The experimental plugin API already provides lifecycle hooks, typed gameplay events, player/world snapshots, messages, teleports, block changes, bounded inventory changes, and commands shared by the console and players. UUID-based operators and permission nodes control player access. Economies, richer mechanics, mobs, and NPCs remain planned expansions.
 
 Bedriox is under active development. These expansion features are roadmap direction, not finished APIs, and behavior may change before the first stable release.
 

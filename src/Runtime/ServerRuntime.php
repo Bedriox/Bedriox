@@ -4,6 +4,10 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
+use Bedriox\Api\Command\CommandResult;
+use Bedriox\Protocol\Packet\CommandOutputMessage;
+use Bedriox\Protocol\Packet\CommandOutputPacket;
+use Bedriox\Protocol\Packet\CommandOutputType;
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\RakNet\Connected\ConnectedPayloadEvent;
 use Bedriox\RakNet\Protocol\Reliability;
@@ -12,7 +16,10 @@ use Bedriox\RakNet\SessionInfo;
 use Bedriox\RakNet\SessionOpenedEvent;
 use Bedriox\Server\Observability\CrashContextPublisher;
 use Bedriox\Server\Observability\CrashPlayer;
+use Bedriox\Server\Permission\PermissionStore;
 use Bedriox\Server\Player\Persistence\PlayerPersistenceManager;
+use Bedriox\Server\Plugin\Command\CommandRegistry;
+use Bedriox\Server\Plugin\Command\ServerPlayerCommandSender;
 use Bedriox\Server\Simulation\Event\BlockBreakStarted;
 use Bedriox\Server\Simulation\Event\BlockBreakStopped;
 use Bedriox\Server\Simulation\Event\BlockChanged;
@@ -80,6 +87,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         private readonly ?PlayerPersistenceManager $playerPersistence = null,
         private readonly int $playerAutosaveIntervalTicks = 6_000,
         private readonly int $playerAutosaveBudget = 8,
+        private readonly ?CommandRegistry $commandRegistry = null,
+        private readonly ?PermissionStore $permissionStore = null,
     ) {
         if ($this->autosaveIntervalTicks < 1 || $this->autosaveChunkBudget < 1
             || $this->playerAutosaveIntervalTicks < 1 || $this->playerAutosaveBudget < 1) {
@@ -93,6 +102,12 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
     public function __destruct()
     {
         $this->close();
+    }
+
+    /** @return list<\Bedriox\Api\Player\Player> */
+    public function onlinePlayers(): array
+    {
+        return $this->world->pluginPlayers();
     }
 
     /** Runs one non-blocking, explicitly bounded network and simulation iteration. */
@@ -565,11 +580,57 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                     return;
                 }
             }
+            if (!$this->dispatchPlayerCommands($session)) {
+                $this->disconnect($key);
+                return;
+            }
             $this->flush($key, $session);
 
             return;
         }
         $this->disconnect($key);
+    }
+
+    private function dispatchPlayerCommands(RuntimeSession $session): bool
+    {
+        if ($session->play === null) {
+            return true;
+        }
+        foreach ($session->play->drainPlayerCommands() as $request) {
+            $messages = [];
+            $result = CommandResult::FAILURE;
+            $player = $session->phase === SessionPhase::SPAWNED
+                ? $this->world->pluginPlayer($session->id)
+                : null;
+            if ($this->commandRegistry !== null && $player !== null) {
+                $sender = new ServerPlayerCommandSender(
+                    $player,
+                    static function (string $message) use (&$messages): void {
+                        if (count($messages) >= 64) {
+                            throw new RuntimeException('Command output message limit exceeded.');
+                        }
+                        $messages[] = $message;
+                    },
+                    fn(string $permission): bool => $this->permissionStore?->hasPermission($player->uuid, $permission) ?? false,
+                );
+                $result = $this->commandRegistry->dispatch($sender, $request->command);
+            } else {
+                $messages[] = 'Commands are not available yet.';
+            }
+            $outputMessages = array_map(
+                static fn(string $message): CommandOutputMessage => new CommandOutputMessage($message),
+                $messages === [] ? [$result === CommandResult::SUCCESS ? 'Command completed.' : 'Command failed.'] : $messages,
+            );
+            if (!$session->play->queuePacket(new CommandOutputPacket(
+                $request->origin,
+                CommandOutputType::AllOutput,
+                $result === CommandResult::SUCCESS ? 1 : 0,
+                $outputMessages,
+            ))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private function promoteIfReady(string $key, RuntimeSession $session): void

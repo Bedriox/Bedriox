@@ -94,6 +94,14 @@ When `console.enabled=true`, Bedriox reads commands without blocking the server 
 
 The qualified protocol family remains alpha software. Unknown commands fail with a bounded console response.
 
+## Commands and permissions
+
+The console and Bedrock slash-command input share one bounded dispatcher. Built-in commands are `version`, `help`, `list`, `stop`, `op`, `deop`, and `permission`. The console always has administrative authority. Players receive only the commands currently available to their UUID when joining.
+
+`op <online-player>` and `deop <online-player>` change operator authority. `permission list <online-player>`, `permission grant <online-player> <node>`, and `permission revoke <online-player> <node>` manage explicit grants. A grant such as `example.*` covers descendants such as `example.build`; operators satisfy every permission. Targets must be online so Bedriox resolves the authenticated UUID instead of trusting a mutable name.
+
+Assignments are atomically stored in the ignored local `permissions.json` file. Back up that file with other server data. Invalid, oversized, linked, or corrupt permission data fails startup instead of silently discarding authority rules.
+
 ## Plugins
 
 Production plugins are strongly signed `.phar` files placed directly in `plugins/`. Bedriox creates this directory on first start, validates every archive and dependency plan before executing entry points, and never scans source directories. Installing PluginTools adds its separate development source loader; PluginTools owns folder discovery and submits validated definitions through the public admission boundary. Plugin-owned writable data is stored separately under `plugin_data/<PluginName>/`.

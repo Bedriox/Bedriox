@@ -24,8 +24,10 @@ use Bedriox\Server\Login\LoginAuthenticator;
 use Bedriox\Server\Login\SecureHandshakeMaterialFactory;
 use Bedriox\Server\Login\SystemMonotonicClock;
 use Bedriox\Server\Observability\CrashContextPublisher;
+use Bedriox\Server\Permission\PermissionStore;
 use Bedriox\Server\Player\Persistence\FilePlayerDataStore;
 use Bedriox\Server\Player\Persistence\PlayerPersistenceManager;
+use Bedriox\Server\Plugin\Command\CommandRegistry;
 use Bedriox\Server\Simulation\FixedRateWorldLoop;
 use Bedriox\Server\Simulation\PluginGameplayEventBridge;
 use Bedriox\Server\Simulation\Position;
@@ -63,6 +65,8 @@ final class ServerBootstrap
         ?RuntimeDiagnostics $diagnostics = null,
         ?CrashContextPublisher $crashContext = null,
         ?PluginGameplayEventBridge $pluginEvents = null,
+        ?CommandRegistry $commandRegistry = null,
+        ?PermissionStore $permissionStore = null,
     ): BootstrappedServer {
         $diagnostics ??= RuntimeDiagnostics::disabled();
         $authenticationClock = new SystemAuthenticationClock();
@@ -171,6 +175,8 @@ final class ServerBootstrap
                     chunksGeneratePerTick: $config->chunksGeneratePerTick,
                     chunksSendPerTick: $config->chunksSendPerTick,
                     inventoryProjector: $inventoryProjector,
+                    commandRegistry: $commandRegistry,
+                    permissionStore: $permissionStore,
                 ),
                 $world,
                 new FixedRateWorldLoop($world, new SystemSimulationClock()),
@@ -184,6 +190,8 @@ final class ServerBootstrap
                 playerPersistence: $playerPersistence,
                 playerAutosaveIntervalTicks: $config->playersAutosaveIntervalTicks,
                 playerAutosaveBudget: $config->playersSavePerTick,
+                commandRegistry: $commandRegistry,
+                permissionStore: $permissionStore,
             );
         } catch (Throwable $exception) {
             $discovery?->close();

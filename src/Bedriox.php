@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Bedriox\Server;
 
 use Bedriox\Api\Plugin\PluginContext;
+use Bedriox\Server\Command\BuiltinCommandRegistrar;
 use Bedriox\Server\Observability\CrashContextProvider;
 use Bedriox\Server\Observability\CrashContextPublisher;
 use Bedriox\Server\Observability\CrashHandler;
@@ -12,6 +13,7 @@ use Bedriox\Server\Observability\CrashReporter;
 use Bedriox\Server\Observability\MutableCrashContextProvider;
 use Bedriox\Server\Observability\RotatingFileLog;
 use Bedriox\Server\Observability\ServerLogger;
+use Bedriox\Server\Permission\PermissionStore;
 use Bedriox\Server\Plugin\Command\ConsoleCommandDriver;
 use Bedriox\Server\Plugin\Command\NullConsoleInput;
 use Bedriox\Server\Plugin\Command\OwnedCommandRegistrar;
@@ -105,6 +107,8 @@ final class Bedriox
             $logger->info('Starting ' . $this->displayName());
             $logger->info(sprintf('Loading world "%s" using %s generator', $config->levelName, $config->levelGenerator));
             $composition = new PluginComposition();
+            $stop = false;
+            $permissionStore = new PermissionStore($workingDirectory . DIRECTORY_SEPARATOR . 'permissions.json');
             $pluginHost = new PluginHost(
                 $workingDirectory . DIRECTORY_SEPARATOR . 'plugins',
                 $workingDirectory . DIRECTORY_SEPARATOR . 'plugin_data',
@@ -141,6 +145,14 @@ final class Bedriox
                     : null,
             );
             $composition->host = $pluginHost;
+            (new BuiltinCommandRegistrar(
+                $pluginHost->commands(),
+                $permissionStore,
+                static fn(): array => $composition->server?->runtime->onlinePlayers() ?? [],
+                static function () use (&$stop): void {
+                    $stop = true;
+                },
+            ))->register();
             $server = (new ServerBootstrap(
                 new PersistentWorldFactory($workingDirectory),
                 playerDataDirectory: $workingDirectory . DIRECTORY_SEPARATOR . 'player_data',
@@ -150,6 +162,8 @@ final class Bedriox
                 $diagnostics,
                 $this->crashContextProvider instanceof CrashContextPublisher ? $this->crashContextProvider : null,
                 new PluginGameplayEventBridge($pluginHost->events()),
+                $pluginHost->commands(),
+                $permissionStore,
             );
             $composition->server = $server;
             $logger->info(sprintf(
@@ -161,7 +175,6 @@ final class Bedriox
                 $logger->warning($server->securityWarning);
             }
             $logger->info(sprintf('Listening on %s:%d', $server->localAddress, $server->localPort));
-            $stop = false;
             if (function_exists('pcntl_async_signals') && function_exists('pcntl_signal')) {
                 pcntl_async_signals(true);
                 foreach (['SIGINT', 'SIGTERM'] as $name) {

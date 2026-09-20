@@ -17,6 +17,9 @@ use Bedriox\Protocol\Packet\BlockPosition;
 use Bedriox\Protocol\Packet\ChatPacket;
 use Bedriox\Protocol\Packet\ChunkRadiusUpdatedPacket;
 use Bedriox\Protocol\Packet\ClientCacheStatusPacket;
+use Bedriox\Protocol\Packet\CommandOrigin;
+use Bedriox\Protocol\Packet\CommandOriginType;
+use Bedriox\Protocol\Packet\CommandRequestPacket;
 use Bedriox\Protocol\Packet\ContainerClosePacket;
 use Bedriox\Protocol\Packet\ContainerOpenPacket;
 use Bedriox\Protocol\Packet\ContainerType;
@@ -98,6 +101,9 @@ final class BedrockPlayChannel
 
     /** @var SplQueue<WorldCommand> */
     private SplQueue $commands;
+
+    /** @var SplQueue<CommandRequestPacket> */
+    private SplQueue $playerCommands;
 
     /** @var SplQueue<Packet> */
     private SplQueue $pendingBootstrapPackets;
@@ -187,6 +193,7 @@ final class BedrockPlayChannel
         $this->authoritativeZ = $spawnZ;
         $this->outgoing = new SplQueue();
         $this->commands = new SplQueue();
+        $this->playerCommands = new SplQueue();
         $this->pendingBootstrapPackets = new SplQueue();
         $this->pendingStreamingResponses = new SplQueue();
         $this->generatedChunks = new SplQueue();
@@ -369,6 +376,16 @@ final class BedrockPlayChannel
         return $values;
     }
 
+    /** @return list<CommandRequestPacket> */
+    public function drainPlayerCommands(): array
+    {
+        $values = [];
+        while (!$this->playerCommands->isEmpty()) {
+            $values[] = $this->playerCommands->dequeue();
+        }
+        return $values;
+    }
+
     public function takeSpawnAcknowledged(): bool
     {
         $acknowledged = $this->spawnAcknowledged;
@@ -458,6 +475,7 @@ final class BedrockPlayChannel
         $this->closed = true;
         $this->outgoing = new SplQueue();
         $this->commands = new SplQueue();
+        $this->playerCommands = new SplQueue();
         $this->pendingBootstrapPackets = new SplQueue();
         $this->pendingStreamingResponses = new SplQueue();
         $this->generatedChunks = new SplQueue();
@@ -500,6 +518,19 @@ final class BedrockPlayChannel
 
     private function handle(Packet $packet): bool
     {
+        if ($packet instanceof CommandRequestPacket) {
+            if (!$this->initialized || $packet->internal || $packet->origin->type !== CommandOriginType::Player
+                || $this->playerCommands->count() >= $this->limits->maximumCommandsPerPayload) {
+                return false;
+            }
+            $this->playerCommands->enqueue(new CommandRequestPacket(
+                $packet->command,
+                new CommandOrigin(CommandOriginType::Player, $this->login->identity, $packet->origin->requestId),
+                false,
+                $packet->version,
+            ));
+            return true;
+        }
         if ($packet instanceof MovementPredictionSyncPacket) {
             $this->diagnostics->record('play.movement_prediction_sync.protocol_trace', [
                 'advisory_consumed' => true,
