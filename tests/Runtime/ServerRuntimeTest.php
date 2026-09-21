@@ -49,6 +49,7 @@ use Bedriox\Protocol\Packet\ServerToClientHandshakePacket;
 use Bedriox\Protocol\Packet\SetLocalPlayerAsInitializedPacket;
 use Bedriox\Protocol\Packet\SubChunkRequestPacket;
 use Bedriox\Protocol\Packet\SwapItemStackRequestAction;
+use Bedriox\Protocol\Packet\TextPacket;
 use Bedriox\Protocol\Packet\UpdateAbilitiesPacket;
 use Bedriox\Protocol\Packet\VoxelShapesPacket;
 use Bedriox\Protocol\ProtocolVersion;
@@ -83,6 +84,7 @@ use Bedriox\Server\Plugin\PluginRuntimeControl;
 use Bedriox\Server\Runtime\BedrockPlayChannelFactory;
 use Bedriox\Server\Runtime\DirectedPacket;
 use Bedriox\Server\Runtime\LoginChannelFactory;
+use Bedriox\Server\Runtime\PlayerConnectionDirectory;
 use Bedriox\Server\Runtime\PlayInitializationFactory;
 use Bedriox\Server\Runtime\RuntimeDiagnostics;
 use Bedriox\Server\Runtime\RuntimeLimits;
@@ -121,6 +123,51 @@ use Throwable;
 
 final class ServerRuntimeTest extends TestCase
 {
+    public function testPlayerConnectionQueuesAndImmediatelyFlushesTypedPackets(): void
+    {
+        $transport = new FakeConnectedTransport();
+        $clock = new RuntimeTestClock();
+        $world = new WorldSimulation();
+        $loginFactory = new RuntimeLoginFactory();
+        $connections = new PlayerConnectionDirectory();
+        $runtime = new ServerRuntime(
+            $transport,
+            $loginFactory,
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $world,
+            new FixedRateWorldLoop($world, $clock),
+            new RecordingEventEncoder(),
+            playerConnections: $connections,
+        );
+        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $this->advanceToInitializing($runtime, $transport, $info, $loginFactory);
+        $decryptor = $loginFactory->clientDecryptor();
+        $this->decodeEncryptedPackets($transport->sent, $decryptor);
+        $transport->sent = [];
+        $connection = $connections->connection('00000000-0000-0000-0000-000000000001');
+
+        self::assertTrue($connection->isConnected());
+        self::assertTrue($connection->sendPacket(TextPacket::tip('queued')));
+        self::assertSame([], $transport->sent);
+        self::assertTrue($runtime->poll());
+        $queued = $this->decodeEncryptedPackets($transport->sent, $decryptor);
+        self::assertCount(1, $queued);
+        self::assertInstanceOf(TextPacket::class, $queued[0]);
+        self::assertSame('queued', $queued[0]->message);
+
+        $transport->sent = [];
+        self::assertTrue($connection->sendPacket(TextPacket::popup('immediate'), immediate: true));
+        $immediate = $this->decodeEncryptedPackets($transport->sent, $decryptor);
+        self::assertCount(1, $immediate);
+        self::assertInstanceOf(TextPacket::class, $immediate[0]);
+        self::assertSame('immediate', $immediate[0]->message);
+
+        $transport->events[] = new SessionClosedEvent($info, SessionCloseReason::RemoteDisconnect);
+        self::assertTrue($runtime->poll());
+        self::assertFalse($connection->isConnected());
+        self::assertFalse($connection->sendPacket(TextPacket::tip('offline')));
+    }
+
     public function testFullLoginTransfersCipherThenJoinsOnlyAfterInitializationAck(): void
     {
         $transport = new FakeConnectedTransport();
@@ -1100,6 +1147,8 @@ final class ServerRuntimeTest extends TestCase
                     $packets[] = AvailableCommandsPacket::decode($frame->payload);
                 } elseif ($frame->header->packetId === PacketIds::COMMAND_OUTPUT) {
                     $packets[] = CommandOutputPacket::decode($frame->payload);
+                } elseif ($frame->header->packetId === PacketIds::TEXT) {
+                    $packets[] = BedrockPacketCodec::decode($frame->header->packetId, $frame->payload);
                 }
             }
         }

@@ -6,6 +6,7 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Added
 
+- Add complete current-protocol text, title, action-bar, popup, tip, toast, and translated-message player APIs plus a trusted typed `PlayerConnection::sendPacket()` escape hatch with normal and immediate delivery modes.
 - Add modern authoritative PvP motion composition with exact client-tick projection, grounded and airborne vertical behavior, sprint-hit reconciliation, localized player/fall/generic death chat, and independently customizable death-screen messages.
 - Add a bounded public `TranslatableMessage` value and a single mutable `PlayerDeathEvent` carrying the victim, optional killer, cause, final incoming damage, and nullable chat/screen presentation.
 - Add server-authoritative player-versus-player combat with a single `pvp` setting, PMMP-aligned reach, hurt cooldown and knockback, typed plugin attack events, and visibility-scoped health, animation, motion, death, and respawn synchronization.

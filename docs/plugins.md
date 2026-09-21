@@ -1,6 +1,6 @@
 # Plugins
 
-Bedriox API `0.1` is an experimental, in-process PHP plugin API. Plugins are trusted PHP programs: the API avoids handing them transport, packet, registry, queue, or mutable simulation objects, but it is not an operating-system sandbox.
+Bedriox API `0.1` is an experimental, in-process PHP plugin API. Plugins are trusted PHP programs. Stable gameplay APIs avoid transport, registry, queue, and mutable simulation objects, while an explicit typed packet escape hatch is available for current-version protocol features. Plugins never receive raw sockets, encryption state, or transport ownership, and the runtime is not an operating-system sandbox.
 
 ## Installation and packaging
 
@@ -81,6 +81,34 @@ Cancellable pre-events cover join, movement, chat, player attacks, damage, block
 Blocks and items use canonical identifiers such as `minecraft:grass_block`; process-local numeric IDs never enter the public API. The current flat-world preview exposes `minecraft:air`, `minecraft:bedrock`, `minecraft:dirt`, and `minecraft:grass_block`. Inventory writes currently support `minecraft:grass_block` or an empty slot.
 
 The [ExamplePlugin repository](https://github.com/Bedriox/ExamplePlugin) contains a complete minimal project. API `0.1` is a preview contract and may make documented breaking changes before `1.0`.
+
+### Player display and packet API
+
+A connected `Player` exposes high-level presentation methods for ordinary messages, translated messages, popups, jukebox popups, tips, titles, subtitles, action bars, title timing, title clearing/resetting, and toast notifications. Title timing uses `TitleTimes` in ticks. `sendTitle()` follows the retail-compatible order: timing, optional subtitle, then title. Ordinary strings use Bedrock's raw-text presentation, matching PocketMine-MP; `TranslatableMessage` uses the translation variant.
+
+```php
+use Bedriox\Api\Player\TitleTimes;
+
+$player->sendMessage('Welcome to Bedriox');
+$player->sendPopup('Now entering spawn');
+$player->sendTip('Use /help for commands');
+$player->sendTitle('Welcome', 'Have fun', new TitleTimes(10, 70, 20));
+$player->sendActionBar('Ready');
+$player->sendToast('Achievement', 'You found the server');
+```
+
+For protocol features without a high-level method, trusted plugins may send any typed packet supported by the installed `bedriox/protocol` version:
+
+```php
+use Bedriox\Protocol\Packet\TextPacket;
+
+$player->connection()->sendPacket(TextPacket::announcement('Server restart soon'));
+$player->connection()->sendPacket(TextPacket::tip('Sent now'), immediate: true);
+```
+
+Normal sends join the connection's bounded output queue and flush during the next runtime poll. `immediate: true` flushes the current connection queue before returning; it does not bypass packet encoding, encryption, queue limits, or connection checks. Both forms return `false` when the player is no longer connected or the packet cannot be queued.
+
+Direct packet access is deliberately version-specific. A plugin using it is responsible for sending a packet valid for the current client phase and for supporting every normal reply or follow-up packet its custom conversation can trigger. Prefer the high-level `Player` and server APIs for gameplay state: a clientbound packet does not mutate the authoritative world, inventory, health, position, or permissions.
 
 ## Commands
 

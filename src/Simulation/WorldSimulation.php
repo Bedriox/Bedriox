@@ -165,7 +165,7 @@ final class WorldSimulation
         $candidate->movement->yaw = $bootstrap->yaw;
         $candidate->movement->headYaw = $bootstrap->yaw;
         $candidate->movement->pitch = $bootstrap->pitch;
-        $decision = $this->pluginEvents?->login(PluginGameplayEventBridge::playerView($candidate));
+        $decision = $this->pluginEvents?->login($this->pluginEvents->playerView($candidate));
         if ($decision !== null && !$decision->allowed) {
             return null;
         }
@@ -373,7 +373,8 @@ final class WorldSimulation
         foreach ($this->players->snapshots() as $snapshot) {
             $player = $this->players->player($snapshot->sessionId);
             if ($player !== null) {
-                $views[] = PluginGameplayEventBridge::playerView($player);
+                $views[] = $this->pluginEvents?->playerView($player)
+                    ?? PluginGameplayEventBridge::detachedPlayerView($player);
             }
         }
 
@@ -384,7 +385,8 @@ final class WorldSimulation
     {
         $player = $this->players->playerByIdentity($identity);
 
-        return $player === null ? null : PluginGameplayEventBridge::playerView($player);
+        return $player === null ? null : ($this->pluginEvents?->playerView($player)
+            ?? PluginGameplayEventBridge::detachedPlayerView($player));
     }
 
     public function enqueuePluginMessage(string $identity, string $message): bool

@@ -30,7 +30,7 @@ $approvedProduction = [
     ],
     'bedriox/protocol' => [
         'version' => '0.1.0-alpha.1',
-        'reference' => '1cfc6fa05dbdcf7ba3209e6ae4ac207bb9a95b3d',
+        'reference' => 'ade9b6764d194b6e759d2453ead8f6ec5f42278e',
         'license' => 'GPL-3.0-only',
     ],
     'bedriox/data' => [

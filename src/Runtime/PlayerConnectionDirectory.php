@@ -1,0 +1,53 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Bedriox\Server\Runtime;
+
+use Bedriox\Api\Player\PlayerConnection;
+use Bedriox\Protocol\Packet\Packet;
+use Closure;
+
+/** @internal Binds immutable public player handles to the current runtime session without exposing it. */
+final class PlayerConnectionDirectory
+{
+    /** @var array<string, array{session: string, connected: Closure(): bool, send: Closure(Packet, bool): bool}> */
+    private array $connections = [];
+
+    /**
+     * @param Closure(): bool             $connected
+     * @param Closure(Packet, bool): bool $send
+     */
+    public function connect(string $identity, string $sessionId, Closure $connected, Closure $send): void
+    {
+        $this->connections[self::key($identity)] = [
+            'session' => $sessionId,
+            'connected' => $connected,
+            'send' => $send,
+        ];
+    }
+
+    public function disconnect(string $identity, string $sessionId): void
+    {
+        $key = self::key($identity);
+        if (($this->connections[$key]['session'] ?? null) === $sessionId) {
+            unset($this->connections[$key]);
+        }
+    }
+
+    public function connection(string $identity): PlayerConnection
+    {
+        $key = self::key($identity);
+
+        return new PlayerConnection(
+            fn(): bool => isset($this->connections[$key]) && ($this->connections[$key]['connected'])(),
+            fn(Packet $packet, bool $immediate): bool => isset($this->connections[$key])
+                && ($this->connections[$key]['send'])($packet, $immediate),
+        );
+    }
+
+    private static function key(string $identity): string
+    {
+        return strtolower($identity);
+    }
+}

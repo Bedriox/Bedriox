@@ -28,6 +28,7 @@ use Bedriox\Api\Event\Player\PlayerRespawnEvent;
 use Bedriox\Api\Inventory\Inventory as ApiInventory;
 use Bedriox\Api\Inventory\ItemStack as ApiItemStack;
 use Bedriox\Api\Player\Player as ApiPlayer;
+use Bedriox\Api\Player\PlayerConnection;
 use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\Block as ApiBlock;
 use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
@@ -38,11 +39,22 @@ use Bedriox\Server\Player\PlayerInventory;
 use Bedriox\Server\Player\PlayerVitals;
 use Bedriox\Server\Plugin\Event\EventDispatcher;
 use Bedriox\Server\World\BlockPosition;
+use Closure;
 
 /** Projects authoritative simulation state into the capability-limited public event API. */
 final readonly class PluginGameplayEventBridge
 {
-    public function __construct(private EventDispatcher $events) {}
+    /** @param null|Closure(string): PlayerConnection $playerConnections */
+    public function __construct(
+        private EventDispatcher $events,
+        private ?Closure $playerConnections = null,
+    ) {}
+
+    /** @param Closure(string): PlayerConnection $playerConnections */
+    public function withPlayerConnections(Closure $playerConnections): self
+    {
+        return new self($this->events, $playerConnections);
+    }
 
     public function allowJoin(string $name, string $uuid): bool
     {
@@ -54,7 +66,7 @@ final readonly class PluginGameplayEventBridge
 
     public function joined(Player $player): void
     {
-        $this->events->dispatch(new PlayerJoinEvent(self::playerView($player)));
+        $this->events->dispatch(new PlayerJoinEvent($this->playerView($player)));
     }
 
     public function login(ApiPlayer $player): PlayerLoginDecision
@@ -73,13 +85,13 @@ final readonly class PluginGameplayEventBridge
 
     public function quit(Player $player): void
     {
-        $this->events->dispatch(new PlayerQuitEvent(self::playerView($player)));
+        $this->events->dispatch(new PlayerQuitEvent($this->playerView($player)));
     }
 
     public function allowMove(Player $player, Position $target): bool
     {
         $event = new PlayerMoveEvent(
-            self::playerView($player),
+            $this->playerView($player),
             self::position($player->movement->position),
             self::position($target),
         );
@@ -90,12 +102,12 @@ final readonly class PluginGameplayEventBridge
 
     public function moved(Player $player): void
     {
-        $this->events->dispatch(new PlayerMovedEvent(self::playerView($player)));
+        $this->events->dispatch(new PlayerMovedEvent($this->playerView($player)));
     }
 
     public function damage(Player $player, DamageCause $cause, float $damage): ?float
     {
-        $event = new PlayerDamageEvent(self::playerView($player), $cause->value, $damage);
+        $event = new PlayerDamageEvent($this->playerView($player), $cause->value, $damage);
         $this->events->dispatch($event);
 
         return $event->isCancelled() ? null : $event->damage();
@@ -103,12 +115,12 @@ final readonly class PluginGameplayEventBridge
 
     public function damaged(Player $player, DamageCause $cause, float $damage): void
     {
-        $this->events->dispatch(new PlayerDamagedEvent(self::playerView($player), $cause->value, $damage));
+        $this->events->dispatch(new PlayerDamagedEvent($this->playerView($player), $cause->value, $damage));
     }
 
     public function attack(Player $attacker, Player $target, float $damage): ?float
     {
-        $event = new PlayerAttackEvent(self::playerView($attacker), self::playerView($target), $damage);
+        $event = new PlayerAttackEvent($this->playerView($attacker), $this->playerView($target), $damage);
         $this->events->dispatch($event);
 
         return $event->isCancelled() ? null : $event->damage();
@@ -117,8 +129,8 @@ final readonly class PluginGameplayEventBridge
     public function attacked(Player $attacker, Player $target, float $damage): void
     {
         $this->events->dispatch(new PlayerAttackedEvent(
-            self::playerView($attacker),
-            self::playerView($target),
+            $this->playerView($attacker),
+            $this->playerView($target),
             $damage,
         ));
     }
@@ -132,11 +144,11 @@ final readonly class PluginGameplayEventBridge
         string|TranslatableMessage|null $deathScreenMessage,
     ): DeathPresentation {
         $event = new PlayerDeathEvent(
-            self::playerView($player),
+            $this->playerView($player),
             $cause->value,
             $damage,
             true,
-            $killer === null ? null : self::playerView($killer),
+            $killer === null ? null : $this->playerView($killer),
             $deathMessage,
             $deathScreenMessage,
         );
@@ -147,7 +159,7 @@ final readonly class PluginGameplayEventBridge
 
     public function respawn(Player $player, Position $position): Position
     {
-        $event = new PlayerRespawnEvent(self::playerView($player), self::position($position));
+        $event = new PlayerRespawnEvent($this->playerView($player), self::position($position));
         $this->events->dispatch($event);
         $destination = $event->position();
 
@@ -156,12 +168,12 @@ final readonly class PluginGameplayEventBridge
 
     public function respawned(Player $player): void
     {
-        $this->events->dispatch(new PlayerRespawnedEvent(self::playerView($player)));
+        $this->events->dispatch(new PlayerRespawnedEvent($this->playerView($player)));
     }
 
     public function chat(Player $player, string $message): ?string
     {
-        $event = new PlayerChatEvent(self::playerView($player), $message);
+        $event = new PlayerChatEvent($this->playerView($player), $message);
         $this->events->dispatch($event);
 
         return $event->isCancelled() ? null : $event->message();
@@ -169,12 +181,12 @@ final readonly class PluginGameplayEventBridge
 
     public function chatBroadcast(Player $player, string $message): void
     {
-        $this->events->dispatch(new PlayerChatBroadcastEvent(self::playerView($player), $message));
+        $this->events->dispatch(new PlayerChatBroadcastEvent($this->playerView($player), $message));
     }
 
     public function allowBlockBreak(Player $player, BlockPosition $position, string $identifier): bool
     {
-        $event = new BlockBreakEvent(self::playerView($player), self::block($position, $identifier));
+        $event = new BlockBreakEvent($this->playerView($player), self::block($position, $identifier));
         $this->events->dispatch($event);
 
         return !$event->isCancelled();
@@ -182,12 +194,12 @@ final readonly class PluginGameplayEventBridge
 
     public function blockBroken(Player $player, BlockPosition $position, string $identifier): void
     {
-        $this->events->dispatch(new BlockBrokenEvent(self::playerView($player), self::block($position, $identifier)));
+        $this->events->dispatch(new BlockBrokenEvent($this->playerView($player), self::block($position, $identifier)));
     }
 
     public function allowBlockPlace(Player $player, BlockPosition $position, string $identifier): bool
     {
-        $event = new BlockPlaceEvent(self::playerView($player), self::block($position, $identifier));
+        $event = new BlockPlaceEvent($this->playerView($player), self::block($position, $identifier));
         $this->events->dispatch($event);
 
         return !$event->isCancelled();
@@ -195,12 +207,12 @@ final readonly class PluginGameplayEventBridge
 
     public function blockPlaced(Player $player, BlockPosition $position, string $identifier): void
     {
-        $this->events->dispatch(new BlockPlacedEvent(self::playerView($player), self::block($position, $identifier)));
+        $this->events->dispatch(new BlockPlacedEvent($this->playerView($player), self::block($position, $identifier)));
     }
 
     public function allowInventoryChange(Player $player, PlayerInventory $before, PlayerInventory $after): bool
     {
-        $event = new InventoryChangeEvent(self::playerView($player, $before), self::inventory($before), self::inventory($after));
+        $event = new InventoryChangeEvent($this->playerView($player, $before), self::inventory($before), self::inventory($after));
         $this->events->dispatch($event);
 
         return !$event->isCancelled();
@@ -209,13 +221,13 @@ final readonly class PluginGameplayEventBridge
     public function inventoryChanged(Player $player, PlayerInventory $before): void
     {
         $this->events->dispatch(new InventoryChangedEvent(
-            self::playerView($player),
+            $this->playerView($player),
             self::inventory($before),
             self::inventory($player->inventory),
         ));
     }
 
-    public static function playerView(Player $player, ?PlayerInventory $inventory = null): ApiPlayer
+    public function playerView(Player $player, ?PlayerInventory $inventory = null): ApiPlayer
     {
         $snapshot = $player->snapshot();
 
@@ -231,6 +243,29 @@ final readonly class PluginGameplayEventBridge
             $player->vitals->health,
             PlayerVitals::MAX_HEALTH,
             $player->vitals->isAlive(),
+            $this->playerConnections === null
+                ? PlayerConnection::disconnected()
+                : ($this->playerConnections)($snapshot->identity),
+        );
+    }
+
+    public static function detachedPlayerView(Player $player, ?PlayerInventory $inventory = null): ApiPlayer
+    {
+        $snapshot = $player->snapshot();
+
+        return new ApiPlayer(
+            $snapshot->displayName,
+            $snapshot->identity,
+            self::position($snapshot->position),
+            $snapshot->yaw,
+            $snapshot->pitch,
+            $snapshot->sneaking,
+            $snapshot->sprinting,
+            self::inventory($inventory ?? $player->inventory),
+            $player->vitals->health,
+            PlayerVitals::MAX_HEALTH,
+            $player->vitals->isAlive(),
+            PlayerConnection::disconnected(),
         );
     }
 

@@ -86,6 +86,8 @@ final class ServerBootstrap
             preloadedChunkRadius: $config->spawnRadius,
             maximumStreamingPacketsPerPoll: $config->chunksSendPerTick,
         );
+        $playerConnections = new PlayerConnectionDirectory();
+        $pluginEvents = $pluginEvents?->withPlayerConnections($playerConnections->connection(...));
         $simulationLimits = new SimulationLimits(
             ticksPerSecond: $config->ticksPerSecond,
             maximumPlayers: $config->maximumPlayers,
@@ -193,6 +195,7 @@ final class ServerBootstrap
                 playerAutosaveBudget: $config->playersSavePerTick,
                 commandRegistry: $commandRegistry,
                 permissionStore: $permissionStore,
+                playerConnections: $playerConnections,
             );
         } catch (Throwable $exception) {
             $discovery?->close();

@@ -8,6 +8,7 @@ use Bedriox\Api\Command\CommandResult;
 use Bedriox\Protocol\Packet\CommandOutputMessage;
 use Bedriox\Protocol\Packet\CommandOutputPacket;
 use Bedriox\Protocol\Packet\CommandOutputType;
+use Bedriox\Protocol\Packet\Packet;
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\RakNet\Connected\ConnectedPayloadEvent;
 use Bedriox\RakNet\Protocol\Reliability;
@@ -67,6 +68,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
     private readonly SimulationCommandFactory $commands;
     private readonly RuntimeDiagnostics $diagnostics;
     private readonly PlayerActorVisibilityRegistry $actorVisibility;
+    private readonly PlayerConnectionDirectory $playerConnections;
     private ?Throwable $failure = null;
     private ?string $involvedSessionId = null;
     private bool $autosaveActive = false;
@@ -91,6 +93,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         private readonly int $playerAutosaveBudget = 8,
         private readonly ?CommandRegistry $commandRegistry = null,
         private readonly ?PermissionStore $permissionStore = null,
+        ?PlayerConnectionDirectory $playerConnections = null,
     ) {
         if ($this->autosaveIntervalTicks < 1 || $this->autosaveChunkBudget < 1
             || $this->playerAutosaveIntervalTicks < 1 || $this->playerAutosaveBudget < 1) {
@@ -99,6 +102,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         $this->commands = $commands ?? new SimulationCommandFactory();
         $this->diagnostics = $diagnostics ?? RuntimeDiagnostics::disabled();
         $this->actorVisibility = new PlayerActorVisibilityRegistry($this->limits->maximumSessions);
+        $this->playerConnections = $playerConnections ?? new PlayerConnectionDirectory();
     }
 
     public function __destruct()
@@ -738,6 +742,21 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
             $play = $this->playChannels->create($ready, $session->id, $session->runtimeEntityId, $bootstrap);
             $session->bootstrap = $bootstrap;
             $session->promote($play);
+            $identity = $bootstrap?->identity->uuid ?? $ready->login->identity;
+            $this->playerConnections->connect(
+                $identity,
+                $session->id,
+                fn(): bool => isset($this->sessions[$key])
+                    && $this->sessions[$key] === $session
+                    && $session->play !== null
+                    && $session->phase !== SessionPhase::CLOSING,
+                fn(Packet $packet, bool $immediate): bool => $this->sendPlayerPacket(
+                    $key,
+                    $session,
+                    $packet,
+                    $immediate,
+                ),
+            );
             $this->flush($key, $session);
         } catch (Throwable $exception) {
             $this->diagnostics->record('play.channel_creation_failed', ['exception' => $exception::class]);
@@ -784,6 +803,19 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         $session->phase = SessionPhase::ADMISSION_PENDING;
 
         return true;
+    }
+
+    private function sendPlayerPacket(string $key, RuntimeSession $session, Packet $packet, bool $immediate): bool
+    {
+        if (($this->sessions[$key] ?? null) !== $session || $session->play === null
+            || $session->phase === SessionPhase::CLOSING || !$session->play->queuePacket($packet)) {
+            return false;
+        }
+        if ($immediate) {
+            $this->flush($key, $session);
+        }
+
+        return ($this->sessions[$key] ?? null) === $session;
     }
 
     private function flush(string $key, RuntimeSession $session): void
@@ -840,6 +872,10 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         $session = $this->sessions[$key] ?? null;
         if (!$session instanceof RuntimeSession) {
             return;
+        }
+        $identity = $session->bootstrap?->identity->uuid ?? $session->play?->login()->identity;
+        if ($identity !== null) {
+            $this->playerConnections->disconnect($identity, $session->id);
         }
         unset($this->sessions[$key], $this->sessionEndpoints[$session->id]);
         if ($session->joined || $session->phase === SessionPhase::ADMISSION_PENDING) {
