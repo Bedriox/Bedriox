@@ -24,6 +24,7 @@ use Bedriox\Protocol\Packet\CommandRequestPacket;
 use Bedriox\Protocol\Packet\ContainerClosePacket;
 use Bedriox\Protocol\Packet\ContainerOpenPacket;
 use Bedriox\Protocol\Packet\CorrectPlayerMovePredictionPacket;
+use Bedriox\Protocol\Packet\DeathInfoPacket;
 use Bedriox\Protocol\Packet\EmoteFlag;
 use Bedriox\Protocol\Packet\EmoteListPacket;
 use Bedriox\Protocol\Packet\EmotePacket;
@@ -69,10 +70,12 @@ use Bedriox\Protocol\Packet\RequestChunkRadiusPacket;
 use Bedriox\Protocol\Packet\RespawnPacket;
 use Bedriox\Protocol\Packet\RespawnState;
 use Bedriox\Protocol\Packet\ServerSettingsRequestPacket;
+use Bedriox\Protocol\Packet\SetActorMotionPacket;
 use Bedriox\Protocol\Packet\SetLocalPlayerAsInitializedPacket;
 use Bedriox\Protocol\Packet\SetPlayerInventoryOptionsPacket;
 use Bedriox\Protocol\Packet\SubChunkRequestPacket;
 use Bedriox\Protocol\Packet\TakeItemStackRequestAction;
+use Bedriox\Protocol\Packet\TranslatedTextPacket;
 use Bedriox\Protocol\Packet\UpdateAbilitiesPacket;
 use Bedriox\Protocol\Packet\VoxelShapesPacket;
 use Bedriox\Protocol\Security\OpenSslEphemeralKeyFactory;
@@ -963,6 +966,43 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertInstanceOf(AttackPlayer::class, $commands[0]);
         self::assertSame(22, $commands[0]->targetRuntimeActorId);
         self::assertSame(0, $commands[0]->hotbarSlot);
+        self::assertFalse($channel->isClosed());
+    }
+
+    public function testEncryptedCombatProjectionCarriesMotionTickAndLocalizedDeathText(): void
+    {
+        [$channel, $client, $server, $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $channel->drainOutgoing();
+
+        $motion = new SetActorMotionPacket(
+            UnsignedLong::fromInt(22),
+            0.25,
+            0.4,
+            -0.25,
+            new UnsignedLong(0x80000000, 25),
+        );
+        $death = new TranslatedTextPacket('death.attack.player', ['Target', 'Attacker']);
+        self::assertTrue($channel->queuePacket($motion));
+        self::assertTrue($channel->queuePacket($death));
+
+        $outgoing = $channel->drainOutgoing();
+        self::assertCount(2, $outgoing);
+        $decoded = array_map(
+            fn($payload): Packet => $this->decode($server->decryptEnvelope($payload->payload)),
+            $outgoing,
+        );
+        self::assertInstanceOf(SetActorMotionPacket::class, $decoded[0]);
+        self::assertEquals($motion->runtimeEntityId, $decoded[0]->runtimeEntityId);
+        self::assertEqualsWithDelta($motion->motionX, $decoded[0]->motionX, 0.000_001);
+        self::assertEqualsWithDelta($motion->motionY, $decoded[0]->motionY, 0.000_001);
+        self::assertEqualsWithDelta($motion->motionZ, $decoded[0]->motionZ, 0.000_001);
+        self::assertEquals($motion->tick, $decoded[0]->tick);
+        self::assertEquals($death, $decoded[1]);
         self::assertFalse($channel->isClosed());
     }
 
@@ -2146,6 +2186,15 @@ final class BedrockPlayChannelTest extends TestCase
             Reliability::ReliableOrdered,
             0,
         )));
+        $channel->drainOutgoing();
+        $searching = new RespawnPacket(0.0, 64.0, 0.0, RespawnState::ServerSearching, $entityId);
+        $suppressedScreen = new DeathInfoPacket('', []);
+        self::assertTrue($channel->queuePacket($searching));
+        self::assertTrue($channel->queuePacket($suppressedScreen));
+        $deathOutput = $channel->drainOutgoing();
+        self::assertCount(2, $deathOutput);
+        self::assertEquals($searching, $this->decode($server->decryptEnvelope($deathOutput[0]->payload)));
+        self::assertEquals($suppressedScreen, $this->decode($server->decryptEnvelope($deathOutput[1]->payload)));
         self::assertTrue($channel->accept(new ConnectedPayloadEvent(
             $client->encryptEnvelope($this->encode([
                 new RespawnPacket(100.0, -20.0, 100.0, RespawnState::ClientReady, UnsignedLong::fromInt(0)),

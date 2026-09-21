@@ -89,16 +89,21 @@ use Bedriox\Server\Runtime\RuntimeLimits;
 use Bedriox\Server\Runtime\RuntimeSession;
 use Bedriox\Server\Runtime\ServerRuntime;
 use Bedriox\Server\Runtime\WorldEventPacketEncoder;
+use Bedriox\Server\Simulation\ClientInputTick;
 use Bedriox\Server\Simulation\Event\ChatBroadcast;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
+use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
+use Bedriox\Server\Simulation\Event\PlayerMotionChanged;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
 use Bedriox\Server\Simulation\Event\WorldEvent;
 use Bedriox\Server\Simulation\FixedRateWorldLoop;
+use Bedriox\Server\Simulation\MovementMode;
 use Bedriox\Server\Simulation\PlayerSnapshot;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\Simulation\SimulationClock;
+use Bedriox\Server\Simulation\VerticalState;
 use Bedriox\Server\Simulation\WorldSimulation;
 use Bedriox\Server\Tests\World\InMemoryWorldProvider;
 use Bedriox\Server\Transport\ConnectedTransport;
@@ -619,6 +624,43 @@ final class ServerRuntimeTest extends TestCase
         self::assertSame(1, $runtime->sessionCount());
         self::assertContains(['127.0.0.1', 20_001], $transport->removed);
         self::assertNotContains(['127.0.0.1', 20_002], $transport->removed);
+    }
+
+    public function testCombatMotionEventsRetainTheAttackingSessionAsFailureOwner(): void
+    {
+        $transport = new FakeConnectedTransport();
+        $world = new WorldSimulation();
+        $runtime = new ServerRuntime(
+            $transport,
+            new RuntimeLoginFactory(),
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $world,
+            new FixedRateWorldLoop($world, new RuntimeTestClock()),
+            new RecordingEventEncoder(),
+        );
+        $player = new PlayerSnapshot(
+            'target',
+            'identity-target',
+            'Target',
+            new Position(0.0, 64.0, 0.0),
+            0.0,
+            0.0,
+            MovementMode::STOPPED,
+            1,
+            VerticalState::GROUNDED,
+            0.0,
+            2,
+        );
+        $tick = ClientInputTick::fromInt(42);
+        $events = [
+            new PlayerKnockedBack('attacker', $player, 0.0, 0.4, 0.4, $tick, ['target']),
+            new PlayerMotionChanged('attacker', $player, 0.0, 0.0, 0.0, $tick, true, ['attacker']),
+        ];
+        $owner = new \ReflectionMethod(ServerRuntime::class, 'eventOwnerSessionId');
+
+        foreach ($events as $event) {
+            self::assertSame('attacker', $owner->invoke($runtime, $event));
+        }
     }
 
     public function testTopLevelPollFailureIsLoggedWithoutItsMessage(): void

@@ -28,6 +28,7 @@ use Bedriox\Api\Event\Player\PlayerRespawnEvent;
 use Bedriox\Api\Inventory\Inventory as ApiInventory;
 use Bedriox\Api\Inventory\ItemStack as ApiItemStack;
 use Bedriox\Api\Player\Player as ApiPlayer;
+use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\Block as ApiBlock;
 use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
 use Bedriox\Api\World\Position as ApiPosition;
@@ -122,9 +123,26 @@ final readonly class PluginGameplayEventBridge
         ));
     }
 
-    public function died(Player $player, DamageCause $cause): void
-    {
-        $this->events->dispatch(new PlayerDeathEvent(self::playerView($player), $cause->value));
+    public function death(
+        Player $player,
+        DamageCause $cause,
+        float $damage,
+        ?Player $killer,
+        string|TranslatableMessage|null $deathMessage,
+        string|TranslatableMessage|null $deathScreenMessage,
+    ): DeathPresentation {
+        $event = new PlayerDeathEvent(
+            self::playerView($player),
+            $cause->value,
+            $damage,
+            true,
+            $killer === null ? null : self::playerView($killer),
+            $deathMessage,
+            $deathScreenMessage,
+        );
+        $this->events->dispatch($event);
+
+        return new DeathPresentation($event->deathMessage(), $event->deathScreenMessage());
     }
 
     public function respawn(Player $player, Position $position): Position

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
+use Bedriox\Api\TranslatableMessage;
 use Bedriox\Protocol\Packet\AbilityLayer;
 use Bedriox\Protocol\Packet\ActorEventPacket;
 use Bedriox\Protocol\Packet\ActorEventType;
@@ -45,6 +46,8 @@ use Bedriox\Protocol\Packet\RespawnPacket;
 use Bedriox\Protocol\Packet\RespawnState;
 use Bedriox\Protocol\Packet\SetActorDataPacket;
 use Bedriox\Protocol\Packet\SetActorMotionPacket;
+use Bedriox\Protocol\Packet\SystemTextPacket;
+use Bedriox\Protocol\Packet\TranslatedTextPacket;
 use Bedriox\Protocol\Packet\UpdateAttributesPacket;
 use Bedriox\Protocol\Packet\UpdateBlockFlag;
 use Bedriox\Protocol\Packet\UpdateBlockPacket;
@@ -69,6 +72,7 @@ use Bedriox\Server\Simulation\Event\PlayerDied;
 use Bedriox\Server\Simulation\Event\PlayerDisconnected;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
 use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
+use Bedriox\Server\Simulation\Event\PlayerMotionChanged;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
 use Bedriox\Server\Simulation\Event\PlayerRespawned;
 use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
@@ -129,10 +133,12 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
                         $event->motionX,
                         $event->motionY,
                         $event->motionZ,
+                        new UnsignedLong($event->clientTick->high, $event->clientTick->low),
                     ),
                 ),
                 $event->recipientSessionIds,
             ),
+            $event instanceof PlayerMotionChanged => $this->motionChanged($event),
             $event instanceof PlayerDied => $this->died($event),
             $event instanceof PlayerRespawned => $this->respawned($event),
             $event instanceof RespawnAcknowledged => [new DirectedPacket(
@@ -162,6 +168,35 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
     }
 
     /** @return list<DirectedPacket> */
+    private function motionChanged(PlayerMotionChanged $event): array
+    {
+        $motion = new SetActorMotionPacket(
+            UnsignedLong::fromInt($event->player->runtimeActorId),
+            $event->motionX,
+            $event->motionY,
+            $event->motionZ,
+            new UnsignedLong($event->clientTick->high, $event->clientTick->low),
+        );
+        $packets = [];
+        foreach ($event->recipientSessionIds as $recipient) {
+            $packets[] = new DirectedPacket($recipient, $motion);
+            if ($event->postureChanged) {
+                $packets[] = new DirectedPacket(
+                    $recipient,
+                    SetActorDataPacket::playerPosture(
+                        UnsignedLong::fromInt($event->player->runtimeActorId),
+                        new UnsignedLong($event->clientTick->high, $event->clientTick->low),
+                        $event->player->sneaking,
+                        $event->player->sprinting,
+                    ),
+                );
+            }
+        }
+
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
     private function died(PlayerDied $event): array
     {
         $animation = new ActorEventPacket(
@@ -169,20 +204,29 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
             ActorEventType::Death,
         );
         $packets = [];
-        foreach ($event->recipientSessionIds as $recipient) {
+        foreach ($event->animationRecipientSessionIds as $recipient) {
             $packets[] = new DirectedPacket($recipient, $animation);
         }
         $packets[] = new DirectedPacket(
             $event->player->sessionId,
             $this->respawnPacket($event->player, RespawnState::ServerSearching),
         );
-        $message = $event->cause === \Bedriox\Server\Simulation\DamageCause::Fall
-            ? 'death.fell.accident.generic'
-            : 'death.attack.generic';
+        $screen = $event->deathScreenMessage;
         $packets[] = new DirectedPacket(
             $event->player->sessionId,
-            new DeathInfoPacket($message, [$event->player->displayName]),
+            new DeathInfoPacket(
+                $screen instanceof TranslatableMessage ? $screen->key : ($screen ?? ''),
+                $screen instanceof TranslatableMessage ? $screen->parameters : [],
+            ),
         );
+        if ($event->deathMessage !== null) {
+            $message = $event->deathMessage instanceof TranslatableMessage
+                ? new TranslatedTextPacket($event->deathMessage->key, $event->deathMessage->parameters)
+                : new SystemTextPacket($event->deathMessage);
+            foreach ($event->messageRecipientSessionIds as $recipient) {
+                $packets[] = new DirectedPacket($recipient, $message);
+            }
+        }
 
         return $packets;
     }

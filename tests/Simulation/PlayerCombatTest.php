@@ -4,11 +4,15 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Simulation;
 
+use Bedriox\Api\TranslatableMessage;
+use Bedriox\Server\Simulation\ClientInputTick;
 use Bedriox\Server\Simulation\Command\AttackPlayer;
+use Bedriox\Server\Simulation\DamageCause;
 use Bedriox\Server\Simulation\Event\CommandRejected;
 use Bedriox\Server\Simulation\Event\PlayerDamaged;
 use Bedriox\Server\Simulation\Event\PlayerDied;
 use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
+use Bedriox\Server\Simulation\Event\PlayerMotionChanged;
 use Bedriox\Server\Simulation\MovementMode;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
 use Bedriox\Server\Simulation\WorldSimulation;
@@ -33,6 +37,117 @@ final class PlayerCombatTest extends TestCase
         self::assertSame(0.4, $events[1]->motionY);
         self::assertSame(0.4, $events[1]->motionZ);
         self::assertSame(19.0, $world->snapshot()->players[1]->health);
+    }
+
+    public function testKnockbackComposesAcceptedMotionAndPreservesTheExactClientTick(): void
+    {
+        [$world, $factory] = self::twoPlayers();
+        $world->enqueue($factory->move(
+            session: 'two',
+            sequence: 3,
+            x: 0.0,
+            y: 64.0,
+            z: 2.1,
+            yaw: 180.0,
+            pitch: 0.0,
+            mode: MovementMode::WALKING,
+            deltaX: 0.2,
+            deltaY: 0.0,
+            deltaZ: -0.2,
+            clientTick: new ClientInputTick(0x80000000, 25),
+        ));
+        $world->tick();
+
+        $world->enqueue($factory->attack('one', 2, 0));
+        $events = $world->tick()->events;
+
+        self::assertInstanceOf(PlayerKnockedBack::class, $events[1]);
+        self::assertEqualsWithDelta(0.0, $events[1]->motionX, 0.000_001);
+        self::assertEqualsWithDelta(0.45, $events[1]->motionZ, 0.000_001);
+        self::assertSame(0.4, $events[1]->motionY);
+        self::assertSame(0x80000000, $events[1]->clientTick->high);
+        self::assertSame(25, $events[1]->clientTick->low);
+    }
+
+    public function testKnockbackNormalizesDiagonalAndUsesFacingForCoincidentPlayers(): void
+    {
+        $factory = new SimulationCommandFactory();
+        $diagonal = new WorldSimulation();
+        $diagonal->enqueue($factory->join('one', 'diagonal-one', 'One', 1));
+        $diagonal->enqueue($factory->join('two', 'diagonal-two', 'Two', 2));
+        $diagonal->tick();
+        $diagonal->enqueue($factory->move('two', 1, 2.0, 64.0, 2.0, 180.0, 0.0, MovementMode::WALKING));
+        $diagonal->tick();
+        $diagonal->enqueue($factory->move('two', 2, 2.0, 64.0, 2.0, 180.0, 0.0, MovementMode::STOPPED));
+        $diagonal->tick();
+        $diagonal->enqueue($factory->attack('one', 2, 0));
+        $diagonalEvents = $diagonal->tick()->events;
+        self::assertInstanceOf(PlayerKnockedBack::class, $diagonalEvents[1]);
+        self::assertEqualsWithDelta(0.2828427, $diagonalEvents[1]->motionX, 0.000_001);
+        self::assertEqualsWithDelta(0.2828427, $diagonalEvents[1]->motionZ, 0.000_001);
+
+        $coincident = new WorldSimulation();
+        $coincident->enqueue($factory->join('one', 'coincident-one', 'One', 1));
+        $coincident->enqueue($factory->join('two', 'coincident-two', 'Two', 2));
+        $coincident->tick();
+        $coincident->enqueue($factory->attack('one', 2, 0));
+        $coincidentEvents = $coincident->tick()->events;
+        self::assertInstanceOf(PlayerKnockedBack::class, $coincidentEvents[1]);
+        self::assertSame(0.0, $coincidentEvents[1]->motionX);
+        self::assertSame(0.4, $coincidentEvents[1]->motionZ);
+    }
+
+    public function testAirborneKnockbackPreservesVerticalVelocity(): void
+    {
+        [$world, $factory] = self::twoPlayers();
+        $world->enqueue($factory->move(
+            session: 'two',
+            sequence: 3,
+            x: 0.0,
+            y: 64.2,
+            z: 2.0,
+            yaw: 180.0,
+            pitch: 0.0,
+            mode: MovementMode::JUMPING,
+            deltaY: 0.1,
+            jumpRequested: true,
+        ));
+        $world->tick();
+
+        $world->enqueue($factory->attack('one', 2, 0));
+        $events = $world->tick()->events;
+
+        self::assertInstanceOf(PlayerKnockedBack::class, $events[1]);
+        self::assertEqualsWithDelta(0.2, $events[1]->motionY, 0.000_001);
+    }
+
+    public function testSprintAttackStopsAndReconcilesTheAttacker(): void
+    {
+        [$world, $factory] = self::twoPlayers();
+        $world->enqueue($factory->move(
+            session: 'one',
+            sequence: 1,
+            x: 0.2,
+            y: 64.0,
+            z: 0.0,
+            yaw: 0.0,
+            pitch: 0.0,
+            mode: MovementMode::SPRINTING,
+            deltaX: -1.0,
+            sprinting: true,
+            clientTick: ClientInputTick::fromInt(77),
+        ));
+        $world->tick();
+
+        $world->enqueue($factory->attack('one', 2, 0));
+        $events = $world->tick()->events;
+
+        self::assertCount(3, $events);
+        self::assertInstanceOf(PlayerKnockedBack::class, $events[1]);
+        self::assertInstanceOf(PlayerMotionChanged::class, $events[2]);
+        self::assertEqualsWithDelta(0.04, $events[2]->motionX, 0.000_001);
+        self::assertFalse($events[2]->player->sprinting);
+        self::assertSame(77, $events[2]->clientTick->low);
     }
 
     public function testCombatRejectsDisabledSelfUnknownOutOfReachAndRepeatedAttacks(): void
@@ -84,6 +199,10 @@ final class PlayerCombatTest extends TestCase
                 self::assertInstanceOf(PlayerDamaged::class, $events[0]);
                 self::assertInstanceOf(PlayerKnockedBack::class, $events[1]);
                 self::assertInstanceOf(PlayerDied::class, $events[2]);
+                self::assertSame('identity-one', $events[2]->killer?->identity);
+                self::assertInstanceOf(TranslatableMessage::class, $events[2]->deathMessage);
+                self::assertSame('death.attack.player', $events[2]->deathMessage->key);
+                self::assertSame(['Two', 'One'], $events[2]->deathMessage->parameters);
                 break;
             }
             for ($tick = 0; $tick < 10; ++$tick) {
@@ -91,6 +210,27 @@ final class PlayerCombatTest extends TestCase
             }
         }
         self::assertFalse($world->snapshot()->players[1]->alive);
+    }
+
+    public function testFallDeathMessageUsesTheFinalIncomingDamageThreshold(): void
+    {
+        $factory = new SimulationCommandFactory();
+        foreach ([[1.0, 'death.attack.fall'], [5.0, 'death.fell.accident.generic']] as [$fatalDamage, $expectedKey]) {
+            $world = new WorldSimulation();
+            $world->enqueue($factory->join('one', 'fall-' . $expectedKey, 'One'));
+            $world->tick();
+            $world->enqueue($factory->damage('one', 19.0));
+            $world->tick();
+            for ($tick = 0; $tick < 10; ++$tick) {
+                $world->tick();
+            }
+            $world->enqueue($factory->damage('one', $fatalDamage, DamageCause::Fall));
+            $events = $world->tick()->events;
+
+            self::assertInstanceOf(PlayerDied::class, $events[1]);
+            self::assertInstanceOf(TranslatableMessage::class, $events[1]->deathMessage);
+            self::assertSame($expectedKey, $events[1]->deathMessage->key);
+        }
     }
 
     public function testAttackCommandValidationRejectsWireDomainLeaks(): void
@@ -112,6 +252,8 @@ final class PlayerCombatTest extends TestCase
         $world->enqueue($factory->join('two', 'identity-two', 'Two', 2));
         $world->tick();
         $world->enqueue($factory->move('two', 1, 0.0, 64.0, 2.0, 180.0, 0.0, MovementMode::WALKING));
+        $world->tick();
+        $world->enqueue($factory->move('two', 2, 0.0, 64.0, 2.0, 180.0, 0.0, MovementMode::STOPPED));
         $world->tick();
 
         return [$world, $factory];

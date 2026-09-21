@@ -21,7 +21,7 @@
         "protocol": {
             "package": "bedriox/protocol",
             "version": "0.1.0-alpha.1",
-            "commit": "9bc6a73c8e96a87545e0f1fc903565884d90cfd3"
+            "commit": "1cfc6fa05dbdcf7ba3209e6ae4ac207bb9a95b3d"
         },
         "data": {
             "package": "bedriox/data",

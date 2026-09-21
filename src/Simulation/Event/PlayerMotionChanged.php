@@ -7,7 +7,8 @@ namespace Bedriox\Server\Simulation\Event;
 use Bedriox\Server\Simulation\ClientInputTick;
 use Bedriox\Server\Simulation\PlayerSnapshot;
 
-final readonly class PlayerKnockedBack implements WorldEvent
+/** Authoritative velocity/posture reconciliation not caused by client movement. */
+final readonly class PlayerMotionChanged implements WorldEvent
 {
     /** @param list<string> $recipientSessionIds */
     public function __construct(
@@ -17,6 +18,7 @@ final readonly class PlayerKnockedBack implements WorldEvent
         public float $motionY,
         public float $motionZ,
         public ClientInputTick $clientTick,
+        public bool $postureChanged,
         public array $recipientSessionIds,
     ) {}
 

@@ -7,6 +7,7 @@ namespace Bedriox\Server\Tests\Simulation;
 use Bedriox\Api\Event\Block\BlockBreakEvent;
 use Bedriox\Api\Event\Block\BlockBrokenEvent;
 use Bedriox\Api\Event\Block\BlockPlaceEvent;
+use Bedriox\Api\Event\EventPriority;
 use Bedriox\Api\Event\Inventory\InventoryChangedEvent;
 use Bedriox\Api\Event\Inventory\InventoryChangeEvent;
 use Bedriox\Api\Event\Player\PlayerAttackedEvent;
@@ -25,6 +26,7 @@ use Bedriox\Api\Event\Player\PlayerRespawnEvent;
 use Bedriox\Api\Inventory\Inventory as ApiInventory;
 use Bedriox\Api\Player\Player as ApiPlayer;
 use Bedriox\Api\Player\PlayerInteractionType;
+use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Player\InventoryStack;
@@ -43,6 +45,7 @@ use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
 use Bedriox\Server\Simulation\Event\MovementCorrected;
 use Bedriox\Server\Simulation\Event\PlayerDamaged;
+use Bedriox\Server\Simulation\Event\PlayerDied;
 use Bedriox\Server\Simulation\Event\PlayerRespawned;
 use Bedriox\Server\Simulation\MovementMode;
 use Bedriox\Server\Simulation\PluginGameplayEventBridge;
@@ -57,6 +60,7 @@ use Bedriox\Server\World\FlatWorldGenerator;
 use Bedriox\Server\World\World;
 use Bedriox\Server\World\WorldMetadata;
 use PHPUnit\Framework\TestCase;
+use RuntimeException;
 use Throwable;
 
 final class PluginGameplayEventBridgeTest extends TestCase
@@ -396,9 +400,19 @@ final class PluginGameplayEventBridgeTest extends TestCase
     {
         [$dispatcher, $bridge] = self::bridge();
         $deathHealth = null;
+        $deathCause = null;
+        $deathDamage = null;
+        $deathMessage = null;
         $respawnHealth = null;
-        $dispatcher->register('Example', PlayerDeathEvent::class, static function (PlayerDeathEvent $event) use (&$deathHealth): void {
+        $dispatcher->register('Example', PlayerDeathEvent::class, static function (PlayerDeathEvent $event) use (&$deathHealth, &$deathCause, &$deathDamage, &$deathMessage): void {
             $deathHealth = $event->player->health;
+            $deathCause = $event->cause;
+            $deathDamage = $event->damage;
+            self::assertNull($event->killer);
+            self::assertInstanceOf(TranslatableMessage::class, $event->deathMessage());
+            $event->setDeathMessage('One died while testing');
+            $event->setDeathScreenMessage(null);
+            $deathMessage = $event->deathMessage();
         });
         $dispatcher->register('Example', PlayerRespawnEvent::class, static function (PlayerRespawnEvent $event): void {
             $event->setPosition(new ApiPosition(2.0, 64.0, 3.0));
@@ -410,15 +424,77 @@ final class PluginGameplayEventBridgeTest extends TestCase
         $simulation->enqueue($factory->join('one', 'identity-one', 'One'));
         $simulation->tick();
         $simulation->enqueue($factory->damage('one', 20.0));
-        $simulation->tick();
+        $deathEvents = $simulation->tick()->events;
 
         self::assertSame(0.0, $deathHealth);
+        self::assertSame('plugin', $deathCause);
+        self::assertSame(20.0, $deathDamage);
+        self::assertSame('One died while testing', $deathMessage);
+        self::assertInstanceOf(PlayerDied::class, $deathEvents[1]);
+        self::assertSame('One died while testing', $deathEvents[1]->deathMessage);
+        self::assertNull($deathEvents[1]->deathScreenMessage);
         $simulation->enqueue($factory->respawn('one'));
         $event = $simulation->tick()->events[0];
         self::assertInstanceOf(PlayerRespawned::class, $event);
         self::assertSame(2.0, $event->player->position->x);
         self::assertSame(3.0, $event->player->position->z);
         self::assertSame(20.0, $respawnHealth);
+    }
+
+    public function testFaultyDeathListenerRestoresBothMessagesBeforeLaterListeners(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $observedChat = null;
+        $observedScreen = null;
+        $dispatcher->register('Example', PlayerDeathEvent::class, static function (PlayerDeathEvent $event): void {
+            $event->setDeathMessage('broken chat');
+            $event->setDeathScreenMessage('broken screen');
+            throw new RuntimeException('listener failed');
+        }, EventPriority::LOW);
+        $dispatcher->register('Example', PlayerDeathEvent::class, static function (PlayerDeathEvent $event) use (&$observedChat, &$observedScreen): void {
+            $observedChat = $event->deathMessage();
+            $observedScreen = $event->deathScreenMessage();
+        }, EventPriority::HIGH);
+        [$simulation, $factory] = self::simulation($bridge);
+        $simulation->enqueue($factory->join('one', 'identity-one', 'One'));
+        $simulation->tick();
+        $simulation->enqueue($factory->damage('one', 20.0));
+
+        $events = $simulation->tick()->events;
+
+        self::assertInstanceOf(TranslatableMessage::class, $observedChat);
+        self::assertSame('death.attack.generic', $observedChat->key);
+        self::assertInstanceOf(TranslatableMessage::class, $observedScreen);
+        self::assertSame('death.attack.generic', $observedScreen->key);
+        self::assertInstanceOf(PlayerDied::class, $events[1]);
+        self::assertEquals($observedChat, $events[1]->deathMessage);
+        self::assertEquals($observedScreen, $events[1]->deathScreenMessage);
+    }
+
+    public function testPvpDeathReportsFinalIncomingDamageAndKiller(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $deathDamage = null;
+        $killerIdentity = null;
+        $dispatcher->register('Example', PlayerAttackEvent::class, static function (PlayerAttackEvent $event): void {
+            $event->setDamage(100.0);
+        });
+        $dispatcher->register('Example', PlayerDeathEvent::class, static function (PlayerDeathEvent $event) use (&$deathDamage, &$killerIdentity): void {
+            $deathDamage = $event->damage;
+            $killerIdentity = $event->killer?->uuid;
+        });
+        [$simulation, $factory] = self::simulation($bridge);
+        $simulation->enqueue($factory->join('one', 'identity-one', 'One', 1));
+        $simulation->enqueue($factory->join('two', 'identity-two', 'Two', 2));
+        $simulation->tick();
+        $simulation->enqueue($factory->move('two', 1, 0.0, 64.0, 2.0, 180.0, 0.0, MovementMode::WALKING));
+        $simulation->tick();
+        $simulation->enqueue($factory->attack('one', 2, 0));
+
+        $simulation->tick();
+
+        self::assertSame(100.0, $deathDamage);
+        self::assertSame('identity-one', $killerIdentity);
     }
 
     /** @return array{EventDispatcher, PluginGameplayEventBridge} */

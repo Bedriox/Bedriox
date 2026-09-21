@@ -980,7 +980,7 @@ final class WorldSimulationTest extends TestCase
         $jumped = $world->snapshot()->players[0];
         self::assertSame(VerticalState::AIRBORNE, $jumped->verticalState);
         self::assertEqualsWithDelta(64.42, $jumped->position->y, 0.000001);
-        self::assertEqualsWithDelta(0.34, $jumped->verticalVelocity, 0.000001);
+        self::assertEqualsWithDelta(0.42, $jumped->verticalVelocity, 0.000001);
 
         $world->tick();
         self::assertEqualsWithDelta(64.42, $world->snapshot()->players[0]->position->y, 0.000001);
@@ -1070,7 +1070,7 @@ final class WorldSimulationTest extends TestCase
         $world->tick();
         $player = $world->snapshot()->players[0];
         self::assertEqualsWithDelta(64.76, $player->position->y, 0.000001);
-        self::assertEqualsWithDelta(0.26, $player->verticalVelocity, 0.000001);
+        self::assertEqualsWithDelta(0.34, $player->verticalVelocity, 0.000001);
     }
 
     public function testFallingPlayerLandsWithoutPenetratingFlatTerrain(): void

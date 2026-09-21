@@ -38,6 +38,7 @@ use Bedriox\Server\Simulation\Event\PlayerDied;
 use Bedriox\Server\Simulation\Event\PlayerDisconnected;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
 use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
+use Bedriox\Server\Simulation\Event\PlayerMotionChanged;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
 use Bedriox\Server\Simulation\Event\PlayerRespawned;
 use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
@@ -355,10 +356,29 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                         );
                     } elseif ($event instanceof PlayerKnockedBack) {
                         $event = new PlayerKnockedBack(
+                            $event->ownerSessionId,
                             $event->player,
                             $event->motionX,
                             $event->motionY,
                             $event->motionZ,
+                            $event->clientTick,
+                            array_values(array_unique([
+                                $event->player->sessionId,
+                                ...array_intersect(
+                                    $event->recipientSessionIds,
+                                    $this->actorVisibility->viewersOf($event->player->sessionId),
+                                ),
+                            ])),
+                        );
+                    } elseif ($event instanceof PlayerMotionChanged) {
+                        $event = new PlayerMotionChanged(
+                            $event->ownerSessionId,
+                            $event->player,
+                            $event->motionX,
+                            $event->motionY,
+                            $event->motionZ,
+                            $event->clientTick,
+                            $event->postureChanged,
                             array_values(array_unique([
                                 $event->player->sessionId,
                                 ...array_intersect(
@@ -371,13 +391,17 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                         $event = new PlayerDied(
                             $event->player,
                             $event->cause,
+                            $event->killer,
+                            $event->deathMessage,
+                            $event->deathScreenMessage,
                             array_values(array_unique([
                                 $event->player->sessionId,
                                 ...array_intersect(
-                                    $event->recipientSessionIds,
+                                    $event->animationRecipientSessionIds,
                                     $this->actorVisibility->viewersOf($event->player->sessionId),
                                 ),
                             ])),
+                            $event->messageRecipientSessionIds,
                         );
                     }
                     if ($event instanceof PlayerDisconnected) {
@@ -960,6 +984,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
             $event instanceof PlayerDisconnected => $event->sessionId,
             $event instanceof PlayerBecameHidden => $event->playerSessionId,
             $event instanceof PlayerBecameVisible => $event->player->sessionId,
+            $event instanceof PlayerKnockedBack, $event instanceof PlayerMotionChanged => $event->ownerSessionId,
             $event instanceof PlayerJoined, $event instanceof PlayerMoved, $event instanceof PlayerDamaged,
             $event instanceof PlayerDied, $event instanceof PlayerRespawned, $event instanceof RespawnAcknowledged => $event->player->sessionId,
             default => null,

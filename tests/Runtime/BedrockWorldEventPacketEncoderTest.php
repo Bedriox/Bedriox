@@ -100,7 +100,15 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
             true,
         );
 
-        $packets = $encoder->encode(new PlayerKnockedBack($player, 0.0, 0.4, 0.4, ['target', 'viewer']), []);
+        $packets = $encoder->encode(new PlayerKnockedBack(
+            'attacker',
+            $player,
+            0.0,
+            0.4,
+            0.4,
+            new ClientInputTick(0x80000000, 42),
+            ['target', 'viewer'],
+        ), []);
 
         self::assertCount(2, $packets);
         self::assertSame(['target', 'viewer'], array_map(static fn($packet): string => $packet->sessionId, $packets));
@@ -108,6 +116,10 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         self::assertSame(22, $packets[0]->packet->runtimeEntityId->low);
         self::assertSame(0.4, $packets[0]->packet->motionY);
         self::assertSame(0.4, $packets[0]->packet->motionZ);
+        self::assertSame(0x80000000, $packets[0]->packet->tick->high);
+        self::assertSame(42, $packets[0]->packet->tick->low);
+        self::assertEquals($packets[0]->packet, $packets[1]->packet);
+        self::assertSame('1600000000cdcccc3ecdcccc3eaa808080808080808001', bin2hex($packets[0]->packet->encode()));
     }
 
     public function testAuthoritativeBlockEventsProjectOrderedCrackAndUpdatePackets(): void

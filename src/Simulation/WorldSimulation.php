@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Simulation;
 
+use Bedriox\Api\TranslatableMessage;
 use Bedriox\Server\Player\InventoryContainer;
 use Bedriox\Server\Player\InventoryResponseMode;
 use Bedriox\Server\Player\InventorySlotReference;
@@ -49,6 +50,7 @@ use Bedriox\Server\Simulation\Event\PlayerDied;
 use Bedriox\Server\Simulation\Event\PlayerDisconnected;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
 use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
+use Bedriox\Server\Simulation\Event\PlayerMotionChanged;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
 use Bedriox\Server\Simulation\Event\PlayerRespawned;
 use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
@@ -541,6 +543,8 @@ final class WorldSimulation
             return new CommandRejected($command->session, 'stale_sequence');
         }
         $movement->sequence = $command->sequence;
+        $movement->clientTick = $command->clientTick;
+        $previousPosition = $movement->position;
         if ($movement->budgetTick !== $this->tick) {
             $movement->budgetTick = $this->tick;
             $movement->distanceThisTick = 0.0;
@@ -605,7 +609,9 @@ final class WorldSimulation
         if ($this->pluginEvents !== null && !$this->pluginEvents->allowMove($player, $position)) {
             return new MovementCorrected($player->snapshot(), 'plugin_cancelled', clientTick: $command->clientTick);
         }
-        $verticalDistance = $position->y - $movement->position->y;
+        $velocityX = ($position->x - $previousPosition->x) / $elapsed;
+        $verticalDistance = $position->y - $previousPosition->y;
+        $velocityZ = ($position->z - $previousPosition->z) / $elapsed;
         $movement->position = $position;
         $movement->yaw = $command->yaw;
         $movement->headYaw = $command->headYaw ?? $command->yaw;
@@ -614,7 +620,9 @@ final class WorldSimulation
         $movement->sneaking = $sneaking;
         $movement->sprinting = $sprinting;
         $movement->verticalState = $grounded ? VerticalState::GROUNDED : VerticalState::AIRBORNE;
-        $movement->verticalVelocity = $grounded || $collidedVertically ? 0.0 : $command->deltaY;
+        $movement->velocityX = $velocityX;
+        $movement->verticalVelocity = $grounded || $collidedVertically ? 0.0 : $verticalDistance / $elapsed;
+        $movement->velocityZ = $velocityZ;
         $movement->distanceThisTick += $distance;
         $movement->lastTick = $this->tick;
         $player->markDirty();
@@ -677,12 +685,7 @@ final class WorldSimulation
         $this->pluginEvents?->damaged($player, $command->cause, $applied);
         if (!$player->vitals->isAlive()) {
             $player->movement->fallDistance = 0.0;
-            $this->pluginEvents?->died($player, $command->cause);
-            $this->deferredEvents[] = new PlayerDied(
-                $player->snapshot(),
-                $command->cause,
-                $this->players->recipients(),
-            );
+            $this->deferredEvents[] = $this->deathEvent($player, $command->cause, $damage);
         }
 
         return new PlayerDamaged($player->snapshot(), $applied, $command->cause, $this->players->recipients());
@@ -718,29 +721,72 @@ final class WorldSimulation
         $applied = min($damage, $target->vitals->health);
         $target->vitals->health -= $applied;
         $target->vitals->invulnerableUntilTick = $this->tick + CombatRules::DAMAGE_IMMUNITY_TICKS;
-        [$motionX, $motionZ] = $this->knockbackDirection($attacker, $target);
-        $target->movement->verticalVelocity = CombatRules::KNOCKBACK_VERTICAL_LIMIT;
-        $target->movement->verticalState = VerticalState::AIRBORNE;
+        [$directionX, $directionZ] = $this->knockbackDirection($attacker, $target);
+        $movement = $target->movement;
+        $wasGrounded = $movement->verticalState === VerticalState::GROUNDED;
+        [$motionX, $motionY, $motionZ] = self::composeKnockback(
+            $movement->velocityX,
+            $movement->verticalVelocity,
+            $movement->velocityZ,
+            $directionX,
+            $directionZ,
+            CombatRules::KNOCKBACK_FORCE,
+            $wasGrounded,
+        );
+        $sprintingAttack = $attacker->movement->sprinting;
+        if ($sprintingAttack) {
+            [$motionX, $motionY, $motionZ] = self::composeKnockback(
+                $motionX,
+                $motionY,
+                $motionZ,
+                $directionX,
+                $directionZ,
+                CombatRules::KNOCKBACK_FORCE * CombatRules::SPRINT_KNOCKBACK_STRENGTH,
+                false,
+            );
+        }
+        $movement->velocityX = $motionX;
+        $movement->verticalVelocity = $motionY;
+        $movement->velocityZ = $motionZ;
+        if ($motionY > 0.0) {
+            $movement->verticalState = VerticalState::AIRBORNE;
+        }
         $target->movement->jumpAuthorizedUntilTick = $this->tick + CombatRules::DAMAGE_IMMUNITY_TICKS;
         $target->markDirty();
 
         $this->pluginEvents?->damaged($target, DamageCause::Attack, $applied);
         $this->pluginEvents?->attacked($attacker, $target, $applied);
         $this->deferredEvents[] = new PlayerKnockedBack(
+            $attacker->sessionId,
             $target->snapshot(),
             $motionX,
-            CombatRules::KNOCKBACK_VERTICAL_LIMIT,
+            $motionY,
             $motionZ,
+            $movement->clientTick,
             $this->players->recipients(),
         );
-        if (!$target->vitals->isAlive()) {
-            $target->movement->fallDistance = 0.0;
-            $this->pluginEvents?->died($target, DamageCause::Attack);
-            $this->deferredEvents[] = new PlayerDied(
-                $target->snapshot(),
-                DamageCause::Attack,
+        if ($sprintingAttack) {
+            $attacker->movement->velocityX *= CombatRules::SPRINT_ATTACKER_DAMPING;
+            $attacker->movement->velocityZ *= CombatRules::SPRINT_ATTACKER_DAMPING;
+            $attacker->movement->sprinting = false;
+            if ($attacker->movement->mode === MovementMode::SPRINTING) {
+                $attacker->movement->mode = MovementMode::WALKING;
+            }
+            $attacker->markDirty();
+            $this->deferredEvents[] = new PlayerMotionChanged(
+                $attacker->sessionId,
+                $attacker->snapshot(),
+                $attacker->movement->velocityX,
+                $attacker->movement->verticalVelocity,
+                $attacker->movement->velocityZ,
+                $attacker->movement->clientTick,
+                true,
                 $this->players->recipients(),
             );
+        }
+        if (!$target->vitals->isAlive()) {
+            $target->movement->fallDistance = 0.0;
+            $this->deferredEvents[] = $this->deathEvent($target, DamageCause::Attack, $damage, $attacker);
         }
 
         return new PlayerDamaged(
@@ -774,6 +820,57 @@ final class WorldSimulation
         return $forward >= -(sqrt(3.0) / 2.0);
     }
 
+    /** @return array{float, float, float} */
+    private static function composeKnockback(
+        float $motionX,
+        float $motionY,
+        float $motionZ,
+        float $directionX,
+        float $directionZ,
+        float $force,
+        bool $grounded,
+    ): array {
+        return [
+            ($motionX / 2.0) + ($directionX * $force),
+            $grounded ? min(CombatRules::KNOCKBACK_VERTICAL_LIMIT, ($motionY / 2.0) + $force) : $motionY,
+            ($motionZ / 2.0) + ($directionZ * $force),
+        ];
+    }
+
+    private function deathEvent(
+        Player $player,
+        DamageCause $cause,
+        float $damage,
+        ?Player $killer = null,
+    ): PlayerDied {
+        $player->movement->velocityX = 0.0;
+        $player->movement->verticalVelocity = 0.0;
+        $player->movement->velocityZ = 0.0;
+        $message = match ($cause) {
+            DamageCause::Attack => new TranslatableMessage(
+                'death.attack.player',
+                [$player->identity->displayName, $killer?->identity->displayName ?? $player->identity->displayName],
+            ),
+            DamageCause::Fall => new TranslatableMessage(
+                $damage > 2.0 ? 'death.fell.accident.generic' : 'death.attack.fall',
+                [$player->identity->displayName],
+            ),
+            DamageCause::Plugin => new TranslatableMessage('death.attack.generic', [$player->identity->displayName]),
+        };
+        $presentation = $this->pluginEvents?->death($player, $cause, $damage, $killer, $message, $message)
+            ?? new DeathPresentation($message, $message);
+
+        return new PlayerDied(
+            $player->snapshot(),
+            $cause,
+            $killer?->snapshot(),
+            $presentation->deathMessage,
+            $presentation->deathScreenMessage,
+            $this->players->recipients(),
+            $this->players->recipients(),
+        );
+    }
+
     /** @return array{float, float} */
     private function knockbackDirection(Player $attacker, Player $target): array
     {
@@ -788,8 +885,8 @@ final class WorldSimulation
         }
 
         return [
-            ($deltaX / $length) * CombatRules::KNOCKBACK_FORCE,
-            ($deltaZ / $length) * CombatRules::KNOCKBACK_FORCE,
+            $deltaX / $length,
+            $deltaZ / $length,
         ];
     }
 
@@ -807,7 +904,9 @@ final class WorldSimulation
         $player->movement->yaw = 0.0;
         $player->movement->headYaw = 0.0;
         $player->movement->pitch = 0.0;
+        $player->movement->velocityX = 0.0;
         $player->movement->verticalVelocity = 0.0;
+        $player->movement->velocityZ = 0.0;
         $player->movement->fallDistance = 0.0;
         $player->movement->verticalState = $this->collisionResolver?->isGrounded($position) === false
             ? VerticalState::AIRBORNE
@@ -1491,7 +1590,9 @@ final class WorldSimulation
         }
         $player->movement->position = $command->position;
         $player->movement->mode = MovementMode::STOPPED;
+        $player->movement->velocityX = 0.0;
         $player->movement->verticalVelocity = 0.0;
+        $player->movement->velocityZ = 0.0;
         $player->movement->fallDistance = 0.0;
         $player->movement->jumpAuthorizedUntilTick = -1;
         $player->movement->lastTick = $this->tick;

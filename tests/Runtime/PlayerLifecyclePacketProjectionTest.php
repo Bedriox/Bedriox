@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Runtime;
 
+use Bedriox\Api\TranslatableMessage;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Packet\ActorEventPacket;
 use Bedriox\Protocol\Packet\ActorEventType;
@@ -14,6 +15,8 @@ use Bedriox\Protocol\Packet\MoveActorAbsolutePacket;
 use Bedriox\Protocol\Packet\MovePlayerPacket;
 use Bedriox\Protocol\Packet\RespawnPacket;
 use Bedriox\Protocol\Packet\RespawnState;
+use Bedriox\Protocol\Packet\SystemTextPacket;
+use Bedriox\Protocol\Packet\TranslatedTextPacket;
 use Bedriox\Protocol\Packet\UpdateAttributesPacket;
 use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Runtime\BedrockInventoryPacketProjector;
@@ -48,8 +51,17 @@ final class PlayerLifecyclePacketProjectionTest extends TestCase
         self::assertSame(ActorEventType::Hurt, $damage[2]->packet->event);
 
         $dead = self::snapshot(0.0, false);
-        $death = $encoder->encode(new PlayerDied($dead, DamageCause::Fall, ['one', 'two']), []);
-        self::assertCount(4, $death);
+        $message = new TranslatableMessage('death.fell.accident.generic', ['Player']);
+        $death = $encoder->encode(new PlayerDied(
+            $dead,
+            DamageCause::Fall,
+            null,
+            $message,
+            $message,
+            ['one', 'two'],
+            ['one', 'two'],
+        ), []);
+        self::assertCount(6, $death);
         self::assertInstanceOf(ActorEventPacket::class, $death[0]->packet);
         self::assertSame(ActorEventType::Death, $death[0]->packet->event);
         self::assertInstanceOf(RespawnPacket::class, $death[2]->packet);
@@ -57,6 +69,9 @@ final class PlayerLifecyclePacketProjectionTest extends TestCase
         self::assertInstanceOf(DeathInfoPacket::class, $death[3]->packet);
         self::assertSame('death.fell.accident.generic', $death[3]->packet->message);
         self::assertSame(['Player'], $death[3]->packet->parameters);
+        self::assertInstanceOf(TranslatedTextPacket::class, $death[4]->packet);
+        self::assertSame('death.fell.accident.generic', $death[4]->packet->message);
+        self::assertEquals($death[4]->packet, $death[5]->packet);
 
         $ready = $encoder->encode(new RespawnAcknowledged($dead), []);
         self::assertCount(1, $ready);
@@ -95,6 +110,46 @@ final class PlayerLifecyclePacketProjectionTest extends TestCase
         self::assertInstanceOf(InventoryContentPacket::class, $packets[5]->packet);
         self::assertCount(36, $packets[5]->packet->items);
         self::assertInstanceOf(MobEquipmentPacket::class, $packets[6]->packet);
+    }
+
+    public function testDeathChatAndScreenCanBeCustomizedOrSuppressedIndependently(): void
+    {
+        $encoder = new BedrockWorldEventPacketEncoder();
+        $dead = self::snapshot(0.0, false);
+
+        $rawChat = $encoder->encode(new PlayerDied(
+            $dead,
+            DamageCause::Plugin,
+            null,
+            'A custom death message',
+            null,
+            ['one'],
+            ['one', 'two'],
+        ), []);
+
+        self::assertCount(5, $rawChat);
+        self::assertInstanceOf(ActorEventPacket::class, $rawChat[0]->packet);
+        self::assertInstanceOf(RespawnPacket::class, $rawChat[1]->packet);
+        self::assertInstanceOf(DeathInfoPacket::class, $rawChat[2]->packet);
+        self::assertSame('', $rawChat[2]->packet->message);
+        self::assertInstanceOf(SystemTextPacket::class, $rawChat[3]->packet);
+        self::assertSame('A custom death message', $rawChat[3]->packet->message);
+        self::assertEquals($rawChat[3]->packet, $rawChat[4]->packet);
+        self::assertSame(['one', 'one', 'one', 'one', 'two'], array_map(static fn($packet): string => $packet->sessionId, $rawChat));
+
+        $screenOnly = $encoder->encode(new PlayerDied(
+            $dead,
+            DamageCause::Plugin,
+            null,
+            null,
+            'Custom screen',
+            ['one'],
+            ['one', 'two'],
+        ), []);
+        self::assertCount(3, $screenOnly);
+        self::assertInstanceOf(DeathInfoPacket::class, $screenOnly[2]->packet);
+        self::assertSame('Custom screen', $screenOnly[2]->packet->message);
+        self::assertSame([], $screenOnly[2]->packet->parameters);
     }
 
     private static function snapshot(float $health, bool $alive): PlayerSnapshot

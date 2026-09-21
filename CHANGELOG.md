@@ -6,6 +6,8 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Added
 
+- Add modern authoritative PvP motion composition with exact client-tick projection, grounded and airborne vertical behavior, sprint-hit reconciliation, localized player/fall/generic death chat, and independently customizable death-screen messages.
+- Add a bounded public `TranslatableMessage` value and a single mutable `PlayerDeathEvent` carrying the victim, optional killer, cause, final incoming damage, and nullable chat/screen presentation.
 - Add server-authoritative player-versus-player combat with a single `pvp` setting, PMMP-aligned reach, hurt cooldown and knockback, typed plugin attack events, and visibility-scoped health, animation, motion, death, and respawn synchronization.
 - Add Bedrock player slash-command admission and feedback, server-owned `version`, `help`, `list`, `stop`, `op`, `deop`, and `permission` commands, and atomic UUID-keyed operator and permission persistence.
 - Advertise only commands available to each joining player through the complete current command packet conversation, with client-provided command identity rebound to the authenticated session.
@@ -51,6 +53,7 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Fixed
 
+- Include the target player's exact latest client input tick in PvP knockback packets so protocol-2193 clients can decode authoritative actor motion.
 - Resolve player command senders through their authenticated UUID so spawned players execute advertised commands instead of receiving a premature availability response.
 - Encode current command origins with their string tag and unconditional signed actor ID, preserve authenticated player correlation through dispatch, and echo that complete origin in command output.
 - Accept the current serverbound movement-prediction sync notification as validated advisory data without importing client-reported movement, collision, ability, health, or hunger state, preventing a legitimate packet 322 from disconnecting a spawned player.
