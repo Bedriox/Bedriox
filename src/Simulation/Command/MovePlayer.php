@@ -25,6 +25,7 @@ final readonly class MovePlayer implements WorldCommand
         public ?bool $sneaking = null,
         public ?bool $sprinting = null,
         public ClientInputTick $clientTick = new ClientInputTick(0, 0),
+        public bool $flying = false,
     ) {}
 
     public function sessionId(): string

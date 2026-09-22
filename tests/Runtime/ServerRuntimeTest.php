@@ -123,6 +123,36 @@ use Throwable;
 
 final class ServerRuntimeTest extends TestCase
 {
+    public function testBlockRecipientFilteringPreservesDestroyedStateForParticles(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $registry = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $transport = new FakeConnectedTransport();
+        $clock = new RuntimeTestClock();
+        $world = new WorldSimulation();
+        $runtime = new ServerRuntime(
+            $transport,
+            new RuntimeLoginFactory(),
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $world,
+            new FixedRateWorldLoop($world, $clock),
+            new RecordingEventEncoder(),
+        );
+        $event = new \Bedriox\Server\Simulation\Event\BlockChanged(
+            'one',
+            new \Bedriox\Server\World\BlockPosition(1, 63, 1),
+            $palette->air,
+            [],
+            true,
+            $palette->grassBlock,
+        );
+
+        $filtered = (new \ReflectionMethod(ServerRuntime::class, 'filterBlockRecipients'))->invoke($runtime, $event);
+        self::assertInstanceOf(\Bedriox\Server\Simulation\Event\BlockChanged::class, $filtered);
+        self::assertSame($palette->grassBlock->value, $filtered->destroyedState?->value);
+    }
+
     public function testPlayerConnectionQueuesAndImmediatelyFlushesTypedPackets(): void
     {
         $transport = new FakeConnectedTransport();

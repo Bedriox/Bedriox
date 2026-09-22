@@ -16,6 +16,7 @@ final readonly class BlockChanged implements WorldEvent
         public InternalBlockStateId $state,
         public array $recipientSessionIds,
         public bool $stopBreaking = false,
+        public ?InternalBlockStateId $destroyedState = null,
     ) {}
 
     public function recipients(): array

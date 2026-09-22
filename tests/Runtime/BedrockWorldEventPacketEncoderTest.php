@@ -22,6 +22,7 @@ use Bedriox\Protocol\Packet\ItemStackResponseContainer;
 use Bedriox\Protocol\Packet\ItemStackResponsePacket;
 use Bedriox\Protocol\Packet\ItemStackResponseSlot;
 use Bedriox\Protocol\Packet\LevelEventPacket;
+use Bedriox\Protocol\Packet\LevelSoundEventPacket;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
 use Bedriox\Protocol\Packet\MoveActorAbsoluteFlag;
 use Bedriox\Protocol\Packet\MoveActorAbsolutePacket;
@@ -149,6 +150,57 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         self::assertSame(['one', 'one', 'two', 'two'], array_map(static fn($packet): string => $packet->sessionId, $changed));
     }
 
+    public function testBlockDestroyParticleUsesPreviousBlockBeforeAirUpdate(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $internal = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($internal);
+        $encoder = new BedrockWorldEventPacketEncoder(new BedrockChunkPacketSerializer(
+            new BlockNetworkTranslator($internal, $data->blockStateRegistry()),
+            $data->plainsBiomeRuntimeId(),
+        ));
+        $stone = $internal->internalId(\Bedriox\Server\World\Block\VanillaBlockStates::stone());
+        $packets = $encoder->encode(new BlockChanged(
+            'one',
+            new BlockPosition(1, 63, 1),
+            $palette->air,
+            ['one'],
+            true,
+            $stone,
+        ), []);
+
+        self::assertCount(3, $packets);
+        self::assertInstanceOf(LevelEventPacket::class, $packets[1]->packet);
+        self::assertSame(2001, $packets[1]->packet->eventId);
+        self::assertSame($data->blockStateRegistry()->networkRuntimeId(
+            $internal->state($stone),
+        ), $packets[1]->packet->data);
+        self::assertInstanceOf(UpdateBlockPacket::class, $packets[2]->packet);
+    }
+
+    public function testBlockPunchUsesTargetStateAndFace(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $internal = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($internal);
+        $encoder = new BedrockWorldEventPacketEncoder(new BedrockChunkPacketSerializer(
+            new BlockNetworkTranslator($internal, $data->blockStateRegistry()),
+            $data->plainsBiomeRuntimeId(),
+        ));
+        $packets = $encoder->encode(new \Bedriox\Server\Simulation\Event\BlockPunch(
+            'one',
+            new BlockPosition(1, 63, 1),
+            $palette->grassBlock,
+            1,
+            ['one'],
+        ), []);
+
+        self::assertCount(1, $packets);
+        self::assertInstanceOf(LevelEventPacket::class, $packets[0]->packet);
+        self::assertSame(3604, $packets[0]->packet->eventId);
+        self::assertSame($data->fixedFlatRuntimeIds()['grass_block'], $packets[0]->packet->data);
+    }
+
     public function testPlacementProjectsWorldAndInventoryAuthorityInDeterministicOrder(): void
     {
         $data = BedrockDataSet::bundled();
@@ -170,22 +222,24 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
             $remaining,
             ['one', 'two'],
         ), []);
-        self::assertCount(4, $placed);
-        self::assertSame(['one', 'two', 'one', 'two'], array_map(static fn($packet): string => $packet->sessionId, $placed));
+        self::assertCount(6, $placed);
+        self::assertSame(['one', 'one', 'two', 'two', 'one', 'two'], array_map(static fn($packet): string => $packet->sessionId, $placed));
         self::assertInstanceOf(UpdateBlockPacket::class, $placed[0]->packet);
-        self::assertInstanceOf(UpdateBlockPacket::class, $placed[1]->packet);
-        self::assertInstanceOf(InventorySlotPacket::class, $placed[2]->packet);
-        self::assertSame($placed[0]->packet->encode(), $placed[1]->packet->encode());
+        self::assertInstanceOf(LevelSoundEventPacket::class, $placed[1]->packet);
+        self::assertInstanceOf(UpdateBlockPacket::class, $placed[2]->packet);
+        self::assertInstanceOf(LevelSoundEventPacket::class, $placed[3]->packet);
+        self::assertInstanceOf(InventorySlotPacket::class, $placed[4]->packet);
+        self::assertSame($placed[0]->packet->encode(), $placed[2]->packet->encode());
         self::assertSame([1, 64, 0], [
             $placed[0]->packet->position->x,
             $placed[0]->packet->position->y,
             $placed[0]->packet->position->z,
         ]);
         self::assertSame($data->fixedFlatRuntimeIds()['grass_block'], $placed[0]->packet->blockRuntimeId);
-        self::assertSame(63, $placed[2]->packet->item->count);
-        self::assertSame(1, $placed[2]->packet->item->stackNetworkId);
-        self::assertInstanceOf(MobEquipmentPacket::class, $placed[3]->packet);
-        self::assertSame(63, $placed[3]->packet->item->count);
+        self::assertSame(63, $placed[4]->packet->item->count);
+        self::assertSame(1, $placed[4]->packet->item->stackNetworkId);
+        self::assertInstanceOf(MobEquipmentPacket::class, $placed[5]->packet);
+        self::assertSame(63, $placed[5]->packet->item->count);
 
         $corrected = $encoder->encode(new BlockPlacementCorrected(
             'one',
@@ -674,6 +728,96 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
             0.0,
             $sneaking,
         );
+    }
+
+    public function testGameModeChangeUsesOwnerAndPeerPacketConversations(): void
+    {
+        [$encoder] = $this->inventoryEncoder();
+        $player = new PlayerSnapshot(
+            'owner',
+            'identity-owner',
+            'Owner',
+            new Position(1.0, 64.0, 2.0),
+            30.0,
+            10.0,
+            MovementMode::STOPPED,
+            7,
+            VerticalState::AIRBORNE,
+            0.0,
+            41,
+            30.0,
+            gameMode: \Bedriox\Api\Player\GameMode::SPECTATOR,
+        );
+
+        $packets = $encoder->encode(new \Bedriox\Server\Simulation\Event\PlayerGameModeChanged(
+            $player,
+            \Bedriox\Api\Player\GameMode::SURVIVAL,
+            \Bedriox\Api\Player\GameMode::SPECTATOR,
+            99,
+            ['owner', 'peer'],
+        ), []);
+
+        self::assertCount(3, $packets);
+        self::assertSame(['owner', 'owner', 'peer'], array_map(static fn($packet): string => $packet->sessionId, $packets));
+        self::assertInstanceOf(\Bedriox\Protocol\Packet\SetPlayerGameTypePacket::class, $packets[0]->packet);
+        self::assertInstanceOf(MovePlayerPacket::class, $packets[1]->packet);
+        self::assertInstanceOf(\Bedriox\Protocol\Packet\UpdatePlayerGameTypePacket::class, $packets[2]->packet);
+    }
+
+    public function testDroppedItemSpawnCarriesMetadataAndNetworkOffset(): void
+    {
+        [$encoder] = $this->inventoryEncoder();
+        $entity = new \Bedriox\Server\Entity\Item\DroppedItemEntity(
+            100,
+            100,
+            new InventoryStack('minecraft:diamond', 2, 1),
+            new Position(2.0, 70.0, 3.0),
+            new \Bedriox\Server\Entity\Item\ItemEntityMotion(0.1, 0.2, 0.3),
+        );
+
+        $packets = $encoder->encode(new \Bedriox\Server\Simulation\Event\ItemEntitySpawned($entity, ['one']), []);
+
+        self::assertCount(1, $packets);
+        self::assertInstanceOf(\Bedriox\Protocol\Packet\AddItemActorPacket::class, $packets[0]->packet);
+        self::assertSame(70.125, $packets[0]->packet->y);
+        self::assertNotEmpty($packets[0]->packet->metadata);
+        self::assertSame(
+            $packets[0]->packet->encode(),
+            \Bedriox\Protocol\Packet\AddItemActorPacket::decode($packets[0]->packet->encode())->encode(),
+        );
+    }
+
+    public function testDroppedItemMovementProjectsAbsolutePositionAndCurrentMotion(): void
+    {
+        $entity = new \Bedriox\Server\Entity\Item\DroppedItemEntity(
+            100,
+            100,
+            new InventoryStack('minecraft:diamond', 1, 1),
+            new Position(2.0, 64.0, 3.0),
+            new \Bedriox\Server\Entity\Item\ItemEntityMotion(0.0, 0.0, 0.0),
+        );
+        $packets = (new BedrockWorldEventPacketEncoder())->encode(
+            new \Bedriox\Server\Simulation\Event\ItemEntityMoved($entity, 25_000, ['one', 'two']),
+            [],
+        );
+
+        self::assertCount(4, $packets);
+        self::assertSame(['one', 'one', 'two', 'two'], array_map(static fn($packet): string => $packet->sessionId, $packets));
+        foreach ([0, 2] as $index) {
+            self::assertInstanceOf(MoveActorAbsolutePacket::class, $packets[$index]->packet);
+            self::assertSame(64.125, $packets[$index]->packet->y);
+            self::assertTrue($packets[$index]->packet->onGround());
+            self::assertInstanceOf(SetActorMotionPacket::class, $packets[$index + 1]->packet);
+            self::assertSame(0.0, $packets[$index + 1]->packet->motionY);
+            self::assertTrue($packets[$index + 1]->packet->tick->equals(UnsignedLong::fromInt(0)));
+        }
+
+        $positionOnly = (new BedrockWorldEventPacketEncoder())->encode(
+            new \Bedriox\Server\Simulation\Event\ItemEntityMoved($entity, 25_001, ['one'], false),
+            [],
+        );
+        self::assertCount(1, $positionOnly);
+        self::assertInstanceOf(MoveActorAbsolutePacket::class, $positionOnly[0]->packet);
     }
 
     /** @return array{BedrockWorldEventPacketEncoder, FixedFlatBlockPalette} */

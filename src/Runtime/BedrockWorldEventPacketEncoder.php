@@ -8,6 +8,7 @@ use Bedriox\Api\TranslatableMessage;
 use Bedriox\Protocol\Packet\AbilityLayer;
 use Bedriox\Protocol\Packet\ActorEventPacket;
 use Bedriox\Protocol\Packet\ActorEventType;
+use Bedriox\Protocol\Packet\AddItemActorPacket;
 use Bedriox\Protocol\Packet\AddPlayerPacket;
 use Bedriox\Protocol\Packet\BlockPosition as ProtocolBlockPosition;
 use Bedriox\Protocol\Packet\ChatPacket;
@@ -25,6 +26,9 @@ use Bedriox\Protocol\Packet\ItemStackResponsePacket;
 use Bedriox\Protocol\Packet\ItemStackResponseSlot;
 use Bedriox\Protocol\Packet\LevelEventPacket;
 use Bedriox\Protocol\Packet\LevelEventPosition;
+use Bedriox\Protocol\Packet\LevelEventType;
+use Bedriox\Protocol\Packet\LevelSoundEventName;
+use Bedriox\Protocol\Packet\LevelSoundEventPacket;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
 use Bedriox\Protocol\Packet\MoveActorAbsoluteFlag;
 use Bedriox\Protocol\Packet\MoveActorAbsolutePacket;
@@ -46,11 +50,14 @@ use Bedriox\Protocol\Packet\RespawnPacket;
 use Bedriox\Protocol\Packet\RespawnState;
 use Bedriox\Protocol\Packet\SetActorDataPacket;
 use Bedriox\Protocol\Packet\SetActorMotionPacket;
+use Bedriox\Protocol\Packet\SetPlayerGameTypePacket;
 use Bedriox\Protocol\Packet\SystemTextPacket;
+use Bedriox\Protocol\Packet\TakeItemActorPacket;
 use Bedriox\Protocol\Packet\TranslatedTextPacket;
 use Bedriox\Protocol\Packet\UpdateAttributesPacket;
 use Bedriox\Protocol\Packet\UpdateBlockFlag;
 use Bedriox\Protocol\Packet\UpdateBlockPacket;
+use Bedriox\Protocol\Packet\UpdatePlayerGameTypePacket;
 use Bedriox\Protocol\Value\BuildPlatform;
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\Server\Player\InventoryContainer;
@@ -60,16 +67,22 @@ use Bedriox\Server\Simulation\Event\BlockBreakStopped;
 use Bedriox\Server\Simulation\Event\BlockChanged;
 use Bedriox\Server\Simulation\Event\BlockPlaced;
 use Bedriox\Server\Simulation\Event\BlockPlacementCorrected;
+use Bedriox\Server\Simulation\Event\BlockPunch;
 use Bedriox\Server\Simulation\Event\ChatBroadcast;
 use Bedriox\Server\Simulation\Event\EmotePerformed;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
+use Bedriox\Server\Simulation\Event\ItemEntityDespawned;
+use Bedriox\Server\Simulation\Event\ItemEntityMoved;
+use Bedriox\Server\Simulation\Event\ItemEntityPickedUp;
+use Bedriox\Server\Simulation\Event\ItemEntitySpawned;
 use Bedriox\Server\Simulation\Event\MovementCorrected;
 use Bedriox\Server\Simulation\Event\PlayerBecameHidden;
 use Bedriox\Server\Simulation\Event\PlayerBecameVisible;
 use Bedriox\Server\Simulation\Event\PlayerDamaged;
 use Bedriox\Server\Simulation\Event\PlayerDied;
 use Bedriox\Server\Simulation\Event\PlayerDisconnected;
+use Bedriox\Server\Simulation\Event\PlayerGameModeChanged;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
 use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
 use Bedriox\Server\Simulation\Event\PlayerMotionChanged;
@@ -118,12 +131,24 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
             $event instanceof EmotePerformed => $this->emote($event, $sessions),
             $event instanceof PlayerDisconnected => $this->disconnected($event),
             $event instanceof BlockBreakStarted => $this->blockBreakStarted($event),
+            $event instanceof BlockPunch => $this->blockPunch($event),
             $event instanceof BlockBreakStopped => $this->blockBreakStopped($event),
             $event instanceof BlockChanged => $this->blockChanged($event),
             $event instanceof BlockPlaced => $this->blockPlaced($event),
             $event instanceof BlockPlacementCorrected => $this->blockPlacementCorrected($event),
             $event instanceof HeldItemChanged => $this->heldItemChanged($event),
             $event instanceof InventoryStackRequestProcessed => $this->inventoryStackRequestProcessed($event),
+            $event instanceof ItemEntitySpawned => $this->itemEntitySpawned($event),
+            $event instanceof ItemEntityMoved => $this->itemEntityMoved($event),
+            $event instanceof ItemEntityPickedUp => $this->itemEntityPickedUp($event),
+            $event instanceof ItemEntityDespawned => array_map(
+                static fn(string $recipient): DirectedPacket => new DirectedPacket(
+                    $recipient,
+                    new RemoveActorPacket($event->runtimeActorId),
+                ),
+                $event->recipientSessionIds,
+            ),
+            $event instanceof PlayerGameModeChanged => $this->gameModeChanged($event),
             $event instanceof PlayerDamaged => $this->damaged($event),
             $event instanceof PlayerKnockedBack => array_map(
                 static fn(string $recipient): DirectedPacket => new DirectedPacket(
@@ -561,6 +586,24 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
     }
 
     /** @return list<DirectedPacket> */
+    private function blockPunch(BlockPunch $event): array
+    {
+        if ($this->chunks === null) {
+            throw new \LogicException('Block events require the active block-network translator.');
+        }
+        $packet = LevelEventPacket::punchBlock(
+            new LevelEventPosition($event->position->x + 0.5, $event->position->y + 0.5, $event->position->z + 0.5),
+            $this->chunks->networkRuntimeId($event->state),
+            $event->face,
+        );
+
+        return array_map(
+            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
+            $event->recipientSessionIds,
+        );
+    }
+
+    /** @return list<DirectedPacket> */
     private function blockChanged(BlockChanged $event): array
     {
         if ($this->chunks === null) {
@@ -570,6 +613,13 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
         foreach ($event->recipientSessionIds as $recipient) {
             if ($event->stopBreaking) {
                 $packets[] = new DirectedPacket($recipient, $this->blockLevelEvent(3601, $event->position, 0));
+            }
+            if ($event->destroyedState !== null) {
+                $packets[] = new DirectedPacket($recipient, $this->blockLevelEvent(
+                    LevelEventType::DestroyBlock->value,
+                    $event->position,
+                    $this->chunks->networkRuntimeId($event->destroyedState),
+                ));
             }
             $packets[] = new DirectedPacket($recipient, new UpdateBlockPacket(
                 new ProtocolBlockPosition($event->position->x, $event->position->y, $event->position->z),
@@ -601,6 +651,11 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
                 $packets[] = new DirectedPacket($recipient, $this->blockLevelEvent(3601, $event->stoppedBreakingPosition, 0));
             }
             $packets[] = new DirectedPacket($recipient, $this->updateBlock($event->position, $event->state));
+            $packets[] = new DirectedPacket($recipient, new LevelSoundEventPacket(
+                LevelSoundEventName::place(),
+                new LevelEventPosition($event->position->x + 0.5, $event->position->y + 0.5, $event->position->z + 0.5),
+                $this->chunks?->networkRuntimeId($event->state) ?? 0,
+            ));
         }
         $packets[] = new DirectedPacket($event->ownerSessionId, new InventorySlotPacket(
             0,
@@ -669,6 +724,123 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
     }
 
     /** @return list<DirectedPacket> */
+    private function itemEntitySpawned(ItemEntitySpawned $event): array
+    {
+        $inventory = $this->requireInventoryProjector();
+        $entity = $event->entity;
+        $packet = new AddItemActorPacket(
+            $entity->uniqueEntityId,
+            UnsignedLong::fromInt($entity->runtimeEntityId),
+            $inventory->toItemActorProtocol($entity->stack),
+            $entity->position->x,
+            $entity->position->y + 0.125,
+            $entity->position->z,
+            $entity->motion->x,
+            $entity->motion->y,
+            $entity->motion->z,
+            ItemActorMetadata::baseline(),
+        );
+
+        return array_map(
+            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
+            $event->recipientSessionIds,
+        );
+    }
+
+    /** @return list<DirectedPacket> */
+    private function itemEntityMoved(ItemEntityMoved $event): array
+    {
+        $entity = $event->entity;
+        $position = new MoveActorAbsolutePacket(
+            UnsignedLong::fromInt($entity->runtimeEntityId),
+            $entity->position->x,
+            $entity->position->y + 0.125,
+            $entity->position->z,
+            0.0,
+            0.0,
+            0.0,
+            $entity->motion->y === 0.0 ? [MoveActorAbsoluteFlag::OnGround] : [],
+        );
+        $motion = $event->motionChanged ? new SetActorMotionPacket(
+            UnsignedLong::fromInt($entity->runtimeEntityId),
+            $entity->motion->x,
+            $entity->motion->y,
+            $entity->motion->z,
+            UnsignedLong::fromInt(0),
+        ) : null;
+
+        $packets = [];
+        foreach ($event->recipientSessionIds as $recipient) {
+            $packets[] = new DirectedPacket($recipient, $position);
+            if ($motion !== null) {
+                $packets[] = new DirectedPacket($recipient, $motion);
+            }
+        }
+
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function itemEntityPickedUp(ItemEntityPickedUp $event): array
+    {
+        $packets = [];
+        $take = new TakeItemActorPacket(
+            UnsignedLong::fromInt($event->itemRuntimeActorId),
+            UnsignedLong::fromInt($event->collectorRuntimeActorId),
+        );
+        foreach ($event->recipientSessionIds as $recipient) {
+            $packets[] = new DirectedPacket($recipient, $take);
+            if ($event->removed) {
+                $packets[] = new DirectedPacket($recipient, new RemoveActorPacket($event->itemRuntimeActorId));
+            }
+        }
+        $inventory = $this->requireInventoryProjector();
+        $packets[] = new DirectedPacket($event->collectorSessionId, new InventoryContentPacket(
+            0,
+            array_map($inventory->toProtocol(...), $event->mainInventory),
+        ));
+
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function gameModeChanged(PlayerGameModeChanged $event): array
+    {
+        $projector = new GameModePacketProjector();
+        $packets = [new DirectedPacket(
+            $event->player->sessionId,
+            new SetPlayerGameTypePacket($projector->gameType($event->gameMode)),
+        ), new DirectedPacket(
+            $event->player->sessionId,
+            new MovePlayerPacket(
+                UnsignedLong::fromInt($event->player->runtimeActorId),
+                $event->player->position->x,
+                PlayerPositionProjection::feetToWireY($event->player->position->y),
+                $event->player->position->z,
+                $event->player->pitch,
+                $event->player->yaw,
+                $event->player->headYaw,
+                MovePlayerMode::TELEPORT,
+                $event->player->verticalState === VerticalState::GROUNDED,
+                UnsignedLong::fromInt(0),
+                UnsignedLong::fromInt(max(0, $event->player->movementSequence)),
+            ),
+        )];
+        $peerPacket = new UpdatePlayerGameTypePacket(
+            $projector->gameType($event->gameMode),
+            $event->player->runtimeActorId,
+            UnsignedLong::fromInt($event->tick),
+        );
+        foreach ($event->recipientSessionIds as $recipient) {
+            if ($recipient !== $event->player->sessionId) {
+                $packets[] = new DirectedPacket($recipient, $peerPacket);
+            }
+        }
+
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
     private function inventoryStackRequestProcessed(InventoryStackRequestProcessed $event): array
     {
         $inventory = $this->requireInventoryProjector();
@@ -702,7 +874,18 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
             );
             $packets[] = new DirectedPacket($event->ownerSessionId, new ItemStackResponsePacket([$response]));
         }
-        if (!$event->success) {
+        if ($event->fullSync) {
+            $main = array_map(
+                fn(?\Bedriox\Server\Player\InventoryStack $stack) => $inventory->toProtocol($stack),
+                $event->mainInventory,
+            );
+            $packets[] = new DirectedPacket($event->ownerSessionId, new InventoryContentPacket(0, $main));
+            $packets[] = new DirectedPacket($event->ownerSessionId, new InventorySlotPacket(
+                124,
+                0,
+                $inventory->toProtocol($event->cursorStack),
+            ));
+        } elseif (!$event->success) {
             $main = array_map(
                 fn(?\Bedriox\Server\Player\InventoryStack $stack) => $inventory->toProtocol($stack),
                 $event->mainInventory,

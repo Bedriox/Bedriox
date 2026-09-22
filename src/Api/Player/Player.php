@@ -27,12 +27,18 @@ final readonly class Player
         public float $health = 20.0,
         public float $maxHealth = 20.0,
         public bool $alive = true,
+        public GameMode $gameMode = GameMode::SURVIVAL,
         private ?PlayerConnection $playerConnection = null,
     ) {}
 
     public function connection(): PlayerConnection
     {
         return $this->playerConnection ?? PlayerConnection::disconnected();
+    }
+
+    public function getGamemode(): GameMode
+    {
+        return $this->gameMode;
     }
 
     public function sendMessage(string|TranslatableMessage $message): bool

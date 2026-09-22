@@ -1,0 +1,55 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Bedriox\Api\Event\Player;
+
+use Bedriox\Api\Event\CancellableEvent;
+use Bedriox\Api\Inventory\ItemStack;
+use Bedriox\Api\Player\Player;
+use InvalidArgumentException;
+
+final class PlayerDropItemEvent extends CancellableEvent
+{
+    public function __construct(
+        public readonly Player $player,
+        public readonly ItemStack $item,
+        private int $count,
+    ) {
+        $this->validateCount($count);
+    }
+
+    public function count(): int
+    {
+        return $this->count;
+    }
+
+    public function setCount(int $count): void
+    {
+        $this->assertMutable();
+        $this->validateCount($count);
+        $this->count = $count;
+    }
+
+    protected function state(): mixed
+    {
+        return [parent::state(), $this->count];
+    }
+
+    protected function replaceState(mixed $state): void
+    {
+        if (!is_array($state) || count($state) !== 2 || !is_bool($state[0]) || !is_int($state[1])) {
+            throw new InvalidArgumentException('Invalid player drop event state.');
+        }
+        parent::replaceState($state[0]);
+        $this->validateCount($state[1]);
+        $this->count = $state[1];
+    }
+
+    private function validateCount(int $count): void
+    {
+        if ($count < 1 || $count > $this->item->count) {
+            throw new InvalidArgumentException('Drop count must be within the selected stack.');
+        }
+    }
+}

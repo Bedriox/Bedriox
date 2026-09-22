@@ -32,6 +32,14 @@ final class VanillaBlockStates
     {
         return CanonicalBlockState::from('minecraft:stone');
     }
+    public static function cobblestone(): CanonicalBlockState
+    {
+        return CanonicalBlockState::from('minecraft:cobblestone');
+    }
+    public static function cobbledDeepslate(): CanonicalBlockState
+    {
+        return CanonicalBlockState::from('minecraft:cobbled_deepslate');
+    }
 
     public static function sand(): CanonicalBlockState
     {

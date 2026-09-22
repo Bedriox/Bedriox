@@ -7,6 +7,8 @@ namespace Bedriox\Server\Command;
 use Bedriox\Api\Player\Player;
 use Bedriox\Server\Command\Default\BuiltinCommand;
 use Bedriox\Server\Command\Default\DeopCommand;
+use Bedriox\Server\Command\Default\GamemodeCommand;
+use Bedriox\Server\Command\Default\GiveCommand;
 use Bedriox\Server\Command\Default\HelpCommand;
 use Bedriox\Server\Command\Default\ListCommand;
 use Bedriox\Server\Command\Default\OnlinePlayerResolver;
@@ -24,6 +26,9 @@ final readonly class BuiltinCommandRegistrar
     /**
      * @param Closure(): list<Player> $players
      * @param Closure(): void $stop
+     * @param Closure(Player, \Bedriox\Api\Player\GameMode): bool|null $changeGameMode
+     * @param Closure(Player, string, int): bool|null $giveItem
+     * @param Closure(string): bool|null $itemExists
      */
     public function __construct(
         private CommandRegistry $commands,
@@ -31,6 +36,9 @@ final readonly class BuiltinCommandRegistrar
         private Closure $players,
         private Closure $stop,
         private ?Closure $authorityChanged = null,
+        private ?Closure $changeGameMode = null,
+        private ?Closure $giveItem = null,
+        private ?Closure $itemExists = null,
     ) {}
 
     public function register(): void
@@ -52,6 +60,8 @@ final readonly class BuiltinCommandRegistrar
             new OpCommand($this->permissions, $players, $this->authorityChanged),
             new DeopCommand($this->permissions, $players, $this->authorityChanged),
             new PermissionCommand($this->permissions, $players, $this->authorityChanged),
+            new GamemodeCommand($players, $this->changeGameMode),
+            new GiveCommand($players, $this->giveItem, $this->itemExists),
         ];
     }
 }

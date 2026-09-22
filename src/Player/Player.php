@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Player;
 
+use Bedriox\Api\Player\GameMode;
 use Bedriox\Server\Simulation\PlayerSnapshot;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\Simulation\VerticalState;
@@ -23,7 +24,8 @@ final class Player
     public readonly PlayerVitals $vitals;
     public readonly string $worldName;
     public readonly int $firstPlayedAt;
-    public readonly string $gamemode;
+    /** Persisted canonical value; mutate only through setGameMode(). */
+    public string $gamemode;
     private int $stateRevision = 0;
     private int $savedRevision = 0;
 
@@ -52,7 +54,7 @@ final class Player
         $this->inventory = $inventory ?? PlayerInventory::empty();
         $this->worldName = $worldName;
         $this->firstPlayedAt = $firstPlayedAt;
-        $this->gamemode = $gamemode;
+        $this->gamemode = GameMode::from($gamemode)->value;
         $this->vitals = new PlayerVitals($health);
     }
 
@@ -75,7 +77,24 @@ final class Player
             $this->movement->sprinting,
             $this->vitals->health,
             $this->vitals->isAlive(),
+            $this->gameMode(),
         );
+    }
+
+    public function gameMode(): GameMode
+    {
+        return GameMode::from($this->gamemode);
+    }
+
+    public function setGameMode(GameMode $gameMode): GameMode
+    {
+        $previous = $this->gameMode();
+        if ($previous !== $gameMode) {
+            $this->gamemode = $gameMode->value;
+            $this->markDirty();
+        }
+
+        return $previous;
     }
 
     public function stateRevision(): int

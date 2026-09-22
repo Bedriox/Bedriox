@@ -1,8 +1,10 @@
 # Authoritative Simulation
 
+Mining effects come from server-owned block state: a new break target emits its block texture and face, and an active break emits at most one further punch effect every five ticks. Aborting, completing, disconnecting, or changing the target block stops those effects. Completion also retains the destroyed state for block-specific particles before the air update.
+
 Bedriox's initial world domain is a deterministic, in-memory flat-world model. It owns all mutable player state and advances at 20 ticks per second by default. Network callbacks cannot access player state: an adapter must first use `SimulationCommandFactory` to convert authenticated, decoded input into one of the immutable join, movement, chat, emote, or disconnect commands, then enqueue it on `WorldSimulation`.
 
-This model does not implement Bedrock packet encoding, chunk serialization, or mobs. It owns player health, fall distance, player-versus-player combat, death and respawn state, inventory, canonical world block mutation, break timing, placement validation, and the authoritative snapshots consumed by player persistence; protocol adapters translate the resulting version-neutral events at a separate boundary.
+This model does not implement Bedrock packet encoding, chunk serialization, or mobs. It owns player health, fall distance, game mode, player-versus-player combat, death and respawn state, inventory, dropped items, canonical world block mutation, tool-aware break timing and drops, placement validation, and the authoritative snapshots consumed by player persistence; protocol adapters translate the resulting version-neutral events at a separate boundary.
 
 ## Ordering and limits
 
@@ -37,7 +39,7 @@ Block interaction follows a PMMP-aligned server-authority boundary. The network 
 
 Main-inventory and cursor moves follow the same boundary. A decoded Take, Place, or Swap request becomes one immutable simulation command whether it arrived in `ItemStackRequest` or embedded in `PlayerAuthInput`. The player inventory stages every action, validates authoritative slot contents, counts, capacity, and stack-network lineage, then commits the whole request or none of it. Successful changed stacks receive fresh positive server IDs and the response reports authoritative affected slots. Rejected, stale, unsupported-container, and oversized-count requests leave state untouched and trigger an error plus a bounded main-inventory and cursor repair. Requests in one packet remain ordered, but each request is its own atomic transaction, matching PocketMine-MP's authority model.
 
-Break state is likewise server-owned. Start and continuation actions carry a validated target, while the retail abort sentinel is normalized into a targetless command with a neutral face before it reaches the simulation. Aborting clears the active break without interpreting sentinel coordinates as a world position. The advertised 18-tick grass rate drives crack progress. Following PocketMine-MP's retail-compatible path, predicted completion revalidates reach and current canonical block state and does not fail only because client and server tick boundaries observed different elapsed counts.
+Break state is likewise server-owned. Start and continuation actions carry a validated target, while the retail abort sentinel is normalized into a targetless command with a neutral face before it reaches the simulation. Aborting clears the active break without interpreting sentinel coordinates as a world position. Crack progress derives from authoritative block hardness and the selected server-held tool. Following PocketMine-MP's retail-compatible path, predicted completion revalidates reach and current canonical block state and does not fail only because client and server tick boundaries observed different elapsed counts. Successful survival breaks apply deterministic drop rules and tool durability, then create bounded item entities with pickup delay, motion, collision, partial-inventory remainder replacement, and despawn lifetime. Creative breaks are instant and do not create survival drops.
 
 Disconnect removes both session and identity indexes before producing `PlayerDisconnected` for the remaining peers. Repeated disconnects cannot leave a ghost player.
 
@@ -49,7 +51,9 @@ Player attacks arrive as bounded intent containing only the authenticated attack
 
 A dead player cannot move, chat, emote, change inventory, or mutate blocks. Those valid but inapplicable inputs are corrected or rejected without disconnecting the session. Bedriox accepts both current retail respawn forms: `PlayerAction::Respawn` and `RespawnPacket::ClientReady`. Either ordering is harmless, and the client-ready form can complete respawn by itself. Respawn runs `PlayerRespawnEvent`, restores 20 health at the selected bounded destination, resets fall and vertical state, grants 60 ticks of damage protection, retains the authoritative inventory, and publishes `PlayerRespawnedEvent`. The adapter completes the searching/ready handshake and resynchronizes health, position, actor animation, inventory, and held equipment.
 
-Inventory is intentionally retained on death until the item-entity milestone can represent drops without deleting or duplicating server-owned items.
+Ordinary player drops atomically validate and remove a bounded count from the authoritative main inventory or cursor before spawning the item actor with PMMP-aligned position, throw motion, and pickup delay. Plugins may cancel or reduce the count before commit and observe the completed drop afterward. Inventory is intentionally retained on death; death-drop policy remains a separate milestone even though authoritative item entities support player drops, block drops, and overflow from `give`.
+
+Dropped items use a quarter-block collision body and settle on the top face of solid terrain. Item forms for supported ordinary blocks come from the block catalog; items merely associated with block states, such as saplings, remain distinct from placeable block items.
 
 ## Chat security
 

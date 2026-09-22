@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
+use Bedriox\Api\Player\GameMode;
 use Bedriox\Server\Login\AuthenticationMode;
 use Bedriox\Server\Observability\LogLevel;
 use InvalidArgumentException;
@@ -149,8 +150,8 @@ final readonly class ServerConfig
         if (!in_array($this->levelGenerator, ['default', 'flat'], true)) {
             throw new InvalidArgumentException('Level generator must be exactly default or flat.');
         }
-        if ($this->defaultGamemode !== 'survival') {
-            throw new InvalidArgumentException('Default gamemode must currently be exactly survival.');
+        if (GameMode::tryFrom($this->defaultGamemode) === null) {
+            throw new InvalidArgumentException('Default gamemode is unsupported.');
         }
         if (!in_array($this->difficulty, ['peaceful', 'easy', 'normal', 'hard'], true)) {
             throw new InvalidArgumentException('Difficulty is unsupported.');

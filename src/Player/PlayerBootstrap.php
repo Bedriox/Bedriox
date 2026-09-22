@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Player;
 
+use Bedriox\Api\Player\GameMode;
 use Bedriox\Server\Simulation\Position;
 use InvalidArgumentException;
 
@@ -43,8 +44,8 @@ final readonly class PlayerBootstrap
         if ($this->firstPlayedAt < 0 || $this->lastPlayedAt < $this->firstPlayedAt) {
             throw new InvalidArgumentException('Player timestamps are invalid.');
         }
-        if ($this->gamemode !== 'survival') {
-            throw new InvalidArgumentException('Player gamemode must currently be exactly survival.');
+        if (GameMode::tryFrom($this->gamemode) === null) {
+            throw new InvalidArgumentException('Player gamemode is unsupported.');
         }
         if (!is_finite($this->health) || $this->health < 0.0 || $this->health > PlayerVitals::MAX_HEALTH) {
             throw new InvalidArgumentException('Player health must be finite and inside its authoritative range.');

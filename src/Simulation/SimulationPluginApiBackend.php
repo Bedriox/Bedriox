@@ -10,10 +10,12 @@ use Bedriox\Api\World\Block;
 use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\World as ApiWorld;
+use Bedriox\Server\Gameplay\Block\BlockCatalog;
+use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Player\InventoryStack;
-use Bedriox\Server\Player\SupportedInventoryItem;
 use Bedriox\Server\Plugin\PluginActionBuffer;
 use Bedriox\Server\Plugin\PluginRuntimeControl;
+use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\BlockPosition;
 use Bedriox\Server\World\World;
@@ -27,6 +29,9 @@ final readonly class SimulationPluginApiBackend
         private WorldSimulation $simulation,
         private World $world,
         private FixedFlatBlockPalette $palette,
+        private ?ItemCatalog $itemCatalog = null,
+        private ?BlockCatalog $blockCatalog = null,
+        private ?BlockStateRegistry $blockStateRegistry = null,
     ) {}
 
     public function serverFor(
@@ -65,6 +70,15 @@ final readonly class SimulationPluginApiBackend
             function (string $identity, float $amount): void {
                 $this->requireQueued($this->simulation->enqueuePluginDamage($identity, $amount));
             },
+            function (string $identity, \Bedriox\Api\Player\GameMode $gameMode): void {
+                $this->requireQueued($this->simulation->enqueueGameMode($identity, $gameMode));
+            },
+            function (string $identity, ApiItemStack $stack): void {
+                if ($stack->damage !== 0) {
+                    throw new InvalidArgumentException('Giving pre-damaged items is not supported by this API yet.');
+                }
+                $this->requireQueued($this->simulation->enqueueGiveItem($identity, $stack->identifier, $stack->count));
+            },
         );
     }
 
@@ -81,30 +95,34 @@ final readonly class SimulationPluginApiBackend
     private function blockView(ApiBlockPosition $position): Block
     {
         $state = $this->world->blockStateAt($position->x, $position->y, $position->z);
-        $identifier = match ($state->value) {
-            $this->palette->air->value => 'minecraft:air',
-            $this->palette->bedrock->value => 'minecraft:bedrock',
-            $this->palette->dirt->value => 'minecraft:dirt',
-            $this->palette->grassBlock->value => 'minecraft:grass_block',
-            default => throw new InvalidArgumentException('Block state is not exposed by the current plugin API.'),
-        };
+        $identifier = $this->blockCatalog !== null && $this->blockStateRegistry !== null
+            ? $this->blockCatalog->typeForInternalId($state, $this->blockStateRegistry)->identifier()
+            : match ($state->value) {
+                $this->palette->air->value => 'minecraft:air',
+                $this->palette->bedrock->value => 'minecraft:bedrock',
+                $this->palette->dirt->value => 'minecraft:dirt',
+                $this->palette->grassBlock->value => 'minecraft:grass_block',
+                default => throw new InvalidArgumentException('Block state is not exposed by the current plugin API.'),
+            };
 
         return new Block($position, $identifier);
     }
 
     private function inventoryStack(ApiItemStack $stack): InventoryStack
     {
-        if (!SupportedInventoryItem::supports($stack->identifier)
-            || $stack->count > SupportedInventoryItem::maximumStackSize($stack->identifier)) {
-            throw new InvalidArgumentException('The current plugin API does not support this inventory stack.');
+        if ($this->itemCatalog !== null) {
+            $type = $this->itemCatalog->type($stack->identifier);
+            $placed = $type->placedBlockState === null || $this->blockStateRegistry === null
+                ? null
+                : $this->blockStateRegistry->internalId($type->placedBlockState);
+
+            return new InventoryStack($stack->identifier, $stack->count, 1, $placed, $stack->damage);
+        }
+        if ($stack->identifier !== 'minecraft:grass_block') {
+            throw new InvalidArgumentException('The inventory stack is outside the current gameplay catalog.');
         }
 
-        return new InventoryStack(
-            $stack->identifier,
-            $stack->count,
-            1,
-            $stack->identifier === 'minecraft:grass_block' ? $this->palette->grassBlock : null,
-        );
+        return new InventoryStack($stack->identifier, $stack->count, 1, $this->palette->grassBlock, $stack->damage);
     }
 
     private function requireQueued(bool $queued): void

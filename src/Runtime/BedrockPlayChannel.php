@@ -10,6 +10,9 @@ use Bedriox\Protocol\Batch\BedrockBatchCodec;
 use Bedriox\Protocol\Batch\CompressionMode;
 use Bedriox\Protocol\Encryption\BedrockDecryptor;
 use Bedriox\Protocol\Encryption\BedrockEncryptor;
+use Bedriox\Protocol\Exception\ItemStackRequestDecodeException;
+use Bedriox\Protocol\Packet\Ability;
+use Bedriox\Protocol\Packet\AbilityLayer;
 use Bedriox\Protocol\Packet\AnimatePacket;
 use Bedriox\Protocol\Packet\BasicInventoryTransaction;
 use Bedriox\Protocol\Packet\BedrockPacketCodec;
@@ -23,11 +26,16 @@ use Bedriox\Protocol\Packet\CommandRequestPacket;
 use Bedriox\Protocol\Packet\ContainerClosePacket;
 use Bedriox\Protocol\Packet\ContainerOpenPacket;
 use Bedriox\Protocol\Packet\ContainerType;
+use Bedriox\Protocol\Packet\CraftCreativeItemStackRequestAction;
+use Bedriox\Protocol\Packet\CraftResultsItemStackRequestAction;
+use Bedriox\Protocol\Packet\CreateItemStackRequestAction;
+use Bedriox\Protocol\Packet\DropItemStackRequestAction;
 use Bedriox\Protocol\Packet\EmoteListPacket;
 use Bedriox\Protocol\Packet\EmotePacket;
 use Bedriox\Protocol\Packet\FullContainerName;
 use Bedriox\Protocol\Packet\InteractPacket;
 use Bedriox\Protocol\Packet\InventoryItemStack;
+use Bedriox\Protocol\Packet\InventorySourceFlag;
 use Bedriox\Protocol\Packet\InventorySourceType;
 use Bedriox\Protocol\Packet\InventoryTransactionPacket;
 use Bedriox\Protocol\Packet\InventoryTransactionType;
@@ -47,6 +55,7 @@ use Bedriox\Protocol\Packet\PacketFrame;
 use Bedriox\Protocol\Packet\PacketHeader;
 use Bedriox\Protocol\Packet\PacketIds;
 use Bedriox\Protocol\Packet\PlaceItemStackRequestAction;
+use Bedriox\Protocol\Packet\PlayerAbilities;
 use Bedriox\Protocol\Packet\PlayerActionPacket;
 use Bedriox\Protocol\Packet\PlayerActionType;
 use Bedriox\Protocol\Packet\PlayerAuthInputFlag;
@@ -123,11 +132,9 @@ final class BedrockPlayChannel
     private int $placementSequence = 0;
     private ?UnsignedLong $lastMovementTick = null;
     private ?bool $lastRequestedFlyingState = null;
+    private ?UpdateAbilitiesPacket $authoritativeAbilities = null;
     private bool $sneaking = false;
     private bool $sprinting = false;
-    private float $authoritativeX;
-    private float $authoritativeY;
-    private float $authoritativeZ;
     /** @var list<Packet> */
     private array $deferredInitializationPackets = [];
     private bool $bootstrapSent = false;
@@ -138,6 +145,8 @@ final class BedrockPlayChannel
     private bool $loadingScreenStarted = false;
     private bool $loadingScreenEnded = false;
     private bool $mainInventoryOpen = false;
+    private int $mainInventoryId = 0;
+    private int $nextMainInventoryId = 1;
     private ?int $pendingHotbarSlot = null;
     private bool $closed = false;
     private bool $spawnStatusQueued = false;
@@ -190,9 +199,6 @@ final class BedrockPlayChannel
         $this->encryptor = $ready->encryptor;
         $this->decryptor = $ready->decryptor;
         $this->protocolVersion = $ready->protocolVersion;
-        $this->authoritativeX = $spawnX;
-        $this->authoritativeY = $spawnY;
-        $this->authoritativeZ = $spawnZ;
         $this->outgoing = new SplQueue();
         $this->commands = new SplQueue();
         $this->playerCommands = new SplQueue();
@@ -217,6 +223,9 @@ final class BedrockPlayChannel
             }
             $radiusPhase = false;
             foreach ($initializationPackets as $packet) {
+                if ($packet instanceof UpdateAbilitiesPacket) {
+                    $this->authoritativeAbilities = $packet;
+                }
                 if ($packet instanceof ChunkRadiusUpdatedPacket) {
                     $radiusPhase = true;
                     continue;
@@ -281,6 +290,23 @@ final class BedrockPlayChannel
         } catch (Throwable $error) {
             $context = $packetId === null ? 'play envelope' : "packet {$packetId}";
             $this->diagnose("failed decoding {$context}: " . $error::class);
+            if ($error instanceof ItemStackRequestDecodeException
+                && ($packetId === PacketIds::ITEM_STACK_REQUEST || $packetId === PacketIds::PLAYER_AUTH_INPUT)) {
+                $this->diagnostics->record('play.inventory_decode.protocol_trace', [
+                    'packet_id' => $packetId,
+                    'stage' => $error->stage,
+                    'detail' => $error->detailCode,
+                    'byte_offset' => $error->byteOffset,
+                    'action_index' => $error->actionIndex,
+                    'action_type' => $error->actionType,
+                ]);
+            } elseif ($packetId === PacketIds::ITEM_STACK_REQUEST) {
+                $this->diagnostics->record('play.inventory_decode.protocol_trace', [
+                    'packet_id' => $packetId,
+                    'stage' => 'packet',
+                    'detail' => self::itemStackPacketDecodeDetail($error),
+                ]);
+            }
             return $this->fail('decode_failed', $packetId, $error);
         }
     }
@@ -306,6 +332,9 @@ final class BedrockPlayChannel
         }
         $this->outgoing->enqueue(new OutgoingPlayPayload($envelope));
         $this->outgoingBytes += strlen($envelope);
+        if ($packet instanceof UpdateAbilitiesPacket) {
+            $this->authoritativeAbilities = $packet;
+        }
 
         return true;
     }
@@ -437,9 +466,6 @@ final class BedrockPlayChannel
         if ($this->closed) {
             return false;
         }
-        $this->authoritativeX = $x;
-        $this->authoritativeY = $y;
-        $this->authoritativeZ = $z;
         if ($this->chunkView === null) {
             return true;
         }
@@ -495,6 +521,7 @@ final class BedrockPlayChannel
         $this->sentSpawnChunks = [];
         $this->chunkView = null;
         $this->mainInventoryOpen = false;
+        $this->mainInventoryId = 0;
         $this->pendingHotbarSlot = null;
         $this->bootstrapSent = false;
         $this->spawnAcknowledged = false;
@@ -571,19 +598,20 @@ final class BedrockPlayChannel
             if ($this->mainInventoryOpen) {
                 return true;
             }
-            if (!$this->queuePacket(new ContainerOpenPacket(
-                0,
-                ContainerType::Inventory,
-                new BlockPosition(
-                    (int) floor($this->authoritativeX),
-                    (int) floor($this->authoritativeY),
-                    (int) floor($this->authoritativeZ),
-                ),
-                -1,
+            if ($this->commands->count() >= $this->limits->maximumCommandsPerPayload) {
+                return false;
+            }
+            $containerId = $this->nextMainInventoryId;
+            $this->nextMainInventoryId = $containerId >= 99 ? 1 : $containerId + 1;
+            if (!$this->queuePacket(ContainerOpenPacket::mainPlayerInventory(
+                $containerId,
+                $this->runtimeEntityId->toSignedBits(),
             ))) {
                 return false;
             }
+            $this->commands->enqueue($this->commandFactory->syncInventory($this->sessionId));
             $this->mainInventoryOpen = true;
+            $this->mainInventoryId = $containerId;
 
             return true;
         }
@@ -622,7 +650,7 @@ final class BedrockPlayChannel
             }
             if ($packet->action === PlayerActionType::StartFlying
                 || $packet->action === PlayerActionType::StopFlying) {
-                return $this->queueSurvivalAbilities();
+                return $this->queueAuthoritativeAbilities($packet->action === PlayerActionType::StartFlying);
             }
             if ($packet->action === PlayerActionType::Respawn) {
                 if ($this->commands->count() >= $this->limits->maximumCommandsPerPayload) {
@@ -712,15 +740,23 @@ final class BedrockPlayChannel
                 return false;
             }
             if (!$this->mainInventoryOpen
-                || !in_array($packet->containerId, [0, 0xff], true)) {
+                || !in_array($packet->containerId, [0, $this->mainInventoryId, 0xff], true)) {
                 return true;
             }
             $this->mainInventoryOpen = false;
+            $containerId = $this->mainInventoryId;
+            $this->mainInventoryId = 0;
 
-            return $this->queuePacket(new ContainerClosePacket(0, ContainerType::Inventory->value & 0xff, false));
+            return $this->queuePacket(new ContainerClosePacket(
+                $containerId,
+                ContainerType::Inventory->value & 0xff,
+                false,
+            ));
         }
         if ($packet instanceof RequestAbilityPacket) {
-            return $this->initialized && $this->queueSurvivalAbilities();
+            return $this->initialized && $this->queueAuthoritativeAbilities(
+                $packet->ability === Ability::Flying->value ? $packet->boolValue : null,
+            );
         }
         if ($packet instanceof ServerSettingsRequestPacket) {
             return true;
@@ -926,6 +962,7 @@ final class BedrockPlayChannel
                     $this->sneaking,
                     $this->sprinting,
                     new ClientInputTick($packet->tick->high, $packet->tick->low),
+                    $this->lastRequestedFlyingState === true,
                 ));
             }
 
@@ -969,6 +1006,32 @@ final class BedrockPlayChannel
 
     private function handleLegacyInventoryTransaction(InventoryTransactionPacket $packet): bool
     {
+        $drop = $this->legacyDropIntent($packet);
+        if ($drop !== null) {
+            if ($this->commands->count() >= $this->limits->maximumCommandsPerPayload) {
+                return false;
+            }
+            if (is_string($drop)) {
+                $this->commands->enqueue($this->commandFactory->inventoryStackRequest(
+                    $this->sessionId,
+                    $packet->legacyRequestId,
+                    [],
+                    $drop,
+                    InventoryResponseMode::LegacySlotSync,
+                ));
+            } else {
+                $this->commands->enqueue($this->commandFactory->dropItem(
+                    $this->sessionId,
+                    $packet->legacyRequestId,
+                    $drop['source'],
+                    $drop['count'],
+                    InventoryResponseMode::LegacySlotSync,
+                    $drop['expected'],
+                ));
+            }
+
+            return true;
+        }
         [$actions, $rejectionReason] = $this->legacyInventoryActions($packet);
         if ($this->commands->count() >= $this->limits->maximumCommandsPerPayload) {
             return false;
@@ -982,6 +1045,74 @@ final class BedrockPlayChannel
         ));
 
         return true;
+    }
+
+    /** @return null|string|array{source: InventorySlotReference, count: int, expected: \Bedriox\Server\Player\InventoryStack} */
+    private function legacyDropIntent(InventoryTransactionPacket $packet): null|string|array
+    {
+        $containsDrop = false;
+        foreach ($packet->actions as $action) {
+            $containsDrop = $containsDrop || ($action->source->type === InventorySourceType::WorldInteraction
+                && $action->source->flag === InventorySourceFlag::DropItem);
+        }
+        if (!$containsDrop) {
+            return null;
+        }
+        if ($packet->transaction->type() !== InventoryTransactionType::Normal
+            || count($packet->actions) !== 2 || $this->inventoryProjector === null) {
+            return 'invalid_drop';
+        }
+        $world = null;
+        $container = null;
+        foreach ($packet->actions as $action) {
+            if ($action->source->type === InventorySourceType::WorldInteraction
+                && $action->source->flag === InventorySourceFlag::DropItem) {
+                $world = $action;
+            } elseif ($action->source->type === InventorySourceType::Container
+                && $action->source->containerId === 0
+                && $action->slot < 36) {
+                $container = $action;
+            }
+        }
+        if ($world === null || $container === null || $world->fromItem->runtimeId !== 0
+            || $world->toItem->count < 1
+            || $container->fromItem->count - $container->toItem->count !== $world->toItem->count) {
+            return 'invalid_drop';
+        }
+        try {
+            $expected = $this->inventoryProjector->fromProtocol($container->fromItem);
+            $dropped = $this->inventoryProjector->fromProtocol($world->toItem);
+            $remaining = $container->toItem->runtimeId === 0
+                ? null
+                : $this->inventoryProjector->fromProtocol($container->toItem);
+        } catch (\InvalidArgumentException) {
+            return 'unsupported_item';
+        }
+        if (!self::sameInventoryContent($expected, $dropped)
+            || ($remaining !== null && !self::sameInventoryContent($expected, $remaining))) {
+            return 'source_item';
+        }
+
+        return [
+            'source' => new InventorySlotReference(
+                InventoryContainer::Main,
+                $container->slot,
+                $container->fromItem->stackNetworkId ?? 0,
+                FullContainerName::INVENTORY,
+                $container->fromItem->count,
+            ),
+            'count' => $world->toItem->count,
+            'expected' => $expected,
+        ];
+    }
+
+    private static function sameInventoryContent(
+        \Bedriox\Server\Player\InventoryStack $left,
+        \Bedriox\Server\Player\InventoryStack $right,
+    ): bool {
+        return $left->identifier === $right->identifier
+            && $left->damage === $right->damage
+            && $left->placedBlockState?->value === $right->placedBlockState?->value;
     }
 
     /** @return array{list<InventoryStackRequestAction>, ?string} */
@@ -1176,9 +1307,73 @@ final class BedrockPlayChannel
         }
         foreach ($requests as $request) {
             $actions = [];
+            $dropSource = null;
+            $dropCount = 0;
+            $creativeStack = null;
+            $sawCreativeSelection = false;
             $rejectionReason = $request->actions === [] ? 'empty_actions' : null;
             foreach ($request->actions as $action) {
-                if ($action instanceof TakeItemStackRequestAction || $action instanceof PlaceItemStackRequestAction) {
+                if ($action instanceof DropItemStackRequestAction) {
+                    $this->diagnostics->record('play.inventory_request.protocol_trace', [
+                        'request_id' => $request->requestId,
+                        'action' => 'drop',
+                        'amount' => $action->amount,
+                        'source_container' => $action->source->containerName->containerNameId,
+                        'source_slot' => $action->source->slot,
+                        'source_stack_id' => $action->source->stackNetworkId,
+                    ]);
+                    $dropSource = self::inventorySlotReference($action->source);
+                    $dropCount = $action->amount;
+                    if ($dropSource === null) {
+                        $rejectionReason = 'unsupported_container';
+                        break;
+                    }
+                } elseif ($action instanceof CraftCreativeItemStackRequestAction) {
+                    $this->diagnostics->record('play.inventory_request.protocol_trace', [
+                        'request_id' => $request->requestId,
+                        'action' => 'craft_creative',
+                        'creative_item_network_id' => $action->creativeItemNetworkId,
+                        'requested_crafts' => $action->requestedCrafts,
+                    ]);
+                    if ($sawCreativeSelection || $this->inventoryProjector === null) {
+                        $rejectionReason = $sawCreativeSelection
+                            ? 'duplicate_creative_selection'
+                            : 'creative_inventory_unavailable';
+                        break;
+                    }
+                    try {
+                        $creativeStack = $this->inventoryProjector->creativeStack(
+                            $action->creativeItemNetworkId,
+                            1,
+                        );
+                    } catch (\InvalidArgumentException) {
+                        $rejectionReason = 'unknown_creative_item';
+                        break;
+                    }
+                    $sawCreativeSelection = true;
+                } elseif ($action instanceof CreateItemStackRequestAction) {
+                    $this->diagnostics->record('play.inventory_request.protocol_trace', [
+                        'request_id' => $request->requestId,
+                        'action' => 'create',
+                        'slot' => $action->slot,
+                    ]);
+                    if (!$sawCreativeSelection) {
+                        $rejectionReason = 'create_without_creative_selection';
+                        break;
+                    }
+                    // Current clients may include this advisory result marker. CraftCreative already staged the output.
+                } elseif ($action instanceof CraftResultsItemStackRequestAction) {
+                    $this->diagnostics->record('play.inventory_request.protocol_trace', [
+                        'request_id' => $request->requestId,
+                        'action' => 'craft_results',
+                        'result_count' => count($action->results),
+                    ]);
+                    if (!$sawCreativeSelection) {
+                        $rejectionReason = 'craft_results_without_creative_selection';
+                        break;
+                    }
+                    // This client report is advisory; the advertised creative ID determines the server-owned stack.
+                } elseif ($action instanceof TakeItemStackRequestAction || $action instanceof PlaceItemStackRequestAction) {
                     $this->diagnostics->record('play.inventory_request.protocol_trace', [
                         'request_id' => $request->requestId,
                         'action' => $action instanceof TakeItemStackRequestAction ? 'take' : 'place',
@@ -1194,6 +1389,12 @@ final class BedrockPlayChannel
                     $destination = self::inventorySlotReference($action->destination);
                     if ($source === null || $destination === null) {
                         $rejectionReason = 'unsupported_container';
+                        break;
+                    }
+                    if (!$sawCreativeSelection
+                        && ($source->container === InventoryContainer::CreatedOutput
+                            || $destination->container === InventoryContainer::CreatedOutput)) {
+                        $rejectionReason = 'created_output_before_selection';
                         break;
                     }
                     $actions[] = new InventoryStackRequestAction(
@@ -1221,6 +1422,12 @@ final class BedrockPlayChannel
                         $rejectionReason = 'unsupported_container';
                         break;
                     }
+                    if (!$sawCreativeSelection
+                        && ($source->container === InventoryContainer::CreatedOutput
+                            || $destination->container === InventoryContainer::CreatedOutput)) {
+                        $rejectionReason = 'created_output_before_selection';
+                        break;
+                    }
                     $actions[] = new InventoryStackRequestAction(
                         InventoryStackRequestActionType::Swap,
                         $source,
@@ -1231,11 +1438,26 @@ final class BedrockPlayChannel
                     break;
                 }
             }
+            if ($dropSource !== null && $rejectionReason === null) {
+                if (count($request->actions) !== 1) {
+                    $rejectionReason = 'mixed_drop_actions';
+                } else {
+                    $this->commands->enqueue($this->commandFactory->dropItem(
+                        $this->sessionId,
+                        $request->requestId,
+                        $dropSource,
+                        $dropCount,
+                        InventoryResponseMode::ItemStackResponse,
+                    ));
+                    continue;
+                }
+            }
             $this->commands->enqueue($this->commandFactory->inventoryStackRequest(
                 $this->sessionId,
                 $request->requestId,
                 $actions,
                 $rejectionReason,
+                authoritativeCreativeStack: $creativeStack,
             ));
         }
 
@@ -1252,11 +1474,13 @@ final class BedrockPlayChannel
             FullContainerName::HOTBAR,
             FullContainerName::INVENTORY => InventoryContainer::Main,
             FullContainerName::CURSOR => InventoryContainer::Cursor,
+            FullContainerName::CREATED_OUTPUT => InventoryContainer::CreatedOutput,
             default => null,
         };
         if ($container === null
             || ($container === InventoryContainer::Main && $slot->slot >= 36)
-            || ($container === InventoryContainer::Cursor && $slot->slot !== 0)) {
+            || ($container === InventoryContainer::Cursor && $slot->slot !== 0)
+            || ($container === InventoryContainer::CreatedOutput && $slot->slot !== 50)) {
             return null;
         }
 
@@ -1343,6 +1567,41 @@ final class BedrockPlayChannel
         return $this->queuePacket(UpdateAbilitiesPacket::survival($this->runtimeEntityId->toSignedBits()));
     }
 
+    private function queueAuthoritativeAbilities(?bool $flying = null): bool
+    {
+        $packet = $this->authoritativeAbilities;
+        if ($packet === null) {
+            return $this->queueSurvivalAbilities();
+        }
+        if ($flying === null) {
+            return $this->queuePacket($packet);
+        }
+        $layers = [];
+        foreach ($packet->abilities->layers as $layer) {
+            $enabled = $layer->abilityValues;
+            if ($flying && $layer->enabled(Ability::MayFly)) {
+                $enabled |= Ability::Flying->mask();
+            } else {
+                $enabled &= ~Ability::Flying->mask();
+            }
+            $layers[] = new AbilityLayer(
+                $layer->type,
+                $layer->abilitiesSet,
+                $enabled,
+                $layer->flySpeed,
+                $layer->verticalFlySpeed,
+                $layer->walkSpeed,
+            );
+        }
+
+        return $this->queuePacket(new UpdateAbilitiesPacket(new PlayerAbilities(
+            $packet->abilities->uniqueEntityId,
+            $packet->abilities->playerPermission,
+            $packet->abilities->commandPermission,
+            $layers,
+        )));
+    }
+
     private function handleFlightFlags(PlayerAuthInputPacket $packet): bool
     {
         $start = $packet->hasInput(PlayerAuthInputFlag::StartFlying);
@@ -1352,7 +1611,7 @@ final class BedrockPlayChannel
         }
         $this->lastRequestedFlyingState = $start;
 
-        return $this->queueSurvivalAbilities();
+        return $this->queueAuthoritativeAbilities($start);
     }
 
     private function fail(string $reason, ?int $packetId = null, ?Throwable $exception = null): bool
@@ -1525,6 +1784,21 @@ final class BedrockPlayChannel
             'Truncated unsigned VarInt.',
             'Truncated unsigned VarLong.' => 'truncated',
             default => null,
+        };
+    }
+
+    private static function itemStackPacketDecodeDetail(Throwable $exception): string
+    {
+        return match ($exception->getMessage()) {
+            'Item-stack request count is invalid.' => 'request_count',
+            'Item-stack request action count exceeds its limit.' => 'action_count_limit',
+            'Item-stack request filter-string count exceeds its limit.' => 'filter_count_limit',
+            'Item-stack request is invalid.' => 'invalid_request_value',
+            'Packet payload contains trailing bytes.' => 'trailing_bytes',
+            'Requested bytes exceed the remaining input.',
+            'Truncated unsigned VarInt.',
+            'Truncated unsigned VarLong.' => 'truncated',
+            default => 'unclassified',
         };
     }
 }

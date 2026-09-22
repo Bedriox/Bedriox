@@ -17,16 +17,23 @@ use Bedriox\Api\Event\Player\PlayerChatEvent;
 use Bedriox\Api\Event\Player\PlayerDamagedEvent;
 use Bedriox\Api\Event\Player\PlayerDamageEvent;
 use Bedriox\Api\Event\Player\PlayerDeathEvent;
+use Bedriox\Api\Event\Player\PlayerDropItemEvent;
+use Bedriox\Api\Event\Player\PlayerDroppedItemEvent;
+use Bedriox\Api\Event\Player\PlayerGameModeChangedEvent;
+use Bedriox\Api\Event\Player\PlayerGameModeChangeEvent;
 use Bedriox\Api\Event\Player\PlayerJoinEvent;
 use Bedriox\Api\Event\Player\PlayerLoginEvent;
 use Bedriox\Api\Event\Player\PlayerMovedEvent;
 use Bedriox\Api\Event\Player\PlayerMoveEvent;
+use Bedriox\Api\Event\Player\PlayerPickedUpItemEvent;
+use Bedriox\Api\Event\Player\PlayerPickupItemEvent;
 use Bedriox\Api\Event\Player\PlayerPreJoinEvent;
 use Bedriox\Api\Event\Player\PlayerQuitEvent;
 use Bedriox\Api\Event\Player\PlayerRespawnedEvent;
 use Bedriox\Api\Event\Player\PlayerRespawnEvent;
 use Bedriox\Api\Inventory\Inventory as ApiInventory;
 use Bedriox\Api\Inventory\ItemStack as ApiItemStack;
+use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\Player\Player as ApiPlayer;
 use Bedriox\Api\Player\PlayerConnection;
 use Bedriox\Api\TranslatableMessage;
@@ -171,6 +178,23 @@ final readonly class PluginGameplayEventBridge
         $this->events->dispatch(new PlayerRespawnedEvent($this->playerView($player)));
     }
 
+    public function gameModeChange(Player $player, GameMode $gameMode): ?GameMode
+    {
+        $event = new PlayerGameModeChangeEvent($this->playerView($player), $player->gameMode(), $gameMode);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->gameMode();
+    }
+
+    public function gameModeChanged(Player $player, GameMode $previous): void
+    {
+        $this->events->dispatch(new PlayerGameModeChangedEvent(
+            $this->playerView($player),
+            $previous,
+            $player->gameMode(),
+        ));
+    }
+
     public function chat(Player $player, string $message): ?string
     {
         $event = new PlayerChatEvent($this->playerView($player), $message);
@@ -227,6 +251,46 @@ final readonly class PluginGameplayEventBridge
         ));
     }
 
+    public function pickupItem(Player $player, InventoryStack $stack): ?int
+    {
+        $event = new PlayerPickupItemEvent(
+            $this->playerView($player),
+            new ApiItemStack($stack->identifier, $stack->count, $stack->damage),
+            $stack->count,
+        );
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->count();
+    }
+
+    public function pickedUpItem(Player $player, InventoryStack $stack): void
+    {
+        $this->events->dispatch(new PlayerPickedUpItemEvent(
+            $this->playerView($player),
+            new ApiItemStack($stack->identifier, $stack->count, $stack->damage),
+        ));
+    }
+
+    public function dropItem(Player $player, InventoryStack $stack): ?int
+    {
+        $event = new PlayerDropItemEvent(
+            $this->playerView($player),
+            new ApiItemStack($stack->identifier, $stack->count, $stack->damage),
+            $stack->count,
+        );
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->count();
+    }
+
+    public function droppedItem(Player $player, InventoryStack $stack): void
+    {
+        $this->events->dispatch(new PlayerDroppedItemEvent(
+            $this->playerView($player),
+            new ApiItemStack($stack->identifier, $stack->count, $stack->damage),
+        ));
+    }
+
     public function playerView(Player $player, ?PlayerInventory $inventory = null): ApiPlayer
     {
         $snapshot = $player->snapshot();
@@ -243,6 +307,7 @@ final readonly class PluginGameplayEventBridge
             $player->vitals->health,
             PlayerVitals::MAX_HEALTH,
             $player->vitals->isAlive(),
+            $player->gameMode(),
             $this->playerConnections === null
                 ? PlayerConnection::disconnected()
                 : ($this->playerConnections)($snapshot->identity),
@@ -265,6 +330,7 @@ final readonly class PluginGameplayEventBridge
             $player->vitals->health,
             PlayerVitals::MAX_HEALTH,
             $player->vitals->isAlive(),
+            $player->gameMode(),
             PlayerConnection::disconnected(),
         );
     }
@@ -280,7 +346,7 @@ final readonly class PluginGameplayEventBridge
 
     private static function item(?InventoryStack $stack): ?ApiItemStack
     {
-        return $stack === null ? null : new ApiItemStack($stack->identifier, $stack->count);
+        return $stack === null ? null : new ApiItemStack($stack->identifier, $stack->count, $stack->damage);
     }
 
     private static function position(Position $position): ApiPosition

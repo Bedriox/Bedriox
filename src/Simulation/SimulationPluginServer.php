@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Simulation;
 
 use Bedriox\Api\Inventory\ItemStack;
+use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\Player\Player;
 use Bedriox\Api\Server;
 use Bedriox\Api\World\Block;
@@ -44,6 +45,8 @@ final readonly class SimulationPluginServer implements Server
         private Closure $setBlock,
         private Closure $setInventorySlot,
         private ?Closure $damage = null,
+        private ?Closure $setGameMode = null,
+        private ?Closure $giveItem = null,
     ) {}
 
     public function world(): World
@@ -117,6 +120,22 @@ final readonly class SimulationPluginServer implements Server
             throw new InvalidArgumentException('Inventory slot must be between 0 and 35.');
         }
         $this->defer(fn() => ($this->setInventorySlot)($player->uuid, $slot, $stack));
+    }
+
+    public function setGameMode(Player $player, GameMode $gameMode): void
+    {
+        if ($this->setGameMode === null) {
+            throw new \LogicException('The game-mode capability is unavailable.');
+        }
+        $this->defer(fn() => ($this->setGameMode)($player->uuid, $gameMode));
+    }
+
+    public function giveItem(Player $player, ItemStack $stack): void
+    {
+        if ($this->giveItem === null) {
+            throw new \LogicException('The item-give capability is unavailable.');
+        }
+        $this->defer(fn() => ($this->giveItem)($player->uuid, $stack));
     }
 
     private function defer(Closure $action): void

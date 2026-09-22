@@ -24,7 +24,10 @@ use Bedriox\Protocol\Packet\CommandRequestPacket;
 use Bedriox\Protocol\Packet\ContainerClosePacket;
 use Bedriox\Protocol\Packet\ContainerOpenPacket;
 use Bedriox\Protocol\Packet\CorrectPlayerMovePredictionPacket;
+use Bedriox\Protocol\Packet\CraftCreativeItemStackRequestAction;
+use Bedriox\Protocol\Packet\CreateItemStackRequestAction;
 use Bedriox\Protocol\Packet\DeathInfoPacket;
+use Bedriox\Protocol\Packet\DropItemStackRequestAction;
 use Bedriox\Protocol\Packet\EmoteFlag;
 use Bedriox\Protocol\Packet\EmoteListPacket;
 use Bedriox\Protocol\Packet\EmotePacket;
@@ -34,6 +37,7 @@ use Bedriox\Protocol\Packet\InteractPacket;
 use Bedriox\Protocol\Packet\InventoryAction;
 use Bedriox\Protocol\Packet\InventoryItemStack;
 use Bedriox\Protocol\Packet\InventorySource;
+use Bedriox\Protocol\Packet\InventorySourceFlag;
 use Bedriox\Protocol\Packet\InventorySourceType;
 use Bedriox\Protocol\Packet\InventoryTransactionPacket;
 use Bedriox\Protocol\Packet\InventoryTransactionType;
@@ -98,12 +102,14 @@ use Bedriox\Server\Simulation\Command\AcknowledgeRespawn;
 use Bedriox\Server\Simulation\Command\ApplyInventoryStackRequest;
 use Bedriox\Server\Simulation\Command\AttackPlayer;
 use Bedriox\Server\Simulation\Command\BreakBlock;
+use Bedriox\Server\Simulation\Command\DropItem;
 use Bedriox\Server\Simulation\Command\MovePlayer;
 use Bedriox\Server\Simulation\Command\PerformEmote;
 use Bedriox\Server\Simulation\Command\PlaceBlock;
 use Bedriox\Server\Simulation\Command\RespawnPlayer;
 use Bedriox\Server\Simulation\Command\SelectHotbarSlot;
 use Bedriox\Server\Simulation\Command\SendChat;
+use Bedriox\Server\Simulation\Command\SyncInventory;
 use Bedriox\Server\Simulation\Event\BlockPlaced;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\MovementMode;
@@ -780,9 +786,10 @@ final class BedrockPlayChannelTest extends TestCase
 
         self::assertFalse($channel->isClosed());
         $commands = $channel->drainCommands();
-        self::assertCount(1, $commands);
-        self::assertInstanceOf(SelectHotbarSlot::class, $commands[0]);
-        self::assertSame(8, $commands[0]->hotbarSlot);
+        self::assertCount(2, $commands);
+        self::assertInstanceOf(SyncInventory::class, $commands[0]);
+        self::assertInstanceOf(SelectHotbarSlot::class, $commands[1]);
+        self::assertSame(8, $commands[1]->hotbarSlot);
     }
 
     public function testLiteralInventoryRequestOpensOneBoundedMainWindowUntilMatchingClose(): void
@@ -806,9 +813,13 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertCount(1, $opened);
         $frame = $this->decodeFrame($server->decryptEnvelope($opened[0]->payload));
         self::assertSame(PacketIds::CONTAINER_OPEN, $frame->header->packetId);
-        self::assertSame('00ff0080010001', bin2hex($frame->payload));
-        self::assertInstanceOf(ContainerOpenPacket::class, BedrockPacketCodec::decode($frame->header->packetId, $frame->payload));
-        self::assertSame([], $channel->drainCommands());
+        $open = BedrockPacketCodec::decode($frame->header->packetId, $frame->payload);
+        self::assertInstanceOf(ContainerOpenPacket::class, $open);
+        self::assertSame(1, $open->containerId);
+        self::assertSame($entityId->toSignedBits(), $open->actorUniqueId);
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(SyncInventory::class, $commands[0]);
 
         $retailClose = hex2bin('ff0000');
         self::assertIsString($retailClose);
@@ -825,9 +836,9 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertNotNull($closedPayload);
         $closeFrame = $this->decodeFrame($server->decryptEnvelope($closedPayload->payload));
         self::assertSame(PacketIds::CONTAINER_CLOSE, $closeFrame->header->packetId);
-        self::assertSame('00ff00', bin2hex($closeFrame->payload));
         $close = BedrockPacketCodec::decode($closeFrame->header->packetId, $closeFrame->payload);
         self::assertInstanceOf(ContainerClosePacket::class, $close);
+        self::assertSame(1, $close->containerId);
         self::assertSame(0xff, $close->containerType);
         self::assertFalse($close->serverInitiated);
 
@@ -1003,6 +1014,47 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertEqualsWithDelta($motion->motionZ, $decoded[0]->motionZ, 0.000_001);
         self::assertEquals($motion->tick, $decoded[0]->tick);
         self::assertEquals($death, $decoded[1]);
+        self::assertFalse($channel->isClosed());
+    }
+
+    public function testEncryptedDroppedItemMovementCarriesAbsolutePositionAndBoundedMotion(): void
+    {
+        [$channel, $client, $server, $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $channel->drainOutgoing();
+
+        $entity = new \Bedriox\Server\Entity\Item\DroppedItemEntity(
+            100,
+            100,
+            new \Bedriox\Server\Player\InventoryStack('minecraft:diamond', 1, 1),
+            new \Bedriox\Server\Simulation\Position(2.0, 64.0, 3.0),
+            new \Bedriox\Server\Entity\Item\ItemEntityMotion(0.0, 0.0, 0.0),
+        );
+        $projected = (new BedrockWorldEventPacketEncoder())->encode(
+            new \Bedriox\Server\Simulation\Event\ItemEntityMoved($entity, 25_000, ['one']),
+            [],
+        );
+        self::assertCount(2, $projected);
+        foreach ($projected as $directed) {
+            self::assertTrue($channel->queuePacket($directed->packet));
+        }
+
+        $outgoing = $channel->drainOutgoing();
+        self::assertCount(2, $outgoing);
+        $decoded = array_map(
+            fn($payload): Packet => $this->decode($server->decryptEnvelope($payload->payload)),
+            $outgoing,
+        );
+        self::assertInstanceOf(\Bedriox\Protocol\Packet\MoveActorAbsolutePacket::class, $decoded[0]);
+        self::assertSame(64.125, $decoded[0]->y);
+        self::assertTrue($decoded[0]->onGround());
+        self::assertInstanceOf(SetActorMotionPacket::class, $decoded[1]);
+        self::assertSame(0.0, $decoded[1]->motionY);
+        self::assertSame(0, $decoded[1]->tick->low);
         self::assertFalse($channel->isClosed());
     }
 
@@ -1222,6 +1274,38 @@ final class BedrockPlayChannelTest extends TestCase
             0,
         )));
         self::assertTrue($unknown->isClosed());
+    }
+
+    public function testCreativeRequestDecodeFailureReportsActionWithoutPacketBytes(): void
+    {
+        $lines = [];
+        $diagnostics = new RuntimeDiagnostics(static function (string $line) use (&$lines): void {
+            $lines[] = $line;
+        });
+        [$channel, $client, , $entityId] = $this->channel([], $diagnostics);
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        $wire = hex2bin('010001101000ffffffff');
+        self::assertNotFalse($wire);
+        self::assertFalse($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encodeFrames([
+                new PacketFrame(new PacketHeader(PacketIds::ITEM_STACK_REQUEST), $wire),
+            ])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        $diagnostic = implode('', $lines);
+        self::assertStringContainsString('"event":"play.inventory_decode.protocol_trace"', $diagnostic);
+        self::assertStringContainsString('"detail":"unsupported_action_type"', $diagnostic);
+        self::assertStringContainsString('"action_type":16', $diagnostic);
+        self::assertStringContainsString('"byte_offset":3', $diagnostic);
+        self::assertStringNotContainsString(bin2hex($wire), $diagnostic);
+        self::assertTrue($channel->isClosed());
     }
 
     public function testRepeatedRadiusRequestsRemainClampedWithoutPublishingTerrain(): void
@@ -1711,6 +1795,101 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertSame(1, $commands[0]->actions[0]->destination->slot);
     }
 
+    public function testLegacyDropTransactionBecomesOneAuthoritativeDropCommand(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $internal = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $projector = BedrockInventoryPacketProjector::fromData(
+            $data,
+            new BlockNetworkTranslator($internal, $data->blockStateRegistry()),
+        );
+        [$channel, $clientEncryptor, , $entityId] = $this->channel(inventoryProjector: $projector);
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $grass = $projector->creativeStack(1, 1);
+        $projected = $projector->toProtocol($grass);
+        $grass64 = $projected;
+        $grass63 = new InventoryItemStack(
+            $projected->runtimeId,
+            63,
+            $projected->aux,
+            1,
+            $projected->blockRuntimeId,
+            $projected->userData,
+        );
+        $grassOne = new InventoryItemStack(
+            $projected->runtimeId,
+            1,
+            $projected->aux,
+            null,
+            $projected->blockRuntimeId,
+            $projected->userData,
+        );
+        $drop = new InventoryTransactionPacket(0, [], [
+            new InventoryAction(
+                new InventorySource(InventorySourceType::WorldInteraction, flag: InventorySourceFlag::DropItem),
+                0,
+                InventoryItemStack::empty(),
+                $grassOne,
+            ),
+            new InventoryAction(
+                new InventorySource(InventorySourceType::Container, 0),
+                0,
+                $grass64,
+                $grass63,
+            ),
+        ], new BasicInventoryTransaction(InventoryTransactionType::Normal));
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([$drop])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(DropItem::class, $commands[0]);
+        self::assertSame(1, $commands[0]->count);
+        self::assertSame(64, $commands[0]->source->expectedCount);
+        self::assertSame(InventoryResponseMode::LegacySlotSync, $commands[0]->responseMode);
+    }
+
+    public function testItemStackDropRequestBecomesOneAuthoritativeDropCommand(): void
+    {
+        $diagnostics = [];
+        [$channel, $clientEncryptor, , $entityId] = $this->channel(diagnostics: new RuntimeDiagnostics(
+            static function (string $line) use (&$diagnostics): void {
+                $diagnostics[] = $line;
+            },
+        ));
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $request = new ItemStackRequest(-17, [
+            new DropItemStackRequestAction(
+                3,
+                new ItemStackRequestSlot(new FullContainerName(FullContainerName::HOTBAR), 0, 1),
+                false,
+            ),
+        ]);
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([$request])])),
+            Reliability::ReliableOrdered,
+            0,
+        )), implode('', $diagnostics));
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(DropItem::class, $commands[0]);
+        self::assertSame(3, $commands[0]->count);
+        self::assertSame(-17, $commands[0]->requestId);
+        self::assertSame(InventoryResponseMode::ItemStackResponse, $commands[0]->responseMode);
+    }
+
     public function testEmbeddedInventoryRequestBecomesACommandAfterItsMovementFrame(): void
     {
         [$channel, $clientEncryptor, , $entityId] = $this->channel();
@@ -1805,6 +1984,111 @@ final class BedrockPlayChannelTest extends TestCase
         );
         self::assertSame(InventoryContainer::Cursor, $commands[0]->actions[0]->destination->container);
         self::assertSame(32, $commands[0]->actions[0]->count);
+    }
+
+    public function testCreativeRequestResolvesAdvertisedItemAndCreatedOutputAuthoritatively(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $internal = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $projector = BedrockInventoryPacketProjector::fromData(
+            $data,
+            new BlockNetworkTranslator($internal, $data->blockStateRegistry()),
+        );
+        [$channel, $clientEncryptor, , $entityId] = $this->channel(inventoryProjector: $projector);
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $request = new ItemStackRequest(-13, [
+            new CraftCreativeItemStackRequestAction(1, 1),
+            new CreateItemStackRequestAction(50),
+            new TakeItemStackRequestAction(
+                1,
+                new ItemStackRequestSlot(new FullContainerName(FullContainerName::CREATED_OUTPUT), 50, -13),
+                new ItemStackRequestSlot(new FullContainerName(FullContainerName::HOTBAR), 1, 0),
+            ),
+        ]);
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([$request])])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(ApplyInventoryStackRequest::class, $commands[0]);
+        self::assertNull($commands[0]->rejectionReason);
+        self::assertEquals($projector->creativeStack(1, 1), $commands[0]->authoritativeCreativeStack);
+        self::assertCount(1, $commands[0]->actions);
+        self::assertSame(InventoryContainer::CreatedOutput, $commands[0]->actions[0]->source->container);
+        self::assertSame(50, $commands[0]->actions[0]->source->slot);
+        self::assertSame(InventoryContainer::Main, $commands[0]->actions[0]->destination->container);
+        self::assertFalse($channel->isClosed());
+    }
+
+    public function testCreativeSelectionWithCraftResultsAdvisoryRemainsAuthoritative(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $internal = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $projector = BedrockInventoryPacketProjector::fromData(
+            $data,
+            new BlockNetworkTranslator($internal, $data->blockStateRegistry()),
+        );
+        [$channel, $clientEncryptor, , $entityId] = $this->channel(inventoryProjector: $projector);
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $request = new ItemStackRequest(-13, [
+            new CraftCreativeItemStackRequestAction(1, 1),
+            new \Bedriox\Protocol\Packet\CraftResultsItemStackRequestAction([], 1),
+            new TakeItemStackRequestAction(
+                1,
+                new ItemStackRequestSlot(new FullContainerName(FullContainerName::CREATED_OUTPUT), 50, -13),
+                new ItemStackRequestSlot(new FullContainerName(FullContainerName::HOTBAR), 1, 0),
+            ),
+        ]);
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([$request])])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(ApplyInventoryStackRequest::class, $commands[0]);
+        self::assertNull($commands[0]->rejectionReason);
+        self::assertCount(1, $commands[0]->actions);
+        self::assertFalse($channel->isClosed());
+    }
+
+    public function testUnknownCreativeItemIsCorrectedWithoutClosingTheSession(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $internal = new BlockStateRegistry($data->blockStateRegistry()->states());
+        [$channel, $clientEncryptor, , $entityId] = $this->channel(inventoryProjector: BedrockInventoryPacketProjector::fromData(
+            $data,
+            new BlockNetworkTranslator($internal, $data->blockStateRegistry()),
+        ));
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $request = new ItemStackRequest(-14, [new CraftCreativeItemStackRequestAction(0xffffffff, 1)]);
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([$request])])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(ApplyInventoryStackRequest::class, $commands[0]);
+        self::assertSame('unknown_creative_item', $commands[0]->rejectionReason);
+        self::assertFalse($channel->isClosed());
     }
 
     public function testTypedBlockAndItemInteractionsDoNotCloseInitializedSession(): void

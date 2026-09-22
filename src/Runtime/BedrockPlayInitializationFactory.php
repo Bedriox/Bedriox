@@ -4,13 +4,13 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
+use Bedriox\Api\Player\GameMode;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Packet\AvailableActorIdentifiersPacket;
 use Bedriox\Protocol\Packet\BiomeDefinitionListPacket;
 use Bedriox\Protocol\Packet\BlockPropertyData;
 use Bedriox\Protocol\Packet\ChunkRadiusUpdatedPacket;
 use Bedriox\Protocol\Packet\CraftingDataPacket;
-use Bedriox\Protocol\Packet\CreativeContentPacket;
 use Bedriox\Protocol\Packet\GameRulesChangedPacket;
 use Bedriox\Protocol\Packet\InventoryContentPacket;
 use Bedriox\Protocol\Packet\ItemRegistryPacket;
@@ -28,7 +28,6 @@ use Bedriox\Protocol\Packet\SetSpawnPositionPacket;
 use Bedriox\Protocol\Packet\SetTimePacket;
 use Bedriox\Protocol\Packet\StartGamePacket;
 use Bedriox\Protocol\Packet\TrimDataPacket;
-use Bedriox\Protocol\Packet\UpdateAbilitiesPacket;
 use Bedriox\Protocol\Packet\UpdateAdventureSettingsPacket;
 use Bedriox\Protocol\Packet\UpdateAttributesPacket;
 use Bedriox\Protocol\Packet\VoxelShapesPacket;
@@ -72,6 +71,7 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
         private int $worldTime = 0,
         private string $generatorName = 'flat',
         private int $rewindHistorySize = 40,
+        private string $defaultGamemode = 'survival',
     ) {
         if ($this->difficulty < 0 || $this->difficulty > 3) {
             throw new \InvalidArgumentException('Difficulty must be a Bedrock value between 0 and 3.');
@@ -81,6 +81,9 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
         }
         if ($this->rewindHistorySize < 1 || $this->rewindHistorySize > 1_200) {
             throw new \InvalidArgumentException('Movement rewind history size must be between 1 and 1200 ticks.');
+        }
+        if (GameMode::tryFrom($this->defaultGamemode) === null) {
+            throw new \InvalidArgumentException('Play initialization received an unsupported default gamemode.');
         }
         $this->biomeDefinitions = $data->biomeDefinitions();
         $networkBlockStates = $data->blockStateRegistry();
@@ -100,6 +103,7 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
         RuntimeLimits $limits,
         WorldData $world,
         int $rewindHistorySize = 40,
+        string $defaultGamemode = 'survival',
     ): self {
         return new self(
             $data,
@@ -111,12 +115,15 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
             $world->time,
             $world->generatorName,
             $rewindHistorySize,
+            $defaultGamemode,
         );
     }
 
     public function create(AuthenticatedLogin $login, UnsignedLong $runtimeEntityId, ?PlayerBootstrap $bootstrap = null): array
     {
         $radius = $this->limits->preloadedChunkRadius;
+        $gameMode = GameMode::from($bootstrap === null ? $this->defaultGamemode : $bootstrap->gamemode);
+        $gameModePackets = new GameModePacketProjector();
         $initialInventory = $bootstrap === null
             ? PlayerInventory::starter($this->fixedFlatBlockPalette)
             : PlayerInventory::restore($bootstrap->inventory, $this->fixedFlatBlockPalette);
@@ -160,6 +167,8 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
                 playerPitch: $playerPitch,
                 playerYaw: $playerYaw,
                 rewindHistorySize: $this->rewindHistorySize,
+                playerGameType: $gameModePackets->gameType($gameMode),
+                levelGameType: $gameModePackets->gameType(GameMode::from($this->defaultGamemode)),
             ),
             ItemRegistryPacket::fromRequiredItems($this->data->requiredItems()),
             // Everything after this marker is emitted as one radius-negotiated bootstrap.
@@ -179,7 +188,7 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
             new SetTimePacket($this->worldTime),
             new SetDifficultyPacket($this->difficulty),
             new SetCommandsEnabledPacket(false),
-            UpdateAbilitiesPacket::survival($runtimeEntityId->toSignedBits()),
+            $gameModePackets->abilities($gameMode, $runtimeEntityId->toSignedBits()),
             new UpdateAdventureSettingsPacket(),
             GameRulesChangedPacket::survivalDefaults(),
             new PlayerListAddPacket([new PlayerListAddEntry(
@@ -193,7 +202,7 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
                 colorArgb: 0xffffffff,
             )]),
             $this->survivalAttributes($runtimeEntityId, $bootstrap === null ? 20.0 : $bootstrap->health),
-            new CreativeContentPacket(),
+            $this->inventoryProjector->creativeContent(),
             new InventoryContentPacket(0, $mainInventory),
             new InventoryContentPacket(120, 4),
             new InventoryContentPacket(119, 1),

@@ -13,7 +13,6 @@ use Bedriox\Server\Player\PlayerInventory;
 use Bedriox\Server\Player\PlayerInventoryEntry;
 use Bedriox\Server\Player\PlayerInventoryStackState;
 use Bedriox\Server\Player\PlayerInventoryState;
-use Bedriox\Server\Player\SupportedInventoryItem;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\Storage\Exception\CorruptWorldDataException;
 use Bedriox\Server\World\Storage\Nbt\LittleEndianNbtCodec;
@@ -23,7 +22,7 @@ use InvalidArgumentException;
 /** Bounded schema-versioned player profile encoding with no session-local identifiers. */
 final readonly class PlayerDataCodec
 {
-    public const int SCHEMA_VERSION = 2;
+    public const int SCHEMA_VERSION = 3;
     public const int MAX_BYTES = 65_536;
 
     private const array REQUIRED_ROOT_TAGS = [
@@ -49,10 +48,14 @@ final readonly class PlayerDataCodec
         try {
             self::validateIdentity($player->identity->uuid, $player->identity->xuid, $player->identity->displayName);
             foreach ($player->inventory->entries as $entry) {
-                self::validateStack($entry->stack->identifier, $entry->stack->count);
+                self::validateStack($entry->stack->identifier, $entry->stack->count, $entry->stack->damage);
             }
             if ($player->inventory->cursor !== null) {
-                self::validateStack($player->inventory->cursor->identifier, $player->inventory->cursor->count);
+                self::validateStack(
+                    $player->inventory->cursor->identifier,
+                    $player->inventory->cursor->count,
+                    $player->inventory->cursor->damage,
+                );
             }
         } catch (CorruptPlayerDataException $error) {
             throw new PlayerDataWriteException('Player profile contains a value which cannot be persisted.', previous: $error);
@@ -63,6 +66,7 @@ final readonly class PlayerDataCodec
                 'Slot' => LittleEndianNbtTag::byte($entry->slot),
                 'Identifier' => LittleEndianNbtTag::string($entry->stack->identifier),
                 'Count' => LittleEndianNbtTag::byte($entry->stack->count),
+                'Damage' => LittleEndianNbtTag::int($entry->stack->damage),
             ]);
         }
         $root = [
@@ -91,6 +95,7 @@ final readonly class PlayerDataCodec
             $root['Cursor'] = LittleEndianNbtTag::compound([
                 'Identifier' => LittleEndianNbtTag::string($player->inventory->cursor->identifier),
                 'Count' => LittleEndianNbtTag::byte($player->inventory->cursor->count),
+                'Damage' => LittleEndianNbtTag::int($player->inventory->cursor->damage),
             ]);
         }
         try {
@@ -158,17 +163,25 @@ final readonly class PlayerDataCodec
                     throw new CorruptPlayerDataException('Player inventory contains an invalid entry.');
                 }
                 $itemTags = self::compound($item, 'Inventory');
-                self::assertExactTags($itemTags, ['Slot', 'Identifier', 'Count'], 'inventory entry');
+                self::assertExactTags(
+                    $itemTags,
+                    self::stackTagNames($schemaVersion, true),
+                    'inventory entry',
+                );
                 $entries[] = new PlayerInventoryEntry(
                     self::integer($itemTags['Slot'], LittleEndianNbtTag::BYTE, 'Inventory.Slot'),
-                    self::stack($itemTags, 'Inventory'),
+                    self::stack($itemTags, 'Inventory', $schemaVersion),
                 );
             }
             $cursor = null;
             if (isset($root['Cursor'])) {
                 $cursorTags = self::compound($root['Cursor'], 'Cursor');
-                self::assertExactTags($cursorTags, ['Identifier', 'Count'], 'cursor entry');
-                $cursor = self::stack($cursorTags, 'Cursor');
+                self::assertExactTags(
+                    $cursorTags,
+                    self::stackTagNames($schemaVersion, false),
+                    'cursor entry',
+                );
+                $cursor = self::stack($cursorTags, 'Cursor', $schemaVersion);
             }
 
             return new PlayerBootstrap(
@@ -195,13 +208,16 @@ final readonly class PlayerDataCodec
     }
 
     /** @param array<string, LittleEndianNbtTag> $tags */
-    private static function stack(array $tags, string $path): PlayerInventoryStackState
+    private static function stack(array $tags, string $path, int $schemaVersion): PlayerInventoryStackState
     {
         $identifier = self::string($tags['Identifier'], "$path.Identifier");
         $count = self::integer($tags['Count'], LittleEndianNbtTag::BYTE, "$path.Count");
-        self::validateStack($identifier, $count);
+        $damage = $schemaVersion >= 3
+            ? self::integer($tags['Damage'], LittleEndianNbtTag::INT, "$path.Damage")
+            : 0;
+        self::validateStack($identifier, $count, $damage);
 
-        return new PlayerInventoryStackState($identifier, $count);
+        return new PlayerInventoryStackState($identifier, $count, $damage);
     }
 
     private static function tag(LittleEndianNbtTag $tag, int $type, string $name): LittleEndianNbtTag
@@ -306,11 +322,22 @@ final readonly class PlayerDataCodec
         }
     }
 
-    private static function validateStack(string $identifier, int $count): void
+    /** @return list<string> */
+    private static function stackTagNames(int $schemaVersion, bool $withSlot): array
+    {
+        $tags = $withSlot ? ['Slot', 'Identifier', 'Count'] : ['Identifier', 'Count'];
+        if ($schemaVersion >= 3) {
+            $tags[] = 'Damage';
+        }
+
+        return $tags;
+    }
+
+    private static function validateStack(string $identifier, int $count, int $damage): void
     {
         if (strlen($identifier) > 256 || preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $identifier) !== 1
-            || !SupportedInventoryItem::supports($identifier)
-            || $count < 1 || $count > SupportedInventoryItem::maximumStackSize($identifier)) {
+            || $count < 1 || $count > 64
+            || $damage < 0 || $damage > PlayerInventoryStackState::MAX_DAMAGE) {
             throw new CorruptPlayerDataException('Player inventory stack is invalid.');
         }
     }

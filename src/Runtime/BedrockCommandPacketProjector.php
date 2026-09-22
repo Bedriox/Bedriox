@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Runtime;
 
 use Bedriox\Api\Command\CommandSenderType;
+use Bedriox\Api\Player\GameMode;
 use Bedriox\Protocol\Packet\AvailableCommandsPacket;
 use Bedriox\Protocol\Packet\CommandArgumentType;
 use Bedriox\Protocol\Packet\CommandDefinition as ProtocolCommandDefinition;
@@ -23,9 +24,16 @@ final readonly class BedrockCommandPacketProjector
         private PermissionStore $permissions,
     ) {}
 
-    public function abilities(string $uuid, int $runtimeEntityId): UpdateAbilitiesPacket
-    {
-        return UpdateAbilitiesPacket::survival($runtimeEntityId, $this->permissions->isOperator($uuid));
+    public function abilities(
+        string $uuid,
+        int $runtimeEntityId,
+        GameMode $gameMode = GameMode::SURVIVAL,
+    ): UpdateAbilitiesPacket {
+        return (new GameModePacketProjector())->abilities(
+            $gameMode,
+            $runtimeEntityId,
+            $this->permissions->isOperator($uuid),
+        );
     }
 
     public function availableCommands(string $uuid): AvailableCommandsPacket

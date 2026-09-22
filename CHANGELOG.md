@@ -1,13 +1,24 @@
 # Changelog
 
+- Synchronize dropped-item falls with absolute actor positions and bounded motion updates so clients do not interpret server uptime as movement interpolation duration.
+- Derive supported block-item placement states from block definitions and settle dropped items against their quarter-block collision body instead of snapping them above the floor.
+- Add protocol-trace diagnostics for item-stack request decode failures without logging raw item or packet data.
+- Treat obtained cobblestone and cobbled deepslate as placeable block items, including their authoritative block definitions.
+- Preserve canonical block identity on cobblestone and other block-item drops so client rendering uses the correct block runtime state.
+- Accept bounded creative craft-results advisories after authoritative creative selection without trusting client-reported results.
+- Restore block-specific destruction particles through chunk-recipient filtering and send bounded face-specific particles while mining.
 All notable changes will be documented here. The project follows Semantic Versioning for its PHP APIs; supported Bedrock protocol versions are tracked separately.
 
 ## [Unreleased]
 
 ### Added
 
-- Support the five iron tool items in authoritative plugin inventory writes, Bedrock inventory packets, item moves, and player-data persistence for test-server kits; tool-specific gameplay effects remain future work.
-
+- Add survival, creative, adventure, and spectator authority with persistent game mode, ability projection, spectator visibility, cancellable plugin events, and the `gamemode` command.
+- Add canonical gameplay catalogs for admitted blocks, items, tool tiers, hardness, break timing, durability, and deterministic drops, plus data-driven creative content and authoritative creative stack requests.
+- Add bounded dropped-item actors with motion, terrain settling, pickup delay, partial-inventory remainder replacement, despawn, late-join visibility, pickup events, and overflow-safe `give` command support.
+- Add authoritative player item dropping for both current Bedrock request forms, cancellable drop events, inventory reconciliation, and projected dropped-item actors.
+- Correct creative inventory group indexes, canonical item extra-data, and the dynamic main-inventory open/synchronize/close conversation.
+- Add block-specific destroy particles, placement sounds, and server-held-tool break progress while keeping client item descriptors non-authoritative.
 - Add complete current-protocol text, title, action-bar, popup, tip, toast, and translated-message player APIs plus a trusted typed `PlayerConnection::sendPacket()` escape hatch with normal and immediate delivery modes.
 - Add modern authoritative PvP motion composition with exact client-tick projection, grounded and airborne vertical behavior, sprint-hit reconciliation, localized player/fall/generic death chat, and independently customizable death-screen messages.
 - Add a bounded public `TranslatableMessage` value and a single mutable `PlayerDeathEvent` carrying the victim, optional killer, cause, final incoming damage, and nullable chat/screen presentation.

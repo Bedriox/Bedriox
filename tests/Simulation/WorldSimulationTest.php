@@ -4,10 +4,15 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Simulation;
 
+use Bedriox\Api\Player\GameMode;
 use Bedriox\Data\BedrockDataSet;
+use Bedriox\Server\Entity\Item\ItemEntityRegistry;
+use Bedriox\Server\Gameplay\Block\BlockCatalog;
+use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Player\InventoryContainer;
 use Bedriox\Server\Player\InventoryResponseMode;
 use Bedriox\Server\Player\InventorySlotReference;
+use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Player\InventoryStackRequestAction;
 use Bedriox\Server\Player\InventoryStackRequestActionType;
 use Bedriox\Server\Player\PlayerBootstrap;
@@ -22,10 +27,13 @@ use Bedriox\Server\Simulation\Event\BlockBreakStarted;
 use Bedriox\Server\Simulation\Event\BlockChanged;
 use Bedriox\Server\Simulation\Event\BlockPlaced;
 use Bedriox\Server\Simulation\Event\BlockPlacementCorrected;
+use Bedriox\Server\Simulation\Event\BlockPunch;
 use Bedriox\Server\Simulation\Event\ChatBroadcast;
 use Bedriox\Server\Simulation\Event\CommandRejected;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
+use Bedriox\Server\Simulation\Event\ItemEntityMoved;
+use Bedriox\Server\Simulation\Event\ItemEntitySpawned;
 use Bedriox\Server\Simulation\Event\MovementCorrected;
 use Bedriox\Server\Simulation\Event\PlayerDisconnected;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
@@ -38,6 +46,7 @@ use Bedriox\Server\Simulation\VerticalState;
 use Bedriox\Server\Simulation\WorldSimulation;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
+use Bedriox\Server\World\Block\VanillaBlockStates;
 use Bedriox\Server\World\BlockOverrideStore;
 use Bedriox\Server\World\BlockPosition;
 use Bedriox\Server\World\ChunkRepository;
@@ -48,6 +57,44 @@ use PHPUnit\Framework\TestCase;
 
 final class WorldSimulationTest extends TestCase
 {
+    public function testMiningEmitsBlockTexturedPunchEffectsAtBoundedIntervals(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $blocks = new World(new WorldMetadata('punch-test', 0), new FlatWorldGenerator($palette), new ChunkRepository(4));
+        $world = new WorldSimulation(blockWorld: $blocks, blockPalette: $palette);
+        $factory = new SimulationCommandFactory();
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        $world->tick();
+
+        $position = new BlockPosition(1, 63, 0);
+        self::assertTrue($world->enqueue($factory->breakBlock('one', 1, BlockBreakAction::Start, $position, 1)));
+        $started = $world->tick()->events;
+        $punches = array_values(array_filter($started, static fn($event): bool => $event instanceof BlockPunch));
+        self::assertCount(1, $punches);
+        self::assertSame($palette->grassBlock->value, $punches[0]->state->value);
+        self::assertSame(1, $punches[0]->face);
+
+        for ($tick = 0; $tick < 4; ++$tick) {
+            self::assertSame([], array_values(array_filter(
+                $world->tick()->events,
+                static fn($event): bool => $event instanceof BlockPunch,
+            )));
+        }
+        self::assertCount(1, array_values(array_filter(
+            $world->tick()->events,
+            static fn($event): bool => $event instanceof BlockPunch,
+        )));
+        self::assertTrue($world->enqueue($factory->breakBlock('one', 2, BlockBreakAction::Abort, null, 0)));
+        $world->tick();
+        for ($tick = 0; $tick < 5; ++$tick) {
+            self::assertSame([], array_values(array_filter(
+                $world->tick()->events,
+                static fn($event): bool => $event instanceof BlockPunch,
+            )));
+        }
+    }
+
     public function testGrassBreakRevalidatesAuthoritativeWorldWhenTheClientPredictsCompletion(): void
     {
         $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
@@ -103,7 +150,12 @@ final class WorldSimulationTest extends TestCase
         $position = new BlockPosition(1, 63, 0);
         self::assertTrue($world->enqueue($factory->breakBlock('one', 1, BlockBreakAction::Start, $position, 1)));
         self::assertTrue($world->enqueue($factory->breakBlock('two', 1, BlockBreakAction::Start, $position, 1)));
-        self::assertCount(2, $world->tick()->events);
+        $started = $world->tick()->events;
+        self::assertCount(4, $started);
+        self::assertInstanceOf(BlockBreakStarted::class, $started[0]);
+        self::assertInstanceOf(BlockPunch::class, $started[1]);
+        self::assertInstanceOf(BlockBreakStarted::class, $started[2]);
+        self::assertInstanceOf(BlockPunch::class, $started[3]);
         for ($tick = 0; $tick < 17; ++$tick) {
             $world->tick();
         }
@@ -205,6 +257,53 @@ final class WorldSimulationTest extends TestCase
         $second = $world->tick()->events[0];
         self::assertInstanceOf(BlockPlaced::class, $second);
         self::assertSame(63, $second->remainingStack?->count);
+    }
+
+    public function testObtainedCobblestoneAndCobbledDeepslateCanBePlacedInSurvival(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $registry = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $blocks = new World(
+            new WorldMetadata('obtained-block-placement-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+        );
+        $world = new WorldSimulation(
+            blockWorld: $blocks,
+            blockPalette: $palette,
+            itemCatalog: ItemCatalog::vanilla($data->itemNetworkRegistry()),
+            blockCatalog: BlockCatalog::vanilla(),
+            blockStateRegistry: $registry,
+        );
+        $factory = new SimulationCommandFactory();
+        $world->enqueue($factory->join('one', 'identity-one', 'One'));
+        $world->tick();
+
+        foreach ([
+            ['minecraft:cobblestone', VanillaBlockStates::cobblestone(), 1],
+            ['minecraft:cobbled_deepslate', VanillaBlockStates::cobbledDeepslate(), 2],
+        ] as [$identifier, $state, $sequence]) {
+            $world->enqueue($factory->giveItem('one', $identifier, 1));
+            $world->tick();
+            $world->enqueue($factory->selectHotbarSlot('one', 1));
+            $world->tick();
+            $world->enqueue($factory->placeBlock(
+                'one',
+                $sequence,
+                new BlockPosition($sequence + 1, 63, 0),
+                1,
+                1,
+                0,
+                0.5,
+                1.0,
+                0.5,
+            ));
+            $placed = $world->tick()->events[0];
+            self::assertInstanceOf(BlockPlaced::class, $placed, $placed instanceof BlockPlacementCorrected ? $placed->reason : get_debug_type($placed));
+            self::assertSame($registry->internalId($state)->value, $blocks->blockStateAt($sequence + 1, 64, 0)->value);
+            self::assertNull($placed->remainingStack);
+        }
     }
 
     public function testPlacementRejectsCollisionAndRepairsBothBlocksAndInventory(): void
@@ -478,6 +577,48 @@ final class WorldSimulationTest extends TestCase
         $events = $world->tick()->events;
         self::assertInstanceOf(BlockPlaced::class, $events[1]);
         self::assertSame(31, $events[1]->remainingStack?->count);
+    }
+
+    public function testCreativeOutputIsAcceptedOnlyForAnAuthoritativeCreativePlayer(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation(blockPalette: $palette);
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        $world->tick();
+        $action = new InventoryStackRequestAction(
+            InventoryStackRequestActionType::Take,
+            new InventorySlotReference(InventoryContainer::CreatedOutput, 50, -21),
+            new InventorySlotReference(InventoryContainer::Main, 1, 0),
+            16,
+        );
+        $creativeStack = new InventoryStack('minecraft:grass_block', 64, 1, $palette->grassBlock);
+
+        self::assertTrue($world->enqueue($factory->inventoryStackRequest(
+            'one',
+            -21,
+            [$action],
+            authoritativeCreativeStack: $creativeStack,
+        )));
+        $rejected = $world->tick()->events[0];
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $rejected);
+        self::assertFalse($rejected->success);
+        self::assertSame('creative_requires_creative_mode', $rejected->reason);
+        self::assertNull($rejected->mainInventory[1]);
+
+        self::assertTrue($world->enqueue($factory->changeGameMode('one', GameMode::CREATIVE)));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->inventoryStackRequest(
+            'one',
+            -21,
+            [$action],
+            authoritativeCreativeStack: $creativeStack,
+        )));
+        $accepted = $world->tick()->events[0];
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $accepted);
+        self::assertTrue($accepted->success);
+        self::assertSame(16, $accepted->mainInventory[1]?->count);
     }
 
     public function testJoinPublishesDeterministicPeerVisibilityAndFixedSpawn(): void
@@ -1272,6 +1413,95 @@ final class WorldSimulationTest extends TestCase
         $event = $world->tick()->events[0];
         self::assertInstanceOf(PlayerJoined::class, $event);
         self::assertSame(['123'], $event->recipients());
+    }
+
+    public function testJoiningPlayerReceivesExistingDroppedItemActors(): void
+    {
+        $items = new ItemEntityRegistry(firstEntityId: 1_000_000_000);
+        $existing = $items->spawn(
+            new InventoryStack('minecraft:diamond', 2, 1),
+            new Position(20.0, 70.0, 20.0),
+            pickupDelayTicks: 20,
+        );
+        $world = new WorldSimulation(itemEntities: $items);
+        self::assertTrue($world->enqueue((new SimulationCommandFactory())->join('one', 'identity-one', 'One')));
+
+        $events = $world->tick()->events;
+        $spawned = array_values(array_filter($events, static fn($event): bool => $event instanceof ItemEntitySpawned));
+        self::assertCount(1, $spawned);
+        self::assertSame($existing->runtimeEntityId, $spawned[0]->entity->runtimeEntityId);
+        self::assertSame(['one'], $spawned[0]->recipients());
+    }
+
+    public function testItemEntitySettlesOnFlatWorldWithoutHoveringOrDisappearing(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $blocks = new World(new WorldMetadata('item-ground-test', 0), new FlatWorldGenerator($palette), new ChunkRepository(4));
+        $items = new ItemEntityRegistry();
+        $entity = $items->spawn(
+            new InventoryStack('minecraft:cobblestone', 1, 1),
+            new Position(0.5, 64.2, 0.5),
+            pickupDelayTicks: 100,
+        );
+        $world = new WorldSimulation(blockWorld: $blocks, blockPalette: $palette, itemEntities: $items);
+
+        $first = $world->tick()->events;
+        $firstMovement = array_values(array_filter($first, static fn($event): bool => $event instanceof ItemEntityMoved));
+        self::assertCount(1, $firstMovement);
+        self::assertFalse($firstMovement[0]->motionChanged);
+        $second = $world->tick()->events;
+        $secondMovement = array_values(array_filter($second, static fn($event): bool => $event instanceof ItemEntityMoved));
+        self::assertCount(1, $secondMovement);
+        self::assertTrue($secondMovement[0]->motionChanged);
+        for ($tick = 0; $tick < 40; ++$tick) {
+            $world->tick();
+        }
+
+        self::assertSame(1, $items->count());
+        $settled = $items->get($entity->runtimeEntityId);
+        self::assertNotNull($settled);
+        self::assertSame(64.0, $settled->position->y);
+        self::assertSame(0.0, $settled->motion->y);
+    }
+
+    public function testDropAtomicallyRemovesInventoryAndSpawnsTheAuthoritativeItemActor(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $palette = FixedFlatBlockPalette::fromRegistry(new BlockStateRegistry(
+            $data->blockStateRegistry()->states(),
+        ));
+        $items = new ItemEntityRegistry(firstEntityId: 1_000_000_000);
+        $world = new WorldSimulation(blockPalette: $palette, itemEntities: $items);
+        $factory = new SimulationCommandFactory();
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->dropItem(
+            'one',
+            -3,
+            new InventorySlotReference(InventoryContainer::Main, 0, 1, expectedCount: 64),
+            2,
+            InventoryResponseMode::ItemStackResponse,
+            new InventoryStack('minecraft:grass_block', 64, 1, $palette->grassBlock),
+        )));
+
+        $events = $world->tick()->events;
+        $processed = array_values(array_filter(
+            $events,
+            static fn($event): bool => $event instanceof InventoryStackRequestProcessed,
+        ));
+        $spawned = array_values(array_filter(
+            $events,
+            static fn($event): bool => $event instanceof ItemEntitySpawned,
+        ));
+        self::assertCount(1, $processed);
+        self::assertTrue($processed[0]->success);
+        self::assertSame(62, $processed[0]->mainInventory[0]?->count);
+        self::assertCount(1, $spawned);
+        self::assertSame(2, $spawned[0]->entity->stack->count);
+        self::assertSame(40, $spawned[0]->entity->pickupDelayTicks);
+        self::assertEqualsWithDelta(65.3, $spawned[0]->entity->position->y, 0.000_01);
+        self::assertCount(1, $items->all());
     }
 
     public function testQueueCountByteAndPerTickDrainLimitsAreExplicit(): void

@@ -15,6 +15,7 @@ final readonly class InventoryStack
         public int $count,
         public int $stackNetworkId,
         public ?InternalBlockStateId $placedBlockState = null,
+        public int $damage = 0,
     ) {
         if (preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $identifier) !== 1) {
             throw new InvalidArgumentException('Inventory identifier must be canonical and namespaced.');
@@ -29,17 +30,25 @@ final readonly class InventoryStack
         if ($stackNetworkId < 1 || $stackNetworkId > 0x7fffffff) {
             throw new InvalidArgumentException('Inventory stack network ID must be a positive signed 32-bit integer.');
         }
+        if ($damage < 0 || $damage > PlayerInventoryStackState::MAX_DAMAGE) {
+            throw new InvalidArgumentException('Inventory stack damage is outside its supported range.');
+        }
     }
 
     public function decrement(): ?self
     {
         return $this->count === 1
             ? null
-            : new self($this->identifier, $this->count - 1, $this->stackNetworkId, $this->placedBlockState);
+            : new self($this->identifier, $this->count - 1, $this->stackNetworkId, $this->placedBlockState, $this->damage);
     }
 
     public function withCountAndNetworkId(int $count, int $stackNetworkId): self
     {
-        return new self($this->identifier, $count, $stackNetworkId, $this->placedBlockState);
+        return new self($this->identifier, $count, $stackNetworkId, $this->placedBlockState, $this->damage);
+    }
+
+    public function withDamage(int $damage): self
+    {
+        return new self($this->identifier, $this->count, $this->stackNetworkId, $this->placedBlockState, $damage);
     }
 }

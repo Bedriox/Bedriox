@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Bedriox\Api;
 
 use Bedriox\Api\Inventory\ItemStack;
+use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\Player\Player;
 use Bedriox\Api\World\Block;
 use Bedriox\Api\World\BlockPosition;
@@ -32,4 +33,8 @@ interface Server
     public function setBlock(BlockPosition $position, string $identifier): void;
 
     public function setInventorySlot(Player $player, int $slot, ?ItemStack $stack): void;
+
+    public function setGameMode(Player $player, GameMode $gameMode): void;
+
+    public function giveItem(Player $player, ItemStack $stack): void;
 }

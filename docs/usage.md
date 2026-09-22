@@ -55,7 +55,7 @@ The settings file uses one `key=value` entry per line. Blank lines and lines beg
 | `level.name` | `world` | 1–64 bytes of UTF-8 without control characters |
 | `level.generator` | `default` | `default` for seeded terrain or `flat` for the fixed classic profile |
 | `level.seed` | `0` | Signed 32-bit decimal integer; `default` is deterministic and `flat` is seed-independent |
-| `level.default-gamemode` | `survival` | `survival` (the only implemented game mode) |
+| `level.default-gamemode` | `survival` | `survival`, `creative`, `adventure`, or `spectator` |
 | `level.difficulty` | `normal` | `peaceful`, `easy`, `normal`, or `hard` |
 | `pvp` | `true` | Exactly `true` or `false`; controls player-versus-player damage |
 | `level.autosave-interval-ticks` | `6000` | 20 through 72000 ticks between autosave scheduling cycles |
@@ -97,7 +97,11 @@ The qualified protocol family remains alpha software. Unknown commands fail with
 
 ## Commands and permissions
 
-The console and Bedrock slash-command input share one bounded dispatcher. Built-in commands are `version`, `help`, `list`, `stop`, `op`, `deop`, and `permission`. The console always has administrative authority. Players receive only the commands currently available to their UUID when joining.
+The console and Bedrock slash-command input share one bounded dispatcher. Built-in commands are `version`, `help`, `list`, `stop`, `op`, `deop`, `permission`, `gamemode`, and `give`. The console always has administrative authority. Players receive only the commands currently available to their UUID when joining.
+
+`gamemode <mode> [player]` accepts the canonical names and numeric aliases for survival, creative, adventure, and spectator. `give <player> <item> [amount]` resolves canonical `minecraft:*` identifiers through the active gameplay catalog. Both commands enqueue normal authoritative simulation work; they do not mutate network sessions directly.
+
+The retail player inventory uses a server-synchronized dynamic window. Moving, splitting, placing, dropping, and picking up admitted items are authoritative: invalid or stale client predictions are corrected to the server-held slots without changing unrelated inventory state.
 
 `op <online-player>` and `deop <online-player>` change operator authority. `permission list <online-player>`, `permission grant <online-player> <node>`, and `permission revoke <online-player> <node>` manage explicit grants. A grant such as `example.*` covers descendants such as `example.build`; operators satisfy every permission. Targets must be online so Bedriox resolves the authenticated UUID instead of trusting a mutable name. Effective changes are projected to the connected client immediately: operator changes refresh abilities and command visibility, while grant/revoke refreshes the available command list. Repeating an already-effective assignment produces no redundant network update.
 

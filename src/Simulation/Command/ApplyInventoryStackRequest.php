@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Simulation\Command;
 
 use Bedriox\Server\Player\InventoryResponseMode;
+use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Player\InventoryStackRequestAction;
 
 final readonly class ApplyInventoryStackRequest implements WorldCommand
@@ -16,6 +17,7 @@ final readonly class ApplyInventoryStackRequest implements WorldCommand
         public array $actions,
         public ?string $rejectionReason = null,
         public InventoryResponseMode $responseMode = InventoryResponseMode::ItemStackResponse,
+        public ?InventoryStack $authoritativeCreativeStack = null,
     ) {}
 
     public function sessionId(): string
@@ -25,6 +27,7 @@ final readonly class ApplyInventoryStackRequest implements WorldCommand
 
     public function estimatedBytes(): int
     {
-        return 32 + strlen($this->session) + strlen($this->rejectionReason ?? '') + count($this->actions) * 48;
+        return 32 + strlen($this->session) + strlen($this->rejectionReason ?? '') + count($this->actions) * 48
+            + ($this->authoritativeCreativeStack === null ? 0 : 64 + strlen($this->authoritativeCreativeStack->identifier));
     }
 }

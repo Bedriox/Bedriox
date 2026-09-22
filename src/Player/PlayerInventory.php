@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Player;
 
+use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use InvalidArgumentException;
 use OverflowException;
@@ -25,6 +26,7 @@ final class PlayerInventory
         private int $selectedHotbarSlot = 0,
         private ?InventoryStack $cursor = null,
         private int $nextStackNetworkId = 2,
+        private ?ItemCatalog $catalog = null,
     ) {
         foreach ($stacks as $slot => $stack) {
             self::validateSlot($slot);
@@ -32,21 +34,24 @@ final class PlayerInventory
         self::validateHotbarSlot($selectedHotbarSlot);
     }
 
-    public static function empty(): self
+    public static function empty(?ItemCatalog $catalog = null): self
     {
-        return new self();
+        return new self(catalog: $catalog);
     }
 
-    public static function starter(FixedFlatBlockPalette $palette): self
+    public static function starter(FixedFlatBlockPalette $palette, ?ItemCatalog $catalog = null): self
     {
         return new self([
             0 => new InventoryStack('minecraft:grass_block', 64, 1, $palette->grassBlock),
-        ]);
+        ], catalog: $catalog);
     }
 
     /** Restores canonical content while assigning fresh play-session stack network IDs. */
-    public static function restore(PlayerInventoryState $state, FixedFlatBlockPalette $palette): self
-    {
+    public static function restore(
+        PlayerInventoryState $state,
+        FixedFlatBlockPalette $palette,
+        ?ItemCatalog $catalog = null,
+    ): self {
         $stacks = [];
         $nextStackNetworkId = 1;
         foreach ($state->entries as $entry) {
@@ -56,7 +61,7 @@ final class PlayerInventory
             ? null
             : self::restoreStack($state->cursor, $palette, $nextStackNetworkId++);
 
-        return new self($stacks, $state->selectedHotbarSlot, $cursor, $nextStackNetworkId);
+        return new self($stacks, $state->selectedHotbarSlot, $cursor, $nextStackNetworkId, $catalog);
     }
 
     public function exportState(): PlayerInventoryState
@@ -65,7 +70,7 @@ final class PlayerInventory
         foreach ($this->stacks as $slot => $stack) {
             $entries[] = new PlayerInventoryEntry(
                 $slot,
-                new PlayerInventoryStackState($stack->identifier, $stack->count),
+                new PlayerInventoryStackState($stack->identifier, $stack->count, $stack->damage),
             );
         }
 
@@ -74,7 +79,7 @@ final class PlayerInventory
             $this->selectedHotbarSlot,
             $this->cursor === null
                 ? null
-                : new PlayerInventoryStackState($this->cursor->identifier, $this->cursor->count),
+                : new PlayerInventoryStackState($this->cursor->identifier, $this->cursor->count, $this->cursor->damage),
         );
     }
 
@@ -125,6 +130,9 @@ final class PlayerInventory
 
             return;
         }
+        if ($stack->count > $this->maximumStackSize($stack->identifier)) {
+            throw new InvalidArgumentException('Inventory stack exceeds the item capacity.');
+        }
         $usedIds = [];
         foreach ($this->stacks as $existing) {
             $usedIds[$existing->stackNetworkId] = true;
@@ -156,18 +164,100 @@ final class PlayerInventory
         return $replacement;
     }
 
+    public function removeForDrop(
+        int $requestId,
+        InventorySlotReference $source,
+        int $count,
+        ?InventoryStack $expectedStack = null,
+    ): InventoryStackRemovalResult {
+        if (!in_array($source->container, [InventoryContainer::Main, InventoryContainer::Cursor], true)
+            || ($source->container === InventoryContainer::Main && ($source->slot < 0 || $source->slot >= self::SLOT_COUNT))
+            || ($source->container === InventoryContainer::Cursor && $source->slot !== 0)
+            || $count < 1) {
+            return new InventoryStackRemovalResult(false, reason: 'drop_source');
+        }
+        $stack = $source->container === InventoryContainer::Main
+            ? ($this->stacks[$source->slot] ?? null)
+            : $this->cursor;
+        if ($stack === null || $stack->count < $count) {
+            return new InventoryStackRemovalResult(false, reason: 'source_count');
+        }
+        if ($source->expectedCount !== null && $source->expectedCount !== $stack->count) {
+            return new InventoryStackRemovalResult(false, reason: 'stack_count');
+        }
+        $lastRequestId = $source->container === InventoryContainer::Main
+            ? ($this->lastRequestIds[$source->slot] ?? null)
+            : $this->cursorLastRequestId;
+        $networkIdMatches = $source->expectedStackNetworkId === 0
+            || ($source->expectedStackNetworkId < 0
+                ? $lastRequestId === $source->expectedStackNetworkId
+                    || $source->expectedStackNetworkId === $requestId
+                : $source->expectedStackNetworkId === $stack->stackNetworkId);
+        if (!$networkIdMatches) {
+            return new InventoryStackRemovalResult(false, reason: 'stack_network_id');
+        }
+        if ($expectedStack !== null && !self::sameContent($stack, $expectedStack)) {
+            return new InventoryStackRemovalResult(false, reason: 'source_item');
+        }
+
+        $removed = $stack->withCountAndNetworkId($count, $stack->stackNetworkId);
+        $remaining = $stack->count - $count;
+        if ($remaining === 0) {
+            if ($source->container === InventoryContainer::Main) {
+                unset($this->stacks[$source->slot]);
+            } else {
+                $this->cursor = null;
+            }
+        } else {
+            $usedIds = [];
+            foreach ($this->stacks as $slot => $existing) {
+                if ($slot !== $source->slot) {
+                    $usedIds[$existing->stackNetworkId] = true;
+                }
+            }
+            if ($this->cursor !== null) {
+                $usedIds[$this->cursor->stackNetworkId] = true;
+            }
+            $networkId = self::allocateStackNetworkId($this->nextStackNetworkId, $usedIds);
+            if ($networkId === null) {
+                return new InventoryStackRemovalResult(false, reason: 'stack_id_capacity');
+            }
+            $replacement = $stack->withCountAndNetworkId($remaining, $networkId);
+            if ($source->container === InventoryContainer::Main) {
+                $this->stacks[$source->slot] = $replacement;
+            } else {
+                $this->cursor = $replacement;
+            }
+        }
+        if ($source->container === InventoryContainer::Main) {
+            $this->lastRequestIds[$source->slot] = $requestId;
+        } else {
+            $this->cursorLastRequestId = $requestId;
+        }
+
+        return new InventoryStackRemovalResult(
+            true,
+            $removed,
+            $source->container === InventoryContainer::Main && $source->slot === $this->selectedHotbarSlot,
+        );
+    }
+
     /**
      * Applies one PMMP-style item-stack request atomically against staged authoritative state.
      *
      * @param list<InventoryStackRequestAction> $actions
      */
-    public function applyStackRequest(int $requestId, array $actions): InventoryStackRequestResult
-    {
+    public function applyStackRequest(
+        int $requestId,
+        array $actions,
+        ?InventoryStack $createdOutput = null,
+    ): InventoryStackRequestResult {
         if ($actions === []) {
             return new InventoryStackRequestResult(false, reason: 'empty_actions');
         }
         $stagedStacks = $this->stacks;
         $stagedCursor = $this->cursor;
+        $stagedCreatedOutput = $createdOutput;
         $stagedLastRequestIds = $this->lastRequestIds;
         $stagedCursorLastRequestId = $this->cursorLastRequestId;
         $affected = [];
@@ -179,6 +269,7 @@ final class PlayerInventory
                 $requestId,
                 $stagedStacks,
                 $stagedCursor,
+                $stagedCreatedOutput,
                 $stagedLastRequestIds,
                 $stagedCursorLastRequestId,
             ) ?? $this->validateReference(
@@ -186,6 +277,7 @@ final class PlayerInventory
                 $requestId,
                 $stagedStacks,
                 $stagedCursor,
+                $stagedCreatedOutput,
                 $stagedLastRequestIds,
                 $stagedCursorLastRequestId,
             );
@@ -195,34 +287,77 @@ final class PlayerInventory
             if ($action->source->key() === $action->destination->key()) {
                 return new InventoryStackRequestResult(false, reason: 'same_slot');
             }
-            $affected[$action->source->responseKey()] = $action->source;
-            $affected[$action->destination->responseKey()] = $action->destination;
-            $mutated[$action->source->key()] = $action->source;
-            $mutated[$action->destination->key()] = $action->destination;
+            if ($action->source->container !== InventoryContainer::CreatedOutput) {
+                $affected[$action->source->responseKey()] = $action->source;
+                $mutated[$action->source->key()] = $action->source;
+            }
+            if ($action->destination->container !== InventoryContainer::CreatedOutput) {
+                $affected[$action->destination->responseKey()] = $action->destination;
+                $mutated[$action->destination->key()] = $action->destination;
+            }
 
             if ($action->type === InventoryStackRequestActionType::Swap) {
-                $source = self::readSlot($action->source, $stagedStacks, $stagedCursor);
-                $destination = self::readSlot($action->destination, $stagedStacks, $stagedCursor);
-                self::writeSlot($action->source, $destination, $stagedStacks, $stagedCursor);
-                self::writeSlot($action->destination, $source, $stagedStacks, $stagedCursor);
+                if ($action->destination->container === InventoryContainer::CreatedOutput) {
+                    return new InventoryStackRequestResult(false, reason: 'created_output_destination');
+                }
+                $source = self::readSlot($action->source, $stagedStacks, $stagedCursor, $stagedCreatedOutput);
+                $destination = self::readSlot(
+                    $action->destination,
+                    $stagedStacks,
+                    $stagedCursor,
+                    $stagedCreatedOutput,
+                );
+                if ($action->source->container !== InventoryContainer::CreatedOutput) {
+                    self::writeSlot(
+                        $action->source,
+                        $destination,
+                        $stagedStacks,
+                        $stagedCursor,
+                        $stagedCreatedOutput,
+                    );
+                }
+                self::writeSlot(
+                    $action->destination,
+                    $source,
+                    $stagedStacks,
+                    $stagedCursor,
+                    $stagedCreatedOutput,
+                );
             } else {
                 if ($action->count < 1) {
                     return new InventoryStackRequestResult(false, reason: 'invalid_count');
                 }
-                $source = self::readSlot($action->source, $stagedStacks, $stagedCursor);
-                if ($source === null || $source->count < $action->count) {
+                if ($action->destination->container === InventoryContainer::CreatedOutput) {
+                    return new InventoryStackRequestResult(false, reason: 'created_output_destination');
+                }
+                $source = self::readSlot($action->source, $stagedStacks, $stagedCursor, $stagedCreatedOutput);
+                $unlimitedCreatedOutput = $action->source->container === InventoryContainer::CreatedOutput;
+                if ($source === null || (!$unlimitedCreatedOutput && $source->count < $action->count)) {
                     return new InventoryStackRequestResult(false, reason: 'source_count');
                 }
-                $sourceRemaining = $source->count === $action->count
-                    ? null
-                    : $source->withCountAndNetworkId($source->count - $action->count, $source->stackNetworkId);
-                self::writeSlot($action->source, $sourceRemaining, $stagedStacks, $stagedCursor);
-                $destination = self::readSlot($action->destination, $stagedStacks, $stagedCursor);
+                if (!$unlimitedCreatedOutput) {
+                    $sourceRemaining = $source->count === $action->count
+                        ? null
+                        : $source->withCountAndNetworkId($source->count - $action->count, $source->stackNetworkId);
+                    self::writeSlot(
+                        $action->source,
+                        $sourceRemaining,
+                        $stagedStacks,
+                        $stagedCursor,
+                        $stagedCreatedOutput,
+                    );
+                }
+                $destination = self::readSlot(
+                    $action->destination,
+                    $stagedStacks,
+                    $stagedCursor,
+                    $stagedCreatedOutput,
+                );
                 if ($destination !== null && !self::canStack($source, $destination)) {
                     return new InventoryStackRequestResult(false, reason: 'destination_item');
                 }
                 $existingCount = $destination === null ? 0 : $destination->count;
-                if ($existingCount + $action->count > SupportedInventoryItem::maximumStackSize($source->identifier)) {
+                if ($existingCount + $action->count > $this->maximumStackSize($source->identifier)) {
                     return new InventoryStackRequestResult(false, reason: 'destination_capacity');
                 }
                 $destinationCount = $existingCount + $action->count;
@@ -230,7 +365,13 @@ final class PlayerInventory
                     $destinationCount,
                     ($destination ?? $source)->stackNetworkId,
                 );
-                self::writeSlot($action->destination, $destinationResult, $stagedStacks, $stagedCursor);
+                self::writeSlot(
+                    $action->destination,
+                    $destinationResult,
+                    $stagedStacks,
+                    $stagedCursor,
+                    $stagedCreatedOutput,
+                );
             }
 
             self::writeLastRequestId(
@@ -258,7 +399,7 @@ final class PlayerInventory
         $nextId = $this->nextStackNetworkId;
         foreach ($mutated as $reference) {
             $before = $this->readAuthoritativeSlot($reference);
-            $after = self::readSlot($reference, $stagedStacks, $stagedCursor);
+            $after = self::readSlot($reference, $stagedStacks, $stagedCursor, $stagedCreatedOutput);
             if (self::sameContent($before, $after)) {
                 self::writeLastRequestId(
                     $reference,
@@ -274,7 +415,7 @@ final class PlayerInventory
                     return new InventoryStackRequestResult(false, reason: 'stack_id_capacity');
                 }
                 $after = $after->withCountAndNetworkId($after->count, $id);
-                self::writeSlot($reference, $after, $stagedStacks, $stagedCursor);
+                self::writeSlot($reference, $after, $stagedStacks, $stagedCursor, $stagedCreatedOutput);
                 $usedIds[$id] = true;
             }
         }
@@ -292,6 +433,61 @@ final class PlayerInventory
         );
     }
 
+    /** Adds as much as possible using existing compatible stacks before empty slots. */
+    public function add(InventoryStack $incoming): ?InventoryStack
+    {
+        $remaining = $incoming->count;
+        $maximum = $this->maximumStackSize($incoming->identifier);
+        foreach ($this->stacks as $slot => $stack) {
+            if (!self::canStack($incoming, $stack) || $stack->count >= $maximum) {
+                continue;
+            }
+            $added = min($remaining, $maximum - $stack->count);
+            $this->stacks[$slot] = $stack->withCountAndNetworkId($stack->count + $added, $stack->stackNetworkId);
+            $remaining -= $added;
+            if ($remaining === 0) {
+                return null;
+            }
+        }
+        for ($slot = 0; $slot < self::SLOT_COUNT && $remaining > 0; ++$slot) {
+            if (isset($this->stacks[$slot])) {
+                continue;
+            }
+            $count = min($remaining, $maximum);
+            $usedIds = [];
+            foreach ($this->stacks as $stack) {
+                $usedIds[$stack->stackNetworkId] = true;
+            }
+            if ($this->cursor !== null) {
+                $usedIds[$this->cursor->stackNetworkId] = true;
+            }
+            $networkId = self::allocateStackNetworkId($this->nextStackNetworkId, $usedIds);
+            if ($networkId === null) {
+                break;
+            }
+            $this->stacks[$slot] = $incoming->withCountAndNetworkId($count, $networkId);
+            $remaining -= $count;
+        }
+
+        return $remaining === 0
+            ? null
+            : $incoming->withCountAndNetworkId($remaining, $incoming->stackNetworkId);
+    }
+
+    public function addableQuantity(InventoryStack $incoming): int
+    {
+        $maximum = $this->maximumStackSize($incoming->identifier);
+        $quantity = 0;
+        foreach ($this->stacks as $stack) {
+            if (self::canStack($incoming, $stack)) {
+                $quantity += max(0, $maximum - $stack->count);
+            }
+        }
+        $quantity += (self::SLOT_COUNT - count($this->stacks)) * $maximum;
+
+        return $quantity;
+    }
+
     /**
      * @param array<int, InventoryStack> $stacks
      * @param array<int, int> $lastRequestIds
@@ -301,17 +497,22 @@ final class PlayerInventory
         int $requestId,
         array $stacks,
         ?InventoryStack $cursor,
+        ?InventoryStack $createdOutput,
         array $lastRequestIds,
         ?int $cursorLastRequestId,
     ): ?string {
         if (($reference->container === InventoryContainer::Main && ($reference->slot < 0 || $reference->slot >= self::SLOT_COUNT))
-            || ($reference->container === InventoryContainer::Cursor && $reference->slot !== 0)) {
+            || ($reference->container === InventoryContainer::Cursor && $reference->slot !== 0)
+            || ($reference->container === InventoryContainer::CreatedOutput && $reference->slot !== 50)) {
             return 'slot';
         }
-        $stack = self::readSlot($reference, $stacks, $cursor);
+        $stack = self::readSlot($reference, $stacks, $cursor, $createdOutput);
         $stackCount = $stack === null ? 0 : $stack->count;
         if ($reference->expectedCount !== null && $stackCount !== $reference->expectedCount) {
             return 'stack_count';
+        }
+        if ($reference->container === InventoryContainer::CreatedOutput) {
+            return null;
         }
         $lastRequestId = $reference->container === InventoryContainer::Main
             ? ($lastRequestIds[$reference->slot] ?? null)
@@ -329,10 +530,13 @@ final class PlayerInventory
         InventorySlotReference $reference,
         array $stacks,
         ?InventoryStack $cursor,
+        ?InventoryStack $createdOutput,
     ): ?InventoryStack {
-        return $reference->container === InventoryContainer::Main
-            ? ($stacks[$reference->slot] ?? null)
-            : $cursor;
+        return match ($reference->container) {
+            InventoryContainer::Main => $stacks[$reference->slot] ?? null,
+            InventoryContainer::Cursor => $cursor,
+            InventoryContainer::CreatedOutput => $createdOutput,
+        };
     }
 
     /** @param array<int, InventoryStack> $stacks */
@@ -341,9 +545,12 @@ final class PlayerInventory
         ?InventoryStack $stack,
         array &$stacks,
         ?InventoryStack &$cursor,
+        ?InventoryStack &$createdOutput,
     ): void {
         if ($reference->container === InventoryContainer::Cursor) {
             $cursor = $stack;
+        } elseif ($reference->container === InventoryContainer::CreatedOutput) {
+            $createdOutput = $stack;
         } elseif ($stack === null) {
             unset($stacks[$reference->slot]);
         } else {
@@ -360,6 +567,8 @@ final class PlayerInventory
     ): void {
         if ($reference->container === InventoryContainer::Cursor) {
             $cursorLastRequestId = $requestId;
+        } elseif ($reference->container === InventoryContainer::CreatedOutput) {
+            return;
         } elseif ($requestId === null) {
             unset($lastRequestIds[$reference->slot]);
         } else {
@@ -369,21 +578,26 @@ final class PlayerInventory
 
     private function readAuthoritativeSlot(InventorySlotReference $reference): ?InventoryStack
     {
-        return $reference->container === InventoryContainer::Main
-            ? ($this->stacks[$reference->slot] ?? null)
-            : $this->cursor;
+        return match ($reference->container) {
+            InventoryContainer::Main => $this->stacks[$reference->slot] ?? null,
+            InventoryContainer::Cursor => $this->cursor,
+            InventoryContainer::CreatedOutput => null,
+        };
     }
 
     private function readLastRequestId(InventorySlotReference $reference): ?int
     {
-        return $reference->container === InventoryContainer::Main
-            ? ($this->lastRequestIds[$reference->slot] ?? null)
-            : $this->cursorLastRequestId;
+        return match ($reference->container) {
+            InventoryContainer::Main => $this->lastRequestIds[$reference->slot] ?? null,
+            InventoryContainer::Cursor => $this->cursorLastRequestId,
+            InventoryContainer::CreatedOutput => null,
+        };
     }
 
     private static function canStack(InventoryStack $left, InventoryStack $right): bool
     {
         return $left->identifier === $right->identifier
+            && $left->damage === $right->damage
             && $left->placedBlockState?->value === $right->placedBlockState?->value;
     }
 
@@ -392,23 +606,20 @@ final class PlayerInventory
         FixedFlatBlockPalette $palette,
         int $stackNetworkId,
     ): InventoryStack {
-        if (!SupportedInventoryItem::supports($state->identifier)
-            || $state->count > SupportedInventoryItem::maximumStackSize($state->identifier)) {
-            throw new InvalidArgumentException('Inventory state contains an unsupported item.');
-        }
+        $placedBlockState = $state->identifier === 'minecraft:grass_block' ? $palette->grassBlock : null;
 
-        return new InventoryStack(
-            $state->identifier,
-            $state->count,
-            $stackNetworkId,
-            $state->identifier === 'minecraft:grass_block' ? $palette->grassBlock : null,
-        );
+        return new InventoryStack($state->identifier, $state->count, $stackNetworkId, $placedBlockState, $state->damage);
     }
 
     private static function sameContent(?InventoryStack $left, ?InventoryStack $right): bool
     {
         return ($left === null && $right === null)
             || ($left !== null && $right !== null && self::canStack($left, $right) && $left->count === $right->count);
+    }
+
+    private function maximumStackSize(string $identifier): int
+    {
+        return $this->catalog?->type($identifier)->maximumStackSize ?? 64;
     }
 
     /** @param array<int, true> $usedIds */

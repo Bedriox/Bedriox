@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Simulation;
 
+use Bedriox\Api\Player\GameMode;
 use Bedriox\Server\Player\InventoryContainer;
 use Bedriox\Server\Player\InventoryResponseMode;
+use Bedriox\Server\Player\InventorySlotReference;
 use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Player\InventoryStackRequestAction;
 use Bedriox\Server\Player\PlayerBootstrap;
@@ -13,8 +15,11 @@ use Bedriox\Server\Simulation\Command\AcknowledgeRespawn;
 use Bedriox\Server\Simulation\Command\ApplyInventoryStackRequest;
 use Bedriox\Server\Simulation\Command\AttackPlayer;
 use Bedriox\Server\Simulation\Command\BreakBlock;
+use Bedriox\Server\Simulation\Command\ChangeGameMode;
 use Bedriox\Server\Simulation\Command\DamagePlayer;
 use Bedriox\Server\Simulation\Command\DisconnectPlayer;
+use Bedriox\Server\Simulation\Command\DropItem;
+use Bedriox\Server\Simulation\Command\GiveItem;
 use Bedriox\Server\Simulation\Command\JoinPlayer;
 use Bedriox\Server\Simulation\Command\MovePlayer;
 use Bedriox\Server\Simulation\Command\PerformEmote;
@@ -25,6 +30,7 @@ use Bedriox\Server\Simulation\Command\SendChat;
 use Bedriox\Server\Simulation\Command\SendPluginMessage;
 use Bedriox\Server\Simulation\Command\SetPluginBlock;
 use Bedriox\Server\Simulation\Command\SetPluginInventorySlot;
+use Bedriox\Server\Simulation\Command\SyncInventory;
 use Bedriox\Server\Simulation\Command\TeleportPlayer;
 use Bedriox\Server\World\BlockPosition;
 
@@ -72,6 +78,7 @@ final readonly class SimulationCommandFactory
         ?bool $sneaking = null,
         ?bool $sprinting = null,
         ?ClientInputTick $clientTick = null,
+        bool $flying = false,
     ): MovePlayer {
         $this->assertOpaqueId($session, 128, 'session');
         if ($sequence < 0) {
@@ -110,6 +117,7 @@ final readonly class SimulationCommandFactory
             $sneaking,
             $sprinting,
             $clientTick ?? ClientInputTick::fromInt($sequence),
+            $flying,
         );
     }
 
@@ -219,6 +227,54 @@ final readonly class SimulationCommandFactory
         return new AttackPlayer($session, $targetRuntimeActorId, $hotbarSlot);
     }
 
+    public function changeGameMode(string $session, GameMode $gameMode): ChangeGameMode
+    {
+        $this->assertOpaqueId($session, 128, 'session');
+
+        return new ChangeGameMode($session, $gameMode);
+    }
+
+    public function giveItem(string $session, string $identifier, int $amount): GiveItem
+    {
+        $this->assertOpaqueId($session, 128, 'session');
+        if (preg_match('/^[a-z0-9_.-]+:[a-z0-9_.-]+$/D', $identifier) !== 1
+            || $amount < 1 || $amount > 32_767) {
+            throw new CommandValidationException('Given item is invalid or outside its bounded amount.');
+        }
+
+        return new GiveItem($session, $identifier, $amount);
+    }
+
+    public function dropItem(
+        string $session,
+        int $requestId,
+        InventorySlotReference $source,
+        int $count,
+        InventoryResponseMode $responseMode,
+        ?InventoryStack $expectedStack = null,
+    ): DropItem {
+        $this->assertOpaqueId($session, 128, 'session');
+        if ($requestId < -0x80000000 || $requestId > 0x7fffffff
+            || !in_array($source->container, [InventoryContainer::Main, InventoryContainer::Cursor], true)
+            || ($source->container === InventoryContainer::Main && ($source->slot < 0 || $source->slot >= 36))
+            || ($source->container === InventoryContainer::Cursor && $source->slot !== 0)
+            || $source->expectedStackNetworkId < -0x80000000
+            || $source->expectedStackNetworkId > 0x7fffffff
+            || $count < 1 || $count > 64
+            || ($expectedStack !== null && $expectedStack->count !== ($source->expectedCount ?? $expectedStack->count))) {
+            throw new CommandValidationException('Item drop intent is invalid.');
+        }
+
+        return new DropItem($session, $requestId, $source, $count, $responseMode, $expectedStack);
+    }
+
+    public function syncInventory(string $session): SyncInventory
+    {
+        $this->assertOpaqueId($session, 128, 'session');
+
+        return new SyncInventory($session);
+    }
+
     public function respawn(string $session): RespawnPlayer
     {
         $this->assertOpaqueId($session, 128, 'session');
@@ -299,6 +355,7 @@ final readonly class SimulationCommandFactory
         array $actions,
         ?string $rejectionReason = null,
         InventoryResponseMode $responseMode = InventoryResponseMode::ItemStackResponse,
+        ?InventoryStack $authoritativeCreativeStack = null,
     ): ApplyInventoryStackRequest {
         $this->assertOpaqueId($session, 128, 'session');
         if ($actions === [] && $rejectionReason === null) {
@@ -316,13 +373,23 @@ final readonly class SimulationCommandFactory
                 || ($action->destination->container === InventoryContainer::Main
                     && ($action->destination->slot < 0 || $action->destination->slot >= 36))
                 || ($action->source->container === InventoryContainer::Cursor && $action->source->slot !== 0)
-                || ($action->destination->container === InventoryContainer::Cursor && $action->destination->slot !== 0)) {
+                || ($action->destination->container === InventoryContainer::Cursor && $action->destination->slot !== 0)
+                || ($action->source->container === InventoryContainer::CreatedOutput && $action->source->slot !== 50)
+                || ($action->destination->container === InventoryContainer::CreatedOutput
+                    && $action->destination->slot !== 50)) {
                 throw new CommandValidationException('Inventory stack request action is invalid.');
             }
             $validatedActions[] = $action;
         }
 
-        return new ApplyInventoryStackRequest($session, $requestId, $validatedActions, $rejectionReason, $responseMode);
+        return new ApplyInventoryStackRequest(
+            $session,
+            $requestId,
+            $validatedActions,
+            $rejectionReason,
+            $responseMode,
+            $authoritativeCreativeStack,
+        );
     }
 
     private function assertOpaqueId(string $value, int $maximumBytes, string $name): void

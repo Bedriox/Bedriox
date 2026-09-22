@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Player\Persistence;
 
+use Bedriox\Api\Player\GameMode;
+use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Login\AuthenticatedLogin;
 use Bedriox\Server\Player\Player;
 use Bedriox\Server\Player\PlayerBootstrap;
@@ -27,7 +29,10 @@ final class PlayerPersistenceManager
         private readonly Position $defaultSpawn,
         private readonly FixedFlatBlockPalette $palette,
         ?Closure $clock = null,
+        private readonly string $defaultGamemode = 'survival',
+        private readonly ?ItemCatalog $itemCatalog = null,
     ) {
+        GameMode::from($this->defaultGamemode);
         $this->clock = $clock ?? static fn(): int => time();
     }
 
@@ -46,9 +51,10 @@ final class PlayerPersistenceManager
                 $this->defaultSpawn,
                 0.0,
                 0.0,
-                PlayerInventory::starter($this->palette)->exportState(),
+                PlayerInventory::starter($this->palette, $this->itemCatalog)->exportState(),
                 $now,
                 $now,
+                $this->defaultGamemode,
             );
         }
 

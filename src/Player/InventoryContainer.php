@@ -8,4 +8,6 @@ enum InventoryContainer
 {
     case Main;
     case Cursor;
+    /** Ephemeral request-local slot populated by an authoritative craft or creative selection. */
+    case CreatedOutput;
 }

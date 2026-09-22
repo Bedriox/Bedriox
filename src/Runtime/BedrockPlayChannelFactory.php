@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
+use Bedriox\Api\Player\GameMode;
 use Bedriox\Protocol\Packet\SetCommandsEnabledPacket;
 use Bedriox\Protocol\Packet\UpdateAbilitiesPacket;
 use Bedriox\Protocol\Value\UnsignedLong;
@@ -54,7 +55,11 @@ final readonly class BedrockPlayChannelFactory implements PlayChannelFactory
             $projector = new BedrockCommandPacketProjector($this->commandRegistry, $this->permissionStore);
             $initializationPackets = array_values(array_filter(array_map(
                 fn($packet) => $packet instanceof UpdateAbilitiesPacket
-                    ? $projector->abilities($ready->login->identity, $runtimeEntityId->toSignedBits())
+                    ? $projector->abilities(
+                        $ready->login->identity,
+                        $runtimeEntityId->toSignedBits(),
+                        GameMode::from($bootstrap === null ? 'survival' : $bootstrap->gamemode),
+                    )
                     : $packet,
                 $initializationPackets,
             ), static fn($packet): bool => !$packet instanceof SetCommandsEnabledPacket));

@@ -51,6 +51,21 @@ final class PlayerDataCodecTest extends TestCase
         self::assertEquals($withTool, $codec->decode($codec->encode($withTool)));
     }
 
+    public function testRoundTripsArbitraryItemsAndDamageWithoutSessionNetworkIds(): void
+    {
+        $profile = self::profileWithInventory(new PlayerInventoryState([
+            new PlayerInventoryEntry(3, new PlayerInventoryStackState('minecraft:diamond_pickaxe', 1, 713)),
+            new PlayerInventoryEntry(9, new PlayerInventoryStackState('example:custom_item', 12, 4)),
+        ], 3, new PlayerInventoryStackState('minecraft:iron_shovel', 1, 122)));
+
+        $decoded = (new PlayerDataCodec())->decode((new PlayerDataCodec())->encode($profile));
+
+        self::assertEquals($profile, $decoded);
+        self::assertSame(713, $decoded->inventory->entries[0]->stack->damage);
+        self::assertSame('example:custom_item', $decoded->inventory->entries[1]->stack->identifier);
+        self::assertSame(122, $decoded->inventory->cursor?->damage);
+    }
+
     public function testPersistsHealthAndMigratesSchemaOneProfilesAtFullHealth(): void
     {
         $profile = self::profile();
@@ -72,10 +87,29 @@ final class PlayerDataCodecTest extends TestCase
         $legacy = self::root();
         $legacy['SchemaVersion'] = LittleEndianNbtTag::int(1);
         unset($legacy['Health']);
+        $legacy = self::withoutDamageTags($legacy);
         self::assertSame(
             20.0,
             $codec->decode((new LittleEndianNbtCodec())->encodeRootCompound($legacy))->health,
         );
+    }
+
+    public function testSchemaOneAndTwoInventoryStacksMigrateWithZeroDamage(): void
+    {
+        $codec = new PlayerDataCodec();
+        foreach ([1, 2] as $schema) {
+            $legacy = self::withoutDamageTags(self::root());
+            $legacy['SchemaVersion'] = LittleEndianNbtTag::int($schema);
+            if ($schema === 1) {
+                unset($legacy['Health']);
+            }
+
+            $decoded = $codec->decode((new LittleEndianNbtCodec())->encodeRootCompound($legacy));
+            foreach ($decoded->inventory->entries as $entry) {
+                self::assertSame(0, $entry->stack->damage);
+            }
+            self::assertSame(0, $decoded->inventory->cursor?->damage);
+        }
     }
 
     public function testRejectsHealthOutsideTheAuthoritativeRange(): void
@@ -183,5 +217,59 @@ final class PlayerDataCodecTest extends TestCase
             1_700_000_000_000,
             1_700_000_001_000,
         );
+    }
+
+    private static function profileWithInventory(PlayerInventoryState $inventory): PlayerBootstrap
+    {
+        $profile = self::profile();
+
+        return new PlayerBootstrap(
+            $profile->identity,
+            $profile->worldName,
+            $profile->position,
+            $profile->yaw,
+            $profile->pitch,
+            $inventory,
+            $profile->firstPlayedAt,
+            $profile->lastPlayedAt,
+            $profile->gamemode,
+            $profile->health,
+        );
+    }
+
+    /**
+     * @param array<string, LittleEndianNbtTag> $root
+     * @return array<string, LittleEndianNbtTag>
+     */
+    private static function withoutDamageTags(array $root): array
+    {
+        $inventory = $root['Inventory'];
+        self::assertIsArray($inventory->value);
+        $entries = [];
+        foreach ($inventory->value as $entry) {
+            self::assertInstanceOf(LittleEndianNbtTag::class, $entry);
+            $entries[] = self::withoutDamageTag($entry);
+        }
+        $root['Inventory'] = LittleEndianNbtTag::list(LittleEndianNbtTag::COMPOUND, $entries);
+        if (isset($root['Cursor'])) {
+            $root['Cursor'] = self::withoutDamageTag($root['Cursor']);
+        }
+
+        return $root;
+    }
+
+    private static function withoutDamageTag(LittleEndianNbtTag $compound): LittleEndianNbtTag
+    {
+        self::assertIsArray($compound->value);
+        $tags = [];
+        foreach ($compound->value as $name => $tag) {
+            self::assertIsString($name);
+            self::assertInstanceOf(LittleEndianNbtTag::class, $tag);
+            if ($name !== 'Damage') {
+                $tags[$name] = $tag;
+            }
+        }
+
+        return LittleEndianNbtTag::compound($tags);
     }
 }

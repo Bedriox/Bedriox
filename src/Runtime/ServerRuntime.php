@@ -5,16 +5,20 @@ declare(strict_types=1);
 namespace Bedriox\Server\Runtime;
 
 use Bedriox\Api\Command\CommandResult;
+use Bedriox\Api\Player\GameMode;
 use Bedriox\Protocol\Packet\CommandOutputMessage;
 use Bedriox\Protocol\Packet\CommandOutputPacket;
 use Bedriox\Protocol\Packet\CommandOutputType;
 use Bedriox\Protocol\Packet\Packet;
+use Bedriox\Protocol\Packet\SystemTextPacket;
+use Bedriox\Protocol\Packet\UpdateAdventureSettingsPacket;
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\RakNet\Connected\ConnectedPayloadEvent;
 use Bedriox\RakNet\Protocol\Reliability;
 use Bedriox\RakNet\ReceivedPayload;
 use Bedriox\RakNet\SessionInfo;
 use Bedriox\RakNet\SessionOpenedEvent;
+use Bedriox\Server\Entity\Item\DroppedItemEntity;
 use Bedriox\Server\Observability\CrashContextPublisher;
 use Bedriox\Server\Observability\CrashPlayer;
 use Bedriox\Server\Permission\PermissionStore;
@@ -26,17 +30,23 @@ use Bedriox\Server\Simulation\Event\BlockBreakStopped;
 use Bedriox\Server\Simulation\Event\BlockChanged;
 use Bedriox\Server\Simulation\Event\BlockPlaced;
 use Bedriox\Server\Simulation\Event\BlockPlacementCorrected;
+use Bedriox\Server\Simulation\Event\BlockPunch;
 use Bedriox\Server\Simulation\Event\ChatBroadcast;
 use Bedriox\Server\Simulation\Event\CommandRejected;
 use Bedriox\Server\Simulation\Event\EmotePerformed;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
+use Bedriox\Server\Simulation\Event\ItemEntityDespawned;
+use Bedriox\Server\Simulation\Event\ItemEntityMoved;
+use Bedriox\Server\Simulation\Event\ItemEntityPickedUp;
+use Bedriox\Server\Simulation\Event\ItemEntitySpawned;
 use Bedriox\Server\Simulation\Event\MovementCorrected;
 use Bedriox\Server\Simulation\Event\PlayerBecameHidden;
 use Bedriox\Server\Simulation\Event\PlayerBecameVisible;
 use Bedriox\Server\Simulation\Event\PlayerDamaged;
 use Bedriox\Server\Simulation\Event\PlayerDied;
 use Bedriox\Server\Simulation\Event\PlayerDisconnected;
+use Bedriox\Server\Simulation\Event\PlayerGameModeChanged;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
 use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
 use Bedriox\Server\Simulation\Event\PlayerMotionChanged;
@@ -74,6 +84,12 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
     private bool $autosaveActive = false;
     private bool $playerAutosaveActive = false;
 
+    /** @var array<int, DroppedItemEntity> */
+    private array $itemActors = [];
+
+    /** @var array<int, array<string, true>> */
+    private array $itemActorViewers = [];
+
     public function __construct(
         private readonly ConnectedTransport $transport,
         private readonly LoginChannelFactory $loginChannels,
@@ -94,6 +110,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         private readonly ?CommandRegistry $commandRegistry = null,
         private readonly ?PermissionStore $permissionStore = null,
         ?PlayerConnectionDirectory $playerConnections = null,
+        private readonly ?BedrockInventoryPacketProjector $inventoryProjector = null,
     ) {
         if ($this->autosaveIntervalTicks < 1 || $this->autosaveChunkBudget < 1
             || $this->playerAutosaveIntervalTicks < 1 || $this->playerAutosaveBudget < 1) {
@@ -116,6 +133,16 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         return $this->world->pluginPlayers();
     }
 
+    public function changePlayerGameMode(string $uuid, GameMode $gameMode): bool
+    {
+        return $this->world->enqueueGameMode($uuid, $gameMode);
+    }
+
+    public function givePlayerItem(string $uuid, string $identifier, int $amount): bool
+    {
+        return $this->world->enqueueGiveItem($uuid, $identifier, $amount);
+    }
+
     /** Refreshes one connected player's command authority after a persisted permission change. */
     public function refreshPlayerAuthority(string $uuid, bool $includeAbilities): void
     {
@@ -123,12 +150,18 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
             return;
         }
         $projector = new BedrockCommandPacketProjector($this->commandRegistry, $this->permissionStore);
+        $player = $this->world->pluginPlayer($uuid);
+        $gameMode = $player === null ? GameMode::SURVIVAL : $player->getGamemode();
         foreach ($this->sessions as $key => $session) {
             if ($session->play === null || strcasecmp($session->play->login()->identity, $uuid) !== 0) {
                 continue;
             }
             if ($includeAbilities && !$session->play->queuePacket(
-                $projector->abilities($uuid, $session->runtimeEntityId->toSignedBits()),
+                $projector->abilities(
+                    $uuid,
+                    $session->runtimeEntityId->toSignedBits(),
+                    $gameMode,
+                ),
             )) {
                 $this->disconnect($key);
 
@@ -244,10 +277,20 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                         continue;
                     }
                     if ($event instanceof BlockBreakStarted
+                        || $event instanceof BlockPunch
                         || $event instanceof BlockBreakStopped
                         || $event instanceof BlockChanged
                         || $event instanceof BlockPlaced) {
                         $event = $this->filterBlockRecipients($event);
+                    }
+                    if ($event instanceof ItemEntitySpawned || $event instanceof ItemEntityMoved
+                        || $event instanceof ItemEntityPickedUp || $event instanceof ItemEntityDespawned) {
+                        foreach ($this->reconcileItemEvent($event) as $itemEvent) {
+                            if (!$this->dispatchWorldEvent($itemEvent, $directedCount)) {
+                                return false;
+                            }
+                        }
+                        continue;
                     }
                     if ($event instanceof PlayerJoined) {
                         $this->actorVisibility->upsert($event->player);
@@ -261,10 +304,49 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                         }
                         continue;
                     }
+                    if ($event instanceof PlayerGameModeChanged) {
+                        $this->actorVisibility->upsert($event->player);
+                        $session = $this->sessionById($event->player->sessionId);
+                        if (!$this->dispatchWorldEvent($event, $directedCount)) {
+                            return false;
+                        }
+                        if ($session?->play !== null && $this->commandRegistry !== null && $this->permissionStore !== null) {
+                            $projector = new BedrockCommandPacketProjector($this->commandRegistry, $this->permissionStore);
+                            if (!$session->play->queuePacket($projector->abilities(
+                                $event->player->identity,
+                                $event->player->runtimeActorId,
+                                $event->gameMode,
+                            ))) {
+                                return false;
+                            }
+                        }
+                        if ($session?->play !== null
+                            && (!$session->play->queuePacket(new UpdateAdventureSettingsPacket())
+                                || ($this->inventoryProjector !== null
+                                    && !$session->play->queuePacket($this->inventoryProjector->creativeContent()))
+                                || !$session->play->queuePacket(new SystemTextPacket(
+                                    'Your game mode has been changed to ' . $event->gameMode->value . '.',
+                                )))) {
+                            return false;
+                        }
+                        foreach ($this->reconcileActorVisibility($event->player->sessionId) as $visibilityEvent) {
+                            if (!$this->dispatchWorldEvent($visibilityEvent, $directedCount)) {
+                                return false;
+                            }
+                        }
+                        continue;
+                    }
                     if ($event instanceof PlayerMoved) {
                         $this->actorVisibility->upsert($event->player);
                         $session = $this->sessionById($event->player->sessionId);
-                        $session?->play?->takeChunkVisibilityChanged();
+                        $chunkVisibilityChanged = $session?->play?->takeChunkVisibilityChanged() ?? false;
+                        if ($chunkVisibilityChanged) {
+                            foreach ($this->reconcileItemsForViewer($event->player->sessionId) as $itemVisibilityEvent) {
+                                if (!$this->dispatchWorldEvent($itemVisibilityEvent, $directedCount)) {
+                                    return false;
+                                }
+                            }
+                        }
                         $newlyVisibleRecipients = [];
                         foreach ($this->reconcileActorVisibility($event->player->sessionId) as $visibilityEvent) {
                             if ($visibilityEvent instanceof PlayerBecameVisible
@@ -458,6 +540,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                             )),
                             $event->reason,
                             $event->responseMode,
+                            $event->fullSync,
                         );
                     }
                     if (!$this->dispatchWorldEvent($event, $directedCount)) {
@@ -996,6 +1079,10 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
     {
         $ownerSessionId = $this->eventOwnerSessionId($event);
         $this->diagnostics->record($diagnostic, ['event_type' => $event::class] + $fields);
+        if ($event instanceof ItemEntitySpawned || $event instanceof ItemEntityMoved
+            || $event instanceof ItemEntityPickedUp || $event instanceof ItemEntityDespawned) {
+            return true;
+        }
         if ($ownerSessionId === null) {
             return $this->failRuntime('ownerless_event_failure');
         }
@@ -1012,7 +1099,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
     {
         return match (true) {
             $event instanceof ChatBroadcast => $event->senderSessionId,
-            $event instanceof BlockBreakStarted, $event instanceof BlockBreakStopped, $event instanceof BlockChanged,
+            $event instanceof BlockBreakStarted, $event instanceof BlockPunch, $event instanceof BlockBreakStopped, $event instanceof BlockChanged,
             $event instanceof BlockPlaced, $event instanceof BlockPlacementCorrected, $event instanceof HeldItemChanged => $event->ownerSessionId,
             $event instanceof CommandRejected => $event->sessionId,
             $event instanceof EmotePerformed => $event->senderSessionId,
@@ -1022,7 +1109,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
             $event instanceof PlayerBecameVisible => $event->player->sessionId,
             $event instanceof PlayerKnockedBack, $event instanceof PlayerMotionChanged => $event->ownerSessionId,
             $event instanceof PlayerJoined, $event instanceof PlayerMoved, $event instanceof PlayerDamaged,
-            $event instanceof PlayerDied, $event instanceof PlayerRespawned, $event instanceof RespawnAcknowledged => $event->player->sessionId,
+            $event instanceof PlayerDied, $event instanceof PlayerRespawned, $event instanceof RespawnAcknowledged,
+            $event instanceof PlayerGameModeChanged => $event->player->sessionId,
             default => null,
         };
     }
@@ -1050,6 +1138,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         return $this->actorVisibility->reconcileViewer(
             $sessionId,
             static fn(\Bedriox\Server\Simulation\PlayerSnapshot $actor): bool => $viewer?->phase === SessionPhase::SPAWNED
+                && $actor->gameMode->isVisible()
                 && ($viewer->play?->hasSentChunkAt($actor->position->x, $actor->position->z) ?? false),
         );
     }
@@ -1059,12 +1148,108 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         $viewer = $this->sessionById($viewerSessionId);
 
         return $viewer?->phase === SessionPhase::SPAWNED
+            && $actor->gameMode->isVisible()
             && ($viewer->play?->hasSentChunkAt($actor->position->x, $actor->position->z) ?? false);
     }
 
+    /**
+     * @return list<ItemEntitySpawned|ItemEntityMoved|ItemEntityPickedUp|ItemEntityDespawned>
+     */
+    private function reconcileItemEvent(
+        ItemEntitySpawned|ItemEntityMoved|ItemEntityPickedUp|ItemEntityDespawned $event,
+    ): array {
+        if ($event instanceof ItemEntityPickedUp) {
+            $viewers = array_keys($this->itemActorViewers[$event->itemRuntimeActorId] ?? []);
+            $this->diagnostics->record('world.item_actor.protocol_trace', [
+                'action' => 'picked_up',
+                'actor_id' => $event->itemRuntimeActorId,
+                'viewers' => count($viewers),
+            ]);
+            unset($this->itemActors[$event->itemRuntimeActorId], $this->itemActorViewers[$event->itemRuntimeActorId]);
+
+            return [new ItemEntityPickedUp(
+                $event->itemRuntimeActorId,
+                $event->collectorRuntimeActorId,
+                $event->stack,
+                $event->collectorSessionId,
+                true,
+                $event->mainInventory,
+                $viewers,
+            )];
+        }
+        if ($event instanceof ItemEntityDespawned) {
+            $viewers = array_keys($this->itemActorViewers[$event->runtimeActorId] ?? []);
+            $this->diagnostics->record('world.item_actor.protocol_trace', [
+                'action' => 'expired',
+                'actor_id' => $event->runtimeActorId,
+                'viewers' => count($viewers),
+            ]);
+            unset($this->itemActors[$event->runtimeActorId], $this->itemActorViewers[$event->runtimeActorId]);
+
+            return $viewers === [] ? [] : [new ItemEntityDespawned($event->runtimeActorId, $viewers)];
+        }
+
+        $entity = $event->entity;
+        $runtimeId = $entity->runtimeEntityId;
+        $this->itemActors[$runtimeId] = $entity;
+        $previous = $this->itemActorViewers[$runtimeId] ?? [];
+        $eligible = $previous;
+        foreach (array_values(array_unique($event->recipientSessionIds)) as $recipient) {
+            if ($this->sessionById($recipient)?->play?->hasSentChunkAt(
+                $entity->position->x,
+                $entity->position->z,
+            ) ?? false) {
+                $eligible[$recipient] = true;
+            } else {
+                unset($eligible[$recipient]);
+            }
+        }
+        $this->itemActorViewers[$runtimeId] = $eligible;
+        $appeared = array_keys(array_diff_key($eligible, $previous));
+        $disappeared = array_keys(array_diff_key($previous, $eligible));
+        if ($appeared !== [] || $disappeared !== []) {
+            $this->diagnostics->record('world.item_actor.protocol_trace', [
+                'action' => 'visibility_changed',
+                'actor_id' => $runtimeId,
+                'shown_to' => count($appeared),
+                'hidden_from' => count($disappeared),
+            ]);
+        }
+        $events = [];
+        if ($disappeared !== []) {
+            $events[] = new ItemEntityDespawned($runtimeId, $disappeared);
+        }
+        if ($appeared !== []) {
+            $events[] = new ItemEntitySpawned($entity, $appeared);
+        }
+        if ($event instanceof ItemEntityMoved) {
+            $continuing = array_keys(array_intersect_key($eligible, $previous));
+            if ($continuing !== []) {
+                $events[] = new ItemEntityMoved($entity, $event->tick, $continuing, $event->motionChanged);
+            }
+        }
+
+        return $events;
+    }
+
+    /** @return list<ItemEntitySpawned|ItemEntityDespawned> */
+    private function reconcileItemsForViewer(string $sessionId): array
+    {
+        $events = [];
+        foreach ($this->itemActors as $entity) {
+            foreach ($this->reconcileItemEvent(new ItemEntitySpawned($entity, [$sessionId])) as $event) {
+                if ($event instanceof ItemEntitySpawned || $event instanceof ItemEntityDespawned) {
+                    $events[] = $event;
+                }
+            }
+        }
+
+        return $events;
+    }
+
     private function filterBlockRecipients(
-        BlockBreakStarted|BlockBreakStopped|BlockChanged|BlockPlaced $event,
-    ): BlockBreakStarted|BlockBreakStopped|BlockChanged|BlockPlaced {
+        BlockBreakStarted|BlockPunch|BlockBreakStopped|BlockChanged|BlockPlaced $event,
+    ): BlockBreakStarted|BlockPunch|BlockBreakStopped|BlockChanged|BlockPlaced {
         $recipients = array_values(array_filter(
             array_values(array_unique($event->recipientSessionIds)),
             fn(string $recipient): bool => $this->sessionById($recipient)?->play?->hasSentChunkAt(
@@ -1080,6 +1265,13 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                 $event->breakRate,
                 $recipients,
                 $event->previousPosition,
+            ),
+            $event instanceof BlockPunch => new BlockPunch(
+                $event->ownerSessionId,
+                $event->position,
+                $event->state,
+                $event->face,
+                $recipients,
             ),
             $event instanceof BlockBreakStopped => new BlockBreakStopped(
                 $event->ownerSessionId,
@@ -1102,6 +1294,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                 $event->state,
                 $recipients,
                 $event->stopBreaking,
+                $event->destroyedState,
             ),
         };
     }

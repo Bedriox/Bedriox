@@ -4,7 +4,18 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Simulation;
 
+use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\TranslatableMessage;
+use Bedriox\Server\Entity\Item\DroppedItemCollisionResolver;
+use Bedriox\Server\Entity\Item\ItemEntityMotion;
+use Bedriox\Server\Entity\Item\ItemEntityRegistry;
+use Bedriox\Server\Gameplay\Block\BlockBreakContext;
+use Bedriox\Server\Gameplay\Block\BlockBreakRules;
+use Bedriox\Server\Gameplay\Block\BlockCatalog;
+use Bedriox\Server\Gameplay\Block\BlockDropRules;
+use Bedriox\Server\Gameplay\Block\DropRandom;
+use Bedriox\Server\Gameplay\Block\SystemDropRandom;
+use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Player\InventoryContainer;
 use Bedriox\Server\Player\InventoryResponseMode;
 use Bedriox\Server\Player\InventorySlotReference;
@@ -20,8 +31,11 @@ use Bedriox\Server\Simulation\Command\AcknowledgeRespawn;
 use Bedriox\Server\Simulation\Command\ApplyInventoryStackRequest;
 use Bedriox\Server\Simulation\Command\AttackPlayer;
 use Bedriox\Server\Simulation\Command\BreakBlock;
+use Bedriox\Server\Simulation\Command\ChangeGameMode;
 use Bedriox\Server\Simulation\Command\DamagePlayer;
 use Bedriox\Server\Simulation\Command\DisconnectPlayer;
+use Bedriox\Server\Simulation\Command\DropItem;
+use Bedriox\Server\Simulation\Command\GiveItem;
 use Bedriox\Server\Simulation\Command\JoinPlayer;
 use Bedriox\Server\Simulation\Command\MovePlayer;
 use Bedriox\Server\Simulation\Command\PerformEmote;
@@ -32,6 +46,7 @@ use Bedriox\Server\Simulation\Command\SendChat;
 use Bedriox\Server\Simulation\Command\SendPluginMessage;
 use Bedriox\Server\Simulation\Command\SetPluginBlock;
 use Bedriox\Server\Simulation\Command\SetPluginInventorySlot;
+use Bedriox\Server\Simulation\Command\SyncInventory;
 use Bedriox\Server\Simulation\Command\TeleportPlayer;
 use Bedriox\Server\Simulation\Command\WorldCommand;
 use Bedriox\Server\Simulation\Event\BlockBreakStarted;
@@ -39,15 +54,21 @@ use Bedriox\Server\Simulation\Event\BlockBreakStopped;
 use Bedriox\Server\Simulation\Event\BlockChanged;
 use Bedriox\Server\Simulation\Event\BlockPlaced;
 use Bedriox\Server\Simulation\Event\BlockPlacementCorrected;
+use Bedriox\Server\Simulation\Event\BlockPunch;
 use Bedriox\Server\Simulation\Event\ChatBroadcast;
 use Bedriox\Server\Simulation\Event\CommandRejected;
 use Bedriox\Server\Simulation\Event\EmotePerformed;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
+use Bedriox\Server\Simulation\Event\ItemEntityDespawned;
+use Bedriox\Server\Simulation\Event\ItemEntityMoved;
+use Bedriox\Server\Simulation\Event\ItemEntityPickedUp;
+use Bedriox\Server\Simulation\Event\ItemEntitySpawned;
 use Bedriox\Server\Simulation\Event\MovementCorrected;
 use Bedriox\Server\Simulation\Event\PlayerDamaged;
 use Bedriox\Server\Simulation\Event\PlayerDied;
 use Bedriox\Server\Simulation\Event\PlayerDisconnected;
+use Bedriox\Server\Simulation\Event\PlayerGameModeChanged;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
 use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
 use Bedriox\Server\Simulation\Event\PlayerMotionChanged;
@@ -55,6 +76,7 @@ use Bedriox\Server\Simulation\Event\PlayerMoved;
 use Bedriox\Server\Simulation\Event\PlayerRespawned;
 use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
 use Bedriox\Server\Simulation\Event\WorldEvent;
+use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\Block\InternalBlockStateId;
 use Bedriox\Server\World\BlockPosition;
@@ -69,6 +91,9 @@ use SplQueue;
 
 final class WorldSimulation
 {
+    private const int MAXIMUM_ITEM_ENTITIES_SPAWNED_PER_COMMAND = 256;
+    private const int MAXIMUM_ITEM_MOVEMENT_EVENTS_PER_TICK = 256;
+    private const int MAXIMUM_ITEM_DESPAWN_EVENTS_PER_TICK = 256;
     private const int EMOTE_COOLDOWN_TICKS = 5;
     private const int EMPTY_HAND_GRASS_BREAK_RATE = 3640;
     private const float MAXIMUM_BLOCK_REACH = 6.0;
@@ -98,11 +123,21 @@ final class WorldSimulation
     private int $nextRuntimeActorId = 1;
     private readonly SimulationCommandFactory $validator;
     private readonly ?PlayerCollisionResolver $collisionResolver;
+    private readonly ?DroppedItemCollisionResolver $itemCollisionResolver;
+    private readonly DropRandom $dropRandom;
+    private readonly ItemEntityRegistry $itemEntities;
+    private int $itemMovementCursor = 0;
+
+    /** @var array<int, ItemEntityMotion> Last motion published for each live item actor. */
+    private array $itemPublishedMotions = [];
+
+    /** @var list<int> */
+    private array $pendingItemDespawns = [];
 
     /** @var list<WorldEvent> */
     private array $deferredEvents = [];
 
-    /** @var array<string, array{position: BlockPosition, state: int, sequence: int}> */
+    /** @var array<string, array{position: BlockPosition, state: int, sequence: int, face: int, lastParticleTick: int}> */
     private array $breakingBlocks = [];
 
     public function __construct(
@@ -115,14 +150,28 @@ final class WorldSimulation
         private readonly ?InternalBlockStateId $lavaState = null,
         private readonly ?PlayerPersistenceManager $playerPersistence = null,
         private readonly bool $pvp = true,
+        private readonly ?ItemCatalog $itemCatalog = null,
+        private readonly ?BlockCatalog $blockCatalog = null,
+        private readonly ?BlockStateRegistry $blockStateRegistry = null,
+        ?DropRandom $dropRandom = null,
+        ?ItemEntityRegistry $itemEntities = null,
     ) {
         $this->commands = new SplQueue();
         $this->lifecycleCommands = new SplQueue();
         $this->movementOrder = new SplQueue();
         $this->validator = new SimulationCommandFactory($this->limits);
         $this->players = new PlayerRegistry($this->limits->maximumPlayers);
+        $this->dropRandom = $dropRandom ?? new SystemDropRandom();
+        $this->itemEntities = $itemEntities ?? new ItemEntityRegistry(firstEntityId: 1_000_000_000);
         $this->collisionResolver = $blockWorld !== null && $blockPalette !== null
             ? new PlayerCollisionResolver(new BlockCollisionQuery(
+                $blockWorld,
+                $blockPalette->air,
+                array_values(array_filter([$waterState, $lavaState])),
+            ))
+            : null;
+        $this->itemCollisionResolver = $blockWorld !== null && $blockPalette !== null
+            ? new DroppedItemCollisionResolver(new BlockCollisionQuery(
                 $blockWorld,
                 $blockPalette->air,
                 array_values(array_filter([$waterState, $lavaState])),
@@ -156,7 +205,7 @@ final class WorldSimulation
             $this->limits->chatBucketCapacity,
             $this->tick,
             $this->limits->flatGroundY,
-            PlayerInventory::restore($bootstrap->inventory, $this->blockPalette),
+            PlayerInventory::restore($bootstrap->inventory, $this->blockPalette, $this->itemCatalog),
             $bootstrap->worldName,
             $bootstrap->firstPlayedAt,
             $bootstrap->gamemode,
@@ -290,6 +339,9 @@ final class WorldSimulation
             $events[] = $this->acceptMovementInput($command);
             array_push($events, ...$this->drainDeferredEvents());
         }
+
+        array_push($events, ...$this->advanceBlockBreakParticles());
+        array_push($events, ...$this->advanceItemEntities());
 
         return new SimulationTick($this->tick, $processed, $events);
     }
@@ -429,6 +481,22 @@ final class WorldSimulation
             && $this->enqueue($this->validator->pluginInventorySlot($player->sessionId, $slot, $stack));
     }
 
+    public function enqueueGameMode(string $identity, GameMode $gameMode): bool
+    {
+        $player = $this->players->playerByIdentity($identity);
+
+        return $player !== null
+            && $this->enqueue($this->validator->changeGameMode($player->sessionId, $gameMode));
+    }
+
+    public function enqueueGiveItem(string $identity, string $identifier, int $amount): bool
+    {
+        $player = $this->players->playerByIdentity($identity);
+
+        return $player !== null
+            && $this->enqueue($this->validator->giveItem($player->sessionId, $identifier, $amount));
+    }
+
     private function apply(WorldCommand $command): ?WorldEvent
     {
         $player = $this->players->player($command->sessionId());
@@ -446,7 +514,11 @@ final class WorldSimulation
             $command instanceof BreakBlock => $this->breakBlock($command),
             $command instanceof PlaceBlock => $this->placeBlock($command),
             $command instanceof ApplyInventoryStackRequest => $this->inventoryStackRequest($command),
+            $command instanceof DropItem => $this->dropItem($command),
             $command instanceof AttackPlayer => $this->attack($command),
+            $command instanceof ChangeGameMode => $this->changeGameMode($command),
+            $command instanceof GiveItem => $this->giveItem($command),
+            $command instanceof SyncInventory => $this->syncInventory($command),
             $command instanceof SelectHotbarSlot => $this->selectHotbarSlot($command),
             $command instanceof DisconnectPlayer => $this->disconnect($command),
             $command instanceof SendPluginMessage => $this->pluginMessage($command),
@@ -458,6 +530,242 @@ final class WorldSimulation
             $command instanceof AcknowledgeRespawn => $this->acknowledgeRespawn($command),
             default => null,
         };
+    }
+
+    private function changeGameMode(ChangeGameMode $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        if ($player === null) {
+            return new CommandRejected($command->session, 'not_joined');
+        }
+        $requested = $command->gameMode;
+        if ($requested === $player->gameMode()) {
+            return new CommandRejected($command->session, 'gamemode_unchanged');
+        }
+        if ($this->pluginEvents !== null) {
+            $requested = $this->pluginEvents->gameModeChange($player, $requested);
+            if ($requested === null) {
+                return new CommandRejected($command->session, 'plugin_cancelled');
+            }
+        }
+        $previous = $player->setGameMode($requested);
+        $player->movement->fallDistance = 0.0;
+        if ($requested === GameMode::SPECTATOR) {
+            $player->movement->verticalState = VerticalState::AIRBORNE;
+        } elseif ($this->collisionResolver !== null) {
+            $player->movement->verticalState = $this->collisionResolver->isGrounded($player->movement->position)
+                ? VerticalState::GROUNDED
+                : VerticalState::AIRBORNE;
+        }
+        if ($previous !== $requested) {
+            $this->pluginEvents?->gameModeChanged($player, $previous);
+        }
+
+        return new PlayerGameModeChanged(
+            $player->snapshot(),
+            $previous,
+            $requested,
+            $this->tick,
+            $this->players->recipients(),
+        );
+    }
+
+    private function giveItem(GiveItem $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        if ($player === null || $this->itemCatalog === null || !$this->itemCatalog->has($command->identifier)) {
+            return new CommandRejected($command->session, 'unsupported_item');
+        }
+        $type = $this->itemCatalog->type($command->identifier);
+        $placed = $type->placedBlockState === null || $this->blockStateRegistry === null
+            ? null
+            : $this->blockStateRegistry->internalId($type->placedBlockState);
+        $prototype = new InventoryStack($command->identifier, 1, 1, $placed);
+        $overflow = max(0, $command->amount - $player->inventory->addableQuantity($prototype));
+        $requiredEntities = (int) ceil($overflow / $type->maximumStackSize);
+        if ($requiredEntities > self::MAXIMUM_ITEM_ENTITIES_SPAWNED_PER_COMMAND
+            || $requiredEntities > $this->itemEntities->remainingCapacity()) {
+            return new CommandRejected($command->session, 'item_entity_capacity');
+        }
+        $remaining = $command->amount;
+        while ($remaining > 0) {
+            $count = min($remaining, $type->maximumStackSize);
+            $overflow = $player->inventory->add(new InventoryStack($command->identifier, $count, 1, $placed));
+            $remaining -= $count;
+            if ($overflow !== null) {
+                $entity = $this->itemEntities->spawn(
+                    $overflow,
+                    new Position(
+                        $player->movement->position->x,
+                        $player->movement->position->y + 1.0,
+                        $player->movement->position->z,
+                    ),
+                    new ItemEntityMotion(0.0, 0.1, 0.0),
+                    10,
+                );
+                $this->deferredEvents[] = new ItemEntitySpawned($entity, $this->players->recipients());
+            }
+        }
+        $player->markDirty();
+        $affected = [];
+        for ($slot = 0; $slot < PlayerInventory::SLOT_COUNT; ++$slot) {
+            $affected[] = new InventorySlotReference(InventoryContainer::Main, $slot, 0);
+        }
+
+        return new InventoryStackRequestProcessed(
+            $player->sessionId,
+            0,
+            true,
+            $affected,
+            $player->inventory->slots(),
+            $player->inventory->cursorStack(),
+            $player->inventory->selectedHotbarSlot(),
+            $player->inventory->selectedStack(),
+            true,
+            $player->runtimeActorId,
+            $this->players->recipients($player->sessionId),
+            responseMode: InventoryResponseMode::LegacySlotSync,
+        );
+    }
+
+    private function dropItem(DropItem $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        if ($player === null) {
+            return new InventoryStackRequestProcessed(
+                $command->session,
+                $command->requestId,
+                false,
+                [$command->source],
+                array_fill(0, PlayerInventory::SLOT_COUNT, null),
+                null,
+                0,
+                null,
+                false,
+                0,
+                [],
+                'not_joined',
+                $command->responseMode,
+            );
+        }
+        $stack = match ($command->source->container) {
+            InventoryContainer::Main => $player->inventory->stackAt($command->source->slot),
+            InventoryContainer::Cursor => $player->inventory->cursorStack(),
+            InventoryContainer::CreatedOutput => null,
+        };
+        $reason = match (true) {
+            $player->gameMode() === GameMode::SPECTATOR => 'gamemode',
+            $stack === null => 'source_count',
+            !$this->itemEntities->canSpawn() => 'item_entity_capacity',
+            default => null,
+        };
+        $dropCount = $command->count;
+        if ($reason === null && $this->pluginEvents !== null) {
+            $dropCount = $this->pluginEvents->dropItem(
+                $player,
+                $stack->withCountAndNetworkId($dropCount, $stack->stackNetworkId),
+            ) ?? 0;
+            if ($dropCount === 0) {
+                $reason = 'plugin_cancelled';
+            }
+        }
+
+        $before = clone $player->inventory;
+        $proposed = clone $player->inventory;
+        if ($reason === null) {
+            $preview = $proposed->removeForDrop(
+                $command->requestId,
+                $command->source,
+                $dropCount,
+                $command->expectedStack,
+            );
+            if (!$preview->success) {
+                $reason = $preview->reason;
+            }
+        }
+        if ($reason === null && $this->pluginEvents !== null
+            && !$this->pluginEvents->allowInventoryChange($player, $before, $proposed)) {
+            $reason = 'plugin_cancelled';
+        }
+
+        $result = null;
+        if ($reason === null) {
+            $result = $player->inventory->removeForDrop(
+                $command->requestId,
+                $command->source,
+                $dropCount,
+                $command->expectedStack,
+            );
+            if (!$result->success || $result->removed === null) {
+                $reason = $result->reason === '' ? 'drop_rejected' : $result->reason;
+            }
+        }
+        if ($reason === null && $result !== null) {
+            $yaw = deg2rad($player->movement->yaw);
+            $pitch = deg2rad($player->movement->pitch);
+            $horizontal = cos($pitch) * 0.4;
+            $entity = $this->itemEntities->spawn(
+                $result->removed,
+                new Position(
+                    $player->movement->position->x,
+                    $player->movement->position->y + 1.3,
+                    $player->movement->position->z,
+                ),
+                new ItemEntityMotion(-sin($yaw) * $horizontal, -sin($pitch) * 0.4, cos($yaw) * $horizontal),
+                40,
+            );
+            $player->markDirty();
+            if ($this->pluginEvents !== null) {
+                $this->pluginEvents->inventoryChanged($player, $before);
+                $this->pluginEvents->droppedItem($player, $result->removed);
+            }
+            $this->deferredEvents[] = new ItemEntitySpawned($entity, $this->players->recipients());
+        }
+
+        $affected = [$command->source];
+        return new InventoryStackRequestProcessed(
+            $command->session,
+            $command->requestId,
+            $reason === null,
+            $affected,
+            $player->inventory->slots(),
+            $player->inventory->cursorStack(),
+            $player->inventory->selectedHotbarSlot(),
+            $player->inventory->selectedStack(),
+            $reason === null && $result->selectedStackChanged,
+            $player->runtimeActorId,
+            $this->players->recipients($player->sessionId),
+            $reason ?? '',
+            $command->responseMode,
+        );
+    }
+
+    private function syncInventory(SyncInventory $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        if ($player === null) {
+            return new CommandRejected($command->session, 'not_joined');
+        }
+        $affected = [];
+        for ($slot = 0; $slot < PlayerInventory::SLOT_COUNT; ++$slot) {
+            $affected[] = new InventorySlotReference(InventoryContainer::Main, $slot, 0);
+        }
+
+        return new InventoryStackRequestProcessed(
+            $player->sessionId,
+            0,
+            true,
+            $affected,
+            $player->inventory->slots(),
+            $player->inventory->cursorStack(),
+            $player->inventory->selectedHotbarSlot(),
+            $player->inventory->selectedStack(),
+            false,
+            $player->runtimeActorId,
+            [],
+            responseMode: InventoryResponseMode::LegacySlotSync,
+            fullSync: true,
+        );
     }
 
     private function join(JoinPlayer $command): WorldEvent
@@ -495,8 +803,10 @@ final class WorldSimulation
             $gamemode = $bootstrap->gamemode;
         }
         $inventory = $bootstrap !== null && $this->blockPalette !== null
-            ? PlayerInventory::restore($bootstrap->inventory, $this->blockPalette)
-            : ($this->blockPalette === null ? PlayerInventory::empty() : PlayerInventory::starter($this->blockPalette));
+            ? PlayerInventory::restore($bootstrap->inventory, $this->blockPalette, $this->itemCatalog)
+            : ($this->blockPalette === null
+                ? PlayerInventory::empty($this->itemCatalog)
+                : PlayerInventory::starter($this->blockPalette, $this->itemCatalog));
         $player = new Player(
             $command->session,
             $runtimeActorId,
@@ -523,6 +833,9 @@ final class WorldSimulation
         }
         $player->markDirty();
         $this->players->add($player);
+        foreach ($this->itemEntities->all() as $entity) {
+            $this->deferredEvents[] = new ItemEntitySpawned($entity, [$player->sessionId]);
+        }
         if ($runtimeActorId >= $this->nextRuntimeActorId && $runtimeActorId < PHP_INT_MAX) {
             $this->nextRuntimeActorId = $runtimeActorId + 1;
         }
@@ -562,9 +875,15 @@ final class WorldSimulation
         }
 
         $wasGrounded = $movement->verticalState === VerticalState::GROUNDED;
+        $flying = ($command->flying && $player->gameMode()->allowsFlight())
+            || $player->gameMode() === GameMode::SPECTATOR;
         $collidedVertically = false;
         $terrainConstrained = false;
-        if ($this->collisionResolver === null) {
+        if ($flying) {
+            $position = $command->position;
+            $grounded = false;
+            $stepped = false;
+        } elseif ($this->collisionResolver === null) {
             if ($command->position->y < $this->limits->flatGroundY - $this->limits->flatGroundTolerance) {
                 return new MovementCorrected($player->snapshot(), 'terrain_collision', clientTick: $command->clientTick);
             }
@@ -586,7 +905,8 @@ final class WorldSimulation
             $terrainConstrained = $position->distanceTo($command->position) > $this->limits->flatGroundTolerance;
         }
         if (
-            $wasGrounded
+            !$flying
+            && $wasGrounded
             && $position->y > $movement->position->y + $this->limits->flatGroundTolerance
             && !$stepped
             && !$command->jumpRequested
@@ -596,7 +916,8 @@ final class WorldSimulation
         }
 
         if (
-            $wasGrounded
+            !$flying
+            && $wasGrounded
             && $grounded
             && $command->jumpRequested
         ) {
@@ -631,7 +952,9 @@ final class WorldSimulation
 
         $snapshot = $player->snapshot();
         $this->pluginEvents?->moved($player);
-        if ($verticalDistance < $movement->fallDistance) {
+        if ($flying || !$player->gameMode()->takesDamage()) {
+            $movement->fallDistance = 0.0;
+        } elseif ($verticalDistance < $movement->fallDistance) {
             $movement->fallDistance -= $verticalDistance;
         } else {
             $movement->fallDistance = 0.0;
@@ -668,6 +991,9 @@ final class WorldSimulation
         if (!$player->vitals->isAlive()) {
             return new CommandRejected($command->session, 'player_dead');
         }
+        if (!$player->gameMode()->takesDamage()) {
+            return new CommandRejected($command->session, 'gamemode_invulnerable');
+        }
         if ($this->tick <= $player->vitals->invulnerableUntilTick) {
             return new CommandRejected($command->session, 'damage_cooldown');
         }
@@ -702,9 +1028,11 @@ final class WorldSimulation
         $target = $this->players->playerByActorId($command->targetRuntimeActorId);
         $reason = match (true) {
             !$this->pvp => 'pvp_disabled',
+            $attacker->gameMode() === GameMode::SPECTATOR => 'attacker_gamemode',
             $target === null => 'target_unavailable',
             $target->sessionId === $attacker->sessionId => 'self_attack',
             !$target->vitals->isAlive() => 'target_dead',
+            !$target->gameMode()->takesDamage() => 'target_gamemode',
             $command->hotbarSlot !== $attacker->inventory->selectedHotbarSlot() => 'selected_slot',
             !$this->entityIsReachable($attacker, $target) => 'reach',
             $this->tick <= $target->vitals->invulnerableUntilTick => 'damage_cooldown',
@@ -1058,6 +1386,7 @@ final class WorldSimulation
                     $command->deltaY,
                     $command->deltaZ,
                     $command->jumpRequested,
+                    flying: $command->flying,
                 ),
                 $command instanceof SendChat => $this->validator->chat(
                     $command->session,
@@ -1092,12 +1421,32 @@ final class WorldSimulation
                     $command->requestId,
                     $command->actions,
                     $command->rejectionReason,
+                    $command->responseMode,
+                    $command->authoritativeCreativeStack,
+                ),
+                $command instanceof DropItem => $this->validator->dropItem(
+                    $command->session,
+                    $command->requestId,
+                    $command->source,
+                    $command->count,
+                    $command->responseMode,
+                    $command->expectedStack,
                 ),
                 $command instanceof AttackPlayer => $this->validator->attack(
                     $command->session,
                     $command->targetRuntimeActorId,
                     $command->hotbarSlot,
                 ),
+                $command instanceof ChangeGameMode => $this->validator->changeGameMode(
+                    $command->session,
+                    $command->gameMode,
+                ),
+                $command instanceof GiveItem => $this->validator->giveItem(
+                    $command->session,
+                    $command->identifier,
+                    $command->amount,
+                ),
+                $command instanceof SyncInventory => $this->validator->syncInventory($command->session),
                 $command instanceof SelectHotbarSlot => $this->validator->selectHotbarSlot(
                     $command->session,
                     $command->hotbarSlot,
@@ -1208,6 +1557,7 @@ final class WorldSimulation
                 $command->sneaking,
                 $command->sprinting,
                 $command->clientTick,
+                $command->flying,
             );
             $bytes = $command->estimatedBytes();
         }
@@ -1254,6 +1604,40 @@ final class WorldSimulation
         return $this->nextRuntimeActorId;
     }
 
+    /** @return list<WorldEvent> */
+    private function advanceBlockBreakParticles(): array
+    {
+        if ($this->blockWorld === null) {
+            return [];
+        }
+        $events = [];
+        foreach ($this->breakingBlocks as $key => $active) {
+            if ($this->tick - $active['lastParticleTick'] < 5) {
+                continue;
+            }
+            $sessionId = substr($key, strlen('session:'));
+            if ($this->players->player($sessionId) === null) {
+                unset($this->breakingBlocks[$key]);
+                continue;
+            }
+            $position = $active['position'];
+            if ($this->blockWorld->blockStateAt($position->x, $position->y, $position->z)->value !== $active['state']) {
+                unset($this->breakingBlocks[$key]);
+                continue;
+            }
+            $this->breakingBlocks[$key]['lastParticleTick'] = $this->tick;
+            $events[] = new BlockPunch(
+                $sessionId,
+                $position,
+                new InternalBlockStateId($active['state']),
+                $active['face'],
+                $this->players->recipients(),
+            );
+        }
+
+        return $events;
+    }
+
     private function breakBlock(BreakBlock $command): WorldEvent
     {
         $player = $this->players->player($command->session);
@@ -1275,32 +1659,60 @@ final class WorldSimulation
             return new CommandRejected($command->session, 'block_reach');
         }
         $state = $this->blockWorld->blockStateAt($position->x, $position->y, $position->z);
+        $blockType = $this->blockCatalog !== null && $this->blockStateRegistry !== null
+            ? $this->blockCatalog->typeForInternalId($state, $this->blockStateRegistry)
+            : null;
         if ($command->action === BlockBreakAction::Start) {
-            if ($state->value === $this->blockPalette->air->value
-                || $state->value === $this->blockPalette->bedrock->value
-                || $state->value === $this->waterState?->value
-                || $state->value === $this->lavaState?->value) {
+            if (!$player->gameMode()->canBuild()
+                || ($blockType !== null && !$blockType->isBreakable())
+                || ($blockType === null && ($state->value === $this->blockPalette->air->value
+                    || $state->value === $this->blockPalette->bedrock->value
+                    || $state->value === $this->waterState?->value
+                    || $state->value === $this->lavaState?->value))) {
                 return new CommandRejected($command->session, 'block_not_breakable');
             }
             if ($active !== null && $command->sequence <= $active['sequence']) {
                 return new CommandRejected($command->session, 'stale_block_sequence');
             }
+            $sameTarget = $active !== null && $active['position']->equals($position) && $active['state'] === $state->value;
             $this->breakingBlocks[$key] = [
                 'position' => $position,
                 'state' => $state->value,
                 'sequence' => $command->sequence,
+                'face' => $command->face,
+                'lastParticleTick' => $sameTarget ? $active['lastParticleTick'] : $this->tick,
             ];
+            if (!$sameTarget) {
+                $this->deferredEvents[] = new BlockPunch(
+                    $command->session,
+                    $position,
+                    $state,
+                    $command->face,
+                    $this->players->recipients(),
+                );
+            }
+
+            $heldType = $this->heldItemType($player);
+            $breakRate = $player->gameMode()->instantlyBreaksBlocks() || $blockType === null
+                ? ($player->gameMode()->instantlyBreaksBlocks() ? 65_535 : self::EMPTY_HAND_GRASS_BREAK_RATE)
+                : BlockBreakRules::networkBreakRate(
+                    $blockType,
+                    $heldType,
+                    new BlockBreakContext(airborne: $player->movement->verticalState === VerticalState::AIRBORNE),
+                );
 
             return new BlockBreakStarted(
                 $command->session,
                 $position,
-                self::EMPTY_HAND_GRASS_BREAK_RATE,
+                $breakRate,
                 $this->players->recipients(),
                 $active !== null && !$active['position']->equals($position) ? $active['position'] : null,
             );
         }
         $stopsActiveBreak = $active !== null && $active['position']->equals($position);
-        if ($state->value === $this->blockPalette->air->value
+        if (!$player->gameMode()->canBuild()
+            || ($blockType !== null && !$blockType->isBreakable())
+            || $state->value === $this->blockPalette->air->value
             || $state->value === $this->blockPalette->bedrock->value
             || $state->value === $this->waterState?->value
             || $state->value === $this->lavaState?->value
@@ -1320,6 +1732,15 @@ final class WorldSimulation
         if ($this->pluginEvents !== null && !$this->pluginEvents->allowBlockBreak($player, $position, $identifier)) {
             return new BlockChanged($command->session, $position, $state, [$command->session], $stopsActiveBreak);
         }
+        $heldType = $this->heldItemType($player);
+        $survivalBreak = $player->gameMode() === GameMode::SURVIVAL
+            && $blockType !== null && $this->itemCatalog !== null;
+        $drops = $survivalBreak
+            ? BlockDropRules::drops($blockType, $heldType, $this->dropRandom)
+            : [];
+        if (count($drops) > $this->itemEntities->remainingCapacity()) {
+            return new BlockChanged($command->session, $position, $state, [$command->session], $stopsActiveBreak);
+        }
         try {
             $this->blockWorld->setBlockState($position->x, $position->y, $position->z, $this->blockPalette->air);
         } catch (OverflowException) {
@@ -1332,6 +1753,22 @@ final class WorldSimulation
             );
         }
         $this->refreshPlayerGroundStates();
+        if ($survivalBreak) {
+            foreach ($drops as $drop) {
+                $type = $this->itemCatalog->type($drop->identifier);
+                $placed = $type->placedBlockState === null
+                    ? null
+                    : $this->blockStateRegistry->internalId($type->placedBlockState);
+                $entity = $this->itemEntities->spawn(
+                    new InventoryStack($drop->identifier, $drop->count, 1, $placed),
+                    new Position($position->x + 0.5, $position->y + 0.5, $position->z + 0.5),
+                    new ItemEntityMotion(0.0, 0.1, 0.0),
+                    10,
+                );
+                $this->deferredEvents[] = new ItemEntitySpawned($entity, $this->players->recipients());
+            }
+            $this->damageHeldTool($player, $heldType);
+        }
         $this->pluginEvents?->blockBroken($player, $position, $identifier);
 
         return new BlockChanged(
@@ -1340,6 +1777,39 @@ final class WorldSimulation
             $this->blockPalette->air,
             $this->players->recipients(),
             $stopsActiveBreak,
+            $state,
+        );
+    }
+
+    private function heldItemType(Player $player): ?\Bedriox\Server\Gameplay\Item\ItemType
+    {
+        $held = $player->inventory->selectedStack();
+        if ($held === null || $this->itemCatalog === null || !$this->itemCatalog->has($held->identifier)) {
+            return null;
+        }
+
+        return $this->itemCatalog->type($held->identifier);
+    }
+
+    private function damageHeldTool(
+        Player $player,
+        ?\Bedriox\Server\Gameplay\Item\ItemType $heldType,
+    ): void {
+        $tool = $heldType?->tool;
+        $held = $player->inventory->selectedStack();
+        if ($tool === null || $held === null) {
+            return;
+        }
+        $damage = $held->damage + $tool->durabilityDamagePerBlock;
+        $remaining = $damage >= $tool->durability ? null : $held->withDamage($damage);
+        $player->inventory->replaceSlot($player->inventory->selectedHotbarSlot(), $remaining);
+        $player->markDirty();
+        $this->deferredEvents[] = new HeldItemChanged(
+            $player->sessionId,
+            $player->runtimeActorId,
+            $player->inventory->selectedHotbarSlot(),
+            $player->inventory->selectedStack(),
+            $this->players->recipients($player->sessionId),
         );
     }
 
@@ -1393,20 +1863,48 @@ final class WorldSimulation
         if ($player === null) {
             return new CommandRejected($command->session, 'not_joined');
         }
+        $rejectionReason = $command->rejectionReason;
+        $usesCreatedOutput = false;
+        foreach ($command->actions as $action) {
+            if ($action->source->container === InventoryContainer::CreatedOutput
+                || $action->destination->container === InventoryContainer::CreatedOutput) {
+                $usesCreatedOutput = true;
+                break;
+            }
+        }
+        if ($command->authoritativeCreativeStack !== null && $player->gameMode() !== GameMode::CREATIVE) {
+            $rejectionReason = 'creative_requires_creative_mode';
+        } elseif ($command->authoritativeCreativeStack !== null && !$usesCreatedOutput) {
+            $rejectionReason = 'unused_creative_output';
+        } elseif ($usesCreatedOutput && $command->authoritativeCreativeStack === null) {
+            $rejectionReason = 'missing_created_output';
+        }
         if ($this->pluginEvents === null) {
-            $result = $command->rejectionReason === null
-                ? $player->inventory->applyStackRequest($command->requestId, $command->actions)
-                : new InventoryStackRequestResult(false, reason: $command->rejectionReason);
+            $result = $rejectionReason === null
+                ? $player->inventory->applyStackRequest(
+                    $command->requestId,
+                    $command->actions,
+                    $command->authoritativeCreativeStack,
+                )
+                : new InventoryStackRequestResult(false, reason: $rejectionReason);
         } else {
             $before = clone $player->inventory;
             $proposed = clone $player->inventory;
-            $result = $command->rejectionReason === null
-                ? $proposed->applyStackRequest($command->requestId, $command->actions)
-                : new InventoryStackRequestResult(false, reason: $command->rejectionReason);
+            $result = $rejectionReason === null
+                ? $proposed->applyStackRequest(
+                    $command->requestId,
+                    $command->actions,
+                    $command->authoritativeCreativeStack,
+                )
+                : new InventoryStackRequestResult(false, reason: $rejectionReason);
             if ($result->success && !$this->pluginEvents->allowInventoryChange($player, $before, $proposed)) {
                 $result = new InventoryStackRequestResult(false, reason: 'plugin_cancelled');
             } elseif ($result->success) {
-                $result = $player->inventory->applyStackRequest($command->requestId, $command->actions);
+                $result = $player->inventory->applyStackRequest(
+                    $command->requestId,
+                    $command->actions,
+                    $command->authoritativeCreativeStack,
+                );
                 if ($result->success) {
                     $this->pluginEvents->inventoryChanged($player, $before);
                 }
@@ -1453,12 +1951,18 @@ final class WorldSimulation
         $activeBreak = $this->breakingBlocks[$key] ?? null;
         unset($this->breakingBlocks[$key]);
         $held = $player->inventory->selectedStack();
+        $heldType = $held !== null && $this->itemCatalog?->has($held->identifier) === true
+            ? $this->itemCatalog->type($held->identifier)
+            : null;
+        $placedBlockState = $heldType?->placedBlockState !== null && $this->blockStateRegistry !== null
+            ? $this->blockStateRegistry->internalId($heldType->placedBlockState)
+            : $held?->placedBlockState;
         $correctionReason = match (true) {
+            !$player->gameMode()->canBuild() => 'gamemode',
             $command->sequence <= $player->placementSequence => 'stale_sequence',
             $command->hotbarSlot !== $player->inventory->selectedHotbarSlot() => 'selected_slot',
             $held === null => 'empty_hand',
-            $held->identifier !== 'minecraft:grass_block'
-                || $held->placedBlockState?->value !== $this->blockPalette->grassBlock->value => 'unsupported_item',
+            $placedBlockState === null => 'unsupported_item',
             $clickedState->value === $this->blockPalette->air->value => 'clicked_air',
             $placedState->value !== $this->blockPalette->air->value => 'occupied',
             !$this->blockIsReachable($player->snapshot(), $command->clickedPosition) => 'reach',
@@ -1482,7 +1986,7 @@ final class WorldSimulation
             );
         }
         if ($this->pluginEvents !== null
-            && !$this->pluginEvents->allowBlockPlace($player, $placedPosition, 'minecraft:grass_block')) {
+            && !$this->pluginEvents->allowBlockPlace($player, $placedPosition, $held->identifier)) {
             return new BlockPlacementCorrected(
                 $command->session,
                 $command->clickedPosition,
@@ -1500,7 +2004,7 @@ final class WorldSimulation
                 $placedPosition->x,
                 $placedPosition->y,
                 $placedPosition->z,
-                $this->blockPalette->grassBlock,
+                $placedBlockState,
             );
         } catch (OverflowException) {
             return new BlockPlacementCorrected(
@@ -1516,15 +2020,19 @@ final class WorldSimulation
             );
         }
         $this->refreshPlayerGroundStates();
-        $remaining = $player->inventory->decrementSelectedOne();
-        $player->markDirty();
-        $this->pluginEvents?->blockPlaced($player, $placedPosition, 'minecraft:grass_block');
+        $remaining = $player->gameMode()->consumesItems()
+            ? $player->inventory->decrementSelectedOne()
+            : $held;
+        if ($player->gameMode()->consumesItems()) {
+            $player->markDirty();
+        }
+        $this->pluginEvents?->blockPlaced($player, $placedPosition, $held->identifier);
 
         return new BlockPlaced(
             $command->session,
             $player->runtimeActorId,
             $placedPosition,
-            $this->blockPalette->grassBlock,
+            $placedBlockState,
             $player->inventory->selectedHotbarSlot(),
             $remaining,
             $this->players->recipients(),
@@ -1616,13 +2124,17 @@ final class WorldSimulation
         if ($this->blockWorld === null || $this->blockPalette === null) {
             return new CommandRejected($command->sessionId(), 'block_world_unavailable');
         }
-        $state = match ($command->identifier) {
-            'minecraft:air' => $this->blockPalette->air,
-            'minecraft:bedrock' => $this->blockPalette->bedrock,
-            'minecraft:dirt' => $this->blockPalette->dirt,
-            'minecraft:grass_block' => $this->blockPalette->grassBlock,
-            default => null,
-        };
+        $state = $this->blockCatalog !== null && $this->blockStateRegistry !== null
+            && $this->blockCatalog->has($command->identifier)
+            && $command->identifier !== 'minecraft:air'
+            ? $this->blockStateRegistry->internalId($this->blockCatalog->type($command->identifier)->state)
+            : match ($command->identifier) {
+                'minecraft:air' => $this->blockPalette->air,
+                'minecraft:bedrock' => $this->blockPalette->bedrock,
+                'minecraft:dirt' => $this->blockPalette->dirt,
+                'minecraft:grass_block' => $this->blockPalette->grassBlock,
+                default => null,
+            };
         if ($state === null) {
             return new CommandRejected($command->sessionId(), 'unsupported_block');
         }
@@ -1677,6 +2189,12 @@ final class WorldSimulation
 
     private function blockIdentifier(int $state): string
     {
+        if ($this->blockCatalog !== null && $this->blockStateRegistry !== null) {
+            return $this->blockCatalog->typeForInternalId(
+                new InternalBlockStateId($state),
+                $this->blockStateRegistry,
+            )->identifier();
+        }
         if ($this->blockPalette === null) {
             return 'minecraft:air';
         }
@@ -1688,6 +2206,129 @@ final class WorldSimulation
             $this->blockPalette->grassBlock->value => 'minecraft:grass_block',
             default => 'minecraft:air',
         };
+    }
+
+    /** @return list<WorldEvent> */
+    private function advanceItemEntities(): array
+    {
+        if ($this->itemEntities->count() === 0) {
+            return [];
+        }
+        $recipients = $this->players->recipients();
+        $events = [];
+        $previousPositions = [];
+        $previousMotions = [];
+        foreach ($this->itemEntities->all() as $entity) {
+            $previousPositions[$entity->runtimeEntityId] = $entity->position;
+            $previousMotions[$entity->runtimeEntityId] = $entity->motion;
+        }
+        $result = $this->itemEntities->tick();
+        $movedEntities = [];
+        foreach ($result->updated as $entity) {
+            $previous = $previousPositions[$entity->runtimeEntityId] ?? null;
+            if ($this->itemCollisionResolver !== null && $previous !== null) {
+                $before = $entity->withPositionAndMotion($previous, $entity->motion);
+                $entity = $this->itemCollisionResolver->resolve($before, $entity);
+                $this->itemEntities->replace($entity);
+            }
+            if ($previous === null || $previous->x !== $entity->position->x
+                || $previous->y !== $entity->position->y || $previous->z !== $entity->position->z) {
+                $movedEntities[] = $entity;
+            }
+        }
+        $movedCount = count($movedEntities);
+        if ($movedCount > 0) {
+            $start = $this->itemMovementCursor % $movedCount;
+            $limit = min(self::MAXIMUM_ITEM_MOVEMENT_EVENTS_PER_TICK, $movedCount);
+            for ($offset = 0; $offset < $limit; ++$offset) {
+                $entity = $movedEntities[($start + $offset) % $movedCount];
+                $runtimeId = $entity->runtimeEntityId;
+                $lastMotion = $this->itemPublishedMotions[$runtimeId]
+                    ?? $previousMotions[$runtimeId]
+                    ?? $entity->motion;
+                $dx = $entity->motion->x - $lastMotion->x;
+                $dy = $entity->motion->y - $lastMotion->y;
+                $dz = $entity->motion->z - $lastMotion->z;
+                $stopped = $entity->motion->x === 0.0 && $entity->motion->y === 0.0
+                    && $entity->motion->z === 0.0
+                    && ($lastMotion->x !== 0.0 || $lastMotion->y !== 0.0 || $lastMotion->z !== 0.0);
+                $motionChanged = ($dx * $dx) + ($dy * $dy) + ($dz * $dz) > 0.0025 || $stopped;
+                if ($motionChanged) {
+                    $this->itemPublishedMotions[$runtimeId] = $entity->motion;
+                } elseif (!isset($this->itemPublishedMotions[$runtimeId])) {
+                    $this->itemPublishedMotions[$runtimeId] = $lastMotion;
+                }
+                $events[] = new ItemEntityMoved($entity, $this->tick, $recipients, $motionChanged);
+            }
+            $this->itemMovementCursor = ($start + $limit) % $movedCount;
+        }
+        foreach ($result->despawned as $entity) {
+            unset($this->itemPublishedMotions[$entity->runtimeEntityId]);
+            $this->pendingItemDespawns[] = $entity->runtimeEntityId;
+        }
+        for ($count = 0; $count < self::MAXIMUM_ITEM_DESPAWN_EVENTS_PER_TICK
+            && $this->pendingItemDespawns !== []; ++$count) {
+            $runtimeId = array_shift($this->pendingItemDespawns);
+            $events[] = new ItemEntityDespawned($runtimeId, $recipients);
+        }
+        foreach ($this->players->players() as $player) {
+            if (!$player->vitals->isAlive() || $player->gameMode() === GameMode::SPECTATOR) {
+                continue;
+            }
+            foreach ($this->itemEntities->nearbyPickupCandidates($player->movement->position, 1.5, 16) as $entity) {
+                $allowedCount = $entity->stack->count;
+                if ($this->pluginEvents !== null) {
+                    $allowedCount = $this->pluginEvents->pickupItem($player, $entity->stack);
+                    if ($allowedCount === null) {
+                        continue;
+                    }
+                }
+                $candidate = $entity->stack->withCountAndNetworkId(
+                    $allowedCount,
+                    $entity->stack->stackNetworkId,
+                );
+                $beforeCount = $candidate->count;
+                $remainder = $player->inventory->add($candidate);
+                $accepted = $beforeCount - ($remainder->count ?? 0);
+                if ($accepted === 0) {
+                    continue;
+                }
+                $pickup = $this->itemEntities->pickup($entity->runtimeEntityId, $accepted);
+                if ($pickup === null) {
+                    continue;
+                }
+                unset($this->itemPublishedMotions[$entity->runtimeEntityId]);
+                $replacement = null;
+                if ($pickup->remaining !== null) {
+                    $this->itemEntities->remove($entity->runtimeEntityId);
+                    $remainingLifetime = $entity->despawnAfterTicks === null
+                        ? null
+                        : max(1, $entity->despawnAfterTicks - $entity->ageTicks);
+                    $replacement = $this->itemEntities->spawn(
+                        $pickup->remaining,
+                        $entity->position,
+                        $entity->motion,
+                        despawnAfterTicks: $remainingLifetime,
+                    );
+                }
+                $player->markDirty();
+                $this->pluginEvents?->pickedUpItem($player, $pickup->pickedUp);
+                $events[] = new ItemEntityPickedUp(
+                    $entity->runtimeEntityId,
+                    $player->runtimeActorId,
+                    $pickup->pickedUp,
+                    $player->sessionId,
+                    true,
+                    $player->inventory->slots(),
+                    $recipients,
+                );
+                if ($replacement !== null) {
+                    $events[] = new ItemEntitySpawned($replacement, $recipients);
+                }
+            }
+        }
+
+        return $events;
     }
 
     private static function adjacentBlock(BlockPosition $position, int $face): ?BlockPosition

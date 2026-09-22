@@ -29,6 +29,7 @@ final readonly class InventoryStackRequestProcessed implements WorldEvent
         public array $peerSessionIds,
         public string $reason = '',
         public InventoryResponseMode $responseMode = InventoryResponseMode::ItemStackResponse,
+        public bool $fullSync = false,
     ) {}
 
     public function recipients(): array

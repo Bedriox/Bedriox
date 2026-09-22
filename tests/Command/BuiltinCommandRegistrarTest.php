@@ -8,6 +8,7 @@ use Bedriox\Api\Command\CommandResult;
 use Bedriox\Api\Command\CommandSender;
 use Bedriox\Api\Command\CommandSenderType;
 use Bedriox\Api\Inventory\Inventory;
+use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\Player\Player;
 use Bedriox\Api\World\Position;
 use Bedriox\Server\Command\BuiltinCommandRegistrar;
@@ -51,10 +52,10 @@ final class BuiltinCommandRegistrarTest extends TestCase
         [$registry, $permissions] = $this->registry();
         (new BuiltinCommandRegistrar($registry, $permissions, static fn(): array => [], static function (): void {}))->register();
 
-        self::assertSame(7, $registry->count());
+        self::assertSame(9, $registry->count());
         $definitions = $registry->availableDefinitions(CommandSenderType::CONSOLE, static fn(string $permission): bool => true);
         self::assertSame(
-            ['version', 'help', 'list', 'stop', 'op', 'deop', 'permission'],
+            ['version', 'help', 'list', 'stop', 'op', 'deop', 'permission', 'gamemode', 'give'],
             array_map(static fn($definition): string => $definition->name, $definitions),
         );
         self::assertSame(['ver'], $definitions[0]->aliases);
@@ -65,6 +66,8 @@ final class BuiltinCommandRegistrarTest extends TestCase
         self::assertSame('bedriox.command.op', $definitions[5]->permission);
         self::assertSame(['perm'], $definitions[6]->aliases);
         self::assertSame('bedriox.command.permission', $definitions[6]->permission);
+        self::assertSame('bedriox.command.gamemode', $definitions[7]->permission);
+        self::assertSame('bedriox.command.give', $definitions[8]->permission);
 
         $sender = new BuiltinCommandSender();
         self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'ver'));
@@ -74,7 +77,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
         );
         self::assertSame('Visit https://bedriox.com', $sender->messages[1]);
         self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'commands'));
-        self::assertContains('Available commands (7):', $sender->messages);
+        self::assertContains('Available commands (9):', $sender->messages);
     }
 
     public function testPlayerListOperatorAndPermissionCommandsPreserveBehavior(): void
@@ -176,6 +179,37 @@ final class BuiltinCommandRegistrarTest extends TestCase
             $versionSender->messages[0],
         );
         self::assertSame("\u{00a7}bVisit https://bedriox.com\u{00a7}r", $versionSender->messages[1]);
+    }
+
+    public function testGameplayCommandCallbacksAreWiredThroughTheRegistrar(): void
+    {
+        [$registry, $permissions] = $this->registry();
+        $player = $this->player('Amy', '00000000-0000-0000-0000-000000000001');
+        $changes = [];
+        $grants = [];
+        (new BuiltinCommandRegistrar(
+            $registry,
+            $permissions,
+            static fn(): array => [$player],
+            static function (): void {},
+            changeGameMode: static function (Player $target, GameMode $mode) use (&$changes): bool {
+                $changes[] = [$target->uuid, $mode];
+
+                return true;
+            },
+            giveItem: static function (Player $target, string $identifier, int $amount) use (&$grants): bool {
+                $grants[] = [$target->uuid, $identifier, $amount];
+
+                return true;
+            },
+            itemExists: static fn(string $identifier): bool => $identifier === 'minecraft:diamond',
+        ))->register();
+        $sender = new BuiltinCommandSender();
+
+        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'gamemode creative Amy'));
+        self::assertSame([[$player->uuid, GameMode::CREATIVE]], $changes);
+        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'give Amy diamond 3'));
+        self::assertSame([[$player->uuid, 'minecraft:diamond', 3]], $grants);
     }
 
     /** @return array{CommandRegistry, PermissionStore} */

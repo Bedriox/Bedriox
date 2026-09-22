@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Simulation;
 
+use Bedriox\Api\Player\GameMode;
+
 final readonly class PlayerSnapshot
 {
     public function __construct(
@@ -23,5 +25,6 @@ final readonly class PlayerSnapshot
         public bool $sprinting = false,
         public float $health = 20.0,
         public bool $alive = true,
+        public GameMode $gameMode = GameMode::SURVIVAL,
     ) {}
 }

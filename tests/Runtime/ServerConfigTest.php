@@ -27,6 +27,7 @@ final class ServerConfigTest extends TestCase
         self::assertSame(8, $defaults->playersSavePerTick);
         self::assertSame(40, $defaults->movementRewindHistorySize);
         self::assertSame('default', $defaults->levelGenerator);
+        self::assertSame('survival', $defaults->defaultGamemode);
         self::assertSame(1, $defaults->chunksGeneratePerTick);
         self::assertTrue($defaults->pvp);
 
@@ -36,12 +37,14 @@ final class ServerConfigTest extends TestCase
             '--name=Private Test',
             '--max-players=12',
             '--auth=SELF_SIGNED',
+            '--default-gamemode=creative',
         ]);
         self::assertSame('127.0.0.1', $config->bindAddress);
         self::assertSame(19_133, $config->port);
         self::assertSame('Private Test', $config->serverName);
         self::assertSame(12, $config->maximumPlayers);
         self::assertSame(AuthenticationMode::SELF_SIGNED, $config->authenticationMode);
+        self::assertSame('creative', $config->defaultGamemode);
 
         $streaming = ServerConfig::fromArguments([
             '--motd=Flat development world',
@@ -109,7 +112,7 @@ final class ServerConfigTest extends TestCase
         yield 'configured views exceed hard cache ceiling' => [[
             '--max-players=16', '--view-distance=32', '--spawn-radius=4', '--chunks-cache-limit=65536',
         ]];
-        yield 'unimplemented gamemode' => [['--default-gamemode=creative']];
+        yield 'unknown gamemode' => [['--default-gamemode=builder']];
         yield 'unknown generator' => [['--generator=normal']];
         yield 'wrong-case generator' => [['--generator=DEFAULT']];
         yield 'noncanonical boolean' => [['--protocol-trace=TRUE']];

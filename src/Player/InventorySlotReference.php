@@ -16,12 +16,20 @@ final readonly class InventorySlotReference
 
     public function key(): string
     {
-        return ($this->container === InventoryContainer::Main ? 'main:' : 'cursor:') . $this->slot;
+        return match ($this->container) {
+            InventoryContainer::Main => 'main:',
+            InventoryContainer::Cursor => 'cursor:',
+            InventoryContainer::CreatedOutput => 'created_output:',
+        } . $this->slot;
     }
 
     public function responseKey(): string
     {
-        return ($this->container === InventoryContainer::Main ? 'main:' : 'cursor:')
-            . ($this->responseContainerId ?? -1) . ':' . $this->slot;
+        return match ($this->container) {
+            InventoryContainer::Main => 'main:',
+            InventoryContainer::Cursor => 'cursor:',
+            InventoryContainer::CreatedOutput => 'created_output:',
+        }
+        . ($this->responseContainerId ?? -1) . ':' . $this->slot;
     }
 }

@@ -145,6 +145,9 @@ final class Bedriox
                     : null,
             );
             $composition->host = $pluginHost;
+            $itemCatalog = \Bedriox\Server\Gameplay\Item\ItemCatalog::vanilla(
+                \Bedriox\Data\BedrockDataSet::bundled()->itemNetworkRegistry(),
+            );
             (new BuiltinCommandRegistrar(
                 $pluginHost->commands(),
                 $permissionStore,
@@ -155,6 +158,11 @@ final class Bedriox
                 static function (\Bedriox\Api\Player\Player $player, bool $includeAbilities) use ($composition): void {
                     $composition->server?->runtime->refreshPlayerAuthority($player->uuid, $includeAbilities);
                 },
+                static fn(\Bedriox\Api\Player\Player $player, \Bedriox\Api\Player\GameMode $gameMode): bool =>
+                    $composition->server?->runtime->changePlayerGameMode($player->uuid, $gameMode) ?? false,
+                static fn(\Bedriox\Api\Player\Player $player, string $identifier, int $amount): bool =>
+                    $composition->server?->runtime->givePlayerItem($player->uuid, $identifier, $amount) ?? false,
+                static fn(string $identifier): bool => $itemCatalog->has($identifier),
             ))->register();
             $server = (new ServerBootstrap(
                 new PersistentWorldFactory($workingDirectory),

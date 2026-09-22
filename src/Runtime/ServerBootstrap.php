@@ -17,6 +17,8 @@ use Bedriox\Server\Authentication\Discovery\CurlHttpsJsonTransport;
 use Bedriox\Server\Authentication\Discovery\MinecraftDiscoveryJwkProvider;
 use Bedriox\Server\Authentication\FullTokenAuthenticator;
 use Bedriox\Server\Authentication\SystemAuthenticationClock;
+use Bedriox\Server\Gameplay\Block\BlockCatalog;
+use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Login\AuthenticationMode;
 use Bedriox\Server\Login\ExplicitSelfSignedLoginAuthenticator;
 use Bedriox\Server\Login\FullLoginAuthenticatorAdapter;
@@ -95,6 +97,8 @@ final class ServerBootstrap
             maximumQueuedLifecycleBytes: max(65_536, $config->maximumPlayers * 144),
         );
         $data = BedrockDataSet::bundled();
+        $blockCatalog = BlockCatalog::vanilla();
+        $itemCatalog = ItemCatalog::vanilla($data->itemNetworkRegistry(), $blockCatalog);
         $networkStates = $data->blockStateRegistry();
         $internalStates = new BlockStateRegistry($networkStates->states());
         $flatPalette = FixedFlatBlockPalette::fromRegistry($internalStates);
@@ -109,6 +113,7 @@ final class ServerBootstrap
                 $runtimeLimits,
                 $openedWorld->data,
                 $config->movementRewindHistorySize,
+                $config->defaultGamemode,
             );
             $spawn = $flatWorld->spawn();
             $playerPersistence = $this->playerDataDirectory === null ? null : new PlayerPersistenceManager(
@@ -116,6 +121,8 @@ final class ServerBootstrap
                 $flatWorld->metadata->name,
                 new Position($spawn->x, $spawn->y, $spawn->z),
                 $flatPalette,
+                defaultGamemode: $config->defaultGamemode,
+                itemCatalog: $itemCatalog,
             );
             $world = new WorldSimulation(
                 $simulationLimits,
@@ -127,6 +134,9 @@ final class ServerBootstrap
                 $defaultPalette->lava,
                 $playerPersistence,
                 $config->pvp,
+                $itemCatalog,
+                $blockCatalog,
+                $internalStates,
             );
             $chunkSerializer = new BedrockChunkPacketSerializer(
                 $blockTranslator = new BlockNetworkTranslator($internalStates, $networkStates),
@@ -196,6 +206,7 @@ final class ServerBootstrap
                 commandRegistry: $commandRegistry,
                 permissionStore: $permissionStore,
                 playerConnections: $playerConnections,
+                inventoryProjector: $inventoryProjector,
             );
         } catch (Throwable $exception) {
             $discovery?->close();
@@ -212,7 +223,14 @@ final class ServerBootstrap
             $discovery->localAddress(),
             $discovery->localPort(),
             $config->authenticationMode === AuthenticationMode::SELF_SIGNED ? self::SELF_SIGNED_WARNING : null,
-            new SimulationPluginApiBackend($world, $flatWorld, $flatPalette),
+            new SimulationPluginApiBackend(
+                $world,
+                $flatWorld,
+                $flatPalette,
+                $itemCatalog,
+                $blockCatalog,
+                $internalStates,
+            ),
             $flatWorld,
         );
     }
