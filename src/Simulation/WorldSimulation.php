@@ -489,12 +489,12 @@ final class WorldSimulation
             && $this->enqueue($this->validator->changeGameMode($player->sessionId, $gameMode));
     }
 
-    public function enqueueGiveItem(string $identity, string $identifier, int $amount): bool
+    public function enqueueGiveItem(string $identity, string $identifier, int $amount, int $damage = 0, ?\Bedriox\Api\Inventory\ItemNbt $nbt = null): bool
     {
         $player = $this->players->playerByIdentity($identity);
 
         return $player !== null
-            && $this->enqueue($this->validator->giveItem($player->sessionId, $identifier, $amount));
+            && $this->enqueue($this->validator->giveItem($player->sessionId, $identifier, $amount, $damage, $nbt));
     }
 
     private function apply(WorldCommand $command): ?WorldEvent
@@ -580,7 +580,7 @@ final class WorldSimulation
         $placed = $type->placedBlockState === null || $this->blockStateRegistry === null
             ? null
             : $this->blockStateRegistry->internalId($type->placedBlockState);
-        $prototype = new InventoryStack($command->identifier, 1, 1, $placed);
+        $prototype = new InventoryStack($command->identifier, 1, 1, $placed, $command->damage, $command->nbt);
         $overflow = max(0, $command->amount - $player->inventory->addableQuantity($prototype));
         $requiredEntities = (int) ceil($overflow / $type->maximumStackSize);
         if ($requiredEntities > self::MAXIMUM_ITEM_ENTITIES_SPAWNED_PER_COMMAND
@@ -590,7 +590,7 @@ final class WorldSimulation
         $remaining = $command->amount;
         while ($remaining > 0) {
             $count = min($remaining, $type->maximumStackSize);
-            $overflow = $player->inventory->add(new InventoryStack($command->identifier, $count, 1, $placed));
+            $overflow = $player->inventory->add(new InventoryStack($command->identifier, $count, 1, $placed, $command->damage, $command->nbt));
             $remaining -= $count;
             if ($overflow !== null) {
                 $entity = $this->itemEntities->spawn(
@@ -1083,6 +1083,7 @@ final class WorldSimulation
         }
         $target->movement->jumpAuthorizedUntilTick = $this->tick + CombatRules::DAMAGE_IMMUNITY_TICKS;
         $target->markDirty();
+        $this->damageHeldTool($attacker, $this->heldItemType($attacker), attack: true);
 
         $this->pluginEvents?->damaged($target, DamageCause::Attack, $applied);
         $this->pluginEvents?->attacked($attacker, $target, $applied);
@@ -1445,6 +1446,8 @@ final class WorldSimulation
                     $command->session,
                     $command->identifier,
                     $command->amount,
+                    $command->damage,
+                    $command->nbt,
                 ),
                 $command instanceof SyncInventory => $this->validator->syncInventory($command->session),
                 $command instanceof SelectHotbarSlot => $this->validator->selectHotbarSlot(
@@ -1794,13 +1797,18 @@ final class WorldSimulation
     private function damageHeldTool(
         Player $player,
         ?\Bedriox\Server\Gameplay\Item\ItemType $heldType,
+        bool $attack = false,
     ): void {
         $tool = $heldType?->tool;
         $held = $player->inventory->selectedStack();
         if ($tool === null || $held === null) {
             return;
         }
-        $damage = $held->damage + $tool->durabilityDamagePerBlock;
+        $wear = $attack ? $tool->durabilityDamagePerAttack : $tool->durabilityDamagePerBlock;
+        if ($wear === 0) {
+            return;
+        }
+        $damage = $held->damage + $wear;
         $remaining = $damage >= $tool->durability ? null : $held->withDamage($damage);
         $player->inventory->replaceSlot($player->inventory->selectedHotbarSlot(), $remaining);
         $player->markDirty();

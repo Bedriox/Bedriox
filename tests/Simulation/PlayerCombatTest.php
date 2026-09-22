@@ -5,10 +5,13 @@ declare(strict_types=1);
 namespace Bedriox\Server\Tests\Simulation;
 
 use Bedriox\Api\TranslatableMessage;
+use Bedriox\Data\BedrockDataSet;
+use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Simulation\ClientInputTick;
 use Bedriox\Server\Simulation\Command\AttackPlayer;
 use Bedriox\Server\Simulation\DamageCause;
 use Bedriox\Server\Simulation\Event\CommandRejected;
+use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\PlayerDamaged;
 use Bedriox\Server\Simulation\Event\PlayerDied;
 use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
@@ -37,6 +40,30 @@ final class PlayerCombatTest extends TestCase
         self::assertSame(0.4, $events[1]->motionY);
         self::assertSame(0.4, $events[1]->motionZ);
         self::assertSame(19.0, $world->snapshot()->players[1]->health);
+    }
+
+    public function testSuccessfulAttackDamagesAndBreaksTheAuthoritativeHeldTool(): void
+    {
+        $factory = new SimulationCommandFactory();
+        $items = ItemCatalog::vanilla(BedrockDataSet::bundled()->itemNetworkRegistry());
+        $world = new WorldSimulation(itemCatalog: $items);
+        $world->enqueue($factory->join('one', 'identity-one', 'One', 1));
+        $world->enqueue($factory->join('two', 'identity-two', 'Two', 2));
+        $world->tick();
+        self::assertTrue($world->enqueueGiveItem('identity-one', 'minecraft:wooden_sword', 1, 59));
+        $world->tick();
+        $world->enqueue($factory->move('two', 1, 0.0, 64.0, 2.0, 180.0, 0.0, MovementMode::WALKING));
+        $world->tick();
+        $world->enqueue($factory->move('two', 2, 0.0, 64.0, 2.0, 180.0, 0.0, MovementMode::STOPPED));
+        $world->tick();
+
+        $world->enqueue($factory->attack('one', 2, 0));
+        $events = [...$world->tick()->events, ...$world->tick()->events];
+
+        $held = array_values(array_filter($events, static fn(object $event): bool => $event instanceof HeldItemChanged));
+        self::assertCount(1, $held);
+        self::assertNull($held[0]->stack);
+        self::assertNull($world->pluginPlayer('identity-one')?->inventory->stackAt(0));
     }
 
     public function testKnockbackComposesAcceptedMotionAndPreservesTheExactClientTick(): void

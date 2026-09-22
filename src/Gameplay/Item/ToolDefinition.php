@@ -15,9 +15,10 @@ final readonly class ToolDefinition
         public int $durability,
         public float $miningEfficiency,
         public int $durabilityDamagePerBlock,
+        public int $durabilityDamagePerAttack,
     ) {
-        if ($durability < 1 || $miningEfficiency <= 0.0 || $durabilityDamagePerBlock < 1) {
-            throw new InvalidArgumentException('Tool properties must be positive.');
+        if ($durability < 1 || $miningEfficiency <= 0.0 || $durabilityDamagePerBlock < 1 || $durabilityDamagePerAttack < 0) {
+            throw new InvalidArgumentException('Tool properties are outside their supported ranges.');
         }
     }
 
@@ -33,12 +34,16 @@ final readonly class ToolDefinition
             $tier->durability(),
             $tier->miningEfficiency(),
             $type === ToolType::Sword ? 2 : 1,
+            match ($type) {
+                ToolType::Sword, ToolType::Hoe => 1,
+                default => 2,
+            },
         );
     }
 
     public static function shears(): self
     {
-        return new self(ToolType::Shears, null, 239, 1.0, 1);
+        return new self(ToolType::Shears, null, 239, 1.0, 1, 0);
     }
 
     public function harvestLevel(): int

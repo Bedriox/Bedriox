@@ -16,30 +16,26 @@ use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
 
 /** Sole translation boundary between authoritative inventory values and the active Bedrock registry. */
-final readonly class BedrockInventoryPacketProjector
+final class BedrockInventoryPacketProjector
 {
-    private const string EMPTY_ITEM_USER_DATA = "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
-
     /** @var array<int, string> */
     private array $creativeIdentifiers;
+    private int $creativeRevision = -1;
 
     public function __construct(
         private ItemNetworkRegistry $items,
         private ItemCatalog $gameplayItems,
         private BlockNetworkTranslator $blocks,
     ) {
-        $creative = [];
-        foreach ($gameplayItems->creativeItems() as $index => $type) {
-            $creative[$index + 1] = $type->identifier;
-        }
-        $this->creativeIdentifiers = $creative;
+        $this->creativeIdentifiers = [];
+        $this->synchronizeCreativeIdentifiers();
     }
 
-    public static function fromData(BedrockDataSet $data, BlockNetworkTranslator $blocks): self
+    public static function fromData(BedrockDataSet $data, BlockNetworkTranslator $blocks, ?ItemCatalog $gameplayItems = null): self
     {
         $items = $data->itemNetworkRegistry();
 
-        return new self($items, ItemCatalog::vanilla($items), $blocks);
+        return new self($items, $gameplayItems ?? ItemCatalog::vanilla($items), $blocks);
     }
 
     public function toProtocol(?InventoryStack $stack): ProtocolInventoryItemStack
@@ -57,18 +53,27 @@ final readonly class BedrockInventoryPacketProjector
         return new ProtocolInventoryItemStack(
             $definition->networkRuntimeId(),
             $stack->count,
-            $stack->damage,
+            0,
             $stack->stackNetworkId,
             $blockRuntimeId,
-            self::EMPTY_ITEM_USER_DATA,
+            ItemExtraDataCodec::encode($stack->nbt, $stack->damage),
         );
     }
 
     public function fromProtocol(ProtocolInventoryItemStack $stack): InventoryStack
     {
-        if ($stack->runtimeId === 0 || $stack->count < 1
-            || !in_array($stack->userData, ['', self::EMPTY_ITEM_USER_DATA], true)) {
+        if ($stack->runtimeId === 0 || $stack->count < 1) {
             throw new \InvalidArgumentException('Client item descriptor is unsupported.');
+        }
+        $nbt = ItemExtraDataCodec::decode($stack->userData);
+        $damage = $stack->aux;
+        if ($nbt?->tag('Damage') !== null) {
+            $damage = $nbt->int('Damage')
+                ?? throw new \InvalidArgumentException('Client item damage tag must be an integer.');
+            $nbt = $nbt->withoutTag('Damage');
+            if ($nbt->isEmpty()) {
+                $nbt = null;
+            }
         }
         $identifier = $this->items->definitionForNetworkRuntimeId($stack->runtimeId)->identifier();
         $type = $this->gameplayItems->type($identifier);
@@ -87,12 +92,14 @@ final readonly class BedrockInventoryPacketProjector
             $stack->count,
             $stack->stackNetworkId ?? 1,
             $placed,
-            $stack->aux,
+            $damage,
+            $nbt,
         );
     }
 
     public function creativeContent(): CreativeContentPacket
     {
+        $this->synchronizeCreativeIdentifiers();
         $groups = [
             new CreativeItemGroup(CreativeItemCategory::Construction, 'itemGroup.name.buildingBlocks', $this->creativeProtocolStack('minecraft:grass_block')),
             new CreativeItemGroup(CreativeItemCategory::Nature, 'itemGroup.name.nature', $this->creativeProtocolStack('minecraft:oak_leaves')),
@@ -102,6 +109,9 @@ final readonly class BedrockInventoryPacketProjector
         $entries = [];
         foreach ($this->creativeIdentifiers as $networkId => $identifier) {
             $type = $this->gameplayItems->type($identifier);
+            if (!$type->creative) {
+                continue;
+            }
             $groupId = match (true) {
                 $type->tool !== null => 2,
                 $type->placedBlockState !== null && (str_contains($identifier, 'leaves')
@@ -131,9 +141,13 @@ final readonly class BedrockInventoryPacketProjector
 
     public function creativeStack(int $networkId, int $stackNetworkId): InventoryStack
     {
+        $this->synchronizeCreativeIdentifiers();
         $identifier = $this->creativeIdentifiers[$networkId]
             ?? throw new \InvalidArgumentException('Creative item network ID is not advertised by Bedriox.');
         $type = $this->gameplayItems->type($identifier);
+        if (!$type->creative) {
+            throw new \InvalidArgumentException('Creative item is no longer advertised by Bedriox.');
+        }
 
         return new InventoryStack(
             $identifier,
@@ -158,8 +172,23 @@ final readonly class BedrockInventoryPacketProjector
             $type->itemBlockState() === null
                 ? 0
                 : $this->blocks->toNetwork($this->blocks->internalRegistry()->internalId($type->itemBlockState())),
-            self::EMPTY_ITEM_USER_DATA,
+            ItemExtraDataCodec::encode(null),
         );
+    }
+
+    private function synchronizeCreativeIdentifiers(): void
+    {
+        if ($this->creativeRevision === $this->gameplayItems->revision()) {
+            return;
+        }
+        $known = array_flip($this->creativeIdentifiers);
+        $next = $this->creativeIdentifiers === [] ? 1 : max(array_keys($this->creativeIdentifiers)) + 1;
+        foreach ($this->gameplayItems->creativeItems() as $type) {
+            if (!isset($known[$type->identifier])) {
+                $this->creativeIdentifiers[$next++] = $type->identifier;
+            }
+        }
+        $this->creativeRevision = $this->gameplayItems->revision();
     }
 
 }

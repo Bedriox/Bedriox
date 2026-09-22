@@ -10,10 +10,12 @@ use Bedriox\Server\Gameplay\Block\BlockCatalog;
 use InvalidArgumentException;
 
 /** Bounded canonical item catalog admitted by the active Bedrock data set. */
-final readonly class ItemCatalog
+final class ItemCatalog
 {
     /** @var array<string, ItemType> */
     private array $types;
+    private int $revision = 0;
+    private ItemNetworkRegistry $networkRegistry;
 
     /** @param list<ItemType> $types */
     public function __construct(array $types, ItemNetworkRegistry $networkRegistry)
@@ -30,6 +32,7 @@ final readonly class ItemCatalog
             $indexed[$type->identifier] = $type;
         }
         $this->types = $indexed;
+        $this->networkRegistry = $networkRegistry;
     }
 
     public static function vanilla(ItemNetworkRegistry $networkRegistry, ?BlockCatalog $blocks = null): self
@@ -73,6 +76,24 @@ final readonly class ItemCatalog
         return isset($this->types[$identifier]);
     }
 
+    public function register(ItemType $type, bool $replace = false): void
+    {
+        if (isset($this->types[$type->identifier]) && !$replace) {
+            throw new InvalidArgumentException('Item definition already exists.');
+        }
+        if (!isset($this->types[$type->identifier]) && count($this->types) >= 1_024) {
+            throw new InvalidArgumentException('Item catalog capacity is exhausted.');
+        }
+        $this->networkRegistry->definitionForIdentifier($type->identifier);
+        $this->types[$type->identifier] = $type;
+        ++$this->revision;
+    }
+
+    public function revision(): int
+    {
+        return $this->revision;
+    }
+
     /** @return list<ItemType> */
     public function all(): array
     {
@@ -82,7 +103,7 @@ final readonly class ItemCatalog
     /** @return list<ItemType> */
     public function creativeItems(): array
     {
-        return $this->all();
+        return array_values(array_filter($this->types, static fn(ItemType $type): bool => $type->creative));
     }
 
     /** @return array<string, int> */

@@ -6,6 +6,8 @@ namespace Bedriox\Api\Plugin;
 
 use Bedriox\Api\Command\CommandRegistrar;
 use Bedriox\Api\Event\EventRegistrar;
+use Bedriox\Api\Inventory\ItemRegistrar;
+use Bedriox\Api\Inventory\UnavailableItemRegistrar;
 use Bedriox\Api\Server;
 
 final class PluginContext
@@ -18,6 +20,7 @@ final class PluginContext
         private readonly SourcePluginRegistrar $sourcePlugins,
         private readonly Server $server,
         private readonly string $dataFolder,
+        private readonly ItemRegistrar $items = new UnavailableItemRegistrar(),
     ) {}
 
     public function name(): string
@@ -53,6 +56,11 @@ final class PluginContext
     public function dataFolder(): string
     {
         return $this->dataFolder;
+    }
+
+    public function items(): ItemRegistrar
+    {
+        return $this->items;
     }
 
 }

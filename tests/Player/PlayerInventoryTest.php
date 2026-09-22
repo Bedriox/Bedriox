@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Player;
 
+use Bedriox\Api\Inventory\ItemNbt;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Player\InventoryContainer;
 use Bedriox\Server\Player\InventorySlotReference;
@@ -335,6 +336,28 @@ final class PlayerInventoryTest extends TestCase
 
         self::assertFalse($result->success);
         self::assertSame('destination_item', $result->reason);
+    }
+
+    public function testStacksWithDifferentCustomNbtCannotMergeAndKeepTheirData(): void
+    {
+        $first = ItemNbt::empty()->withString('bedriox:feature', 'first');
+        $second = ItemNbt::empty()->withString('bedriox:feature', 'second');
+        $inventory = PlayerInventory::restore(new PlayerInventoryState([
+            new PlayerInventoryEntry(0, new PlayerInventoryStackState('minecraft:diamond', 3, nbt: $first)),
+            new PlayerInventoryEntry(1, new PlayerInventoryStackState('minecraft:diamond', 4, nbt: $second)),
+        ], 0), $this->palette());
+
+        $result = $inventory->applyStackRequest(0, [new InventoryStackRequestAction(
+            InventoryStackRequestActionType::Take,
+            new InventorySlotReference(InventoryContainer::Main, 1, 2, expectedCount: 4),
+            new InventorySlotReference(InventoryContainer::Main, 0, 1, expectedCount: 3),
+            1,
+        )]);
+
+        self::assertFalse($result->success);
+        self::assertSame('destination_item', $result->reason);
+        self::assertSame('first', $inventory->stackAt(0)?->nbt?->string('bedriox:feature'));
+        self::assertSame('second', $inventory->stackAt(1)?->nbt?->string('bedriox:feature'));
     }
 
     public function testCreativeCreatedOutputIsAuthoritativeUnlimitedAndRequestLocal(): void

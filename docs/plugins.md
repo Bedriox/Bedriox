@@ -80,6 +80,32 @@ Cancellable pre-events cover join, movement, chat, player attacks, damage, block
 
 Blocks and items use canonical identifiers such as `minecraft:grass_block`; process-local numeric IDs never enter the public API. The gameplay catalogs expose the admitted terrain blocks, their drops, and supported tools without exposing network runtime IDs. Inventory writes accept catalog items or an empty slot.
 
+Item stacks may carry immutable, bounded custom NBT. `ItemNbt` supports every ordinary NBT value through typed `Tag` factories: byte, short, int, long, float, double, string, byte/int/long arrays, homogeneous lists, and nested compounds. Bedriox compares NBT when stacking, preserves it across moves, drops, pickups, player saves, and rejoins, and writes it through the Bedrock item extra-data envelope. The top-level `Damage` tag is reserved for Bedriox's authoritative durability field; plugins should use their own namespaced keys.
+
+```php
+use Bedriox\Api\Inventory\ItemNbt;
+use Bedriox\Api\Inventory\ItemStack;
+use Bedriox\Api\Nbt\Tag;
+use Bedriox\Api\Nbt\TagType;
+
+$nbt = ItemNbt::empty()
+    ->withString('example:kind', 'reward')
+    ->withTag('example:levels', Tag::list(TagType::INT, [Tag::int(1), Tag::int(2)]))
+    ->withTag('example:display', Tag::compound(['enabled' => Tag::byte(1)]));
+$this->context()->server()->giveItem($player, new ItemStack('minecraft:diamond', 1, nbt: $nbt));
+```
+
+`PluginContext::items()` registers or explicitly replaces bounded definitions for item identifiers present in the active Bedrock data set. A definition controls maximum stack size and creative visibility. Replacing an admitted vanilla definition preserves its block-placement and tool behavior. Registrations are live for authoritative inventory rules; players already online keep the creative list sent at login, while later joins receive the current list. New client-side item identifiers and textures require a resource-pack/custom-item milestone and are not invented by this API.
+
+```php
+use Bedriox\Api\Inventory\ItemDefinition;
+
+$this->context()->items()->register(
+    new ItemDefinition('minecraft:diamond', maximumStackSize: 16),
+    replace: true,
+);
+```
+
 The [ExamplePlugin repository](https://github.com/Bedriox/ExamplePlugin) contains a complete minimal project. API `0.1` is a preview contract and may make documented breaking changes before `1.0`.
 
 ### Player display and packet API

@@ -74,10 +74,13 @@ final readonly class SimulationPluginApiBackend
                 $this->requireQueued($this->simulation->enqueueGameMode($identity, $gameMode));
             },
             function (string $identity, ApiItemStack $stack): void {
-                if ($stack->damage !== 0) {
-                    throw new InvalidArgumentException('Giving pre-damaged items is not supported by this API yet.');
-                }
-                $this->requireQueued($this->simulation->enqueueGiveItem($identity, $stack->identifier, $stack->count));
+                $this->requireQueued($this->simulation->enqueueGiveItem(
+                    $identity,
+                    $stack->identifier,
+                    $stack->count,
+                    $stack->damage,
+                    $stack->nbt,
+                ));
             },
         );
     }
@@ -116,13 +119,13 @@ final readonly class SimulationPluginApiBackend
                 ? null
                 : $this->blockStateRegistry->internalId($type->placedBlockState);
 
-            return new InventoryStack($stack->identifier, $stack->count, 1, $placed, $stack->damage);
+            return new InventoryStack($stack->identifier, $stack->count, 1, $placed, $stack->damage, $stack->nbt);
         }
         if ($stack->identifier !== 'minecraft:grass_block') {
             throw new InvalidArgumentException('The inventory stack is outside the current gameplay catalog.');
         }
 
-        return new InventoryStack($stack->identifier, $stack->count, 1, $this->palette->grassBlock, $stack->damage);
+        return new InventoryStack($stack->identifier, $stack->count, 1, $this->palette->grassBlock, $stack->damage, $stack->nbt);
     }
 
     private function requireQueued(bool $queued): void

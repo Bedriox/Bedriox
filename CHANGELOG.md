@@ -17,6 +17,8 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Added
 
+- Add bounded typed custom item NBT, schema-four player persistence, Bedrock item-extra-data projection, PMMP-aligned tool wear for mining and combat, and live plugin-owned item stack/creative definitions.
+
 - Add a plugin-facing, cancellable `Player::kick()` with separate reason, optional quit announcement, and disconnect-screen message. Duplicate account logins now receive a visible encrypted reason while the existing player remains connected.
 
 - Add survival, creative, adventure, and spectator authority with persistent game mode, ability projection, spectator visibility, cancellable plugin events, and the `gamemode` command.

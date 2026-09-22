@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Player;
 
+use Bedriox\Api\Inventory\ItemNbt;
 use InvalidArgumentException;
 
 /** Canonical inventory content which is safe to carry across play sessions. */
@@ -15,6 +16,7 @@ final readonly class PlayerInventoryStackState
         public string $identifier,
         public int $count,
         public int $damage = 0,
+        public ?ItemNbt $nbt = null,
     ) {
         if (preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $this->identifier) !== 1) {
             throw new InvalidArgumentException('Inventory identifier must be canonical and namespaced.');

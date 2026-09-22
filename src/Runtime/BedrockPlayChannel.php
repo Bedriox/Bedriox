@@ -1112,6 +1112,7 @@ final class BedrockPlayChannel
     ): bool {
         return $left->identifier === $right->identifier
             && $left->damage === $right->damage
+            && ($left->nbt?->toBinary() ?? '') === ($right->nbt?->toBinary() ?? '')
             && $left->placedBlockState?->value === $right->placedBlockState?->value;
     }
 

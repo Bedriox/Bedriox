@@ -69,6 +69,7 @@ final class ServerBootstrap
         ?PluginGameplayEventBridge $pluginEvents = null,
         ?CommandRegistry $commandRegistry = null,
         ?PermissionStore $permissionStore = null,
+        ?ItemCatalog $itemCatalog = null,
     ): BootstrappedServer {
         $diagnostics ??= RuntimeDiagnostics::disabled();
         $authenticationClock = new SystemAuthenticationClock();
@@ -98,7 +99,7 @@ final class ServerBootstrap
         );
         $data = BedrockDataSet::bundled();
         $blockCatalog = BlockCatalog::vanilla();
-        $itemCatalog = ItemCatalog::vanilla($data->itemNetworkRegistry(), $blockCatalog);
+        $itemCatalog ??= ItemCatalog::vanilla($data->itemNetworkRegistry(), $blockCatalog);
         $networkStates = $data->blockStateRegistry();
         $internalStates = new BlockStateRegistry($networkStates->states());
         $flatPalette = FixedFlatBlockPalette::fromRegistry($internalStates);
@@ -142,7 +143,7 @@ final class ServerBootstrap
                 $blockTranslator = new BlockNetworkTranslator($internalStates, $networkStates),
                 $data->plainsBiomeRuntimeId(),
             );
-            $inventoryProjector = BedrockInventoryPacketProjector::fromData($data, $blockTranslator);
+            $inventoryProjector = BedrockInventoryPacketProjector::fromData($data, $blockTranslator, $itemCatalog);
             $serverGuid = random_int(1, PHP_INT_MAX);
             $advertisement = new BedrockServerAdvertisement(
                 motd: $config->serverName,

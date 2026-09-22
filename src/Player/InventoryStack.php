@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Player;
 
+use Bedriox\Api\Inventory\ItemNbt;
 use Bedriox\Server\World\Block\InternalBlockStateId;
 use InvalidArgumentException;
 
@@ -16,6 +17,7 @@ final readonly class InventoryStack
         public int $stackNetworkId,
         public ?InternalBlockStateId $placedBlockState = null,
         public int $damage = 0,
+        public ?ItemNbt $nbt = null,
     ) {
         if (preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $identifier) !== 1) {
             throw new InvalidArgumentException('Inventory identifier must be canonical and namespaced.');
@@ -39,16 +41,16 @@ final readonly class InventoryStack
     {
         return $this->count === 1
             ? null
-            : new self($this->identifier, $this->count - 1, $this->stackNetworkId, $this->placedBlockState, $this->damage);
+            : new self($this->identifier, $this->count - 1, $this->stackNetworkId, $this->placedBlockState, $this->damage, $this->nbt);
     }
 
     public function withCountAndNetworkId(int $count, int $stackNetworkId): self
     {
-        return new self($this->identifier, $count, $stackNetworkId, $this->placedBlockState, $this->damage);
+        return new self($this->identifier, $count, $stackNetworkId, $this->placedBlockState, $this->damage, $this->nbt);
     }
 
     public function withDamage(int $damage): self
     {
-        return new self($this->identifier, $this->count, $this->stackNetworkId, $this->placedBlockState, $damage);
+        return new self($this->identifier, $this->count, $this->stackNetworkId, $this->placedBlockState, $damage, $this->nbt);
     }
 }

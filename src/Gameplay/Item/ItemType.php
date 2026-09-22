@@ -16,6 +16,8 @@ final readonly class ItemType
         public ?ToolDefinition $tool = null,
         public ?CanonicalBlockState $placedBlockState = null,
         public ?CanonicalBlockState $networkBlockState = null,
+        public bool $creative = true,
+        public ?string $owner = null,
     ) {
         if (preg_match('/^[a-z0-9_.-]+:[a-z0-9_.-]+$/D', $identifier) !== 1) {
             throw new InvalidArgumentException('Item identifier must be canonical and namespaced.');

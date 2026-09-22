@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Player\Persistence;
 
+use Bedriox\Api\Inventory\ItemNbt;
 use Bedriox\Server\Player\Persistence\Exception\CorruptPlayerDataException;
 use Bedriox\Server\Player\Persistence\Exception\UnsupportedPlayerDataException;
 use Bedriox\Server\Player\Persistence\PlayerDataCodec;
@@ -54,7 +55,7 @@ final class PlayerDataCodecTest extends TestCase
     public function testRoundTripsArbitraryItemsAndDamageWithoutSessionNetworkIds(): void
     {
         $profile = self::profileWithInventory(new PlayerInventoryState([
-            new PlayerInventoryEntry(3, new PlayerInventoryStackState('minecraft:diamond_pickaxe', 1, 713)),
+            new PlayerInventoryEntry(3, new PlayerInventoryStackState('minecraft:diamond_pickaxe', 1, 713, ItemNbt::empty()->withString('bedriox:feature', 'saved'))),
             new PlayerInventoryEntry(9, new PlayerInventoryStackState('example:custom_item', 12, 4)),
         ], 3, new PlayerInventoryStackState('minecraft:iron_shovel', 1, 122)));
 
@@ -62,6 +63,7 @@ final class PlayerDataCodecTest extends TestCase
 
         self::assertEquals($profile, $decoded);
         self::assertSame(713, $decoded->inventory->entries[0]->stack->damage);
+        self::assertSame('saved', $decoded->inventory->entries[0]->stack->nbt?->string('bedriox:feature'));
         self::assertSame('example:custom_item', $decoded->inventory->entries[1]->stack->identifier);
         self::assertSame(122, $decoded->inventory->cursor?->damage);
     }
@@ -265,7 +267,7 @@ final class PlayerDataCodecTest extends TestCase
         foreach ($compound->value as $name => $tag) {
             self::assertIsString($name);
             self::assertInstanceOf(LittleEndianNbtTag::class, $tag);
-            if ($name !== 'Damage') {
+            if ($name !== 'Damage' && $name !== 'ItemNbt') {
                 $tags[$name] = $tag;
             }
         }

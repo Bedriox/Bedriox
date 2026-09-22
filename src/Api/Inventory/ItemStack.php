@@ -12,6 +12,7 @@ final readonly class ItemStack
         public string $identifier,
         public int $count,
         public int $damage = 0,
+        public ?ItemNbt $nbt = null,
     ) {
         if (preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $identifier) !== 1) {
             throw new InvalidArgumentException('Item identifier must be canonical and namespaced.');

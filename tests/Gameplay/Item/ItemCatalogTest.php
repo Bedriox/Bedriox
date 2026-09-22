@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Gameplay\Item;
 
+use Bedriox\Api\Inventory\ItemDefinition;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Gameplay\Block\BlockCatalog;
 use Bedriox\Server\Gameplay\Block\BlockDropKind;
@@ -11,6 +12,7 @@ use Bedriox\Server\Gameplay\Block\BlockType;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Gameplay\Item\ToolTier;
 use Bedriox\Server\Gameplay\Item\ToolType;
+use Bedriox\Server\Plugin\OwnedItemRegistrar;
 use Bedriox\Server\World\Block\VanillaBlockStates;
 use PHPUnit\Framework\TestCase;
 
@@ -65,12 +67,32 @@ final class ItemCatalogTest extends TestCase
         self::assertSame(ToolTier::Wood, $woodenSword->tool->tier);
         self::assertSame(60, $woodenSword->tool->durability);
         self::assertSame(2, $woodenSword->tool->durabilityDamagePerBlock);
+        self::assertSame(1, $woodenSword->tool->durabilityDamagePerAttack);
         self::assertSame(12.0, $goldenPickaxe->tool->miningEfficiency);
         self::assertSame(191, $copperAxe->tool->durability);
         self::assertSame(2_032, $netheriteShovel->tool->durability);
         self::assertSame(ToolType::Shears, $shears->tool->type);
         self::assertNull($shears->tool->tier);
         self::assertSame(239, $shears->tool->durability);
+        self::assertSame(0, $shears->tool->durabilityDamagePerAttack);
         self::assertSame(1, $shears->maximumStackSize);
+    }
+
+    public function testPluginReplacementPreservesExistingGameplayBehavior(): void
+    {
+        $catalog = ItemCatalog::vanilla(BedrockDataSet::bundled()->itemNetworkRegistry());
+        $before = $catalog->type('minecraft:grass_block');
+
+        (new OwnedItemRegistrar('TestPlugin', $catalog))->register(
+            new ItemDefinition('minecraft:grass_block', 32, false),
+            true,
+        );
+
+        $after = $catalog->type('minecraft:grass_block');
+        self::assertSame(1, $catalog->revision());
+        self::assertSame(32, $after->maximumStackSize);
+        self::assertFalse($after->creative);
+        self::assertSame('TestPlugin', $after->owner);
+        self::assertSame($before->placedBlockState?->canonicalKey(), $after->placedBlockState?->canonicalKey());
     }
 }

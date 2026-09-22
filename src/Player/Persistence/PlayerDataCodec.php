@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Player\Persistence;
 
+use Bedriox\Api\Inventory\ItemNbt;
 use Bedriox\Server\Player\Persistence\Exception\CorruptPlayerDataException;
 use Bedriox\Server\Player\Persistence\Exception\PlayerDataWriteException;
 use Bedriox\Server\Player\Persistence\Exception\UnsupportedPlayerDataException;
@@ -22,8 +23,8 @@ use InvalidArgumentException;
 /** Bounded schema-versioned player profile encoding with no session-local identifiers. */
 final readonly class PlayerDataCodec
 {
-    public const int SCHEMA_VERSION = 3;
-    public const int MAX_BYTES = 65_536;
+    public const int SCHEMA_VERSION = 4;
+    public const int MAX_BYTES = 131_072;
 
     private const array REQUIRED_ROOT_TAGS = [
         'SchemaVersion',
@@ -67,6 +68,7 @@ final readonly class PlayerDataCodec
                 'Identifier' => LittleEndianNbtTag::string($entry->stack->identifier),
                 'Count' => LittleEndianNbtTag::byte($entry->stack->count),
                 'Damage' => LittleEndianNbtTag::int($entry->stack->damage),
+                'ItemNbt' => new LittleEndianNbtTag(LittleEndianNbtTag::BYTE_ARRAY, $entry->stack->nbt?->toBinary() ?? ''),
             ]);
         }
         $root = [
@@ -96,6 +98,7 @@ final readonly class PlayerDataCodec
                 'Identifier' => LittleEndianNbtTag::string($player->inventory->cursor->identifier),
                 'Count' => LittleEndianNbtTag::byte($player->inventory->cursor->count),
                 'Damage' => LittleEndianNbtTag::int($player->inventory->cursor->damage),
+                'ItemNbt' => new LittleEndianNbtTag(LittleEndianNbtTag::BYTE_ARRAY, $player->inventory->cursor->nbt?->toBinary() ?? ''),
             ]);
         }
         try {
@@ -215,9 +218,17 @@ final readonly class PlayerDataCodec
         $damage = $schemaVersion >= 3
             ? self::integer($tags['Damage'], LittleEndianNbtTag::INT, "$path.Damage")
             : 0;
+        $itemNbt = null;
+        if ($schemaVersion >= 4) {
+            $bytes = self::tag($tags['ItemNbt'], LittleEndianNbtTag::BYTE_ARRAY, "$path.ItemNbt")->value;
+            if (!is_string($bytes)) {
+                throw new CorruptPlayerDataException("Player inventory $path item NBT is invalid.");
+            }
+            $itemNbt = $bytes === '' ? null : ItemNbt::fromBinary($bytes);
+        }
         self::validateStack($identifier, $count, $damage);
 
-        return new PlayerInventoryStackState($identifier, $count, $damage);
+        return new PlayerInventoryStackState($identifier, $count, $damage, $itemNbt);
     }
 
     private static function tag(LittleEndianNbtTag $tag, int $type, string $name): LittleEndianNbtTag
@@ -328,6 +339,9 @@ final readonly class PlayerDataCodec
         $tags = $withSlot ? ['Slot', 'Identifier', 'Count'] : ['Identifier', 'Count'];
         if ($schemaVersion >= 3) {
             $tags[] = 'Damage';
+        }
+        if ($schemaVersion >= 4) {
+            $tags[] = 'ItemNbt';
         }
 
         return $tags;

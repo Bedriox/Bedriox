@@ -70,7 +70,7 @@ final class PlayerInventory
         foreach ($this->stacks as $slot => $stack) {
             $entries[] = new PlayerInventoryEntry(
                 $slot,
-                new PlayerInventoryStackState($stack->identifier, $stack->count, $stack->damage),
+                new PlayerInventoryStackState($stack->identifier, $stack->count, $stack->damage, $stack->nbt),
             );
         }
 
@@ -79,7 +79,7 @@ final class PlayerInventory
             $this->selectedHotbarSlot,
             $this->cursor === null
                 ? null
-                : new PlayerInventoryStackState($this->cursor->identifier, $this->cursor->count, $this->cursor->damage),
+                : new PlayerInventoryStackState($this->cursor->identifier, $this->cursor->count, $this->cursor->damage, $this->cursor->nbt),
         );
     }
 
@@ -598,6 +598,7 @@ final class PlayerInventory
     {
         return $left->identifier === $right->identifier
             && $left->damage === $right->damage
+            && ($left->nbt?->toBinary() ?? '') === ($right->nbt?->toBinary() ?? '')
             && $left->placedBlockState?->value === $right->placedBlockState?->value;
     }
 
@@ -608,7 +609,7 @@ final class PlayerInventory
     ): InventoryStack {
         $placedBlockState = $state->identifier === 'minecraft:grass_block' ? $palette->grassBlock : null;
 
-        return new InventoryStack($state->identifier, $state->count, $stackNetworkId, $placedBlockState, $state->damage);
+        return new InventoryStack($state->identifier, $state->count, $stackNetworkId, $placedBlockState, $state->damage, $state->nbt);
     }
 
     private static function sameContent(?InventoryStack $left, ?InventoryStack $right): bool

@@ -265,7 +265,7 @@ final readonly class PluginGameplayEventBridge
     {
         $event = new PlayerPickupItemEvent(
             $this->playerView($player),
-            new ApiItemStack($stack->identifier, $stack->count, $stack->damage),
+            new ApiItemStack($stack->identifier, $stack->count, $stack->damage, $stack->nbt),
             $stack->count,
         );
         $this->events->dispatch($event);
@@ -277,7 +277,7 @@ final readonly class PluginGameplayEventBridge
     {
         $this->events->dispatch(new PlayerPickedUpItemEvent(
             $this->playerView($player),
-            new ApiItemStack($stack->identifier, $stack->count, $stack->damage),
+            new ApiItemStack($stack->identifier, $stack->count, $stack->damage, $stack->nbt),
         ));
     }
 
@@ -285,7 +285,7 @@ final readonly class PluginGameplayEventBridge
     {
         $event = new PlayerDropItemEvent(
             $this->playerView($player),
-            new ApiItemStack($stack->identifier, $stack->count, $stack->damage),
+            new ApiItemStack($stack->identifier, $stack->count, $stack->damage, $stack->nbt),
             $stack->count,
         );
         $this->events->dispatch($event);
@@ -297,7 +297,7 @@ final readonly class PluginGameplayEventBridge
     {
         $this->events->dispatch(new PlayerDroppedItemEvent(
             $this->playerView($player),
-            new ApiItemStack($stack->identifier, $stack->count, $stack->damage),
+            new ApiItemStack($stack->identifier, $stack->count, $stack->damage, $stack->nbt),
         ));
     }
 
@@ -356,7 +356,7 @@ final readonly class PluginGameplayEventBridge
 
     private static function item(?InventoryStack $stack): ?ApiItemStack
     {
-        return $stack === null ? null : new ApiItemStack($stack->identifier, $stack->count, $stack->damage);
+        return $stack === null ? null : new ApiItemStack($stack->identifier, $stack->count, $stack->damage, $stack->nbt);
     }
 
     private static function position(Position $position): ApiPosition

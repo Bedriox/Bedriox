@@ -21,6 +21,7 @@ use Bedriox\Server\Plugin\Command\ServerConsoleCommandSender;
 use Bedriox\Server\Plugin\Command\StreamConsoleInput;
 use Bedriox\Server\Plugin\Command\WindowsConsoleInput;
 use Bedriox\Server\Plugin\Event\OwnedEventRegistrar;
+use Bedriox\Server\Plugin\OwnedItemRegistrar;
 use Bedriox\Server\Plugin\OwnedSourcePluginRegistrar;
 use Bedriox\Server\Plugin\PluginComposition;
 use Bedriox\Server\Plugin\PluginHost;
@@ -109,6 +110,9 @@ final class Bedriox
             $composition = new PluginComposition();
             $stop = false;
             $permissionStore = new PermissionStore($workingDirectory . DIRECTORY_SEPARATOR . 'permissions.json');
+            $itemCatalog = \Bedriox\Server\Gameplay\Item\ItemCatalog::vanilla(
+                \Bedriox\Data\BedrockDataSet::bundled()->itemNetworkRegistry(),
+            );
             $pluginHost = new PluginHost(
                 $workingDirectory . DIRECTORY_SEPARATOR . 'plugins',
                 $workingDirectory . DIRECTORY_SEPARATOR . 'plugin_data',
@@ -120,7 +124,7 @@ final class Bedriox
                     OwnedCommandRegistrar $commands,
                     OwnedSourcePluginRegistrar $sourcePlugins,
                     ServerPluginLogger $pluginLogger,
-                ) use ($composition): PluginContext {
+                ) use ($composition, $itemCatalog): PluginContext {
                     if ($composition->server === null || $composition->host === null) {
                         throw new \LogicException('Plugin API composition is not ready.');
                     }
@@ -137,6 +141,7 @@ final class Bedriox
                             $composition->host->actions(),
                         ),
                         $dataFolder,
+                        new OwnedItemRegistrar($manifest->name, $itemCatalog),
                     );
                 },
                 maximumPlugins: $config->maximumPlugins,
@@ -145,9 +150,6 @@ final class Bedriox
                     : null,
             );
             $composition->host = $pluginHost;
-            $itemCatalog = \Bedriox\Server\Gameplay\Item\ItemCatalog::vanilla(
-                \Bedriox\Data\BedrockDataSet::bundled()->itemNetworkRegistry(),
-            );
             (new BuiltinCommandRegistrar(
                 $pluginHost->commands(),
                 $permissionStore,
@@ -175,6 +177,7 @@ final class Bedriox
                 new PluginGameplayEventBridge($pluginHost->events()),
                 $pluginHost->commands(),
                 $permissionStore,
+                $itemCatalog,
             );
             $composition->server = $server;
             $logger->info(sprintf(
