@@ -22,6 +22,7 @@ use Bedriox\Api\Event\Player\PlayerDroppedItemEvent;
 use Bedriox\Api\Event\Player\PlayerGameModeChangedEvent;
 use Bedriox\Api\Event\Player\PlayerGameModeChangeEvent;
 use Bedriox\Api\Event\Player\PlayerJoinEvent;
+use Bedriox\Api\Event\Player\PlayerKickEvent;
 use Bedriox\Api\Event\Player\PlayerLoginEvent;
 use Bedriox\Api\Event\Player\PlayerMovedEvent;
 use Bedriox\Api\Event\Player\PlayerMoveEvent;
@@ -93,6 +94,15 @@ final readonly class PluginGameplayEventBridge
     public function quit(Player $player): void
     {
         $this->events->dispatch(new PlayerQuitEvent($this->playerView($player)));
+    }
+
+    /** @return null|array{string, ?string, ?string} */
+    public function kick(ApiPlayer $player, string $reason, ?string $quitMessage, ?string $screenMessage): ?array
+    {
+        $event = new PlayerKickEvent($player, $reason, $quitMessage, $screenMessage);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : [$event->reason(), $event->quitMessage(), $event->disconnectScreenMessage()];
     }
 
     public function allowMove(Player $player, Position $target): bool

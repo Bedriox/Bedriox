@@ -41,6 +41,12 @@ final readonly class Player
         return $this->gameMode;
     }
 
+    /** Requests a cancellable, visible kick. Returns false if the player is offline or a plugin cancels it. */
+    public function kick(string $reason = '', ?string $quitMessage = null, ?string $disconnectScreenMessage = null): bool
+    {
+        return $this->connection()->kick($reason, $quitMessage, $disconnectScreenMessage);
+    }
+
     public function sendMessage(string|TranslatableMessage $message): bool
     {
         return $this->connection()->sendPacket($message instanceof TranslatableMessage

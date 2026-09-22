@@ -26,6 +26,7 @@ use Bedriox\Protocol\Packet\CommandOriginType;
 use Bedriox\Protocol\Packet\CommandOutputPacket;
 use Bedriox\Protocol\Packet\CommandPermissionLevel;
 use Bedriox\Protocol\Packet\CommandRequestPacket;
+use Bedriox\Protocol\Packet\DisconnectPacket;
 use Bedriox\Protocol\Packet\FullContainerName;
 use Bedriox\Protocol\Packet\ItemStackRequest;
 use Bedriox\Protocol\Packet\ItemStackRequestPacket;
@@ -73,6 +74,8 @@ use Bedriox\Server\Login\LoginSession;
 use Bedriox\Server\Login\MonotonicClock;
 use Bedriox\Server\Observability\MutableCrashContextProvider;
 use Bedriox\Server\Permission\PermissionStore;
+use Bedriox\Server\Player\Persistence\PlayerDataStore;
+use Bedriox\Server\Player\Persistence\PlayerPersistenceManager;
 use Bedriox\Server\Player\PlayerBootstrap;
 use Bedriox\Server\Plugin\Command\CommandRegistry;
 use Bedriox\Server\Plugin\Event\EventDispatcher;
@@ -123,6 +126,119 @@ use Throwable;
 
 final class ServerRuntimeTest extends TestCase
 {
+    public function testDuplicateIdentityReceivesEncryptedReasonWithoutKickingExistingSession(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $palette = FixedFlatBlockPalette::fromRegistry(new BlockStateRegistry($data->blockStateRegistry()->states()));
+        $store = new class implements PlayerDataStore {
+            public function exists(string $uuid): bool
+            {
+                return false;
+            }
+            public function load(string $uuid): ?PlayerBootstrap
+            {
+                return null;
+            }
+            public function save(PlayerBootstrap $player): void {}
+        };
+        $transport = new FakeConnectedTransport();
+        $clock = new RuntimeTestClock();
+        $world = new WorldSimulation(blockPalette: $palette);
+        $factory = new RuntimeLoginFactory();
+        $runtime = new ServerRuntime(
+            $transport,
+            $factory,
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $world,
+            new FixedRateWorldLoop($world, $clock),
+            new RecordingEventEncoder(),
+            playerPersistence: new PlayerPersistenceManager($store, 'world', new Position(0.0, 64.0, 0.0), $palette),
+            closeClock: $clock,
+        );
+        $first = new SessionInfo('127.0.0.1', 20_001, 41, 1_400, 11);
+        $second = new SessionInfo('127.0.0.1', 20_002, 42, 1_400, 11);
+        $this->advanceToInitializing($runtime, $transport, $first, $factory);
+        self::assertSame(1, $runtime->sessionCount());
+        $transport->sent = [];
+        $this->advanceToInitializing($runtime, $transport, $second, $factory);
+        self::assertNotEmpty($transport->sent, 'Duplicate login must emit a visible disconnect.');
+        $decoder = $factory->clientDecryptor();
+        $packets = $this->decodeEncryptedPackets($transport->sent, $decoder);
+        self::assertCount(1, $packets);
+        self::assertInstanceOf(DisconnectPacket::class, $packets[0]);
+        self::assertStringContainsString('already connected', $packets[0]->kickMessage);
+        self::assertSame(1, $runtime->sessionCount());
+        self::assertSame([], $transport->removed);
+        $clock->advance(10_000_000_001);
+        self::assertTrue($runtime->poll());
+        self::assertSame([['127.0.0.1', 20_002]], $transport->removed);
+    }
+
+    public function testPlayerKickSendsEncryptedDisconnectBeforeTransportRemoval(): void
+    {
+        $transport = new FakeConnectedTransport();
+        $clock = new RuntimeTestClock();
+        $world = new WorldSimulation();
+        $factory = new RuntimeLoginFactory();
+        $connections = new PlayerConnectionDirectory();
+        $runtime = new ServerRuntime(
+            $transport,
+            $factory,
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $world,
+            new FixedRateWorldLoop($world, $clock),
+            new RecordingEventEncoder(),
+            playerConnections: $connections,
+            closeClock: $clock,
+        );
+        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $this->advanceToInitializing($runtime, $transport, $info, $factory);
+        $decoder = $factory->clientDecryptor();
+        $this->decodeEncryptedPackets($transport->sent, $decoder);
+        $transport->sent = [];
+        $connection = $connections->connection('00000000-0000-0000-0000-000000000001');
+        self::assertTrue($connection->kick('Reason', null, 'Screen message'));
+        $packets = $this->decodeEncryptedPackets($transport->sent, $decoder);
+        self::assertCount(1, $packets);
+        self::assertInstanceOf(DisconnectPacket::class, $packets[0]);
+        self::assertSame('Screen message', $packets[0]->kickMessage);
+        self::assertFalse($connection->isConnected());
+        self::assertSame([], $transport->removed);
+        $clock->advance(10_000_000_001);
+        self::assertTrue($runtime->poll());
+        self::assertSame([['127.0.0.1', 20_001]], $transport->removed);
+    }
+
+    public function testLateCloseForKickedEndpointCannotRemoveReplacementSession(): void
+    {
+        $transport = new FakeConnectedTransport();
+        $clock = new RuntimeTestClock();
+        $world = new WorldSimulation();
+        $factory = new RuntimeLoginFactory();
+        $connections = new PlayerConnectionDirectory();
+        $runtime = new ServerRuntime(
+            $transport,
+            $factory,
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $world,
+            new FixedRateWorldLoop($world, $clock),
+            new RecordingEventEncoder(),
+            playerConnections: $connections,
+            closeClock: $clock,
+        );
+        $old = new SessionInfo('127.0.0.1', 20_001, 41, 1_400, 11);
+        $this->advanceToInitializing($runtime, $transport, $old, $factory);
+        self::assertTrue($connections->connection('00000000-0000-0000-0000-000000000001')->kick('Removed'));
+        $replacement = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $transport->events[] = new SessionOpenedEvent($replacement);
+        self::assertTrue($runtime->poll());
+        self::assertSame(1, $runtime->sessionCount());
+        $transport->events[] = new SessionClosedEvent($old, SessionCloseReason::RemoteDisconnect);
+        self::assertTrue($runtime->poll());
+        self::assertSame(1, $runtime->sessionCount());
+        self::assertSame([], $transport->removed);
+    }
+
     public function testBlockRecipientFilteringPreservesDestroyedStateForParticles(): void
     {
         $data = BedrockDataSet::bundled();
@@ -192,7 +308,7 @@ final class ServerRuntimeTest extends TestCase
         self::assertInstanceOf(TextPacket::class, $immediate[0]);
         self::assertSame('immediate', $immediate[0]->message);
 
-        $transport->events[] = new SessionClosedEvent($info, SessionCloseReason::RemoteDisconnect);
+        $transport->events[] = new SessionClosedEvent($info, SessionCloseReason::IdleTimeout);
         self::assertTrue($runtime->poll());
         self::assertFalse($connection->isConnected());
         self::assertFalse($connection->sendPacket(TextPacket::tip('offline')));
@@ -1177,7 +1293,7 @@ final class ServerRuntimeTest extends TestCase
                     $packets[] = AvailableCommandsPacket::decode($frame->payload);
                 } elseif ($frame->header->packetId === PacketIds::COMMAND_OUTPUT) {
                     $packets[] = CommandOutputPacket::decode($frame->payload);
-                } elseif ($frame->header->packetId === PacketIds::TEXT) {
+                } elseif ($frame->header->packetId === PacketIds::TEXT || $frame->header->packetId === PacketIds::DISCONNECT) {
                     $packets[] = BedrockPacketCodec::decode($frame->header->packetId, $frame->payload);
                 }
             }

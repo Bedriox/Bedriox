@@ -13,11 +13,13 @@ final readonly class PlayerConnection
     /**
      * @param Closure(): bool              $connected
      * @param Closure(Packet, bool): bool  $sendPacket
+     * @param Closure(string, ?string, ?string): bool $kick
      * @internal The server owns connection construction; plugins receive it from Player::connection().
      */
     public function __construct(
         private Closure $connected,
         private Closure $sendPacket,
+        private ?Closure $kick = null,
     ) {}
 
     public static function disconnected(): self
@@ -25,6 +27,7 @@ final readonly class PlayerConnection
         return new self(
             static fn(): bool => false,
             static fn(Packet $packet, bool $immediate): bool => false,
+            static fn(string $reason, ?string $quitMessage, ?string $screenMessage): bool => false,
         );
     }
 
@@ -36,5 +39,10 @@ final readonly class PlayerConnection
     public function sendPacket(Packet $packet, bool $immediate = false): bool
     {
         return ($this->sendPacket)($packet, $immediate);
+    }
+
+    public function kick(string $reason = '', ?string $quitMessage = null, ?string $disconnectScreenMessage = null): bool
+    {
+        return $this->kick !== null && ($this->kick)($reason, $quitMessage, $disconnectScreenMessage);
     }
 }

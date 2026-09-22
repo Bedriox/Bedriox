@@ -207,6 +207,7 @@ final class ServerBootstrap
                 permissionStore: $permissionStore,
                 playerConnections: $playerConnections,
                 inventoryProjector: $inventoryProjector,
+                pluginEvents: $pluginEvents,
             );
         } catch (Throwable $exception) {
             $discovery?->close();

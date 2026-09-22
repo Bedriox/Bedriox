@@ -17,6 +17,8 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Added
 
+- Add a plugin-facing, cancellable `Player::kick()` with separate reason, optional quit announcement, and disconnect-screen message. Duplicate account logins now receive a visible encrypted reason while the existing player remains connected.
+
 - Add survival, creative, adventure, and spectator authority with persistent game mode, ability projection, spectator visibility, cancellable plugin events, and the `gamemode` command.
 - Add canonical gameplay catalogs for admitted blocks, items, tool tiers, hardness, break timing, durability, and deterministic drops, plus data-driven creative content and authoritative creative stack requests.
 - Add bounded dropped-item actors with motion, terrain settling, pickup delay, partial-inventory remainder replacement, despawn, late-join visibility, pickup events, and overflow-safe `give` command support.

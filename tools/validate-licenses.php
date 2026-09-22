@@ -40,7 +40,7 @@ $approvedProduction = [
     ],
     'bedriox/raknet' => [
         'version' => '0.1.0-alpha.1',
-        'reference' => '258c8773b4ff1e7095576ae091f10945bbeb31ee',
+        'reference' => 'eddc38670977c8f01cb46802293e4bd9fe9eb7d5',
         'license' => 'GPL-3.0-only',
     ],
 ];

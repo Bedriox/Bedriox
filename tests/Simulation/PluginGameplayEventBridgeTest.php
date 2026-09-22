@@ -18,6 +18,7 @@ use Bedriox\Api\Event\Player\PlayerDamagedEvent;
 use Bedriox\Api\Event\Player\PlayerDamageEvent;
 use Bedriox\Api\Event\Player\PlayerDeathEvent;
 use Bedriox\Api\Event\Player\PlayerJoinEvent;
+use Bedriox\Api\Event\Player\PlayerKickEvent;
 use Bedriox\Api\Event\Player\PlayerLoginEvent;
 use Bedriox\Api\Event\Player\PlayerMoveEvent;
 use Bedriox\Api\Event\Player\PlayerPreJoinEvent;
@@ -65,6 +66,26 @@ use Throwable;
 
 final class PluginGameplayEventBridgeTest extends TestCase
 {
+    public function testKickEventCanChangeMessagesOrCancelTheRequest(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $dispatcher->register('Example', PlayerKickEvent::class, static function (PlayerKickEvent $event): void {
+            $event->setReason('Changed reason');
+            $event->setQuitMessage('Changed quit');
+            $event->setDisconnectScreenMessage('Changed screen');
+        });
+        self::assertSame(
+            ['Changed reason', 'Changed quit', 'Changed screen'],
+            $bridge->kick(self::loginPlayerView(), 'Original', null, null),
+        );
+
+        [$dispatcher, $bridge] = self::bridge();
+        $dispatcher->register('Example', PlayerKickEvent::class, static function (PlayerKickEvent $event): void {
+            $event->cancel();
+        });
+        self::assertNull($bridge->kick(self::loginPlayerView(), 'Original', null, null));
+    }
+
     public function testLoginEventReturnsTheFinalSynchronousBootstrapDestination(): void
     {
         [$dispatcher, $bridge] = self::bridge();

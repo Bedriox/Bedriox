@@ -6,10 +6,19 @@ namespace Bedriox\Server\Runtime;
 
 use Bedriox\Api\Command\CommandResult;
 use Bedriox\Api\Player\GameMode;
+use Bedriox\Protocol\Batch\BatchLimits;
+use Bedriox\Protocol\Batch\BedrockBatch;
+use Bedriox\Protocol\Batch\BedrockBatchCodec;
+use Bedriox\Protocol\Batch\CompressionMode;
+use Bedriox\Protocol\Packet\BedrockPacketCodec;
 use Bedriox\Protocol\Packet\CommandOutputMessage;
 use Bedriox\Protocol\Packet\CommandOutputPacket;
 use Bedriox\Protocol\Packet\CommandOutputType;
+use Bedriox\Protocol\Packet\DisconnectPacket;
+use Bedriox\Protocol\Packet\DisconnectReason;
 use Bedriox\Protocol\Packet\Packet;
+use Bedriox\Protocol\Packet\PacketFrame;
+use Bedriox\Protocol\Packet\PacketHeader;
 use Bedriox\Protocol\Packet\SystemTextPacket;
 use Bedriox\Protocol\Packet\UpdateAdventureSettingsPacket;
 use Bedriox\Protocol\Value\UnsignedLong;
@@ -55,7 +64,10 @@ use Bedriox\Server\Simulation\Event\PlayerRespawned;
 use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
 use Bedriox\Server\Simulation\Event\WorldEvent;
 use Bedriox\Server\Simulation\FixedRateWorldLoop;
+use Bedriox\Server\Simulation\PluginGameplayEventBridge;
+use Bedriox\Server\Simulation\SimulationClock;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
+use Bedriox\Server\Simulation\SystemSimulationClock;
 use Bedriox\Server\Simulation\VerticalState;
 use Bedriox\Server\Simulation\WorldSimulation;
 use Bedriox\Server\Transport\ConnectedTransport;
@@ -84,6 +96,10 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
     private bool $autosaveActive = false;
     private bool $playerAutosaveActive = false;
 
+    /** @var array<string, array{SessionInfo, int}> */
+    private array $pendingTransportCloses = [];
+    private readonly SimulationClock $closeClock;
+
     /** @var array<int, DroppedItemEntity> */
     private array $itemActors = [];
 
@@ -111,6 +127,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         private readonly ?PermissionStore $permissionStore = null,
         ?PlayerConnectionDirectory $playerConnections = null,
         private readonly ?BedrockInventoryPacketProjector $inventoryProjector = null,
+        private readonly ?PluginGameplayEventBridge $pluginEvents = null,
+        ?SimulationClock $closeClock = null,
     ) {
         if ($this->autosaveIntervalTicks < 1 || $this->autosaveChunkBudget < 1
             || $this->playerAutosaveIntervalTicks < 1 || $this->playerAutosaveBudget < 1) {
@@ -120,6 +138,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         $this->diagnostics = $diagnostics ?? RuntimeDiagnostics::disabled();
         $this->actorVisibility = new PlayerActorVisibilityRegistry($this->limits->maximumSessions);
         $this->playerConnections = $playerConnections ?? new PlayerConnectionDirectory();
+        $this->closeClock = $closeClock ?? new SystemSimulationClock();
     }
 
     public function __destruct()
@@ -194,9 +213,11 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                 if ($event instanceof SessionOpenedEvent) {
                     $this->open($event->session);
                 } else {
+                    $this->diagnostics->record('runtime.transport_session_closed', ['reason' => $event->reason->value]);
                     $this->closeEndpoint($event->session);
                 }
             }
+            $this->expirePendingTransportCloses();
             foreach ($payloads as $payload) {
                 $this->involvedSessionId = $this->sessions[self::rawEndpointKey($payload->remoteAddress, $payload->remotePort)]->id ?? null;
                 $this->publishCrashContext();
@@ -609,6 +630,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         foreach (array_keys($this->sessions) as $key) {
             $this->removeRuntimeSession($key);
         }
+        $this->pendingTransportCloses = [];
         $this->drainShutdownLifecycle();
         if ($this->playerPersistence !== null && $this->playerPersistence->pendingCount() > 0) {
             $this->playerPersistence->retryPending($this->limits->maximumSessions);
@@ -637,6 +659,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
     private function open(SessionInfo $info): void
     {
         $key = self::endpointKey($info);
+        unset($this->pendingTransportCloses[$key]);
         if (isset($this->sessions[$key]) || count($this->sessions) >= $this->limits->maximumSessions) {
             $this->removeTransportSession($info);
 
@@ -801,9 +824,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                 foreach ($this->sessions as $other) {
                     if ($other !== $session && $other->bootstrap?->identity->uuid === $loaded->identity->uuid) {
                         $this->diagnostics->record('play.duplicate_identity_rejected');
-                        $ready->encryptor->close();
-                        $ready->decryptor->close();
-                        $this->disconnect($key);
+                        $this->rejectReadySession($key, $session, $ready, 'This account is already connected to this server.');
 
                         return;
                     }
@@ -838,6 +859,13 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                     $session,
                     $packet,
                     $immediate,
+                ),
+                fn(string $reason, ?string $quitMessage, ?string $screenMessage): bool => $this->kickPlayer(
+                    $key,
+                    $session,
+                    $reason,
+                    $quitMessage,
+                    $screenMessage,
                 ),
             );
             $this->flush($key, $session);
@@ -937,7 +965,97 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
 
     private function closeEndpoint(SessionInfo $info): void
     {
-        $this->removeRuntimeSession(self::endpointKey($info));
+        $key = self::endpointKey($info);
+        if (($this->pendingTransportCloses[$key][0] ?? null) === $info) {
+            unset($this->pendingTransportCloses[$key]);
+        }
+        if (($this->sessions[$key]->transport ?? null) !== $info) {
+            return;
+        }
+        $this->removeRuntimeSession($key);
+    }
+
+    private function kickPlayer(string $key, RuntimeSession $session, string $reason, ?string $quitMessage, ?string $screenMessage): bool
+    {
+        if (($this->sessions[$key] ?? null) !== $session || $session->play === null) {
+            return false;
+        }
+        $identity = $session->bootstrap?->identity->uuid ?? $session->play->login()->identity;
+        $player = $this->world->pluginPlayer($identity);
+        if ($player !== null && $this->pluginEvents !== null) {
+            $decision = $this->pluginEvents->kick($player, $reason, $quitMessage, $screenMessage);
+            if ($decision === null) {
+                return false;
+            }
+            [$reason, $quitMessage, $screenMessage] = $decision;
+        }
+        $message = $screenMessage ?? ($reason !== '' ? $reason : 'Disconnected from server.');
+        try {
+            $packet = new DisconnectPacket(DisconnectReason::KICKED, false, $message, $message);
+            $quitPacket = $quitMessage !== null && $quitMessage !== '' ? new SystemTextPacket($quitMessage) : null;
+        } catch (Throwable) {
+            return false;
+        }
+        if (!$session->play->queuePacket($packet)) {
+            $this->disconnect($key);
+            return false;
+        }
+        $this->flush($key, $session);
+        if (($this->sessions[$key] ?? null) !== $session) {
+            return false;
+        }
+        if ($quitPacket !== null) {
+            foreach ($this->sessions as $otherKey => $other) {
+                if ($otherKey !== $key && $other->joined && $other->play !== null
+                    && $other->play->queuePacket($quitPacket)) {
+                    $this->flush($otherKey, $other);
+                }
+            }
+        }
+        $this->deferTransportClose($key, $session);
+
+        return true;
+    }
+
+    private function rejectReadySession(string $key, RuntimeSession $session, \Bedriox\Server\Login\LoginChannelReady $ready, string $message): void
+    {
+        try {
+            $packet = new DisconnectPacket(DisconnectReason::KICKED, false, $message, $message);
+            $batch = new BedrockBatch([
+                new PacketFrame(new PacketHeader(BedrockPacketCodec::packetId($packet)), BedrockPacketCodec::encode($packet, $ready->protocolVersion)),
+            ], CompressionMode::NegotiatedZlib, 256);
+            $this->transport->sendPayload(
+                $session->transport->remoteAddress,
+                $session->transport->remotePort,
+                $ready->encryptor->encryptEnvelope(BedrockBatchCodec::encode($batch, new BatchLimits())),
+                Reliability::ReliableOrdered,
+                0,
+            );
+            $this->deferTransportClose($key, $session);
+        } catch (Throwable $exception) {
+            $this->diagnostics->record('play.duplicate_rejection_send_failed', ['exception' => $exception::class]);
+            $this->disconnect($key);
+        } finally {
+            $ready->encryptor->close();
+            $ready->decryptor->close();
+        }
+    }
+
+    private function deferTransportClose(string $key, RuntimeSession $session): void
+    {
+        $this->pendingTransportCloses[$key] = [$session->transport, $this->closeClock->nowNanoseconds() + 10_000_000_000];
+        $this->removeRuntimeSession($key);
+    }
+
+    private function expirePendingTransportCloses(): void
+    {
+        $now = $this->closeClock->nowNanoseconds();
+        foreach ($this->pendingTransportCloses as $key => [$info, $deadline]) {
+            if ($now >= $deadline) {
+                unset($this->pendingTransportCloses[$key]);
+                $this->removeTransportSession($info);
+            }
+        }
     }
 
     private function removeTransportSession(SessionInfo $info): void

@@ -90,6 +90,22 @@ final class PlayerConnectionTest extends TestCase
         self::assertFalse($player->connection()->isConnected());
         self::assertFalse($player->sendTip('offline'));
         self::assertFalse($player->connection()->sendPacket(TextPacket::raw('offline'), true));
+        self::assertFalse($player->kick('offline'));
+    }
+
+    public function testPlayerKickForwardsReasonAndMessagesToCurrentConnection(): void
+    {
+        $captured = null;
+        $connection = new PlayerConnection(
+            static fn(): bool => true,
+            static fn(Packet $packet, bool $immediate): bool => true,
+            static function (string $reason, ?string $quit, ?string $screen) use (&$captured): bool {
+                $captured = [$reason, $quit, $screen];
+                return true;
+            },
+        );
+        self::assertTrue(self::player($connection)->kick('Reason', 'Quit', 'Screen'));
+        self::assertSame(['Reason', 'Quit', 'Screen'], $captured);
     }
 
     public function testTitleTimesAreBounded(): void

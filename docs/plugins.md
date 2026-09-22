@@ -86,6 +86,8 @@ The [ExamplePlugin repository](https://github.com/Bedriox/ExamplePlugin) contain
 
 A connected `Player` exposes high-level presentation methods for ordinary messages, translated messages, popups, jukebox popups, tips, titles, subtitles, action bars, title timing, title clearing/resetting, and toast notifications. Title timing uses `TitleTimes` in ticks. `sendTitle()` follows the retail-compatible order: timing, optional subtitle, then title. Ordinary strings use Bedrock's raw-text presentation, matching PocketMine-MP; `TranslatableMessage` uses the translation variant.
 
+`Player::kick($reason, $quitMessage, $disconnectScreenMessage)` requests a server-initiated disconnect. A `PlayerKickEvent` listener may cancel it or change those messages. The quit message, when supplied, is sent to other online players; the disconnect-screen message defaults to the reason. The method returns `false` for an offline player, cancellation, or an invalid/failed send. Transport timeouts and ordinary client quits do not fire the kick event.
+
 ```php
 use Bedriox\Api\Player\TitleTimes;
 
