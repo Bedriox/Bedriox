@@ -22,6 +22,10 @@ final readonly class InventoryStack
         if ($count < 1 || $count > 64) {
             throw new InvalidArgumentException('Inventory stack count must be between 1 and 64.');
         }
+        if (SupportedInventoryItem::supports($identifier)
+            && $count > SupportedInventoryItem::maximumStackSize($identifier)) {
+            throw new InvalidArgumentException('Inventory stack exceeds the supported item stack size.');
+        }
         if ($stackNetworkId < 1 || $stackNetworkId > 0x7fffffff) {
             throw new InvalidArgumentException('Inventory stack network ID must be a positive signed 32-bit integer.');
         }

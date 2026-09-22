@@ -222,7 +222,7 @@ final class PlayerInventory
                     return new InventoryStackRequestResult(false, reason: 'destination_item');
                 }
                 $existingCount = $destination === null ? 0 : $destination->count;
-                if ($existingCount + $action->count > 64) {
+                if ($existingCount + $action->count > SupportedInventoryItem::maximumStackSize($source->identifier)) {
                     return new InventoryStackRequestResult(false, reason: 'destination_capacity');
                 }
                 $destinationCount = $existingCount + $action->count;
@@ -392,11 +392,17 @@ final class PlayerInventory
         FixedFlatBlockPalette $palette,
         int $stackNetworkId,
     ): InventoryStack {
-        if ($state->identifier !== 'minecraft:grass_block') {
+        if (!SupportedInventoryItem::supports($state->identifier)
+            || $state->count > SupportedInventoryItem::maximumStackSize($state->identifier)) {
             throw new InvalidArgumentException('Inventory state contains an unsupported item.');
         }
 
-        return new InventoryStack($state->identifier, $state->count, $stackNetworkId, $palette->grassBlock);
+        return new InventoryStack(
+            $state->identifier,
+            $state->count,
+            $stackNetworkId,
+            $state->identifier === 'minecraft:grass_block' ? $palette->grassBlock : null,
+        );
     }
 
     private static function sameContent(?InventoryStack $left, ?InventoryStack $right): bool

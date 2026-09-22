@@ -13,6 +13,7 @@ use Bedriox\Server\Player\PlayerInventory;
 use Bedriox\Server\Player\PlayerInventoryEntry;
 use Bedriox\Server\Player\PlayerInventoryStackState;
 use Bedriox\Server\Player\PlayerInventoryState;
+use Bedriox\Server\Player\SupportedInventoryItem;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\Storage\Exception\CorruptWorldDataException;
 use Bedriox\Server\World\Storage\Nbt\LittleEndianNbtCodec;
@@ -308,7 +309,8 @@ final readonly class PlayerDataCodec
     private static function validateStack(string $identifier, int $count): void
     {
         if (strlen($identifier) > 256 || preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $identifier) !== 1
-            || $count < 1 || $count > 64) {
+            || !SupportedInventoryItem::supports($identifier)
+            || $count < 1 || $count > SupportedInventoryItem::maximumStackSize($identifier)) {
             throw new CorruptPlayerDataException('Player inventory stack is invalid.');
         }
     }

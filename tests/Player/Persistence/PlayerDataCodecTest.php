@@ -31,6 +31,26 @@ final class PlayerDataCodecTest extends TestCase
         self::assertSame('minecraft:grass_block', $decoded->inventory->cursor?->identifier);
     }
 
+    public function testPersistsAnIronTool(): void
+    {
+        $profile = self::profile();
+        $withTool = new PlayerBootstrap(
+            $profile->identity,
+            $profile->worldName,
+            $profile->position,
+            $profile->yaw,
+            $profile->pitch,
+            new PlayerInventoryState([
+                new PlayerInventoryEntry(0, new PlayerInventoryStackState('minecraft:iron_pickaxe', 1)),
+            ], 0),
+            $profile->firstPlayedAt,
+            $profile->lastPlayedAt,
+        );
+
+        $codec = new PlayerDataCodec();
+        self::assertEquals($withTool, $codec->decode($codec->encode($withTool)));
+    }
+
     public function testPersistsHealthAndMigratesSchemaOneProfilesAtFullHealth(): void
     {
         $profile = self::profile();

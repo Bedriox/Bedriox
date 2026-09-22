@@ -7,31 +7,39 @@ namespace Bedriox\Server\Runtime;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Packet\InventoryItemStack as ProtocolInventoryItemStack;
 use Bedriox\Server\Player\InventoryStack;
+use Bedriox\Server\Player\SupportedInventoryItem;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use InvalidArgumentException;
 
 /** Sole translation boundary between authoritative inventory values and the active Bedrock registry. */
 final readonly class BedrockInventoryPacketProjector
 {
-    private const string GRASS_BLOCK = 'minecraft:grass_block';
-
+    /** @param array<string, int> $itemRuntimeIds */
     public function __construct(
-        private int $grassItemRuntimeId,
+        private array $itemRuntimeIds,
         private BlockNetworkTranslator $blocks,
     ) {
-        if ($grassItemRuntimeId < -0x8000 || $grassItemRuntimeId > 0x7fff) {
-            throw new InvalidArgumentException('Grass item runtime ID is outside the protocol range.');
+        foreach (SupportedInventoryItem::IDENTIFIERS as $identifier) {
+            $runtimeId = $itemRuntimeIds[$identifier] ?? null;
+            if (!is_int($runtimeId) || $runtimeId < -0x8000 || $runtimeId > 0x7fff) {
+                throw new InvalidArgumentException('Supported item runtime ID is missing or outside the protocol range.');
+            }
         }
     }
 
     public static function fromData(BedrockDataSet $data, BlockNetworkTranslator $blocks): self
     {
-        $grass = $data->requiredItems()[self::GRASS_BLOCK] ?? null;
-        if (!is_array($grass)) {
-            throw new InvalidArgumentException('The active item registry does not contain grass blocks.');
+        $items = $data->requiredItems();
+        $runtimeIds = [];
+        foreach (SupportedInventoryItem::IDENTIFIERS as $identifier) {
+            $item = $items[$identifier] ?? null;
+            if (!is_array($item)) {
+                throw new InvalidArgumentException('The active item registry is missing a supported inventory item.');
+            }
+            $runtimeIds[$identifier] = $item['runtime_id'];
         }
 
-        return new self($grass['runtime_id'], $blocks);
+        return new self($runtimeIds, $blocks);
     }
 
     public function toProtocol(?InventoryStack $stack): ProtocolInventoryItemStack
@@ -39,16 +47,17 @@ final readonly class BedrockInventoryPacketProjector
         if ($stack === null) {
             return ProtocolInventoryItemStack::empty();
         }
-        if ($stack->identifier !== self::GRASS_BLOCK || $stack->placedBlockState === null) {
+        if (!SupportedInventoryItem::supports($stack->identifier)
+            || ($stack->identifier === 'minecraft:grass_block') !== ($stack->placedBlockState !== null)) {
             throw new InvalidArgumentException('Inventory stack has no supported Bedrock projection.');
         }
 
         return new ProtocolInventoryItemStack(
-            $this->grassItemRuntimeId,
+            $this->itemRuntimeIds[$stack->identifier],
             $stack->count,
             0,
             $stack->stackNetworkId,
-            $this->blocks->toNetwork($stack->placedBlockState),
+            $stack->placedBlockState === null ? 0 : $this->blocks->toNetwork($stack->placedBlockState),
             '',
         );
     }

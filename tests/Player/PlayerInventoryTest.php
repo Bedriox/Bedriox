@@ -254,6 +254,34 @@ final class PlayerInventoryTest extends TestCase
         PlayerInventory::restore($state, $this->palette());
     }
 
+    public function testIronToolsMoveButCannotBeMergedIntoStacks(): void
+    {
+        $inventory = PlayerInventory::restore(new PlayerInventoryState([
+            new PlayerInventoryEntry(0, new PlayerInventoryStackState('minecraft:iron_sword', 1)),
+            new PlayerInventoryEntry(1, new PlayerInventoryStackState('minecraft:iron_sword', 1)),
+        ], 0), $this->palette());
+
+        $merge = $inventory->applyStackRequest(0, [new InventoryStackRequestAction(
+            InventoryStackRequestActionType::Take,
+            new InventorySlotReference(InventoryContainer::Main, 0, 1),
+            new InventorySlotReference(InventoryContainer::Main, 1, 2),
+            1,
+        )]);
+        self::assertFalse($merge->success);
+        self::assertSame('destination_capacity', $merge->reason);
+        self::assertSame(1, $inventory->stackAt(0)?->count);
+        self::assertSame(1, $inventory->stackAt(1)?->count);
+
+        $swap = $inventory->applyStackRequest(0, [new InventoryStackRequestAction(
+            InventoryStackRequestActionType::Swap,
+            new InventorySlotReference(InventoryContainer::Main, 0, 1),
+            new InventorySlotReference(InventoryContainer::Main, 2, 0),
+        )]);
+        self::assertTrue($swap->success);
+        self::assertNull($inventory->stackAt(0));
+        self::assertSame('minecraft:iron_sword', $inventory->stackAt(2)?->identifier);
+    }
+
     public function testInventoryStateRejectsDuplicateSlots(): void
     {
         $stack = new PlayerInventoryStackState('minecraft:grass_block', 1);

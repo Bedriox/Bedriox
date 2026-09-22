@@ -78,7 +78,7 @@ Cancellable pre-events cover join, movement, chat, player attacks, damage, block
 
 `PluginContext::server()` supplies immutable player, inventory, world, position, block, item, health, and alive-state views. It supports bounded requests to send a player message, teleport or damage a player, read or change a canonical block, and change a supported inventory slot. Damage enters the same cancellable authoritative event path as built-in causes. Mutations requested by an event listener are staged until that listener returns successfully, then enter the authoritative simulation queue for validation and synchronization.
 
-Blocks and items use canonical identifiers such as `minecraft:grass_block`; process-local numeric IDs never enter the public API. The current flat-world preview exposes `minecraft:air`, `minecraft:bedrock`, `minecraft:dirt`, and `minecraft:grass_block`. Inventory writes currently support `minecraft:grass_block` or an empty slot.
+Blocks and items use canonical identifiers such as `minecraft:grass_block`; process-local numeric IDs never enter the public API. The current flat-world preview exposes `minecraft:air`, `minecraft:bedrock`, `minecraft:dirt`, and `minecraft:grass_block`. Inventory writes support `minecraft:grass_block`, one each of `minecraft:iron_sword`, `minecraft:iron_pickaxe`, `minecraft:iron_axe`, `minecraft:iron_shovel`, and `minecraft:iron_hoe`, or an empty slot. Iron tools can be held, moved, and persisted; tool-specific mining and combat effects are not implemented yet.
 
 The [ExamplePlugin repository](https://github.com/Bedriox/ExamplePlugin) contains a complete minimal project. API `0.1` is a preview contract and may make documented breaking changes before `1.0`.
 

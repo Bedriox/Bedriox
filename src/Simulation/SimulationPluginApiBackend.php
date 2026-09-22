@@ -11,6 +11,7 @@ use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\World as ApiWorld;
 use Bedriox\Server\Player\InventoryStack;
+use Bedriox\Server\Player\SupportedInventoryItem;
 use Bedriox\Server\Plugin\PluginActionBuffer;
 use Bedriox\Server\Plugin\PluginRuntimeControl;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
@@ -93,11 +94,17 @@ final readonly class SimulationPluginApiBackend
 
     private function inventoryStack(ApiItemStack $stack): InventoryStack
     {
-        if ($stack->identifier !== 'minecraft:grass_block') {
-            throw new InvalidArgumentException('The current plugin API exposes only minecraft:grass_block inventory stacks.');
+        if (!SupportedInventoryItem::supports($stack->identifier)
+            || $stack->count > SupportedInventoryItem::maximumStackSize($stack->identifier)) {
+            throw new InvalidArgumentException('The current plugin API does not support this inventory stack.');
         }
 
-        return new InventoryStack($stack->identifier, $stack->count, 1, $this->palette->grassBlock);
+        return new InventoryStack(
+            $stack->identifier,
+            $stack->count,
+            1,
+            $stack->identifier === 'minecraft:grass_block' ? $this->palette->grassBlock : null,
+        );
     }
 
     private function requireQueued(bool $queued): void
