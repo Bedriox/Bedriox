@@ -619,7 +619,8 @@ final class PlayerInventory
 
     private function maximumStackSize(string $identifier): int
     {
-        return $this->catalog?->type($identifier)->maximumStackSize ?? 64;
+        return $this->catalog?->type($identifier)->maximumStackSize
+            ?? (SupportedInventoryItem::supports($identifier) ? SupportedInventoryItem::maximumStackSize($identifier) : 64);
     }
 
     /** @param array<int, true> $usedIds */
