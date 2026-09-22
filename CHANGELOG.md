@@ -11,6 +11,10 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ## [Unreleased]
 
+### Fixed
+
+- Reject attempts to merge one-slot tools in catalog-free inventories without throwing or changing either slot.
+
 ### Added
 
 - Add survival, creative, adventure, and spectator authority with persistent game mode, ability projection, spectator visibility, cancellable plugin events, and the `gamemode` command.
