@@ -26,8 +26,10 @@ use Bedriox\Server\Login\LoginAuthenticator;
 use Bedriox\Server\Login\SecureHandshakeMaterialFactory;
 use Bedriox\Server\Login\SystemMonotonicClock;
 use Bedriox\Server\Observability\CrashContextPublisher;
+use Bedriox\Server\Observability\PerformanceMonitor;
 use Bedriox\Server\Permission\PermissionStore;
 use Bedriox\Server\Player\Persistence\FilePlayerDataStore;
+use Bedriox\Server\Player\Persistence\PlayerDataStore;
 use Bedriox\Server\Player\Persistence\PlayerPersistenceManager;
 use Bedriox\Server\Plugin\Command\CommandRegistry;
 use Bedriox\Server\Simulation\FixedRateWorldLoop;
@@ -38,6 +40,12 @@ use Bedriox\Server\Simulation\SimulationPluginApiBackend;
 use Bedriox\Server\Simulation\SystemSimulationClock;
 use Bedriox\Server\Simulation\WorldSimulation;
 use Bedriox\Server\Transport\DiscoveryServerTransport;
+use Bedriox\Server\Worker\Chunk\AsyncChunkGenerator;
+use Bedriox\Server\Worker\Chunk\ChunkProjectionIdentity;
+use Bedriox\Server\Worker\Chunk\PreparedChunkCache;
+use Bedriox\Server\Worker\CoreWorkerTaskCatalog;
+use Bedriox\Server\Worker\ManagedWorkerDispatcher;
+use Bedriox\Server\Worker\Network\ManagedCompressionWorkerDispatcher;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\DefaultBlockPalette;
@@ -48,6 +56,7 @@ use Bedriox\Server\World\SpawnPosition;
 use Bedriox\Server\World\World;
 use Bedriox\Server\World\WorldGeneratorFactory;
 use Bedriox\Server\World\WorldMetadata;
+use Closure;
 use Throwable;
 
 /** Fail-closed production dependency composition; FULL discovery completes before UDP bind. */
@@ -59,6 +68,7 @@ final class ServerBootstrap
         private readonly ?ConfiguredWorldFactory $worldFactory = null,
         private readonly ?EphemeralKeyFactory $ephemeralKeys = null,
         private readonly ?string $playerDataDirectory = null,
+        private readonly ?PlayerDataStore $playerDataStore = null,
     ) {}
 
     public function create(
@@ -70,6 +80,9 @@ final class ServerBootstrap
         ?CommandRegistry $commandRegistry = null,
         ?PermissionStore $permissionStore = null,
         ?ItemCatalog $itemCatalog = null,
+        ?PerformanceMonitor $performance = null,
+        ?Closure $simulationTickBoundary = null,
+        ?ManagedWorkerDispatcher $workers = null,
     ): BootstrappedServer {
         $diagnostics ??= RuntimeDiagnostics::disabled();
         $authenticationClock = new SystemAuthenticationClock();
@@ -107,6 +120,36 @@ final class ServerBootstrap
         $openedWorld = $this->worldFactory?->open($config, $data)
             ?? $this->ephemeralWorld($config, $internalStates);
         $flatWorld = $openedWorld->world;
+        $workerCount = $workers?->snapshot()->workerCount ?? 0;
+        $workersAvailable = $workerCount > 0;
+        if ($workers !== null && $workersAvailable) {
+            $flatWorld->enableAsyncGeneration(new AsyncChunkGenerator(
+                $workers,
+                CoreWorkerTaskCatalog::GENERATE_CHUNK,
+                $openedWorld->data->generatorName,
+                $openedWorld->data->generatorVersion,
+                $openedWorld->data->metadata->seed,
+                $internalStates,
+            ));
+        }
+        $compressionWorkers = $workers !== null && $workersAvailable
+            ? new ManagedCompressionWorkerDispatcher($workers)
+            : null;
+        $preparedChunks = $workers !== null && $workersAvailable
+            ? new PreparedChunkCache(
+                $workers,
+                CoreWorkerTaskCatalog::PREPARE_CHUNK,
+                $internalStates,
+                bin2hex(random_bytes(16)),
+                maximumEntries: min(4_096, $config->chunkCacheLimit),
+                maximumBytes: min(
+                    67_108_864,
+                    max(8_388_608, intdiv($config->memoryLimitBytes === 0 ? 536_870_912 : $config->memoryLimitBytes, 8)),
+                ),
+                maximumPending: min($config->chunkGenerationQueueSize, $workerCount * 2),
+                registryHash: ChunkProjectionIdentity::registryHash($data, $networkStates),
+            )
+            : null;
         $discovery = null;
         try {
             $initialization ??= BedrockPlayInitializationFactory::forWorld(
@@ -117,8 +160,10 @@ final class ServerBootstrap
                 $config->defaultGamemode,
             );
             $spawn = $flatWorld->spawn();
-            $playerPersistence = $this->playerDataDirectory === null ? null : new PlayerPersistenceManager(
-                new FilePlayerDataStore($this->playerDataDirectory),
+            $playerStore = $this->playerDataStore
+                ?? ($this->playerDataDirectory === null ? null : new FilePlayerDataStore($this->playerDataDirectory));
+            $playerPersistence = $playerStore === null ? null : new PlayerPersistenceManager(
+                $playerStore,
                 $flatWorld->metadata->name,
                 new Position($spawn->x, $spawn->y, $spawn->z),
                 $flatPalette,
@@ -188,9 +233,14 @@ final class ServerBootstrap
                     spawnRadius: $config->spawnRadius,
                     chunksGeneratePerTick: $config->chunksGeneratePerTick,
                     chunksSendPerTick: $config->chunksSendPerTick,
+                    chunkPrefetchRadius: $config->chunkLoadingPrefetchRadius,
+                    chunkGenerationQueueSize: $config->chunkGenerationQueueSize,
                     inventoryProjector: $inventoryProjector,
                     commandRegistry: $commandRegistry,
                     permissionStore: $permissionStore,
+                    compressionWorkers: $compressionWorkers,
+                    compressionTaskTypeId: CoreWorkerTaskCatalog::COMPRESS_BATCH,
+                    preparedChunks: $preparedChunks,
                 ),
                 $world,
                 new FixedRateWorldLoop($world, new SystemSimulationClock()),
@@ -209,6 +259,9 @@ final class ServerBootstrap
                 playerConnections: $playerConnections,
                 inventoryProjector: $inventoryProjector,
                 pluginEvents: $pluginEvents,
+                simulationTickBoundary: $simulationTickBoundary,
+                performance: $performance,
+                preparedChunks: $preparedChunks,
             );
         } catch (Throwable $exception) {
             $discovery?->close();

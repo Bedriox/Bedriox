@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Observability;
 
+use Bedriox\Server\Observability\BackgroundLogWriter;
 use Bedriox\Server\Observability\LogLevel;
 use Bedriox\Server\Observability\RotatingFileLog;
 use Bedriox\Server\Observability\ServerLogger;
@@ -60,6 +61,35 @@ final class ServerLoggerTest extends TestCase
                 @unlink($archive);
             }
             @rmdir($directory . DIRECTORY_SEPARATOR . 'archive');
+            @unlink($path);
+            @rmdir($directory);
+        }
+    }
+
+    public function testCanSendAlreadyRedactedPlainLinesToBackgroundWriter(): void
+    {
+        $directory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'bedriox-background-log-' . bin2hex(random_bytes(6));
+        $path = $directory . DIRECTORY_SEPARATOR . 'server.log';
+        $writer = null;
+        try {
+            $writer = BackgroundLogWriter::start('logger-test', $path, 65_536, 1);
+            $logger = new ServerLogger(
+                static function (string $_line): void {},
+                LogLevel::INFO,
+                false,
+                false,
+                null,
+                backgroundFile: $writer,
+            );
+            $logger->info('ready password=private-value');
+            self::assertTrue($writer->flush(5_000));
+
+            $contents = file_get_contents($path);
+            self::assertIsString($contents);
+            self::assertStringContainsString('ready [REDACTED]', $contents);
+            self::assertStringNotContainsString('private-value', $contents);
+        } finally {
+            $writer?->shutdown(1_000);
             @unlink($path);
             @rmdir($directory);
         }

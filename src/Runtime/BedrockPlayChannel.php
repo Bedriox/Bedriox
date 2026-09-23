@@ -8,6 +8,7 @@ use Bedriox\Protocol\Batch\BatchLimits;
 use Bedriox\Protocol\Batch\BedrockBatch;
 use Bedriox\Protocol\Batch\BedrockBatchCodec;
 use Bedriox\Protocol\Batch\CompressionMode;
+use Bedriox\Protocol\Batch\PacketBatchCodec;
 use Bedriox\Protocol\Encryption\BedrockDecryptor;
 use Bedriox\Protocol\Encryption\BedrockEncryptor;
 use Bedriox\Protocol\Exception\ItemStackRequestDecodeException;
@@ -95,6 +96,11 @@ use Bedriox\Server\Simulation\ClientInputTick;
 use Bedriox\Server\Simulation\Command\WorldCommand;
 use Bedriox\Server\Simulation\MovementMode;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
+use Bedriox\Server\Worker\Chunk\PreparedChunk;
+use Bedriox\Server\Worker\Chunk\PreparedChunkAvailability;
+use Bedriox\Server\Worker\Chunk\PreparedChunkCache;
+use Bedriox\Server\Worker\Network\CompressionWorkerDispatcher;
+use Bedriox\Server\Worker\Network\OrderedOutboundCompressionQueue;
 use Bedriox\Server\World\BlockPosition as WorldBlockPosition;
 use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkPosition;
@@ -106,6 +112,10 @@ use Throwable;
 final class BedrockPlayChannel
 {
     private const int COMPRESSION_THRESHOLD = 256;
+    private const int CHUNK_PREPARATION_NANOSECONDS_PER_TICK = 5_000_000;
+    private const int CHUNK_PREPARATION_BYTES_PER_TICK = 4_194_304;
+    private const int CHUNK_DELIVERY_NANOSECONDS_PER_TICK = 5_000_000;
+    private const int CHUNK_DELIVERY_BYTES_PER_TICK = 524_288;
 
     /** @var SplQueue<OutgoingPlayPayload> */
     private SplQueue $outgoing;
@@ -156,6 +166,8 @@ final class BedrockPlayChannel
     private array $retainedChunks = [];
     /** @var array<string, true> */
     private array $queuedChunkKeys = [];
+    /** @var array<string, ChunkPosition> */
+    private array $pendingChunkRequests = [];
     /** @var array<string, true> */
     private array $sentSpawnChunks = [];
     private readonly AuthenticatedLogin $login;
@@ -164,6 +176,11 @@ final class BedrockPlayChannel
     private readonly BatchLimits $batchLimits;
     private readonly RuntimeDiagnostics $diagnostics;
     private readonly int $protocolVersion;
+    private readonly ?OrderedOutboundCompressionQueue $outboundCompression;
+
+    /** @var SplQueue<string> */
+    private SplQueue $deferredCompressionBatches;
+    private int $deferredCompressionBytes = 0;
 
     /** @var array<string, true> */
     private array $trackedSubChunkRequests = [];
@@ -190,10 +207,15 @@ final class BedrockPlayChannel
         private readonly int $spawnRadius = 1,
         private readonly int $chunksGeneratePerTick = 1,
         private readonly int $chunksSendPerTick = 1,
+        private readonly int $chunkPrefetchRadius = 0,
+        private readonly int $chunkGenerationQueueSize = 1_024,
         private readonly float $spawnX = 0.0,
         private readonly float $spawnY = 64.0,
         private readonly float $spawnZ = 0.0,
         private readonly ?BedrockInventoryPacketProjector $inventoryProjector = null,
+        ?CompressionWorkerDispatcher $compressionWorkers = null,
+        int $compressionTaskTypeId = 0,
+        private readonly ?PreparedChunkCache $preparedChunks = null,
     ) {
         $this->login = $ready->login;
         $this->encryptor = $ready->encryptor;
@@ -205,7 +227,20 @@ final class BedrockPlayChannel
         $this->pendingBootstrapPackets = new SplQueue();
         $this->pendingStreamingResponses = new SplQueue();
         $this->generatedChunks = new SplQueue();
+        $this->deferredCompressionBatches = new SplQueue();
         $this->batchLimits = new BatchLimits(maximumPackets: $this->limits->maximumPacketsPerPayload);
+        $this->outboundCompression = $compressionWorkers === null ? null : new OrderedOutboundCompressionQueue(
+            $compressionWorkers,
+            $compressionTaskTypeId,
+            1,
+            CompressionMode::NegotiatedZlib,
+            self::COMPRESSION_THRESHOLD,
+            $this->batchLimits,
+            maximumOutstandingTasks: $this->limits->maximumOutgoingPayloadsPerSession,
+            maximumOutstandingBytes: $this->limits->maximumOutgoingBytesPerSession,
+            maximumResultBytes: $this->batchLimits->maximumInputBytes + 1,
+            minimumOffloadBytes: 4_096,
+        );
         $this->diagnostics = $diagnostics ?? RuntimeDiagnostics::disabled();
         try {
             if ($this->protocolVersion !== ProtocolVersion::CURRENT) {
@@ -215,7 +250,10 @@ final class BedrockPlayChannel
                 || $this->viewDistance < 1 || $this->viewDistance > 32
                 || $this->spawnRadius < 1 || $this->spawnRadius > $this->viewDistance
                 || $this->chunksGeneratePerTick < 1 || $this->chunksGeneratePerTick > 64
-                || $this->chunksSendPerTick < 1 || $this->chunksSendPerTick > 64) {
+                || $this->chunksSendPerTick < 1 || $this->chunksSendPerTick > 64
+                || $this->chunkPrefetchRadius < 0 || $this->chunkPrefetchRadius > 8
+                || $this->viewDistance + $this->chunkPrefetchRadius > 32
+                || $this->chunkGenerationQueueSize < 1 || $this->chunkGenerationQueueSize > 65_536) {
                 throw new \InvalidArgumentException('Chunk streaming configuration is invalid.');
             }
             if (count($initializationPackets) > $this->limits->maximumOutgoingPayloadsPerSession) {
@@ -317,9 +355,50 @@ final class BedrockPlayChannel
             return false;
         }
         try {
-            $batch = new BedrockBatch([
-                new PacketFrame(new PacketHeader(BedrockPacketCodec::packetId($packet)), BedrockPacketCodec::encode($packet, $this->protocolVersion)),
-            ], CompressionMode::NegotiatedZlib, self::COMPRESSION_THRESHOLD);
+            $frame = new PacketFrame(
+                new PacketHeader(BedrockPacketCodec::packetId($packet)),
+                BedrockPacketCodec::encode($packet, $this->protocolVersion),
+            );
+            if ($this->outboundCompression !== null) {
+                $clearBatch = PacketBatchCodec::encode([$frame], $this->batchLimits);
+                if (!$this->deferredCompressionBatches->isEmpty()) {
+                    if (!$this->canRetainDeferredCompression($clearBatch)) {
+                        return false;
+                    }
+                    $this->deferredCompressionBatches->enqueue($clearBatch);
+                    $this->deferredCompressionBytes += strlen($clearBatch);
+                    if ($packet instanceof UpdateAbilitiesPacket) {
+                        $this->authoritativeAbilities = $packet;
+                    }
+
+                    return true;
+                }
+                $submission = $this->outboundCompression->enqueue($clearBatch);
+                if (!$submission->isAccepted()) {
+                    $this->diagnose('deferred ' . $packet::class . ' due to compression backpressure');
+                    if (!$this->canRetainDeferredCompression($clearBatch)) {
+                        return false;
+                    }
+                    $this->deferredCompressionBatches->enqueue($clearBatch);
+                    $this->deferredCompressionBytes += strlen($clearBatch);
+                    if ($packet instanceof UpdateAbilitiesPacket) {
+                        $this->authoritativeAbilities = $packet;
+                    }
+
+                    return true;
+                }
+                if (!$this->releaseCompressedBatches()) {
+                    return false;
+                }
+                $this->diagnose('queued ' . $packet::class . ' as packet ' . BedrockPacketCodec::packetId($packet)
+                    . ($submission->synchronousFallback ? ' with synchronous compression' : ' for worker compression'));
+                if ($packet instanceof UpdateAbilitiesPacket) {
+                    $this->authoritativeAbilities = $packet;
+                }
+
+                return true;
+            }
+            $batch = new BedrockBatch([$frame], CompressionMode::NegotiatedZlib, self::COMPRESSION_THRESHOLD);
             $envelope = $this->encryptor->encryptEnvelope(BedrockBatchCodec::encode($batch, $this->batchLimits));
             $this->diagnose('queued ' . $packet::class . ' as packet ' . BedrockPacketCodec::packetId($packet)
                 . ' (' . strlen($envelope) . ' encrypted bytes)');
@@ -343,6 +422,22 @@ final class BedrockPlayChannel
     public function tick(): bool
     {
         if ($this->closed) {
+            return false;
+        }
+        if (!$this->releaseCompressedBatches()) {
+            return false;
+        }
+        $compressionBudget = $this->limits->maximumStreamingPacketsPerPoll;
+        while ($compressionBudget-- > 0 && !$this->deferredCompressionBatches->isEmpty()) {
+            $batch = $this->deferredCompressionBatches->bottom();
+            $submission = $this->outboundCompression?->enqueue($batch);
+            if ($submission === null || !$submission->isAccepted()) {
+                break;
+            }
+            $this->deferredCompressionBatches->dequeue();
+            $this->deferredCompressionBytes -= strlen($batch);
+        }
+        if (!$this->releaseCompressedBatches()) {
             return false;
         }
         $remaining = $this->limits->maximumStreamingPacketsPerPoll;
@@ -380,10 +475,13 @@ final class BedrockPlayChannel
             return true;
         }
 
-        return $this->generateChunks() && $this->sendGeneratedChunks();
+        return $this->generateChunks() && $this->prepareGeneratedChunks() && $this->sendGeneratedChunks();
     }
 
-    /** @return list<OutgoingPlayPayload> */
+    /**
+     * @return list<OutgoingPlayPayload>
+     * @phpstan-impure
+     */
     public function drainOutgoing(): array
     {
         $values = [];
@@ -445,6 +543,19 @@ final class BedrockPlayChannel
         return $this->generatedChunks->count();
     }
 
+    public function chunkStreamingSnapshot(): ChunkStreamingSnapshot
+    {
+        return new ChunkStreamingSnapshot(
+            $this->chunkView === null ? 0 : 1,
+            $this->chunkView?->pendingCount() ?? 0,
+            $this->chunkView?->prefetchPendingCount() ?? 0,
+            count($this->pendingChunkRequests),
+            $this->generatedChunks->count(),
+            count($this->retainedChunks),
+            $this->totalQueuedPackets(),
+        );
+    }
+
     /** Whether this client has already been sent the chunk containing the block position. */
     public function hasSentChunkAt(float $x, float $z): bool
     {
@@ -482,7 +593,12 @@ final class BedrockPlayChannel
         if ($released !== []) {
             $this->chunkVisibilityChanged = true;
         }
-        $this->discardGeneratedChunksOutsideView();
+        $this->resetGeneratedChunkDeliveryQueue();
+        foreach ($this->pendingChunkRequests as $key => $position) {
+            if (!$view->containsRetained($position->x, $position->z)) {
+                unset($this->pendingChunkRequests[$key]);
+            }
+        }
         if ($center === null) {
             return false;
         }
@@ -501,7 +617,10 @@ final class BedrockPlayChannel
             return;
         }
         $this->closed = true;
+        $this->outboundCompression?->close();
         $this->outgoing = new SplQueue();
+        $this->deferredCompressionBatches = new SplQueue();
+        $this->deferredCompressionBytes = 0;
         $this->commands = new SplQueue();
         $this->playerCommands = new SplQueue();
         $this->pendingBootstrapPackets = new SplQueue();
@@ -518,6 +637,7 @@ final class BedrockPlayChannel
         }
         $this->retainedChunks = [];
         $this->queuedChunkKeys = [];
+        $this->pendingChunkRequests = [];
         $this->sentSpawnChunks = [];
         $this->chunkView = null;
         $this->mainInventoryOpen = false;
@@ -819,7 +939,8 @@ final class BedrockPlayChannel
                 return false;
             }
             if ($this->flatWorld !== null && $this->chunkSerializer !== null) {
-                $this->chunkView = new ChunkViewManager($radius);
+                $prefetchRadius = min($this->chunkPrefetchRadius, 32 - $radius);
+                $this->chunkView = new ChunkViewManager($radius, $prefetchRadius);
                 $this->chunkView->centerOnBlock($this->spawnX, $this->spawnZ);
                 if (!$this->queuePacket(new NetworkChunkPublisherUpdatePacket(
                     (int) floor($this->spawnX),
@@ -1641,7 +1762,41 @@ final class BedrockPlayChannel
     private function totalQueuedPackets(): int
     {
         return $this->outgoing->count() + $this->pendingBootstrapPackets->count()
-            + $this->pendingStreamingResponses->count() + count($this->deferredInitializationPackets);
+            + $this->pendingStreamingResponses->count() + count($this->deferredInitializationPackets)
+            + ($this->outboundCompression?->outstandingCount() ?? 0)
+            + $this->deferredCompressionBatches->count();
+    }
+
+    private function releaseCompressedBatches(): bool
+    {
+        if ($this->outboundCompression === null) {
+            return true;
+        }
+        foreach ($this->outboundCompression->takeReady($this->limits->maximumOutgoingPayloadsPerSession) as $batch) {
+            if ($batch->payload === null || $batch->failureCode !== null) {
+                return $this->fail('compression_failed');
+            }
+            try {
+                $envelope = $this->encryptor->encryptEnvelope($batch->payload);
+            } catch (Throwable $error) {
+                return $this->fail('encode_failed', exception: $error);
+            }
+            if (strlen($envelope) > $this->limits->maximumOutgoingBytesPerSession - $this->outgoingBytes) {
+                return $this->fail('output_limit');
+            }
+            $this->outgoing->enqueue(new OutgoingPlayPayload($envelope));
+            $this->outgoingBytes += strlen($envelope);
+        }
+
+        return true;
+    }
+
+    private function canRetainDeferredCompression(string $batch): bool
+    {
+        $retained = $this->outgoingBytes + $this->deferredCompressionBytes
+            + ($this->outboundCompression?->outstandingBytes() ?? 0);
+
+        return strlen($batch) <= $this->limits->maximumOutgoingBytesPerSession - $retained;
     }
 
     private function updateSpawnAcknowledged(): void
@@ -1659,14 +1814,9 @@ final class BedrockPlayChannel
         }
         $view = $this->chunkView;
         $world = $this->flatWorld;
-        $pendingCount = $view->pendingCount();
-        if ($pendingCount === 0) {
-            return true;
-        }
-        $generated = 0;
-        foreach ($view->pending($pendingCount) as $coordinate) {
-            if ($generated >= $this->chunksGeneratePerTick
-                || $this->generatedChunks->count() >= $this->limits->maximumOutgoingPayloadsPerSession) {
+        $admitted = 0;
+        foreach ($view->pending(max(1, $view->pendingCount())) as $coordinate) {
+            if ($this->generatedChunks->count() >= $this->limits->maximumOutgoingPayloadsPerSession) {
                 break;
             }
             $position = new ChunkPosition($coordinate['x'], $coordinate['z']);
@@ -1674,15 +1824,63 @@ final class BedrockPlayChannel
             if (isset($this->queuedChunkKeys[$key])) {
                 continue;
             }
+            if ($view->isPrepared($position->x, $position->z)) {
+                $this->queuedChunkKeys[$key] = true;
+                $this->generatedChunks->enqueue($position);
+                continue;
+            }
+            if ($admitted >= $this->chunksGeneratePerTick) {
+                break;
+            }
+            if (!isset($this->pendingChunkRequests[$key])
+                && count($this->pendingChunkRequests) >= $this->chunkGenerationQueueSize) {
+                break;
+            }
+            ++$admitted;
             try {
-                $world->retainChunk($position);
+                if (!$world->requestRetainChunk($position)) {
+                    $this->pendingChunkRequests[$key] = $position;
+                    continue;
+                }
             } catch (Throwable $exception) {
                 return $this->fail('chunk_generation_failed', exception: $exception);
             }
+            unset($this->pendingChunkRequests[$key]);
             $this->retainedChunks[$key] = $position;
+            $view->markPrepared($position->x, $position->z);
             $this->queuedChunkKeys[$key] = true;
             $this->generatedChunks->enqueue($position);
-            ++$generated;
+        }
+
+        if ($view->unpreparedVisibleCount() > 0) {
+            return true;
+        }
+        foreach ($view->pendingPrefetch(max(1, $view->prefetchPendingCount())) as $coordinate) {
+            if ($admitted >= $this->chunksGeneratePerTick
+                || $this->generatedChunks->count() >= $this->limits->maximumOutgoingPayloadsPerSession) {
+                break;
+            }
+            $position = new ChunkPosition($coordinate['x'], $coordinate['z']);
+            $key = $position->key();
+            if ($view->isPrepared($position->x, $position->z)) {
+                continue;
+            }
+            if (!isset($this->pendingChunkRequests[$key])
+                && count($this->pendingChunkRequests) >= $this->chunkGenerationQueueSize) {
+                break;
+            }
+            ++$admitted;
+            try {
+                if (!$world->requestRetainChunk($position)) {
+                    $this->pendingChunkRequests[$key] = $position;
+                    continue;
+                }
+            } catch (Throwable $exception) {
+                return $this->fail('chunk_generation_failed', exception: $exception);
+            }
+            unset($this->pendingChunkRequests[$key]);
+            $this->retainedChunks[$key] = $position;
+            $view->markPrepared($position->x, $position->z);
         }
 
         return true;
@@ -1693,28 +1891,78 @@ final class BedrockPlayChannel
         if ($this->chunkView === null || $this->flatWorld === null || $this->chunkSerializer === null) {
             return true;
         }
+        if (!$this->releaseCompressedBatches()) {
+            return false;
+        }
         $view = $this->chunkView;
         $sent = 0;
+        $sentBytes = 0;
+        $startedAt = hrtime(true);
         while ($sent < $this->chunksSendPerTick && !$this->generatedChunks->isEmpty()) {
-            $position = $this->generatedChunks->dequeue();
+            /** @var ChunkPosition $position */
+            $position = $this->generatedChunks->bottom();
             $key = $position->key();
-            unset($this->queuedChunkKeys[$key]);
             if (!$view->contains($position->x, $position->z)) {
+                $this->generatedChunks->dequeue();
+                unset($this->queuedChunkKeys[$key]);
                 $this->releaseChunk($position->x, $position->z);
                 continue;
             }
             try {
-                $packet = $this->chunkSerializer->serialize($this->flatWorld->chunk($position));
+                $chunk = $this->flatWorld->chunk($position);
             } catch (Throwable $exception) {
+                $this->generatedChunks->dequeue();
+                unset($this->queuedChunkKeys[$key]);
                 $this->releaseChunk($position->x, $position->z);
 
                 return $this->fail('chunk_serialization_failed', exception: $exception);
             }
-            if (!$this->queuePacket($packet)) {
-                $this->releaseChunk($position->x, $position->z);
-
-                return false;
+            $prepared = null;
+            if ($this->preparedChunks !== null) {
+                $lookup = $this->preparedChunks->lookupOrRequest($chunk, $this->protocolVersion);
+                if ($lookup->availability === PreparedChunkAvailability::PENDING
+                    || $lookup->availability === PreparedChunkAvailability::DEFERRED) {
+                    break;
+                }
+                if ($lookup->availability === PreparedChunkAvailability::READY) {
+                    $prepared = $lookup->chunk;
+                    if (!$prepared instanceof PreparedChunk
+                        || !$this->preparedChunks->isCurrent($prepared, $chunk, $this->protocolVersion)) {
+                        break;
+                    }
+                }
             }
+
+            if ($prepared instanceof PreparedChunk) {
+                if ($this->hasOutboundOrderingBarrier()
+                    || ($sent > 0 && $sentBytes + $prepared->bytes() > self::CHUNK_DELIVERY_BYTES_PER_TICK)
+                    || ($sent > 0 && hrtime(true) - $startedAt >= self::CHUNK_DELIVERY_NANOSECONDS_PER_TICK)) {
+                    break;
+                }
+                if (!$this->queuePreparedChunk($prepared)) {
+                    $this->releaseChunk($position->x, $position->z);
+
+                    return false;
+                }
+                $sentBytes += $prepared->bytes();
+            } else {
+                try {
+                    $packet = $this->chunkSerializer->serialize($chunk);
+                } catch (Throwable $exception) {
+                    $this->generatedChunks->dequeue();
+                    unset($this->queuedChunkKeys[$key]);
+                    $this->releaseChunk($position->x, $position->z);
+
+                    return $this->fail('chunk_serialization_failed', exception: $exception);
+                }
+                if (!$this->queuePacket($packet)) {
+                    $this->releaseChunk($position->x, $position->z);
+
+                    return false;
+                }
+            }
+            $this->generatedChunks->dequeue();
+            unset($this->queuedChunkKeys[$key]);
             $view->markSent($position->x, $position->z);
             $this->chunkVisibilityChanged = true;
             ++$sent;
@@ -1739,24 +1987,81 @@ final class BedrockPlayChannel
         return true;
     }
 
-    private function discardGeneratedChunksOutsideView(): void
+    /** Admits detached preparation work without changing the nearest-first delivery queue. */
+    private function prepareGeneratedChunks(): bool
+    {
+        if ($this->preparedChunks === null || $this->flatWorld === null || $this->generatedChunks->isEmpty()) {
+            return true;
+        }
+        $startedAt = hrtime(true);
+        $submittedBytes = 0;
+        $admitted = 0;
+        /** @var SplQueue<ChunkPosition> $pending */
+        $pending = clone $this->generatedChunks;
+        while (!$pending->isEmpty() && $admitted < $this->chunksSendPerTick) {
+            /** @var ChunkPosition $position */
+            $position = $pending->dequeue();
+            if ($this->chunkView?->contains($position->x, $position->z) !== true) {
+                continue;
+            }
+            try {
+                $chunk = $this->flatWorld->chunk($position);
+                $lookup = $this->preparedChunks->lookupOrRequest($chunk, $this->protocolVersion);
+            } catch (Throwable $exception) {
+                return $this->fail('chunk_preparation_failed', exception: $exception);
+            }
+            ++$admitted;
+            $submittedBytes += $lookup->submittedBytes;
+            if ($submittedBytes >= self::CHUNK_PREPARATION_BYTES_PER_TICK
+                || hrtime(true) - $startedAt >= self::CHUNK_PREPARATION_NANOSECONDS_PER_TICK) {
+                break;
+            }
+        }
+
+        return true;
+    }
+
+    private function hasOutboundOrderingBarrier(): bool
+    {
+        return !$this->deferredCompressionBatches->isEmpty()
+            || ($this->outboundCompression?->outstandingCount() ?? 0) > 0;
+    }
+
+    private function queuePreparedChunk(PreparedChunk $prepared): bool
+    {
+        if ($this->closed || $this->totalQueuedPackets() >= $this->limits->maximumOutgoingPayloadsPerSession) {
+            return false;
+        }
+        try {
+            $envelope = $this->encryptor->encryptEnvelope($prepared->clearEnvelope);
+        } catch (Throwable $error) {
+            return $this->fail('encode_failed', exception: $error);
+        }
+        if (strlen($envelope) > $this->limits->maximumOutgoingBytesPerSession - $this->outgoingBytes) {
+            return $this->fail('output_limit');
+        }
+        $this->outgoing->enqueue(new OutgoingPlayPayload($envelope));
+        $this->outgoingBytes += strlen($envelope);
+        $this->diagnose('queued prepared chunk ' . $prepared->position->key()
+            . ' revision ' . $prepared->revision . ' (' . strlen($envelope) . ' encrypted bytes)');
+
+        return true;
+    }
+
+    /** Clears stale delivery ordering so the next tick rebuilds it nearest to the new center. */
+    private function resetGeneratedChunkDeliveryQueue(): void
     {
         if ($this->chunkView === null) {
             return;
         }
         $view = $this->chunkView;
-        /** @var SplQueue<ChunkPosition> $kept */
-        $kept = new SplQueue();
         while (!$this->generatedChunks->isEmpty()) {
             $position = $this->generatedChunks->dequeue();
-            if ($view->contains($position->x, $position->z)) {
-                $kept->enqueue($position);
-                continue;
-            }
             unset($this->queuedChunkKeys[$position->key()]);
-            $this->releaseChunk($position->x, $position->z);
+            if (!$view->containsRetained($position->x, $position->z)) {
+                $this->releaseChunk($position->x, $position->z);
+            }
         }
-        $this->generatedChunks = $kept;
     }
 
     private function releaseChunk(int $x, int $z): void

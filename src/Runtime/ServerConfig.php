@@ -7,39 +7,45 @@ namespace Bedriox\Server\Runtime;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Server\Login\AuthenticationMode;
 use Bedriox\Server\Observability\LogLevel;
+use Bedriox\Server\Worker\WorkerCoreCount;
 use InvalidArgumentException;
 
 final readonly class ServerConfig
 {
     private const array DEFAULTS = [
-        'server.name' => 'Bedriox Server',
-        'server.motd' => 'Powered by Bedriox',
-        'server.max-players' => '20',
-        'network.bind-address' => '0.0.0.0',
-        'network.port' => '19132',
-        'network.authentication' => 'FULL',
-        'level.name' => 'world',
-        'level.generator' => 'default',
-        'level.seed' => '0',
-        'level.default-gamemode' => 'survival',
-        'level.difficulty' => 'normal',
+        'server-name' => 'Bedriox Server',
+        'motd' => 'Powered by Bedriox',
+        'server-ip' => '0.0.0.0',
+        'server-port' => '19132',
+        'max-players' => '20',
+        'memory-limit' => '500MB',
+        'xbox-auth' => 'true',
+        'enable-console' => 'true',
+        'enable-plugins' => 'true',
+        'level-name' => 'world',
+        'level-type' => 'default',
+        'level-seed' => '0',
+        'gamemode' => 'survival',
+        'difficulty' => 'normal',
         'pvp' => 'true',
-        'level.autosave-interval-ticks' => '6000',
+        'view-distance' => '4',
+        'network.authentication' => 'FULL',
         'level.spawn-x' => '',
         'level.spawn-y' => '',
         'level.spawn-z' => '',
-        'chunks.view-distance' => '4',
-        'chunks.spawn-radius' => '4',
-        'chunks.send-per-tick' => '4',
-        'chunks.generate-per-tick' => '1',
-        'chunks.cache-limit' => '2048',
-        'chunks.save-per-tick' => '8',
+        'runtime.ticks-per-second' => '20',
+        'workers.core-count' => 'auto',
+        'chunk-sending.spawn-radius' => '4',
+        'chunk-sending.per-tick' => '8',
+        'chunk-generation.per-tick' => '4',
+        'chunk-generation.queue-size' => '1024',
+        'chunk-loading.prefetch-radius' => '1',
+        'chunk-cache.limit' => 'auto',
+        'chunk-saving.per-tick' => '8',
+        'level.autosave-interval-ticks' => '6000',
         'players.autosave-interval-ticks' => '6000',
         'players.save-per-tick' => '8',
         'movement.rewind-history-size' => '40',
-        'runtime.ticks-per-second' => '20',
-        'console.enabled' => 'true',
-        'plugins.enabled' => 'true',
         'plugins.maximum' => '64',
         'logging.level' => 'INFO',
         'logging.console' => 'true',
@@ -51,32 +57,80 @@ final readonly class ServerConfig
         'crash-report.include-player-identifiers' => 'true',
     ];
 
+    private const array SERVER_PROPERTY_KEYS = [
+        'server-name' => true,
+        'motd' => true,
+        'server-ip' => true,
+        'server-port' => true,
+        'max-players' => true,
+        'memory-limit' => true,
+        'xbox-auth' => true,
+        'enable-console' => true,
+        'enable-plugins' => true,
+        'level-name' => true,
+        'level-type' => true,
+        'level-seed' => true,
+        'gamemode' => true,
+        'difficulty' => true,
+        'pvp' => true,
+        'view-distance' => true,
+    ];
+
+    private const array ADVANCED_SETTING_KEYS = [
+        'runtime.ticks-per-second' => true,
+        'workers.core-count' => true,
+        'chunk-sending.spawn-radius' => true,
+        'chunk-sending.per-tick' => true,
+        'chunk-generation.per-tick' => true,
+        'chunk-generation.queue-size' => true,
+        'chunk-loading.prefetch-radius' => true,
+        'chunk-cache.limit' => true,
+        'chunk-saving.per-tick' => true,
+        'level.autosave-interval-ticks' => true,
+        'players.autosave-interval-ticks' => true,
+        'players.save-per-tick' => true,
+        'movement.rewind-history-size' => true,
+        'plugins.maximum' => true,
+        'logging.level' => true,
+        'logging.console' => true,
+        'logging.console-colors' => true,
+        'logging.file' => true,
+        'logging.file-max-size' => true,
+        'logging.file-history' => true,
+        'logging.protocol-trace' => true,
+        'crash-report.include-player-identifiers' => true,
+    ];
+
     private const array CLI_KEYS = [
-        'bind' => 'network.bind-address',
-        'port' => 'network.port',
-        'name' => 'server.name',
-        'motd' => 'server.motd',
-        'max-players' => 'server.max-players',
+        'bind' => 'server-ip',
+        'port' => 'server-port',
+        'name' => 'server-name',
+        'motd' => 'motd',
+        'max-players' => 'max-players',
+        'memory-limit' => 'memory-limit',
         'auth' => 'network.authentication',
-        'level-name' => 'level.name',
-        'generator' => 'level.generator',
-        'seed' => 'level.seed',
-        'default-gamemode' => 'level.default-gamemode',
-        'difficulty' => 'level.difficulty',
+        'level-name' => 'level-name',
+        'generator' => 'level-type',
+        'seed' => 'level-seed',
+        'default-gamemode' => 'gamemode',
+        'difficulty' => 'difficulty',
         'pvp' => 'pvp',
         'level-autosave-interval-ticks' => 'level.autosave-interval-ticks',
-        'view-distance' => 'chunks.view-distance',
-        'spawn-radius' => 'chunks.spawn-radius',
-        'chunks-send-per-tick' => 'chunks.send-per-tick',
-        'chunks-generate-per-tick' => 'chunks.generate-per-tick',
-        'chunks-cache-limit' => 'chunks.cache-limit',
-        'chunks-save-per-tick' => 'chunks.save-per-tick',
+        'view-distance' => 'view-distance',
+        'spawn-radius' => 'chunk-sending.spawn-radius',
+        'chunks-send-per-tick' => 'chunk-sending.per-tick',
+        'chunks-generate-per-tick' => 'chunk-generation.per-tick',
+        'chunk-generation-queue-size' => 'chunk-generation.queue-size',
+        'chunk-loading-prefetch-radius' => 'chunk-loading.prefetch-radius',
+        'chunks-cache-limit' => 'chunk-cache.limit',
+        'chunks-save-per-tick' => 'chunk-saving.per-tick',
         'players-autosave-interval-ticks' => 'players.autosave-interval-ticks',
         'players-save-per-tick' => 'players.save-per-tick',
         'movement-rewind-history-size' => 'movement.rewind-history-size',
         'ticks-per-second' => 'runtime.ticks-per-second',
-        'console-enabled' => 'console.enabled',
-        'plugins-enabled' => 'plugins.enabled',
+        'workers' => 'workers.core-count',
+        'console-enabled' => 'enable-console',
+        'plugins-enabled' => 'enable-plugins',
         'maximum-plugins' => 'plugins.maximum',
         'log-level' => 'logging.level',
         'log-console' => 'logging.console',
@@ -107,14 +161,15 @@ final readonly class ServerConfig
         public int $levelAutosaveIntervalTicks = 6_000,
         public int $viewDistance = 4,
         public int $spawnRadius = 4,
-        public int $chunksSendPerTick = 4,
-        public int $chunksGeneratePerTick = 1,
-        public int $chunkCacheLimit = 2_048,
+        public int $chunksSendPerTick = 8,
+        public int $chunksGeneratePerTick = 4,
+        public int $chunkCacheLimit = 4_096,
         public int $chunksSavePerTick = 8,
         public int $playersAutosaveIntervalTicks = 6_000,
         public int $playersSavePerTick = 8,
         public int $movementRewindHistorySize = 40,
         public int $ticksPerSecond = 20,
+        public int $workerCoreCount = 1,
         public bool $consoleEnabled = true,
         public bool $pluginsEnabled = true,
         public int $maximumPlugins = 64,
@@ -129,6 +184,9 @@ final readonly class ServerConfig
         public int $loggingFileMaxSize = 16_777_216,
         public int $loggingFileHistory = 10,
         public bool $crashReportIncludePlayerIdentifiers = true,
+        public int $memoryLimitBytes = 500_000_000,
+        public int $chunkGenerationQueueSize = 1_024,
+        public int $chunkLoadingPrefetchRadius = 1,
     ) {
         if (filter_var($this->bindAddress, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
             throw new InvalidArgumentException('Bind address must be a literal IPv4 address.');
@@ -161,19 +219,31 @@ final readonly class ServerConfig
         self::range($this->spawnRadius, 1, $this->viewDistance, 'Spawn radius');
         self::range($this->chunksSendPerTick, 1, 64, 'Chunks sent per tick');
         self::range($this->chunksGeneratePerTick, 1, 64, 'Chunks generated per tick');
+        self::range($this->chunkGenerationQueueSize, 1, 65_536, 'Chunk generation queue size');
+        self::range($this->chunkLoadingPrefetchRadius, 0, 8, 'Chunk loading prefetch radius');
+        if ($this->viewDistance + $this->chunkLoadingPrefetchRadius > 32) {
+            throw new InvalidArgumentException('View distance plus chunk loading prefetch radius must not exceed 32.');
+        }
         self::range($this->chunkCacheLimit, 16, 65_536, 'Chunk cache limit');
         self::range($this->chunksSavePerTick, 1, 64, 'Chunks saved per tick');
         self::range($this->playersAutosaveIntervalTicks, 20, 72_000, 'Player autosave interval');
         self::range($this->playersSavePerTick, 1, 64, 'Players saved per tick');
         self::range($this->movementRewindHistorySize, 1, 1_200, 'Movement rewind history size');
         self::range($this->ticksPerSecond, 1, 100, 'Ticks per second');
+        self::range($this->workerCoreCount, 0, 32, 'Core worker count');
         self::range($this->maximumPlugins, 0, 256, 'Maximum plugins');
         if (!in_array($this->loggingConsoleColors, ['auto', 'true', 'false'], true)) {
             throw new InvalidArgumentException('Console colors must be exactly auto, true, or false.');
         }
         self::range($this->loggingFileMaxSize, 65_536, 1_073_741_824, 'Log file maximum size');
         self::range($this->loggingFileHistory, 0, 100, 'Log file history');
-        $maximumRetainedChunks = $this->maximumPlayers * (2 * $this->viewDistance + 1) ** 2;
+        if ($this->memoryLimitBytes !== 0
+            && ($this->memoryLimitBytes < 128_000_000 || $this->memoryLimitBytes > 68_719_476_736)) {
+            throw new InvalidArgumentException('Memory limit must be unlimited or between 128MB and 64GiB.');
+        }
+        $retainedRadius = $this->viewDistance + $this->chunkLoadingPrefetchRadius;
+        $retainedDiameter = 2 * $retainedRadius + 1;
+        $maximumRetainedChunks = $this->maximumPlayers * $retainedDiameter * $retainedDiameter;
         if ($maximumRetainedChunks > 65_536 || $this->chunkCacheLimit < $maximumRetainedChunks) {
             throw new InvalidArgumentException('Chunk cache limit must hold every configured player view within 65536 chunks.');
         }
@@ -194,26 +264,29 @@ final readonly class ServerConfig
     /** @param list<string> $arguments */
     public static function fromArguments(array $arguments): self
     {
-        return self::fromValues([], $arguments);
+        return self::fromValues([], [], $arguments);
     }
 
     /** @param list<string> $arguments */
-    public static function fromSettingsFile(string $path, array $arguments): self
+    public static function fromConfigurationFiles(string $serverPropertiesPath, string $advancedSettingsPath, array $arguments): self
     {
-        return self::fromValues((new ServerSettingsFile())->loadOrCreate($path), $arguments);
+        return self::fromValues(
+            (new ServerPropertiesFile())->loadOrCreate($serverPropertiesPath),
+            (new ServerSettingsFile())->loadOrCreate($advancedSettingsPath),
+            $arguments,
+        );
     }
 
     /**
-     * @param array<string, string> $fileValues
+     * @param array<string, string> $serverProperties
+     * @param array<string, string> $advancedSettings
      * @param list<string>          $arguments
      */
-    private static function fromValues(array $fileValues, array $arguments): self
+    private static function fromValues(array $serverProperties, array $advancedSettings, array $arguments): self
     {
-        $unknown = array_diff_key($fileValues, self::DEFAULTS);
-        if ($unknown !== []) {
-            throw new InvalidArgumentException(sprintf('Unknown setting "%s".', array_key_first($unknown)));
-        }
-        $values = array_replace(self::DEFAULTS, $fileValues);
+        self::rejectUnknown($serverProperties, self::SERVER_PROPERTY_KEYS, 'server property');
+        self::rejectUnknown($advancedSettings, self::ADVANCED_SETTING_KEYS, 'advanced setting');
+        $values = array_replace(self::DEFAULTS, $serverProperties, $advancedSettings);
         $seen = [];
         foreach ($arguments as $argument) {
             if (!str_starts_with($argument, '--') || !str_contains($argument, '=')) {
@@ -226,37 +299,58 @@ final readonly class ServerConfig
             $seen[$name] = true;
             $values[self::CLI_KEYS[$name]] = $value;
         }
-        $mode = match ($values['network.authentication']) {
-            'FULL' => AuthenticationMode::FULL,
-            'SELF_SIGNED' => AuthenticationMode::SELF_SIGNED,
-            default => throw new InvalidArgumentException('Authentication must be exactly FULL or SELF_SIGNED.'),
-        };
+        $mode = isset($seen['auth'])
+            ? match ($values['network.authentication']) {
+                'FULL' => AuthenticationMode::FULL,
+                'SELF_SIGNED' => AuthenticationMode::SELF_SIGNED,
+                default => throw new InvalidArgumentException('Authentication must be exactly FULL or SELF_SIGNED.'),
+            }
+        : (self::boolean($values['xbox-auth'], 'xbox-auth')
+            ? AuthenticationMode::FULL
+            : AuthenticationMode::SELF_SIGNED);
 
         $spawn = [];
         foreach (['level.spawn-x', 'level.spawn-y', 'level.spawn-z'] as $key) {
             $spawn[] = $values[$key] === '' ? null : self::integer($values[$key], $key, -30_000_000, 30_000_000, true);
         }
 
+        $maximumPlayers = self::integer($values['max-players'], 'max-players', 1, 1_024);
+        $viewDistance = self::integer($values['view-distance'], 'view-distance', 1, 32);
+        $chunkLoadingPrefetchRadius = self::integer(
+            $values['chunk-loading.prefetch-radius'],
+            'chunk-loading.prefetch-radius',
+            0,
+            8,
+        );
+        if ($viewDistance + $chunkLoadingPrefetchRadius > 32) {
+            throw new InvalidArgumentException('View distance plus chunk loading prefetch radius must not exceed 32.');
+        }
+        $viewDiameter = 2 * ($viewDistance + $chunkLoadingPrefetchRadius) + 1;
+        $maximumRetainedChunks = $maximumPlayers * $viewDiameter * $viewDiameter;
+        $chunkCacheLimit = $values['chunk-cache.limit'] === 'auto'
+            ? max(2_048, $maximumRetainedChunks)
+            : self::integer($values['chunk-cache.limit'], 'chunk-cache.limit', 16, 65_536);
+
         return new self(
-            bindAddress: $values['network.bind-address'],
-            port: self::integer($values['network.port'], 'network.port', 1, 65_535),
-            serverName: $values['server.name'],
-            maximumPlayers: self::integer($values['server.max-players'], 'server.max-players', 1, 1_024),
+            bindAddress: $values['server-ip'],
+            port: self::integer($values['server-port'], 'server-port', 1, 65_535),
+            serverName: $values['server-name'],
+            maximumPlayers: $maximumPlayers,
             authenticationMode: $mode,
-            motd: $values['server.motd'],
-            levelName: $values['level.name'],
-            levelGenerator: $values['level.generator'],
-            levelSeed: self::integer($values['level.seed'], 'level.seed', -2_147_483_648, 2_147_483_647, true),
-            defaultGamemode: $values['level.default-gamemode'],
-            difficulty: $values['level.difficulty'],
+            motd: $values['motd'],
+            levelName: $values['level-name'],
+            levelGenerator: $values['level-type'],
+            levelSeed: self::integer($values['level-seed'], 'level-seed', -2_147_483_648, 2_147_483_647, true),
+            defaultGamemode: $values['gamemode'],
+            difficulty: $values['difficulty'],
             pvp: self::boolean($values['pvp'], 'pvp'),
             levelAutosaveIntervalTicks: self::integer($values['level.autosave-interval-ticks'], 'level.autosave-interval-ticks', 20, 72_000),
-            viewDistance: self::integer($values['chunks.view-distance'], 'chunks.view-distance', 1, 32),
-            spawnRadius: self::integer($values['chunks.spawn-radius'], 'chunks.spawn-radius', 1, 32),
-            chunksSendPerTick: self::integer($values['chunks.send-per-tick'], 'chunks.send-per-tick', 1, 64),
-            chunksGeneratePerTick: self::integer($values['chunks.generate-per-tick'], 'chunks.generate-per-tick', 1, 64),
-            chunkCacheLimit: self::integer($values['chunks.cache-limit'], 'chunks.cache-limit', 16, 65_536),
-            chunksSavePerTick: self::integer($values['chunks.save-per-tick'], 'chunks.save-per-tick', 1, 64),
+            viewDistance: $viewDistance,
+            spawnRadius: self::integer($values['chunk-sending.spawn-radius'], 'chunk-sending.spawn-radius', 1, 32),
+            chunksSendPerTick: self::integer($values['chunk-sending.per-tick'], 'chunk-sending.per-tick', 1, 64),
+            chunksGeneratePerTick: self::integer($values['chunk-generation.per-tick'], 'chunk-generation.per-tick', 1, 64),
+            chunkCacheLimit: $chunkCacheLimit,
+            chunksSavePerTick: self::integer($values['chunk-saving.per-tick'], 'chunk-saving.per-tick', 1, 64),
             playersAutosaveIntervalTicks: self::integer($values['players.autosave-interval-ticks'], 'players.autosave-interval-ticks', 20, 72_000),
             playersSavePerTick: self::integer($values['players.save-per-tick'], 'players.save-per-tick', 1, 64),
             movementRewindHistorySize: self::integer(
@@ -266,8 +360,9 @@ final readonly class ServerConfig
                 1_200,
             ),
             ticksPerSecond: self::integer($values['runtime.ticks-per-second'], 'runtime.ticks-per-second', 1, 100),
-            consoleEnabled: self::boolean($values['console.enabled'], 'console.enabled'),
-            pluginsEnabled: self::boolean($values['plugins.enabled'], 'plugins.enabled'),
+            workerCoreCount: WorkerCoreCount::parse($values['workers.core-count']),
+            consoleEnabled: self::boolean($values['enable-console'], 'enable-console'),
+            pluginsEnabled: self::boolean($values['enable-plugins'], 'enable-plugins'),
             maximumPlugins: self::integer($values['plugins.maximum'], 'plugins.maximum', 0, 256),
             protocolTrace: self::boolean($values['logging.protocol-trace'], 'logging.protocol-trace'),
             spawnX: $spawn[0],
@@ -280,7 +375,27 @@ final readonly class ServerConfig
             loggingFileMaxSize: self::integer($values['logging.file-max-size'], 'logging.file-max-size', 65_536, 1_073_741_824),
             loggingFileHistory: self::integer($values['logging.file-history'], 'logging.file-history', 0, 100),
             crashReportIncludePlayerIdentifiers: self::boolean($values['crash-report.include-player-identifiers'], 'crash-report.include-player-identifiers'),
+            memoryLimitBytes: ProcessMemoryLimit::parse($values['memory-limit']),
+            chunkGenerationQueueSize: self::integer(
+                $values['chunk-generation.queue-size'],
+                'chunk-generation.queue-size',
+                1,
+                65_536,
+            ),
+            chunkLoadingPrefetchRadius: $chunkLoadingPrefetchRadius,
         );
+    }
+
+    /**
+     * @param array<string, string> $values
+     * @param array<string, true>   $allowed
+     */
+    private static function rejectUnknown(array $values, array $allowed, string $kind): void
+    {
+        $unknown = array_diff_key($values, $allowed);
+        if ($unknown !== []) {
+            throw new InvalidArgumentException(sprintf('Unknown %s "%s".', $kind, array_key_first($unknown)));
+        }
     }
 
     private static function validateText(string $value, string $name, int $maximumBytes): void

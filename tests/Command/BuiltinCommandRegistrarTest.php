@@ -13,7 +13,12 @@ use Bedriox\Api\Player\Player;
 use Bedriox\Api\World\Position;
 use Bedriox\Server\Command\BuiltinCommandRegistrar;
 use Bedriox\Server\Command\Default\OnlinePlayerResolver;
+use Bedriox\Server\Observability\BackgroundLogWriterSnapshot;
+use Bedriox\Server\Observability\LogQueueSnapshot;
+use Bedriox\Server\Observability\PerformanceSnapshot;
+use Bedriox\Server\Observability\PerformanceSubsystem;
 use Bedriox\Server\Permission\PermissionStore;
+use Bedriox\Server\Persistence\PersistenceQueueSnapshot;
 use Bedriox\Server\Plugin\Command\CommandRegistry;
 use Bedriox\Server\Plugin\Event\EventDispatcher;
 use Bedriox\Server\Plugin\PluginActionBuffer;
@@ -21,6 +26,10 @@ use Bedriox\Server\Plugin\PluginExecutionContext;
 use Bedriox\Server\Plugin\PluginExecutionFrame;
 use Bedriox\Server\Plugin\PluginOwnershipRegistry;
 use Bedriox\Server\Plugin\PluginRuntimeControl;
+use Bedriox\Server\Runtime\ChunkStreamingSnapshot;
+use Bedriox\Server\Worker\Chunk\PreparedChunkCacheSnapshot;
+use Bedriox\Server\Worker\WorkerPoolSnapshot;
+use Bedriox\Server\World\ChunkRepositorySnapshot;
 use PHPUnit\Framework\TestCase;
 use Throwable;
 
@@ -72,7 +81,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
         $sender = new BuiltinCommandSender();
         self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'ver'));
         self::assertSame(
-            'This server is running Bedriox version 0.1.0-alpha.1 (protocol 2193).',
+            'This server is running Bedriox version 0.2.0-alpha.1 (protocol 2193).',
             $sender->messages[0],
         );
         self::assertSame('Visit https://bedriox.com', $sender->messages[1]);
@@ -175,7 +184,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
         $versionSender = new BuiltinCommandSender(CommandSenderType::PLAYER);
         self::assertSame(CommandResult::SUCCESS, $registry->dispatch($versionSender, 'version'));
         self::assertSame(
-            "\u{00a7}aThis server is running Bedriox version 0.1.0-alpha.1 (protocol 2193).\u{00a7}r",
+            "\u{00a7}aThis server is running Bedriox version 0.2.0-alpha.1 (protocol 2193).\u{00a7}r",
             $versionSender->messages[0],
         );
         self::assertSame("\u{00a7}bVisit https://bedriox.com\u{00a7}r", $versionSender->messages[1]);
@@ -210,6 +219,189 @@ final class BuiltinCommandRegistrarTest extends TestCase
         self::assertSame([[$player->uuid, GameMode::CREATIVE]], $changes);
         self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'give Amy diamond 3'));
         self::assertSame([[$player->uuid, 'minecraft:diamond', 3]], $grants);
+    }
+
+    public function testStatusCommandRequiresItsPermissionAndRendersTheProvidedSnapshot(): void
+    {
+        [$registry, $permissions] = $this->registry();
+        (new BuiltinCommandRegistrar(
+            $registry,
+            $permissions,
+            static fn(): array => [],
+            static function (): void {},
+            status: static fn(): PerformanceSnapshot => new PerformanceSnapshot(
+                90_061,
+                20.0,
+                19.95,
+                18.5,
+                2.5,
+                3.0,
+                5.0,
+                8.0,
+                5.0,
+                1200,
+                0.5,
+                1.0,
+                16 * 1_048_576,
+                32 * 1_048_576,
+                2,
+                20,
+                25,
+                3,
+                averageSubsystemMilliseconds: [
+                    PerformanceSubsystem::TRANSPORT => 0.25,
+                    PerformanceSubsystem::WORLD => 1.5,
+                ],
+                averageUnclassifiedMilliseconds: 0.75,
+                networkReceiveBytesPerSecond: 1_024.0,
+                networkSendBytesPerSecond: 2_048.0,
+                configuredMemoryLimitBytes: 500 * 1_048_576,
+                worldCount: 1,
+                entityCount: 4,
+                pendingAsyncPluginTasks: 2,
+                maximumAsyncCompletionsPerTick: 64,
+                chunkCache: new ChunkRepositorySnapshot(128, 25, 9, 18, 3, 80, 20, 4),
+                chunkStreaming: new ChunkStreamingSnapshot(2, 6, 8, 3, 4, 18, 5),
+                worldPersistence: new PersistenceQueueSnapshot(2, 1, 3, 4_096, 4, 5, 6),
+                playerPersistence: new PersistenceQueueSnapshot(1, 0, 2, 2_048, 3, 4, 5),
+                preparedChunkCache: new PreparedChunkCacheSnapshot(12, 24_576, 3, 6_144, 80, 20, 2, 4, 1),
+            ),
+        ))->register();
+
+        $sender = new BuiltinCommandSender();
+        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'status'));
+        self::assertSame([
+            '--------- Bedriox Status ---------',
+            'Version: Bedriox 0.2.0-alpha.1',
+            'Uptime: 1d 01h 01m 01s',
+            'Players: 2/20 online',
+            'TPS: 20.00 current, 19.95 average',
+            'MSPT: 2.50 current, 3.00 average',
+            'Memory: 16.0 MiB current, 500.0 MiB limit, 32.0 MiB peak',
+            'Network: 1.0 KiB/s receive, 2.0 KiB/s send',
+            'Worlds: 1, 25 loaded chunks, 4 entities',
+            '--------- End Status ---------',
+        ], $sender->messages);
+
+        $advanced = new BuiltinCommandSender();
+        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($advanced, 'status advanced'));
+        self::assertSame('--------- Bedriox Status: Advanced ---------', $advanced->messages[0]);
+        self::assertContains('--------- Tick Performance ---------', $advanced->messages);
+        self::assertContains('TPS history: 19.95 average, 18.50 minimum', $advanced->messages);
+        self::assertContains('MSPT history: 3.00 average, 5.00 p95, 8.00 p99', $advanced->messages);
+        self::assertContains('Chunks: 25 loaded, 3 dirty, 0 generating', $advanced->messages);
+        self::assertContains('Chunk cache: 25/128 loaded, 9 retained (18 references)', $advanced->messages);
+        self::assertContains('Chunk cache lookups: 80 hits, 20 misses, 4 evictions, 80.0% hit ratio', $advanced->messages);
+        self::assertContains('Chunk streaming: 6 visible pending, 8 prefetch pending, 3 generation queued, 4 delivery queued', $advanced->messages);
+        self::assertContains('Prepared chunks: 12 entries (24.0 KiB), 3 pending (6.0 KiB)', $advanced->messages);
+        self::assertContains('Prepared chunk lookups: hits 80, misses 20, evictions 2, invalidations 4, failures 1, hit ratio 80.0%', $advanced->messages);
+        self::assertContains('Asynchronous tasks: 2 pending, 64 completions per tick maximum', $advanced->messages);
+        self::assertContains('Session queues: 5 outgoing payloads', $advanced->messages);
+        self::assertContains('World persistence: 2 queued, 1 in flight, 3 completions (4.0 KiB)', $advanced->messages);
+        self::assertContains('Player persistence totals: 3 coalesced, 4 saturated, 5 failed', $advanced->messages);
+        self::assertContains('Core workers: unavailable', $advanced->messages);
+        self::assertContains('Plugin workers: unavailable', $advanced->messages);
+        self::assertContains('Transport: 0.25 ms', $advanced->messages);
+        self::assertContains('Sessions: unavailable', $advanced->messages);
+        self::assertContains('World: 1.50 ms', $advanced->messages);
+        self::assertContains('Background logging: unavailable', $advanced->messages);
+        self::assertSame('--------- End Status ---------', $advanced->messages[count($advanced->messages) - 1]);
+
+        $alias = new BuiltinCommandSender();
+        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($alias, 'status advance'));
+        self::assertSame($advanced->messages, $alias->messages);
+        self::assertSame(CommandResult::USAGE, $registry->dispatch($sender, 'status extra'));
+        self::assertSame('Usage: status [advanced]', $sender->messages[count($sender->messages) - 1]);
+
+        $definitions = $registry->availableDefinitions(CommandSenderType::CONSOLE, static fn(string $permission): bool => true);
+        self::assertNotEmpty($definitions);
+        self::assertSame('bedriox.command.status', $definitions[count($definitions) - 1]->permission);
+        self::assertNotContains(
+            'status',
+            array_map(
+                static fn($definition): string => $definition->name,
+                $registry->availableDefinitions(CommandSenderType::PLAYER, static fn(string $permission): bool => false),
+            ),
+        );
+    }
+
+    public function testAdvancedStatusDistinguishesWorkerAndLoggingServiceStates(): void
+    {
+        [$registry, $permissions] = $this->registry();
+        (new BuiltinCommandRegistrar(
+            $registry,
+            $permissions,
+            static fn(): array => [],
+            static function (): void {},
+            status: static fn(): PerformanceSnapshot => new PerformanceSnapshot(
+                1,
+                20.0,
+                20.0,
+                20.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                2.0,
+                1,
+                0.1,
+                0.2,
+                1_024,
+                2_048,
+                0,
+                20,
+                0,
+                0,
+                coreWorkers: new WorkerPoolSnapshot('', 0, 0, 1, 1_024, 2, 3, 4, 5, 6, 7, 8, 9, false, 2_048),
+                pluginWorkers: new WorkerPoolSnapshot(
+                    '',
+                    2,
+                    1,
+                    3,
+                    4_096,
+                    4,
+                    5,
+                    6,
+                    7,
+                    8,
+                    9,
+                    10,
+                    11,
+                    false,
+                    8_192,
+                    12_288,
+                    34_816,
+                ),
+                logWriter: new BackgroundLogWriterSnapshot(
+                    false,
+                    true,
+                    new LogQueueSnapshot(2, 3_072, 1, 2, 3, 42),
+                    10,
+                    4,
+                ),
+            ),
+        ))->register();
+
+        $basic = new BuiltinCommandSender();
+        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($basic, 'status'));
+        self::assertSame([], array_values(array_filter(
+            $basic->messages,
+            static fn(string $message): bool => str_starts_with($message, 'Network:'),
+        )));
+
+        $sender = new BuiltinCommandSender();
+        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'status advanced'));
+        self::assertContains('Core workers: disabled, 0/0 busy', $sender->messages);
+        self::assertContains('Core queue: 1 pending (1.0 KiB), 2 ready (2.0 KiB)', $sender->messages);
+        self::assertContains('Core totals: 3 submitted, 4 completed, 5 rejected, 6 cancelled', $sender->messages);
+        self::assertContains('Core failures: 7 timed out, 8 failed, 9 restarts', $sender->messages);
+        self::assertContains('Plugin workers: offline, 1/2 busy', $sender->messages);
+        self::assertContains('Plugin worker memory: 34.0 KiB compute, 12.0 KiB broker', $sender->messages);
+        self::assertContains('Background logging: offline', $sender->messages);
+        self::assertContains('Logging queue: 2 entries (3.0 KiB), oldest sequence 42', $sender->messages);
+        self::assertContains('Logging writer: write in flight, 10 acknowledged', $sender->messages);
+        self::assertContains('Logging drops: 1 routine, 2 high-severity', $sender->messages);
+        self::assertContains('Logging failures: 4 service, 3 write', $sender->messages);
     }
 
     /** @return array{CommandRegistry, PermissionStore} */

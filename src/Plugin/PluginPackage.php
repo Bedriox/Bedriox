@@ -19,5 +19,6 @@ final readonly class PluginPackage
         public PluginManifest $manifest,
         public Closure $autoloader,
         public Closure $instantiate,
+        public ?PluginArchiveIdentity $archiveIdentity = null,
     ) {}
 }

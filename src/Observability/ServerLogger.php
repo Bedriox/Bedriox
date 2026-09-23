@@ -25,6 +25,7 @@ final class ServerLogger
         private readonly ?RotatingFileLog $file,
         private readonly LogFormatter $formatter = new LogFormatter(),
         private readonly LogRedactor $redactor = new LogRedactor(),
+        private readonly ?BackgroundLogWriter $backgroundFile = null,
     ) {}
 
     public function debug(string $message, ?string $component = null): void
@@ -70,17 +71,19 @@ final class ServerLogger
                 // Logging must not change runtime behavior.
             }
         }
-        if ($this->file !== null) {
+        if ($this->backgroundFile !== null) {
+            try {
+                if ($this->backgroundFile->enqueue($record->sequence, $level, $plain) === LogQueueSubmission::DROPPED) {
+                    $this->reportFileFailure('The background log queue is full; some file log records were dropped.');
+                }
+            } catch (Throwable) {
+                $this->reportFileFailure('Background file logging is unavailable; continuing with console logging.');
+            }
+        } elseif ($this->file !== null) {
             try {
                 $this->file->write($plain);
             } catch (Throwable) {
-                if (!$this->fileFailureReported) {
-                    $this->fileFailureReported = true;
-                    try {
-                        ($this->console)($this->formatter->format(new LogRecord(new DateTimeImmutable(), ++$this->sequence, LogLevel::WARNING, 'File logging is unavailable; continuing with console logging.')) . PHP_EOL);
-                    } catch (Throwable) {
-                    }
-                }
+                $this->reportFileFailure('File logging is unavailable; continuing with console logging.');
             }
         }
     }
@@ -89,5 +92,22 @@ final class ServerLogger
     public function recentLines(): array
     {
         return $this->history;
+    }
+
+    private function reportFileFailure(string $message): void
+    {
+        if ($this->fileFailureReported) {
+            return;
+        }
+        $this->fileFailureReported = true;
+        try {
+            ($this->console)($this->formatter->format(new LogRecord(
+                new DateTimeImmutable(),
+                ++$this->sequence,
+                LogLevel::WARNING,
+                $message,
+            )) . PHP_EOL);
+        } catch (Throwable) {
+        }
     }
 }

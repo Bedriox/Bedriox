@@ -27,6 +27,26 @@ final class RuntimeRunnerTest extends TestCase
         self::assertSame(1, $driver->closes);
     }
 
+    public function testBackgroundServicesArePolledOnceBeforeEachRuntimePoll(): void
+    {
+        $driver = new FakeRuntimeDriver();
+        $backgroundPolls = 0;
+        $iterations = 0;
+        $result = (new RuntimeRunner(
+            $driver,
+            new FakeRuntimeSleeper(),
+            backgroundPoll: static function () use (&$backgroundPolls): void {
+                ++$backgroundPolls;
+            },
+        ))->run(static function () use (&$iterations): bool {
+            return $iterations++ === 3;
+        });
+
+        self::assertSame(0, $result);
+        self::assertSame(3, $driver->polls);
+        self::assertSame(3, $backgroundPolls);
+    }
+
     public function testRuntimeFailureReturnsFailureAndStillCloses(): void
     {
         $driver = new FakeRuntimeDriver(false);

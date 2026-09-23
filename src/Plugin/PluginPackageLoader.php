@@ -17,7 +17,7 @@ use Throwable;
 /** Discovers validated PHAR plugins without executing plugin code. */
 final class PluginPackageLoader
 {
-    public const string API_VERSION = '0.1.0';
+    public const string API_VERSION = '0.2.0';
     private const int MAXIMUM_ARCHIVE_BYTES = 16_777_216;
     private const int MAXIMUM_ENTRIES = 2_048;
     private const int MAXIMUM_ENTRY_BYTES = 8_388_608;
@@ -94,6 +94,10 @@ final class PluginPackageLoader
         if (!in_array($signature['hash_type'], ['SHA-256', 'SHA-512', 'OpenSSL', 'OpenSSL_SHA256', 'OpenSSL_SHA512'], true)) {
             throw new PluginException('Plugin archive must have a supported strong PHAR signature.');
         }
+        $archiveDigest = hash_file('sha256', $resolved);
+        if (!is_string($archiveDigest)) {
+            throw new PluginException('Plugin archive identity could not be calculated.');
+        }
         if ($archive->hasMetadata()) {
             throw new PluginException('Plugin archives may not contain serialized archive metadata.');
         }
@@ -158,12 +162,28 @@ final class PluginPackageLoader
             }
         };
 
-        return new PluginPackage($resolved, $manifest, $autoloader, $instantiate);
+        return new PluginPackage(
+            $resolved,
+            $manifest,
+            $autoloader,
+            $instantiate,
+            new PluginArchiveIdentity(
+                $resolved,
+                $manifest->name,
+                $manifest->version,
+                $archiveDigest,
+                $signature['hash_type'],
+                strtolower($signature['hash']),
+            ),
+        );
     }
 
     private function supportsApi(string $constraint): bool
     {
-        return in_array($constraint, ['0.1', '0.1.0', '^0.1', '^0.1.0', '~0.1', '~0.1.0'], true);
+        return in_array($constraint, [
+            '0.1', '0.1.0', '^0.1', '^0.1.0', '~0.1', '~0.1.0',
+            '0.2', '0.2.0', '^0.2', '^0.2.0', '~0.2', '~0.2.0',
+        ], true);
     }
 
     private function within(string $root, string $candidate): bool

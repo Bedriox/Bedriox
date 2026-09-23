@@ -9,7 +9,9 @@ UDP → RakNet → Bedrock decode → session validation → command queue
     → simulation → event queue → Bedrock encode → RakNet → UDP
 ```
 
-Mutable world and player state has one authoritative owner. Queues and decoded sizes are bounded. Initial development uses one non-blocking PHP process; worker processes are introduced only behind an interface and only after profiling.
+Mutable world and player state has one authoritative owner. Queues and decoded sizes are bounded. Managed worker processes receive immutable, versioned task payloads for admitted CPU-heavy work; completions return to the authoritative server loop before they can affect gameplay. Ordered storage and log services own their file handles exclusively. Workers never receive live players, worlds, sessions, sockets, packets, or mutable registries.
+
+Chunk streaming has a deliberately later worker boundary than world authority. The server installs or loads one immutable canonical chunk revision, snapshots its canonical palettes and validated packed X-Z-Y words into a bounded projection transfer, and asks a core worker to translate each palette once, write those words, frame, and compress the packet. A shared revision- and wire-identity cache deduplicates the result across players. The main process revalidates the current revision, applies the session cipher, and hands the payload to RakNet. Unfinished chunk preparation is never inserted into a session's ordered output, so chat and control traffic can continue while workers are busy.
 
 Block state follows the same ownership rule. `Data` supplies canonical immutable states such as `minecraft:grass_block` and the ordered network palette. The server assigns dense process-local `InternalBlockStateId` values independently of that palette, uses those IDs inside world logic, and translates only the states needed by an outgoing palette through `BlockNetworkTranslator`. Internal IDs are intentionally unstable across process starts and must never become packet values, persistence keys, configuration, or plugin API. LevelDB persistence stores canonical state identity and rebuilds local IDs on load.
 

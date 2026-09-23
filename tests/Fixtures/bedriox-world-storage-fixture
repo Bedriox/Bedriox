@@ -1,0 +1,83 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use Bedriox\Data\PersistentBlockStateRegistry;
+use Bedriox\Server\Persistence\World\Internal\WorldStorageProcessProgram;
+use Bedriox\Server\Persistence\World\WorldStorageStartup;
+use Bedriox\Server\Tests\World\InMemoryWorldProvider;
+use Bedriox\Server\World\Block\BlockStateRegistry;
+use Bedriox\Server\World\ChunkPosition;
+use Bedriox\Server\World\Provider\ChunkSaveData;
+use Bedriox\Server\World\Provider\LoadedChunkData;
+use Bedriox\Server\World\Provider\WorldData;
+use Bedriox\Server\World\Provider\WritableWorldProvider;
+use Bedriox\Server\World\SpawnPosition;
+use Bedriox\Server\World\WorldMetadata;
+
+require dirname(__DIR__, 2) . '/vendor/autoload.php';
+
+exit(WorldStorageProcessProgram::run(
+    $argv[2] ?? '',
+    $argv[3] ?? '',
+    $argv[4] ?? '',
+    $argv[5] ?? '',
+    static function (
+        WorldStorageStartup $startup,
+        BlockStateRegistry $_states,
+        PersistentBlockStateRegistry $_persistentStates,
+    ): WritableWorldProvider {
+        $data = $startup->createData ?? new WorldData(
+            new WorldMetadata('fixture', 1),
+            'flat',
+            new SpawnPosition(0, 64, 0),
+        );
+        $inner = new InMemoryWorldProvider($data);
+        if (str_contains($startup->path, 'corrupt')) {
+            $inner->corruptChunks['0:0'] = true;
+        }
+        $delayLoads = str_contains($startup->path, 'timeout');
+        $delaySaves = str_contains($startup->path, 'slow-save');
+
+        return new readonly class ($inner, $delayLoads, $delaySaves) implements WritableWorldProvider {
+            public function __construct(
+                private InMemoryWorldProvider $inner,
+                private bool $delayLoads,
+                private bool $delaySaves,
+            ) {}
+
+            public function worldData(): WorldData
+            {
+                return $this->inner->worldData();
+            }
+
+            public function loadChunk(ChunkPosition $position): ?LoadedChunkData
+            {
+                if ($this->delayLoads) {
+                    usleep(500_000);
+                }
+
+                return $this->inner->loadChunk($position);
+            }
+
+            public function saveWorldData(WorldData $worldData): void
+            {
+                $this->inner->saveWorldData($worldData);
+            }
+
+            public function saveChunk(ChunkSaveData $chunkData): void
+            {
+                if ($this->delaySaves) {
+                    usleep(500_000);
+                }
+                $this->inner->saveChunk($chunkData);
+            }
+
+            public function close(): void
+            {
+                $this->inner->close();
+            }
+        };
+    },
+));

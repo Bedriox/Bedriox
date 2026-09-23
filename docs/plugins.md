@@ -35,7 +35,7 @@ Every PHAR contains `plugin.json` at its root and namespaced code under `src/`. 
   "schema": 1,
   "name": "ExamplePlugin",
   "version": "1.0.0",
-  "api": "^0.1",
+  "api": "^0.2",
   "main": "Bedriox\\ExamplePlugin\\Main",
   "namespace": "Bedriox\\ExamplePlugin",
   "authors": ["Bedriox Team"],
@@ -149,3 +149,61 @@ Handlers receive a `CommandContext` and return `CommandResult::SUCCESS`, `FAILUR
 `CommandPreDispatchEvent` is cancellable after command resolution, sender policy, and permission validation. `CommandDispatchedEvent` observes successful handler completion. A throwing handler is attributed to its owning plugin, its staged API work is discarded, and that plugin's commands and listeners are released without stopping the server.
 
 Long-running external work must never block a handler or simulation poll. A plugin may submit a cooperative `CommandJob` through its registrar; Bedriox bounds live jobs and polls per server iteration, while the plugin owns task-specific process, timeout, and output limits. Job resources are cancelled automatically when their plugin disables.
+
+## Scheduled and asynchronous work
+
+`PluginContext::scheduler()` owns every task registered by that plugin. Main-thread callbacks may be scheduled for the next tick, after a positive delay, at a positive repeating period, or with separate initial-delay and repeating-period values:
+
+```php
+$scheduler = $this->context()->scheduler();
+
+$scheduler->nextTick(function (): void {
+    $this->logger()->info('The next server tick started');
+});
+
+$handle = $scheduler->delayedRepeating(20, 20, function (): void {
+    $this->logger()->info('One second passed at 20 TPS');
+});
+
+$handle->cancel();
+```
+
+Due callbacks run in target-tick and registration order. A callback registered while tasks are being dispatched cannot run during that same dispatch. Repeating tasks use fixed-delay timing: the next run is measured from the tick that completed the current run, and missed intervals are not replayed in a burst. Handles expose their terminal state and cancellation is idempotent. Disabling a plugin cancels all of its outstanding work. An uncaught callback failure is attributed to its owner, discards staged API actions, disables that plugin, and does not stop healthy plugins or the server.
+
+CPU-heavy calculations use the class-based async API instead of closures. An async entry point extends `Bedriox\Api\Scheduler\AsyncTask`, has no dependency on a live server object in `onRun()`, and exchanges only `AsyncTaskValue` instances. Transfer values admit bounded `null`, booleans, finite numbers, UTF-8 strings, lists, and string-keyed maps; resources, references, closures, arbitrary objects, packets, players, worlds, and mutable server state are rejected.
+
+Process-isolated async tasks are available only to admitted PHAR plugins. Admission binds the plugin name and version to the archive's exact SHA-256 digest and embedded signature identity; the worker verifies that identity again before loading task code, so replacing the PHAR requires a normal server restart and fresh admission. Development source plugins may still use deterministic main-thread scheduling but cannot submit process-isolated tasks.
+
+```php
+use Bedriox\Api\Scheduler\AsyncTask;
+use Bedriox\Api\Scheduler\AsyncTaskFailure;
+use Bedriox\Api\Scheduler\AsyncTaskValue;
+use Bedriox\Api\Plugin\PluginContext;
+
+final class CalculateScore extends AsyncTask
+{
+    public function onRun(AsyncTaskValue $input): AsyncTaskValue
+    {
+        $value = $input->value();
+
+        return new AsyncTaskValue(['score' => is_int($value) ? $value * 2 : 0]);
+    }
+
+    public function onCompletion(AsyncTaskValue $result, PluginContext $context): void
+    {
+        $context->logger()->info('Calculation completed');
+    }
+
+    public function onFailure(AsyncTaskFailure $failure, PluginContext $context): void
+    {
+        $context->logger()->warning('Calculation failed: ' . $failure->type);
+    }
+}
+
+$this->context()->scheduler()->async(
+    new CalculateScore(),
+    new AsyncTaskValue(21),
+);
+```
+
+Async execution is for brief CPU-bound calculations. Do not use the shared plugin worker capacity for filesystem, database, network, subprocess, or indefinite work. Async task classes cannot declare constructor arguments: all worker input must cross the bounded `AsyncTaskValue` boundary. The worker constructs a fresh task instance and invokes only `onRun()`; it does not serialize the submitted object or return worker-mutated instance state. `onCompletion()` and `onFailure()` run on the authoritative main thread with the owning `PluginContext`, and any gameplay change they request is validated normally. A worker failure invokes `onFailure()` and marks the handle failed; an exception from either main-thread callback is attributed to and isolates the owning plugin. Cancellation of running worker work is best effort, and stale results from cancelled, replaced-generation, or disabled owners are ignored.

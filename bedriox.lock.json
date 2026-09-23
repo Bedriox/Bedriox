@@ -1,7 +1,7 @@
 {
     "schema": 2,
     "status": "alpha",
-    "server": "0.1.0-alpha.1",
+    "server": "0.2.0-alpha.1",
     "php": "^8.4",
     "bedrock": {
         "clientVersions": [
@@ -21,7 +21,7 @@
         "protocol": {
             "package": "bedriox/protocol",
             "version": "0.1.0-alpha.1",
-            "commit": "b8e063b7863e19f5d011a66ba7b36ea40c18065e"
+            "commit": "6c0b2bf2882e91c4aea06209ae602d8cdcb73676"
         },
         "data": {
             "package": "bedriox/data",

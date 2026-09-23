@@ -19,8 +19,13 @@ final readonly class SubChunkBlockStorage
     /** One unsigned byte per block, indexed as x + (z * 16) + (y * 256). */
     private string $paletteIndices;
 
+    private int $networkBitsPerEntry;
+
+    /** Bedrock X-Z-Y ordered little-endian words. */
+    private string $networkWordArray;
+
     /** @param list<mixed> $palette */
-    private function __construct(array $palette, string $paletteIndices)
+    private function __construct(array $palette, string $paletteIndices, ?string $networkWordArray = null)
     {
         if ($palette === [] || count($palette) > self::MAX_PALETTE_SIZE) {
             throw new InvalidArgumentException('Block-storage palette must contain between 1 and 256 states.');
@@ -41,6 +46,16 @@ final readonly class SubChunkBlockStorage
         }
         $this->palette = $palette;
         $this->paletteIndices = $paletteIndices;
+        $this->networkBitsPerEntry = PackedPaletteWords::bitsForPaletteSize($paletteSize);
+        $this->networkWordArray = $networkWordArray
+            ?? PackedPaletteWords::packNetworkOrder($paletteIndices, $this->networkBitsPerEntry);
+        $expectedWords = $this->networkBitsPerEntry === 0 ? 0 : intdiv(
+            self::BLOCK_COUNT + intdiv(32, $this->networkBitsPerEntry) - 1,
+            intdiv(32, $this->networkBitsPerEntry),
+        ) * 4;
+        if (strlen($this->networkWordArray) !== $expectedWords) {
+            throw new InvalidArgumentException('Block-storage packed word array has an invalid length.');
+        }
     }
 
     public static function uniform(InternalBlockStateId $state): self
@@ -97,6 +112,16 @@ final readonly class SubChunkBlockStorage
         return $this->paletteIndices;
     }
 
+    public function networkBitsPerEntry(): int
+    {
+        return $this->networkBitsPerEntry;
+    }
+
+    public function networkWordArray(): string
+    {
+        return $this->networkWordArray;
+    }
+
     public function paletteIndexAt(int $localX, int $localY, int $localZ): int
     {
         self::validateLocalCoordinate($localX);
@@ -138,7 +163,19 @@ final readonly class SubChunkBlockStorage
         $indices = $this->paletteIndices;
         $indices[$offset] = self::encodePaletteIndex($paletteIndex);
 
-        return new self($palette, $indices);
+        $newBits = PackedPaletteWords::bitsForPaletteSize(count($palette));
+        $words = $newBits === $this->networkBitsPerEntry && $newBits !== 0
+            ? PackedPaletteWords::replaceNetworkIndex(
+                $this->networkWordArray,
+                $newBits,
+                $localX,
+                $localY,
+                $localZ,
+                $paletteIndex,
+            )
+            : PackedPaletteWords::packNetworkOrder($indices, $newBits);
+
+        return new self($palette, $indices, $words);
     }
 
     private static function validateLocalCoordinate(int $coordinate): void

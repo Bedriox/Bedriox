@@ -13,6 +13,8 @@ use Bedriox\Server\Permission\PermissionStore;
 use Bedriox\Server\Player\PlayerBootstrap;
 use Bedriox\Server\Plugin\Command\CommandRegistry;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
+use Bedriox\Server\Worker\Chunk\PreparedChunkCache;
+use Bedriox\Server\Worker\Network\CompressionWorkerDispatcher;
 use Bedriox\Server\World\World;
 
 final readonly class BedrockPlayChannelFactory implements PlayChannelFactory
@@ -28,9 +30,14 @@ final readonly class BedrockPlayChannelFactory implements PlayChannelFactory
         private int $spawnRadius = 1,
         private int $chunksGeneratePerTick = 1,
         private int $chunksSendPerTick = 1,
+        private int $chunkPrefetchRadius = 0,
+        private int $chunkGenerationQueueSize = 1_024,
         private ?BedrockInventoryPacketProjector $inventoryProjector = null,
         private ?CommandRegistry $commandRegistry = null,
         private ?PermissionStore $permissionStore = null,
+        private ?CompressionWorkerDispatcher $compressionWorkers = null,
+        private int $compressionTaskTypeId = 0,
+        private ?PreparedChunkCache $preparedChunks = null,
     ) {}
 
     public function create(LoginChannelReady $ready, string $sessionId, UnsignedLong $runtimeEntityId, ?PlayerBootstrap $bootstrap = null): BedrockPlayChannel
@@ -82,10 +89,15 @@ final readonly class BedrockPlayChannelFactory implements PlayChannelFactory
             $this->spawnRadius,
             $this->chunksGeneratePerTick,
             $this->chunksSendPerTick,
+            $this->chunkPrefetchRadius,
+            $this->chunkGenerationQueueSize,
             $spawnX,
             $spawnY,
             $spawnZ,
             $this->inventoryProjector,
+            $this->compressionWorkers,
+            $this->compressionTaskTypeId,
+            $this->preparedChunks,
         );
     }
 }

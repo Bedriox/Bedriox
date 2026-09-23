@@ -20,6 +20,7 @@ final class ChunkViewManagerTest extends TestCase
         self::assertSame([['x' => 0, 'z' => 0]], $view->pending(1));
 
         foreach ($view->pending(81) as $chunk) {
+            $view->markPrepared($chunk['x'], $chunk['z']);
             $view->markSent($chunk['x'], $chunk['z']);
         }
         self::assertSame(81, $view->sentCount());
@@ -31,6 +32,7 @@ final class ChunkViewManagerTest extends TestCase
         $view = new ChunkViewManager(4);
         $view->centerOnChunk(0, 0);
         foreach ($view->pending(81) as $chunk) {
+            $view->markPrepared($chunk['x'], $chunk['z']);
             $view->markSent($chunk['x'], $chunk['z']);
         }
 
@@ -70,6 +72,7 @@ final class ChunkViewManagerTest extends TestCase
     {
         $view = new ChunkViewManager(1);
         $view->centerOnChunk(0, 0);
+        $view->markPrepared(0, 0);
         $view->markSent(0, 0);
         self::assertTrue($view->hasSent(0, 0));
         self::assertFalse($view->hasSent(1, 0));
@@ -94,6 +97,33 @@ final class ChunkViewManagerTest extends TestCase
         $view->centerOnChunk(3, -2);
         self::assertFalse($view->contains(-1, 1));
         self::assertTrue($view->contains(4, -3));
+    }
+
+    public function testPrefetchRingIsPreparedWithoutBecomingVisibleAndPromotesOnMovement(): void
+    {
+        $view = new ChunkViewManager(1, 1);
+        $view->centerOnChunk(0, 0);
+
+        self::assertSame(9, $view->pendingCount());
+        self::assertSame(16, $view->prefetchPendingCount());
+        self::assertTrue($view->containsRetained(2, 0));
+        self::assertFalse($view->contains(2, 0));
+
+        foreach ($view->pending(9) as $chunk) {
+            $view->markPrepared($chunk['x'], $chunk['z']);
+            $view->markSent($chunk['x'], $chunk['z']);
+        }
+        foreach ($view->pendingPrefetch(16) as $chunk) {
+            $view->markPrepared($chunk['x'], $chunk['z']);
+        }
+
+        $released = $view->centerOnChunk(1, 0);
+
+        self::assertCount(5, $released);
+        self::assertSame(3, $view->pendingCount());
+        self::assertSame(0, $view->unpreparedVisibleCount());
+        self::assertTrue($view->isPrepared(2, 0));
+        self::assertSame(5, $view->prefetchPendingCount());
     }
 
     public function testInvalidLimitsAndStateFailClosed(): void

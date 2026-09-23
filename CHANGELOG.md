@@ -17,6 +17,20 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Added
 
+- Preserve validated X-Z-Y palette word arrays in authoritative block and biome storages, transfer compact revision-specific projection snapshots, and write packed chunk words directly in workers while translating each canonical palette only once.
+- Move complete revision-specific chunk packet projection, framing, and compression to managed workers; deduplicate and cache compressed clear envelopes across players; invalidate stale work on immutable revision changes; and enforce count, byte, and elapsed-time streaming budgets without placing unfinished chunks ahead of chat or control traffic.
+- Report prepared-chunk cache entries, bytes, pending work, hits, misses, evictions, invalidations, failures, and hit ratio in `status advanced`, and include bounded worker completion polling in runtime-poll latency measurements.
+
+- Split common `server.properties` from advanced `bedriox.settings`, preserve strict layered CLI precedence, and apply a verified 500 MB default main-process memory limit before startup services.
+
+- Add visible-first hidden chunk prefetching, bounded generation admission, prefetch-aware cache sizing, and live cache, streaming, persistence, scheduler, and worker-memory status metrics.
+
+- Add managed core and plugin worker pools, asynchronous chunk generation and outbound compression, deterministic plugin scheduling, background file logging, performance telemetry, and operator-only basic and advanced `status` views.
+
+- Add RFC 0023's checksummed canonical chunk-transfer format and deterministic flat/default generation worker handler while retaining authoritative world ownership in the server process.
+
+- Add deterministic plugin-owned next-tick, delayed, repeating, and delayed-repeating scheduling with bounded dispatch, lifecycle cleanup, failure attribution, and class-based bounded async task lifecycle callbacks.
+
 - Add bounded typed custom item NBT, schema-four player persistence, Bedrock item-extra-data projection, PMMP-aligned tool wear for mining and combat, and live plugin-owned item stack/creative definitions.
 
 - Add a plugin-facing, cancellable `Player::kick()` with separate reason, optional quit announcement, and disconnect-screen message. Duplicate account logins now receive a visible encrypted reason while the existing player remains connected.

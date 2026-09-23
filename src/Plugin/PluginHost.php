@@ -12,6 +12,8 @@ use Bedriox\Server\Plugin\Command\CommandRegistry;
 use Bedriox\Server\Plugin\Command\OwnedCommandRegistrar;
 use Bedriox\Server\Plugin\Event\EventDispatcher;
 use Bedriox\Server\Plugin\Event\OwnedEventRegistrar;
+use Bedriox\Server\Plugin\Scheduler\MainThreadPluginScheduler;
+use Bedriox\Server\Plugin\Scheduler\PluginAsyncTaskExecutor;
 use Closure;
 use Throwable;
 
@@ -23,6 +25,7 @@ final class PluginHost
     private readonly PluginManager $manager;
     private readonly EventDispatcher $events;
     private readonly CommandRegistry $commands;
+    private readonly MainThreadPluginScheduler $scheduler;
     /** @var list<PluginPackage> */
     private array $packages = [];
     /** @var array<string, array{provider: string, definitions: list<SourcePluginDefinition>}> */
@@ -40,6 +43,7 @@ final class PluginHost
         private readonly Closure $contextFactory,
         private readonly int $maximumPlugins = 64,
         ?CrashContextPublisher $crashContext = null,
+        ?PluginAsyncTaskExecutor $asyncTaskExecutor = null,
     ) {
         $this->ownership = new PluginOwnershipRegistry();
         $this->actions = new PluginActionBuffer();
@@ -59,6 +63,13 @@ final class PluginHost
             $this->actions,
             $this->ownership,
             $this->events,
+        );
+        $this->scheduler = new MainThreadPluginScheduler(
+            $this->manager,
+            $this->execution,
+            $this->actions,
+            $this->ownership,
+            $asyncTaskExecutor,
         );
     }
 
@@ -118,6 +129,13 @@ final class PluginHost
                     $sourcePlugins,
                     $pluginLogger,
                 );
+                $ownedScheduler = $this->scheduler->forPlugin(
+                    $package->manifest->name,
+                    $package->manifest->version,
+                    $package->archiveIdentity,
+                );
+                $context = $context->withScheduler($ownedScheduler);
+                $ownedScheduler->attachContext($context);
                 $plugin = ($package->instantiate)($context);
                 $this->manager->add($package->manifest, $plugin);
             } catch (Throwable $failure) {
@@ -158,6 +176,7 @@ final class PluginHost
             return;
         }
         $this->manager->disableAll();
+        $this->scheduler->shutdown();
         foreach (array_reverse($this->packages) as $package) {
             spl_autoload_unregister($package->autoloader);
         }
@@ -179,6 +198,17 @@ final class PluginHost
     public function commands(): CommandRegistry
     {
         return $this->commands;
+    }
+
+    /** @internal Invoked once at the authoritative server-tick boundary. */
+    public function tickScheduler(int $currentTick): void
+    {
+        $this->scheduler->tick($currentTick);
+    }
+
+    public function scheduler(): MainThreadPluginScheduler
+    {
+        return $this->scheduler;
     }
 
     /** @internal Used by the simulation-backed public API composition. */
@@ -318,6 +348,13 @@ final class PluginHost
                     $sourcePlugins,
                     $pluginLogger,
                 );
+                $ownedScheduler = $this->scheduler->forPlugin(
+                    $package->manifest->name,
+                    $package->manifest->version,
+                    $package->archiveIdentity,
+                );
+                $context = $context->withScheduler($ownedScheduler);
+                $ownedScheduler->attachContext($context);
                 $plugin = ($package->instantiate)($context);
                 $this->manager->add($package->manifest, $plugin);
                 $this->ownership->own(
@@ -365,7 +402,10 @@ final class PluginHost
             'load' => $definition->load,
         ], JSON_THROW_ON_ERROR);
         $manifest = (new PluginManifestParser())->parse($json);
-        if (!in_array($manifest->api, ['0.1', '0.1.0', '^0.1', '^0.1.0', '~0.1', '~0.1.0'], true)) {
+        if (!in_array($manifest->api, [
+            '0.1', '0.1.0', '^0.1', '^0.1.0', '~0.1', '~0.1.0',
+            '0.2', '0.2.0', '^0.2', '^0.2.0', '~0.2', '~0.2.0',
+        ], true)) {
             throw new PluginException("Plugin {$manifest->name} requires unsupported API {$manifest->api}.");
         }
 

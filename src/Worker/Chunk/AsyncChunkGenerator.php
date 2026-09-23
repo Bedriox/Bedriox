@@ -1,0 +1,112 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Bedriox\Server\Worker\Chunk;
+
+use Bedriox\Server\Worker\WorkerDispatcher;
+use Bedriox\Server\Worker\WorkerReceipt;
+use Bedriox\Server\Worker\WorkerResult;
+use Bedriox\Server\Worker\WorkerResultStatus;
+use Bedriox\Server\World\Block\BlockStateRegistry;
+use Bedriox\Server\World\Chunk;
+use Bedriox\Server\World\ChunkPosition;
+use Closure;
+use Throwable;
+
+/** Main-process coordinator for deduplicated worker generation requests. */
+final class AsyncChunkGenerator
+{
+    /** @var array<string, WorkerReceipt> */
+    private array $pending = [];
+    /** @var array<string, true> */
+    private array $failed = [];
+
+    public function __construct(
+        private readonly WorkerDispatcher $workers,
+        private readonly int $taskTypeId,
+        private readonly string $generator,
+        private readonly int $generatorVersion,
+        private readonly int $seed,
+        private readonly BlockStateRegistry $states,
+        private readonly int $maximumPending = 1024,
+    ) {
+        if ($maximumPending < 1 || $maximumPending > 65_536) {
+            throw new \InvalidArgumentException('Async chunk request limit is invalid.');
+        }
+    }
+
+    public function isPending(ChunkPosition $position): bool
+    {
+        return isset($this->pending[$position->key()]);
+    }
+
+    /** @param Closure(Chunk): void $completion */
+    public function request(ChunkPosition $position, Closure $completion): bool
+    {
+        $key = $position->key();
+        if (isset($this->pending[$key])) {
+            return true;
+        }
+        if (isset($this->failed[$key])) {
+            unset($this->failed[$key]);
+
+            return false;
+        }
+        if (count($this->pending) >= $this->maximumPending) {
+            return false;
+        }
+        $payload = (new ChunkGenerationRequestCodec())->encode(new ChunkGenerationRequest(
+            $this->generator,
+            $this->generatorVersion,
+            $this->seed,
+            'minecraft:overworld',
+            $position,
+        ));
+        $submission = $this->workers->submit(
+            $this->taskTypeId,
+            $payload,
+            function (WorkerResult $result) use ($position, $key, $completion): void {
+                $receipt = $this->pending[$key] ?? null;
+                if ($receipt === null || $receipt->taskId !== $result->receipt->taskId) {
+                    return;
+                }
+                unset($this->pending[$key]);
+                if ($result->status !== WorkerResultStatus::SUCCESS) {
+                    $this->failed[$key] = true;
+
+                    return;
+                }
+                try {
+                    $chunk = (new ChunkTransferCodec())->decode($result->payload, $this->states);
+                    if ($chunk->position->x !== $position->x || $chunk->position->z !== $position->z) {
+                        throw new ChunkTransferException('Generated chunk position does not match its request.');
+                    }
+                    $completion($chunk);
+                } catch (Throwable) {
+                    $this->failed[$key] = true;
+                }
+            },
+        );
+        if ($submission->receipt === null) {
+            return false;
+        }
+        $this->pending[$key] = $submission->receipt;
+
+        return true;
+    }
+
+    public function pendingCount(): int
+    {
+        return count($this->pending);
+    }
+
+    public function cancelAll(): void
+    {
+        foreach ($this->pending as $receipt) {
+            $this->workers->cancel($receipt);
+        }
+        $this->pending = [];
+        $this->failed = [];
+    }
+}

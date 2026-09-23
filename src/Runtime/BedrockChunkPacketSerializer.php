@@ -8,26 +8,45 @@ use Bedriox\Protocol\Packet\ChunkColumnData;
 use Bedriox\Protocol\Packet\ChunkSectionData;
 use Bedriox\Protocol\Packet\ChunkSerializer;
 use Bedriox\Protocol\Packet\LevelChunkPacket;
-use Bedriox\Protocol\Packet\PalettedStorage;
+use Bedriox\Protocol\Packet\PackedPalettedStorage;
 use Bedriox\Server\World\BiomeRuntimeIdMap;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Chunk;
 use InvalidArgumentException;
 
 /** Translates Bedriox-owned world state into the current Bedrock full-column wire model. */
-final readonly class BedrockChunkPacketSerializer
+final class BedrockChunkPacketSerializer
 {
+    /** @var \WeakMap<Chunk, LevelChunkPacket> */
+    private \WeakMap $cache;
+
+    private int $cacheHits = 0;
+
+    private int $cacheMisses = 0;
+
     public function __construct(
-        private BlockNetworkTranslator $blocks,
-        private int $plainsBiomeRuntimeId,
+        private readonly BlockNetworkTranslator $blocks,
+        private readonly int $plainsBiomeRuntimeId,
+        private readonly int $maximumCachedPackets = 256,
     ) {
         if ($plainsBiomeRuntimeId < 0 || $plainsBiomeRuntimeId > 65_535) {
             throw new InvalidArgumentException('Plains biome runtime ID is outside its supported range.');
         }
+        if ($maximumCachedPackets < 1 || $maximumCachedPackets > 4_096) {
+            throw new InvalidArgumentException('Chunk packet cache limit must be between 1 and 4096.');
+        }
+        $this->cache = new \WeakMap();
     }
 
     public function serialize(Chunk $chunk): LevelChunkPacket
     {
+        $cached = $this->cache[$chunk] ?? null;
+        if ($cached instanceof LevelChunkPacket) {
+            ++$this->cacheHits;
+
+            return $cached;
+        }
+        ++$this->cacheMisses;
         $highestSectionY = Chunk::MIN_SECTION_Y;
         foreach ($chunk->populatedSections() as $section) {
             $highestSectionY = max($highestSectionY, $section->sectionY);
@@ -42,39 +61,44 @@ final readonly class BedrockChunkPacketSerializer
                 continue;
             }
 
-            // Bedrock's subchunk cell order is Y-fastest: ((x * 16) + z) * 16 + y.
-            $runtimeIds = [];
-            for ($x = 0; $x < 16; ++$x) {
-                for ($z = 0; $z < 16; ++$z) {
-                    for ($y = 0; $y < 16; ++$y) {
-                        $runtimeIds[] = $this->blocks->toNetwork($section->blockStateAt($x, $y, $z));
-                    }
-                }
+            $storage = $section->blockStorageLayer(0);
+            $palette = [];
+            foreach ($storage->palette() as $state) {
+                $palette[] = $this->blocks->toNetwork($state);
             }
-            $sections[] = ChunkSectionData::fromRuntimeIds($sectionY, $runtimeIds);
+            $sections[] = new ChunkSectionData($sectionY, [new PackedPalettedStorage(
+                $palette,
+                $storage->networkBitsPerEntry(),
+                $storage->networkWordArray(),
+                ChunkSectionData::CELL_COUNT,
+            )]);
         }
 
         $biomes = [];
+        /** @var \WeakMap<\Bedriox\Server\World\BiomeStorage, PackedPalettedStorage> $projectedBiomeStorages */
+        $projectedBiomeStorages = new \WeakMap();
         for ($sectionY = Chunk::MIN_SECTION_Y; $sectionY <= Chunk::MAX_SECTION_Y; ++$sectionY) {
             $storage = $chunk->biomeStorage($sectionY);
-            $runtimeIds = [];
-            for ($x = 0; $x < 16; ++$x) {
-                for ($z = 0; $z < 16; ++$z) {
-                    for ($y = 0; $y < 16; ++$y) {
-                        $biome = $storage->biomeAt($x, $y, $z);
-                        $runtimeIds[] = $biome->identifier === 'minecraft:plains'
-                            ? $this->plainsBiomeRuntimeId
-                            : BiomeRuntimeIdMap::id($biome);
-                    }
+            $projected = $projectedBiomeStorages[$storage] ?? null;
+            if (!$projected instanceof PackedPalettedStorage) {
+                $palette = [];
+                foreach ($storage->palette() as $biome) {
+                    $palette[] = $biome->identifier === 'minecraft:plains'
+                        ? $this->plainsBiomeRuntimeId
+                        : BiomeRuntimeIdMap::id($biome);
                 }
+                $projected = new PackedPalettedStorage(
+                    $palette,
+                    $storage->networkBitsPerEntry(),
+                    $storage->networkWordArray(),
+                    ChunkColumnData::BIOME_CELL_COUNT,
+                );
+                $projectedBiomeStorages[$storage] = $projected;
             }
-            $uniqueRuntimeIds = array_values(array_unique($runtimeIds, SORT_REGULAR));
-            $biomes[] = count($uniqueRuntimeIds) === 1
-                ? PalettedStorage::singleton($uniqueRuntimeIds[0], ChunkColumnData::BIOME_CELL_COUNT, 2)
-                : PalettedStorage::fromValues($runtimeIds, ChunkColumnData::BIOME_CELL_COUNT);
+            $biomes[] = $projected;
         }
 
-        return ChunkSerializer::fullColumn(new ChunkColumnData(
+        $packet = ChunkSerializer::fullColumn(new ChunkColumnData(
             $chunk->position->x,
             $chunk->position->z,
             0,
@@ -83,6 +107,18 @@ final readonly class BedrockChunkPacketSerializer
             $sections,
             $biomes,
         ));
+        if (count($this->cache) >= $this->maximumCachedPackets) {
+            $this->cache = new \WeakMap();
+        }
+        $this->cache[$chunk] = $packet;
+
+        return $packet;
+    }
+
+    /** @return array{entries: int, hits: int, misses: int} */
+    public function cacheMetrics(): array
+    {
+        return ['entries' => count($this->cache), 'hits' => $this->cacheHits, 'misses' => $this->cacheMisses];
     }
 
     /** Translates one authoritative world cell without exposing internal state IDs to the play channel. */

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
+use Bedriox\Server\Observability\PerformanceMonitor;
 use Closure;
 use Throwable;
 
@@ -14,6 +15,8 @@ final readonly class RuntimeRunner
         private RuntimeSleeper $sleeper = new SystemRuntimeSleeper(),
         private ?RuntimeDiagnostics $diagnostics = null,
         private ?Closure $failureHandler = null,
+        private ?PerformanceMonitor $performance = null,
+        private ?Closure $backgroundPoll = null,
     ) {}
 
     /** @param Closure(): bool $stopRequested */
@@ -23,7 +26,11 @@ final readonly class RuntimeRunner
         $reportedFailure = null;
         try {
             while (!$stopRequested()) {
-                if (!$this->runtime->poll()) {
+                $pollStarted = hrtime(true);
+                ($this->backgroundPoll)?->__invoke();
+                $alive = $this->runtime->poll();
+                $this->performance?->recordPoll(hrtime(true) - $pollStarted);
+                if (!$alive) {
                     $result = 1;
                     if ($this->runtime instanceof RuntimeFailureSource) {
                         $failure = $this->runtime->failure();

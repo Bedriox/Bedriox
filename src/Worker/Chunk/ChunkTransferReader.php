@@ -1,0 +1,81 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Bedriox\Server\Worker\Chunk;
+
+/** @internal Strict cursor for the versioned chunk worker transfer format. */
+final class ChunkTransferReader
+{
+    private int $offset = 0;
+
+    public function __construct(private readonly string $bytes) {}
+
+    public function byte(): int
+    {
+        return ord($this->take(1));
+    }
+
+    public function signedByte(): int
+    {
+        $value = $this->byte();
+
+        return $value >= 0x80 ? $value - 0x100 : $value;
+    }
+
+    public function unsignedShort(): int
+    {
+        $decoded = unpack('nvalue', $this->take(2));
+
+        $value = is_array($decoded) ? ($decoded['value'] ?? null) : null;
+        if (!is_int($value)) {
+            throw new ChunkTransferException('Chunk transfer integer is malformed.');
+        }
+
+        return $value;
+    }
+
+    public function signedInt(): int
+    {
+        $decoded = unpack('Nvalue', $this->take(4));
+        $value = is_array($decoded) ? ($decoded['value'] ?? null) : null;
+        if (!is_int($value)) {
+            throw new ChunkTransferException('Chunk transfer integer is malformed.');
+        }
+
+        return $value >= 0x80000000 ? $value - 0x100000000 : $value;
+    }
+
+    public function bytes(int $length): string
+    {
+        return $this->take($length);
+    }
+
+    public function boundedString(int $maximumBytes): string
+    {
+        $length = $this->unsignedShort();
+        if ($length < 1 || $length > $maximumBytes) {
+            throw new ChunkTransferException('Chunk transfer string length is outside its bound.');
+        }
+
+        return $this->take($length);
+    }
+
+    public function finish(): void
+    {
+        if ($this->offset !== strlen($this->bytes)) {
+            throw new ChunkTransferException('Chunk transfer contains trailing bytes.');
+        }
+    }
+
+    private function take(int $length): string
+    {
+        if ($length < 0 || $this->offset + $length > strlen($this->bytes)) {
+            throw new ChunkTransferException('Chunk transfer is truncated.');
+        }
+        $value = substr($this->bytes, $this->offset, $length);
+        $this->offset += $length;
+
+        return $value;
+    }
+}

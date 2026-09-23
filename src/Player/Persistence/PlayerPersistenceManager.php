@@ -93,6 +93,18 @@ final class PlayerPersistenceManager
 
     public function save(Player $player): bool
     {
+        if ($this->store instanceof AsynchronousPlayerDataStore) {
+            $this->collectAsynchronousCompletions();
+            if (!$player->isDirty()) {
+                return true;
+            }
+            $revision = $player->stateRevision();
+            $profile = $this->snapshot($player);
+            $this->pending[$player->identity->uuid] = compact('player', 'profile', 'revision');
+            $this->store->enqueueSave($profile, $revision);
+
+            return false;
+        }
         $revision = $player->stateRevision();
         $profile = $this->snapshot($player);
         try {
@@ -111,6 +123,19 @@ final class PlayerPersistenceManager
     /** @phpstan-impure */
     public function retryPending(int $budget): int
     {
+        if ($this->store instanceof AsynchronousPlayerDataStore) {
+            $saved = $this->collectAsynchronousCompletions($budget);
+            $attempted = 0;
+            foreach ($this->pending as $entry) {
+                if ($saved + $attempted >= $budget) {
+                    break;
+                }
+                $this->store->enqueueSave($entry['profile'], $entry['revision']);
+                ++$attempted;
+            }
+
+            return $saved;
+        }
         $saved = 0;
         foreach (array_keys($this->pending) as $uuid) {
             if ($saved >= $budget) {
@@ -133,5 +158,55 @@ final class PlayerPersistenceManager
     public function pendingCount(): int
     {
         return count($this->pending);
+    }
+
+    public function close(int $timeoutMilliseconds = 30_000): bool
+    {
+        if (!$this->store instanceof AsynchronousPlayerDataStore) {
+            return $this->pending === [];
+        }
+        foreach ($this->pending as $entry) {
+            $this->store->enqueueSave($entry['profile'], $entry['revision']);
+        }
+        $successful = true;
+        foreach ($this->store->drainSaves($timeoutMilliseconds) as $completion) {
+            $successful = $this->applyAsynchronousCompletion($completion) && $successful;
+        }
+        $this->store->close();
+
+        return $successful && $this->pending === [];
+    }
+
+    private function collectAsynchronousCompletions(int $maximum = 256): int
+    {
+        if (!$this->store instanceof AsynchronousPlayerDataStore) {
+            return 0;
+        }
+        $saved = 0;
+        foreach ($this->store->pollSaves($maximum) as $completion) {
+            if ($this->applyAsynchronousCompletion($completion)) {
+                ++$saved;
+            }
+        }
+
+        return $saved;
+    }
+
+    private function applyAsynchronousCompletion(\Bedriox\Server\Persistence\PersistenceWriteCompletion $completion): bool
+    {
+        if (!$completion->successful || !str_starts_with($completion->key, 'player:')) {
+            return false;
+        }
+        $uuid = substr($completion->key, 7);
+        $entry = $this->pending[$uuid] ?? null;
+        if ($entry === null || $completion->revision > $entry['player']->stateRevision()) {
+            return false;
+        }
+        $entry['player']->acknowledgeSaved($completion->revision);
+        if ($completion->revision === $entry['revision']) {
+            unset($this->pending[$uuid]);
+        }
+
+        return true;
     }
 }

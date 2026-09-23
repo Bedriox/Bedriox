@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Runtime;
 
+use Bedriox\Api\Command\CommandContext;
 use Bedriox\Api\Command\CommandDefinition;
 use Bedriox\Api\Command\CommandResult;
 use Bedriox\Data\BedrockDataSet;
@@ -73,6 +74,8 @@ use Bedriox\Server\Login\LoginAuthenticator;
 use Bedriox\Server\Login\LoginSession;
 use Bedriox\Server\Login\MonotonicClock;
 use Bedriox\Server\Observability\MutableCrashContextProvider;
+use Bedriox\Server\Observability\PerformanceMonitor;
+use Bedriox\Server\Observability\PerformanceSubsystem;
 use Bedriox\Server\Permission\PermissionStore;
 use Bedriox\Server\Player\Persistence\PlayerDataStore;
 use Bedriox\Server\Player\Persistence\PlayerPersistenceManager;
@@ -126,6 +129,41 @@ use Throwable;
 
 final class ServerRuntimeTest extends TestCase
 {
+    public function testRuntimePublishesCompletedPhaseTimingsAndInboundPayloadRate(): void
+    {
+        $transport = new FakeConnectedTransport();
+        $transport->payloads[] = new ReceivedPayload(
+            '127.0.0.1',
+            20_001,
+            'abc',
+            Reliability::ReliableOrdered,
+            0,
+        );
+        $clock = new RuntimeTestClock();
+        $world = new WorldSimulation();
+        $monitor = new PerformanceMonitor();
+        $runtime = new ServerRuntime(
+            $transport,
+            new RuntimeLoginFactory(),
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $world,
+            new FixedRateWorldLoop($world, $clock),
+            new RecordingEventEncoder(),
+            performance: $monitor,
+        );
+
+        $clock->advance(50_000_000);
+        self::assertTrue($runtime->poll());
+
+        $snapshot = $monitor->snapshot();
+        self::assertSame(1, $snapshot->tickSamples);
+        self::assertSame(0, $snapshot->timerImbalances);
+        self::assertSame(0.3, $snapshot->networkReceiveBytesPerSecond);
+        self::assertArrayHasKey(PerformanceSubsystem::TRANSPORT, $snapshot->averageSubsystemMilliseconds);
+        self::assertArrayHasKey(PerformanceSubsystem::WORLD, $snapshot->averageSubsystemMilliseconds);
+        self::assertArrayHasKey(PerformanceSubsystem::NETWORK_OUTBOUND, $snapshot->averageSubsystemMilliseconds);
+    }
+
     public function testDuplicateIdentityReceivesEncryptedReasonWithoutKickingExistingSession(): void
     {
         $data = BedrockDataSet::bundled();
@@ -1100,7 +1138,7 @@ final class ServerRuntimeTest extends TestCase
             self::assertSame(0xff, $abilities[0]->abilities->layers[0]->abilityValues);
             self::assertCount(1, $available);
             self::assertInstanceOf(AvailableCommandsPacket::class, $available[0]);
-            self::assertSame(['public', 'protected'], array_map(
+            self::assertSame(['public', 'protected', 'verbose'], array_map(
                 static fn($definition): string => $definition->name,
                 $available[0]->commands,
             ));
@@ -1237,6 +1275,26 @@ final class ServerRuntimeTest extends TestCase
             self::assertSame(1, $packets[0]->successCount);
             self::assertCount(1, $packets[0]->messages);
             self::assertSame('Command completed.', $packets[0]->messages[0]->messageId);
+
+            $transport->sent = [];
+            $this->receiveEncrypted($transport, $info, $client, new CommandRequestPacket(
+                '/verbose',
+                new CommandOrigin(
+                    CommandOriginType::Player,
+                    'ffffffff-ffff-ffff-ffff-ffffffffffff',
+                    'verbose-request',
+                    0x0102030405060708,
+                ),
+            ));
+            self::assertTrue($runtime->poll());
+            $packets = $this->decodeEncryptedPackets($transport->sent, $decryptor);
+            self::assertCount(1, $packets);
+            self::assertInstanceOf(CommandOutputPacket::class, $packets[0]);
+            self::assertSame('verbose-request', $packets[0]->origin->requestId);
+            self::assertSame(1, $packets[0]->successCount);
+            self::assertCount(70, $packets[0]->messages);
+            self::assertSame('line 0', $packets[0]->messages[0]->messageId);
+            self::assertSame('line 69', $packets[0]->messages[69]->messageId);
         } finally {
             $runtime->close();
             foreach (glob($directory . DIRECTORY_SEPARATOR . '*') ?: [] as $file) {
@@ -1265,6 +1323,16 @@ final class ServerRuntimeTest extends TestCase
         $commands->registerServer(
             new CommandDefinition('protected', 'Protected command', 'protected', permission: 'example.use'),
             static fn(): CommandResult => CommandResult::SUCCESS,
+        );
+        $commands->registerServer(
+            new CommandDefinition('verbose', 'Verbose command', 'verbose'),
+            static function (CommandContext $context): CommandResult {
+                for ($line = 0; $line < 70; ++$line) {
+                    $context->sender()->sendMessage('line ' . $line);
+                }
+
+                return CommandResult::SUCCESS;
+            },
         );
 
         return $commands;

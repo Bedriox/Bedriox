@@ -4,7 +4,11 @@ declare(strict_types=1);
 
 $finder = PhpCsFixer\Finder::create()
     ->in([__DIR__ . '/src', __DIR__ . '/tests'])
-    ->append([__DIR__ . '/bin/bedriox']);
+    ->append([
+        __DIR__ . '/bin/bedriox',
+        __DIR__ . '/bootstrap/bedriox-io.php',
+        __DIR__ . '/bootstrap/bedriox-worker.php',
+    ]);
 
 return (new PhpCsFixer\Config())
     ->setRiskyAllowed(true)

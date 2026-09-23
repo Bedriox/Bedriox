@@ -6,6 +6,8 @@
 /coverage/
 /vendor/
 /bedriox.settings
+/bedriox.settings.legacy-*
+/server.properties
 composer.phar
 *.log
 /logs/

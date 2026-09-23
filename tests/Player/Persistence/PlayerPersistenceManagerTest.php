@@ -8,6 +8,11 @@ use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Identity\VerifiedClientData;
 use Bedriox\Protocol\Security\OpenSslEphemeralKeyFactory;
 use Bedriox\Server\Login\AuthenticatedLogin;
+use Bedriox\Server\Persistence\PersistenceEnqueueResult;
+use Bedriox\Server\Persistence\PersistenceSubmission;
+use Bedriox\Server\Persistence\PersistenceWriteCompletion;
+use Bedriox\Server\Persistence\PersistenceWriteRequest;
+use Bedriox\Server\Player\Persistence\AsynchronousPlayerDataStore;
 use Bedriox\Server\Player\Persistence\PlayerDataStore;
 use Bedriox\Server\Player\Persistence\PlayerPersistenceManager;
 use Bedriox\Server\Player\Player;
@@ -152,6 +157,65 @@ final class PlayerPersistenceManagerTest extends TestCase
         self::assertSame(20.0, $store->profile?->health);
     }
 
+    public function testAsynchronousSaveAcknowledgesOnlyTheCompletedRevisionDuringARace(): void
+    {
+        $palette = self::palette();
+        $store = new FakeAsynchronousPlayerDataStore();
+        $manager = new PlayerPersistenceManager(
+            $store,
+            'world',
+            new Position(0.0, 64.0, 0.0),
+            $palette,
+            static fn(): int => 300,
+        );
+        $player = self::player($palette);
+        self::assertSame(1, $player->markDirty());
+
+        self::assertFalse($manager->save($player));
+        self::assertSame([1], $store->submittedRevisions);
+        self::assertSame(0, $store->synchronousSaveCalls);
+
+        self::assertSame(2, $player->markDirty());
+        self::assertFalse($manager->save($player));
+        self::assertSame([1, 2], $store->submittedRevisions);
+
+        $store->complete(1);
+        self::assertSame(1, $manager->retryPending(1));
+        self::assertSame(1, $player->savedRevision());
+        self::assertTrue($player->isDirty());
+        self::assertSame(1, $manager->pendingCount());
+
+        $store->complete(2);
+        self::assertSame(1, $manager->retryPending(1));
+        self::assertSame(2, $player->savedRevision());
+        self::assertFalse($player->isDirty());
+        self::assertSame(0, $manager->pendingCount());
+    }
+
+    public function testCloseDrainsPendingAsynchronousSaveBeforeClosingStore(): void
+    {
+        $palette = self::palette();
+        $store = new FakeAsynchronousPlayerDataStore();
+        $store->completeDrainedSaves = true;
+        $manager = new PlayerPersistenceManager(
+            $store,
+            'world',
+            new Position(0.0, 64.0, 0.0),
+            $palette,
+            static fn(): int => 300,
+        );
+        $player = self::player($palette);
+        $player->markDirty();
+        self::assertFalse($manager->save($player));
+
+        self::assertTrue($manager->close(25));
+
+        self::assertFalse($player->isDirty());
+        self::assertSame(0, $manager->pendingCount());
+        self::assertSame(['drain:25', 'close'], $store->lifecycle);
+        self::assertSame(0, $store->synchronousSaveCalls);
+    }
+
     private const string UUID = '00000000-0000-0000-0000-000000000001';
 
     private static function palette(): FixedFlatBlockPalette
@@ -171,6 +235,22 @@ final class PlayerPersistenceManagerTest extends TestCase
             $xuid,
             $key,
             new VerifiedClientData(1, 1, "\0\0\0\0", 0, 0, '', '{}', [], skinId: 'skin'),
+        );
+    }
+
+    private static function player(FixedFlatBlockPalette $palette): Player
+    {
+        return new Player(
+            'session',
+            1,
+            new PlayerIdentity(self::UUID, 'Player', '1'),
+            new Position(5.0, 70.0, 6.0),
+            4,
+            0,
+            64.0,
+            PlayerInventory::starter($palette),
+            'world',
+            100,
         );
     }
 }
@@ -197,5 +277,87 @@ final class MemoryPlayerDataStore implements PlayerDataStore
             throw new RuntimeException('write failed');
         }
         $this->profile = $player;
+    }
+}
+
+final class FakeAsynchronousPlayerDataStore implements AsynchronousPlayerDataStore
+{
+    /** @var list<int> */
+    public array $submittedRevisions = [];
+    /** @var list<string> */
+    public array $lifecycle = [];
+    public int $synchronousSaveCalls = 0;
+    public bool $completeDrainedSaves = false;
+    /** @var array<int, PersistenceWriteRequest> */
+    private array $requests = [];
+    /** @var list<PersistenceWriteCompletion> */
+    private array $completions = [];
+    private int $nextRequestId = 1;
+
+    public function exists(string $uuid): bool
+    {
+        return false;
+    }
+
+    public function load(string $uuid): ?PlayerBootstrap
+    {
+        return null;
+    }
+
+    public function save(PlayerBootstrap $player): void
+    {
+        ++$this->synchronousSaveCalls;
+    }
+
+    public function enqueueSave(PlayerBootstrap $player, int $revision): PersistenceEnqueueResult
+    {
+        if (isset($this->requests[$revision])) {
+            return new PersistenceEnqueueResult(PersistenceSubmission::STALE, null);
+        }
+        $request = new PersistenceWriteRequest(
+            $this->nextRequestId++,
+            count($this->submittedRevisions) + 1,
+            'player:' . $player->identity->uuid,
+            $revision,
+            'player',
+        );
+        $this->requests[$revision] = $request;
+        $this->submittedRevisions[] = $revision;
+
+        return new PersistenceEnqueueResult(PersistenceSubmission::ACCEPTED, $request);
+    }
+
+    public function complete(int $revision): void
+    {
+        $request = $this->requests[$revision];
+        unset($this->requests[$revision]);
+        $this->completions[] = new PersistenceWriteCompletion(
+            $request->id,
+            $request->key,
+            $request->revision,
+            true,
+        );
+    }
+
+    public function pollSaves(int $maximumCompletions = 256): array
+    {
+        return array_splice($this->completions, 0, $maximumCompletions);
+    }
+
+    public function drainSaves(int $timeoutMilliseconds): array
+    {
+        $this->lifecycle[] = 'drain:' . $timeoutMilliseconds;
+        if ($this->completeDrainedSaves) {
+            foreach (array_keys($this->requests) as $revision) {
+                $this->complete($revision);
+            }
+        }
+
+        return $this->pollSaves();
+    }
+
+    public function close(): void
+    {
+        $this->lifecycle[] = 'close';
     }
 }

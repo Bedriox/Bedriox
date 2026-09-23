@@ -30,6 +30,8 @@ use Bedriox\RakNet\SessionOpenedEvent;
 use Bedriox\Server\Entity\Item\DroppedItemEntity;
 use Bedriox\Server\Observability\CrashContextPublisher;
 use Bedriox\Server\Observability\CrashPlayer;
+use Bedriox\Server\Observability\PerformanceMonitor;
+use Bedriox\Server\Observability\PerformanceSubsystem;
 use Bedriox\Server\Permission\PermissionStore;
 use Bedriox\Server\Player\Persistence\PlayerPersistenceManager;
 use Bedriox\Server\Plugin\Command\CommandRegistry;
@@ -71,7 +73,10 @@ use Bedriox\Server\Simulation\SystemSimulationClock;
 use Bedriox\Server\Simulation\VerticalState;
 use Bedriox\Server\Simulation\WorldSimulation;
 use Bedriox\Server\Transport\ConnectedTransport;
+use Bedriox\Server\Worker\Chunk\PreparedChunkCache;
+use Bedriox\Server\Worker\Chunk\PreparedChunkCacheSnapshot;
 use Bedriox\Server\World\World;
+use Closure;
 use InvalidArgumentException;
 use RuntimeException;
 use Throwable;
@@ -79,6 +84,8 @@ use Throwable;
 /** Bounded single-threaded composition root for transport, protocol, and simulation. */
 final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
 {
+    private const int MAXIMUM_PLAYER_COMMAND_OUTPUT_MESSAGES = 256;
+
     /** @var array<string, RuntimeSession> endpoint key => session */
     private array $sessions = [];
 
@@ -128,7 +135,10 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         ?PlayerConnectionDirectory $playerConnections = null,
         private readonly ?BedrockInventoryPacketProjector $inventoryProjector = null,
         private readonly ?PluginGameplayEventBridge $pluginEvents = null,
+        private readonly ?Closure $simulationTickBoundary = null,
+        private readonly ?PerformanceMonitor $performance = null,
         ?SimulationClock $closeClock = null,
+        private readonly ?PreparedChunkCache $preparedChunks = null,
     ) {
         if ($this->autosaveIntervalTicks < 1 || $this->autosaveChunkBudget < 1
             || $this->playerAutosaveIntervalTicks < 1 || $this->playerAutosaveBudget < 1) {
@@ -200,7 +210,11 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         if ($this->closed) {
             return false;
         }
+        $pollStarted = hrtime(true);
+        $completedTicks = 0;
+        $this->performance?->beginTick($pollStarted);
         try {
+            $transportTiming = $this->performance?->startSubsystem(PerformanceSubsystem::TRANSPORT);
             $this->publishCrashContext();
             $this->transport->poll($this->limits->maximumDatagramsPerPoll);
             $events = $this->transport->drainSessionEvents();
@@ -219,11 +233,14 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
             }
             $this->expirePendingTransportCloses();
             foreach ($payloads as $payload) {
+                $this->performance?->recordNetworkReceived(strlen($payload->payload));
                 $this->involvedSessionId = $this->sessions[self::rawEndpointKey($payload->remoteAddress, $payload->remotePort)]->id ?? null;
                 $this->publishCrashContext();
                 $this->accept($payload);
                 $this->involvedSessionId = null;
             }
+            $transportTiming?->end();
+            $sessionTiming = $this->performance?->startSubsystem(PerformanceSubsystem::SESSIONS);
             foreach (array_keys($this->sessions) as $key) {
                 $session = $this->sessions[$key];
                 if ($session->phase === SessionPhase::LOGIN) {
@@ -247,14 +264,25 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                     }
                 }
             }
+            $sessionTiming?->end();
             $directedCount = 0;
-            foreach ($this->worldLoop->poll() as $tick) {
+            $worldTiming = $this->performance?->startSubsystem(PerformanceSubsystem::WORLD);
+            $ticks = $this->worldLoop->poll();
+            $worldTiming?->end();
+            $outboundTiming = $this->performance?->startSubsystem(PerformanceSubsystem::NETWORK_OUTBOUND);
+            foreach ($ticks as $tick) {
+                ++$completedTicks;
+                $pluginTiming = $this->performance?->startSubsystem(PerformanceSubsystem::PLUGINS);
+                ($this->simulationTickBoundary)?->__invoke($tick->number);
+                $pluginTiming?->end();
+                $chunkTiming = $this->performance?->startSubsystem(PerformanceSubsystem::CHUNKS);
                 foreach (array_keys($this->sessions) as $key) {
                     $play = $this->sessions[$key]->play;
                     if ($play !== null && !$play->worldTick()) {
                         $this->disconnect($key);
                     }
                 }
+                $chunkTiming?->end();
                 foreach ($this->sessions as $session) {
                     if ($session->play === null || !$session->play->takeChunkVisibilityChanged()) {
                         continue;
@@ -568,6 +596,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                         return false;
                     }
                 }
+                $persistenceTiming = $this->performance?->startSubsystem(PerformanceSubsystem::PERSISTENCE);
                 if ($this->persistentWorld !== null && $tick->number % $this->autosaveIntervalTicks === 0) {
                     $this->autosaveActive = true;
                 }
@@ -591,9 +620,18 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                         'remaining_dirty_players' => $result['remaining'],
                     ]);
                 }
+                $persistenceTiming?->end();
             }
             foreach (array_keys($this->sessions) as $key) {
                 $this->flush($key, $this->sessions[$key]);
+            }
+            $outboundTiming?->end();
+
+            if ($completedTicks > 0) {
+                $completedAt = hrtime(true);
+                $this->performance?->completeTicks($completedTicks, $completedAt);
+            } else {
+                $this->performance?->cancelTick();
             }
 
             $this->publishCrashContext();
@@ -607,6 +645,28 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
     public function sessionCount(): int
     {
         return count($this->sessions);
+    }
+
+    public function entityCount(): int
+    {
+        return count($this->world->snapshot()->players) + count($this->itemActors);
+    }
+
+    public function chunkStreamingSnapshot(): ChunkStreamingSnapshot
+    {
+        $snapshot = new ChunkStreamingSnapshot(0, 0, 0, 0, 0, 0, 0);
+        foreach ($this->sessions as $session) {
+            if ($session->play !== null) {
+                $snapshot = $snapshot->plus($session->play->chunkStreamingSnapshot());
+            }
+        }
+
+        return $snapshot;
+    }
+
+    public function preparedChunkCacheSnapshot(): ?PreparedChunkCacheSnapshot
+    {
+        return $this->preparedChunks?->snapshot();
     }
 
     public function isClosed(): bool
@@ -632,9 +692,20 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         }
         $this->pendingTransportCloses = [];
         $this->drainShutdownLifecycle();
-        if ($this->playerPersistence !== null && $this->playerPersistence->pendingCount() > 0) {
-            $this->playerPersistence->retryPending($this->limits->maximumSessions);
-            if ($this->playerPersistence->pendingCount() > 0) {
+        $this->preparedChunks?->close();
+        if ($this->playerPersistence !== null) {
+            try {
+                $this->playerPersistence->retryPending($this->limits->maximumSessions);
+            } catch (Throwable $exception) {
+                $this->recordShutdownFailure('runtime.player_store_retry_failed', $exception);
+            }
+            try {
+                $durable = $this->playerPersistence->close();
+            } catch (Throwable $exception) {
+                $durable = false;
+                $this->recordShutdownFailure('runtime.player_store_close_failed', $exception);
+            }
+            if (!$durable || $this->playerPersistence->pendingCount() > 0) {
                 $this->recordShutdownFailure(
                     'runtime.player_save_failed',
                     new RuntimeException('One or more player profiles could not be saved during shutdown.'),
@@ -773,6 +844,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         }
         foreach ($session->play->drainPlayerCommands() as $request) {
             $messages = [];
+            $outputTruncated = false;
             $result = CommandResult::FAILURE;
             $player = $session->phase === SessionPhase::SPAWNED
                 ? $this->world->pluginPlayer($session->play->login()->identity)
@@ -780,9 +852,11 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
             if ($this->commandRegistry !== null && $player !== null) {
                 $sender = new ServerPlayerCommandSender(
                     $player,
-                    static function (string $message) use (&$messages): void {
-                        if (count($messages) >= 64) {
-                            throw new RuntimeException('Command output message limit exceeded.');
+                    static function (string $message) use (&$messages, &$outputTruncated): void {
+                        if (count($messages) >= self::MAXIMUM_PLAYER_COMMAND_OUTPUT_MESSAGES - 1) {
+                            $outputTruncated = true;
+
+                            return;
                         }
                         $messages[] = $message;
                     },
@@ -791,6 +865,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                 $result = $this->commandRegistry->dispatch($sender, $request->command);
             } else {
                 $messages[] = 'Commands are not available yet.';
+            }
+            if ($outputTruncated) {
+                $messages[] = 'Additional command output was truncated.';
             }
             $outputMessages = array_map(
                 static fn(string $message): CommandOutputMessage => new CommandOutputMessage($message),
@@ -870,7 +947,10 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
             );
             $this->flush($key, $session);
         } catch (Throwable $exception) {
-            $this->diagnostics->record('play.channel_creation_failed', ['exception' => $exception::class]);
+            $this->diagnostics->record('play.channel_creation_failed', [
+                'exception' => $exception::class,
+                'message' => $exception->getMessage(),
+            ]);
             $ready->encryptor->close();
             $ready->decryptor->close();
             $this->disconnect($key);
@@ -943,6 +1023,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                     $payload->reliability,
                     $payload->orderingChannel,
                 );
+                $this->performance?->recordNetworkSent(strlen($payload->payload));
             } catch (Throwable $exception) {
                 $this->diagnostics->record('runtime.transport_send_failed', ['exception' => $exception::class]);
                 $this->disconnect($key);

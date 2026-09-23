@@ -48,6 +48,7 @@ final class PluginHostSourceAdmissionTest extends TestCase
     public function testProviderStagesSourcePluginForNormalLifecycleAndCleanup(): void
     {
         $cleanupMarker = $this->root . DIRECTORY_SEPARATOR . 'released.txt';
+        $scheduledMarker = $this->root . DIRECTORY_SEPARATOR . 'scheduled.txt';
         $providerSource = <<<'PHP'
 <?php
 declare(strict_types=1);
@@ -65,9 +66,15 @@ final class Main extends Plugin{
             static function (): void { file_put_contents(__CLEANUP__, 'released'); },
         )]);
     }
+    public function onEnable(): void{
+        $this->context()->scheduler()->nextTick(
+            static function (): void { file_put_contents(__SCHEDULED__, 'ran'); },
+        );
+    }
 }
 PHP;
         $providerSource = str_replace('__CLEANUP__', var_export($cleanupMarker, true), $providerSource);
+        $providerSource = str_replace('__SCHEDULED__', var_export($scheduledMarker, true), $providerSource);
         $sourceMain = <<<'PHP'
 <?php
 declare(strict_types=1);
@@ -106,6 +113,8 @@ PHP;
         self::assertTrue($host->manager()->isEnabled('DevelopmentProvider'));
         self::assertTrue($host->manager()->isEnabled('SourceFixture'));
         self::assertStringContainsString('Enabled source plugin SourceFixture 1.0.0', implode("\n", $logger->recentLines()));
+        $host->tickScheduler(1);
+        self::assertFileExists($scheduledMarker);
 
         $host->stop();
 

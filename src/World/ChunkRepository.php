@@ -27,6 +27,12 @@ final class ChunkRepository
 
     private int $dirtySequence = 0;
 
+    private int $hits = 0;
+
+    private int $misses = 0;
+
+    private int $evictions = 0;
+
     public function __construct(private readonly int $capacity)
     {
         if ($capacity < 1 || $capacity > 100_000) {
@@ -43,10 +49,12 @@ final class ChunkRepository
         $key = $position->key();
         $cached = $this->chunks[$key] ?? null;
         if ($cached instanceof Chunk) {
+            ++$this->hits;
             $this->touch($key);
 
             return $cached;
         }
+        ++$this->misses;
 
         $evictionCandidate = count($this->chunks) >= $this->capacity
             ? $this->leastRecentlyUsedEvictionCandidate()
@@ -59,6 +67,7 @@ final class ChunkRepository
             $this->saveForEviction($evictionCandidate, $saver);
             unset($this->chunks[$evictionCandidate], $this->lastAccess[$evictionCandidate]);
             unset($this->dirtySince[$evictionCandidate]);
+            ++$this->evictions;
         }
         $this->chunks[$key] = $chunk;
         $this->trackDirtyState($key, $chunk);
@@ -161,9 +170,68 @@ final class ChunkRepository
         return count($this->dirtySince);
     }
 
+    /** @return list<Chunk> Immutable oldest-dirty snapshots suitable for bounded persistence submission. */
+    public function dirtySnapshots(int $maximumChunks): array
+    {
+        if ($maximumChunks < 1 || $maximumChunks > $this->capacity) {
+            throw new InvalidArgumentException('Dirty chunk snapshot limit must be between 1 and the cache capacity.');
+        }
+
+        $keys = array_keys($this->dirtySince);
+        usort($keys, fn(string $left, string $right): int => $this->dirtySince[$left] <=> $this->dirtySince[$right]);
+        $snapshots = [];
+        foreach ($keys as $key) {
+            $chunk = $this->chunks[$key] ?? null;
+            if ($chunk instanceof Chunk && $chunk->isDirty()) {
+                $snapshots[] = $chunk;
+                if (count($snapshots) >= $maximumChunks) {
+                    break;
+                }
+            }
+        }
+
+        return $snapshots;
+    }
+
+    /** Applies an exact durable completion without allowing an older revision to clean newer state. */
+    public function acknowledgePersisted(ChunkPosition $position, int $revision): bool
+    {
+        $key = $position->key();
+        $current = $this->chunks[$key] ?? null;
+        if (!$current instanceof Chunk) {
+            throw new InvalidArgumentException('Cannot acknowledge a chunk which is not loaded.');
+        }
+        if ($revision > $current->revision) {
+            throw new UnexpectedValueException('A persisted chunk revision leads authoritative state.');
+        }
+        if ($revision <= $current->persistedRevision) {
+            return false;
+        }
+
+        $acknowledged = $current->withPersistedRevision($revision);
+        $this->chunks[$key] = $acknowledged;
+        $this->trackDirtyState($key, $acknowledged);
+
+        return true;
+    }
+
     public function count(): int
     {
         return count($this->chunks);
+    }
+
+    public function snapshot(): ChunkRepositorySnapshot
+    {
+        return new ChunkRepositorySnapshot(
+            $this->capacity,
+            count($this->chunks),
+            count($this->retainCounts),
+            array_sum($this->retainCounts),
+            count($this->dirtySince),
+            $this->hits,
+            $this->misses,
+            $this->evictions,
+        );
     }
 
     public function clear(): void
@@ -176,6 +244,9 @@ final class ChunkRepository
         $this->dirtySince = [];
         $this->accessSequence = 0;
         $this->dirtySequence = 0;
+        $this->hits = 0;
+        $this->misses = 0;
+        $this->evictions = 0;
     }
 
     private function touch(string $key): void
@@ -235,9 +306,7 @@ final class ChunkRepository
             throw new UnexpectedValueException('A chunk revision moved backwards while its save was in progress.');
         }
 
-        $acknowledged = $current->withPersistedRevision($snapshot->revision);
-        $this->chunks[$key] = $acknowledged;
-        $this->trackDirtyState($key, $acknowledged);
+        $this->acknowledgePersisted($snapshot->position, $snapshot->revision);
 
         return true;
     }

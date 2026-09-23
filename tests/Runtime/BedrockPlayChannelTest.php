@@ -78,6 +78,7 @@ use Bedriox\Protocol\Packet\SetActorMotionPacket;
 use Bedriox\Protocol\Packet\SetLocalPlayerAsInitializedPacket;
 use Bedriox\Protocol\Packet\SetPlayerInventoryOptionsPacket;
 use Bedriox\Protocol\Packet\SubChunkRequestPacket;
+use Bedriox\Protocol\Packet\SystemTextPacket;
 use Bedriox\Protocol\Packet\TakeItemStackRequestAction;
 use Bedriox\Protocol\Packet\TranslatedTextPacket;
 use Bedriox\Protocol\Packet\UpdateAbilitiesPacket;
@@ -115,6 +116,15 @@ use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\MovementMode;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
 use Bedriox\Server\Simulation\WorldSimulation;
+use Bedriox\Server\Worker\Chunk\PreparedChunkCache;
+use Bedriox\Server\Worker\Network\CompressionWorkerDispatcher;
+use Bedriox\Server\Worker\Task\PrepareChunkTask;
+use Bedriox\Server\Worker\WorkerDispatcher;
+use Bedriox\Server\Worker\WorkerPoolSnapshot;
+use Bedriox\Server\Worker\WorkerReceipt;
+use Bedriox\Server\Worker\WorkerResult;
+use Bedriox\Server\Worker\WorkerResultStatus;
+use Bedriox\Server\Worker\WorkerSubmission;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
@@ -128,6 +138,7 @@ use Bedriox\Server\World\SubChunk;
 use Bedriox\Server\World\World;
 use Bedriox\Server\World\WorldGenerator;
 use Bedriox\Server\World\WorldMetadata;
+use Closure;
 use PHPUnit\Framework\TestCase;
 
 final class BedrockPlayChannelTest extends TestCase
@@ -1635,6 +1646,63 @@ final class BedrockPlayChannelTest extends TestCase
         );
     }
 
+    public function testPreparedChunkWorkerResultIsEncryptedAndSentWithoutMainThreadSerialization(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $network = $data->blockStateRegistry();
+        $internal = new BlockStateRegistry($network->states());
+        $world = new World(
+            new WorldMetadata('prepared-stream-test', 0),
+            new FlatWorldGenerator(FixedFlatBlockPalette::fromRegistry($internal)),
+            new ChunkRepository(32),
+        );
+        $serializer = new BedrockChunkPacketSerializer(
+            new BlockNetworkTranslator($internal, $network),
+            $data->plainsBiomeRuntimeId(),
+        );
+        $workers = new ImmediatePreparationWorkerDispatcher();
+        $cache = new PreparedChunkCache($workers, 5, $internal, str_repeat('b', 32));
+        [$channel, $client, $server] = $this->channel(
+            [new ChunkRadiusUpdatedPacket(1)],
+            world: $world,
+            serializer: $serializer,
+            generatePerTick: 4,
+            sendPerTick: 2,
+            viewDistance: 1,
+            spawnRadius: 1,
+            preparedChunks: $cache,
+        );
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new RequestChunkRadiusPacket(1, 1)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        foreach ($channel->drainOutgoing() as $outgoing) {
+            $server->decryptEnvelope($outgoing->payload);
+        }
+
+        self::assertTrue($channel->worldTick());
+        self::assertSame([], $channel->drainOutgoing());
+
+        self::assertTrue($channel->queuePacket(new SystemTextPacket('control-before-prepared-chunk')));
+        $control = $channel->drainOutgoing();
+        self::assertCount(1, $control);
+        $controlPacket = $this->decode($server->decryptEnvelope($control[0]->payload));
+        self::assertInstanceOf(SystemTextPacket::class, $controlPacket);
+        self::assertSame('control-before-prepared-chunk', $controlPacket->message);
+
+        $workers->completeAll();
+        self::assertTrue($channel->worldTick());
+        $outgoing = $channel->drainOutgoing();
+        self::assertNotEmpty($outgoing);
+        self::assertLessThanOrEqual(2, count($outgoing));
+        $preparedPayload = $outgoing[0] ?? null;
+        self::assertInstanceOf(\Bedriox\Server\Runtime\OutgoingPlayPayload::class, $preparedPayload);
+        self::assertInstanceOf(LevelChunkPacket::class, $this->decode($server->decryptEnvelope($preparedPayload->payload)));
+        self::assertSame(['entries' => 0, 'hits' => 0, 'misses' => 0], $serializer->cacheMetrics());
+        self::assertGreaterThanOrEqual(1, $workers->submissions);
+    }
+
     public function testSerializationFailureReleasesTheJustRetainedChunk(): void
     {
         $data = BedrockDataSet::bundled();
@@ -1718,6 +1786,139 @@ final class BedrockPlayChannelTest extends TestCase
             $channel->drainOutgoing();
         }
         self::assertGreaterThan(0, $channel->queuedGeneratedChunkCount());
+    }
+
+    public function testMovingDuringBacklogReprioritizesDeliveryAroundTheNewCenter(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $network = $data->blockStateRegistry();
+        $internal = new BlockStateRegistry($network->states());
+        $world = new World(
+            new WorldMetadata('moving-backlog-priority-test', 0),
+            new FlatWorldGenerator(FixedFlatBlockPalette::fromRegistry($internal)),
+            new ChunkRepository(256),
+        );
+        [$channel, $client, $server] = $this->channel(
+            [new ChunkRadiusUpdatedPacket(4)],
+            limits: new RuntimeLimits(maximumChunkRadius: 4, preloadedChunkRadius: 1),
+            world: $world,
+            serializer: new BedrockChunkPacketSerializer(
+                new BlockNetworkTranslator($internal, $network),
+                $data->plainsBiomeRuntimeId(),
+            ),
+            generatePerTick: 64,
+            sendPerTick: 1,
+            viewDistance: 4,
+            spawnRadius: 1,
+        );
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new RequestChunkRadiusPacket(4, 4)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        foreach ($channel->drainOutgoing() as $outgoing) {
+            $server->decryptEnvelope($outgoing->payload);
+        }
+
+        self::assertTrue($channel->worldTick());
+        $initial = $channel->drainOutgoing();
+        self::assertCount(1, $initial);
+        $initialChunk = $this->decode($server->decryptEnvelope($initial[0]->payload));
+        self::assertInstanceOf(LevelChunkPacket::class, $initialChunk);
+        self::assertSame([0, 0], [$initialChunk->chunkX, $initialChunk->chunkZ]);
+        self::assertGreaterThan(0, $channel->queuedGeneratedChunkCount());
+
+        self::assertTrue($channel->updateChunkView(64.0, 64.0, 0.0));
+        foreach ($channel->drainOutgoing() as $outgoing) {
+            self::assertInstanceOf(
+                NetworkChunkPublisherUpdatePacket::class,
+                $this->decode($server->decryptEnvelope($outgoing->payload)),
+            );
+        }
+        self::assertTrue($channel->worldTick());
+        $recentered = $channel->drainOutgoing();
+        self::assertCount(1, $recentered);
+        $recenteredChunk = $this->decode($server->decryptEnvelope($recentered[0]->payload));
+        self::assertInstanceOf(LevelChunkPacket::class, $recenteredChunk);
+        self::assertSame([4, 0], [$recenteredChunk->chunkX, $recenteredChunk->chunkZ]);
+
+        $channel->close();
+        $world->close();
+    }
+
+    public function testHiddenPrefetchRingIsNotSentUntilMovementMakesItVisible(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $network = $data->blockStateRegistry();
+        $internal = new BlockStateRegistry($network->states());
+        $repository = new ChunkRepository(32);
+        $world = new World(
+            new WorldMetadata('prefetch-test', 0),
+            new FlatWorldGenerator(FixedFlatBlockPalette::fromRegistry($internal)),
+            $repository,
+        );
+        [$channel, $client, $server] = $this->channel(
+            [new ChunkRadiusUpdatedPacket(1)],
+            limits: new RuntimeLimits(maximumChunkRadius: 1, preloadedChunkRadius: 1),
+            world: $world,
+            serializer: new BedrockChunkPacketSerializer(
+                new BlockNetworkTranslator($internal, $network),
+                $data->plainsBiomeRuntimeId(),
+            ),
+            generatePerTick: 4,
+            sendPerTick: 3,
+            viewDistance: 1,
+            spawnRadius: 1,
+            prefetchRadius: 1,
+        );
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new RequestChunkRadiusPacket(1, 1)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        foreach ($channel->drainOutgoing() as $outgoing) {
+            $server->decryptEnvelope($outgoing->payload);
+        }
+
+        $visible = [];
+        for ($tick = 0; $tick < 16 && $repository->count() < 25; ++$tick) {
+            self::assertTrue($channel->worldTick());
+            foreach ($channel->drainOutgoing() as $outgoing) {
+                $packet = $this->decode($server->decryptEnvelope($outgoing->payload));
+                if ($packet instanceof LevelChunkPacket) {
+                    $visible[$packet->chunkX . ':' . $packet->chunkZ] = true;
+                }
+            }
+        }
+        self::assertCount(9, $visible, 'The hidden ring must not be sent before it becomes visible.');
+        self::assertSame(25, $repository->count(), 'The complete one-chunk hidden ring should be prepared.');
+        $ready = $channel->chunkStreamingSnapshot();
+        self::assertSame(0, $ready->visiblePending);
+        self::assertSame(0, $ready->prefetchPending);
+        self::assertSame(0, $ready->deliveryQueued);
+        self::assertSame(25, $ready->retained);
+
+        self::assertTrue($channel->updateChunkView(16.0, 64.0, 0.0));
+        $moved = $channel->chunkStreamingSnapshot();
+        self::assertSame(3, $moved->visiblePending);
+        self::assertSame(5, $moved->prefetchPending);
+        foreach ($channel->drainOutgoing() as $outgoing) {
+            self::assertInstanceOf(
+                NetworkChunkPublisherUpdatePacket::class,
+                $this->decode($server->decryptEnvelope($outgoing->payload)),
+            );
+        }
+        self::assertTrue($channel->worldTick());
+        $promoted = [];
+        foreach ($channel->drainOutgoing() as $outgoing) {
+            $packet = $this->decode($server->decryptEnvelope($outgoing->payload));
+            self::assertInstanceOf(LevelChunkPacket::class, $packet);
+            $promoted[] = [$packet->chunkX, $packet->chunkZ];
+        }
+        self::assertSame([[2, 0], [2, -1], [2, 1]], $promoted);
+
+        $channel->close();
+        $repository->clear();
     }
 
     public function testValidatedInventoryRequestsBecomeOrderedAuthoritativeCommands(): void
@@ -2462,6 +2663,21 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertSame([], $channel->drainOutgoing());
     }
 
+    public function testCompressionSaturationAppliesBackpressureWithoutClosingChannel(): void
+    {
+        $workers = new NonCompletingCompressionWorkerDispatcher();
+        $limits = new RuntimeLimits(
+            maximumOutgoingPayloadsPerSession: 16,
+            maximumOutgoingBytesPerSession: 4_000,
+        );
+        [$channel] = $this->channel(limits: $limits, compressionWorkers: $workers);
+        $chunk = new LevelChunkPacket(0, 0, 0, 0, str_repeat('x', 5_000));
+
+        self::assertFalse($channel->queuePacket($chunk));
+        self::assertFalse($channel->isClosed());
+        self::assertSame(0, $workers->submissionCount);
+    }
+
     public function testInitializedDeathConversationAcceptsBothRetailRespawnInputs(): void
     {
         [$channel, $client, $server, $entityId] = $this->channel();
@@ -2531,6 +2747,9 @@ final class BedrockPlayChannelTest extends TestCase
         float $spawnX = 0.0,
         float $spawnY = 64.0,
         float $spawnZ = 0.0,
+        ?CompressionWorkerDispatcher $compressionWorkers = null,
+        int $prefetchRadius = 0,
+        ?PreparedChunkCache $preparedChunks = null,
     ): array {
         $key = str_repeat("\x42", 32);
         $keys = (new OpenSslEphemeralKeyFactory(dirname(__DIR__) . '/Fixtures/openssl.cnf'))->generate();
@@ -2559,10 +2778,14 @@ final class BedrockPlayChannelTest extends TestCase
                 spawnRadius: $world === null ? 1 : $spawnRadius,
                 chunksGeneratePerTick: $world === null ? 1 : $generatePerTick,
                 chunksSendPerTick: $world === null ? 1 : $sendPerTick,
+                chunkPrefetchRadius: $world === null ? 0 : $prefetchRadius,
                 spawnX: $spawnX,
                 spawnY: $spawnY,
                 spawnZ: $spawnZ,
                 inventoryProjector: $inventoryProjector,
+                compressionWorkers: $compressionWorkers,
+                compressionTaskTypeId: $compressionWorkers === null ? 0 : 3,
+                preparedChunks: $preparedChunks,
             ),
             new BedrockEncryptor($key),
             new BedrockDecryptor($key),
@@ -2777,5 +3000,89 @@ final class BedrockPlayChannelTest extends TestCase
         $batch = BedrockBatchCodec::decode($payload, CompressionMode::NegotiatedZlib, new BatchLimits(), 256);
 
         return $batch->packets[0]->header->packetId;
+    }
+}
+
+final class NonCompletingCompressionWorkerDispatcher implements CompressionWorkerDispatcher
+{
+    public int $submissionCount = 0;
+
+    public function workerCount(): int
+    {
+        return 1;
+    }
+
+    public function submit(
+        int $taskTypeId,
+        string $payload,
+        Closure $completion,
+        ?int $deadlineNanoseconds = null,
+    ): WorkerSubmission {
+        ++$this->submissionCount;
+
+        return WorkerSubmission::accepted(new WorkerReceipt(
+            'test',
+            $this->submissionCount,
+            $taskTypeId,
+            'network',
+            $deadlineNanoseconds ?? PHP_INT_MAX,
+        ));
+    }
+
+    public function cancel(WorkerReceipt $receipt): bool
+    {
+        return true;
+    }
+}
+
+final class ImmediatePreparationWorkerDispatcher implements WorkerDispatcher
+{
+    public int $submissions = 0;
+    /** @var array<int, array{WorkerReceipt, string, Closure(WorkerResult): void}> */
+    private array $pending = [];
+
+    public function submit(
+        int $taskTypeId,
+        string $payload,
+        Closure $completion,
+        ?int $deadlineNanoseconds = null,
+    ): WorkerSubmission {
+        $taskId = ++$this->submissions;
+        $receipt = new WorkerReceipt('prepared-test', $taskId, $taskTypeId, 'chunk-preparation', PHP_INT_MAX);
+        $this->pending[$taskId] = [$receipt, $payload, $completion];
+
+        return WorkerSubmission::accepted($receipt);
+    }
+
+    public function completeAll(): void
+    {
+        $pending = $this->pending;
+        $this->pending = [];
+        foreach ($pending as [$receipt, $payload, $completion]) {
+            $completion(new WorkerResult(
+                $receipt,
+                WorkerResultStatus::SUCCESS,
+                (new PrepareChunkTask())->execute($payload),
+            ));
+        }
+    }
+
+    public function cancel(WorkerReceipt $receipt): bool
+    {
+        unset($this->pending[$receipt->taskId]);
+
+        return true;
+    }
+
+    public function poll(int $maximumCompletions = 256): void {}
+
+    public function snapshot(): WorkerPoolSnapshot
+    {
+        return new WorkerPoolSnapshot('', 1, 0, count($this->pending), 0, 0, $this->submissions, 0, 0, 0, 0, 0, 0, true);
+    }
+
+    public function shutdown(): void
+    {
+        $this->pending = [];
     }
 }

@@ -7,7 +7,7 @@ namespace Bedriox\Server\Runtime;
 use InvalidArgumentException;
 use RuntimeException;
 
-final class ServerSettingsFile
+class ServerSettingsFile
 {
     public const int MAX_BYTES = 65_536;
     public const int MAX_LINES = 256;
@@ -65,53 +65,29 @@ final class ServerSettingsFile
     public static function defaults(): string
     {
         return <<<'SETTINGS'
-# Bedriox operator settings. CLI options override values in this file.
+# Bedriox advanced settings. Common server settings belong in server.properties.
 
-# Server identity
-server.name=Bedriox Server
-server.motd=Powered by Bedriox
-server.max-players=20
+# Runtime and workers
+runtime.ticks-per-second=20
+workers.core-count=auto
 
-# Network
-network.bind-address=0.0.0.0
-network.port=19132
-network.authentication=FULL
+# Chunk orchestration
+chunk-sending.spawn-radius=4
+chunk-sending.per-tick=8
+chunk-generation.per-tick=4
+chunk-generation.queue-size=1024
+chunk-loading.prefetch-radius=1
+chunk-cache.limit=auto
+chunk-saving.per-tick=8
 
-# Level
-level.name=world
-level.generator=default
-level.seed=0
-level.default-gamemode=survival
-level.difficulty=normal
-pvp=true
+# Persistence and movement
 level.autosave-interval-ticks=6000
-
-# Leave all three commented to use the level's calculated default spawn.
-# level.spawn-x=
-# level.spawn-y=
-# level.spawn-z=
-
-# Chunk generation and streaming
-chunks.view-distance=4
-chunks.spawn-radius=4
-chunks.send-per-tick=4
-chunks.generate-per-tick=1
-chunks.cache-limit=2048
-chunks.save-per-tick=8
-
-# Player persistence
 players.autosave-interval-ticks=6000
 players.save-per-tick=8
-
-# Runtime and diagnostics
 movement.rewind-history-size=40
-runtime.ticks-per-second=20
-console.enabled=true
 
-# Plugins
-plugins.enabled=true
+# Plugins and diagnostics
 plugins.maximum=64
-
 logging.level=INFO
 logging.console=true
 logging.console-colors=auto
@@ -138,13 +114,18 @@ SETTINGS
             throw new RuntimeException('Unable to create the settings file.');
         }
         try {
-            $contents = self::defaults();
+            $contents = $this->defaultContents();
             if (fwrite($handle, $contents) !== strlen($contents) || !fflush($handle)) {
                 throw new RuntimeException('Unable to write the settings file.');
             }
         } finally {
             fclose($handle);
         }
+    }
+
+    protected function defaultContents(): string
+    {
+        return self::defaults();
     }
 
     private function read(string $path): string

@@ -38,6 +38,13 @@ final class ChunkRepositoryTest extends TestCase
         self::assertFalse($repository->contains($one));
         self::assertTrue($repository->contains($two));
         self::assertSame(2, $repository->count());
+        $snapshot = $repository->snapshot();
+        self::assertSame(2, $snapshot->capacity);
+        self::assertSame(2, $snapshot->loaded);
+        self::assertSame(2, $snapshot->hits);
+        self::assertSame(3, $snapshot->misses);
+        self::assertSame(1, $snapshot->evictions);
+        self::assertSame(0.4, $snapshot->hitRatio());
     }
 
     public function testRetainedChunksCannotBeEvictedUntilReleased(): void
@@ -46,6 +53,8 @@ final class ChunkRepositoryTest extends TestCase
         $loader = static fn(ChunkPosition $position): Chunk => new Chunk($position, new InternalBlockStateId(0), []);
         $retained = new ChunkPosition(0, 0);
         $repository->retain($retained, $loader);
+        self::assertSame(1, $repository->snapshot()->retainedChunks);
+        self::assertSame(1, $repository->snapshot()->retentionReferences);
 
         try {
             $repository->get(new ChunkPosition(1, 0), $loader);
@@ -54,6 +63,7 @@ final class ChunkRepositoryTest extends TestCase
             self::addToAssertionCount(1);
         }
         $repository->release($retained);
+        self::assertSame(0, $repository->snapshot()->retainedChunks);
         $repository->get(new ChunkPosition(1, 0), $loader);
         self::assertFalse($repository->contains($retained));
     }
@@ -177,6 +187,42 @@ final class ChunkRepositoryTest extends TestCase
         self::assertSame(2, $current->revision);
         self::assertSame(1, $current->persistedRevision);
         self::assertTrue($current->isDirty());
+    }
+
+    public function testAsyncCompletionForOlderRevisionLeavesNewerChunkDirty(): void
+    {
+        $air = new InternalBlockStateId(0);
+        $position = new ChunkPosition(0, 0);
+        $repository = new ChunkRepository(1);
+        $repository->get($position, static fn(ChunkPosition $requested): Chunk => new Chunk($requested, $air, []));
+        $repository->replace(
+            $repository->get($position, self::failLoader(...))->withBlockState(1, 0, 1, new InternalBlockStateId(1)),
+        );
+        $snapshot = $repository->dirtySnapshots(1)[0];
+        $repository->replace($snapshot->withBlockState(2, 0, 2, new InternalBlockStateId(2)));
+
+        self::assertTrue($repository->acknowledgePersisted($position, $snapshot->revision));
+        $current = $repository->get($position, self::failLoader(...));
+        self::assertSame(2, $current->revision);
+        self::assertSame(1, $current->persistedRevision);
+        self::assertTrue($current->isDirty());
+    }
+
+    public function testAsyncCompletionForCurrentRevisionCleansChunk(): void
+    {
+        $air = new InternalBlockStateId(0);
+        $position = new ChunkPosition(0, 0);
+        $repository = new ChunkRepository(1);
+        $repository->get($position, static fn(ChunkPosition $requested): Chunk => new Chunk($requested, $air, []));
+        $repository->replace(
+            $repository->get($position, self::failLoader(...))->withBlockState(1, 0, 1, new InternalBlockStateId(1)),
+        );
+        $snapshot = $repository->dirtySnapshots(1)[0];
+
+        self::assertTrue($repository->acknowledgePersisted($position, $snapshot->revision));
+        self::assertFalse($repository->get($position, self::failLoader(...))->isDirty());
+        self::assertSame(0, $repository->dirtyCount());
+        self::assertFalse($repository->acknowledgePersisted($position, $snapshot->revision));
     }
 
     private static function failLoader(ChunkPosition $_position): never

@@ -28,7 +28,12 @@ final class ServerConfigTest extends TestCase
         self::assertSame(40, $defaults->movementRewindHistorySize);
         self::assertSame('default', $defaults->levelGenerator);
         self::assertSame('survival', $defaults->defaultGamemode);
-        self::assertSame(1, $defaults->chunksGeneratePerTick);
+        self::assertSame(4, $defaults->chunksGeneratePerTick);
+        self::assertSame(8, $defaults->chunksSendPerTick);
+        self::assertSame(500_000_000, $defaults->memoryLimitBytes);
+        self::assertSame(1_024, $defaults->chunkGenerationQueueSize);
+        self::assertSame(1, $defaults->chunkLoadingPrefetchRadius);
+        self::assertSame(2_420, $defaults->chunkCacheLimit);
         self::assertTrue($defaults->pvp);
 
         $config = ServerConfig::fromArguments([
@@ -54,7 +59,7 @@ final class ServerConfigTest extends TestCase
             '--spawn-radius=6',
             '--chunks-send-per-tick=7',
             '--chunks-generate-per-tick=5',
-            '--chunks-cache-limit=6000',
+            '--chunks-cache-limit=8000',
             '--level-autosave-interval-ticks=1200',
             '--chunks-save-per-tick=12',
             '--players-autosave-interval-ticks=1400',
@@ -109,6 +114,7 @@ final class ServerConfigTest extends TestCase
         yield 'noncanonical seed' => [['--seed=-0']];
         yield 'spawn radius exceeds view' => [['--view-distance=2', '--spawn-radius=3']];
         yield 'cache cannot hold all player views' => [['--chunks-cache-limit=1024']];
+        yield 'cache cannot hold hidden prefetched views' => [['--chunks-cache-limit=2419']];
         yield 'configured views exceed hard cache ceiling' => [[
             '--max-players=16', '--view-distance=32', '--spawn-radius=4', '--chunks-cache-limit=65536',
         ]];
@@ -130,6 +136,13 @@ final class ServerConfigTest extends TestCase
         yield 'excess player save budget' => [['--players-save-per-tick=65']];
         yield 'zero movement rewind history' => [['--movement-rewind-history-size=0']];
         yield 'excess movement rewind history' => [['--movement-rewind-history-size=1201']];
+        yield 'malformed memory limit' => [['--memory-limit=500M']];
+        yield 'memory limit below minimum' => [['--memory-limit=127MB']];
+        yield 'excess generation queue' => [['--chunk-generation-queue-size=65537']];
+        yield 'excess prefetch radius' => [['--chunk-loading-prefetch-radius=9']];
+        yield 'visible and prefetched radius exceeds ceiling' => [[
+            '--view-distance=29', '--chunk-loading-prefetch-radius=4', '--chunks-cache-limit=65536',
+        ]];
     }
 
     /** @param list<string> $arguments */
@@ -142,15 +155,19 @@ final class ServerConfigTest extends TestCase
 
     public function testSettingsFileIsLoadedBeforeCliOverrides(): void
     {
-        $path = tempnam(sys_get_temp_dir(), 'bedriox-settings-');
-        self::assertIsString($path);
+        $properties = tempnam(sys_get_temp_dir(), 'bedriox-properties-');
+        $settings = tempnam(sys_get_temp_dir(), 'bedriox-settings-');
+        self::assertIsString($properties);
+        self::assertIsString($settings);
         try {
-            file_put_contents($path, "server.name=Configured name\nserver.max-players=8\nlevel.autosave-interval-ticks=8000\nchunks.view-distance=6\nchunks.spawn-radius=5\nchunks.save-per-tick=6\n");
-            $config = ServerConfig::fromSettingsFile($path, [
+            file_put_contents($properties, "server-name=Configured name\nmax-players=8\nmemory-limit=1GiB\nview-distance=6\n");
+            file_put_contents($settings, "level.autosave-interval-ticks=8000\nchunk-sending.spawn-radius=5\nchunk-saving.per-tick=6\nchunk-generation.queue-size=2048\nchunk-loading.prefetch-radius=2\n");
+            $config = ServerConfig::fromConfigurationFiles($properties, $settings, [
                 '--name=CLI name',
                 '--view-distance=7',
                 '--level-autosave-interval-ticks=9000',
                 '--chunks-save-per-tick=7',
+                '--memory-limit=2GB',
             ]);
             self::assertSame('CLI name', $config->serverName);
             self::assertSame(8, $config->maximumPlayers);
@@ -158,21 +175,62 @@ final class ServerConfigTest extends TestCase
             self::assertSame(5, $config->spawnRadius);
             self::assertSame(9_000, $config->levelAutosaveIntervalTicks);
             self::assertSame(7, $config->chunksSavePerTick);
+            self::assertSame(2_000_000_000, $config->memoryLimitBytes);
+            self::assertSame(2_048, $config->chunkGenerationQueueSize);
+            self::assertSame(2, $config->chunkLoadingPrefetchRadius);
         } finally {
-            @unlink($path);
+            @unlink($properties);
+            @unlink($settings);
         }
     }
 
     public function testSettingsSpawnMustBeAllEmptyOrAllPopulated(): void
     {
-        $path = tempnam(sys_get_temp_dir(), 'bedriox-settings-');
-        self::assertIsString($path);
+        $this->expectException(InvalidArgumentException::class);
+        ServerConfig::fromArguments(['--spawn-x=0', '--spawn-y=', '--spawn-z=0']);
+    }
+
+    public function testFilesUseIndependentAllowlistsWithoutMigratingLegacyKeys(): void
+    {
+        $properties = tempnam(sys_get_temp_dir(), 'bedriox-properties-');
+        $settings = tempnam(sys_get_temp_dir(), 'bedriox-settings-');
+        self::assertIsString($properties);
+        self::assertIsString($settings);
         try {
-            file_put_contents($path, "level.spawn-x=0\nlevel.spawn-y=\nlevel.spawn-z=0\n");
+            file_put_contents($properties, "runtime.ticks-per-second=20\n");
+            file_put_contents($settings, '');
+            try {
+                ServerConfig::fromConfigurationFiles($properties, $settings, []);
+                self::fail('Advanced setting was accepted in server.properties.');
+            } catch (InvalidArgumentException) {
+            }
+
+            file_put_contents($properties, "server-name=Configured\n");
+            file_put_contents($settings, "server.name=Legacy\n");
             $this->expectException(InvalidArgumentException::class);
-            ServerConfig::fromSettingsFile($path, []);
+            ServerConfig::fromConfigurationFiles($properties, $settings, []);
         } finally {
-            @unlink($path);
+            @unlink($properties);
+            @unlink($settings);
+        }
+    }
+
+    public function testCliAuthenticationOverridesServerProperties(): void
+    {
+        $properties = tempnam(sys_get_temp_dir(), 'bedriox-properties-');
+        $settings = tempnam(sys_get_temp_dir(), 'bedriox-settings-');
+        self::assertIsString($properties);
+        self::assertIsString($settings);
+        try {
+            file_put_contents($properties, "xbox-auth=false\n");
+            file_put_contents($settings, '');
+
+            $config = ServerConfig::fromConfigurationFiles($properties, $settings, ['--auth=FULL']);
+
+            self::assertSame(AuthenticationMode::FULL, $config->authenticationMode);
+        } finally {
+            @unlink($properties);
+            @unlink($settings);
         }
     }
 }

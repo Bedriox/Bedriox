@@ -8,6 +8,8 @@ use Bedriox\Api\Command\CommandRegistrar;
 use Bedriox\Api\Event\EventRegistrar;
 use Bedriox\Api\Inventory\ItemRegistrar;
 use Bedriox\Api\Inventory\UnavailableItemRegistrar;
+use Bedriox\Api\Scheduler\PluginScheduler;
+use Bedriox\Api\Scheduler\UnavailablePluginScheduler;
 use Bedriox\Api\Server;
 
 final class PluginContext
@@ -21,6 +23,7 @@ final class PluginContext
         private readonly Server $server,
         private readonly string $dataFolder,
         private readonly ItemRegistrar $items = new UnavailableItemRegistrar(),
+        private readonly PluginScheduler $scheduler = new UnavailablePluginScheduler(),
     ) {}
 
     public function name(): string
@@ -61,6 +64,27 @@ final class PluginContext
     public function items(): ItemRegistrar
     {
         return $this->items;
+    }
+
+    public function scheduler(): PluginScheduler
+    {
+        return $this->scheduler;
+    }
+
+    /** @internal Used by the server composition root to attach an owner-scoped scheduler. */
+    public function withScheduler(PluginScheduler $scheduler): self
+    {
+        return new self(
+            $this->name,
+            $this->logger,
+            $this->events,
+            $this->commands,
+            $this->sourcePlugins,
+            $this->server,
+            $this->dataFolder,
+            $this->items,
+            $scheduler,
+        );
     }
 
 }

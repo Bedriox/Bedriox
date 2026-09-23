@@ -34,8 +34,7 @@ reduced modulo 360 before entering the simulation, matching established server
 behavior. `PlayerJoinEvent` continues to mean that the client completed
 initialization and entered play.
 
-Writes use a temporary sibling file, flush it, and atomically replace the
-profile. Corrupt, oversized, unreadable, and unsupported profiles are kept in
+The production player-storage process exclusively owns the profile directory. Login performs a bounded read before admission. Routine saves send immutable profile snapshots to its ordered bounded queue; only a successful acknowledgement for the exact player revision marks that state saved. The storage owner writes a temporary sibling file, flushes it, and atomically replaces the profile. Corrupt, oversized, unreadable, and unsupported profiles are kept in
 place and only that login is rejected. They are never treated as a new player
 and never overwritten with defaults. Failed saves remain dirty and are retried
 through the bounded player save queue.
@@ -46,5 +45,6 @@ The relevant settings are:
 - `players.save-per-tick=8`
 
 Graceful disconnect captures committed server-owned state before removing the
-player. Graceful shutdown drains disconnect saves, retries failed snapshots,
-then closes the world provider and transport.
+player. Graceful shutdown drains disconnect saves, applies exact revision
+acknowledgements, closes the player store and world provider, and then closes
+the transport.
