@@ -656,6 +656,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                                 $event->recipientSessionIds,
                                 $this->actorVisibility->viewersOf($event->ownerSessionId),
                             )),
+                            $event->ownerSlotCorrection,
                         );
                     } elseif ($event instanceof InventoryStackRequestProcessed) {
                         $this->diagnostics->record('world.inventory_request.protocol_trace', [
@@ -682,6 +683,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                             $event->reason,
                             $event->responseMode,
                             $event->fullSync,
+                            $event->armorInventory,
+                            $event->offhandStack,
                         );
                     }
                     if (!$this->dispatchWorldEvent($event, $directedCount)) {

@@ -31,6 +31,7 @@ use Bedriox\Server\Plugin\OwnedItemRegistrar;
 use Bedriox\Server\Plugin\OwnedSourcePluginRegistrar;
 use Bedriox\Server\Plugin\PluginComposition;
 use Bedriox\Server\Plugin\PluginHost;
+use Bedriox\Server\Plugin\PluginItemBehaviorRegistrar;
 use Bedriox\Server\Plugin\PluginManifest;
 use Bedriox\Server\Plugin\Scheduler\Worker\ManagedPluginAsyncTaskExecutor;
 use Bedriox\Server\Plugin\ServerPluginLogger;
@@ -178,6 +179,9 @@ final class Bedriox
                     if ($composition->server === null || $composition->host === null) {
                         throw new \LogicException('Plugin API composition is not ready.');
                     }
+                    if ($composition->itemBehaviors === null) {
+                        throw new \LogicException('Plugin item behavior composition is not ready.');
+                    }
 
                     return new PluginContext(
                         $manifest->name,
@@ -191,7 +195,12 @@ final class Bedriox
                             $composition->host->actions(),
                         ),
                         $dataFolder,
-                        new OwnedItemRegistrar($manifest->name, $itemCatalog, $itemCommandEnum),
+                        new OwnedItemRegistrar(
+                            $manifest->name,
+                            $itemCatalog,
+                            $itemCommandEnum,
+                            $composition->itemBehaviors->register(...),
+                        ),
                     );
                 },
                 maximumPlugins: $config->maximumPlugins,
@@ -324,6 +333,11 @@ final class Bedriox
                 $coreWorkers,
             );
             $composition->server = $server;
+            $composition->itemBehaviors = new PluginItemBehaviorRegistrar(
+                $server->pluginApi->itemBehaviorRegistry(),
+                $pluginHost->ownership(),
+                $itemCatalog,
+            );
             $logger->info(sprintf(
                 'Loaded world "%s" using %s generator',
                 $server->world->metadata->name,

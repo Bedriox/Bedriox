@@ -219,6 +219,12 @@ final class PluginHost
         return $this->actions;
     }
 
+    /** @internal Used to bind plugin-owned public resources to lifecycle cleanup. */
+    public function ownership(): PluginOwnershipRegistry
+    {
+        return $this->ownership;
+    }
+
     private function dataFolder(string $plugin): string
     {
         if (!is_dir($this->pluginDataDirectory)

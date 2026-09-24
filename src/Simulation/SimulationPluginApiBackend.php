@@ -11,6 +11,7 @@ use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\World as ApiWorld;
 use Bedriox\Server\Gameplay\Block\BlockCatalog;
+use Bedriox\Server\Gameplay\Item\ItemBehaviorRegistry;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Plugin\PluginActionBuffer;
@@ -33,6 +34,12 @@ final readonly class SimulationPluginApiBackend
         private ?BlockCatalog $blockCatalog = null,
         private ?BlockStateRegistry $blockStateRegistry = null,
     ) {}
+
+    /** @internal Plugin item definitions enter the simulation through this bounded registry. */
+    public function itemBehaviorRegistry(): ItemBehaviorRegistry
+    {
+        return $this->simulation->itemBehaviorRegistry();
+    }
 
     public function serverFor(
         string $plugin,

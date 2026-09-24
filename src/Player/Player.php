@@ -42,6 +42,9 @@ final class Player
         int $firstPlayedAt = 0,
         string $gamemode = 'survival',
         float $health = PlayerVitals::MAX_HEALTH,
+        float $food = PlayerVitals::MAX_FOOD,
+        float $saturation = PlayerVitals::MAX_SATURATION,
+        float $exhaustion = 0.0,
     ) {
         $this->chatTokens = $chatTokens;
         $this->lastChatRefillTick = $tick;
@@ -55,7 +58,7 @@ final class Player
         $this->worldName = $worldName;
         $this->firstPlayedAt = $firstPlayedAt;
         $this->gamemode = GameMode::from($gamemode)->value;
-        $this->vitals = new PlayerVitals($health);
+        $this->vitals = new PlayerVitals($health, $food, $saturation, $exhaustion);
     }
 
     public function snapshot(): PlayerSnapshot
@@ -78,6 +81,13 @@ final class Player
             $this->vitals->health,
             $this->vitals->isAlive(),
             $this->gameMode(),
+            $this->vitals->food,
+            $this->vitals->saturation,
+            $this->vitals->exhaustion,
+            $this->inventory->armorSlots(),
+            $this->inventory->offhandStack(),
+            $this->inventory->selectedHotbarSlot(),
+            $this->inventory->selectedStack(),
         );
     }
 

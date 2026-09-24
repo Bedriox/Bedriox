@@ -8,6 +8,7 @@ use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Encryption\BedrockDecryptor;
 use Bedriox\Protocol\Encryption\BedrockEncryptor;
 use Bedriox\Protocol\Identity\VerifiedClientData;
+use Bedriox\Protocol\Packet\ActorEventPacket;
 use Bedriox\Protocol\Packet\ActorFlag;
 use Bedriox\Protocol\Packet\AddPlayerPacket;
 use Bedriox\Protocol\Packet\ChatPacket;
@@ -15,6 +16,7 @@ use Bedriox\Protocol\Packet\CorrectPlayerMovePredictionPacket;
 use Bedriox\Protocol\Packet\EmoteFlag;
 use Bedriox\Protocol\Packet\EmotePacket;
 use Bedriox\Protocol\Packet\FullContainerName;
+use Bedriox\Protocol\Packet\InventoryContainerId;
 use Bedriox\Protocol\Packet\InventoryContentPacket;
 use Bedriox\Protocol\Packet\InventorySlotPacket;
 use Bedriox\Protocol\Packet\ItemStackResponse;
@@ -23,6 +25,7 @@ use Bedriox\Protocol\Packet\ItemStackResponsePacket;
 use Bedriox\Protocol\Packet\ItemStackResponseSlot;
 use Bedriox\Protocol\Packet\LevelEventPacket;
 use Bedriox\Protocol\Packet\LevelSoundEventPacket;
+use Bedriox\Protocol\Packet\MobArmorEquipmentPacket;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
 use Bedriox\Protocol\Packet\MoveActorAbsoluteFlag;
 use Bedriox\Protocol\Packet\MoveActorAbsolutePacket;
@@ -35,6 +38,7 @@ use Bedriox\Protocol\Packet\PredictionType;
 use Bedriox\Protocol\Packet\RemoveActorPacket;
 use Bedriox\Protocol\Packet\SetActorDataPacket;
 use Bedriox\Protocol\Packet\SetActorMotionPacket;
+use Bedriox\Protocol\Packet\UpdateAttributesPacket;
 use Bedriox\Protocol\Packet\UpdateBlockPacket;
 use Bedriox\Protocol\Security\OpenSslEphemeralKeyFactory;
 use Bedriox\Protocol\Value\BuildPlatform;
@@ -50,6 +54,7 @@ use Bedriox\Server\Runtime\BedrockChunkPacketSerializer;
 use Bedriox\Server\Runtime\BedrockInventoryPacketProjector;
 use Bedriox\Server\Runtime\BedrockPlayChannel;
 use Bedriox\Server\Runtime\BedrockWorldEventPacketEncoder;
+use Bedriox\Server\Runtime\DirectedPacket;
 use Bedriox\Server\Runtime\RuntimeSession;
 use Bedriox\Server\Simulation\ClientInputTick;
 use Bedriox\Server\Simulation\Event\BlockBreakStarted;
@@ -60,14 +65,20 @@ use Bedriox\Server\Simulation\Event\ChatBroadcast;
 use Bedriox\Server\Simulation\Event\EmotePerformed;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
+use Bedriox\Server\Simulation\Event\ItemConsumed;
+use Bedriox\Server\Simulation\Event\ItemUseCancelled;
+use Bedriox\Server\Simulation\Event\ItemUseStarted;
 use Bedriox\Server\Simulation\Event\MovementCorrected;
+use Bedriox\Server\Simulation\Event\NutritionChanged;
 use Bedriox\Server\Simulation\Event\PlayerBecameHidden;
 use Bedriox\Server\Simulation\Event\PlayerBecameVisible;
 use Bedriox\Server\Simulation\Event\PlayerDisconnected;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
 use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
+use Bedriox\Server\Simulation\ItemUseCancellationReason;
 use Bedriox\Server\Simulation\MovementMode;
+use Bedriox\Server\Simulation\NutritionChangeReason;
 use Bedriox\Server\Simulation\PlayerSnapshot;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\Simulation\VerticalState;
@@ -79,6 +90,97 @@ use PHPUnit\Framework\TestCase;
 
 final class BedrockWorldEventPacketEncoderTest extends TestCase
 {
+    public function testItemUseAndNutritionProjectCompleteClientFeedback(): void
+    {
+        [$encoder] = $this->inventoryEncoder();
+        $apple = new InventoryStack('minecraft:apple', 2, 7);
+        $player = new PlayerSnapshot(
+            'owner',
+            'identity',
+            'Player',
+            new Position(0.0, 64.0, 0.0),
+            0.0,
+            0.0,
+            MovementMode::STOPPED,
+            12,
+            VerticalState::GROUNDED,
+            0.0,
+            42,
+            food: 14.0,
+            saturation: 7.0,
+            exhaustion: 1.0,
+            selectedStack: $apple,
+        );
+        $started = $encoder->encode(new ItemUseStarted(
+            'owner',
+            42,
+            0,
+            $apple,
+            10,
+            32,
+            ['owner', 'peer'],
+            movementSequence: 12,
+        ), []);
+        self::assertCount(4, $started);
+        self::assertInstanceOf(SetActorDataPacket::class, $started[0]->packet);
+        self::assertIsInt($started[0]->packet->metadata[0]->value);
+        self::assertNotSame(0, $started[0]->packet->metadata[0]->value & ActorFlag::UsingItem->mask());
+        self::assertInstanceOf(ActorEventPacket::class, $started[1]->packet);
+
+        $cancelled = $encoder->encode(new ItemUseCancelled(
+            'owner',
+            42,
+            0,
+            $apple,
+            ItemUseCancellationReason::RELEASED,
+            ['owner', 'peer'],
+            movementSequence: 12,
+        ), []);
+        self::assertCount(2, $cancelled);
+        $cancelledMetadata = $cancelled[0]->packet;
+        self::assertInstanceOf(SetActorDataPacket::class, $cancelledMetadata);
+        $cancelledFlags = $cancelledMetadata->metadata[0]->value;
+        self::assertIsInt($cancelledFlags);
+        self::assertSame(0, $cancelledFlags & ActorFlag::UsingItem->mask());
+
+        $main = array_fill(0, 36, null);
+        $main[0] = new InventoryStack('minecraft:apple', 1, 8);
+        $consumed = $encoder->encode(new ItemConsumed(
+            $player,
+            $apple->withCountAndNetworkId(1, 7),
+            0,
+            $main[0],
+            [new InventorySlotReference(InventoryContainer::Main, 0, 0)],
+            $main,
+            null,
+            ['owner', 'peer'],
+        ), []);
+        self::assertCount(8, $consumed);
+        self::assertCount(2, array_filter(
+            $consumed,
+            static fn(DirectedPacket $packet): bool => $packet->packet instanceof InventorySlotPacket,
+        ));
+        self::assertCount(0, array_filter(
+            $consumed,
+            static fn(DirectedPacket $packet): bool => $packet->packet instanceof InventoryContentPacket,
+        ));
+
+        $nutrition = $encoder->encode(new NutritionChanged(
+            $player,
+            10.0,
+            5.0,
+            0.0,
+            NutritionChangeReason::CONSUMPTION,
+            ['owner'],
+        ), []);
+        self::assertCount(1, $nutrition);
+        self::assertInstanceOf(UpdateAttributesPacket::class, $nutrition[0]->packet);
+        self::assertSame(
+            ['minecraft:player.hunger', 'minecraft:player.saturation', 'minecraft:player.exhaustion'],
+            array_map(static fn($attribute): string => $attribute->name, $nutrition[0]->packet->attributes),
+        );
+    }
+
     public function testAuthoritativeKnockbackProjectsMotionToEachVisibleRecipient(): void
     {
         $encoder = new BedrockWorldEventPacketEncoder();
@@ -259,6 +361,26 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         self::assertSame('two', $equipment[0]->sessionId);
         self::assertInstanceOf(MobEquipmentPacket::class, $equipment[0]->packet);
         self::assertSame(63, $equipment[0]->packet->item->count);
+
+        $damagedTool = new InventoryStack('minecraft:iron_pickaxe', 1, 9, damage: 7);
+        $correctedTool = $encoder->encode(new HeldItemChanged(
+            'one',
+            41,
+            0,
+            $damagedTool,
+            ['two'],
+            ownerSlotCorrection: true,
+        ), []);
+        self::assertCount(3, $correctedTool);
+        self::assertSame(['one', 'one', 'two'], array_map(
+            static fn($packet): string => $packet->sessionId,
+            $correctedTool,
+        ));
+        self::assertInstanceOf(InventorySlotPacket::class, $correctedTool[0]->packet);
+        self::assertSame(0, $correctedTool[0]->packet->item->count);
+        self::assertInstanceOf(InventorySlotPacket::class, $correctedTool[1]->packet);
+        self::assertSame(9, $correctedTool[1]->packet->item->stackNetworkId);
+        self::assertInstanceOf(MobEquipmentPacket::class, $correctedTool[2]->packet);
     }
 
     public function testInventoryRequestProjectsSuccessAndPeerEquipmentFromAuthoritativeState(): void
@@ -309,7 +431,40 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         )]))->encode(), $packets[0]->packet->encode());
         self::assertInstanceOf(MobEquipmentPacket::class, $packets[1]->packet);
         self::assertSame(32, $packets[1]->packet->item->count);
-        self::assertSame(2, $packets[1]->packet->item->stackNetworkId);
+        self::assertNull($packets[1]->packet->item->stackNetworkId);
+    }
+
+    public function testMineBlockResponseCarriesAuthoritativeDurabilityWithoutFullInventoryCorrection(): void
+    {
+        [$encoder] = $this->inventoryEncoder();
+        $main = array_fill(0, 36, null);
+        $main[0] = new InventoryStack('minecraft:iron_pickaxe', 1, 7, damage: 12);
+        $event = new InventoryStackRequestProcessed(
+            'one',
+            -13,
+            true,
+            [new InventorySlotReference(
+                InventoryContainer::Main,
+                0,
+                0,
+                FullContainerName::HOTBAR,
+            )],
+            $main,
+            null,
+            0,
+            $main[0],
+            false,
+            41,
+            [],
+        );
+
+        $packets = $encoder->encode($event, []);
+
+        self::assertCount(1, $packets);
+        self::assertInstanceOf(ItemStackResponsePacket::class, $packets[0]->packet);
+        $slot = $packets[0]->packet->responses[0]->containers[0]->slots[0];
+        self::assertSame(12, $slot->durabilityCorrection);
+        self::assertSame(7, $slot->stackNetworkId);
     }
 
     public function testRejectedInventoryRequestReturnsErrorAndFullMainAndCursorCorrection(): void
@@ -333,16 +488,24 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         );
 
         $packets = $encoder->encode($event, []);
-        self::assertCount(3, $packets);
-        self::assertSame(['one', 'one', 'one'], array_map(static fn($packet): string => $packet->sessionId, $packets));
+        self::assertCount(8, $packets);
+        self::assertSame(array_fill(0, 8, 'one'), array_map(static fn($packet): string => $packet->sessionId, $packets));
         self::assertInstanceOf(ItemStackResponsePacket::class, $packets[0]->packet);
         self::assertInstanceOf(InventoryContentPacket::class, $packets[1]->packet);
         self::assertCount(36, $packets[1]->packet->items);
-        self::assertSame(64, $packets[1]->packet->items[0]->count);
-        self::assertInstanceOf(InventorySlotPacket::class, $packets[2]->packet);
-        self::assertSame(124, $packets[2]->packet->containerId);
-        self::assertSame(0, $packets[2]->packet->slot);
-        self::assertSame(0, $packets[2]->packet->item->count);
+        self::assertSame(0, $packets[1]->packet->items[0]->count);
+        self::assertInstanceOf(InventoryContentPacket::class, $packets[2]->packet);
+        self::assertSame(64, $packets[2]->packet->items[0]->count);
+        self::assertInstanceOf(InventorySlotPacket::class, $packets[3]->packet);
+        self::assertSame(InventoryContainerId::UI, $packets[3]->packet->containerId);
+        self::assertSame(0, $packets[3]->packet->slot);
+        self::assertSame(0, $packets[3]->packet->item->count);
+        foreach ([[4, InventoryContainerId::ARMOR, 4], [5, InventoryContainerId::ARMOR, 4],
+            [6, InventoryContainerId::OFFHAND, 1], [7, InventoryContainerId::OFFHAND, 1]] as [$index, $container, $count]) {
+            self::assertInstanceOf(InventoryContentPacket::class, $packets[$index]->packet);
+            self::assertSame($container, $packets[$index]->packet->windowId);
+            self::assertCount($count, $packets[$index]->packet->items);
+        }
     }
 
     public function testLegacyInventorySuccessSynchronizesChangedSlotsWithoutAStackResponse(): void
@@ -370,15 +533,108 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         );
 
         $packets = $encoder->encode($event, []);
-        self::assertCount(3, $packets);
+        self::assertCount(5, $packets);
         self::assertInstanceOf(InventorySlotPacket::class, $packets[0]->packet);
         self::assertInstanceOf(InventorySlotPacket::class, $packets[1]->packet);
-        self::assertSame([32, 32], [
+        self::assertInstanceOf(InventorySlotPacket::class, $packets[2]->packet);
+        self::assertInstanceOf(InventorySlotPacket::class, $packets[3]->packet);
+        self::assertSame([0, 32, 0, 32], [
             $packets[0]->packet->item->count,
             $packets[1]->packet->item->count,
+            $packets[2]->packet->item->count,
+            $packets[3]->packet->item->count,
         ]);
+        self::assertInstanceOf(MobEquipmentPacket::class, $packets[4]->packet);
+        self::assertSame('two', $packets[4]->sessionId);
+    }
+
+    public function testEquipmentResponsePreservesClientSlotWhileProjectingAuthoritativePeers(): void
+    {
+        [$encoder, $palette] = $this->inventoryEncoder();
+        $helmet = new InventoryStack('minecraft:iron_helmet', 1, 4);
+        $offhand = new InventoryStack('minecraft:grass_block', 1, 5, $palette->grassBlock);
+        $event = new InventoryStackRequestProcessed(
+            'one',
+            -11,
+            true,
+            [
+                new InventorySlotReference(
+                    InventoryContainer::Armor,
+                    0,
+                    0,
+                    FullContainerName::ARMOR,
+                    responseSlot: 0,
+                ),
+                new InventorySlotReference(
+                    InventoryContainer::Offhand,
+                    0,
+                    0,
+                    FullContainerName::OFFHAND,
+                    responseSlot: 40,
+                ),
+            ],
+            array_fill(0, 36, null),
+            null,
+            0,
+            null,
+            false,
+            41,
+            ['two'],
+            armorInventory: [$helmet, null, null, null],
+            offhandStack: $offhand,
+        );
+
+        $packets = $encoder->encode($event, []);
+
+        self::assertCount(3, $packets);
+        self::assertInstanceOf(ItemStackResponsePacket::class, $packets[0]->packet);
+        $containers = $packets[0]->packet->responses[0]->containers;
+        self::assertSame(FullContainerName::ARMOR, $containers[0]->containerName->containerNameId);
+        self::assertSame(0, $containers[0]->slots[0]->slot);
+        self::assertSame(FullContainerName::OFFHAND, $containers[1]->containerName->containerNameId);
+        self::assertSame(40, $containers[1]->slots[0]->slot);
+        self::assertInstanceOf(MobArmorEquipmentPacket::class, $packets[1]->packet);
+        self::assertNull($packets[1]->packet->helmet->stackNetworkId);
         self::assertInstanceOf(MobEquipmentPacket::class, $packets[2]->packet);
-        self::assertSame('two', $packets[2]->sessionId);
+        self::assertSame(InventoryContainerId::OFFHAND, $packets[2]->packet->windowId);
+        self::assertNull($packets[2]->packet->item->stackNetworkId);
+    }
+
+    public function testLegacyOffhandCorrectionUsesClearThenRealFullContent(): void
+    {
+        [$encoder, $palette] = $this->inventoryEncoder();
+        $offhand = new InventoryStack('minecraft:grass_block', 1, 5, $palette->grassBlock);
+        $event = new InventoryStackRequestProcessed(
+            'one',
+            0,
+            true,
+            [new InventorySlotReference(InventoryContainer::Offhand, 0, 0)],
+            array_fill(0, 36, null),
+            null,
+            0,
+            null,
+            false,
+            41,
+            [],
+            responseMode: InventoryResponseMode::LegacySlotSync,
+            offhandStack: $offhand,
+        );
+
+        $packets = $encoder->encode($event, []);
+
+        self::assertCount(2, $packets);
+        foreach ($packets as $packet) {
+            self::assertInstanceOf(InventoryContentPacket::class, $packet->packet);
+            self::assertSame(InventoryContainerId::OFFHAND, $packet->packet->windowId);
+            self::assertCount(1, $packet->packet->items);
+        }
+        $cleared = $packets[0]->packet;
+        $restored = $packets[1]->packet;
+        self::assertInstanceOf(InventoryContentPacket::class, $cleared);
+        self::assertInstanceOf(InventoryContentPacket::class, $restored);
+        self::assertSame(0, $cleared->items[0]->count);
+        self::assertSame(1, $restored->items[0]->count);
+        self::assertSame(5, $restored->items[0]->stackNetworkId);
     }
 
     public function testChatUsesAuthoritativeSimulationAttribution(): void
@@ -472,14 +728,17 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
 
     public function testActorVisibilityTransitionsDoNotDuplicatePlayerListMembership(): void
     {
+        [$encoder, $palette] = $this->inventoryEncoder();
         $player = $this->player(
             'joined',
             7,
             '00000000-0000-0000-0000-000000000007',
             'Joined',
             true,
+            [new InventoryStack('minecraft:iron_helmet', 1, 2)],
+            new InventoryStack('minecraft:grass_block', 1, 3, $palette->grassBlock),
+            new InventoryStack('minecraft:grass_block', 2, 1, $palette->grassBlock),
         );
-        $encoder = new BedrockWorldEventPacketEncoder();
         $joined = $this->authenticatedSession(
             'joined',
             7,
@@ -489,7 +748,7 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         );
 
         $shown = $encoder->encode(new PlayerBecameVisible($player, 'viewer'), ['joined' => $joined]);
-        self::assertCount(2, $shown);
+        self::assertCount(5, $shown);
         self::assertInstanceOf(AddPlayerPacket::class, $shown[0]->packet);
         self::assertTrue($shown[0]->packet->runtimeEntityId->equals(UnsignedLong::fromInt(7)));
         self::assertSame(BuildPlatform::Unknown, $shown[0]->packet->buildPlatform);
@@ -504,6 +763,18 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         self::assertInstanceOf(PlayerSkinPacket::class, $shown[1]->packet);
         self::assertSame('00000000-0000-0000-0000-000000000007', $shown[1]->packet->uuid);
         self::assertSame('skin-joined', $shown[1]->packet->newSkinName);
+        self::assertInstanceOf(MobEquipmentPacket::class, $shown[2]->packet);
+        self::assertSame(InventoryContainerId::INVENTORY, $shown[2]->packet->windowId);
+        self::assertSame(2, $shown[2]->packet->item->count);
+        self::assertNull($shown[2]->packet->item->stackNetworkId);
+        self::assertInstanceOf(MobArmorEquipmentPacket::class, $shown[3]->packet);
+        self::assertNotSame(0, $shown[3]->packet->helmet->runtimeId);
+        self::assertNull($shown[3]->packet->helmet->stackNetworkId);
+        self::assertSame(0, $shown[3]->packet->body->runtimeId);
+        self::assertInstanceOf(MobEquipmentPacket::class, $shown[4]->packet);
+        self::assertSame(InventoryContainerId::OFFHAND, $shown[4]->packet->windowId);
+        self::assertSame(1, $shown[4]->packet->item->count);
+        self::assertNull($shown[4]->packet->item->stackNetworkId);
 
         $hidden = $encoder->encode(new PlayerBecameHidden('joined', 7, 'viewer'), []);
         self::assertCount(1, $hidden);
@@ -703,12 +974,16 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         ));
     }
 
+    /** @param list<InventoryStack|null> $armor */
     private function player(
         string $sessionId,
         int $runtimeActorId,
         string $identity,
         string $displayName,
         bool $sneaking = false,
+        array $armor = [],
+        ?InventoryStack $offhand = null,
+        ?InventoryStack $selectedStack = null,
     ): PlayerSnapshot {
         return new PlayerSnapshot(
             $sessionId,
@@ -724,6 +999,9 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
             $runtimeActorId,
             0.0,
             $sneaking,
+            armor: $armor,
+            offhand: $offhand,
+            selectedStack: $selectedStack,
         );
     }
 

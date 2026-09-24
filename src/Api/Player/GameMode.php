@@ -34,7 +34,7 @@ enum GameMode: string
 
     public function consumesItems(): bool
     {
-        return $this === self::SURVIVAL;
+        return $this === self::SURVIVAL || $this === self::ADVENTURE;
     }
 
     public function takesDamage(): bool

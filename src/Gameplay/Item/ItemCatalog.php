@@ -94,14 +94,17 @@ final class ItemCatalog
             }
             $existing = $types[$identifier] ?? null;
             $mappedBlockState = $creativeBlockStates[$identifier] ?? null;
+            $armor = VanillaArmorDefinitions::definition($identifier) ?? $existing?->armor;
             $types[$identifier] = new ItemType(
                 $identifier,
-                maximumStackSize: $existing === null ? 64 : $existing->maximumStackSize,
+                maximumStackSize: $armor === null ? ($existing === null ? 64 : $existing->maximumStackSize) : 1,
                 tool: $existing?->tool,
                 placedBlockState: $mappedBlockState ?? $existing?->placedBlockState,
                 networkBlockState: $mappedBlockState ?? $existing?->networkBlockState,
                 creative: $creative === null ? ($existing !== null && $existing->creative) : isset($creativeIdentifiers[$identifier]),
                 owner: $existing?->owner,
+                armor: $armor,
+                allowedInOffhand: true,
             );
         }
 

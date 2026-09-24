@@ -14,6 +14,7 @@ use Bedriox\Server\Player\PlayerInventory;
 use Bedriox\Server\Player\PlayerInventoryEntry;
 use Bedriox\Server\Player\PlayerInventoryStackState;
 use Bedriox\Server\Player\PlayerInventoryState;
+use Bedriox\Server\Player\PlayerVitals;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\Storage\Exception\CorruptWorldDataException;
 use Bedriox\Server\World\Storage\Nbt\LittleEndianNbtCodec;
@@ -23,7 +24,7 @@ use InvalidArgumentException;
 /** Bounded schema-versioned player profile encoding with no session-local identifiers. */
 final readonly class PlayerDataCodec
 {
-    public const int SCHEMA_VERSION = 5;
+    public const int SCHEMA_VERSION = 6;
     public const int MAX_BYTES = 131_072;
 
     private const array REQUIRED_ROOT_TAGS = [
@@ -38,8 +39,12 @@ final readonly class PlayerDataCodec
         'Rotation',
         'GameMode',
         'Inventory',
+        'Armor',
         'SelectedHotbarSlot',
         'Health',
+        'FoodLevel',
+        'Saturation',
+        'Exhaustion',
     ];
 
     public function __construct(private LittleEndianNbtCodec $nbt = new LittleEndianNbtCodec()) {}
@@ -56,6 +61,17 @@ final readonly class PlayerDataCodec
                     $entry->stack->auxValue,
                 );
             }
+            foreach ($player->inventory->armor as $entry) {
+                self::validateStack(
+                    $entry->stack->identifier,
+                    $entry->stack->count,
+                    $entry->stack->damage,
+                    $entry->stack->auxValue,
+                );
+                if ($entry->stack->count !== 1) {
+                    throw new CorruptPlayerDataException('Persisted armor stacks must contain exactly one item.');
+                }
+            }
             if ($player->inventory->cursor !== null) {
                 self::validateStack(
                     $player->inventory->cursor->identifier,
@@ -64,19 +80,24 @@ final readonly class PlayerDataCodec
                     $player->inventory->cursor->auxValue,
                 );
             }
+            if ($player->inventory->offhand !== null) {
+                self::validateStack(
+                    $player->inventory->offhand->identifier,
+                    $player->inventory->offhand->count,
+                    $player->inventory->offhand->damage,
+                    $player->inventory->offhand->auxValue,
+                );
+            }
         } catch (CorruptPlayerDataException $error) {
             throw new PlayerDataWriteException('Player profile contains a value which cannot be persisted.', previous: $error);
         }
         $inventory = [];
         foreach ($player->inventory->entries as $entry) {
-            $inventory[] = LittleEndianNbtTag::compound([
-                'Slot' => LittleEndianNbtTag::byte($entry->slot),
-                'Identifier' => LittleEndianNbtTag::string($entry->stack->identifier),
-                'Count' => LittleEndianNbtTag::byte($entry->stack->count),
-                'Damage' => LittleEndianNbtTag::int($entry->stack->damage),
-                'ItemNbt' => new LittleEndianNbtTag(LittleEndianNbtTag::BYTE_ARRAY, $entry->stack->nbt?->toBinary() ?? ''),
-                'Aux' => LittleEndianNbtTag::int($entry->stack->auxValue),
-            ]);
+            $inventory[] = self::encodedStack($entry->stack, $entry->slot);
+        }
+        $armor = [];
+        foreach ($player->inventory->armor as $entry) {
+            $armor[] = self::encodedStack($entry->stack, $entry->slot);
         }
         $root = [
             'SchemaVersion' => LittleEndianNbtTag::int(self::SCHEMA_VERSION),
@@ -97,17 +118,18 @@ final readonly class PlayerDataCodec
             ]),
             'GameMode' => LittleEndianNbtTag::string($player->gamemode),
             'Inventory' => LittleEndianNbtTag::list(LittleEndianNbtTag::COMPOUND, $inventory),
+            'Armor' => LittleEndianNbtTag::list(LittleEndianNbtTag::COMPOUND, $armor),
             'SelectedHotbarSlot' => LittleEndianNbtTag::byte($player->inventory->selectedHotbarSlot),
             'Health' => LittleEndianNbtTag::float($player->health),
+            'FoodLevel' => LittleEndianNbtTag::float($player->food),
+            'Saturation' => LittleEndianNbtTag::float($player->saturation),
+            'Exhaustion' => LittleEndianNbtTag::float($player->exhaustion),
         ];
         if ($player->inventory->cursor !== null) {
-            $root['Cursor'] = LittleEndianNbtTag::compound([
-                'Identifier' => LittleEndianNbtTag::string($player->inventory->cursor->identifier),
-                'Count' => LittleEndianNbtTag::byte($player->inventory->cursor->count),
-                'Damage' => LittleEndianNbtTag::int($player->inventory->cursor->damage),
-                'ItemNbt' => new LittleEndianNbtTag(LittleEndianNbtTag::BYTE_ARRAY, $player->inventory->cursor->nbt?->toBinary() ?? ''),
-                'Aux' => LittleEndianNbtTag::int($player->inventory->cursor->auxValue),
-            ]);
+            $root['Cursor'] = self::encodedStack($player->inventory->cursor);
+        }
+        if ($player->inventory->offhand !== null) {
+            $root['Offhand'] = self::encodedStack($player->inventory->offhand);
         }
         try {
             $encoded = $this->nbt->encodeRootCompound($root);
@@ -142,10 +164,20 @@ final readonly class PlayerDataCodec
         if ($schemaVersion < 1) {
             throw new CorruptPlayerDataException('Player profile schema version must be positive and supported.');
         }
-        $required = $schemaVersion === 1
-            ? array_filter(self::REQUIRED_ROOT_TAGS, static fn(string $name): bool => $name !== 'Health')
-            : self::REQUIRED_ROOT_TAGS;
-        $allowed = array_fill_keys([...$required, 'Cursor'], true);
+        $required = array_filter(
+            self::REQUIRED_ROOT_TAGS,
+            static fn(string $name): bool => !($schemaVersion === 1 && $name === 'Health')
+                && !($schemaVersion < 6 && in_array(
+                    $name,
+                    ['Armor', 'FoodLevel', 'Saturation', 'Exhaustion'],
+                    true,
+                )),
+        );
+        $allowed = array_fill_keys([
+            ...$required,
+            'Cursor',
+            ...($schemaVersion >= 6 ? ['Offhand'] : []),
+        ], true);
         foreach ($root as $name => $_tag) {
             if (!isset($allowed[$name])) {
                 throw new CorruptPlayerDataException("Player profile contains unknown tag '$name'.");
@@ -194,6 +226,39 @@ final readonly class PlayerDataCodec
                 );
                 $cursor = self::stack($cursorTags, 'Cursor', $schemaVersion);
             }
+            $armor = [];
+            if ($schemaVersion >= 6) {
+                $armorTag = self::tag($root['Armor'], LittleEndianNbtTag::LIST, 'Armor');
+                if ($armorTag->listType !== LittleEndianNbtTag::COMPOUND || !is_array($armorTag->value)
+                    || count($armorTag->value) > PlayerInventory::ARMOR_SLOT_COUNT) {
+                    throw new CorruptPlayerDataException('Player armor list is malformed or exceeds its slot limit.');
+                }
+                foreach ($armorTag->value as $item) {
+                    if (!$item instanceof LittleEndianNbtTag) {
+                        throw new CorruptPlayerDataException('Player armor contains an invalid entry.');
+                    }
+                    $itemTags = self::compound($item, 'Armor');
+                    self::assertExactTags($itemTags, self::stackTagNames($schemaVersion, true), 'armor entry');
+                    $stack = self::stack($itemTags, 'Armor', $schemaVersion);
+                    if ($stack->count !== 1) {
+                        throw new CorruptPlayerDataException('Player armor stack count must be one.');
+                    }
+                    $armor[] = new PlayerInventoryEntry(
+                        self::integer($itemTags['Slot'], LittleEndianNbtTag::BYTE, 'Armor.Slot'),
+                        $stack,
+                    );
+                }
+            }
+            $offhand = null;
+            if (isset($root['Offhand'])) {
+                $offhandTags = self::compound($root['Offhand'], 'Offhand');
+                self::assertExactTags(
+                    $offhandTags,
+                    self::stackTagNames($schemaVersion, false),
+                    'offhand entry',
+                );
+                $offhand = self::stack($offhandTags, 'Offhand', $schemaVersion);
+            }
 
             return new PlayerBootstrap(
                 new PlayerIdentity($uuid, $name, $xuid),
@@ -205,17 +270,44 @@ final readonly class PlayerDataCodec
                     $entries,
                     self::integer($root['SelectedHotbarSlot'], LittleEndianNbtTag::BYTE, 'SelectedHotbarSlot'),
                     $cursor,
+                    $armor,
+                    $offhand,
                 ),
                 self::integer($root['FirstPlayed'], LittleEndianNbtTag::LONG, 'FirstPlayed'),
                 self::integer($root['LastPlayed'], LittleEndianNbtTag::LONG, 'LastPlayed'),
                 self::string($root['GameMode'], 'GameMode'),
                 isset($root['Health']) ? self::floating($root['Health'], 'Health') : 20.0,
+                isset($root['FoodLevel'])
+                    ? self::floating($root['FoodLevel'], 'FoodLevel')
+                    : PlayerVitals::MAX_FOOD,
+                isset($root['Saturation'])
+                    ? self::floating($root['Saturation'], 'Saturation')
+                    : PlayerVitals::MAX_SATURATION,
+                isset($root['Exhaustion']) ? self::floating($root['Exhaustion'], 'Exhaustion') : 0.0,
             );
         } catch (CorruptPlayerDataException $error) {
             throw $error;
         } catch (InvalidArgumentException $error) {
             throw new CorruptPlayerDataException('Player profile contains an invalid value.', previous: $error);
         }
+    }
+
+    private static function encodedStack(
+        PlayerInventoryStackState $stack,
+        ?int $slot = null,
+    ): LittleEndianNbtTag {
+        $tags = [
+            'Identifier' => LittleEndianNbtTag::string($stack->identifier),
+            'Count' => LittleEndianNbtTag::byte($stack->count),
+            'Damage' => LittleEndianNbtTag::int($stack->damage),
+            'ItemNbt' => new LittleEndianNbtTag(LittleEndianNbtTag::BYTE_ARRAY, $stack->nbt?->toBinary() ?? ''),
+            'Aux' => LittleEndianNbtTag::int($stack->auxValue),
+        ];
+        if ($slot !== null) {
+            $tags = ['Slot' => LittleEndianNbtTag::byte($slot), ...$tags];
+        }
+
+        return LittleEndianNbtTag::compound($tags);
     }
 
     /** @param array<string, LittleEndianNbtTag> $tags */

@@ -12,6 +12,7 @@ final readonly class PlayerRespawned implements WorldEvent
     /**
      * @param list<string> $recipientSessionIds
      * @param list<?InventoryStack> $inventory
+     * @param list<?InventoryStack> $armor
      */
     public function __construct(
         public PlayerSnapshot $player,
@@ -19,6 +20,8 @@ final readonly class PlayerRespawned implements WorldEvent
         public array $inventory,
         public int $selectedHotbarSlot,
         public ?InventoryStack $selectedStack,
+        public array $armor = [],
+        public ?InventoryStack $offhand = null,
     ) {}
     public function recipients(): array
     {

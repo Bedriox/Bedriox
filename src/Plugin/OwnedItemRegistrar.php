@@ -5,10 +5,13 @@ declare(strict_types=1);
 namespace Bedriox\Server\Plugin;
 
 use Bedriox\Api\Command\CommandSoftEnum;
+use Bedriox\Api\Inventory\ItemBehaviorDefinition;
 use Bedriox\Api\Inventory\ItemDefinition;
 use Bedriox\Api\Inventory\ItemRegistrar;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Gameplay\Item\ItemType;
+use Closure;
+use LogicException;
 
 final readonly class OwnedItemRegistrar implements ItemRegistrar
 {
@@ -16,6 +19,8 @@ final readonly class OwnedItemRegistrar implements ItemRegistrar
         private string $plugin,
         private ItemCatalog $items,
         private ?CommandSoftEnum $itemIdentifiers = null,
+        /** @var null|Closure(string, string, ItemBehaviorDefinition, bool): void */
+        private ?Closure $behaviorRegistration = null,
     ) {}
 
     public function register(ItemDefinition $definition, bool $replace = false): void
@@ -31,9 +36,29 @@ final readonly class OwnedItemRegistrar implements ItemRegistrar
             $existing?->networkBlockState,
             creative: $definition->creative,
             owner: $this->plugin,
+            armor: $existing?->armor,
+            allowedInOffhand: $existing === null ? false : $existing->allowedInOffhand,
         ), $replace);
         if ($this->itemIdentifiers !== null) {
             $this->itemIdentifiers->replace($this->items->commandIdentifiers());
         }
+    }
+
+    public function registerBehavior(
+        string $identifier,
+        ItemBehaviorDefinition $definition,
+        bool $replace = false,
+    ): void {
+        $this->items->type($identifier);
+        if ($definition->consumable !== null) {
+            foreach ($definition->consumable->residue as $residue) {
+                $this->items->type($residue->identifier);
+            }
+        }
+        if ($this->behaviorRegistration === null) {
+            throw new LogicException('Item behavior registration is unavailable in this plugin context.');
+        }
+
+        ($this->behaviorRegistration)($this->plugin, $identifier, $definition, $replace);
     }
 }

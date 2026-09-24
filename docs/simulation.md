@@ -55,6 +55,12 @@ Ordinary player drops atomically validate and remove a bounded count from the au
 
 Dropped items use a quarter-block collision body and settle on the top face of solid terrain. Item forms for supported ordinary blocks come from the block catalog; items merely associated with block states, such as saplings, remain distinct from placeable block items.
 
+## Item use and nutrition
+
+Item use is resolved from the authoritative selected stack. Timed foods complete only after their registered duration; instant uses and cancellations follow the same bounded simulation queue. The client's eating actor event is an animation advisory and cannot consume an item, restore nutrition, or choose a result. Ordinary foods, golden apples, and enchanted golden apples all use registered server-owned nutrition values; status effects remain a separate gameplay milestone.
+
+Accepted survival and adventure sprint movement adds the vanilla `0.1` exhaustion per horizontal block. Four exhaustion points remove one saturation point and then one food point after saturation is depleted. Walking adds no exhaustion. Every committed exhaustion transition passes through the cancellable food-level change event and publishes the resulting authoritative nutrition state to the player.
+
 ## Chat security
 
 Chat accepts non-empty valid UTF-8 without C0 controls or DEL, rejects messages beginning with `/` for the future command boundary, and enforces byte and character limits before enqueueing. Every sender has an independent tick-based token bucket and monotonically increasing chat sequence. Rejected rate-limited sequences cannot later be replayed.

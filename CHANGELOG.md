@@ -1,5 +1,14 @@
 # Changelog
 
+- Preserve authoritative armor and offhand snapshots through runtime recipient filtering so successful equipment transactions cannot be projected as empty equipment.
+- Accept the current eating actor advisory without trusting it for item use, preventing ordinary and golden food consumption from disconnecting the player.
+- Synchronize only the main-inventory slots changed by item consumption and `give` instead of refreshing every slot.
+- Honor legacy requested-slot corrections without escalating successful player drops into a full inventory refresh.
+- Reconcile mining stack predictions against the authoritative post-break tool state and correct only the affected hotbar slot instead of refreshing the complete inventory.
+- Apply vanilla sprint exhaustion from accepted horizontal movement while retaining cancellable authoritative nutrition events.
+- Add bounded plugin item-use, consumption, nutrition, equipment, armor,
+  offhand, durability, and item-break values and events, including owner-scoped
+  data-only item behavior registration and natural-regeneration events.
 - Synchronize dropped-item falls with absolute actor positions and bounded motion updates so clients do not interpret server uptime as movement interpolation duration.
 - Derive supported block-item placement states from block definitions and settle dropped items against their quarter-block collision body instead of snapping them above the floor.
 - Add protocol-trace diagnostics for item-stack request decode failures without logging raw item or packet data.

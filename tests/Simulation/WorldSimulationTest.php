@@ -35,10 +35,12 @@ use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
 use Bedriox\Server\Simulation\Event\ItemEntityMoved;
 use Bedriox\Server\Simulation\Event\ItemEntitySpawned;
 use Bedriox\Server\Simulation\Event\MovementCorrected;
+use Bedriox\Server\Simulation\Event\NutritionChanged;
 use Bedriox\Server\Simulation\Event\PlayerDisconnected;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
 use Bedriox\Server\Simulation\MovementMode;
+use Bedriox\Server\Simulation\NutritionChangeReason;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
 use Bedriox\Server\Simulation\SimulationLimits;
@@ -57,6 +59,53 @@ use PHPUnit\Framework\TestCase;
 
 final class WorldSimulationTest extends TestCase
 {
+    public function testGiveSynchronizesOnlyChangedInventorySlots(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $registry = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $world = new WorldSimulation(
+            blockPalette: $palette,
+            itemCatalog: ItemCatalog::vanilla($data->itemNetworkRegistry()),
+        );
+        $factory = new SimulationCommandFactory();
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        $world->tick();
+
+        self::assertTrue($world->enqueue($factory->giveItem('one', 'minecraft:apple', 65)));
+        $event = $world->tick()->events[0];
+
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $event);
+        self::assertTrue($event->success);
+        self::assertSame(InventoryResponseMode::LegacySlotSync, $event->responseMode);
+        self::assertFalse($event->selectedStackChanged);
+        self::assertSame([1, 2], array_map(
+            static fn(InventorySlotReference $reference): int => $reference->slot,
+            $event->affectedSlots,
+        ));
+    }
+
+    public function testRequestedInventorySlotSyncDoesNotEscalateToFullContents(): void
+    {
+        $world = new WorldSimulation();
+        $factory = new SimulationCommandFactory();
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        $world->tick();
+
+        $slots = [
+            new InventorySlotReference(InventoryContainer::Main, 0, 0),
+            new InventorySlotReference(InventoryContainer::Armor, 0, 0),
+        ];
+        self::assertTrue($world->enqueue($factory->syncInventorySlots('one', $slots)));
+        $event = $world->tick()->events[0];
+
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $event);
+        self::assertTrue($event->success);
+        self::assertSame(InventoryResponseMode::LegacySlotSync, $event->responseMode);
+        self::assertFalse($event->fullSync);
+        self::assertSame($slots, $event->affectedSlots);
+    }
+
     public function testMiningEmitsBlockTexturedPunchEffectsAtBoundedIntervals(): void
     {
         $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
@@ -1012,6 +1061,52 @@ final class WorldSimulationTest extends TestCase
         $event = $world->tick()->events[0];
         self::assertInstanceOf(PlayerMoved::class, $event);
         self::assertSame(['peer'], $event->recipients());
+    }
+
+    public function testAcceptedSprintDistanceAppliesAuthoritativeExhaustion(): void
+    {
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation();
+        $bootstrap = new PlayerBootstrap(
+            new PlayerIdentity('00000000-0000-0000-0000-000000000001', 'Runner'),
+            'world',
+            new Position(0.0, 64.0, 0.0),
+            0.0,
+            0.0,
+            new PlayerInventoryState([], 0),
+            1,
+            1,
+            saturation: 20.0,
+            exhaustion: 3.95,
+        );
+        self::assertTrue($world->enqueue($factory->join(
+            'runner',
+            $bootstrap->identity->uuid,
+            $bootstrap->identity->displayName,
+            bootstrap: $bootstrap,
+            loginApproved: true,
+        )));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->move(
+            'runner',
+            1,
+            1.0,
+            64.0,
+            0.0,
+            0.0,
+            0.0,
+            MovementMode::SPRINTING,
+            deltaX: 1.0,
+            sprinting: true,
+        )));
+
+        $events = $world->tick()->events;
+        self::assertCount(2, $events);
+        self::assertInstanceOf(PlayerMoved::class, $events[0]);
+        self::assertInstanceOf(NutritionChanged::class, $events[1]);
+        self::assertSame(NutritionChangeReason::EXHAUSTION, $events[1]->reason);
+        self::assertSame(19.0, $events[1]->player->saturation);
+        self::assertEqualsWithDelta(0.05, $events[1]->player->exhaustion, 0.000001);
     }
 
     public function testMovementRetainsHeadYawAndReportsOnlyPostureTransitions(): void

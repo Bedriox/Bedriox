@@ -35,6 +35,8 @@ The command path is a complete current-client conversation: initialization adver
 
 Client position, collision, actor, attribution, timing, inventory, and block-state claims are hints until validated. Stale or invalid predictions cannot modify state, and item or block claims cannot replace server-owned inventory or world authority. A routine movement disagreement preserves the complete unsigned input tick and returns `CorrectPlayerMovePrediction` with authoritative position, grounded state, and zero player delta. `MovePlayer` remains limited to teleport and respawn lifecycle projection. Harmless stale input is a bounded no-op rather than another correction. The current serverbound `MovementPredictionSync` notification is consumed as a bounded advisory no-op even when it arrives early or repeatedly; its reported actor, flags, dimensions, speeds, vitals, and flying state never become server authority. Network input never receives a mutable reference to players, worlds, queues, or cryptographic state. The advertised rewind history defaults to 40 ticks and is bounded by `movement.rewind-history-size`.
 
+The current client may also send an eating `ActorEvent` while an authoritative timed food use is active. Bedriox accepts it as an advisory animation signal only; the selected server stack, registered use duration, and simulation completion determine consumption. Mining predictions embedded in `PlayerAuthInput` are ordered after the corresponding block action, then reconciled against the post-break authoritative held stack. The response contains only the affected hotbar slot and its durability correction, avoiding a complete inventory repair for a valid tool-use prediction.
+
 ## Outbound path
 
 ```text

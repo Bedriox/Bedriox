@@ -4,7 +4,15 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Simulation;
 
+use Bedriox\Api\Inventory\ConsumptionResult as ApiConsumptionResult;
+use Bedriox\Api\Inventory\EquipmentSlot as ApiEquipmentSlot;
+use Bedriox\Api\Inventory\ItemDamageCause as ApiItemDamageCause;
+use Bedriox\Api\Inventory\ItemStack as ApiItemStack;
+use Bedriox\Api\Inventory\ItemUseKind as ApiItemUseKind;
+use Bedriox\Api\Player\FoodLevelChangeCause as ApiFoodLevelChangeCause;
 use Bedriox\Api\Player\GameMode;
+use Bedriox\Api\Player\HealthRegainCause as ApiHealthRegainCause;
+use Bedriox\Api\Player\Nutrition as ApiNutrition;
 use Bedriox\Api\TranslatableMessage;
 use Bedriox\Server\Entity\Item\DroppedItemCollisionResolver;
 use Bedriox\Server\Entity\Item\ItemEntityMotion;
@@ -16,11 +24,15 @@ use Bedriox\Server\Gameplay\Block\BlockDropRules;
 use Bedriox\Server\Gameplay\Block\BlockPlacementStateResolver;
 use Bedriox\Server\Gameplay\Block\DropRandom;
 use Bedriox\Server\Gameplay\Block\SystemDropRandom;
+use Bedriox\Server\Gameplay\Item\ArmorSlot;
+use Bedriox\Server\Gameplay\Item\ItemBehaviorRegistry;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
+use Bedriox\Server\Gameplay\Item\ItemUseSession;
 use Bedriox\Server\Player\InventoryContainer;
 use Bedriox\Server\Player\InventoryResponseMode;
 use Bedriox\Server\Player\InventorySlotReference;
 use Bedriox\Server\Player\InventoryStack;
+use Bedriox\Server\Player\InventoryStackRequestActionType;
 use Bedriox\Server\Player\InventoryStackRequestResult;
 use Bedriox\Server\Player\Persistence\PlayerPersistenceManager;
 use Bedriox\Server\Player\Player;
@@ -28,6 +40,7 @@ use Bedriox\Server\Player\PlayerBootstrap;
 use Bedriox\Server\Player\PlayerIdentity;
 use Bedriox\Server\Player\PlayerInventory;
 use Bedriox\Server\Player\PlayerRegistry;
+use Bedriox\Server\Player\SupportedInventoryItem;
 use Bedriox\Server\Simulation\Command\AcknowledgeRespawn;
 use Bedriox\Server\Simulation\Command\ApplyInventoryStackRequest;
 use Bedriox\Server\Simulation\Command\AttackPlayer;
@@ -41,6 +54,7 @@ use Bedriox\Server\Simulation\Command\JoinPlayer;
 use Bedriox\Server\Simulation\Command\MovePlayer;
 use Bedriox\Server\Simulation\Command\PerformEmote;
 use Bedriox\Server\Simulation\Command\PlaceBlock;
+use Bedriox\Server\Simulation\Command\ReleaseItem;
 use Bedriox\Server\Simulation\Command\RespawnPlayer;
 use Bedriox\Server\Simulation\Command\SelectHotbarSlot;
 use Bedriox\Server\Simulation\Command\SendChat;
@@ -48,7 +62,9 @@ use Bedriox\Server\Simulation\Command\SendPluginMessage;
 use Bedriox\Server\Simulation\Command\SetPluginBlock;
 use Bedriox\Server\Simulation\Command\SetPluginInventorySlot;
 use Bedriox\Server\Simulation\Command\SyncInventory;
+use Bedriox\Server\Simulation\Command\SyncInventorySlots;
 use Bedriox\Server\Simulation\Command\TeleportPlayer;
+use Bedriox\Server\Simulation\Command\UseItem;
 use Bedriox\Server\Simulation\Command\WorldCommand;
 use Bedriox\Server\Simulation\Event\BlockBreakStarted;
 use Bedriox\Server\Simulation\Event\BlockBreakStopped;
@@ -60,16 +76,22 @@ use Bedriox\Server\Simulation\Event\ChatBroadcast;
 use Bedriox\Server\Simulation\Event\CommandRejected;
 use Bedriox\Server\Simulation\Event\EmotePerformed;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
+use Bedriox\Server\Simulation\Event\InstantItemUsed;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
+use Bedriox\Server\Simulation\Event\ItemConsumed;
 use Bedriox\Server\Simulation\Event\ItemEntityDespawned;
 use Bedriox\Server\Simulation\Event\ItemEntityMoved;
 use Bedriox\Server\Simulation\Event\ItemEntityPickedUp;
 use Bedriox\Server\Simulation\Event\ItemEntitySpawned;
+use Bedriox\Server\Simulation\Event\ItemUseCancelled;
+use Bedriox\Server\Simulation\Event\ItemUseStarted;
 use Bedriox\Server\Simulation\Event\MovementCorrected;
+use Bedriox\Server\Simulation\Event\NutritionChanged;
 use Bedriox\Server\Simulation\Event\PlayerDamaged;
 use Bedriox\Server\Simulation\Event\PlayerDied;
 use Bedriox\Server\Simulation\Event\PlayerDisconnected;
 use Bedriox\Server\Simulation\Event\PlayerGameModeChanged;
+use Bedriox\Server\Simulation\Event\PlayerHealed;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
 use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
 use Bedriox\Server\Simulation\Event\PlayerMotionChanged;
@@ -100,6 +122,12 @@ final class WorldSimulation
     private const int EMOTE_COOLDOWN_TICKS = 5;
     private const int EMPTY_HAND_GRASS_BREAK_RATE = 3640;
     private const float MAXIMUM_BLOCK_REACH = 6.0;
+    private const int MAXIMUM_ITEM_USE_HOLD_TICKS = 1_200;
+    private const int NATURAL_REGENERATION_INTERVAL_TICKS = 80;
+    private const float NATURAL_REGENERATION_FOOD_THRESHOLD = 18.0;
+    private const float NATURAL_REGENERATION_HEALTH = 1.0;
+    private const float NATURAL_REGENERATION_EXHAUSTION = 6.0;
+    private const float SPRINTING_EXHAUSTION_PER_BLOCK = 0.1;
 
     /** @var SplQueue<WorldCommand> */
     private SplQueue $commands;
@@ -141,6 +169,17 @@ final class WorldSimulation
     /** @var list<WorldEvent> */
     private array $deferredEvents = [];
 
+    /** @var array<string, ItemUseSession> One transient action per connected session. */
+    private array $activeItemUses = [];
+
+    /** @var array<string, array<string, int>> Session, canonical identifier, expiry tick. */
+    private array $itemCooldowns = [];
+
+    /** @var array<string, int> Last successful completion tick per connected session. */
+    private array $lastItemUseCompletionTicks = [];
+
+    private readonly ItemBehaviorRegistry $itemBehaviors;
+
     /** @var array<string, array{position: BlockPosition, state: int, sequence: int, face: int, lastParticleTick: int}> */
     private array $breakingBlocks = [];
 
@@ -163,6 +202,7 @@ final class WorldSimulation
         private readonly ?BlockCollisionRegistry $blockCollisionRegistry = null,
         ?DropRandom $dropRandom = null,
         ?ItemEntityRegistry $itemEntities = null,
+        ?ItemBehaviorRegistry $itemBehaviors = null,
     ) {
         $this->commands = new SplQueue();
         $this->lifecycleCommands = new SplQueue();
@@ -171,6 +211,7 @@ final class WorldSimulation
         $this->players = new PlayerRegistry($this->limits->maximumPlayers);
         $this->dropRandom = $dropRandom ?? new SystemDropRandom();
         $this->itemEntities = $itemEntities ?? new ItemEntityRegistry(firstEntityId: 1_000_000_000);
+        $this->itemBehaviors = $itemBehaviors ?? ItemBehaviorRegistry::vanilla();
         $this->collisionResolver = $blockWorld !== null && $blockPalette !== null
             ? new PlayerCollisionResolver(new BlockCollisionQuery(
                 $blockWorld,
@@ -228,6 +269,9 @@ final class WorldSimulation
             $bootstrap->firstPlayedAt,
             $bootstrap->gamemode,
             $bootstrap->health,
+            $bootstrap->food,
+            $bootstrap->saturation,
+            $bootstrap->exhaustion,
         );
         $candidate->movement->yaw = $bootstrap->yaw;
         $candidate->movement->headYaw = $bootstrap->yaw;
@@ -257,6 +301,9 @@ final class WorldSimulation
             $bootstrap->lastPlayedAt,
             $bootstrap->gamemode,
             $bootstrap->health,
+            $bootstrap->food,
+            $bootstrap->saturation,
+            $bootstrap->exhaustion,
         );
     }
 
@@ -355,10 +402,13 @@ final class WorldSimulation
             $this->queuedBytes -= $bytes;
             ++$processed;
             $events[] = $this->acceptMovementInput($command);
+            $this->reconcileActiveItemUse($this->players->player($command->session));
             array_push($events, ...$this->drainDeferredEvents());
         }
 
         array_push($events, ...$this->advancePendingRespawns());
+        array_push($events, ...$this->advanceItemUseSessions());
+        array_push($events, ...$this->advanceNutrition());
         array_push($events, ...$this->advanceBlockBreakParticles());
         array_push($events, ...$this->advanceItemEntities());
 
@@ -432,6 +482,7 @@ final class WorldSimulation
             if ($event !== null) {
                 $events[] = $event;
             }
+            array_push($events, ...$this->drainDeferredEvents());
         }
 
         return [$processed, $events];
@@ -550,7 +601,7 @@ final class WorldSimulation
             return new CommandRejected($command->sessionId(), 'player_dead');
         }
 
-        return match (true) {
+        $event = match (true) {
             $command instanceof JoinPlayer => $this->join($command),
             $command instanceof SendChat => $this->chat($command),
             $command instanceof PerformEmote => $this->emote($command),
@@ -562,6 +613,7 @@ final class WorldSimulation
             $command instanceof ChangeGameMode => $this->changeGameMode($command),
             $command instanceof GiveItem => $this->giveItem($command),
             $command instanceof SyncInventory => $this->syncInventory($command),
+            $command instanceof SyncInventorySlots => $this->syncInventorySlots($command),
             $command instanceof SelectHotbarSlot => $this->selectHotbarSlot($command),
             $command instanceof DisconnectPlayer => $this->disconnect($command),
             $command instanceof SendPluginMessage => $this->pluginMessage($command),
@@ -571,8 +623,14 @@ final class WorldSimulation
             $command instanceof DamagePlayer => $this->damage($command),
             $command instanceof RespawnPlayer => $this->respawn($command),
             $command instanceof AcknowledgeRespawn => $this->acknowledgeRespawn($command),
+            $command instanceof UseItem => $this->useItem($command),
+            $command instanceof ReleaseItem => $this->releaseItem($command),
             default => null,
         };
+
+        $this->reconcileActiveItemUse($this->players->player($command->sessionId()));
+
+        return $event;
     }
 
     private function changeGameMode(ChangeGameMode $command): WorldEvent
@@ -592,6 +650,7 @@ final class WorldSimulation
             }
         }
         $previous = $player->setGameMode($requested);
+        $this->deferItemUseCancellation($player, ItemUseCancellationReason::GAME_MODE_CHANGED);
         $player->movement->fallDistance = 0.0;
         if ($requested === GameMode::SPECTATOR) {
             $player->movement->verticalState = VerticalState::AIRBORNE;
@@ -619,6 +678,7 @@ final class WorldSimulation
         if ($player === null || $this->itemCatalog === null || !$this->itemCatalog->has($command->identifier)) {
             return new CommandRejected($command->session, 'unsupported_item');
         }
+        $inventoryBefore = clone $player->inventory;
         $type = $this->itemCatalog->type($command->identifier);
         $placed = $type->placedBlockState === null || $this->blockStateRegistry === null
             ? null
@@ -666,10 +726,7 @@ final class WorldSimulation
             }
         }
         $player->markDirty();
-        $affected = [];
-        for ($slot = 0; $slot < PlayerInventory::SLOT_COUNT; ++$slot) {
-            $affected[] = new InventorySlotReference(InventoryContainer::Main, $slot, 0);
-        }
+        $affected = self::changedMainInventorySlots($inventoryBefore, $player->inventory);
 
         return new InventoryStackRequestProcessed(
             $player->sessionId,
@@ -680,10 +737,15 @@ final class WorldSimulation
             $player->inventory->cursorStack(),
             $player->inventory->selectedHotbarSlot(),
             $player->inventory->selectedStack(),
-            true,
+            !self::sameInventoryStack(
+                $inventoryBefore->selectedStack(),
+                $player->inventory->selectedStack(),
+            ),
             $player->runtimeActorId,
             $this->players->recipients($player->sessionId),
             responseMode: InventoryResponseMode::LegacySlotSync,
+            armorInventory: $player->inventory->armorSlots(),
+            offhandStack: $player->inventory->offhandStack(),
         );
     }
 
@@ -710,6 +772,8 @@ final class WorldSimulation
         $stack = match ($command->source->container) {
             InventoryContainer::Main => $player->inventory->stackAt($command->source->slot),
             InventoryContainer::Cursor => $player->inventory->cursorStack(),
+            InventoryContainer::Armor => $player->inventory->armorStack($command->source->slot),
+            InventoryContainer::Offhand => $player->inventory->offhandStack(),
             InventoryContainer::CreatedOutput => null,
         };
         $reason = match (true) {
@@ -796,6 +860,8 @@ final class WorldSimulation
             $this->players->recipients($player->sessionId),
             $reason ?? '',
             $command->responseMode,
+            armorInventory: $player->inventory->armorSlots(),
+            offhandStack: $player->inventory->offhandStack(),
         );
     }
 
@@ -824,6 +890,33 @@ final class WorldSimulation
             [],
             responseMode: InventoryResponseMode::LegacySlotSync,
             fullSync: true,
+            armorInventory: $player->inventory->armorSlots(),
+            offhandStack: $player->inventory->offhandStack(),
+        );
+    }
+
+    private function syncInventorySlots(SyncInventorySlots $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        if ($player === null) {
+            return new CommandRejected($command->session, 'not_joined');
+        }
+
+        return new InventoryStackRequestProcessed(
+            $player->sessionId,
+            0,
+            true,
+            $command->slots,
+            $player->inventory->slots(),
+            $player->inventory->cursorStack(),
+            $player->inventory->selectedHotbarSlot(),
+            $player->inventory->selectedStack(),
+            false,
+            $player->runtimeActorId,
+            [],
+            responseMode: InventoryResponseMode::LegacySlotSync,
+            armorInventory: $player->inventory->armorSlots(),
+            offhandStack: $player->inventory->offhandStack(),
         );
     }
 
@@ -884,6 +977,9 @@ final class WorldSimulation
             $firstPlayedAt,
             $gamemode,
             $bootstrap === null ? \Bedriox\Server\Player\PlayerVitals::MAX_HEALTH : $bootstrap->health,
+            $bootstrap === null ? \Bedriox\Server\Player\PlayerVitals::MAX_FOOD : $bootstrap->food,
+            $bootstrap === null ? \Bedriox\Server\Player\PlayerVitals::MAX_SATURATION : $bootstrap->saturation,
+            $bootstrap === null ? 0.0 : $bootstrap->exhaustion,
         );
         if ($bootstrap !== null) {
             $player->movement->yaw = $bootstrap->yaw;
@@ -1014,6 +1110,17 @@ final class WorldSimulation
         $movement->lastTick = $this->tick;
         $player->markDirty();
 
+        $horizontalDistance = hypot(
+            $position->x - $previousPosition->x,
+            $position->z - $previousPosition->z,
+        );
+        if (!$flying && $sprinting && $player->gameMode()->consumesItems() && $horizontalDistance > 0.0) {
+            $this->applyMovementExhaustion(
+                $player,
+                self::SPRINTING_EXHAUSTION_PER_BLOCK * $horizontalDistance,
+            );
+        }
+
         $snapshot = $player->snapshot();
         $this->pluginEvents?->moved($player);
         if ($flying || !$player->gameMode()->takesDamage()) {
@@ -1046,6 +1153,53 @@ final class WorldSimulation
         return new PlayerMoved($snapshot, $this->players->recipients($player->sessionId), $postureChanged);
     }
 
+    private function applyMovementExhaustion(Player $player, float $amount): void
+    {
+        $previousNutrition = PluginGameplayEventBridge::nutrition($player);
+        $stagedVitals = clone $player->vitals;
+        $stagedVitals->exhaust($amount);
+        $proposedNutrition = new ApiNutrition(
+            (int) $stagedVitals->food,
+            $stagedVitals->saturation,
+            $stagedVitals->exhaustion,
+        );
+        if ($this->pluginEvents !== null) {
+            $proposedNutrition = $this->pluginEvents->nutritionChange(
+                $player,
+                $previousNutrition,
+                $proposedNutrition,
+                ApiFoodLevelChangeCause::EXHAUSTION,
+            );
+            if ($proposedNutrition === null) {
+                return;
+            }
+        }
+        if ($proposedNutrition == $previousNutrition) {
+            return;
+        }
+        $player->vitals->setNutrition(
+            $proposedNutrition->foodLevel,
+            $proposedNutrition->saturationLevel,
+            $proposedNutrition->exhaustionLevel,
+        );
+        $player->markDirty();
+        $currentNutrition = PluginGameplayEventBridge::nutrition($player);
+        $this->pluginEvents?->nutritionChanged(
+            $player,
+            $previousNutrition,
+            $currentNutrition,
+            ApiFoodLevelChangeCause::EXHAUSTION,
+        );
+        $this->deferredEvents[] = new NutritionChanged(
+            $player->snapshot(),
+            $previousNutrition->foodLevel,
+            $previousNutrition->saturationLevel,
+            $previousNutrition->exhaustionLevel,
+            NutritionChangeReason::EXHAUSTION,
+            [$player->sessionId],
+        );
+    }
+
     private function damage(DamagePlayer $command): WorldEvent
     {
         $player = $this->players->player($command->session);
@@ -1061,9 +1215,11 @@ final class WorldSimulation
         if ($this->tick <= $player->vitals->invulnerableUntilTick) {
             return new CommandRejected($command->session, 'damage_cooldown');
         }
+        $baseDamage = $command->amount;
+        $reducedDamage = $this->armorReducedDamage($player, $baseDamage, $command->cause);
         $damage = $this->pluginEvents === null
-            ? $command->amount
-            : $this->pluginEvents->damage($player, $command->cause, $command->amount);
+            ? $reducedDamage
+            : $this->pluginEvents->damage($player, $command->cause, $reducedDamage);
         if ($damage === null) {
             return new CommandRejected($command->session, 'plugin_cancelled');
         }
@@ -1073,6 +1229,8 @@ final class WorldSimulation
         $applied = min($damage, $player->vitals->health);
         $player->vitals->health -= $applied;
         $player->vitals->invulnerableUntilTick = $this->tick + CombatRules::DAMAGE_IMMUNITY_TICKS;
+        $equipmentChanged = $player->vitals->isAlive()
+            && $this->damageArmor($player, $baseDamage, $command->cause);
         $player->markDirty();
         $this->pluginEvents?->damaged($player, $command->cause, $applied);
         if (!$player->vitals->isAlive()) {
@@ -1080,7 +1238,13 @@ final class WorldSimulation
             $this->deferredEvents[] = $this->deathEvent($player, $command->cause, $damage);
         }
 
-        return new PlayerDamaged($player->snapshot(), $applied, $command->cause, $this->players->recipients());
+        return new PlayerDamaged(
+            $player->snapshot(),
+            $applied,
+            $command->cause,
+            $this->players->recipients(),
+            $equipmentChanged,
+        );
     }
 
     private function attack(AttackPlayer $command): WorldEvent
@@ -1106,8 +1270,10 @@ final class WorldSimulation
             return new CommandRejected($command->session, $reason);
         }
 
-        $damage = $this->pluginEvents?->attack($attacker, $target, CombatRules::EMPTY_HAND_DAMAGE)
-            ?? ($this->pluginEvents === null ? CombatRules::EMPTY_HAND_DAMAGE : null);
+        $baseDamage = CombatRules::EMPTY_HAND_DAMAGE;
+        $reducedDamage = $this->armorReducedDamage($target, $baseDamage, DamageCause::Attack);
+        $damage = $this->pluginEvents?->attack($attacker, $target, $reducedDamage)
+            ?? ($this->pluginEvents === null ? $reducedDamage : null);
         if ($damage === null || $damage <= 0.0) {
             return new CommandRejected($command->session, 'plugin_cancelled');
         }
@@ -1115,16 +1281,19 @@ final class WorldSimulation
         $applied = min($damage, $target->vitals->health);
         $target->vitals->health -= $applied;
         $target->vitals->invulnerableUntilTick = $this->tick + CombatRules::DAMAGE_IMMUNITY_TICKS;
+        $equipmentChanged = $target->vitals->isAlive()
+            && $this->damageArmor($target, $baseDamage, DamageCause::Attack);
         [$directionX, $directionZ] = $this->knockbackDirection($attacker, $target);
         $movement = $target->movement;
         $wasGrounded = $movement->verticalState === VerticalState::GROUNDED;
+        $knockbackMultiplier = 1.0 - $target->inventory->knockbackResistance();
         [$motionX, $motionY, $motionZ] = self::composeKnockback(
             $movement->velocityX,
             $movement->verticalVelocity,
             $movement->velocityZ,
             $directionX,
             $directionZ,
-            CombatRules::KNOCKBACK_FORCE,
+            CombatRules::KNOCKBACK_FORCE * $knockbackMultiplier,
             $wasGrounded,
         );
         $sprintingAttack = $attacker->movement->sprinting;
@@ -1135,7 +1304,7 @@ final class WorldSimulation
                 $motionZ,
                 $directionX,
                 $directionZ,
-                CombatRules::KNOCKBACK_FORCE * CombatRules::SPRINT_KNOCKBACK_STRENGTH,
+                CombatRules::KNOCKBACK_FORCE * CombatRules::SPRINT_KNOCKBACK_STRENGTH * $knockbackMultiplier,
                 false,
             );
         }
@@ -1189,6 +1358,7 @@ final class WorldSimulation
             $applied,
             DamageCause::Attack,
             $this->players->recipients(),
+            $equipmentChanged,
         );
     }
 
@@ -1332,6 +1502,7 @@ final class WorldSimulation
             ? VerticalState::AIRBORNE
             : VerticalState::GROUNDED;
         $player->vitals->health = \Bedriox\Server\Player\PlayerVitals::MAX_HEALTH;
+        $player->vitals->resetNutrition();
         $player->vitals->invulnerableUntilTick = $this->tick + 60;
         $player->markDirty();
         $this->pluginEvents?->respawned($player);
@@ -1506,6 +1677,8 @@ final class WorldSimulation
         if ($player === null) {
             return new CommandRejected($command->session, 'not_joined');
         }
+        $this->deferItemUseCancellation($player, ItemUseCancellationReason::DISCONNECTED);
+        unset($this->itemCooldowns[$key], $this->lastItemUseCompletionTicks[$key]);
         $this->pluginEvents?->quit($player);
         $this->playerPersistence?->save($player);
         $this->players->remove($command->session);
@@ -1606,6 +1779,10 @@ final class WorldSimulation
                     $command->nbt,
                 ),
                 $command instanceof SyncInventory => $this->validator->syncInventory($command->session),
+                $command instanceof SyncInventorySlots => $this->validator->syncInventorySlots(
+                    $command->session,
+                    $command->slots,
+                ),
                 $command instanceof SelectHotbarSlot => $this->validator->selectHotbarSlot(
                     $command->session,
                     $command->hotbarSlot,
@@ -1639,6 +1816,8 @@ final class WorldSimulation
                 ),
                 $command instanceof RespawnPlayer => $this->validator->respawn($command->session),
                 $command instanceof AcknowledgeRespawn => $this->validator->acknowledgeRespawn($command->session),
+                $command instanceof UseItem => $this->validator->useItem($command->session, $command->hotbarSlot),
+                $command instanceof ReleaseItem => $this->validator->releaseItem($command->session, $command->hotbarSlot),
                 default => throw new CommandValidationException('Unsupported world command.'),
             };
         } catch (CommandValidationException) {
@@ -1947,6 +2126,484 @@ final class WorldSimulation
         );
     }
 
+    public function itemBehaviorRegistry(): ItemBehaviorRegistry
+    {
+        return $this->itemBehaviors;
+    }
+
+    private function useItem(UseItem $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        if ($player === null) {
+            return new CommandRejected($command->session, 'not_joined');
+        }
+        $key = self::sessionKey($player->sessionId);
+        $held = $player->inventory->selectedStack();
+        $active = $this->activeItemUses[$key] ?? null;
+        if ($active === null && ($this->lastItemUseCompletionTicks[$key] ?? -1) === $this->tick) {
+            return new CommandRejected($command->session, 'duplicate_item_use');
+        }
+        if ($command->hotbarSlot !== $player->inventory->selectedHotbarSlot()) {
+            return $active === null
+                ? new CommandRejected($command->session, 'selected_slot')
+                : $this->cancelItemUse($player, ItemUseCancellationReason::HELD_ITEM_CHANGED);
+        }
+        if ($active !== null) {
+            if (!$active->matches($command->hotbarSlot, $held)) {
+                return $this->cancelItemUse($player, ItemUseCancellationReason::HELD_ITEM_CHANGED);
+            }
+            if (!$active->isCompleteAt($this->tick)) {
+                return $this->cancelItemUse($player, ItemUseCancellationReason::TOO_EARLY);
+            }
+
+            return $this->consumeHeldItem($player, $active);
+        }
+        if ($held === null) {
+            return new CommandRejected($command->session, 'empty_hand');
+        }
+        $behavior = $this->itemBehaviors->behavior($held->identifier);
+        if ($behavior === null || ($this->itemCatalog !== null && !$this->itemCatalog->has($held->identifier))) {
+            return new CommandRejected($command->session, 'item_not_usable');
+        }
+        if ($player->gameMode() === GameMode::SPECTATOR) {
+            return new CommandRejected($command->session, 'player_gamemode');
+        }
+        $this->pruneItemCooldowns($key);
+        if (($this->itemCooldowns[$key][$held->identifier] ?? -1) > $this->tick) {
+            return new CommandRejected($command->session, 'item_cooldown');
+        }
+        $consumable = $behavior->consumable;
+        if ($consumable !== null
+            && $player->gameMode() !== GameMode::CREATIVE
+            && !$player->vitals->canConsume($consumable->requiresHunger)) {
+            return new CommandRejected($command->session, 'food_full');
+        }
+        if ($this->pluginEvents !== null
+            && !$this->pluginEvents->allowItemUse(
+                $player,
+                $held,
+                $behavior->kind,
+                $behavior->useDurationTicks,
+            )) {
+            return new CommandRejected($command->session, 'plugin_cancelled');
+        }
+
+        if ($behavior->kind === ApiItemUseKind::INSTANT) {
+            if ($behavior->cooldownTicks > 0) {
+                $this->setItemCooldown($key, $held->identifier, $behavior->cooldownTicks);
+            }
+            $this->lastItemUseCompletionTicks[$key] = $this->tick;
+            $this->pluginEvents?->itemUsed($player, $held, ApiItemUseKind::INSTANT, 0);
+
+            return new InstantItemUsed($player->snapshot(), $held, $this->players->recipients());
+        }
+
+        $active = new ItemUseSession($command->hotbarSlot, $held, $behavior, $this->tick);
+        $this->activeItemUses[$key] = $active;
+
+        return new ItemUseStarted(
+            $player->sessionId,
+            $player->runtimeActorId,
+            $active->hotbarSlot,
+            $active->stack,
+            $active->startedAtTick,
+            $active->behavior->useDurationTicks,
+            $this->players->recipients(),
+            $player->movement->sneaking,
+            $player->movement->sprinting,
+            $player->movement->sequence,
+        );
+    }
+
+    private function releaseItem(ReleaseItem $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        if ($player === null) {
+            return new CommandRejected($command->session, 'not_joined');
+        }
+        $active = $this->activeItemUses[self::sessionKey($player->sessionId)] ?? null;
+        if ($active === null) {
+            return new CommandRejected($command->session, 'item_not_in_use');
+        }
+        $reason = $command->hotbarSlot === $player->inventory->selectedHotbarSlot()
+            ? ItemUseCancellationReason::RELEASED
+            : ItemUseCancellationReason::HELD_ITEM_CHANGED;
+
+        return $this->cancelItemUse($player, $reason);
+    }
+
+    private function consumeHeldItem(Player $player, ItemUseSession $active): WorldEvent
+    {
+        $key = self::sessionKey($player->sessionId);
+        unset($this->activeItemUses[$key]);
+        $held = $player->inventory->selectedStack();
+        if (!$active->matches($player->inventory->selectedHotbarSlot(), $held) || $held === null) {
+            return $this->itemUseCancelledEvent($player, $active, ItemUseCancellationReason::HELD_ITEM_CHANGED);
+        }
+        $consumable = $active->behavior->consumable;
+        if ($consumable === null || ($player->gameMode() !== GameMode::CREATIVE
+            && !$player->vitals->canConsume($consumable->requiresHunger))) {
+            return $this->itemUseCancelledEvent($player, $active, ItemUseCancellationReason::HELD_ITEM_CHANGED);
+        }
+
+        $consumed = $held->withCountAndNetworkId(1, $held->stackNetworkId);
+        $previousNutrition = PluginGameplayEventBridge::nutrition($player);
+        $result = new ApiConsumptionResult(
+            (int) $consumable->foodRestore,
+            $consumable->saturationRestore,
+            $consumable->residue,
+        );
+        if ($this->pluginEvents !== null) {
+            $result = $this->pluginEvents->consume($player, $consumed, $previousNutrition, $result);
+            if ($result === null) {
+                return $this->itemUseCancelledEvent($player, $active, ItemUseCancellationReason::PLUGIN);
+            }
+        }
+
+        $inventoryBefore = clone $player->inventory;
+        $residue = [];
+        try {
+            foreach ($result->residue as $stack) {
+                $residue[] = $this->inventoryStackFromApi($stack);
+            }
+            $stagedInventory = clone $player->inventory;
+            if ($player->gameMode()->consumesItems()) {
+                $this->applyConsumptionInventory($stagedInventory, $active->hotbarSlot, $residue);
+            }
+        } catch (InvalidArgumentException|OverflowException) {
+            return $this->itemUseCancelledEvent($player, $active, ItemUseCancellationReason::PLUGIN);
+        }
+
+        $proposedNutrition = new ApiNutrition(
+            min(ApiNutrition::MAX_FOOD_LEVEL, $previousNutrition->foodLevel + $result->foodRestore),
+            min(ApiNutrition::MAX_SATURATION_LEVEL, $previousNutrition->saturationLevel + $result->saturationRestore),
+            $previousNutrition->exhaustionLevel,
+        );
+        $nutritionChanges = $proposedNutrition != $previousNutrition;
+        if ($nutritionChanges && $this->pluginEvents !== null) {
+            $proposedNutrition = $this->pluginEvents->nutritionChange(
+                $player,
+                $previousNutrition,
+                $proposedNutrition,
+                ApiFoodLevelChangeCause::CONSUMPTION,
+            );
+            if ($proposedNutrition === null) {
+                return $this->itemUseCancelledEvent($player, $active, ItemUseCancellationReason::PLUGIN);
+            }
+        }
+
+        $droppedResidue = null;
+        if ($player->gameMode()->consumesItems()) {
+            foreach ($this->applyConsumptionInventory($player->inventory, $active->hotbarSlot, $residue) as $drop) {
+                $droppedResidue ??= $drop;
+                $entity = $this->itemEntities->spawn(
+                    $drop,
+                    new Position(
+                        $player->movement->position->x,
+                        $player->movement->position->y + 1.3,
+                        $player->movement->position->z,
+                    ),
+                    new ItemEntityMotion(0.0, 0.1, 0.0),
+                    40,
+                );
+                $this->deferredEvents[] = new ItemEntitySpawned($entity, $this->players->recipients());
+            }
+        }
+        if ($nutritionChanges) {
+            $player->vitals->setNutrition(
+                $proposedNutrition->foodLevel,
+                $proposedNutrition->saturationLevel,
+                $proposedNutrition->exhaustionLevel,
+            );
+        }
+        if ($active->behavior->cooldownTicks > 0) {
+            $this->setItemCooldown($key, $held->identifier, $active->behavior->cooldownTicks);
+        }
+        $player->markDirty();
+        $this->lastItemUseCompletionTicks[$key] = $this->tick;
+        $currentNutrition = PluginGameplayEventBridge::nutrition($player);
+        $this->pluginEvents?->consumed($player, $consumed, $previousNutrition, $currentNutrition, $result);
+        if ($nutritionChanges) {
+            $this->pluginEvents?->nutritionChanged(
+                $player,
+                $previousNutrition,
+                $currentNutrition,
+                ApiFoodLevelChangeCause::CONSUMPTION,
+            );
+            $this->deferredEvents[] = new NutritionChanged(
+                $player->snapshot(),
+                $previousNutrition->foodLevel,
+                $previousNutrition->saturationLevel,
+                $previousNutrition->exhaustionLevel,
+                NutritionChangeReason::CONSUMPTION,
+                [$player->sessionId],
+            );
+        }
+        $this->pluginEvents?->itemUsed(
+            $player,
+            $consumed,
+            ApiItemUseKind::CONSUME,
+            $this->tick - $active->startedAtTick,
+        );
+
+        return new ItemConsumed(
+            $player->snapshot(),
+            $consumed,
+            $active->hotbarSlot,
+            $player->inventory->selectedStack(),
+            self::changedMainInventorySlots($inventoryBefore, $player->inventory),
+            $player->inventory->slots(),
+            $droppedResidue,
+            $this->players->recipients(),
+        );
+    }
+
+    /**
+     * @param list<InventoryStack> $residue
+     * @return list<InventoryStack>
+     */
+    private function applyConsumptionInventory(PlayerInventory $inventory, int $hotbarSlot, array $residue): array
+    {
+        $inventory->decrementSelectedOne();
+        $dropped = [];
+        foreach ($residue as $stack) {
+            if ($inventory->selectedStack() === null) {
+                $inventory->replaceSlot($hotbarSlot, $stack);
+                continue;
+            }
+            $leftover = $inventory->add($stack);
+            if ($leftover !== null) {
+                $dropped[] = $leftover;
+            }
+        }
+
+        return $dropped;
+    }
+
+    private function inventoryStackFromApi(ApiItemStack $stack): InventoryStack
+    {
+        $type = null;
+        if ($this->itemCatalog !== null) {
+            if (!$this->itemCatalog->has($stack->identifier)) {
+                throw new InvalidArgumentException('Plugin item result is not present in the active item catalog.');
+            }
+            $type = $this->itemCatalog->type($stack->identifier);
+        }
+        $maximumStackSize = $type === null
+            ? (SupportedInventoryItem::supports($stack->identifier)
+                ? SupportedInventoryItem::maximumStackSize($stack->identifier)
+                : 64)
+            : $type->maximumStackSize;
+        if ($stack->count > $maximumStackSize) {
+            throw new InvalidArgumentException('Plugin item result exceeds the registered stack capacity.');
+        }
+        $placedBlockState = $type === null || $type->placedBlockState === null || $this->blockStateRegistry === null
+            ? null
+            : $this->blockStateRegistry->internalId($type->placedBlockState);
+
+        return new InventoryStack(
+            $stack->identifier,
+            $stack->count,
+            1,
+            $placedBlockState,
+            $stack->damage,
+            $stack->nbt,
+            $stack->auxValue,
+        );
+    }
+
+    private function cancelItemUse(Player $player, ItemUseCancellationReason $reason): ItemUseCancelled
+    {
+        $key = self::sessionKey($player->sessionId);
+        $active = $this->activeItemUses[$key]
+            ?? throw new \LogicException('Cannot cancel an item use which is not active.');
+        unset($this->activeItemUses[$key]);
+
+        return $this->itemUseCancelledEvent($player, $active, $reason);
+    }
+
+    private function itemUseCancelledEvent(
+        Player $player,
+        ItemUseSession $active,
+        ItemUseCancellationReason $reason,
+    ): ItemUseCancelled {
+        $this->pluginEvents?->itemUseCancelled(
+            $player,
+            $active->stack,
+            ApiItemUseKind::CONSUME,
+            $reason,
+            $this->tick - $active->startedAtTick,
+        );
+
+        return new ItemUseCancelled(
+            $player->sessionId,
+            $player->runtimeActorId,
+            $active->hotbarSlot,
+            $active->stack,
+            $reason,
+            $this->players->recipients(),
+            $player->movement->sneaking,
+            $player->movement->sprinting,
+            $player->movement->sequence,
+        );
+    }
+
+    private function deferItemUseCancellation(Player $player, ItemUseCancellationReason $reason): void
+    {
+        if (!isset($this->activeItemUses[self::sessionKey($player->sessionId)])) {
+            return;
+        }
+        $this->deferredEvents[] = $this->cancelItemUse($player, $reason);
+    }
+
+    private function reconcileActiveItemUse(?Player $player): void
+    {
+        if ($player === null) {
+            return;
+        }
+        $active = $this->activeItemUses[self::sessionKey($player->sessionId)] ?? null;
+        if ($active === null) {
+            return;
+        }
+        if (!$player->vitals->isAlive()) {
+            $this->deferItemUseCancellation($player, ItemUseCancellationReason::DEATH);
+        } elseif (!$active->matches($player->inventory->selectedHotbarSlot(), $player->inventory->selectedStack())) {
+            $this->deferItemUseCancellation($player, ItemUseCancellationReason::HELD_ITEM_CHANGED);
+        }
+    }
+
+    /** @return list<WorldEvent> */
+    private function advanceItemUseSessions(): array
+    {
+        $events = [];
+        foreach ($this->activeItemUses as $key => $active) {
+            $player = $this->players->player(substr($key, strlen('session:')));
+            if ($player === null) {
+                unset($this->activeItemUses[$key], $this->itemCooldowns[$key]);
+                continue;
+            }
+            if (!$active->matches($player->inventory->selectedHotbarSlot(), $player->inventory->selectedStack())) {
+                $events[] = $this->cancelItemUse($player, ItemUseCancellationReason::HELD_ITEM_CHANGED);
+            } elseif ($this->tick > $active->completionTick() + self::MAXIMUM_ITEM_USE_HOLD_TICKS) {
+                $events[] = $this->cancelItemUse($player, ItemUseCancellationReason::TIMED_OUT);
+            }
+        }
+
+        return $events;
+    }
+
+    /** @return list<WorldEvent> */
+    private function advanceNutrition(): array
+    {
+        $events = [];
+        foreach ($this->players->players() as $player) {
+            if (!$player->vitals->isAlive() || $player->gameMode() !== GameMode::SURVIVAL) {
+                $player->vitals->foodTickTimer = 0;
+                continue;
+            }
+            ++$player->vitals->foodTickTimer;
+            if ($player->vitals->foodTickTimer < self::NATURAL_REGENERATION_INTERVAL_TICKS) {
+                continue;
+            }
+            $player->vitals->foodTickTimer = 0;
+            if ($player->vitals->food < self::NATURAL_REGENERATION_FOOD_THRESHOLD
+                || $player->vitals->health >= \Bedriox\Server\Player\PlayerVitals::MAX_HEALTH) {
+                continue;
+            }
+            $healed = min(
+                self::NATURAL_REGENERATION_HEALTH,
+                \Bedriox\Server\Player\PlayerVitals::MAX_HEALTH - $player->vitals->health,
+            );
+            if ($this->pluginEvents !== null) {
+                $healed = $this->pluginEvents->regainHealth(
+                    $player,
+                    ApiHealthRegainCause::SATURATION,
+                    $healed,
+                );
+                if ($healed === null || $healed <= 0.0) {
+                    continue;
+                }
+                $healed = min(
+                    $healed,
+                    \Bedriox\Server\Player\PlayerVitals::MAX_HEALTH - $player->vitals->health,
+                );
+            }
+            $previousNutrition = PluginGameplayEventBridge::nutrition($player);
+            $stagedVitals = clone $player->vitals;
+            $stagedVitals->exhaust(self::NATURAL_REGENERATION_EXHAUSTION);
+            $proposedNutrition = new ApiNutrition(
+                (int) $stagedVitals->food,
+                $stagedVitals->saturation,
+                $stagedVitals->exhaustion,
+            );
+            if ($this->pluginEvents !== null) {
+                $proposedNutrition = $this->pluginEvents->nutritionChange(
+                    $player,
+                    $previousNutrition,
+                    $proposedNutrition,
+                    ApiFoodLevelChangeCause::REGENERATION,
+                );
+                if ($proposedNutrition === null) {
+                    continue;
+                }
+            }
+            $player->vitals->health += $healed;
+            $player->vitals->setNutrition(
+                $proposedNutrition->foodLevel,
+                $proposedNutrition->saturationLevel,
+                $proposedNutrition->exhaustionLevel,
+            );
+            $player->markDirty();
+            $currentNutrition = PluginGameplayEventBridge::nutrition($player);
+            $this->pluginEvents?->regainedHealth($player, ApiHealthRegainCause::SATURATION, $healed);
+            $this->pluginEvents?->nutritionChanged(
+                $player,
+                $previousNutrition,
+                $currentNutrition,
+                ApiFoodLevelChangeCause::REGENERATION,
+            );
+            $events[] = new PlayerHealed(
+                $player->snapshot(),
+                $healed,
+                HealthRegainCause::SATURATION,
+                $this->players->recipients(),
+            );
+            $events[] = new NutritionChanged(
+                $player->snapshot(),
+                $previousNutrition->foodLevel,
+                $previousNutrition->saturationLevel,
+                $previousNutrition->exhaustionLevel,
+                NutritionChangeReason::NATURAL_REGENERATION,
+                [$player->sessionId],
+            );
+        }
+
+        return $events;
+    }
+
+    private function pruneItemCooldowns(string $key): void
+    {
+        foreach ($this->itemCooldowns[$key] ?? [] as $identifier => $expiry) {
+            if ($expiry <= $this->tick) {
+                unset($this->itemCooldowns[$key][$identifier]);
+            }
+        }
+        if (($this->itemCooldowns[$key] ?? []) === []) {
+            unset($this->itemCooldowns[$key]);
+        }
+    }
+
+    private function setItemCooldown(string $key, string $identifier, int $ticks): void
+    {
+        $this->pruneItemCooldowns($key);
+        if (count($this->itemCooldowns[$key] ?? []) >= 64) {
+            asort($this->itemCooldowns[$key], SORT_NUMERIC);
+            $oldest = array_key_first($this->itemCooldowns[$key]);
+            unset($this->itemCooldowns[$key][$oldest]);
+        }
+        $this->itemCooldowns[$key][$identifier] = $this->tick + $ticks;
+    }
+
     private function heldItemType(Player $player): ?\Bedriox\Server\Gameplay\Item\ItemType
     {
         $held = $player->inventory->selectedStack();
@@ -1955,6 +2612,72 @@ final class WorldSimulation
         }
 
         return $this->itemCatalog->type($held->identifier);
+    }
+
+    private function armorReducedDamage(Player $player, float $damage, DamageCause $cause): float
+    {
+        if ($cause === DamageCause::Fall) {
+            return $damage;
+        }
+
+        return max(0.0, $damage * (1.0 - ($player->inventory->defensePoints() * 0.04)));
+    }
+
+    private function damageArmor(Player $player, float $baseDamage, DamageCause $cause): bool
+    {
+        if ($cause === DamageCause::Fall || $this->itemCatalog === null) {
+            return false;
+        }
+        $defaultWear = max((int) floor($baseDamage / 4.0), 1);
+        $changed = false;
+        foreach (ArmorSlot::cases() as $slot) {
+            $stack = $player->inventory->armorStack($slot);
+            if ($stack === null || !$this->itemCatalog->has($stack->identifier)) {
+                continue;
+            }
+            $definition = $this->itemCatalog->type($stack->identifier)->armor;
+            if ($definition === null || $definition->slot !== $slot) {
+                continue;
+            }
+            $apiSlot = self::apiEquipmentSlot($slot);
+            $wear = $this->pluginEvents?->itemDamage(
+                $player,
+                $stack,
+                ApiItemDamageCause::DAMAGE_ABSORPTION,
+                $apiSlot,
+                $defaultWear,
+            ) ?? ($this->pluginEvents === null ? $defaultWear : null);
+            if ($wear === null || $wear === 0) {
+                continue;
+            }
+            $newDamage = $stack->damage + $wear;
+            $replacement = $newDamage >= $definition->maximumDurability
+                ? null
+                : $stack->withDamage($newDamage);
+            $player->inventory->replaceArmorSlot($slot, $replacement);
+            $this->pluginEvents?->equipmentChanged($player, $apiSlot, $stack, $replacement);
+            if ($replacement === null) {
+                $this->pluginEvents?->itemBroken(
+                    $player,
+                    $stack,
+                    ApiItemDamageCause::DAMAGE_ABSORPTION,
+                    $apiSlot,
+                );
+            }
+            $changed = true;
+        }
+
+        return $changed;
+    }
+
+    private static function apiEquipmentSlot(ArmorSlot $slot): ApiEquipmentSlot
+    {
+        return match ($slot) {
+            ArmorSlot::Head => ApiEquipmentSlot::HEAD,
+            ArmorSlot::Chest => ApiEquipmentSlot::CHEST,
+            ArmorSlot::Legs => ApiEquipmentSlot::LEGS,
+            ArmorSlot::Feet => ApiEquipmentSlot::FEET,
+        };
     }
 
     private function damageHeldTool(
@@ -1971,16 +2694,31 @@ final class WorldSimulation
         if ($wear === 0) {
             return;
         }
+        $cause = $attack ? ApiItemDamageCause::ENTITY_ATTACK : ApiItemDamageCause::BLOCK_BREAK;
+        $wear = $this->pluginEvents?->itemDamage(
+            $player,
+            $held,
+            $cause,
+            ApiEquipmentSlot::MAIN_HAND,
+            $wear,
+        ) ?? ($this->pluginEvents === null ? $wear : null);
+        if ($wear === null || $wear === 0) {
+            return;
+        }
         $damage = $held->damage + $wear;
         $remaining = $damage >= $tool->durability ? null : $held->withDamage($damage);
         $player->inventory->replaceSlot($player->inventory->selectedHotbarSlot(), $remaining);
         $player->markDirty();
+        if ($remaining === null) {
+            $this->pluginEvents?->itemBroken($player, $held, $cause, ApiEquipmentSlot::MAIN_HAND);
+        }
         $this->deferredEvents[] = new HeldItemChanged(
             $player->sessionId,
             $player->runtimeActorId,
             $player->inventory->selectedHotbarSlot(),
             $player->inventory->selectedStack(),
             $this->players->recipients($player->sessionId),
+            ownerSlotCorrection: true,
         );
     }
 
@@ -2035,8 +2773,10 @@ final class WorldSimulation
             return new CommandRejected($command->session, 'not_joined');
         }
         $rejectionReason = $command->rejectionReason;
+        $predictionOnly = $command->actions !== [];
         $usesCreatedOutput = false;
         foreach ($command->actions as $action) {
+            $predictionOnly = $predictionOnly && $action->type === InventoryStackRequestActionType::MineBlock;
             if ($action->source->container === InventoryContainer::CreatedOutput
                 || $action->destination->container === InventoryContainer::CreatedOutput) {
                 $usesCreatedOutput = true;
@@ -2050,7 +2790,7 @@ final class WorldSimulation
         } elseif ($usesCreatedOutput && $command->authoritativeCreativeStack === null) {
             $rejectionReason = 'missing_created_output';
         }
-        if ($this->pluginEvents === null) {
+        if ($this->pluginEvents === null || $predictionOnly) {
             $result = $rejectionReason === null
                 ? $player->inventory->applyStackRequest(
                     $command->requestId,
@@ -2061,6 +2801,8 @@ final class WorldSimulation
         } else {
             $before = clone $player->inventory;
             $proposed = clone $player->inventory;
+            /** @var array<string, array{ApiEquipmentSlot, ?InventoryStack, ?InventoryStack}> $equipmentChanges */
+            $equipmentChanges = [];
             $result = $rejectionReason === null
                 ? $proposed->applyStackRequest(
                     $command->requestId,
@@ -2068,6 +2810,24 @@ final class WorldSimulation
                     $command->authoritativeCreativeStack,
                 )
                 : new InventoryStackRequestResult(false, reason: $rejectionReason);
+            if ($result->success) {
+                try {
+                    foreach (self::equipmentChanges($before, $proposed) as [$slot, $previous, $next]) {
+                        $event = $this->pluginEvents->equipmentChange($player, $slot, $previous, $next);
+                        if ($event === null) {
+                            $result = new InventoryStackRequestResult(false, reason: 'plugin_cancelled');
+                            break;
+                        }
+                        $replacement = $event->item() === null
+                            ? null
+                            : $this->inventoryStackFromApi($event->item());
+                        self::replaceEquipment($proposed, $slot, $replacement);
+                        $equipmentChanges[$slot->value] = [$slot, $previous, $replacement];
+                    }
+                } catch (InvalidArgumentException|OverflowException) {
+                    $result = new InventoryStackRequestResult(false, reason: 'plugin_result');
+                }
+            }
             if ($result->success && !$this->pluginEvents->allowInventoryChange($player, $before, $proposed)) {
                 $result = new InventoryStackRequestResult(false, reason: 'plugin_cancelled');
             } elseif ($result->success) {
@@ -2077,11 +2837,15 @@ final class WorldSimulation
                     $command->authoritativeCreativeStack,
                 );
                 if ($result->success) {
+                    foreach ($equipmentChanges as [$slot, $previous, $replacement]) {
+                        self::replaceEquipment($player->inventory, $slot, $replacement);
+                        $this->pluginEvents->equipmentChanged($player, $slot, $previous, $replacement);
+                    }
                     $this->pluginEvents->inventoryChanged($player, $before);
                 }
             }
         }
-        if ($result->success) {
+        if ($result->success && !$predictionOnly) {
             $player->markDirty();
         }
 
@@ -2099,7 +2863,82 @@ final class WorldSimulation
             $this->players->recipients($player->sessionId),
             $result->reason,
             $command->responseMode,
+            armorInventory: $player->inventory->armorSlots(),
+            offhandStack: $player->inventory->offhandStack(),
         );
+    }
+
+    /**
+     * @return list<array{ApiEquipmentSlot, ?InventoryStack, ?InventoryStack}>
+     */
+    private static function equipmentChanges(PlayerInventory $before, PlayerInventory $after): array
+    {
+        $changes = [];
+        foreach (ArmorSlot::cases() as $slot) {
+            $previous = $before->armorStack($slot);
+            $next = $after->armorStack($slot);
+            if (!self::sameInventoryStack($previous, $next)) {
+                $changes[] = [self::apiEquipmentSlot($slot), $previous, $next];
+            }
+        }
+        if (!self::sameInventoryStack($before->offhandStack(), $after->offhandStack())) {
+            $changes[] = [ApiEquipmentSlot::OFF_HAND, $before->offhandStack(), $after->offhandStack()];
+        }
+
+        return $changes;
+    }
+
+    private static function replaceEquipment(
+        PlayerInventory $inventory,
+        ApiEquipmentSlot $slot,
+        ?InventoryStack $stack,
+    ): void {
+        switch ($slot) {
+            case ApiEquipmentSlot::HEAD:
+                $inventory->replaceArmorSlot(ArmorSlot::Head, $stack);
+                break;
+            case ApiEquipmentSlot::CHEST:
+                $inventory->replaceArmorSlot(ArmorSlot::Chest, $stack);
+                break;
+            case ApiEquipmentSlot::LEGS:
+                $inventory->replaceArmorSlot(ArmorSlot::Legs, $stack);
+                break;
+            case ApiEquipmentSlot::FEET:
+                $inventory->replaceArmorSlot(ArmorSlot::Feet, $stack);
+                break;
+            case ApiEquipmentSlot::OFF_HAND:
+                $inventory->replaceOffhand($stack);
+                break;
+            case ApiEquipmentSlot::MAIN_HAND:
+                throw new InvalidArgumentException('Main-hand replacement is not an equipment-container transaction.');
+        }
+    }
+
+    private static function sameInventoryStack(?InventoryStack $left, ?InventoryStack $right): bool
+    {
+        return ($left === null && $right === null)
+            || ($left !== null && $right !== null
+                && $left->identifier === $right->identifier
+                && $left->count === $right->count
+                && $left->damage === $right->damage
+                && $left->auxValue === $right->auxValue
+                && $left->placedBlockState?->value === $right->placedBlockState?->value
+                && ($left->nbt?->toBinary() ?? '') === ($right->nbt?->toBinary() ?? ''));
+    }
+
+    /** @return list<InventorySlotReference> */
+    private static function changedMainInventorySlots(
+        PlayerInventory $before,
+        PlayerInventory $after,
+    ): array {
+        $changes = [];
+        for ($slot = 0; $slot < PlayerInventory::SLOT_COUNT; ++$slot) {
+            if (!self::sameInventoryStack($before->stackAt($slot), $after->stackAt($slot))) {
+                $changes[] = new InventorySlotReference(InventoryContainer::Main, $slot, 0);
+            }
+        }
+
+        return $changes;
     }
 
     private function placeBlock(PlaceBlock $command): WorldEvent
@@ -2284,6 +3123,7 @@ final class WorldSimulation
             $yaw = $decision->yaw;
             $pitch = $decision->pitch;
         }
+        $this->deferItemUseCancellation($player, ItemUseCancellationReason::TELEPORT);
         $player->movement->position = $destination;
         $player->movement->yaw = $yaw;
         $player->movement->headYaw = $yaw;
@@ -2375,6 +3215,8 @@ final class WorldSimulation
             $player->runtimeActorId,
             $this->players->recipients($player->sessionId),
             responseMode: InventoryResponseMode::LegacySlotSync,
+            armorInventory: $player->inventory->armorSlots(),
+            offhandStack: $player->inventory->offhandStack(),
         );
     }
 

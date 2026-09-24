@@ -29,6 +29,7 @@ final readonly class Player
         public bool $alive = true,
         public GameMode $gameMode = GameMode::SURVIVAL,
         private ?PlayerConnection $playerConnection = null,
+        public Nutrition $nutrition = new Nutrition(20, 20.0, 0.0),
     ) {}
 
     public function connection(): PlayerConnection

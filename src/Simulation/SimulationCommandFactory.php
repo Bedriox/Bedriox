@@ -11,6 +11,7 @@ use Bedriox\Server\Player\InventorySlotReference;
 use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Player\InventoryStackRequestAction;
 use Bedriox\Server\Player\PlayerBootstrap;
+use Bedriox\Server\Player\PlayerInventory;
 use Bedriox\Server\Simulation\Command\AcknowledgeRespawn;
 use Bedriox\Server\Simulation\Command\ApplyInventoryStackRequest;
 use Bedriox\Server\Simulation\Command\AttackPlayer;
@@ -24,6 +25,7 @@ use Bedriox\Server\Simulation\Command\JoinPlayer;
 use Bedriox\Server\Simulation\Command\MovePlayer;
 use Bedriox\Server\Simulation\Command\PerformEmote;
 use Bedriox\Server\Simulation\Command\PlaceBlock;
+use Bedriox\Server\Simulation\Command\ReleaseItem;
 use Bedriox\Server\Simulation\Command\RespawnPlayer;
 use Bedriox\Server\Simulation\Command\SelectHotbarSlot;
 use Bedriox\Server\Simulation\Command\SendChat;
@@ -31,7 +33,9 @@ use Bedriox\Server\Simulation\Command\SendPluginMessage;
 use Bedriox\Server\Simulation\Command\SetPluginBlock;
 use Bedriox\Server\Simulation\Command\SetPluginInventorySlot;
 use Bedriox\Server\Simulation\Command\SyncInventory;
+use Bedriox\Server\Simulation\Command\SyncInventorySlots;
 use Bedriox\Server\Simulation\Command\TeleportPlayer;
+use Bedriox\Server\Simulation\Command\UseItem;
 use Bedriox\Server\World\BlockPosition;
 
 final readonly class SimulationCommandFactory
@@ -272,9 +276,18 @@ final readonly class SimulationCommandFactory
     ): DropItem {
         $this->assertOpaqueId($session, 128, 'session');
         if ($requestId < -0x80000000 || $requestId > 0x7fffffff
-            || !in_array($source->container, [InventoryContainer::Main, InventoryContainer::Cursor], true)
-            || ($source->container === InventoryContainer::Main && ($source->slot < 0 || $source->slot >= 36))
+            || !in_array($source->container, [
+                InventoryContainer::Main,
+                InventoryContainer::Cursor,
+                InventoryContainer::Armor,
+                InventoryContainer::Offhand,
+            ], true)
+            || ($source->container === InventoryContainer::Main
+                && ($source->slot < 0 || $source->slot >= PlayerInventory::SLOT_COUNT))
             || ($source->container === InventoryContainer::Cursor && $source->slot !== 0)
+            || ($source->container === InventoryContainer::Armor
+                && ($source->slot < 0 || $source->slot >= PlayerInventory::ARMOR_SLOT_COUNT))
+            || ($source->container === InventoryContainer::Offhand && $source->slot !== 0)
             || $source->expectedStackNetworkId < -0x80000000
             || $source->expectedStackNetworkId > 0x7fffffff
             || $count < 1 || $count > 64
@@ -290,6 +303,32 @@ final readonly class SimulationCommandFactory
         $this->assertOpaqueId($session, 128, 'session');
 
         return new SyncInventory($session);
+    }
+
+    /** @param list<mixed> $slots */
+    public function syncInventorySlots(string $session, array $slots): SyncInventorySlots
+    {
+        $this->assertOpaqueId($session, 128, 'session');
+        if ($slots === [] || count($slots) > PlayerInventory::SLOT_COUNT + PlayerInventory::ARMOR_SLOT_COUNT + 2) {
+            throw new CommandValidationException('Inventory slot sync is outside its bounded range.');
+        }
+        $seen = [];
+        foreach ($slots as $slot) {
+            if (!$slot instanceof InventorySlotReference
+                || $slot->container === InventoryContainer::CreatedOutput
+                || ($slot->container === InventoryContainer::Main
+                    && ($slot->slot < 0 || $slot->slot >= PlayerInventory::SLOT_COUNT))
+                || ($slot->container === InventoryContainer::Armor
+                    && ($slot->slot < 0 || $slot->slot >= PlayerInventory::ARMOR_SLOT_COUNT))
+                || ($slot->container === InventoryContainer::Cursor && $slot->slot !== 0)
+                || ($slot->container === InventoryContainer::Offhand && $slot->slot !== 0)
+                || isset($seen[$slot->key()])) {
+                throw new CommandValidationException('Inventory slot sync contains an invalid slot.');
+            }
+            $seen[$slot->key()] = true;
+        }
+
+        return new SyncInventorySlots($session, $slots);
     }
 
     public function respawn(string $session): RespawnPlayer
@@ -365,6 +404,26 @@ final readonly class SimulationCommandFactory
         return new SelectHotbarSlot($session, $hotbarSlot);
     }
 
+    public function useItem(string $session, int $hotbarSlot): UseItem
+    {
+        $this->assertOpaqueId($session, 128, 'session');
+        if ($hotbarSlot < 0 || $hotbarSlot > 8) {
+            throw new CommandValidationException('Item-use hotbar slot is outside its supported range.');
+        }
+
+        return new UseItem($session, $hotbarSlot);
+    }
+
+    public function releaseItem(string $session, int $hotbarSlot): ReleaseItem
+    {
+        $this->assertOpaqueId($session, 128, 'session');
+        if ($hotbarSlot < 0 || $hotbarSlot > 8) {
+            throw new CommandValidationException('Item-release hotbar slot is outside its supported range.');
+        }
+
+        return new ReleaseItem($session, $hotbarSlot);
+    }
+
     /** @param list<mixed> $actions */
     public function inventoryStackRequest(
         string $session,
@@ -386,11 +445,19 @@ final readonly class SimulationCommandFactory
         foreach ($actions as $action) {
             if (!$action instanceof InventoryStackRequestAction
                 || ($action->source->container === InventoryContainer::Main
-                    && ($action->source->slot < 0 || $action->source->slot >= 36))
+                    && ($action->source->slot < 0 || $action->source->slot >= PlayerInventory::SLOT_COUNT))
                 || ($action->destination->container === InventoryContainer::Main
-                    && ($action->destination->slot < 0 || $action->destination->slot >= 36))
+                    && ($action->destination->slot < 0 || $action->destination->slot >= PlayerInventory::SLOT_COUNT))
                 || ($action->source->container === InventoryContainer::Cursor && $action->source->slot !== 0)
                 || ($action->destination->container === InventoryContainer::Cursor && $action->destination->slot !== 0)
+                || ($action->source->container === InventoryContainer::Armor
+                    && ($action->source->slot < 0 || $action->source->slot >= PlayerInventory::ARMOR_SLOT_COUNT))
+                || ($action->destination->container === InventoryContainer::Armor
+                    && ($action->destination->slot < 0
+                        || $action->destination->slot >= PlayerInventory::ARMOR_SLOT_COUNT))
+                || ($action->source->container === InventoryContainer::Offhand && $action->source->slot !== 0)
+                || ($action->destination->container === InventoryContainer::Offhand
+                    && $action->destination->slot !== 0)
                 || ($action->source->container === InventoryContainer::CreatedOutput && $action->source->slot !== 50)
                 || ($action->destination->container === InventoryContainer::CreatedOutput
                     && $action->destination->slot !== 50)) {

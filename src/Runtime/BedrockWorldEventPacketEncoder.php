@@ -18,7 +18,9 @@ use Bedriox\Protocol\Packet\DeathInfoPacket;
 use Bedriox\Protocol\Packet\EmoteFlag;
 use Bedriox\Protocol\Packet\EmotePacket;
 use Bedriox\Protocol\Packet\FullContainerName;
+use Bedriox\Protocol\Packet\InventoryContainerId;
 use Bedriox\Protocol\Packet\InventoryContentPacket;
+use Bedriox\Protocol\Packet\InventoryItemStack as ProtocolInventoryItemStack;
 use Bedriox\Protocol\Packet\InventorySlotPacket;
 use Bedriox\Protocol\Packet\ItemStackResponse;
 use Bedriox\Protocol\Packet\ItemStackResponseContainer;
@@ -29,6 +31,7 @@ use Bedriox\Protocol\Packet\LevelEventPosition;
 use Bedriox\Protocol\Packet\LevelEventType;
 use Bedriox\Protocol\Packet\LevelSoundEventName;
 use Bedriox\Protocol\Packet\LevelSoundEventPacket;
+use Bedriox\Protocol\Packet\MobArmorEquipmentPacket;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
 use Bedriox\Protocol\Packet\MoveActorAbsoluteFlag;
 use Bedriox\Protocol\Packet\MoveActorAbsolutePacket;
@@ -72,17 +75,22 @@ use Bedriox\Server\Simulation\Event\ChatBroadcast;
 use Bedriox\Server\Simulation\Event\EmotePerformed;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
+use Bedriox\Server\Simulation\Event\ItemConsumed;
 use Bedriox\Server\Simulation\Event\ItemEntityDespawned;
 use Bedriox\Server\Simulation\Event\ItemEntityMoved;
 use Bedriox\Server\Simulation\Event\ItemEntityPickedUp;
 use Bedriox\Server\Simulation\Event\ItemEntitySpawned;
+use Bedriox\Server\Simulation\Event\ItemUseCancelled;
+use Bedriox\Server\Simulation\Event\ItemUseStarted;
 use Bedriox\Server\Simulation\Event\MovementCorrected;
+use Bedriox\Server\Simulation\Event\NutritionChanged;
 use Bedriox\Server\Simulation\Event\PlayerBecameHidden;
 use Bedriox\Server\Simulation\Event\PlayerBecameVisible;
 use Bedriox\Server\Simulation\Event\PlayerDamaged;
 use Bedriox\Server\Simulation\Event\PlayerDied;
 use Bedriox\Server\Simulation\Event\PlayerDisconnected;
 use Bedriox\Server\Simulation\Event\PlayerGameModeChanged;
+use Bedriox\Server\Simulation\Event\PlayerHealed;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
 use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
 use Bedriox\Server\Simulation\Event\PlayerMotionChanged;
@@ -138,6 +146,13 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
             $event instanceof BlockPlacementCorrected => $this->blockPlacementCorrected($event),
             $event instanceof HeldItemChanged => $this->heldItemChanged($event),
             $event instanceof InventoryStackRequestProcessed => $this->inventoryStackRequestProcessed($event),
+            $event instanceof ItemUseStarted => $this->itemUseStarted($event),
+            $event instanceof ItemUseCancelled => $this->itemUseCancelled($event),
+            $event instanceof ItemConsumed => $this->itemConsumed($event),
+            $event instanceof NutritionChanged => [new DirectedPacket(
+                $event->player->sessionId,
+                $this->nutritionPacket($event->player),
+            )],
             $event instanceof ItemEntitySpawned => $this->itemEntitySpawned($event),
             $event instanceof ItemEntityMoved => $this->itemEntityMoved($event),
             $event instanceof ItemEntityPickedUp => $this->itemEntityPickedUp($event),
@@ -150,6 +165,10 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
             ),
             $event instanceof PlayerGameModeChanged => $this->gameModeChanged($event),
             $event instanceof PlayerDamaged => $this->damaged($event),
+            $event instanceof PlayerHealed => [new DirectedPacket(
+                $event->player->sessionId,
+                $this->healthPacket($event->player),
+            )],
             $event instanceof PlayerKnockedBack => array_map(
                 static fn(string $recipient): DirectedPacket => new DirectedPacket(
                     $recipient,
@@ -188,8 +207,125 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
         foreach ($event->recipientSessionIds as $recipient) {
             $packets[] = new DirectedPacket($recipient, $animation);
         }
+        if ($event->equipmentChanged && $this->inventory !== null) {
+            $packets = [
+                ...$packets,
+                ...$this->inventoryContentCorrection(
+                    $event->player->sessionId,
+                    InventoryContainerId::ARMOR,
+                    self::normalizeArmor($event->player->armor),
+                ),
+            ];
+            $armor = $this->armorEquipment($event->player);
+            foreach ($event->recipientSessionIds as $recipient) {
+                if ($recipient !== $event->player->sessionId) {
+                    $packets[] = new DirectedPacket($recipient, $armor);
+                }
+            }
+        }
 
         return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function itemUseStarted(ItemUseStarted $event): array
+    {
+        $packets = [];
+        $metadata = SetActorDataPacket::playerPosture(
+            UnsignedLong::fromInt($event->runtimeActorId),
+            UnsignedLong::fromInt(max(0, $event->movementSequence)),
+            $event->sneaking,
+            $event->sprinting,
+            true,
+        );
+        $animation = $this->eatingAnimation($event->runtimeActorId, $event->stack);
+        foreach ($event->recipientSessionIds as $recipient) {
+            $packets[] = new DirectedPacket($recipient, $metadata);
+            if ($animation !== null) {
+                $packets[] = new DirectedPacket($recipient, $animation);
+            }
+        }
+
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function itemUseCancelled(ItemUseCancelled $event): array
+    {
+        $metadata = SetActorDataPacket::playerPosture(
+            UnsignedLong::fromInt($event->runtimeActorId),
+            UnsignedLong::fromInt(max(0, $event->movementSequence)),
+            $event->sneaking,
+            $event->sprinting,
+        );
+
+        return array_map(
+            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $metadata),
+            $event->recipientSessionIds,
+        );
+    }
+
+    /** @return list<DirectedPacket> */
+    private function itemConsumed(ItemConsumed $event): array
+    {
+        $player = $event->player;
+        $packets = [];
+        $metadata = SetActorDataPacket::playerPosture(
+            UnsignedLong::fromInt($player->runtimeActorId),
+            UnsignedLong::fromInt(max(0, $player->movementSequence)),
+            $player->sneaking,
+            $player->sprinting,
+        );
+        $animation = $this->eatingAnimation($player->runtimeActorId, $event->consumedStack);
+        foreach ($event->recipientSessionIds as $recipient) {
+            $packets[] = new DirectedPacket($recipient, $metadata);
+            if ($animation !== null) {
+                $packets[] = new DirectedPacket($recipient, $animation);
+            }
+        }
+        if ($this->inventory !== null) {
+            foreach ($event->affectedSlots as $reference) {
+                $packets = [
+                    ...$packets,
+                    ...$this->inventorySlotCorrection(
+                        $player->sessionId,
+                        InventoryContainerId::INVENTORY,
+                        $reference->slot,
+                        $event->mainInventory[$reference->slot] ?? null,
+                    ),
+                ];
+            }
+            $equipment = new MobEquipmentPacket(
+                UnsignedLong::fromInt($player->runtimeActorId),
+                $event->hotbarSlot,
+                $event->hotbarSlot,
+                InventoryContainerId::INVENTORY,
+                $this->visualStack($event->selectedStack),
+            );
+            foreach ($event->recipientSessionIds as $recipient) {
+                $packets[] = new DirectedPacket($recipient, $equipment);
+            }
+        }
+
+        return $packets;
+    }
+
+    private function eatingAnimation(int $runtimeActorId, \Bedriox\Server\Player\InventoryStack $stack): ?ActorEventPacket
+    {
+        if ($this->inventory === null) {
+            return null;
+        }
+        $network = $this->inventory->toProtocol($stack);
+        $data = (($network->runtimeId & 0xffff) << 16) | ($network->aux & 0xffff);
+        if ($data > 0x7fffffff) {
+            $data -= 0x100000000;
+        }
+
+        return new ActorEventPacket(
+            UnsignedLong::fromInt($runtimeActorId),
+            ActorEventType::EatingItem,
+            $data,
+        );
     }
 
     /** @return list<DirectedPacket> */
@@ -262,6 +398,7 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
         $player = $event->player;
         $packets = [
             new DirectedPacket($player->sessionId, $this->healthPacket($player)),
+            new DirectedPacket($player->sessionId, $this->nutritionPacket($player)),
             new DirectedPacket($player->sessionId, new MovePlayerPacket(
                 UnsignedLong::fromInt($player->runtimeActorId),
                 $player->position->x,
@@ -287,16 +424,31 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
             $packets[] = $packet;
         }
         if ($this->inventory !== null) {
-            $owner = array_map(
-                fn(?\Bedriox\Server\Player\InventoryStack $stack) => $this->inventory->toProtocol($stack),
-                $event->inventory,
-            );
-            $packets[] = new DirectedPacket($player->sessionId, new InventoryContentPacket(0, $owner));
+            $armor = $event->armor !== [] ? $event->armor : $player->armor;
+            $offhand = $event->offhand ?? $player->offhand;
+            $packets = [
+                ...$packets,
+                ...$this->inventoryContentCorrection(
+                    $player->sessionId,
+                    InventoryContainerId::INVENTORY,
+                    $event->inventory,
+                ),
+                ...$this->inventoryContentCorrection(
+                    $player->sessionId,
+                    InventoryContainerId::ARMOR,
+                    self::normalizeArmor($armor),
+                ),
+                ...$this->inventoryContentCorrection(
+                    $player->sessionId,
+                    InventoryContainerId::OFFHAND,
+                    [$offhand],
+                ),
+            ];
             $packets[] = new DirectedPacket($player->sessionId, new MobEquipmentPacket(
                 UnsignedLong::fromInt($player->runtimeActorId),
                 $event->selectedHotbarSlot,
                 $event->selectedHotbarSlot,
-                0,
+                InventoryContainerId::INVENTORY,
                 $this->inventory->toProtocol($event->selectedStack),
             ));
         }
@@ -309,6 +461,19 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
         return new UpdateAttributesPacket(
             UnsignedLong::fromInt($player->runtimeActorId),
             [new PlayerAttribute('minecraft:health', 0.0, 20.0, $player->health, 0.0, 20.0, 20.0)],
+            UnsignedLong::fromInt(max(0, $player->movementSequence)),
+        );
+    }
+
+    private function nutritionPacket(PlayerSnapshot $player): UpdateAttributesPacket
+    {
+        return new UpdateAttributesPacket(
+            UnsignedLong::fromInt($player->runtimeActorId),
+            [
+                new PlayerAttribute('minecraft:player.hunger', 0.0, 20.0, $player->food, 0.0, 20.0, 20.0),
+                new PlayerAttribute('minecraft:player.saturation', 0.0, 20.0, $player->saturation, 0.0, 20.0, 20.0),
+                new PlayerAttribute('minecraft:player.exhaustion', 0.0, 4.0, $player->exhaustion, 0.0, 4.0, 0.0),
+            ],
             UnsignedLong::fromInt(max(0, $player->movementSequence)),
         );
     }
@@ -556,6 +721,21 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
                 $login->clientData->skinId,
                 '',
             )),
+            new DirectedPacket($event->recipientSessionId, new MobEquipmentPacket(
+                UnsignedLong::fromInt($event->player->runtimeActorId),
+                $event->player->selectedHotbarSlot,
+                $event->player->selectedHotbarSlot,
+                InventoryContainerId::INVENTORY,
+                $this->visualStack($event->player->selectedStack),
+            )),
+            new DirectedPacket($event->recipientSessionId, $this->armorEquipment($event->player)),
+            new DirectedPacket($event->recipientSessionId, new MobEquipmentPacket(
+                UnsignedLong::fromInt($event->player->runtimeActorId),
+                0,
+                0,
+                InventoryContainerId::OFFHAND,
+                $this->visualStack($event->player->offhand),
+            )),
         ];
     }
 
@@ -671,7 +851,7 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
                 $event->inventorySlot,
                 $event->inventorySlot,
                 0,
-                $inventory->toProtocol($event->remainingStack),
+                $this->visualStack($event->remainingStack),
             ));
         }
 
@@ -709,18 +889,27 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
     /** @return list<DirectedPacket> */
     private function heldItemChanged(HeldItemChanged $event): array
     {
-        $inventory = $this->requireInventoryProjector();
+        $packets = $event->ownerSlotCorrection
+            ? $this->inventorySlotCorrection(
+                $event->ownerSessionId,
+                InventoryContainerId::INVENTORY,
+                $event->hotbarSlot,
+                $event->stack,
+            )
+            : [];
 
-        return array_map(
+        array_push($packets, ...array_map(
             fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, new MobEquipmentPacket(
                 UnsignedLong::fromInt($event->runtimeActorId),
                 $event->hotbarSlot,
                 $event->hotbarSlot,
                 0,
-                $inventory->toProtocol($event->stack),
+                $this->visualStack($event->stack),
             )),
             $event->recipientSessionIds,
-        );
+        ));
+
+        return $packets;
     }
 
     /** @return list<DirectedPacket> */
@@ -843,22 +1032,18 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
     /** @return list<DirectedPacket> */
     private function inventoryStackRequestProcessed(InventoryStackRequestProcessed $event): array
     {
-        $inventory = $this->requireInventoryProjector();
         $containers = [];
         if ($event->success) {
             $slotsByContainer = [];
             foreach ($event->affectedSlots as $reference) {
-                $containerId = $reference->responseContainerId ?? ($reference->container === InventoryContainer::Main
-                    ? FullContainerName::INVENTORY
-                    : FullContainerName::CURSOR);
-                $stack = $reference->container === InventoryContainer::Main
-                    ? $event->mainInventory[$reference->slot]
-                    : $event->cursorStack;
+                $containerId = $reference->responseContainerId ?? self::fullContainerNameId($reference->container);
+                $stack = self::processedStack($event, $reference);
                 $slotsByContainer[$containerId][] = new ItemStackResponseSlot(
-                    $reference->slot,
-                    $reference->slot,
+                    $reference->responseSlotId(),
+                    $reference->responseSlotId(),
                     $stack === null ? 0 : $stack->count,
                     $stack?->stackNetworkId,
+                    durabilityCorrection: $stack === null ? 0 : $stack->damage,
                 );
             }
             foreach ($slotsByContainer as $containerId => $slots) {
@@ -875,27 +1060,55 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
             $packets[] = new DirectedPacket($event->ownerSessionId, new ItemStackResponsePacket([$response]));
         }
         if ($event->fullSync) {
-            $main = array_map(
-                fn(?\Bedriox\Server\Player\InventoryStack $stack) => $inventory->toProtocol($stack),
-                $event->mainInventory,
-            );
-            $packets[] = new DirectedPacket($event->ownerSessionId, new InventoryContentPacket(0, $main));
-            $packets[] = new DirectedPacket($event->ownerSessionId, new InventorySlotPacket(
-                124,
-                0,
-                $inventory->toProtocol($event->cursorStack),
-            ));
+            $packets = [
+                ...$packets,
+                ...$this->inventoryContentCorrection(
+                    $event->ownerSessionId,
+                    InventoryContainerId::INVENTORY,
+                    $event->mainInventory,
+                ),
+                ...$this->inventorySlotCorrection(
+                    $event->ownerSessionId,
+                    InventoryContainerId::UI,
+                    0,
+                    $event->cursorStack,
+                ),
+                ...$this->inventoryContentCorrection(
+                    $event->ownerSessionId,
+                    InventoryContainerId::ARMOR,
+                    self::normalizeArmor($event->armorInventory),
+                ),
+                ...$this->inventoryContentCorrection(
+                    $event->ownerSessionId,
+                    InventoryContainerId::OFFHAND,
+                    [$event->offhandStack],
+                ),
+            ];
         } elseif (!$event->success) {
-            $main = array_map(
-                fn(?\Bedriox\Server\Player\InventoryStack $stack) => $inventory->toProtocol($stack),
-                $event->mainInventory,
-            );
-            $packets[] = new DirectedPacket($event->ownerSessionId, new InventoryContentPacket(0, $main));
-            $packets[] = new DirectedPacket($event->ownerSessionId, new InventorySlotPacket(
-                124,
-                0,
-                $inventory->toProtocol($event->cursorStack),
-            ));
+            $packets = [
+                ...$packets,
+                ...$this->inventoryContentCorrection(
+                    $event->ownerSessionId,
+                    InventoryContainerId::INVENTORY,
+                    $event->mainInventory,
+                ),
+                ...$this->inventorySlotCorrection(
+                    $event->ownerSessionId,
+                    InventoryContainerId::UI,
+                    0,
+                    $event->cursorStack,
+                ),
+                ...$this->inventoryContentCorrection(
+                    $event->ownerSessionId,
+                    InventoryContainerId::ARMOR,
+                    self::normalizeArmor($event->armorInventory),
+                ),
+                ...$this->inventoryContentCorrection(
+                    $event->ownerSessionId,
+                    InventoryContainerId::OFFHAND,
+                    [$event->offhandStack],
+                ),
+            ];
         } elseif ($event->responseMode === InventoryResponseMode::LegacySlotSync) {
             $synchronized = [];
             foreach ($event->affectedSlots as $reference) {
@@ -903,14 +1116,27 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
                     continue;
                 }
                 $synchronized[$reference->key()] = true;
-                $stack = $reference->container === InventoryContainer::Main
-                    ? $event->mainInventory[$reference->slot]
-                    : $event->cursorStack;
-                $packets[] = new DirectedPacket($event->ownerSessionId, new InventorySlotPacket(
-                    $reference->container === InventoryContainer::Main ? 0 : 124,
-                    $reference->slot,
-                    $inventory->toProtocol($stack),
-                ));
+                $stack = self::processedStack($event, $reference);
+                if ($reference->container === InventoryContainer::Offhand) {
+                    $packets = [
+                        ...$packets,
+                        ...$this->inventoryContentCorrection(
+                            $event->ownerSessionId,
+                            InventoryContainerId::OFFHAND,
+                            [$stack],
+                        ),
+                    ];
+                } else {
+                    $packets = [
+                        ...$packets,
+                        ...$this->inventorySlotCorrection(
+                            $event->ownerSessionId,
+                            self::windowId($reference->container),
+                            $reference->slot,
+                            $stack,
+                        ),
+                    ];
+                }
             }
         }
         if ($event->success && $event->selectedStackChanged) {
@@ -920,12 +1146,154 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
                     $event->selectedHotbarSlot,
                     $event->selectedHotbarSlot,
                     0,
-                    $inventory->toProtocol($event->selectedStack),
+                    $this->visualStack($event->selectedStack),
                 ));
+            }
+        }
+        $armorChanged = false;
+        $offhandChanged = false;
+        foreach ($event->affectedSlots as $reference) {
+            $armorChanged = $armorChanged || $reference->container === InventoryContainer::Armor;
+            $offhandChanged = $offhandChanged || $reference->container === InventoryContainer::Offhand;
+        }
+        if ($event->success && ($armorChanged || $offhandChanged)) {
+            $armor = new MobArmorEquipmentPacket(
+                UnsignedLong::fromInt($event->runtimeActorId),
+                $this->visualStack($event->armorInventory[0] ?? null),
+                $this->visualStack($event->armorInventory[1] ?? null),
+                $this->visualStack($event->armorInventory[2] ?? null),
+                $this->visualStack($event->armorInventory[3] ?? null),
+            );
+            $offhand = new MobEquipmentPacket(
+                UnsignedLong::fromInt($event->runtimeActorId),
+                0,
+                0,
+                InventoryContainerId::OFFHAND,
+                $this->visualStack($event->offhandStack),
+            );
+            foreach ($event->peerSessionIds as $recipient) {
+                if ($armorChanged) {
+                    $packets[] = new DirectedPacket($recipient, $armor);
+                }
+                if ($offhandChanged) {
+                    $packets[] = new DirectedPacket($recipient, $offhand);
+                }
             }
         }
 
         return $packets;
+    }
+
+    private function armorEquipment(PlayerSnapshot $player): MobArmorEquipmentPacket
+    {
+        return new MobArmorEquipmentPacket(
+            UnsignedLong::fromInt($player->runtimeActorId),
+            $this->visualStack($player->armor[0] ?? null),
+            $this->visualStack($player->armor[1] ?? null),
+            $this->visualStack($player->armor[2] ?? null),
+            $this->visualStack($player->armor[3] ?? null),
+        );
+    }
+
+    private function visualStack(?\Bedriox\Server\Player\InventoryStack $stack): ProtocolInventoryItemStack
+    {
+        $projected = $this->requireInventoryProjector()->toProtocol($stack);
+
+        return new ProtocolInventoryItemStack(
+            $projected->runtimeId,
+            $projected->count,
+            $projected->aux,
+            null,
+            $projected->blockRuntimeId,
+            $projected->userData,
+        );
+    }
+
+    /**
+     * @param list<?\Bedriox\Server\Player\InventoryStack> $stacks
+     * @return list<DirectedPacket>
+     */
+    private function inventoryContentCorrection(string $sessionId, int $containerId, array $stacks): array
+    {
+        $inventory = $this->requireInventoryProjector();
+        $empty = array_map(
+            static fn(): ProtocolInventoryItemStack => ProtocolInventoryItemStack::empty(),
+            $stacks,
+        );
+        $actual = array_map($inventory->toProtocol(...), $stacks);
+
+        return [
+            new DirectedPacket($sessionId, new InventoryContentPacket($containerId, $empty)),
+            new DirectedPacket($sessionId, new InventoryContentPacket($containerId, $actual)),
+        ];
+    }
+
+    /** @return list<DirectedPacket> */
+    private function inventorySlotCorrection(
+        string $sessionId,
+        int $containerId,
+        int $slot,
+        ?\Bedriox\Server\Player\InventoryStack $stack,
+    ): array {
+        $actual = $this->requireInventoryProjector()->toProtocol($stack);
+        $packets = [];
+        if ($actual->stackNetworkId !== null) {
+            $packets[] = new DirectedPacket(
+                $sessionId,
+                new InventorySlotPacket($containerId, $slot, ProtocolInventoryItemStack::empty()),
+            );
+        }
+        $packets[] = new DirectedPacket($sessionId, new InventorySlotPacket($containerId, $slot, $actual));
+
+        return $packets;
+    }
+
+    /**
+     * @param list<?\Bedriox\Server\Player\InventoryStack> $armor
+     * @return list<?\Bedriox\Server\Player\InventoryStack>
+     */
+    private static function normalizeArmor(array $armor): array
+    {
+        return [
+            $armor[0] ?? null,
+            $armor[1] ?? null,
+            $armor[2] ?? null,
+            $armor[3] ?? null,
+        ];
+    }
+
+    private static function processedStack(
+        InventoryStackRequestProcessed $event,
+        \Bedriox\Server\Player\InventorySlotReference $reference,
+    ): ?\Bedriox\Server\Player\InventoryStack {
+        return match ($reference->container) {
+            InventoryContainer::Main => $event->mainInventory[$reference->slot] ?? null,
+            InventoryContainer::Cursor => $event->cursorStack,
+            InventoryContainer::Armor => $event->armorInventory[$reference->slot] ?? null,
+            InventoryContainer::Offhand => $event->offhandStack,
+            InventoryContainer::CreatedOutput => null,
+        };
+    }
+
+    private static function fullContainerNameId(InventoryContainer $container): int
+    {
+        return match ($container) {
+            InventoryContainer::Main => FullContainerName::INVENTORY,
+            InventoryContainer::Cursor => FullContainerName::CURSOR,
+            InventoryContainer::Armor => FullContainerName::ARMOR,
+            InventoryContainer::Offhand => FullContainerName::OFFHAND,
+            InventoryContainer::CreatedOutput => FullContainerName::CREATED_OUTPUT,
+        };
+    }
+
+    private static function windowId(InventoryContainer $container): int
+    {
+        return match ($container) {
+            InventoryContainer::Main => InventoryContainerId::INVENTORY,
+            InventoryContainer::Cursor, InventoryContainer::CreatedOutput => InventoryContainerId::UI,
+            InventoryContainer::Armor => InventoryContainerId::ARMOR,
+            InventoryContainer::Offhand => InventoryContainerId::OFFHAND,
+        };
     }
 
     private function updateBlock(

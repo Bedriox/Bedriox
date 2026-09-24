@@ -12,6 +12,7 @@ final readonly class InventorySlotReference
         public int $expectedStackNetworkId,
         public ?int $responseContainerId = null,
         public ?int $expectedCount = null,
+        public ?int $responseSlot = null,
     ) {}
 
     public function key(): string
@@ -19,6 +20,8 @@ final readonly class InventorySlotReference
         return match ($this->container) {
             InventoryContainer::Main => 'main:',
             InventoryContainer::Cursor => 'cursor:',
+            InventoryContainer::Armor => 'armor:',
+            InventoryContainer::Offhand => 'offhand:',
             InventoryContainer::CreatedOutput => 'created_output:',
         } . $this->slot;
     }
@@ -28,8 +31,15 @@ final readonly class InventorySlotReference
         return match ($this->container) {
             InventoryContainer::Main => 'main:',
             InventoryContainer::Cursor => 'cursor:',
+            InventoryContainer::Armor => 'armor:',
+            InventoryContainer::Offhand => 'offhand:',
             InventoryContainer::CreatedOutput => 'created_output:',
         }
-        . ($this->responseContainerId ?? -1) . ':' . $this->slot;
+        . ($this->responseContainerId ?? -1) . ':' . $this->responseSlotId();
+    }
+
+    public function responseSlotId(): int
+    {
+        return $this->responseSlot ?? $this->slot;
     }
 }

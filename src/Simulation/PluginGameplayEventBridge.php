@@ -19,8 +19,19 @@ use Bedriox\Api\Event\Player\PlayerDamageEvent;
 use Bedriox\Api\Event\Player\PlayerDeathEvent;
 use Bedriox\Api\Event\Player\PlayerDropItemEvent;
 use Bedriox\Api\Event\Player\PlayerDroppedItemEvent;
+use Bedriox\Api\Event\Player\PlayerEquipmentChangedEvent;
+use Bedriox\Api\Event\Player\PlayerEquipmentChangeEvent;
+use Bedriox\Api\Event\Player\PlayerFoodLevelChangedEvent;
+use Bedriox\Api\Event\Player\PlayerFoodLevelChangeEvent;
 use Bedriox\Api\Event\Player\PlayerGameModeChangedEvent;
 use Bedriox\Api\Event\Player\PlayerGameModeChangeEvent;
+use Bedriox\Api\Event\Player\PlayerItemBreakEvent;
+use Bedriox\Api\Event\Player\PlayerItemConsumedEvent;
+use Bedriox\Api\Event\Player\PlayerItemConsumeEvent;
+use Bedriox\Api\Event\Player\PlayerItemDamageEvent;
+use Bedriox\Api\Event\Player\PlayerItemUseCancelledEvent;
+use Bedriox\Api\Event\Player\PlayerItemUsedEvent;
+use Bedriox\Api\Event\Player\PlayerItemUseEvent;
 use Bedriox\Api\Event\Player\PlayerJoinEvent;
 use Bedriox\Api\Event\Player\PlayerKickEvent;
 use Bedriox\Api\Event\Player\PlayerLoginEvent;
@@ -30,13 +41,23 @@ use Bedriox\Api\Event\Player\PlayerPickedUpItemEvent;
 use Bedriox\Api\Event\Player\PlayerPickupItemEvent;
 use Bedriox\Api\Event\Player\PlayerPreJoinEvent;
 use Bedriox\Api\Event\Player\PlayerQuitEvent;
+use Bedriox\Api\Event\Player\PlayerRegainedHealthEvent;
+use Bedriox\Api\Event\Player\PlayerRegainHealthEvent;
 use Bedriox\Api\Event\Player\PlayerRespawnedEvent;
 use Bedriox\Api\Event\Player\PlayerRespawnEvent;
 use Bedriox\Api\Event\Player\PlayerTeleportedEvent;
 use Bedriox\Api\Event\Player\PlayerTeleportEvent;
+use Bedriox\Api\Inventory\ConsumptionResult;
+use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Inventory\Inventory as ApiInventory;
+use Bedriox\Api\Inventory\ItemDamageCause;
 use Bedriox\Api\Inventory\ItemStack as ApiItemStack;
+use Bedriox\Api\Inventory\ItemUseCancellationReason as ApiItemUseCancellationReason;
+use Bedriox\Api\Inventory\ItemUseKind;
+use Bedriox\Api\Player\FoodLevelChangeCause;
 use Bedriox\Api\Player\GameMode;
+use Bedriox\Api\Player\HealthRegainCause as ApiHealthRegainCause;
+use Bedriox\Api\Player\Nutrition;
 use Bedriox\Api\Player\Player as ApiPlayer;
 use Bedriox\Api\Player\PlayerConnection;
 use Bedriox\Api\TranslatableMessage;
@@ -186,6 +207,184 @@ final readonly class PluginGameplayEventBridge
             $this->playerView($attacker),
             $this->playerView($target),
             $damage,
+        ));
+    }
+
+    public function allowItemUse(Player $player, InventoryStack $item, ItemUseKind $kind, int $requiredTicks): bool
+    {
+        $event = new PlayerItemUseEvent(
+            $this->playerView($player),
+            self::itemRequired($item),
+            $kind,
+            EquipmentSlot::MAIN_HAND,
+            $requiredTicks,
+        );
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function itemUseCancelled(
+        Player $player,
+        InventoryStack $item,
+        ItemUseKind $kind,
+        ItemUseCancellationReason $reason,
+        int $elapsedTicks,
+    ): void {
+        $this->events->dispatch(new PlayerItemUseCancelledEvent(
+            $this->playerView($player),
+            self::itemRequired($item),
+            $kind,
+            EquipmentSlot::MAIN_HAND,
+            self::itemUseCancellationReason($reason),
+            max(0, min(1_200, $elapsedTicks)),
+        ));
+    }
+
+    public function consume(
+        Player $player,
+        InventoryStack $item,
+        Nutrition $nutrition,
+        ConsumptionResult $result,
+    ): ?ConsumptionResult {
+        $event = new PlayerItemConsumeEvent(
+            $this->playerView($player),
+            self::itemRequired($item),
+            $nutrition,
+            $result,
+        );
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->result();
+    }
+
+    public function consumed(
+        Player $player,
+        InventoryStack $item,
+        Nutrition $previous,
+        Nutrition $nutrition,
+        ConsumptionResult $result,
+    ): void {
+        $this->events->dispatch(new PlayerItemConsumedEvent(
+            $this->playerView($player),
+            self::itemRequired($item),
+            $previous,
+            $nutrition,
+            $result,
+        ));
+    }
+
+    public function itemUsed(Player $player, InventoryStack $item, ItemUseKind $kind, int $elapsedTicks): void
+    {
+        $this->events->dispatch(new PlayerItemUsedEvent(
+            $this->playerView($player),
+            self::itemRequired($item),
+            $kind,
+            EquipmentSlot::MAIN_HAND,
+            max(0, min(1_200, $elapsedTicks)),
+        ));
+    }
+
+    public function nutritionChange(
+        Player $player,
+        Nutrition $previous,
+        Nutrition $nutrition,
+        FoodLevelChangeCause $cause,
+    ): ?Nutrition {
+        $event = new PlayerFoodLevelChangeEvent($this->playerView($player), $previous, $nutrition, $cause);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->nutrition();
+    }
+
+    public function nutritionChanged(
+        Player $player,
+        Nutrition $previous,
+        Nutrition $nutrition,
+        FoodLevelChangeCause $cause,
+    ): void {
+        $this->events->dispatch(new PlayerFoodLevelChangedEvent(
+            $this->playerView($player),
+            $previous,
+            $nutrition,
+            $cause,
+        ));
+    }
+
+    public function regainHealth(Player $player, ApiHealthRegainCause $cause, float $amount): ?float
+    {
+        $event = new PlayerRegainHealthEvent($this->playerView($player), $cause, $amount);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->amount();
+    }
+
+    public function regainedHealth(Player $player, ApiHealthRegainCause $cause, float $amount): void
+    {
+        $this->events->dispatch(new PlayerRegainedHealthEvent($this->playerView($player), $cause, $amount));
+    }
+
+    public function equipmentChange(
+        Player $player,
+        EquipmentSlot $slot,
+        ?InventoryStack $previous,
+        ?InventoryStack $item,
+    ): ?PlayerEquipmentChangeEvent {
+        $event = new PlayerEquipmentChangeEvent(
+            $this->playerView($player),
+            $slot,
+            self::item($previous),
+            self::item($item),
+        );
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event;
+    }
+
+    public function equipmentChanged(
+        Player $player,
+        EquipmentSlot $slot,
+        ?InventoryStack $previous,
+        ?InventoryStack $item,
+    ): void {
+        $this->events->dispatch(new PlayerEquipmentChangedEvent(
+            $this->playerView($player),
+            $slot,
+            self::item($previous),
+            self::item($item),
+        ));
+    }
+
+    public function itemDamage(
+        Player $player,
+        InventoryStack $item,
+        ItemDamageCause $cause,
+        EquipmentSlot $slot,
+        int $damage,
+    ): ?int {
+        $event = new PlayerItemDamageEvent(
+            $this->playerView($player),
+            self::itemRequired($item),
+            $cause,
+            $slot,
+            $damage,
+        );
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->damage();
+    }
+
+    public function itemBroken(
+        Player $player,
+        InventoryStack $item,
+        ItemDamageCause $cause,
+        EquipmentSlot $slot,
+    ): void {
+        $this->events->dispatch(new PlayerItemBreakEvent(
+            $this->playerView($player),
+            self::itemRequired($item),
+            $cause,
+            $slot,
         ));
     }
 
@@ -358,6 +557,7 @@ final readonly class PluginGameplayEventBridge
             $this->playerConnections === null
                 ? PlayerConnection::disconnected()
                 : ($this->playerConnections)($snapshot->identity),
+            self::nutrition($player),
         );
     }
 
@@ -379,6 +579,7 @@ final readonly class PluginGameplayEventBridge
             $player->vitals->isAlive(),
             $player->gameMode(),
             PlayerConnection::disconnected(),
+            self::nutrition($player),
         );
     }
 
@@ -396,6 +597,36 @@ final readonly class PluginGameplayEventBridge
         return $stack === null
             ? null
             : new ApiItemStack($stack->identifier, $stack->count, $stack->damage, $stack->nbt, $stack->auxValue);
+    }
+
+    private static function itemRequired(InventoryStack $stack): ApiItemStack
+    {
+        return self::item($stack)
+            ?? throw new \LogicException('A required inventory stack could not be projected.');
+    }
+
+    public static function nutrition(Player $player): Nutrition
+    {
+        return new Nutrition(
+            (int) $player->vitals->food,
+            $player->vitals->saturation,
+            $player->vitals->exhaustion,
+        );
+    }
+
+    private static function itemUseCancellationReason(ItemUseCancellationReason $reason): ApiItemUseCancellationReason
+    {
+        return match ($reason) {
+            ItemUseCancellationReason::RELEASED, ItemUseCancellationReason::TOO_EARLY =>
+                ApiItemUseCancellationReason::RELEASED_EARLY,
+            ItemUseCancellationReason::HELD_ITEM_CHANGED => ApiItemUseCancellationReason::ITEM_CHANGED,
+            ItemUseCancellationReason::DEATH => ApiItemUseCancellationReason::PLAYER_DIED,
+            ItemUseCancellationReason::TELEPORT => ApiItemUseCancellationReason::TELEPORTED,
+            ItemUseCancellationReason::GAME_MODE_CHANGED => ApiItemUseCancellationReason::GAME_MODE_CHANGED,
+            ItemUseCancellationReason::DISCONNECTED => ApiItemUseCancellationReason::DISCONNECTED,
+            ItemUseCancellationReason::TIMED_OUT => ApiItemUseCancellationReason::INVALIDATED,
+            ItemUseCancellationReason::PLUGIN => ApiItemUseCancellationReason::PLUGIN,
+        };
     }
 
     private static function position(Position $position): ApiPosition

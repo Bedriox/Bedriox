@@ -15,6 +15,7 @@ final readonly class HeldItemChanged implements WorldEvent
         public int $hotbarSlot,
         public ?InventoryStack $stack,
         public array $recipientSessionIds,
+        public bool $ownerSlotCorrection = false,
     ) {}
 
     public function recipients(): array

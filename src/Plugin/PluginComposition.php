@@ -11,4 +11,5 @@ final class PluginComposition
 {
     public ?BootstrappedServer $server = null;
     public ?PluginHost $host = null;
+    public ?PluginItemBehaviorRegistrar $itemBehaviors = null;
 }

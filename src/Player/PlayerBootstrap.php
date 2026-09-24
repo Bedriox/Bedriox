@@ -22,6 +22,9 @@ final readonly class PlayerBootstrap
         public int $lastPlayedAt,
         public string $gamemode = 'survival',
         public float $health = 20.0,
+        public float $food = PlayerVitals::MAX_FOOD,
+        public float $saturation = PlayerVitals::MAX_SATURATION,
+        public float $exhaustion = 0.0,
     ) {
         if ($this->worldName === '' || strlen($this->worldName) > 64
             || preg_match('//u', $this->worldName) !== 1
@@ -49,6 +52,13 @@ final readonly class PlayerBootstrap
         }
         if (!is_finite($this->health) || $this->health < 0.0 || $this->health > PlayerVitals::MAX_HEALTH) {
             throw new InvalidArgumentException('Player health must be finite and inside its authoritative range.');
+        }
+        if (!is_finite($this->food) || $this->food < 0.0 || $this->food > PlayerVitals::MAX_FOOD
+            || !is_finite($this->saturation) || $this->saturation < 0.0
+            || $this->saturation > PlayerVitals::MAX_SATURATION
+            || !is_finite($this->exhaustion) || $this->exhaustion < 0.0
+            || $this->exhaustion >= PlayerVitals::EXHAUSTION_THRESHOLD) {
+            throw new InvalidArgumentException('Player nutrition is outside its authoritative range.');
         }
     }
 }

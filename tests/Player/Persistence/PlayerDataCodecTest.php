@@ -30,6 +30,11 @@ final class PlayerDataCodecTest extends TestCase
         self::assertEquals($profile, $decoded);
         self::assertSame([0, 17], array_map(static fn(PlayerInventoryEntry $entry): int => $entry->slot, $decoded->inventory->entries));
         self::assertSame('minecraft:grass_block', $decoded->inventory->cursor?->identifier);
+        self::assertSame(
+            ['minecraft:diamond_helmet', 'minecraft:diamond_chestplate', 'minecraft:diamond_leggings', 'minecraft:diamond_boots'],
+            array_map(static fn(PlayerInventoryEntry $entry): string => $entry->stack->identifier, $decoded->inventory->armor),
+        );
+        self::assertSame('minecraft:shield', $decoded->inventory->offhand?->identifier);
     }
 
     public function testPersistsAnIronTool(): void
@@ -90,6 +95,7 @@ final class PlayerDataCodecTest extends TestCase
 
         $legacy = self::root();
         $legacy['SchemaVersion'] = LittleEndianNbtTag::int(1);
+        self::removeSchemaSixTags($legacy);
         unset($legacy['Health']);
         $legacy = self::withoutDamageTags($legacy);
         self::assertSame(
@@ -98,12 +104,48 @@ final class PlayerDataCodecTest extends TestCase
         );
     }
 
+    public function testPersistsNutritionAndMigratesSchemaFiveProfilesToEmptyEquipmentDefaults(): void
+    {
+        $profile = self::profile();
+        $profile = new PlayerBootstrap(
+            $profile->identity,
+            $profile->worldName,
+            $profile->position,
+            $profile->yaw,
+            $profile->pitch,
+            $profile->inventory,
+            $profile->firstPlayedAt,
+            $profile->lastPlayedAt,
+            $profile->gamemode,
+            $profile->health,
+            13.0,
+            4.5,
+            2.25,
+        );
+        $codec = new PlayerDataCodec();
+        $decoded = $codec->decode($codec->encode($profile));
+        self::assertSame(13.0, $decoded->food);
+        self::assertSame(4.5, $decoded->saturation);
+        self::assertSame(2.25, $decoded->exhaustion);
+
+        $legacy = self::root();
+        $legacy['SchemaVersion'] = LittleEndianNbtTag::int(5);
+        self::removeSchemaSixTags($legacy);
+        $decodedLegacy = $codec->decode((new LittleEndianNbtCodec())->encodeRootCompound($legacy));
+        self::assertSame(20.0, $decodedLegacy->food);
+        self::assertSame(20.0, $decodedLegacy->saturation);
+        self::assertSame(0.0, $decodedLegacy->exhaustion);
+        self::assertSame([], $decodedLegacy->inventory->armor);
+        self::assertNull($decodedLegacy->inventory->offhand);
+    }
+
     public function testSchemaOneAndTwoInventoryStacksMigrateWithZeroDamage(): void
     {
         $codec = new PlayerDataCodec();
         foreach ([1, 2] as $schema) {
             $legacy = self::withoutDamageTags(self::root());
             $legacy['SchemaVersion'] = LittleEndianNbtTag::int($schema);
+            self::removeSchemaSixTags($legacy);
             if ($schema === 1) {
                 unset($legacy['Health']);
             }
@@ -126,6 +168,7 @@ final class PlayerDataCodecTest extends TestCase
                 4 => ['Aux'],
             });
             $legacy['SchemaVersion'] = LittleEndianNbtTag::int($schema);
+            self::removeSchemaSixTags($legacy);
             if ($schema === 1) {
                 unset($legacy['Health']);
             }
@@ -243,6 +286,41 @@ final class PlayerDataCodecTest extends TestCase
         (new PlayerDataCodec())->decode((new LittleEndianNbtCodec())->encodeRootCompound($root));
     }
 
+    public function testRejectsDuplicateAndOutOfRangeArmorEntries(): void
+    {
+        $root = self::root();
+        $armor = self::listValues($root['Armor']);
+        $root['Armor'] = LittleEndianNbtTag::list(LittleEndianNbtTag::COMPOUND, [$armor[0], $armor[0]]);
+        try {
+            (new PlayerDataCodec())->decode((new LittleEndianNbtCodec())->encodeRootCompound($root));
+            self::fail('Duplicate armor slots were accepted.');
+        } catch (CorruptPlayerDataException) {
+        }
+
+        $root = self::root();
+        $armor = self::listValues($root['Armor']);
+        $tags = self::compoundValues($armor[0]);
+        $tags['Slot'] = LittleEndianNbtTag::byte(4);
+        $armor[0] = LittleEndianNbtTag::compound($tags);
+        $root['Armor'] = LittleEndianNbtTag::list(LittleEndianNbtTag::COMPOUND, $armor);
+
+        $this->expectException(CorruptPlayerDataException::class);
+        (new PlayerDataCodec())->decode((new LittleEndianNbtCodec())->encodeRootCompound($root));
+    }
+
+    public function testRejectsStackedArmorInPersistedEquipment(): void
+    {
+        $root = self::root();
+        $armor = self::listValues($root['Armor']);
+        $tags = self::compoundValues($armor[0]);
+        $tags['Count'] = LittleEndianNbtTag::byte(2);
+        $armor[0] = LittleEndianNbtTag::compound($tags);
+        $root['Armor'] = LittleEndianNbtTag::list(LittleEndianNbtTag::COMPOUND, $armor);
+
+        $this->expectException(CorruptPlayerDataException::class);
+        (new PlayerDataCodec())->decode((new LittleEndianNbtCodec())->encodeRootCompound($root));
+    }
+
     /** @return array<string, LittleEndianNbtTag> */
     private static function root(): array
     {
@@ -260,7 +338,12 @@ final class PlayerDataCodecTest extends TestCase
             new PlayerInventoryState([
                 new PlayerInventoryEntry(17, new PlayerInventoryStackState('minecraft:grass_block', 32)),
                 new PlayerInventoryEntry(0, new PlayerInventoryStackState('minecraft:grass_block', 64)),
-            ], 1, new PlayerInventoryStackState('minecraft:grass_block', 3)),
+            ], 1, new PlayerInventoryStackState('minecraft:grass_block', 3), [
+                new PlayerInventoryEntry(0, new PlayerInventoryStackState('minecraft:diamond_helmet', 1)),
+                new PlayerInventoryEntry(1, new PlayerInventoryStackState('minecraft:diamond_chestplate', 1)),
+                new PlayerInventoryEntry(2, new PlayerInventoryStackState('minecraft:diamond_leggings', 1)),
+                new PlayerInventoryEntry(3, new PlayerInventoryStackState('minecraft:diamond_boots', 1)),
+            ], new PlayerInventoryStackState('minecraft:shield', 1)),
             1_700_000_000_000,
             1_700_000_001_000,
         );
@@ -282,6 +365,12 @@ final class PlayerDataCodecTest extends TestCase
             $profile->gamemode,
             $profile->health,
         );
+    }
+
+    /** @param array<string, LittleEndianNbtTag> $root */
+    private static function removeSchemaSixTags(array &$root): void
+    {
+        unset($root['Armor'], $root['Offhand'], $root['FoodLevel'], $root['Saturation'], $root['Exhaustion']);
     }
 
     /**
@@ -310,6 +399,16 @@ final class PlayerDataCodecTest extends TestCase
         $root['Inventory'] = LittleEndianNbtTag::list(LittleEndianNbtTag::COMPOUND, $entries);
         if (isset($root['Cursor'])) {
             $root['Cursor'] = self::withoutStackTagNames($root['Cursor'], $removed);
+        }
+        if (isset($root['Armor'])) {
+            $armor = self::listValues($root['Armor']);
+            foreach ($armor as $index => $entry) {
+                $armor[$index] = self::withoutStackTagNames($entry, $removed);
+            }
+            $root['Armor'] = LittleEndianNbtTag::list(LittleEndianNbtTag::COMPOUND, $armor);
+        }
+        if (isset($root['Offhand'])) {
+            $root['Offhand'] = self::withoutStackTagNames($root['Offhand'], $removed);
         }
 
         return $root;

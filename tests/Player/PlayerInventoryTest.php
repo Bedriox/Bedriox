@@ -110,6 +110,26 @@ final class PlayerInventoryTest extends TestCase
         self::assertSame(1, $remaining->stackNetworkId);
     }
 
+    public function testMineBlockPredictionAcknowledgesOnlyTheHotbarSlotWithoutMutatingIt(): void
+    {
+        $inventory = PlayerInventory::starter($this->palette());
+        $reference = new InventorySlotReference(InventoryContainer::Main, 0, 0);
+
+        $result = $inventory->applyStackRequest(-13, [new InventoryStackRequestAction(
+            InventoryStackRequestActionType::MineBlock,
+            $reference,
+            $reference,
+        )]);
+
+        self::assertTrue($result->success);
+        self::assertSame([$reference], $result->affectedSlots);
+        self::assertFalse($result->selectedStackChanged);
+        $stack = $inventory->selectedStack();
+        self::assertNotNull($stack);
+        self::assertSame(64, $stack->count);
+        self::assertSame(1, $stack->stackNetworkId);
+    }
+
     public function testAddableQuantityAccountsForCompatibleStacksAndEmptySlotsWithoutMutation(): void
     {
         $inventory = PlayerInventory::starter($this->palette());
@@ -502,6 +522,80 @@ final class PlayerInventoryTest extends TestCase
             new PlayerInventoryEntry(4, $stack),
             new PlayerInventoryEntry(4, $stack),
         ], 0);
+    }
+
+    public function testArmorAndOffhandTransfersAreAtomicAndServerValidated(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $blockStates = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $catalog = ItemCatalog::vanilla($data->itemNetworkRegistry());
+        $inventory = PlayerInventory::restore(new PlayerInventoryState([
+            new PlayerInventoryEntry(0, new PlayerInventoryStackState('minecraft:diamond_helmet', 1)),
+            new PlayerInventoryEntry(1, new PlayerInventoryStackState('minecraft:apple', 4)),
+            new PlayerInventoryEntry(2, new PlayerInventoryStackState('minecraft:iron_boots', 1)),
+        ], 0), $this->palette(), $catalog, $blockStates);
+
+        $helmet = $inventory->applyStackRequest(-31, [new InventoryStackRequestAction(
+            InventoryStackRequestActionType::Take,
+            new InventorySlotReference(InventoryContainer::Main, 0, 1),
+            new InventorySlotReference(InventoryContainer::Armor, 0, 0),
+            1,
+        )]);
+        self::assertTrue($helmet->success);
+        self::assertNull($inventory->stackAt(0));
+        self::assertSame('minecraft:diamond_helmet', $inventory->armorStack(0)?->identifier);
+
+        $wrongSlot = $inventory->applyStackRequest(-32, [new InventoryStackRequestAction(
+            InventoryStackRequestActionType::Take,
+            new InventorySlotReference(InventoryContainer::Main, 2, 3),
+            new InventorySlotReference(InventoryContainer::Armor, 1, 0),
+            1,
+        )]);
+        self::assertFalse($wrongSlot->success);
+        self::assertSame('equipment_slot', $wrongSlot->reason);
+        self::assertSame('minecraft:iron_boots', $inventory->stackAt(2)?->identifier);
+        self::assertNull($inventory->armorStack(1));
+
+        $offhand = $inventory->applyStackRequest(-33, [new InventoryStackRequestAction(
+            InventoryStackRequestActionType::Take,
+            new InventorySlotReference(InventoryContainer::Main, 1, 2),
+            new InventorySlotReference(InventoryContainer::Offhand, 0, 0),
+            4,
+        )]);
+        self::assertTrue($offhand->success);
+        self::assertNull($inventory->stackAt(1));
+        self::assertSame(4, $inventory->offhandStack()?->count);
+        self::assertSame(3, $inventory->defensePoints());
+    }
+
+    public function testEquipmentStateRoundTripsWithoutSessionNetworkIds(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $blockStates = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $catalog = ItemCatalog::vanilla($data->itemNetworkRegistry());
+        $state = new PlayerInventoryState(
+            [],
+            0,
+            armor: [new PlayerInventoryEntry(
+                3,
+                new PlayerInventoryStackState('minecraft:netherite_boots', 1, damage: 7),
+            )],
+            offhand: new PlayerInventoryStackState('minecraft:shield', 1, damage: 3),
+        );
+
+        $inventory = PlayerInventory::restore($state, $this->palette(), $catalog, $blockStates);
+        $exported = $inventory->exportState();
+
+        $boots = $inventory->armorStack(3);
+        self::assertNotNull($boots);
+        self::assertSame('minecraft:netherite_boots', $boots->identifier);
+        self::assertSame(7, $boots->damage);
+        $offhand = $inventory->offhandStack();
+        self::assertNotNull($offhand);
+        self::assertSame('minecraft:shield', $offhand->identifier);
+        self::assertNotNull($exported->offhand);
+        self::assertSame(3, $exported->offhand->damage);
+        self::assertSame(3, $exported->armor[0]->slot);
     }
 
     public function testInventoryStackRejectsAuxOutsideItsBoundedRange(): void

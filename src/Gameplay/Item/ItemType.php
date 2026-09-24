@@ -18,6 +18,8 @@ final readonly class ItemType
         public ?CanonicalBlockState $networkBlockState = null,
         public bool $creative = true,
         public ?string $owner = null,
+        public ?ArmorDefinition $armor = null,
+        public bool $allowedInOffhand = false,
     ) {
         if (preg_match('/^[a-z0-9_.-]+:[a-z0-9_.-]+$/D', $identifier) !== 1) {
             throw new InvalidArgumentException('Item identifier must be canonical and namespaced.');
@@ -27,6 +29,9 @@ final readonly class ItemType
         }
         if ($tool !== null && $maximumStackSize !== 1) {
             throw new InvalidArgumentException('Tools must have a maximum stack size of one.');
+        }
+        if ($armor !== null && $maximumStackSize !== 1) {
+            throw new InvalidArgumentException('Armor must have a maximum stack size of one.');
         }
     }
 

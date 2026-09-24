@@ -7,6 +7,11 @@ namespace Bedriox\Server\Tests\Simulation;
 use Bedriox\Api\TranslatableMessage;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
+use Bedriox\Server\Player\PlayerBootstrap;
+use Bedriox\Server\Player\PlayerIdentity;
+use Bedriox\Server\Player\PlayerInventoryEntry;
+use Bedriox\Server\Player\PlayerInventoryStackState;
+use Bedriox\Server\Player\PlayerInventoryState;
 use Bedriox\Server\Simulation\ClientInputTick;
 use Bedriox\Server\Simulation\Command\AttackPlayer;
 use Bedriox\Server\Simulation\DamageCause;
@@ -17,8 +22,11 @@ use Bedriox\Server\Simulation\Event\PlayerDied;
 use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
 use Bedriox\Server\Simulation\Event\PlayerMotionChanged;
 use Bedriox\Server\Simulation\MovementMode;
+use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
 use Bedriox\Server\Simulation\WorldSimulation;
+use Bedriox\Server\World\Block\BlockStateRegistry;
+use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use PHPUnit\Framework\TestCase;
 
 final class PlayerCombatTest extends TestCase
@@ -40,6 +48,49 @@ final class PlayerCombatTest extends TestCase
         self::assertSame(0.4, $events[1]->motionY);
         self::assertSame(0.4, $events[1]->motionZ);
         self::assertSame(19.0, $world->snapshot()->players[1]->health);
+    }
+
+    public function testArmorReducesCombatDamageAndLosesAuthoritativeDurability(): void
+    {
+        $factory = new SimulationCommandFactory();
+        $data = BedrockDataSet::bundled();
+        $items = ItemCatalog::vanilla($data->itemNetworkRegistry());
+        $states = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($states);
+        $world = new WorldSimulation(
+            blockPalette: $palette,
+            blockStateRegistry: $states,
+            itemCatalog: $items,
+        );
+        $targetBootstrap = new PlayerBootstrap(
+            new PlayerIdentity('identity-two', 'Two'),
+            'world',
+            new Position(0.0, 64.0, 0.0),
+            0.0,
+            0.0,
+            new PlayerInventoryState([], 0, armor: [
+                new PlayerInventoryEntry(
+                    1,
+                    new PlayerInventoryStackState('minecraft:diamond_chestplate', 1),
+                ),
+            ]),
+            0,
+            0,
+        );
+        $world->enqueue($factory->join('one', 'identity-one', 'One', 1));
+        $world->enqueue($factory->join('two', 'identity-two', 'Two', 2, $targetBootstrap));
+        $world->tick();
+        $world->enqueue($factory->move('two', 1, 0.0, 64.0, 2.0, 180.0, 0.0, MovementMode::WALKING));
+        $world->tick();
+        $world->enqueue($factory->move('two', 2, 0.0, 64.0, 2.0, 180.0, 0.0, MovementMode::STOPPED));
+        $world->tick();
+        $world->enqueue($factory->attack('one', 2, 0));
+        $events = $world->tick()->events;
+
+        self::assertInstanceOf(PlayerDamaged::class, $events[0]);
+        self::assertEqualsWithDelta(0.68, $events[0]->damage, 0.000_001);
+        self::assertTrue($events[0]->equipmentChanged);
+        self::assertSame(1, $events[0]->player->armor[1]?->damage);
     }
 
     public function testSuccessfulAttackDamagesAndBreaksTheAuthoritativeHeldTool(): void
@@ -219,23 +270,25 @@ final class PlayerCombatTest extends TestCase
     public function testLethalAttackPublishesDamageMotionThenDeath(): void
     {
         [$world, $factory] = self::twoPlayers();
-        for ($hit = 0; $hit < 20; ++$hit) {
+        $died = false;
+        for ($hit = 0; $hit < 30; ++$hit) {
             $world->enqueue($factory->attack('one', 2, 0));
             $events = $world->tick()->events;
-            if ($hit === 19) {
+            if (isset($events[2]) && $events[2] instanceof PlayerDied) {
                 self::assertInstanceOf(PlayerDamaged::class, $events[0]);
                 self::assertInstanceOf(PlayerKnockedBack::class, $events[1]);
-                self::assertInstanceOf(PlayerDied::class, $events[2]);
                 self::assertSame('identity-one', $events[2]->killer?->identity);
                 self::assertInstanceOf(TranslatableMessage::class, $events[2]->deathMessage);
                 self::assertSame('death.attack.player', $events[2]->deathMessage->key);
                 self::assertSame(['Two', 'One'], $events[2]->deathMessage->parameters);
+                $died = true;
                 break;
             }
             for ($tick = 0; $tick < 10; ++$tick) {
                 $world->tick();
             }
         }
+        self::assertTrue($died);
         self::assertFalse($world->snapshot()->players[1]->alive);
     }
 

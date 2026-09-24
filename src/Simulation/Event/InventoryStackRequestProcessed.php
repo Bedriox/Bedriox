@@ -13,6 +13,7 @@ final readonly class InventoryStackRequestProcessed implements WorldEvent
     /**
      * @param list<InventorySlotReference> $affectedSlots
      * @param list<InventoryStack|null> $mainInventory
+     * @param list<InventoryStack|null> $armorInventory
      * @param list<string> $peerSessionIds
      */
     public function __construct(
@@ -30,6 +31,8 @@ final readonly class InventoryStackRequestProcessed implements WorldEvent
         public string $reason = '',
         public InventoryResponseMode $responseMode = InventoryResponseMode::ItemStackResponse,
         public bool $fullSync = false,
+        public array $armorInventory = [],
+        public ?InventoryStack $offhandStack = null,
     ) {}
 
     public function recipients(): array

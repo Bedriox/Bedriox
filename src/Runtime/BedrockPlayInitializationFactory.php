@@ -12,6 +12,7 @@ use Bedriox\Protocol\Packet\BlockPropertyData;
 use Bedriox\Protocol\Packet\ChunkRadiusUpdatedPacket;
 use Bedriox\Protocol\Packet\CraftingDataPacket;
 use Bedriox\Protocol\Packet\GameRulesChangedPacket;
+use Bedriox\Protocol\Packet\InventoryContainerId;
 use Bedriox\Protocol\Packet\InventoryContentPacket;
 use Bedriox\Protocol\Packet\ItemRegistryPacket;
 use Bedriox\Protocol\Packet\JigsawStructureDataPacket;
@@ -169,6 +170,11 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
             $initialInventory->slots(),
         );
         $heldItem = $this->inventoryProjector->toProtocol($initialInventory->selectedStack());
+        $armorInventory = array_map(
+            fn($stack) => $this->inventoryProjector->toProtocol($stack),
+            $initialInventory->armorSlots(),
+        );
+        $offhandItem = $this->inventoryProjector->toProtocol($initialInventory->offhandStack());
         $packets = [
             new JigsawStructureDataPacket(),
             new VoxelShapesPacket(),
@@ -223,11 +229,17 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
                 PlayerSkin::fromVerifiedClientData($login->clientData),
                 colorArgb: 0xffffffff,
             )]),
-            $this->survivalAttributes($runtimeEntityId, $bootstrap === null ? 20.0 : $bootstrap->health),
+            $this->survivalAttributes(
+                $runtimeEntityId,
+                $bootstrap === null ? 20.0 : $bootstrap->health,
+                $bootstrap === null ? 20.0 : $bootstrap->food,
+                $bootstrap === null ? 20.0 : $bootstrap->saturation,
+                $bootstrap === null ? 0.0 : $bootstrap->exhaustion,
+            ),
             $this->inventoryProjector->creativeContent(),
-            new InventoryContentPacket(0, $mainInventory),
-            new InventoryContentPacket(120, 4),
-            new InventoryContentPacket(119, 1),
+            new InventoryContentPacket(InventoryContainerId::INVENTORY, $mainInventory),
+            new InventoryContentPacket(InventoryContainerId::ARMOR, $armorInventory),
+            new InventoryContentPacket(InventoryContainerId::OFFHAND, [$offhandItem]),
             new MobEquipmentPacket(
                 $runtimeEntityId,
                 $initialInventory->selectedHotbarSlot(),
@@ -248,13 +260,20 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
         return $this->fixedFlatBlockPalette->toNetworkRuntimeIds($this->blockNetworkTranslator);
     }
 
-    private function survivalAttributes(UnsignedLong $runtimeEntityId, float $health): UpdateAttributesPacket
-    {
+    private function survivalAttributes(
+        UnsignedLong $runtimeEntityId,
+        float $health,
+        float $food,
+        float $saturation,
+        float $exhaustion,
+    ): UpdateAttributesPacket {
         $maximum = 3.4028234663852886e38;
 
         return new UpdateAttributesPacket($runtimeEntityId, [
             new PlayerAttribute('minecraft:health', 0.0, 20.0, $health, 0.0, 20.0, 20.0),
-            new PlayerAttribute('minecraft:player.hunger', 0.0, 20.0, 20.0, 0.0, 20.0, 20.0),
+            new PlayerAttribute('minecraft:player.hunger', 0.0, 20.0, $food, 0.0, 20.0, 20.0),
+            new PlayerAttribute('minecraft:player.saturation', 0.0, 20.0, $saturation, 0.0, 20.0, 20.0),
+            new PlayerAttribute('minecraft:player.exhaustion', 0.0, 4.0, $exhaustion, 0.0, 4.0, 0.0),
             new PlayerAttribute('minecraft:movement', 0.0, $maximum, 0.1, 0.0, $maximum, 0.1),
             new PlayerAttribute('minecraft:player.level', 0.0, 24_791.0, 0.0, 0.0, 24_791.0, 0.0),
             new PlayerAttribute('minecraft:player.experience', 0.0, 1.0, 0.0, 0.0, 1.0, 0.0),

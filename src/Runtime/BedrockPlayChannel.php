@@ -14,6 +14,7 @@ use Bedriox\Protocol\Encryption\BedrockEncryptor;
 use Bedriox\Protocol\Exception\ItemStackRequestDecodeException;
 use Bedriox\Protocol\Packet\Ability;
 use Bedriox\Protocol\Packet\AbilityLayer;
+use Bedriox\Protocol\Packet\ActorEventPacket;
 use Bedriox\Protocol\Packet\AnimatePacket;
 use Bedriox\Protocol\Packet\BasicInventoryTransaction;
 use Bedriox\Protocol\Packet\BedrockPacketCodec;
@@ -35,11 +36,14 @@ use Bedriox\Protocol\Packet\EmoteListPacket;
 use Bedriox\Protocol\Packet\EmotePacket;
 use Bedriox\Protocol\Packet\FullContainerName;
 use Bedriox\Protocol\Packet\InteractPacket;
+use Bedriox\Protocol\Packet\InventoryContainerId;
 use Bedriox\Protocol\Packet\InventoryItemStack;
 use Bedriox\Protocol\Packet\InventorySourceFlag;
 use Bedriox\Protocol\Packet\InventorySourceType;
 use Bedriox\Protocol\Packet\InventoryTransactionPacket;
 use Bedriox\Protocol\Packet\InventoryTransactionType;
+use Bedriox\Protocol\Packet\ItemReleaseActionType;
+use Bedriox\Protocol\Packet\ItemReleaseInventoryTransaction;
 use Bedriox\Protocol\Packet\ItemStackRequest;
 use Bedriox\Protocol\Packet\ItemStackRequestPacket;
 use Bedriox\Protocol\Packet\ItemStackRequestSlot;
@@ -47,6 +51,8 @@ use Bedriox\Protocol\Packet\ItemUseActionType;
 use Bedriox\Protocol\Packet\ItemUseInventoryTransaction;
 use Bedriox\Protocol\Packet\ItemUseOnEntityActionType;
 use Bedriox\Protocol\Packet\ItemUseOnEntityInventoryTransaction;
+use Bedriox\Protocol\Packet\MineBlockItemStackRequestAction;
+use Bedriox\Protocol\Packet\MobArmorEquipmentPacket;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
 use Bedriox\Protocol\Packet\MovementPredictionSyncPacket;
 use Bedriox\Protocol\Packet\NetworkChunkPublisherUpdatePacket;
@@ -91,6 +97,7 @@ use Bedriox\Server\Player\InventoryResponseMode;
 use Bedriox\Server\Player\InventorySlotReference;
 use Bedriox\Server\Player\InventoryStackRequestAction;
 use Bedriox\Server\Player\InventoryStackRequestActionType;
+use Bedriox\Server\Player\PlayerInventory;
 use Bedriox\Server\Simulation\BlockBreakAction;
 use Bedriox\Server\Simulation\ClientInputTick;
 use Bedriox\Server\Simulation\Command\WorldCommand;
@@ -116,6 +123,7 @@ final class BedrockPlayChannel
     private const int CHUNK_PREPARATION_BYTES_PER_TICK = 4_194_304;
     private const int CHUNK_DELIVERY_NANOSECONDS_PER_TICK = 5_000_000;
     private const int CHUNK_DELIVERY_BYTES_PER_TICK = 524_288;
+    private const int MAXIMUM_LEGACY_SLOT_SYNC_GROUPS = 10;
 
     /** @var SplQueue<OutgoingPlayPayload> */
     private SplQueue $outgoing;
@@ -741,12 +749,28 @@ final class BedrockPlayChannel
         if ($packet instanceof AnimatePacket) {
             return $packet->runtimeEntityId->equals($this->runtimeEntityId);
         }
+        if ($packet instanceof ActorEventPacket) {
+            $this->diagnostics->record('play.actor_event_advisory.protocol_trace', [
+                'initialized' => $this->initialized,
+                'self_actor' => $packet->runtimeEntityId->equals($this->runtimeEntityId),
+                'actor_event' => $packet->event->name,
+            ]);
+
+            // Retail sends eating presentation here. Authoritative use, nutrition, and animation remain server-owned.
+            return true;
+        }
         if ($packet instanceof MobEquipmentPacket) {
-            if (!$packet->runtimeEntityId->equals($this->runtimeEntityId)
-                || $packet->inventorySlot > 8
+            if (!$packet->runtimeEntityId->equals($this->runtimeEntityId)) {
+                return false;
+            }
+            if ($packet->windowId === InventoryContainerId::OFFHAND) {
+                // Offhand ownership is changed only through a stack request; this presentation echo is harmless.
+                return true;
+            }
+            if ($packet->inventorySlot > 8
                 || $packet->hotbarSlot > 8
                 || $packet->inventorySlot !== $packet->hotbarSlot
-                || $packet->windowId !== 0) {
+                || $packet->windowId !== InventoryContainerId::INVENTORY) {
                 return false;
             }
             if (!$this->initialized) {
@@ -763,6 +787,10 @@ final class BedrockPlayChannel
             ));
 
             return true;
+        }
+        if ($packet instanceof MobArmorEquipmentPacket) {
+            // Armor mutations arrive through authoritative stack requests. This client presentation echo is advisory.
+            return $packet->runtimeEntityId->equals($this->runtimeEntityId);
         }
         if ($packet instanceof PlayerActionPacket) {
             if (!$this->initialized || !$packet->runtimeEntityId->equals($this->runtimeEntityId)) {
@@ -841,7 +869,39 @@ final class BedrockPlayChannel
 
                 return true;
             }
-            if (!$transaction instanceof ItemUseInventoryTransaction || $transaction->action !== ItemUseActionType::Place) {
+            if ($transaction instanceof ItemReleaseInventoryTransaction) {
+                if ($this->commands->count() >= $this->limits->maximumCommandsPerPayload) {
+                    return false;
+                }
+                try {
+                    $this->commands->enqueue($transaction->action === ItemReleaseActionType::Consume
+                        ? $this->commandFactory->useItem($this->sessionId, $transaction->hotbarSlot)
+                        : $this->commandFactory->releaseItem($this->sessionId, $transaction->hotbarSlot));
+                } catch (\Bedriox\Server\Simulation\CommandValidationException) {
+                    return true;
+                }
+
+                return true;
+            }
+            if (!$transaction instanceof ItemUseInventoryTransaction) {
+                return true;
+            }
+            if ($transaction->action === ItemUseActionType::Use) {
+                if ($this->commands->count() >= $this->limits->maximumCommandsPerPayload) {
+                    return false;
+                }
+                try {
+                    $this->commands->enqueue($this->commandFactory->useItem(
+                        $this->sessionId,
+                        $transaction->hotbarSlot,
+                    ));
+                } catch (\Bedriox\Server\Simulation\CommandValidationException) {
+                    return true;
+                }
+
+                return true;
+            }
+            if ($transaction->action !== ItemUseActionType::Place) {
                 return true;
             }
 
@@ -1090,12 +1150,21 @@ final class BedrockPlayChannel
             if ($packet->itemUseTransaction !== null && !$this->handleEmbeddedPlacement($packet->itemUseTransaction)) {
                 return false;
             }
-            if ($packet->itemStackRequest !== null
-                && !$this->handleItemStackRequests([$packet->itemStackRequest])) {
-                return false;
-            }
-            if ($packet->blockActions !== null && !$this->handleBlockActions($packet->blockActions)) {
-                return false;
+            if ($packet->itemStackRequest !== null && self::isMineBlockRequest($packet->itemStackRequest)) {
+                if ($packet->blockActions !== null && !$this->handleBlockActions($packet->blockActions)) {
+                    return false;
+                }
+                if (!$this->handleItemStackRequests([$packet->itemStackRequest])) {
+                    return false;
+                }
+            } else {
+                if ($packet->itemStackRequest !== null
+                    && !$this->handleItemStackRequests([$packet->itemStackRequest])) {
+                    return false;
+                }
+                if ($packet->blockActions !== null && !$this->handleBlockActions($packet->blockActions)) {
+                    return false;
+                }
             }
 
             return true;
@@ -1127,11 +1196,16 @@ final class BedrockPlayChannel
 
     private function handleLegacyInventoryTransaction(InventoryTransactionPacket $packet): bool
     {
+        if (count($packet->legacySlots) > self::MAXIMUM_LEGACY_SLOT_SYNC_GROUPS) {
+            return false;
+        }
+        $requestedCorrections = self::legacyRequestedSlotCorrections($packet);
+        $requiredCommandCapacity = $requestedCorrections === [] ? 1 : 2;
+        if ($this->commands->count() > $this->limits->maximumCommandsPerPayload - $requiredCommandCapacity) {
+            return false;
+        }
         $drop = $this->legacyDropIntent($packet);
         if ($drop !== null) {
-            if ($this->commands->count() >= $this->limits->maximumCommandsPerPayload) {
-                return false;
-            }
             if (is_string($drop)) {
                 $this->commands->enqueue($this->commandFactory->inventoryStackRequest(
                     $this->sessionId,
@@ -1150,13 +1224,16 @@ final class BedrockPlayChannel
                     $drop['expected'],
                 ));
             }
+            if ($requestedCorrections !== []) {
+                $this->commands->enqueue($this->commandFactory->syncInventorySlots(
+                    $this->sessionId,
+                    $requestedCorrections,
+                ));
+            }
 
             return true;
         }
         [$actions, $rejectionReason] = $this->legacyInventoryActions($packet);
-        if ($this->commands->count() >= $this->limits->maximumCommandsPerPayload) {
-            return false;
-        }
         $this->commands->enqueue($this->commandFactory->inventoryStackRequest(
             $this->sessionId,
             $packet->legacyRequestId,
@@ -1164,8 +1241,52 @@ final class BedrockPlayChannel
             $rejectionReason,
             InventoryResponseMode::LegacySlotSync,
         ));
+        if ($requestedCorrections !== []) {
+            $this->commands->enqueue($this->commandFactory->syncInventorySlots(
+                $this->sessionId,
+                $requestedCorrections,
+            ));
+        }
 
         return true;
+    }
+
+    /** @return list<InventorySlotReference> */
+    private static function legacyRequestedSlotCorrections(InventoryTransactionPacket $packet): array
+    {
+        $corrections = [];
+        foreach ($packet->legacySlots as $slotSet) {
+            $slotCount = strlen($slotSet->slots);
+            for ($offset = 0; $offset < $slotCount; ++$offset) {
+                $networkSlot = ord($slotSet->slots[$offset]);
+                $container = match ($slotSet->containerId) {
+                    FullContainerName::COMBINED_HOTBAR_AND_INVENTORY,
+                    FullContainerName::HOTBAR,
+                    FullContainerName::INVENTORY => InventoryContainer::Main,
+                    FullContainerName::ARMOR => InventoryContainer::Armor,
+                    FullContainerName::OFFHAND => InventoryContainer::Offhand,
+                    FullContainerName::CURSOR => InventoryContainer::Cursor,
+                    default => null,
+                };
+                $internalSlot = $container === InventoryContainer::Offhand ? 0 : $networkSlot;
+                if ($container === null
+                    || ($container === InventoryContainer::Main && $internalSlot >= PlayerInventory::SLOT_COUNT)
+                    || ($container === InventoryContainer::Armor && $internalSlot >= PlayerInventory::ARMOR_SLOT_COUNT)
+                    || ($container === InventoryContainer::Cursor && $internalSlot !== 0)) {
+                    continue;
+                }
+                $reference = new InventorySlotReference(
+                    $container,
+                    $internalSlot,
+                    0,
+                    $slotSet->containerId,
+                    responseSlot: $networkSlot,
+                );
+                $corrections[$reference->key()] = $reference;
+            }
+        }
+
+        return array_values($corrections);
     }
 
     /** @return null|string|array{source: InventorySlotReference, count: int, expected: \Bedriox\Server\Player\InventoryStack} */
@@ -1332,12 +1453,17 @@ final class BedrockPlayChannel
             return null;
         }
         $container = match ($containerId) {
-            0 => InventoryContainer::Main,
-            124 => InventoryContainer::Cursor,
+            InventoryContainerId::INVENTORY => InventoryContainer::Main,
+            InventoryContainerId::UI => InventoryContainer::Cursor,
+            InventoryContainerId::ARMOR => InventoryContainer::Armor,
+            InventoryContainerId::OFFHAND => InventoryContainer::Offhand,
             default => null,
         };
-        if ($container === null || ($container === InventoryContainer::Main && $slot >= 36)
-            || ($container === InventoryContainer::Cursor && $slot !== 0)) {
+        if ($container === null || $slot < 0
+            || ($container === InventoryContainer::Main && $slot >= PlayerInventory::SLOT_COUNT)
+            || ($container === InventoryContainer::Armor && $slot >= PlayerInventory::ARMOR_SLOT_COUNT)
+            || (($container === InventoryContainer::Cursor || $container === InventoryContainer::Offhand)
+                && $slot !== 0)) {
             return null;
         }
         $networkId = $fromItem->runtimeId === 0 && $fromItem->count === 0
@@ -1434,6 +1560,7 @@ final class BedrockPlayChannel
             $dropCount = 0;
             $creativeStack = null;
             $sawCreativeSelection = false;
+            $sawMineBlock = false;
             $rejectionReason = $request->actions === [] ? 'empty_actions' : null;
             foreach ($request->actions as $action) {
                 if ($action instanceof DropItemStackRequestAction) {
@@ -1556,6 +1683,32 @@ final class BedrockPlayChannel
                         $source,
                         $destination,
                     );
+                } elseif ($action instanceof MineBlockItemStackRequestAction) {
+                    $this->diagnostics->record('play.inventory_request.protocol_trace', [
+                        'request_id' => $request->requestId,
+                        'action' => 'mine_block',
+                        'hotbar_slot' => $action->hotbarSlot,
+                        'predicted_durability' => $action->predictedDurability,
+                        'stack_network_id' => $action->stackNetworkId,
+                    ]);
+                    if ($sawMineBlock || count($request->actions) !== 1
+                        || $action->hotbarSlot < 0 || $action->hotbarSlot >= PlayerInventory::HOTBAR_SIZE) {
+                        $rejectionReason = 'invalid_mine_block_prediction';
+                        break;
+                    }
+                    $reference = new InventorySlotReference(
+                        InventoryContainer::Main,
+                        $action->hotbarSlot,
+                        0,
+                        FullContainerName::HOTBAR,
+                        responseSlot: $action->hotbarSlot,
+                    );
+                    $actions[] = new InventoryStackRequestAction(
+                        InventoryStackRequestActionType::MineBlock,
+                        $reference,
+                        $reference,
+                    );
+                    $sawMineBlock = true;
                 } else {
                     $rejectionReason = 'unsupported_action';
                     break;
@@ -1587,6 +1740,20 @@ final class BedrockPlayChannel
         return true;
     }
 
+    private static function isMineBlockRequest(?ItemStackRequest $request): bool
+    {
+        if ($request === null) {
+            return false;
+        }
+        foreach ($request->actions as $action) {
+            if ($action instanceof MineBlockItemStackRequestAction) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static function inventorySlotReference(ItemStackRequestSlot $slot): ?InventorySlotReference
     {
         if ($slot->containerName->dynamicId !== null) {
@@ -1596,12 +1763,17 @@ final class BedrockPlayChannel
             FullContainerName::COMBINED_HOTBAR_AND_INVENTORY,
             FullContainerName::HOTBAR,
             FullContainerName::INVENTORY => InventoryContainer::Main,
+            FullContainerName::ARMOR => InventoryContainer::Armor,
+            FullContainerName::OFFHAND => InventoryContainer::Offhand,
             FullContainerName::CURSOR => InventoryContainer::Cursor,
             FullContainerName::CREATED_OUTPUT => InventoryContainer::CreatedOutput,
             default => null,
         };
+        $internalSlot = $container === InventoryContainer::Offhand ? 0 : $slot->slot;
         if ($container === null
-            || ($container === InventoryContainer::Main && $slot->slot >= 36)
+            || $slot->slot < 0
+            || ($container === InventoryContainer::Main && $slot->slot >= PlayerInventory::SLOT_COUNT)
+            || ($container === InventoryContainer::Armor && $slot->slot >= PlayerInventory::ARMOR_SLOT_COUNT)
             || ($container === InventoryContainer::Cursor && $slot->slot !== 0)
             || ($container === InventoryContainer::CreatedOutput && $slot->slot !== 50)) {
             return null;
@@ -1609,9 +1781,10 @@ final class BedrockPlayChannel
 
         return new InventorySlotReference(
             $container,
-            $slot->slot,
+            $internalSlot,
             $slot->stackNetworkId,
             $slot->containerName->containerNameId,
+            responseSlot: $slot->slot,
         );
     }
 

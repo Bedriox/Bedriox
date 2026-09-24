@@ -13,6 +13,7 @@ use Bedriox\Protocol\Packet\ChunkRadiusUpdatedPacket;
 use Bedriox\Protocol\Packet\CraftingDataPacket;
 use Bedriox\Protocol\Packet\CreativeContentPacket;
 use Bedriox\Protocol\Packet\GameRulesChangedPacket;
+use Bedriox\Protocol\Packet\InventoryContainerId;
 use Bedriox\Protocol\Packet\InventoryContentPacket;
 use Bedriox\Protocol\Packet\ItemRegistryPacket;
 use Bedriox\Protocol\Packet\JigsawStructureDataPacket;
@@ -159,7 +160,9 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
             5.0,
             new PlayerInventoryState([
                 new PlayerInventoryEntry(3, new PlayerInventoryStackState('minecraft:grass_block', 11)),
-            ], 3),
+            ], 3, armor: [
+                new PlayerInventoryEntry(0, new PlayerInventoryStackState('minecraft:iron_helmet', 1)),
+            ], offhand: new PlayerInventoryStackState('minecraft:grass_block', 3)),
             100,
             200,
             health: 7.5,
@@ -185,6 +188,17 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
         self::assertSame(0, $inventory->items[0]->runtimeId);
         self::assertSame(11, $inventory->items[3]->count);
         self::assertSame(1, $inventory->items[3]->stackNetworkId);
+        $armor = $packets[18];
+        self::assertInstanceOf(InventoryContentPacket::class, $armor);
+        self::assertSame(InventoryContainerId::ARMOR, $armor->windowId);
+        self::assertNotSame(0, $armor->items[0]->runtimeId);
+        self::assertSame(1, $armor->items[0]->count);
+        self::assertSame(2, $armor->items[0]->stackNetworkId);
+        $offhand = $packets[19];
+        self::assertInstanceOf(InventoryContentPacket::class, $offhand);
+        self::assertSame(InventoryContainerId::OFFHAND, $offhand->windowId);
+        self::assertSame(3, $offhand->items[0]->count);
+        self::assertSame(3, $offhand->items[0]->stackNetworkId);
         $equipment = $packets[20];
         self::assertInstanceOf(MobEquipmentPacket::class, $equipment);
         self::assertSame(3, $equipment->inventorySlot);

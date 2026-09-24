@@ -13,6 +13,8 @@ use Bedriox\Protocol\Encryption\BedrockDecryptor;
 use Bedriox\Protocol\Encryption\BedrockEncryptor;
 use Bedriox\Protocol\Identity\VerifiedClientData;
 use Bedriox\Protocol\Packet\AbilityValueType;
+use Bedriox\Protocol\Packet\ActorEventPacket;
+use Bedriox\Protocol\Packet\ActorEventType;
 use Bedriox\Protocol\Packet\AnimatePacket;
 use Bedriox\Protocol\Packet\BasicInventoryTransaction;
 use Bedriox\Protocol\Packet\BedrockPacketCodec;
@@ -35,13 +37,17 @@ use Bedriox\Protocol\Packet\FullContainerName;
 use Bedriox\Protocol\Packet\HandSlot;
 use Bedriox\Protocol\Packet\InteractPacket;
 use Bedriox\Protocol\Packet\InventoryAction;
+use Bedriox\Protocol\Packet\InventoryContainerId;
 use Bedriox\Protocol\Packet\InventoryItemStack;
+use Bedriox\Protocol\Packet\InventoryLegacySlot;
 use Bedriox\Protocol\Packet\InventorySource;
 use Bedriox\Protocol\Packet\InventorySourceFlag;
 use Bedriox\Protocol\Packet\InventorySourceType;
 use Bedriox\Protocol\Packet\InventoryTransactionPacket;
 use Bedriox\Protocol\Packet\InventoryTransactionType;
 use Bedriox\Protocol\Packet\InventoryVector3;
+use Bedriox\Protocol\Packet\ItemReleaseActionType;
+use Bedriox\Protocol\Packet\ItemReleaseInventoryTransaction;
 use Bedriox\Protocol\Packet\ItemStackRequest;
 use Bedriox\Protocol\Packet\ItemStackRequestPacket;
 use Bedriox\Protocol\Packet\ItemStackRequestSlot;
@@ -53,6 +59,8 @@ use Bedriox\Protocol\Packet\ItemUseOnEntityInventoryTransaction;
 use Bedriox\Protocol\Packet\ItemUsePredictedResult;
 use Bedriox\Protocol\Packet\ItemUseTriggerType;
 use Bedriox\Protocol\Packet\LevelChunkPacket;
+use Bedriox\Protocol\Packet\MineBlockItemStackRequestAction;
+use Bedriox\Protocol\Packet\MobArmorEquipmentPacket;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
 use Bedriox\Protocol\Packet\MovementPredictionSyncPacket;
 use Bedriox\Protocol\Packet\NetworkChunkPublisherUpdatePacket;
@@ -107,10 +115,13 @@ use Bedriox\Server\Simulation\Command\DropItem;
 use Bedriox\Server\Simulation\Command\MovePlayer;
 use Bedriox\Server\Simulation\Command\PerformEmote;
 use Bedriox\Server\Simulation\Command\PlaceBlock;
+use Bedriox\Server\Simulation\Command\ReleaseItem;
 use Bedriox\Server\Simulation\Command\RespawnPlayer;
 use Bedriox\Server\Simulation\Command\SelectHotbarSlot;
 use Bedriox\Server\Simulation\Command\SendChat;
 use Bedriox\Server\Simulation\Command\SyncInventory;
+use Bedriox\Server\Simulation\Command\SyncInventorySlots;
+use Bedriox\Server\Simulation\Command\UseItem;
 use Bedriox\Server\Simulation\Event\BlockPlaced;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\MovementMode;
@@ -447,6 +458,38 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertNotEmpty($channel->drainCommands());
     }
 
+    public function testRetailEatingActorEventIsAcceptedAsPresentationOnly(): void
+    {
+        $lines = [];
+        $diagnostics = new RuntimeDiagnostics(static function (string $line) use (&$lines): void {
+            $lines[] = $line;
+        });
+        [$channel, $client, , $entityId] = $this->channel([], $diagnostics);
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $channel->drainOutgoing();
+        $channel->drainCommands();
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([
+                new ActorEventPacket($entityId, ActorEventType::EatingItem, 1),
+            ])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        self::assertFalse($channel->isClosed());
+        self::assertSame([], $channel->drainOutgoing());
+        self::assertSame([], $channel->drainCommands());
+        self::assertStringContainsString(
+            '"event":"play.actor_event_advisory.protocol_trace"',
+            implode('', $lines),
+        );
+    }
+
     public function testEncryptedMovementPredictionSyncDoesNotTreatReportedActorAsAuthority(): void
     {
         [$channel, $client, , $entityId] = $this->channel();
@@ -604,6 +647,29 @@ final class BedrockPlayChannelTest extends TestCase
             0,
         )));
         self::assertTrue($channel->isClosed());
+        self::assertSame([], $channel->drainCommands());
+    }
+
+    public function testAuthoritativeEquipmentEchoesRemainBoundedSafeNoOps(): void
+    {
+        [$channel, $client, , $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        self::assertSame([], $channel->drainCommands());
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([
+                new MobEquipmentPacket($entityId, 0xff, 0xfe, InventoryContainerId::OFFHAND),
+                new MobArmorEquipmentPacket($entityId),
+            ])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        self::assertFalse($channel->isClosed());
         self::assertSame([], $channel->drainCommands());
     }
 
@@ -1946,6 +2012,58 @@ final class BedrockPlayChannelTest extends TestCase
         ));
     }
 
+    public function testCurrentItemUseAndReleaseTransactionsBecomeAuthoritativeCommands(): void
+    {
+        [$channel, $clientEncryptor, , $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $item = InventoryItemStack::empty();
+        $position = new InventoryVector3(0.0, 64.0, 0.0);
+        $use = new InventoryTransactionPacket(0, [], [], new ItemUseInventoryTransaction(
+            ItemUseActionType::Use,
+            ItemUseTriggerType::PlayerInput,
+            new BlockPosition(0, 0, 0),
+            0,
+            2,
+            HandSlot::Mainhand,
+            $item,
+            $position,
+            $position,
+            0,
+            ItemUsePredictedResult::Failure,
+            ItemUseClientCooldownState::Off,
+        ));
+        $consume = new InventoryTransactionPacket(0, [], [], new ItemReleaseInventoryTransaction(
+            ItemReleaseActionType::Consume,
+            2,
+            $item,
+            $position,
+        ));
+        $release = new InventoryTransactionPacket(0, [], [], new ItemReleaseInventoryTransaction(
+            ItemReleaseActionType::Release,
+            2,
+            $item,
+            $position,
+        ));
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([$use, $consume, $release])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $commands = $channel->drainCommands();
+        self::assertCount(3, $commands);
+        self::assertInstanceOf(UseItem::class, $commands[0]);
+        self::assertInstanceOf(UseItem::class, $commands[1]);
+        self::assertInstanceOf(ReleaseItem::class, $commands[2]);
+        self::assertSame(2, $commands[0]->hotbarSlot);
+        self::assertSame(2, $commands[1]->hotbarSlot);
+        self::assertSame(2, $commands[2]->hotbarSlot);
+    }
+
     public function testLegacyPredictedSplitBecomesAnAuthoritativeBoundedTransfer(): void
     {
         [$channel, $clientEncryptor, , $entityId] = $this->channel();
@@ -1989,7 +2107,59 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertSame(1, $commands[0]->actions[0]->destination->slot);
     }
 
-    public function testLegacyDropTransactionBecomesOneAuthoritativeDropCommand(): void
+    public function testLegacyRequestedSlotCorrectionsScheduleOnlyExactAuthoritativeSlots(): void
+    {
+        [$channel, $clientEncryptor, , $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $packet = new InventoryTransactionPacket(-2, [
+            new InventoryLegacySlot(FullContainerName::ARMOR, "\0"),
+        ], [], new BasicInventoryTransaction(InventoryTransactionType::Normal));
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([$packet])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        $commands = $channel->drainCommands();
+        self::assertCount(2, $commands);
+        self::assertInstanceOf(ApplyInventoryStackRequest::class, $commands[0]);
+        self::assertSame('empty_actions', $commands[0]->rejectionReason);
+        self::assertInstanceOf(SyncInventorySlots::class, $commands[1]);
+        self::assertCount(1, $commands[1]->slots);
+        self::assertSame(InventoryContainer::Armor, $commands[1]->slots[0]->container);
+        self::assertSame(0, $commands[1]->slots[0]->slot);
+    }
+
+    public function testLegacyRequestedSlotCorrectionGroupsAreBounded(): void
+    {
+        [$channel, $clientEncryptor, , $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $packet = new InventoryTransactionPacket(
+            -2,
+            array_fill(0, 11, new InventoryLegacySlot(FullContainerName::INVENTORY, "\0")),
+            [],
+            new BasicInventoryTransaction(InventoryTransactionType::Normal),
+        );
+
+        self::assertFalse($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([$packet])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        self::assertTrue($channel->isClosed());
+        self::assertSame([], $channel->drainCommands());
+    }
+
+    public function testLegacyDropTransactionKeepsRequestedCorrectionFocusedOnItsSourceSlot(): void
     {
         $data = BedrockDataSet::bundled();
         $internal = new BlockStateRegistry($data->blockStateRegistry()->states());
@@ -2037,7 +2207,9 @@ final class BedrockPlayChannelTest extends TestCase
             $projected->blockRuntimeId,
             $projected->userData,
         );
-        $drop = new InventoryTransactionPacket(0, [], [
+        $drop = new InventoryTransactionPacket(-2, [
+            new InventoryLegacySlot(FullContainerName::INVENTORY, "\0"),
+        ], [
             new InventoryAction(
                 new InventorySource(InventorySourceType::WorldInteraction, flag: InventorySourceFlag::DropItem),
                 0,
@@ -2058,11 +2230,15 @@ final class BedrockPlayChannelTest extends TestCase
             0,
         )));
         $commands = $channel->drainCommands();
-        self::assertCount(1, $commands);
+        self::assertCount(2, $commands);
         self::assertInstanceOf(DropItem::class, $commands[0]);
         self::assertSame(1, $commands[0]->count);
         self::assertSame(64, $commands[0]->source->expectedCount);
         self::assertSame(InventoryResponseMode::LegacySlotSync, $commands[0]->responseMode);
+        self::assertInstanceOf(SyncInventorySlots::class, $commands[1]);
+        self::assertCount(1, $commands[1]->slots);
+        self::assertSame(InventoryContainer::Main, $commands[1]->slots[0]->container);
+        self::assertSame(0, $commands[1]->slots[0]->slot);
     }
 
     public function testItemStackDropRequestBecomesOneAuthoritativeDropCommand(): void
@@ -2193,6 +2369,37 @@ final class BedrockPlayChannelTest extends TestCase
         );
         self::assertSame(InventoryContainer::Cursor, $commands[0]->actions[0]->destination->container);
         self::assertSame(32, $commands[0]->actions[0]->count);
+    }
+
+    public function testOffhandRequestUsesInternalSlotZeroAndPreservesTheClientResponseSlot(): void
+    {
+        [$channel, $clientEncryptor, , $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $request = new ItemStackRequest(-11, [new TakeItemStackRequestAction(
+            1,
+            new ItemStackRequestSlot(new FullContainerName(FullContainerName::HOTBAR), 0, 1),
+            new ItemStackRequestSlot(new FullContainerName(FullContainerName::OFFHAND), 40, 0),
+        )]);
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([$request])])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(ApplyInventoryStackRequest::class, $commands[0]);
+        self::assertNull($commands[0]->rejectionReason);
+        $destination = $commands[0]->actions[0]->destination;
+        self::assertSame(InventoryContainer::Offhand, $destination->container);
+        self::assertSame(0, $destination->slot);
+        self::assertSame(40, $destination->responseSlotId());
+        self::assertSame(FullContainerName::OFFHAND, $destination->responseContainerId);
     }
 
     public function testCreativeRequestResolvesAdvertisedItemAndCreatedOutputAuthoritatively(): void
@@ -2406,16 +2613,26 @@ final class BedrockPlayChannelTest extends TestCase
                 new BlockPosition(1, 63, -2),
                 $actionType === PlayerActionType::AbortDestroyBlock ? -1 : 1,
             );
+            $packet = $actionType === PlayerActionType::PredictDestroyBlock
+                ? $this->mineBlockActionPacket($target, $tick)
+                : $this->blockActionPacket($target, $tick);
             self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-                $client->encryptEnvelope($this->encode([$this->blockActionPacket($target, $tick)])),
+                $client->encryptEnvelope($this->encode([$packet])),
                 Reliability::ReliableOrdered,
                 0,
             )));
             self::assertSame([], $channel->drainOutgoing());
             $commands = $channel->drainCommands();
-            self::assertCount(2, $commands);
+            self::assertCount($actionType === PlayerActionType::PredictDestroyBlock ? 3 : 2, $commands);
             self::assertInstanceOf(BreakBlock::class, $commands[1]);
             self::assertSame($intent, $commands[1]->action);
+            if ($actionType === PlayerActionType::PredictDestroyBlock) {
+                self::assertInstanceOf(ApplyInventoryStackRequest::class, $commands[2]);
+                self::assertSame(-13, $commands[2]->requestId);
+                self::assertCount(1, $commands[2]->actions);
+                self::assertSame(InventoryStackRequestActionType::MineBlock, $commands[2]->actions[0]->type);
+                self::assertSame(0, $commands[2]->actions[0]->source->slot);
+            }
             if ($intent === BlockBreakAction::Abort) {
                 self::assertNull($commands[1]->position);
                 self::assertSame(0, $commands[1]->face);
@@ -2953,6 +3170,44 @@ final class BedrockPlayChannelTest extends TestCase
             0.0,
             true,
             blockActions: [$action],
+        );
+    }
+
+    private function mineBlockActionPacket(PlayerBlockAction $action, int $tick): PlayerAuthInputPacket
+    {
+        return new PlayerAuthInputPacket(
+            0.0,
+            0.0,
+            0.0,
+            PlayerPositionProjection::feetToWireY(64.0),
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            [
+                PlayerAuthInputFlag::PerformItemStackRequest->value,
+                PlayerAuthInputFlag::PerformBlockActions->value,
+            ],
+            1,
+            0,
+            0,
+            0.0,
+            0.0,
+            UnsignedLong::fromInt($tick),
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            true,
+            -13,
+            [$action],
+            itemStackRequest: new ItemStackRequest(-13, [new MineBlockItemStackRequestAction(0, 1, 1)]),
         );
     }
 

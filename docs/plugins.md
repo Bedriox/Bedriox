@@ -70,7 +70,13 @@ public function onJoin(PlayerJoinEvent $event): void
 
 `#[EventHandler]` defaults to `EventPriority::NORMAL`. Dispatch order is `LOWEST`, `LOW`, `NORMAL`, `HIGH`, `HIGHEST`, then `MONITOR`, with registration order as the tie-breaker. Programmatic registration is available through `PluginContext::events()`.
 
-Cancellable pre-events cover join, movement, teleportation, chat, player attacks, damage, block breaking, block placement, inventory changes, game-mode changes, item dropping, and item pickup. `PlayerTeleportEvent` may cancel a teleport or replace its bounded destination, yaw, and pitch; it intentionally applies no collision or headroom policy. `PlayerTeleportedEvent` describes the committed result. `PlayerAttackEvent` exposes immutable attacker and target snapshots and may cancel the intent or set its bounded damage; its `PlayerInteractionType::ATTACK` value is independent of Bedrock wire IDs. `PlayerDamageEvent` performs the same role for non-attack damage. `PlayerRespawnEvent` may select a bounded destination before respawn commits. `PlayerGameModeChangeEvent` may cancel or replace the requested mode. `PlayerDropItemEvent` may cancel a drop or bound its count before inventory mutation, while `PlayerPickupItemEvent` may cancel or bound the collected count. A cancelled client prediction receives the authoritative correction. Immutable post-events, including `PlayerAttackedEvent`, `PlayerDamagedEvent`, `PlayerRespawnedEvent`, `PlayerGameModeChangedEvent`, `PlayerDroppedItemEvent`, and `PlayerPickedUpItemEvent`, describe committed changes. `MONITOR` observes the final result and cannot cancel, mutate, or stage server actions.
+Cancellable pre-events cover join, movement, teleportation, chat, player attacks, damage, block breaking, block placement, inventory changes, game-mode changes, item dropping and pickup, item use and consumption, nutrition, equipment, and durability. `PlayerTeleportEvent` may cancel a teleport or replace its bounded destination, yaw, and pitch; it intentionally applies no collision or headroom policy. `PlayerTeleportedEvent` describes the committed result. `PlayerAttackEvent` exposes immutable attacker and target snapshots and may cancel the intent or set its bounded damage; its `PlayerInteractionType::ATTACK` value is independent of Bedrock wire IDs. `PlayerDamageEvent` performs the same role for non-attack damage. `PlayerRespawnEvent` may select a bounded destination before respawn commits. `PlayerGameModeChangeEvent` may cancel or replace the requested mode. `PlayerDropItemEvent` may cancel a drop or bound its count before inventory mutation, while `PlayerPickupItemEvent` may cancel or bound the collected count. A cancelled client prediction receives the authoritative correction. Immutable post-events describe only committed changes. `MONITOR` observes the final result and cannot cancel, mutate, or stage server actions.
+
+`PlayerItemUseEvent` runs after the held stack, game mode, cooldown, and active-use rules have been validated. Cancelling it prevents the use from starting or applying. `PlayerItemUsedEvent` reports a committed instant or completed timed use, while `PlayerItemUseCancelledEvent` records why an active use ended without completing. `PlayerItemConsumeEvent` may cancel consumption or replace its bounded `ConsumptionResult`, including nutrition restoration and residue stacks. `PlayerItemConsumedEvent` reports the committed stack, nutrition, and residue result. `PlayerFoodLevelChangeEvent` may cancel or replace a bounded `Nutrition` snapshot; `PlayerFoodLevelChangedEvent` reports the committed state. `FoodLevelChangeCause::EXHAUSTION` includes accepted survival and adventure sprint movement.
+
+`PlayerEquipmentChangeEvent` covers armor and offhand transitions. A listener may cancel it or replace the proposed immutable stack, which is revalidated for the target `EquipmentSlot` before commit. `PlayerEquipmentChangedEvent` reports the committed result. `PlayerItemDamageEvent` may cancel or adjust bounded durability loss; `PlayerItemBreakEvent` reports an item removed after its durability was exhausted. These APIs use gameplay enums such as `EquipmentSlot`, `ItemUseKind`, and `ItemDamageCause`, never protocol ordinals.
+
+Natural regeneration enters `PlayerRegainHealthEvent` before health changes. A listener may cancel it or set a bounded amount. `PlayerRegainedHealthEvent` observes the committed result, and `HealthRegainCause::SATURATION` identifies the nutrition-driven path without exposing an internal numeric cause.
 
 `PlayerDeathEvent` runs after lethal health commits but before Bedriox presents the death. It carries immutable victim and optional killer snapshots, the cause and final incoming damage, plus independent chat and death-screen messages. A plugin may set either message to a bounded raw string, a `Bedriox\Api\TranslatableMessage`, or `null` to suppress that presentation. Screen suppression retains the empty protocol handshake required for respawning. The event does not cancel death. Listener failure restores both messages before later listeners run, and `MONITOR` remains read-only.
 
@@ -102,6 +108,40 @@ use Bedriox\Api\Inventory\ItemDefinition;
 
 $this->context()->items()->register(
     new ItemDefinition('minecraft:diamond', maximumStackSize: 16),
+    replace: true,
+);
+```
+
+The same owner-scoped registrar adds bounded gameplay behavior to an admitted item. Behavior registration is data-only: plugin event listeners implement custom effects through the normal staged server API. A consumable definition sets its authoritative use duration, cooldown, food and saturation restoration, hunger requirement, and residue. An armor definition selects one typed armor slot and sets defense, durability, and optional knockback resistance. Offhand admission is an explicit capability. With `replace: true`, a plugin may override built-in behavior or its own earlier definition while enabled, but never another plugin's definition. Disablement removes the override and restores the built-in behavior when one exists.
+
+```php
+use Bedriox\Api\Inventory\ArmorDefinition;
+use Bedriox\Api\Inventory\ConsumableDefinition;
+use Bedriox\Api\Inventory\EquipmentSlot;
+use Bedriox\Api\Inventory\ItemBehaviorDefinition;
+use Bedriox\Api\Inventory\ItemStack;
+use Bedriox\Api\Inventory\ItemUseKind;
+
+$items = $this->context()->items();
+$items->registerBehavior(
+    'minecraft:beetroot_soup',
+    new ItemBehaviorDefinition(
+        ItemUseKind::CONSUME,
+        useDurationTicks: 32,
+        consumable: new ConsumableDefinition(
+            foodRestore: 6,
+            saturationRestore: 7.2,
+            residue: [new ItemStack('minecraft:bowl', 1)],
+        ),
+    ),
+    replace: true,
+);
+$items->registerBehavior(
+    'minecraft:iron_helmet',
+    new ItemBehaviorDefinition(
+        ItemUseKind::EQUIP,
+        armor: new ArmorDefinition(EquipmentSlot::HEAD, 2, 165),
+    ),
     replace: true,
 );
 ```

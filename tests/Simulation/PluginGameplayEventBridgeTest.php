@@ -17,16 +17,22 @@ use Bedriox\Api\Event\Player\PlayerChatEvent;
 use Bedriox\Api\Event\Player\PlayerDamagedEvent;
 use Bedriox\Api\Event\Player\PlayerDamageEvent;
 use Bedriox\Api\Event\Player\PlayerDeathEvent;
+use Bedriox\Api\Event\Player\PlayerFoodLevelChangedEvent;
+use Bedriox\Api\Event\Player\PlayerFoodLevelChangeEvent;
 use Bedriox\Api\Event\Player\PlayerJoinEvent;
 use Bedriox\Api\Event\Player\PlayerKickEvent;
 use Bedriox\Api\Event\Player\PlayerLoginEvent;
 use Bedriox\Api\Event\Player\PlayerMoveEvent;
 use Bedriox\Api\Event\Player\PlayerPreJoinEvent;
+use Bedriox\Api\Event\Player\PlayerRegainedHealthEvent;
+use Bedriox\Api\Event\Player\PlayerRegainHealthEvent;
 use Bedriox\Api\Event\Player\PlayerRespawnedEvent;
 use Bedriox\Api\Event\Player\PlayerRespawnEvent;
 use Bedriox\Api\Event\Player\PlayerTeleportedEvent;
 use Bedriox\Api\Event\Player\PlayerTeleportEvent;
 use Bedriox\Api\Inventory\Inventory as ApiInventory;
+use Bedriox\Api\Player\FoodLevelChangeCause;
+use Bedriox\Api\Player\HealthRegainCause;
 use Bedriox\Api\Player\Player as ApiPlayer;
 use Bedriox\Api\Player\PlayerInteractionType;
 use Bedriox\Api\TranslatableMessage;
@@ -49,6 +55,7 @@ use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
 use Bedriox\Server\Simulation\Event\MovementCorrected;
 use Bedriox\Server\Simulation\Event\PlayerDamaged;
 use Bedriox\Server\Simulation\Event\PlayerDied;
+use Bedriox\Server\Simulation\Event\PlayerHealed;
 use Bedriox\Server\Simulation\Event\PlayerRespawned;
 use Bedriox\Server\Simulation\MovementMode;
 use Bedriox\Server\Simulation\PluginGameplayEventBridge;
@@ -562,6 +569,69 @@ final class PluginGameplayEventBridgeTest extends TestCase
 
         self::assertSame(100.0, $deathDamage);
         self::assertSame('identity-one', $killerIdentity);
+    }
+
+    public function testNaturalRegenerationRunsThroughOrderedPluginEvents(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $order = [];
+        $dispatcher->register('Example', PlayerRegainHealthEvent::class, static function (PlayerRegainHealthEvent $event) use (&$order): void {
+            $order[] = 'health-before';
+            self::assertSame(HealthRegainCause::SATURATION, $event->cause);
+            $event->setAmount(0.5);
+        });
+        $dispatcher->register('Example', PlayerFoodLevelChangeEvent::class, static function (PlayerFoodLevelChangeEvent $event) use (&$order): void {
+            $order[] = 'food-before';
+            self::assertSame(FoodLevelChangeCause::REGENERATION, $event->cause);
+        });
+        $dispatcher->register('Example', PlayerRegainedHealthEvent::class, static function (PlayerRegainedHealthEvent $event) use (&$order): void {
+            $order[] = 'health-after';
+            self::assertSame(0.5, $event->amount);
+        });
+        $dispatcher->register('Example', PlayerFoodLevelChangedEvent::class, static function (PlayerFoodLevelChangedEvent $event) use (&$order): void {
+            $order[] = 'food-after';
+            self::assertSame(FoodLevelChangeCause::REGENERATION, $event->cause);
+        });
+        [$simulation, $factory] = self::simulation($bridge);
+        $simulation->enqueue($factory->join('one', 'identity-one', 'One'));
+        $simulation->tick();
+        $simulation->enqueue($factory->damage('one', 2.0));
+        $simulation->tick();
+
+        $events = [];
+        for ($tick = 0; $tick < 80; ++$tick) {
+            $events = $simulation->tick()->events;
+            if ($events !== []) {
+                break;
+            }
+        }
+
+        self::assertInstanceOf(PlayerHealed::class, $events[0] ?? null);
+        self::assertSame(18.5, $events[0]->player->health);
+        self::assertSame(['health-before', 'food-before', 'health-after', 'food-after'], $order);
+    }
+
+    public function testPluginCanCancelNaturalRegenerationWithoutChargingNutrition(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $dispatcher->register('Example', PlayerRegainHealthEvent::class, static function (PlayerRegainHealthEvent $event): void {
+            $event->cancel();
+        });
+        [$simulation, $factory] = self::simulation($bridge);
+        $simulation->enqueue($factory->join('one', 'identity-one', 'One'));
+        $simulation->tick();
+        $simulation->enqueue($factory->damage('one', 2.0));
+        $simulation->tick();
+
+        for ($tick = 0; $tick < 80; ++$tick) {
+            $simulation->tick();
+        }
+
+        $player = $simulation->snapshot()->players[0];
+        self::assertSame(18.0, $player->health);
+        self::assertSame(20.0, $player->food);
+        self::assertSame(20.0, $player->saturation);
+        self::assertSame(0.0, $player->exhaustion);
     }
 
     /** @return array{EventDispatcher, PluginGameplayEventBridge} */

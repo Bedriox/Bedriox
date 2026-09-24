@@ -55,6 +55,7 @@ use Bedriox\Protocol\Packet\SetLocalPlayerAsInitializedPacket;
 use Bedriox\Protocol\Packet\SoftEnumUpdateType;
 use Bedriox\Protocol\Packet\SubChunkRequestPacket;
 use Bedriox\Protocol\Packet\SwapItemStackRequestAction;
+use Bedriox\Protocol\Packet\TakeItemStackRequestAction;
 use Bedriox\Protocol\Packet\TextPacket;
 use Bedriox\Protocol\Packet\UpdateAbilitiesPacket;
 use Bedriox\Protocol\Packet\UpdateSoftEnumPacket;
@@ -71,6 +72,7 @@ use Bedriox\RakNet\SessionClosedEvent;
 use Bedriox\RakNet\SessionCloseReason;
 use Bedriox\RakNet\SessionInfo;
 use Bedriox\RakNet\SessionOpenedEvent;
+use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Login\AuthenticatedLogin;
 use Bedriox\Server\Login\BedrockLoginChannel;
 use Bedriox\Server\Login\HandshakeMaterial;
@@ -82,6 +84,7 @@ use Bedriox\Server\Observability\MutableCrashContextProvider;
 use Bedriox\Server\Observability\PerformanceMonitor;
 use Bedriox\Server\Observability\PerformanceSubsystem;
 use Bedriox\Server\Permission\PermissionStore;
+use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Player\Persistence\PlayerDataStore;
 use Bedriox\Server\Player\Persistence\PlayerPersistenceManager;
 use Bedriox\Server\Player\PlayerBootstrap;
@@ -807,7 +810,9 @@ final class ServerRuntimeTest extends TestCase
     {
         $transport = new FakeConnectedTransport();
         $clock = new RuntimeTestClock();
-        $world = new WorldSimulation();
+        $world = new WorldSimulation(
+            itemCatalog: ItemCatalog::vanilla(BedrockDataSet::bundled()->itemNetworkRegistry()),
+        );
         $loginFactory = new RuntimeLoginFactory(uniqueIdentities: true);
         $events = new RecordingEventEncoder();
         $runtime = new ServerRuntime(
@@ -829,11 +834,27 @@ final class ServerRuntimeTest extends TestCase
         self::assertTrue($runtime->poll());
         self::assertCount(2, $world->snapshot()->players);
 
+        self::assertTrue($world->enqueuePluginInventorySlot(
+            $world->snapshot()->players[0]->identity,
+            0,
+            new InventoryStack('minecraft:iron_helmet', 1, 1),
+        ));
+        $clock->advance(50_000_000);
+        self::assertTrue($runtime->poll());
+        $helmet = $world->snapshot()->players[0]->selectedStack;
+        self::assertNotNull($helmet);
+
         $events->clearEvents();
-        $emptyFirst = new ItemStackRequestSlot(new FullContainerName(FullContainerName::INVENTORY), 0, 0);
-        $emptySecond = new ItemStackRequestSlot(new FullContainerName(FullContainerName::INVENTORY), 1, 0);
         $this->receiveEncrypted($transport, $first, $firstClient, new ItemStackRequestPacket([
-            new ItemStackRequest(-1, [new SwapItemStackRequestAction($emptyFirst, $emptySecond)]),
+            new ItemStackRequest(-1, [new TakeItemStackRequestAction(
+                1,
+                new ItemStackRequestSlot(
+                    new FullContainerName(FullContainerName::HOTBAR),
+                    0,
+                    $helmet->stackNetworkId,
+                ),
+                new ItemStackRequestSlot(new FullContainerName(FullContainerName::ARMOR), 0, 0),
+            )]),
         ]));
         self::assertTrue($runtime->poll());
         $clock->advance(50_000_000);
@@ -845,8 +866,10 @@ final class ServerRuntimeTest extends TestCase
         ));
         self::assertCount(1, $processed);
         self::assertInstanceOf(InventoryStackRequestProcessed::class, $processed[0]);
-        self::assertTrue($processed[0]->success);
+        self::assertTrue($processed[0]->success, $processed[0]->reason);
         self::assertSame([], $processed[0]->peerSessionIds);
+        self::assertSame('minecraft:iron_helmet', $processed[0]->armorInventory[0]?->identifier);
+        self::assertNull($processed[0]->offhandStack);
     }
 
     public function testFactoryFailureAndInvalidPeerInputAreIsolated(): void

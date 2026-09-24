@@ -59,7 +59,8 @@ final class PlayerPersistenceManager
         }
 
         $sameWorld = $saved->worldName === $this->worldName;
-        $restoreLocation = $sameWorld && $saved->health > 0.0;
+        $savedAlive = $saved->health > 0.0;
+        $restoreLocation = $sameWorld && $savedAlive;
 
         return new PlayerBootstrap(
             new PlayerIdentity($uuid, $login->displayName, $login->xuid),
@@ -71,7 +72,10 @@ final class PlayerPersistenceManager
             $saved->firstPlayedAt,
             $now,
             $saved->gamemode,
-            $saved->health > 0.0 ? $saved->health : \Bedriox\Server\Player\PlayerVitals::MAX_HEALTH,
+            $savedAlive ? $saved->health : \Bedriox\Server\Player\PlayerVitals::MAX_HEALTH,
+            $savedAlive ? $saved->food : \Bedriox\Server\Player\PlayerVitals::MAX_FOOD,
+            $savedAlive ? $saved->saturation : \Bedriox\Server\Player\PlayerVitals::MAX_SATURATION,
+            $savedAlive ? $saved->exhaustion : 0.0,
         );
     }
 
@@ -88,6 +92,9 @@ final class PlayerPersistenceManager
             ($this->clock)(),
             $player->gamemode,
             $player->vitals->health,
+            $player->vitals->food,
+            $player->vitals->saturation,
+            $player->vitals->exhaustion,
         );
     }
 
