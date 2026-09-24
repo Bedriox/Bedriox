@@ -28,7 +28,6 @@ final class PrepareChunkTask implements WorkerTaskHandler
 {
     private ?BlockStateRegistry $internalStates = null;
     private ?BlockNetworkTranslator $blocks = null;
-    private ?int $plainsBiomeRuntimeId = null;
     private ?string $registryHash = null;
 
     public function execute(string $payload): string
@@ -46,13 +45,10 @@ final class PrepareChunkTask implements WorkerTaskHandler
             ?? throw new \LogicException('Chunk projection did not initialize its internal registry.');
         $blocks = $this->blocks
             ?? throw new \LogicException('Chunk projection did not initialize its block translator.');
-        $plainsBiomeRuntimeId = $this->plainsBiomeRuntimeId
-            ?? throw new \LogicException('Chunk projection did not initialize its biome mapping.');
         $column = (new ChunkProjectionTransferCodec())->decodeColumn(
             $request->chunkTransfer,
             $internalStates,
             $blocks,
-            $plainsBiomeRuntimeId,
         );
         $packet = ChunkSerializer::fullColumn($column);
         $frame = new PacketFrame(
@@ -79,7 +75,6 @@ final class PrepareChunkTask implements WorkerTaskHandler
         $networkStates = $data->blockStateRegistry();
         $this->internalStates = new BlockStateRegistry($networkStates->states());
         $this->blocks = new BlockNetworkTranslator($this->internalStates, $networkStates);
-        $this->plainsBiomeRuntimeId = $data->plainsBiomeRuntimeId();
         $this->registryHash = ChunkProjectionIdentity::registryHash($data, $networkStates);
     }
 }

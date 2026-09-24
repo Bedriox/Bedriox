@@ -13,6 +13,7 @@ use Bedriox\Server\Gameplay\Block\BlockBreakContext;
 use Bedriox\Server\Gameplay\Block\BlockBreakRules;
 use Bedriox\Server\Gameplay\Block\BlockCatalog;
 use Bedriox\Server\Gameplay\Block\BlockDropRules;
+use Bedriox\Server\Gameplay\Block\BlockPlacementStateResolver;
 use Bedriox\Server\Gameplay\Block\DropRandom;
 use Bedriox\Server\Gameplay\Block\SystemDropRandom;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
@@ -80,8 +81,10 @@ use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\Block\InternalBlockStateId;
 use Bedriox\Server\World\BlockPosition;
+use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\Collision\AxisAlignedBox;
 use Bedriox\Server\World\Collision\BlockCollisionQuery;
+use Bedriox\Server\World\Collision\BlockCollisionRegistry;
 use Bedriox\Server\World\Collision\PlayerCollisionResolver;
 use Bedriox\Server\World\Collision\PlayerCollisionShape;
 use Bedriox\Server\World\World;
@@ -124,6 +127,7 @@ final class WorldSimulation
     private readonly SimulationCommandFactory $validator;
     private readonly ?PlayerCollisionResolver $collisionResolver;
     private readonly ?DroppedItemCollisionResolver $itemCollisionResolver;
+    private readonly ?BlockPlacementStateResolver $blockPlacementStates;
     private readonly DropRandom $dropRandom;
     private readonly ItemEntityRegistry $itemEntities;
     private int $itemMovementCursor = 0;
@@ -140,6 +144,9 @@ final class WorldSimulation
     /** @var array<string, array{position: BlockPosition, state: int, sequence: int, face: int, lastParticleTick: int}> */
     private array $breakingBlocks = [];
 
+    /** @var array<string, array{session: string, position: Position, acknowledge: bool}> */
+    private array $pendingRespawns = [];
+
     public function __construct(
         private readonly SimulationLimits $limits = new SimulationLimits(),
         private readonly Position $spawn = new Position(0.0, 64.0, 0.0),
@@ -153,6 +160,7 @@ final class WorldSimulation
         private readonly ?ItemCatalog $itemCatalog = null,
         private readonly ?BlockCatalog $blockCatalog = null,
         private readonly ?BlockStateRegistry $blockStateRegistry = null,
+        private readonly ?BlockCollisionRegistry $blockCollisionRegistry = null,
         ?DropRandom $dropRandom = null,
         ?ItemEntityRegistry $itemEntities = null,
     ) {
@@ -168,6 +176,7 @@ final class WorldSimulation
                 $blockWorld,
                 $blockPalette->air,
                 array_values(array_filter([$waterState, $lavaState])),
+                $blockCollisionRegistry,
             ))
             : null;
         $this->itemCollisionResolver = $blockWorld !== null && $blockPalette !== null
@@ -175,8 +184,12 @@ final class WorldSimulation
                 $blockWorld,
                 $blockPalette->air,
                 array_values(array_filter([$waterState, $lavaState])),
+                $blockCollisionRegistry,
             ))
             : null;
+        $this->blockPlacementStates = $blockStateRegistry === null
+            ? null
+            : new BlockPlacementStateResolver($blockStateRegistry);
         $this->validator->move('spawn', 0, $spawn->x, $spawn->y, $spawn->z, 0.0, 0.0, MovementMode::STOPPED);
         if ($blockWorld === null && $spawn->y < $this->limits->flatGroundY) {
             throw new InvalidArgumentException('Spawn cannot be below the flat-world surface.');
@@ -340,6 +353,7 @@ final class WorldSimulation
             array_push($events, ...$this->drainDeferredEvents());
         }
 
+        array_push($events, ...$this->advancePendingRespawns());
         array_push($events, ...$this->advanceBlockBreakParticles());
         array_push($events, ...$this->advanceItemEntities());
 
@@ -450,6 +464,15 @@ final class WorldSimulation
 
     public function enqueuePluginTeleport(string $identity, Position $position): bool
     {
+        return $this->enqueueTeleport($identity, $position);
+    }
+
+    public function enqueueTeleport(
+        string $identity,
+        Position $position,
+        ?float $yaw = null,
+        ?float $pitch = null,
+    ): bool {
         $player = $this->players->playerByIdentity($identity);
 
         return $player !== null && $this->enqueue($this->validator->teleport(
@@ -457,6 +480,8 @@ final class WorldSimulation
             $position->x,
             $position->y,
             $position->z,
+            $yaw,
+            $pitch,
         ));
     }
 
@@ -1221,7 +1246,7 @@ final class WorldSimulation
         ];
     }
 
-    private function respawn(RespawnPlayer $command): WorldEvent
+    private function respawn(RespawnPlayer $command): ?WorldEvent
     {
         $player = $this->players->player($command->session);
         if ($player === null) {
@@ -1230,7 +1255,32 @@ final class WorldSimulation
         if ($player->vitals->isAlive()) {
             return new CommandRejected($command->session, 'already_alive');
         }
-        $position = $this->pluginEvents?->respawn($player, $this->spawn) ?? $this->spawn;
+        $this->beginRespawn($player, false);
+
+        return null;
+    }
+
+    private function beginRespawn(Player $player, bool $acknowledge): void
+    {
+        $key = self::sessionKey($player->sessionId);
+        $pending = $this->pendingRespawns[$key] ?? null;
+        if ($pending !== null) {
+            if ($acknowledge && !$pending['acknowledge']) {
+                $pending['acknowledge'] = true;
+                $this->pendingRespawns[$key] = $pending;
+            }
+
+            return;
+        }
+        $this->pendingRespawns[$key] = [
+            'session' => $player->sessionId,
+            'position' => $this->pluginEvents?->respawn($player, $this->spawn) ?? $this->spawn,
+            'acknowledge' => $acknowledge,
+        ];
+    }
+
+    private function completeRespawn(Player $player, Position $position): PlayerRespawned
+    {
         $player->movement->position = $position;
         $player->movement->yaw = 0.0;
         $player->movement->headYaw = 0.0;
@@ -1256,16 +1306,82 @@ final class WorldSimulation
         );
     }
 
-    private function acknowledgeRespawn(AcknowledgeRespawn $command): WorldEvent
+    private function acknowledgeRespawn(AcknowledgeRespawn $command): ?WorldEvent
     {
         $player = $this->players->player($command->session);
-        if ($player !== null && !$player->vitals->isAlive()) {
-            $this->deferredEvents[] = $this->respawn(new RespawnPlayer($command->session));
+        if ($player === null) {
+            return new CommandRejected($command->session, 'not_joined');
+        }
+        if ($player->vitals->isAlive()) {
+            return new RespawnAcknowledged($player->snapshot());
+        }
+        $this->beginRespawn($player, true);
+
+        return null;
+    }
+
+    /** @return list<WorldEvent> */
+    private function advancePendingRespawns(): array
+    {
+        $events = [];
+        foreach ($this->pendingRespawns as $key => $pending) {
+            $player = $this->players->player($pending['session']);
+            if ($player === null || $player->vitals->isAlive()) {
+                unset($this->pendingRespawns[$key]);
+
+                continue;
+            }
+            $retainedChunks = [];
+            if ($this->blockWorld !== null) {
+                $ready = true;
+                foreach (self::respawnChunkPositions($pending['position']) as $chunk) {
+                    if ($this->blockWorld->requestRetainChunk($chunk)) {
+                        $retainedChunks[] = $chunk;
+                    } else {
+                        $ready = false;
+                    }
+                }
+                if (!$ready) {
+                    foreach ($retainedChunks as $chunk) {
+                        $this->blockWorld->releaseChunk($chunk);
+                    }
+
+                    continue;
+                }
+            }
+            try {
+                $respawned = $this->completeRespawn($player, $pending['position']);
+            } finally {
+                foreach ($retainedChunks as $chunk) {
+                    $this->blockWorld?->releaseChunk($chunk);
+                }
+            }
+            unset($this->pendingRespawns[$key]);
+            if ($pending['acknowledge']) {
+                $events[] = new RespawnAcknowledged($respawned->player);
+            }
+            $events[] = $respawned;
         }
 
-        return $player === null
-            ? new CommandRejected($command->session, 'not_joined')
-            : new RespawnAcknowledged($player->snapshot());
+        return $events;
+    }
+
+    /** @return list<ChunkPosition> */
+    private static function respawnChunkPositions(Position $position): array
+    {
+        $area = PlayerCollisionShape::at($position)->offset(0.0, -0.05, 0.0);
+        $chunks = [];
+        $minimumChunkX = (int) floor($area->minX / 16.0);
+        $maximumChunkX = (int) floor($area->maxX / 16.0);
+        $minimumChunkZ = (int) floor($area->minZ / 16.0);
+        $maximumChunkZ = (int) floor($area->maxZ / 16.0);
+        for ($chunkZ = $minimumChunkZ; $chunkZ <= $maximumChunkZ; ++$chunkZ) {
+            for ($chunkX = $minimumChunkX; $chunkX <= $maximumChunkX; ++$chunkX) {
+                $chunks[] = new ChunkPosition($chunkX, $chunkZ);
+            }
+        }
+
+        return $chunks;
     }
 
     /** @return list<WorldEvent> */
@@ -1345,7 +1461,8 @@ final class WorldSimulation
 
     private function disconnect(DisconnectPlayer $command): WorldEvent
     {
-        unset($this->breakingBlocks[self::sessionKey($command->session)]);
+        $key = self::sessionKey($command->session);
+        unset($this->breakingBlocks[$key], $this->pendingRespawns[$key]);
         $player = $this->players->player($command->session);
         if ($player === null) {
             return new CommandRejected($command->session, 'not_joined');
@@ -1463,6 +1580,8 @@ final class WorldSimulation
                     $command->position->x,
                     $command->position->y,
                     $command->position->z,
+                    $command->yaw,
+                    $command->pitch,
                 ),
                 $command instanceof SetPluginBlock => $this->validator->pluginBlock(
                     $command->plugin,
@@ -1663,8 +1782,13 @@ final class WorldSimulation
         }
         $state = $this->blockWorld->blockStateAt($position->x, $position->y, $position->z);
         $blockType = $this->blockCatalog !== null && $this->blockStateRegistry !== null
-            ? $this->blockCatalog->typeForInternalId($state, $this->blockStateRegistry)
+            ? $this->blockCatalog->findTypeForInternalId($state, $this->blockStateRegistry)
             : null;
+        if ($this->blockCatalog !== null && $this->blockStateRegistry !== null && $blockType === null) {
+            unset($this->breakingBlocks[$key]);
+
+            return new BlockChanged($command->session, $position, $state, [$command->session], true);
+        }
         if ($command->action === BlockBreakAction::Start) {
             if (!$player->gameMode()->canBuild()
                 || ($blockType !== null && !$blockType->isBreakable())
@@ -1962,14 +2086,21 @@ final class WorldSimulation
         $heldType = $held !== null && $this->itemCatalog?->has($held->identifier) === true
             ? $this->itemCatalog->type($held->identifier)
             : null;
-        $placedBlockState = $heldType?->placedBlockState !== null && $this->blockStateRegistry !== null
-            ? $this->blockStateRegistry->internalId($heldType->placedBlockState)
-            : $held?->placedBlockState;
+        $placementStateValid = true;
+        try {
+            $placedBlockState = $heldType?->placedBlockState !== null && $this->blockPlacementStates !== null
+                ? $this->blockPlacementStates->resolve($heldType->placedBlockState, $command->face)
+                : $held?->placedBlockState;
+        } catch (InvalidArgumentException) {
+            $placedBlockState = null;
+            $placementStateValid = false;
+        }
         $correctionReason = match (true) {
             !$player->gameMode()->canBuild() => 'gamemode',
             $command->sequence <= $player->placementSequence => 'stale_sequence',
             $command->hotbarSlot !== $player->inventory->selectedHotbarSlot() => 'selected_slot',
             $held === null => 'empty_hand',
+            !$placementStateValid => 'unsupported_state',
             $placedBlockState === null => 'unsupported_item',
             $clickedState->value === $this->blockPalette->air->value => 'clicked_air',
             $placedState->value !== $this->blockPalette->air->value => 'occupied',
@@ -2101,12 +2232,23 @@ final class WorldSimulation
         if ($player === null) {
             return new CommandRejected($command->session, 'not_joined');
         }
-        if ($this->blockWorld !== null && $this->blockPalette !== null
-            && (new BlockCollisionQuery($this->blockWorld, $this->blockPalette->air))
-                ->hasCollision(PlayerCollisionShape::at($command->position))) {
-            return new MovementCorrected($player->snapshot(), 'plugin_teleport_collision');
+        $destination = $command->position;
+        $yaw = $command->yaw ?? $player->movement->yaw;
+        $pitch = $command->pitch ?? $player->movement->pitch;
+        $from = $player->movement->position;
+        if ($this->pluginEvents !== null) {
+            $decision = $this->pluginEvents->teleport($player, $destination, $yaw, $pitch);
+            if ($decision === null) {
+                return new CommandRejected($command->session, 'plugin_cancelled');
+            }
+            $destination = $decision->destination;
+            $yaw = $decision->yaw;
+            $pitch = $decision->pitch;
         }
-        $player->movement->position = $command->position;
+        $player->movement->position = $destination;
+        $player->movement->yaw = $yaw;
+        $player->movement->headYaw = $yaw;
+        $player->movement->pitch = $pitch;
         $player->movement->mode = MovementMode::STOPPED;
         $player->movement->velocityX = 0.0;
         $player->movement->verticalVelocity = 0.0;
@@ -2114,10 +2256,12 @@ final class WorldSimulation
         $player->movement->fallDistance = 0.0;
         $player->movement->jumpAuthorizedUntilTick = -1;
         $player->movement->lastTick = $this->tick;
-        $player->movement->verticalState = $this->collisionResolver?->isGrounded($command->position) === true
+        $player->movement->verticalState = $this->collisionResolver?->isGrounded($destination) === true
             ? VerticalState::GROUNDED
             : VerticalState::AIRBORNE;
+        unset($this->breakingBlocks[self::sessionKey($command->session)]);
         $player->markDirty();
+        $this->pluginEvents?->teleported($player, $from);
 
         return new MovementCorrected(
             $player->snapshot(),

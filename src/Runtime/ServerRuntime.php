@@ -30,6 +30,11 @@ use Bedriox\RakNet\SessionOpenedEvent;
 use Bedriox\Server\Entity\Item\DroppedItemEntity;
 use Bedriox\Server\Observability\CrashContextPublisher;
 use Bedriox\Server\Observability\CrashPlayer;
+use Bedriox\Server\Observability\Memory\GarbageCollectionReport;
+use Bedriox\Server\Observability\Memory\GarbageCollector;
+use Bedriox\Server\Observability\Memory\MemoryManagementDecision;
+use Bedriox\Server\Observability\Memory\MemoryManager;
+use Bedriox\Server\Observability\Memory\MemoryPressure;
 use Bedriox\Server\Observability\PerformanceMonitor;
 use Bedriox\Server\Observability\PerformanceSubsystem;
 use Bedriox\Server\Permission\PermissionStore;
@@ -75,6 +80,7 @@ use Bedriox\Server\Simulation\WorldSimulation;
 use Bedriox\Server\Transport\ConnectedTransport;
 use Bedriox\Server\Worker\Chunk\PreparedChunkCache;
 use Bedriox\Server\Worker\Chunk\PreparedChunkCacheSnapshot;
+use Bedriox\Server\World\ChunkUnloadResult;
 use Bedriox\Server\World\World;
 use Closure;
 use InvalidArgumentException;
@@ -102,6 +108,11 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
     private ?string $involvedSessionId = null;
     private bool $autosaveActive = false;
     private bool $playerAutosaveActive = false;
+    private ?MemoryManagementDecision $lastMemoryDecision = null;
+    private ?GarbageCollectionReport $lastGarbageCollection = null;
+    private ?ChunkUnloadResult $lastChunkUnload = null;
+    private int $totalChunksUnloaded = 0;
+    private int $totalPreparedBytesTrimmed = 0;
 
     /** @var array<string, array{SessionInfo, int}> */
     private array $pendingTransportCloses = [];
@@ -139,9 +150,13 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         private readonly ?PerformanceMonitor $performance = null,
         ?SimulationClock $closeClock = null,
         private readonly ?PreparedChunkCache $preparedChunks = null,
+        private readonly ?MemoryManager $memoryManager = null,
+        private readonly ?GarbageCollector $garbageCollector = null,
+        private readonly int $chunkUnloadPerTick = 96,
     ) {
         if ($this->autosaveIntervalTicks < 1 || $this->autosaveChunkBudget < 1
-            || $this->playerAutosaveIntervalTicks < 1 || $this->playerAutosaveBudget < 1) {
+            || $this->playerAutosaveIntervalTicks < 1 || $this->playerAutosaveBudget < 1
+            || $this->chunkUnloadPerTick < 1 || $this->chunkUnloadPerTick > 1_024) {
             throw new InvalidArgumentException('Autosave interval and chunk budget must be positive.');
         }
         $this->commands = $commands ?? new SimulationCommandFactory();
@@ -170,6 +185,20 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
     public function givePlayerItem(string $uuid, string $identifier, int $amount): bool
     {
         return $this->world->enqueueGiveItem($uuid, $identifier, $amount);
+    }
+
+    public function teleportPlayer(
+        string $uuid,
+        \Bedriox\Api\World\Position $position,
+        ?float $yaw = null,
+        ?float $pitch = null,
+    ): bool {
+        return $this->world->enqueueTeleport(
+            $uuid,
+            new \Bedriox\Server\Simulation\Position($position->x, $position->y, $position->z),
+            $yaw,
+            $pitch,
+        );
     }
 
     /** Refreshes one connected player's command authority after a persisted permission change. */
@@ -214,6 +243,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         $completedTicks = 0;
         $this->performance?->beginTick($pollStarted);
         try {
+            $this->persistentWorld?->requestRetainSpawnChunk();
             $transportTiming = $this->performance?->startSubsystem(PerformanceSubsystem::TRANSPORT);
             $this->publishCrashContext();
             $this->transport->poll($this->limits->maximumDatagramsPerPoll);
@@ -321,7 +351,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                         && !$this->updateAuthoritativeChunkView($event->player)) {
                         continue;
                     }
-                    if ($event instanceof MovementCorrected && $event->peerSessionIds !== []
+                    if ($event instanceof MovementCorrected
+                        && ($event->reason === 'plugin_teleport' || $event->peerSessionIds !== [])
                         && !$this->updateAuthoritativeChunkView($event->authoritativePlayer)) {
                         continue;
                     }
@@ -620,6 +651,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                         'remaining_dirty_players' => $result['remaining'],
                     ]);
                 }
+                $this->runMemoryMaintenance($tick->number);
                 $persistenceTiming?->end();
             }
             foreach (array_keys($this->sessions) as $key) {
@@ -669,9 +701,119 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         return $this->preparedChunks?->snapshot();
     }
 
+    public function lastMemoryManagementDecision(): ?MemoryManagementDecision
+    {
+        return $this->lastMemoryDecision;
+    }
+
+    public function lastGarbageCollectionReport(): ?GarbageCollectionReport
+    {
+        return $this->lastGarbageCollection;
+    }
+
+    public function lastChunkUnloadResult(): ?ChunkUnloadResult
+    {
+        return $this->lastChunkUnload;
+    }
+
+    public function totalChunksUnloaded(): int
+    {
+        return $this->totalChunksUnloaded;
+    }
+
+    public function totalPreparedBytesTrimmed(): int
+    {
+        return $this->totalPreparedBytesTrimmed;
+    }
+
+    public function garbageCollectorRuns(): int
+    {
+        return $this->garbageCollector?->runs() ?? 0;
+    }
+
+    public function garbageCollectorThreshold(): int
+    {
+        return $this->garbageCollector?->threshold() ?? GarbageCollector::DEFAULT_THRESHOLD;
+    }
+
+    public function pendingChunkUnloadCount(): int
+    {
+        return $this->persistentWorld?->pendingChunkUnloadCount() ?? 0;
+    }
+
+    public function forceGarbageCollection(): ?GarbageCollectionReport
+    {
+        return $this->lastGarbageCollection = $this->garbageCollector?->collectNow();
+    }
+
+    public function runChunkUnloadMaintenance(): ?ChunkUnloadResult
+    {
+        if ($this->persistentWorld === null) {
+            return null;
+        }
+        $result = $this->persistentWorld->processChunkUnloads($this->chunkUnloadPerTick, 5_000);
+        $this->recordChunkUnloadResult($result);
+
+        return $result;
+    }
+
     public function isClosed(): bool
     {
         return $this->closed;
+    }
+
+    private function runMemoryMaintenance(int $tickNumber): void
+    {
+        $unloadBudget = $this->chunkUnloadPerTick;
+        $decision = $this->memoryManager?->evaluate();
+        if ($decision !== null) {
+            $this->lastMemoryDecision = $decision;
+            if ($decision->accelerateChunkUnloading) {
+                $unloadBudget = max($unloadBudget, $decision->maximumChunkUnloads);
+            }
+            if ($decision->trimDisposableCaches && $decision->pressure !== $decision->previousPressure) {
+                $trimmed = $this->preparedChunks?->trim($decision->pressure->value >= MemoryPressure::HIGH->value) ?? 0;
+                $this->totalPreparedBytesTrimmed = self::saturatingAdd($this->totalPreparedBytesTrimmed, $trimmed);
+            }
+        }
+
+        if ($this->persistentWorld !== null) {
+            $result = $this->persistentWorld->processChunkUnloads($unloadBudget, 2_000);
+            $this->recordChunkUnloadResult($result);
+        }
+
+        if ($this->garbageCollector === null) {
+            return;
+        }
+        $forceCollection = $decision?->collectCycles === true && (
+            $decision->pressure !== $decision->previousPressure
+            || ($decision->pressure === MemoryPressure::CRITICAL && $tickNumber % 5 === 0)
+            || ($decision->pressure === MemoryPressure::HIGH && $tickNumber % 20 === 0)
+            || ($decision->pressure === MemoryPressure::ELEVATED && $tickNumber % 100 === 0)
+        );
+        $this->lastGarbageCollection = $forceCollection
+            ? $this->garbageCollector->collectNow($decision->releaseAllocatorCaches)
+            : $this->garbageCollector->maybeCollect();
+    }
+
+    private function recordChunkUnloadResult(ChunkUnloadResult $result): void
+    {
+        $this->lastChunkUnload = $result;
+        $this->totalChunksUnloaded = self::saturatingAdd($this->totalChunksUnloaded, $result->evicted);
+        if ($result->examined > 0 || $result->persistenceSaturated) {
+            $this->diagnostics->record('world.chunk_unload_maintenance', [
+                'examined' => $result->examined,
+                'evicted' => $result->evicted,
+                'save_submissions' => $result->saveSubmissions,
+                'persistence_saturated' => $result->persistenceSaturated,
+                'remaining_queued' => $result->remainingQueued,
+            ]);
+        }
+    }
+
+    private static function saturatingAdd(int $left, int $right): int
+    {
+        return $right > PHP_INT_MAX - $left ? PHP_INT_MAX : $left + $right;
     }
 
     public function failure(): ?Throwable

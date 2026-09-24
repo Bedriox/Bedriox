@@ -24,17 +24,17 @@ final class BedrockChunkPacketSerializer
 
     private int $cacheMisses = 0;
 
+    private readonly BiomeRuntimeIdMap $biomes;
+
     public function __construct(
         private readonly BlockNetworkTranslator $blocks,
-        private readonly int $plainsBiomeRuntimeId,
         private readonly int $maximumCachedPackets = 256,
+        ?BiomeRuntimeIdMap $biomes = null,
     ) {
-        if ($plainsBiomeRuntimeId < 0 || $plainsBiomeRuntimeId > 65_535) {
-            throw new InvalidArgumentException('Plains biome runtime ID is outside its supported range.');
-        }
         if ($maximumCachedPackets < 1 || $maximumCachedPackets > 4_096) {
             throw new InvalidArgumentException('Chunk packet cache limit must be between 1 and 4096.');
         }
+        $this->biomes = $biomes ?? BiomeRuntimeIdMap::bundled();
         $this->cache = new \WeakMap();
     }
 
@@ -83,9 +83,7 @@ final class BedrockChunkPacketSerializer
             if (!$projected instanceof PackedPalettedStorage) {
                 $palette = [];
                 foreach ($storage->palette() as $biome) {
-                    $palette[] = $biome->identifier === 'minecraft:plains'
-                        ? $this->plainsBiomeRuntimeId
-                        : BiomeRuntimeIdMap::id($biome);
+                    $palette[] = $this->biomes->id($biome);
                 }
                 $projected = new PackedPalettedStorage(
                     $palette,

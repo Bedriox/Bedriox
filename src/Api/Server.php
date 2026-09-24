@@ -25,7 +25,7 @@ interface Server
 
     public function sendMessage(Player $player, string $message): void;
 
-    public function teleport(Player $player, Position $position): void;
+    public function teleport(Player $player, Position $position, ?float $yaw = null, ?float $pitch = null): void;
 
     /** Queues bounded server-authoritative damage; PlayerDamageEvent may cancel or modify it. */
     public function damage(Player $player, float $amount): void;

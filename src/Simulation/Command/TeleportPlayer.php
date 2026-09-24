@@ -8,7 +8,12 @@ use Bedriox\Server\Simulation\Position;
 
 final readonly class TeleportPlayer implements WorldCommand
 {
-    public function __construct(public string $session, public Position $position) {}
+    public function __construct(
+        public string $session,
+        public Position $position,
+        public ?float $yaw = null,
+        public ?float $pitch = null,
+    ) {}
 
     public function sessionId(): string
     {

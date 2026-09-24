@@ -20,7 +20,9 @@ final readonly class PersistentBiomeRegistry
     /** @param array<int, string> $identifiersById */
     public function __construct(array $identifiersById = [])
     {
-        $identifiersById = $identifiersById === [] ? BiomeRuntimeIdMap::identifiersById() : $identifiersById;
+        $identifiersById = $identifiersById === []
+            ? BiomeRuntimeIdMap::bundled()->identifiersById()
+            : $identifiersById;
         if ($identifiersById === [] || count($identifiersById) > 4_096) {
             throw new InvalidArgumentException('Persistent biome registry must be non-empty and bounded.');
         }

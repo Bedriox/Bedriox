@@ -1,0 +1,32 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Bedriox\Server\Observability\Memory;
+
+use InvalidArgumentException;
+
+final readonly class GarbageCollectionReport
+{
+    public function __construct(
+        public bool $collected,
+        public bool $forced,
+        public bool $allocatorCachesReleased,
+        public int $rootsBefore,
+        public int $rootsAfter,
+        public int $cyclesCollected,
+        public int $allocatorBytesReleased,
+        public int $durationNanoseconds,
+        public int $thresholdBefore,
+        public int $thresholdAfter,
+    ) {
+        if ($rootsBefore < 0 || $rootsAfter < 0 || $cyclesCollected < 0 || $allocatorBytesReleased < 0
+            || $durationNanoseconds < 0 || $thresholdBefore < 1 || $thresholdAfter < 1) {
+            throw new InvalidArgumentException('Garbage collection report values are invalid.');
+        }
+        if (!$collected && ($cyclesCollected !== 0 || $allocatorBytesReleased !== 0 || $durationNanoseconds !== 0
+            || $allocatorCachesReleased || $rootsBefore !== $rootsAfter)) {
+            throw new InvalidArgumentException('A skipped garbage collection report cannot contain collection results.');
+        }
+    }
+}

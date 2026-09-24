@@ -130,7 +130,6 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         $palette = FixedFlatBlockPalette::fromRegistry($internal);
         $encoder = new BedrockWorldEventPacketEncoder(new BedrockChunkPacketSerializer(
             new BlockNetworkTranslator($internal, $data->blockStateRegistry()),
-            $data->plainsBiomeRuntimeId(),
         ));
         $position = new BlockPosition(1, 63, -2);
 
@@ -157,7 +156,6 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         $palette = FixedFlatBlockPalette::fromRegistry($internal);
         $encoder = new BedrockWorldEventPacketEncoder(new BedrockChunkPacketSerializer(
             new BlockNetworkTranslator($internal, $data->blockStateRegistry()),
-            $data->plainsBiomeRuntimeId(),
         ));
         $stone = $internal->internalId(\Bedriox\Server\World\Block\VanillaBlockStates::stone());
         $packets = $encoder->encode(new BlockChanged(
@@ -185,7 +183,6 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         $palette = FixedFlatBlockPalette::fromRegistry($internal);
         $encoder = new BedrockWorldEventPacketEncoder(new BedrockChunkPacketSerializer(
             new BlockNetworkTranslator($internal, $data->blockStateRegistry()),
-            $data->plainsBiomeRuntimeId(),
         ));
         $packets = $encoder->encode(new \Bedriox\Server\Simulation\Event\BlockPunch(
             'one',
@@ -208,7 +205,7 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         $palette = FixedFlatBlockPalette::fromRegistry($internal);
         $translator = new BlockNetworkTranslator($internal, $data->blockStateRegistry());
         $encoder = new BedrockWorldEventPacketEncoder(
-            new BedrockChunkPacketSerializer($translator, $data->plainsBiomeRuntimeId()),
+            new BedrockChunkPacketSerializer($translator),
             BedrockInventoryPacketProjector::fromData($data, $translator),
         );
         $remaining = new InventoryStack('minecraft:grass_block', 63, 1, $palette->grassBlock);
@@ -830,7 +827,7 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
 
         return [
             new BedrockWorldEventPacketEncoder(
-                new BedrockChunkPacketSerializer($translator, $data->plainsBiomeRuntimeId()),
+                new BedrockChunkPacketSerializer($translator),
                 BedrockInventoryPacketProjector::fromData($data, $translator),
             ),
             $palette,

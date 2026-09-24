@@ -148,10 +148,16 @@ final readonly class SimulationCommandFactory
         return new SendPluginMessage($session, $message);
     }
 
-    public function teleport(string $session, float $x, float $y, float $z): TeleportPlayer
-    {
+    public function teleport(
+        string $session,
+        float $x,
+        float $y,
+        float $z,
+        ?float $yaw = null,
+        ?float $pitch = null,
+    ): TeleportPlayer {
         $this->assertOpaqueId($session, 128, 'session');
-        foreach (['x' => $x, 'y' => $y, 'z' => $z] as $name => $value) {
+        foreach (['x' => $x, 'y' => $y, 'z' => $z, 'yaw' => $yaw ?? 0.0, 'pitch' => $pitch ?? 0.0] as $name => $value) {
             if (!is_finite($value)) {
                 throw new CommandValidationException("Teleport {$name} must be finite.");
             }
@@ -160,8 +166,12 @@ final readonly class SimulationCommandFactory
             || $y < -64.0 || $y > 319.0) {
             throw new CommandValidationException('Teleport position exceeds the world boundary.');
         }
+        if (($yaw !== null && ($yaw < -360.0 || $yaw > 360.0))
+            || ($pitch !== null && ($pitch < -90.0 || $pitch > 90.0))) {
+            throw new CommandValidationException('Teleport orientation exceeds its accepted range.');
+        }
 
-        return new TeleportPlayer($session, new Position($x, $y, $z));
+        return new TeleportPlayer($session, new Position($x, $y, $z), $yaw, $pitch);
     }
 
     public function pluginBlock(string $plugin, BlockPosition $position, string $identifier): SetPluginBlock

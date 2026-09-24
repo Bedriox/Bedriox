@@ -16,6 +16,7 @@ use Bedriox\Api\World\Position;
 use Bedriox\Server\Command\Default\GamemodeCommand;
 use Bedriox\Server\Command\Default\GiveCommand;
 use Bedriox\Server\Command\Default\OnlinePlayerResolver;
+use Bedriox\Server\Command\Default\TeleportCommand;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
@@ -217,6 +218,86 @@ final class BuiltinGameplayCommandTest extends TestCase
         self::assertSame(0, $grants);
     }
 
+    public function testTeleportSupportsPlayerTargetsCoordinatesRotationAndRelativeValues(): void
+    {
+        $subject = $this->player('Subject');
+        $destination = new Player(
+            'Destination',
+            '00000000-0000-0000-0000-000000000002',
+            new Position(50.0, 80.0, -10.0),
+            135.0,
+            -20.0,
+            false,
+            false,
+            new Inventory(array_fill(0, 36, null), 0),
+        );
+        $teleports = [];
+        $command = new TeleportCommand(
+            new OnlinePlayerResolver(static fn(): array => [$subject, $destination]),
+            static function (Player $player, Position $position, ?float $yaw, ?float $pitch) use (&$teleports): bool {
+                $teleports[] = [$player->name, $position, $yaw, $pitch];
+
+                return true;
+            },
+        );
+        $sender = new GameplayPlayerSender($subject);
+
+        self::assertSame(CommandResult::SUCCESS, $command->execute(new CommandContext($sender, 'tp', ['Destination'])));
+        self::assertSame(50.0, $teleports[0][1]->x);
+        self::assertSame(135.0, $teleports[0][2]);
+        self::assertSame(-20.0, $teleports[0][3]);
+
+        self::assertSame(CommandResult::SUCCESS, $command->execute(new CommandContext(
+            $sender,
+            'teleport',
+            ['~2.5', '~', '~-3', '90', '30'],
+        )));
+        self::assertSame(2.5, $teleports[1][1]->x);
+        self::assertSame(64.0, $teleports[1][1]->y);
+        self::assertSame(-3.0, $teleports[1][1]->z);
+        self::assertSame(90.0, $teleports[1][2]);
+        self::assertSame(30.0, $teleports[1][3]);
+    }
+
+    public function testTeleportRequiresOtherPermissionAndRejectsInvalidCoordinates(): void
+    {
+        $subject = $this->player('Subject');
+        $target = new Player(
+            'Target',
+            '00000000-0000-0000-0000-000000000002',
+            new Position(1.0, 64.0, 1.0),
+            0.0,
+            0.0,
+            false,
+            false,
+            new Inventory(array_fill(0, 36, null), 0),
+        );
+        $calls = 0;
+        $command = new TeleportCommand(
+            new OnlinePlayerResolver(static fn(): array => [$subject, $target]),
+            static function () use (&$calls): bool {
+                ++$calls;
+
+                return true;
+            },
+        );
+        $sender = new GameplayPlayerSender($subject, []);
+
+        self::assertSame(CommandResult::FAILURE, $command->execute(new CommandContext(
+            $sender,
+            'tp',
+            ['Target', '0', '70', '0'],
+        )));
+        self::assertSame(0, $calls);
+
+        self::assertSame(CommandResult::FAILURE, $command->execute(new CommandContext(
+            new GameplayPlayerSender($subject),
+            'tp',
+            ['NaN', '64', '0'],
+        )));
+        self::assertSame(0, $calls);
+    }
+
     private function player(string $name, GameMode $gameMode = GameMode::SURVIVAL): Player
     {
         return new Player(
@@ -261,7 +342,8 @@ class GameplayConsoleSender implements CommandSender
 
 final class GameplayPlayerSender extends GameplayConsoleSender implements PlayerCommandSender
 {
-    public function __construct(private readonly Player $player) {}
+    /** @param list<string>|null $permissions */
+    public function __construct(private readonly Player $player, private readonly ?array $permissions = null) {}
 
     public function type(): CommandSenderType
     {
@@ -276,5 +358,10 @@ final class GameplayPlayerSender extends GameplayConsoleSender implements Player
     public function player(): Player
     {
         return $this->player;
+    }
+
+    public function hasPermission(string $permission): bool
+    {
+        return $this->permissions === null || in_array($permission, $this->permissions, true);
     }
 }

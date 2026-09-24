@@ -13,6 +13,7 @@ use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Gameplay\Item\ToolTier;
 use Bedriox\Server\Gameplay\Item\ToolType;
 use Bedriox\Server\Plugin\OwnedItemRegistrar;
+use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\VanillaBlockStates;
 use PHPUnit\Framework\TestCase;
 
@@ -47,6 +48,21 @@ final class ItemCatalogTest extends TestCase
             $items->type('minecraft:cobblestone')->placedBlockState?->canonicalKey(),
         );
         self::assertFalse($items->type('minecraft:diamond')->isPlaceable());
+    }
+
+    public function testGeneratedCatalogAdmitsOnlyPlaceableBlockItemForms(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $blocks = BlockCatalog::vanilla(new BlockStateRegistry($data->blockStateRegistry()->states()));
+        $items = ItemCatalog::vanilla($data->itemNetworkRegistry(), $blocks);
+
+        self::assertTrue($items->type('minecraft:short_grass')->isPlaceable());
+        self::assertTrue($items->type('minecraft:glass_pane')->isPlaceable());
+        self::assertFalse($items->has('minecraft:farmland'));
+        self::assertFalse($items->has('minecraft:grass_path'));
+        self::assertFalse($items->has('minecraft:wheat'));
+        self::assertFalse($items->has('minecraft:water'));
+        self::assertFalse($items->has('minecraft:lava'));
     }
 
     public function testTieredToolsAndShearsHaveAuthoritativeProperties(): void

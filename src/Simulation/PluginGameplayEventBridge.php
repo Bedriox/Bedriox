@@ -32,6 +32,8 @@ use Bedriox\Api\Event\Player\PlayerPreJoinEvent;
 use Bedriox\Api\Event\Player\PlayerQuitEvent;
 use Bedriox\Api\Event\Player\PlayerRespawnedEvent;
 use Bedriox\Api\Event\Player\PlayerRespawnEvent;
+use Bedriox\Api\Event\Player\PlayerTeleportedEvent;
+use Bedriox\Api\Event\Player\PlayerTeleportEvent;
 use Bedriox\Api\Inventory\Inventory as ApiInventory;
 use Bedriox\Api\Inventory\ItemStack as ApiItemStack;
 use Bedriox\Api\Player\GameMode;
@@ -120,6 +122,41 @@ final readonly class PluginGameplayEventBridge
     public function moved(Player $player): void
     {
         $this->events->dispatch(new PlayerMovedEvent($this->playerView($player)));
+    }
+
+    public function teleport(Player $player, Position $destination, float $yaw, float $pitch): ?PlayerTeleportDecision
+    {
+        $from = self::position($player->movement->position);
+        $event = new PlayerTeleportEvent(
+            $this->playerView($player),
+            $from,
+            self::position($destination),
+            $yaw,
+            $pitch,
+        );
+        $this->events->dispatch($event);
+        if ($event->isCancelled()) {
+            return null;
+        }
+        $final = $event->destination();
+
+        return new PlayerTeleportDecision(
+            new Position($final->x, $final->y, $final->z),
+            $event->yaw(),
+            $event->pitch(),
+        );
+    }
+
+    public function teleported(Player $player, Position $from): void
+    {
+        $snapshot = $this->playerView($player);
+        $this->events->dispatch(new PlayerTeleportedEvent(
+            $snapshot,
+            self::position($from),
+            $snapshot->position,
+            $snapshot->yaw,
+            $snapshot->pitch,
+        ));
     }
 
     public function damage(Player $player, DamageCause $cause, float $damage): ?float

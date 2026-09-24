@@ -36,10 +36,9 @@ final class ChunkProjectionIdentity
             $key = $state->canonicalKey();
             hash_update($context, pack('N2', $runtimeId, strlen($key)) . $key);
         }
-        foreach (BiomeRuntimeIdMap::identifiersById() as $runtimeId => $name) {
+        foreach ((new BiomeRuntimeIdMap($data->biomeRuntimeIds()))->identifiersById() as $runtimeId => $name) {
             hash_update($context, pack('N2', $runtimeId, strlen($name)) . $name);
         }
-        hash_update($context, pack('N', $data->plainsBiomeRuntimeId()));
         return hash_final($context);
     }
 }

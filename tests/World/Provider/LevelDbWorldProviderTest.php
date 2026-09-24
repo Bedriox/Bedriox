@@ -8,7 +8,6 @@ use Bedriox\Data\BedrockDataSet;
 use Bedriox\Data\LittleEndianBlockStateNbtCodec;
 use Bedriox\Data\OpaquePersistentBlockState;
 use Bedriox\Server\World\Block\BlockStateRegistry;
-use Bedriox\Server\World\Block\DefaultBlockPalette;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkPosition;
@@ -64,7 +63,7 @@ final class LevelDbWorldProviderTest extends TestCase
     public function testDefaultTerrainBlocksAndBiomesRoundTripThroughLevelDbMapping(): void
     {
         [$provider, , $registry] = self::provider();
-        $chunk = (new DefaultWorldGenerator(44, DefaultBlockPalette::fromRegistry($registry)))
+        $chunk = (new DefaultWorldGenerator(44, $registry))
             ->generate(new ChunkPosition(-3, 5));
 
         $provider->saveChunk(new ChunkSaveData($chunk));

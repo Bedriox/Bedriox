@@ -1008,6 +1008,7 @@ final class ServerRuntimeTest extends TestCase
 
         $clock->advance(250_000_000);
         self::assertTrue($runtime->poll());
+        self::assertSame(1, $blocks->chunkRepositorySnapshot()->retainedChunks);
         self::assertCount(1, $provider->savedRevisions);
         self::assertSame(2, $blocks->dirtyChunkCount());
         $clock->advance(50_000_000);

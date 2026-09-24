@@ -79,6 +79,14 @@ chunk-generation.queue-size=1024
 chunk-loading.prefetch-radius=1
 chunk-cache.limit=auto
 chunk-saving.per-tick=8
+chunk-unloading.grace-ticks=600
+chunk-unloading.per-tick=96
+
+# Memory pressure and garbage collection
+memory-management.enabled=true
+memory-management.soft-threshold=70
+memory-management.high-threshold=85
+memory-management.critical-threshold=92
 
 # Persistence and movement
 level.autosave-interval-ticks=6000

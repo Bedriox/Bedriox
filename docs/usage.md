@@ -76,8 +76,14 @@ Both files use one `key=value` entry per line. Blank lines and lines beginning w
 | `chunk-generation.per-tick` | `4` | 1–64 |
 | `chunk-generation.queue-size` | `1024` | 1–65536 |
 | `chunk-loading.prefetch-radius` | `1` | 0–8 chunks; visible plus prefetched radius must not exceed 32 |
-| `chunk-cache.limit` | `auto` | `auto` or 16–65536 chunks; `auto` resolves to enough for every configured player view including the hidden prefetch radius (2420 at the defaults) |
+| `chunk-cache.limit` | `auto` | `auto` or 16–65536 chunks; `auto` resolves to every configured player view, the retained world spawn, and four transition columns (2425 at the defaults) |
 | `chunk-saving.per-tick` | `8` | 1–64 dirty chunks per scheduled autosave tick |
+| `chunk-unloading.grace-ticks` | `600` | 0–6000 ticks before an unretained chunk becomes eligible for safe unload |
+| `chunk-unloading.per-tick` | `96` | 1–1024 eligible chunks examined per tick, additionally bounded by elapsed time |
+| `memory-management.enabled` | `true` | Exactly `true` or `false` |
+| `memory-management.soft-threshold` | `70` | 1–98 percent; must be below the high threshold |
+| `memory-management.high-threshold` | `85` | 2–99 percent; must be between the soft and critical thresholds |
+| `memory-management.critical-threshold` | `92` | 3–100 percent; must be above the high threshold |
 | `level.autosave-interval-ticks` | `6000` | 20 through 72000 ticks between autosave scheduling cycles |
 | `players.autosave-interval-ticks` | `6000` | 20 through 72000 ticks between player autosave scheduling cycles |
 | `players.save-per-tick` | `8` | 1 through 64 dirty player profiles saved during each autosave tick |
@@ -94,7 +100,7 @@ Both files use one `key=value` entry per line. Blank lines and lines beginning w
 
 The protected `--spawn-x`, `--spawn-y`, and `--spawn-z` CLI overrides remain available only when all three are populated. Without them, the selected generator calculates a safe default. `default` performs a bounded dry-land search over generated terrain; `flat` uses `(0, 64, 0)`.
 
-The generator, generator algorithm version, and seed recorded in an existing world's `level.dat` remain authoritative when it is reopened. Changing `level-type` or `level-seed` does not silently convert stored chunks. Unsupported future generator versions fail before missing terrain can be created. New worlds use the configured values and create the native `level.dat`, `levelname.txt`, and `db/` layout. `default` currently selects the version-one continental overworld; `flat` retains its fixed bedrock, dirt, and grass profile.
+The generator, generator algorithm version, and seed recorded in an existing world's `level.dat` remain authoritative when it is reopened. Changing `level-type` or `level-seed` does not silently convert stored chunks. Unsupported future generator versions fail before missing terrain can be created. New worlds use the configured values and create the native `level.dat`, `levelname.txt`, and `db/` layout. `default` currently selects the pre-release version-one three-dimensional overworld; `flat` retains its fixed bedrock, dirt, and grass profile. The version-one output is still allowed to change during alpha development, so delete development worlds before testing a changed generator build rather than mixing old and new chunks.
 
 Settings for independent query ports, resource packs, whitelists, and other unfinished features are deliberately not accepted yet. This prevents apparently valid options from silently doing nothing.
 
@@ -108,15 +114,19 @@ The qualified protocol family remains alpha software. Unknown commands fail with
 
 ## Commands and permissions
 
-The console and Bedrock slash-command input share one bounded dispatcher. Built-in commands are `version`, `help`, `list`, `stop`, `op`, `deop`, `permission`, `gamemode`, and `give`. The console always has administrative authority. Players receive only the commands currently available to their UUID when joining.
+The console and Bedrock slash-command input share one bounded dispatcher. Built-in commands are `version`, `help`, `list`, `stop`, `op`, `deop`, `permission`, `gamemode`, `give`, `gc`, and `tp` (alias `teleport`). The console always has administrative authority. Players receive only the commands currently available to their UUID when joining.
 
 `gamemode <mode> [player]` accepts the canonical names and numeric aliases for survival, creative, adventure, and spectator. `give <player> <item> [amount]` resolves canonical `minecraft:*` identifiers through the active gameplay catalog. Both commands enqueue normal authoritative simulation work; they do not mutate network sessions directly.
+
+`tp <player>`, `tp <x> <y> <z> [yaw pitch]`, and their explicit-target forms enqueue the same authoritative teleport used by plugins. Coordinates accept `~` relative values. `bedriox.command.teleport` permits self teleportation and `bedriox.command.teleport.other` permits selecting another subject. Destination collision is deliberately not treated as command policy; the operator or plugin choosing the coordinate owns that decision.
 
 The retail player inventory uses a server-synchronized dynamic window. Moving, splitting, placing, dropping, and picking up admitted items are authoritative: invalid or stale client predictions are corrected to the server-held slots without changing unrelated inventory state.
 
 `op <online-player>` and `deop <online-player>` change operator authority. `permission list <online-player>`, `permission grant <online-player> <node>`, and `permission revoke <online-player> <node>` manage explicit grants. A grant such as `example.*` covers descendants such as `example.build`; operators satisfy every permission. Targets must be online so Bedriox resolves the authenticated UUID instead of trusting a mutable name. Effective changes are projected to the connected client immediately: operator changes refresh abilities and command visibility, while grant/revoke refreshes the available command list. Repeating an already-effective assignment produces no redundant network update.
 
 Assignments are atomically stored in the ignored local `permissions.json` file. Back up that file with other server data. Invalid, oversized, linked, or corrupt permission data fails startup instead of silently discarding authority rules.
+
+`gc` and `gc status` report process memory, pressure, adaptive cyclic-collector state, and authoritative chunk residency. `gc run` forces PHP cycle collection plus allocator-cache cleanup. `gc chunks` immediately runs one bounded safe-unload pass. These operations require `bedriox.command.gc`; they never discard retained or dirty authoritative chunks.
 
 ## Plugins
 

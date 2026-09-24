@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Observability;
 
+use Bedriox\Server\Observability\Memory\GarbageCollectionReport;
+use Bedriox\Server\Observability\Memory\MemoryManagementDecision;
 use Bedriox\Server\Persistence\PersistenceQueueSnapshot;
 use Bedriox\Server\Runtime\ChunkStreamingSnapshot;
 use Bedriox\Server\Worker\Chunk\PreparedChunkCacheSnapshot;
 use Bedriox\Server\Worker\WorkerPoolSnapshot;
 use Bedriox\Server\World\ChunkRepositorySnapshot;
+use Bedriox\Server\World\ChunkUnloadResult;
 
 final readonly class PerformanceSnapshot
 {
@@ -53,5 +56,12 @@ final readonly class PerformanceSnapshot
         public ?PersistenceQueueSnapshot $worldPersistence = null,
         public ?PersistenceQueueSnapshot $playerPersistence = null,
         public ?PreparedChunkCacheSnapshot $preparedChunkCache = null,
+        public ?MemoryManagementDecision $memoryManagement = null,
+        public ?GarbageCollectionReport $garbageCollection = null,
+        public int $garbageCollectorRuns = 0,
+        public int $garbageCollectorThreshold = 0,
+        public ?ChunkUnloadResult $chunkUnload = null,
+        public int $totalChunksUnloaded = 0,
+        public int $preparedBytesTrimmed = 0,
     ) {}
 }

@@ -181,7 +181,7 @@ final class PersistentWorldFactoryTest extends TestCase
             levelName: $levelName,
             levelSeed: $levelSeed,
             difficulty: $difficulty,
-            chunkCacheLimit: 81,
+            chunkCacheLimit: 86,
             chunkLoadingPrefetchRadius: 0,
             spawnX: $spawn?->x,
             spawnY: $spawn?->y,

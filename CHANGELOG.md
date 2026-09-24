@@ -13,6 +13,11 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Fixed
 
+- Keep the world spawn retained and wait for every chunk touched by the player collision footprint before committing a respawn, preventing persistence backlogs from turning respawn into a blocking storage read and whole-server disconnect.
+- Give every block emitted by the default generator an admitted gameplay definition and collision shape, allow generated vegetation to be broken normally, and correct truly unknown block predictions without terminating the server.
+- Treat grasses, flowers, mushrooms, vines, aquatic plants, rails, and torches as non-colliding while applying bounded partial geometry to snow layers, paths, farmland, cactus, bamboo, panes, bars, lanterns, dripstone, mud, and soul sand for both players and dropped items.
+- Anchor structures and vegetation to the captured pre-decoration terrain surface, populate structures before vegetation, and require valid substrates and replaceable volumes so village foundations cannot be placed on tree canopies.
+- Translate every generated biome through the complete canonical `LevelChunk` runtime-ID registry, preventing mixed-biome chunks from disconnecting players when definition order overlaps a vanilla biome ID.
 - Reject attempts to merge one-slot tools in catalog-free inventories without throwing or changing either slot.
 
 ### Added

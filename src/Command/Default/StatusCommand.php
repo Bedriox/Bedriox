@@ -126,6 +126,30 @@ final readonly class StatusCommand implements BuiltinCommand
             self::bytes($status->peakMemoryBytes),
         ));
         self::send($sender, TextFormat::GRAY, 'Worker memory is reported per pool below.');
+        if ($status->memoryManagement !== null) {
+            self::send($sender, TextFormat::YELLOW, sprintf(
+                'Memory pressure: %s (%.1f%% allocated)',
+                strtolower($status->memoryManagement->pressure->name),
+                $status->memoryManagement->snapshot->utilizationPercent(),
+            ));
+        } else {
+            self::send($sender, TextFormat::GRAY, 'Memory pressure management: disabled or awaiting first tick');
+        }
+        self::send($sender, TextFormat::GRAY, sprintf(
+            'Cyclic GC: %d runs, %d-root adaptive threshold',
+            $status->garbageCollectorRuns,
+            $status->garbageCollectorThreshold,
+        ));
+        if ($status->garbageCollection !== null) {
+            self::send($sender, TextFormat::GRAY, sprintf(
+                'Last GC: %s, %d cycles, %s allocator caches, %.2f ms',
+                $status->garbageCollection->collected ? 'collected' : 'skipped',
+                $status->garbageCollection->cyclesCollected,
+                self::bytes($status->garbageCollection->allocatorBytesReleased),
+                $status->garbageCollection->durationNanoseconds / 1_000_000,
+            ));
+        }
+        self::send($sender, TextFormat::GRAY, 'Prepared-cache memory trimmed: ' . self::bytes($status->preparedBytesTrimmed));
 
         self::section($sender, 'World');
         self::send($sender, TextFormat::GREEN, sprintf(
@@ -156,6 +180,20 @@ final readonly class StatusCommand implements BuiltinCommand
                 $status->chunkCache->hitRatio() === null
                     ? 'unavailable'
                     : sprintf('%.1f%%', $status->chunkCache->hitRatio() * 100),
+            ));
+        }
+        if ($status->chunkUnload !== null) {
+            self::send($sender, TextFormat::GRAY, sprintf(
+                'Chunk unloads: %d queued, %d examined, %d evicted last pass, %d evicted total',
+                $status->chunkUnload->remainingQueued,
+                $status->chunkUnload->examined,
+                $status->chunkUnload->evicted,
+                $status->totalChunksUnloaded,
+            ));
+            self::send($sender, TextFormat::GRAY, sprintf(
+                'Unload persistence: %d save submissions, %s',
+                $status->chunkUnload->saveSubmissions,
+                $status->chunkUnload->persistenceSaturated ? 'saturated' : 'available',
             ));
         }
         if ($status->chunkStreaming !== null) {

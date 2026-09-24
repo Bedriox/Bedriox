@@ -10,6 +10,17 @@ use PHPUnit\Framework\TestCase;
 
 final class SeededNoiseTest extends TestCase
 {
+    public function testThreeDimensionalFractalNoiseIsDeterministicAndVariesAcrossAxes(): void
+    {
+        $noise = new SeededNoise(9_821);
+        $sample = $noise->fractal3d(-41, 17, 93, 64, 4, 52, 701);
+
+        self::assertSame($sample, $noise->fractal3d(-41, 17, 93, 64, 4, 52, 701));
+        self::assertNotSame($sample, $noise->fractal3d(-40, 17, 93, 64, 4, 52, 701));
+        self::assertNotSame($sample, $noise->fractal3d(-41, 18, 93, 64, 4, 52, 701));
+        self::assertNotSame($sample, $noise->fractal3d(-41, 17, 94, 64, 4, 52, 701));
+    }
+
     public function testSmoothNoiseIsDeterministicBoundedAndContinuousAcrossNegativeCoordinates(): void
     {
         $first = new SeededNoise(-7_431);

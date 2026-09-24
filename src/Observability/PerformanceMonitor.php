@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Observability;
 
+use Bedriox\Server\Observability\Memory\GarbageCollectionReport;
+use Bedriox\Server\Observability\Memory\MemoryManagementDecision;
 use Bedriox\Server\Persistence\PersistenceQueueSnapshot;
 use Bedriox\Server\Runtime\ChunkStreamingSnapshot;
 use Bedriox\Server\Worker\Chunk\PreparedChunkCacheSnapshot;
 use Bedriox\Server\Worker\WorkerPoolSnapshot;
 use Bedriox\Server\World\ChunkRepositorySnapshot;
+use Bedriox\Server\World\ChunkUnloadResult;
 use InvalidArgumentException;
 
 /** Bounded in-process timing history used by operator diagnostics and release gates. */
@@ -217,12 +220,20 @@ final class PerformanceMonitor
         ?PersistenceQueueSnapshot $worldPersistence = null,
         ?PersistenceQueueSnapshot $playerPersistence = null,
         ?PreparedChunkCacheSnapshot $preparedChunkCache = null,
+        ?MemoryManagementDecision $memoryManagement = null,
+        ?GarbageCollectionReport $garbageCollection = null,
+        int $garbageCollectorRuns = 0,
+        int $garbageCollectorThreshold = 0,
+        ?ChunkUnloadResult $chunkUnload = null,
+        int $totalChunksUnloaded = 0,
+        int $preparedBytesTrimmed = 0,
     ): PerformanceSnapshot {
         if ($onlinePlayers < 0 || $maximumPlayers < 0 || $onlinePlayers > $maximumPlayers
             || $loadedChunks < 0 || $dirtyChunks < 0 || $generatingChunks < 0
             || $scheduledPluginTasks < 0 || $deferredPluginTasks < 0 || $configuredMemoryLimitBytes < 0
             || $worldCount < 0 || $entityCount < 0 || $pendingAsyncPluginTasks < 0
-            || $maximumAsyncCompletionsPerTick < 0) {
+            || $maximumAsyncCompletionsPerTick < 0 || $garbageCollectorRuns < 0
+            || $garbageCollectorThreshold < 0 || $totalChunksUnloaded < 0 || $preparedBytesTrimmed < 0) {
             throw new InvalidArgumentException('Performance gauges cannot be negative.');
         }
         $uptimeNanoseconds = max(0, ($nowNanoseconds ?? self::now()) - $this->startedAtNanoseconds);
@@ -268,6 +279,13 @@ final class PerformanceMonitor
             $worldPersistence,
             $playerPersistence,
             $preparedChunkCache,
+            $memoryManagement,
+            $garbageCollection,
+            $garbageCollectorRuns,
+            $garbageCollectorThreshold,
+            $chunkUnload,
+            $totalChunksUnloaded,
+            $preparedBytesTrimmed,
         );
     }
 

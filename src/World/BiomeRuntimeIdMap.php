@@ -4,40 +4,59 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World;
 
+use Bedriox\Data\BedrockDataSet;
 use InvalidArgumentException;
 
-/** Qualified legacy biome IDs used by Bedrock chunk storage and protocol 2193 columns. */
-final class BiomeRuntimeIdMap
+/** Immutable mapping between canonical biome identities and the pinned Bedrock runtime IDs. */
+final readonly class BiomeRuntimeIdMap
 {
-    private const array IDS = [
-        'minecraft:ocean' => 0,
-        'minecraft:plains' => 1,
-        'minecraft:desert' => 2,
-        'minecraft:extreme_hills' => 3,
-        'minecraft:forest' => 4,
-        'minecraft:taiga' => 5,
-        'minecraft:river' => 7,
-        'minecraft:ice_plains' => 12,
-        'minecraft:beach' => 16,
-        'minecraft:deep_ocean' => 24,
-        'minecraft:stone_beach' => 25,
-        'minecraft:birch_forest' => 27,
-        'minecraft:savanna' => 35,
-        'minecraft:jagged_peaks' => 182,
-        'minecraft:snowy_slopes' => 184,
-    ];
+    /** @var array<int, string> */
+    private array $identifiersById;
 
-    private function __construct() {}
+    /** @var array<string, int> */
+    private array $idsByIdentifier;
 
-    public static function id(Biome $biome): int
+    /** @param array<array-key, mixed> $runtimeIds */
+    public function __construct(array $runtimeIds)
     {
-        return self::IDS[$biome->identifier]
-            ?? throw new InvalidArgumentException("Biome {$biome->identifier} is not admitted by the default-world profile.");
+        if ($runtimeIds === [] || count($runtimeIds) > 1_024 || array_is_list($runtimeIds)) {
+            throw new InvalidArgumentException('Biome runtime IDs must be a non-empty bounded map.');
+        }
+        $identifiers = [];
+        $ids = [];
+        foreach ($runtimeIds as $identifier => $id) {
+            if (!is_string($identifier) || !is_int($id) || $id < 0 || $id > 65_535
+                || isset($identifiers[$id]) || isset($ids[$identifier])) {
+                throw new InvalidArgumentException('Biome runtime IDs contain an invalid or duplicate identity.');
+            }
+            new Biome($identifier);
+            $identifiers[$id] = $identifier;
+            $ids[$identifier] = $id;
+        }
+        ksort($identifiers, SORT_NUMERIC);
+        $this->identifiersById = $identifiers;
+        $this->idsByIdentifier = $ids;
+    }
+
+    public static function bundled(): self
+    {
+        return new self(BedrockDataSet::bundled()->biomeRuntimeIds());
+    }
+
+    public function id(Biome $biome): int
+    {
+        return $this->idsByIdentifier[$biome->identifier]
+            ?? throw new InvalidArgumentException("Biome {$biome->identifier} is not admitted by the pinned Bedrock data set.");
     }
 
     /** @return array<int, string> */
-    public static function identifiersById(): array
+    public function identifiersById(): array
     {
-        return array_flip(self::IDS);
+        return $this->identifiersById;
+    }
+
+    public function contains(string $identifier): bool
+    {
+        return isset($this->idsByIdentifier[$identifier]);
     }
 }

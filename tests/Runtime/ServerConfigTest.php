@@ -33,7 +33,13 @@ final class ServerConfigTest extends TestCase
         self::assertSame(500_000_000, $defaults->memoryLimitBytes);
         self::assertSame(1_024, $defaults->chunkGenerationQueueSize);
         self::assertSame(1, $defaults->chunkLoadingPrefetchRadius);
-        self::assertSame(2_420, $defaults->chunkCacheLimit);
+        self::assertSame(2_425, $defaults->chunkCacheLimit);
+        self::assertSame(600, $defaults->chunkUnloadGraceTicks);
+        self::assertSame(96, $defaults->chunkUnloadPerTick);
+        self::assertTrue($defaults->memoryManagementEnabled);
+        self::assertSame(70, $defaults->memorySoftThreshold);
+        self::assertSame(85, $defaults->memoryHighThreshold);
+        self::assertSame(92, $defaults->memoryCriticalThreshold);
         self::assertTrue($defaults->pvp);
 
         $config = ServerConfig::fromArguments([
@@ -161,7 +167,7 @@ final class ServerConfigTest extends TestCase
         self::assertIsString($settings);
         try {
             file_put_contents($properties, "server-name=Configured name\nmax-players=8\nmemory-limit=1GiB\nview-distance=6\n");
-            file_put_contents($settings, "level.autosave-interval-ticks=8000\nchunk-sending.spawn-radius=5\nchunk-saving.per-tick=6\nchunk-generation.queue-size=2048\nchunk-loading.prefetch-radius=2\n");
+            file_put_contents($settings, "level.autosave-interval-ticks=8000\nchunk-sending.spawn-radius=5\nchunk-saving.per-tick=6\nchunk-generation.queue-size=2048\nchunk-loading.prefetch-radius=2\nchunk-unloading.grace-ticks=400\nchunk-unloading.per-tick=72\nmemory-management.enabled=false\nmemory-management.soft-threshold=65\nmemory-management.high-threshold=80\nmemory-management.critical-threshold=90\n");
             $config = ServerConfig::fromConfigurationFiles($properties, $settings, [
                 '--name=CLI name',
                 '--view-distance=7',
@@ -178,6 +184,29 @@ final class ServerConfigTest extends TestCase
             self::assertSame(2_000_000_000, $config->memoryLimitBytes);
             self::assertSame(2_048, $config->chunkGenerationQueueSize);
             self::assertSame(2, $config->chunkLoadingPrefetchRadius);
+            self::assertSame(400, $config->chunkUnloadGraceTicks);
+            self::assertSame(72, $config->chunkUnloadPerTick);
+            self::assertFalse($config->memoryManagementEnabled);
+            self::assertSame(65, $config->memorySoftThreshold);
+            self::assertSame(80, $config->memoryHighThreshold);
+            self::assertSame(90, $config->memoryCriticalThreshold);
+        } finally {
+            @unlink($properties);
+            @unlink($settings);
+        }
+    }
+
+    public function testMemoryThresholdsMustBeStrictlyIncreasing(): void
+    {
+        $properties = tempnam(sys_get_temp_dir(), 'bedriox-properties-');
+        $settings = tempnam(sys_get_temp_dir(), 'bedriox-settings-');
+        self::assertIsString($properties);
+        self::assertIsString($settings);
+        try {
+            file_put_contents($properties, '');
+            file_put_contents($settings, "memory-management.soft-threshold=85\nmemory-management.high-threshold=85\n");
+            $this->expectException(InvalidArgumentException::class);
+            ServerConfig::fromConfigurationFiles($properties, $settings, []);
         } finally {
             @unlink($properties);
             @unlink($settings);

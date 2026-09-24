@@ -27,7 +27,7 @@ final readonly class SimulationPluginServer implements Server
      * @param Closure(string): ?Player                          $player
      * @param Closure(BlockPosition): Block                     $block
      * @param Closure(string, string): void                     $sendMessage
-     * @param Closure(string, Position): void                   $teleport
+     * @param Closure(string, Position, ?float, ?float): void   $teleport
      * @param Closure(BlockPosition, string): void              $setBlock
      * @param Closure(string, int, ItemStack|null): void        $setInventorySlot
      * @param null|Closure(string, float): void                 $damage
@@ -85,14 +85,18 @@ final readonly class SimulationPluginServer implements Server
         $this->defer(fn() => ($this->sendMessage)($player->uuid, $message));
     }
 
-    public function teleport(Player $player, Position $position): void
+    public function teleport(Player $player, Position $position, ?float $yaw = null, ?float $pitch = null): void
     {
         if (!is_finite($position->x) || !is_finite($position->y) || !is_finite($position->z)
             || abs($position->x) > 30_000_000 || abs($position->z) > 30_000_000
             || $position->y < -64 || $position->y > 319) {
             throw new InvalidArgumentException('Teleport position is outside the supported world boundary.');
         }
-        $this->defer(fn() => ($this->teleport)($player->uuid, $position));
+        if (($yaw !== null && (!is_finite($yaw) || $yaw < -360.0 || $yaw > 360.0))
+            || ($pitch !== null && (!is_finite($pitch) || $pitch < -90.0 || $pitch > 90.0))) {
+            throw new InvalidArgumentException('Teleport orientation exceeds its accepted range.');
+        }
+        $this->defer(fn() => ($this->teleport)($player->uuid, $position, $yaw, $pitch));
     }
 
     public function setBlock(BlockPosition $position, string $identifier): void

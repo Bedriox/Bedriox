@@ -225,6 +225,90 @@ final class ChunkRepositoryTest extends TestCase
         self::assertFalse($repository->acknowledgePersisted($position, $snapshot->revision));
     }
 
+    public function testPendingOldestRevisionDoesNotStarveLaterDirtyChunks(): void
+    {
+        $air = new InternalBlockStateId(0);
+        $solid = new InternalBlockStateId(1);
+        $repository = new ChunkRepository(3);
+        $positions = [new ChunkPosition(0, 0), new ChunkPosition(1, 0), new ChunkPosition(2, 0)];
+        foreach ($positions as $position) {
+            $repository->get($position, static fn(ChunkPosition $requested): Chunk => new Chunk($requested, $air, []));
+            $repository->replace($repository->loaded($position)?->withBlockState(1, 0, 1, $solid)
+                ?? throw new \LogicException('Chunk was not loaded.'));
+        }
+
+        $snapshots = $repository->dirtySnapshots(1, [
+            $positions[0]->key() => 1,
+            $positions[1]->key() => 1,
+        ]);
+
+        self::assertCount(1, $snapshots);
+        self::assertSame($positions[2]->key(), $snapshots[0]->position->key());
+    }
+
+    public function testExplicitEvictionOnlyRemovesCleanUnretainedChunks(): void
+    {
+        $air = new InternalBlockStateId(0);
+        $position = new ChunkPosition(0, 0);
+        $repository = new ChunkRepository(1);
+        $repository->retain($position, static fn(ChunkPosition $requested): Chunk => new Chunk($requested, $air, []));
+
+        self::assertFalse($repository->evictIfCleanAndUnretained($position));
+        $repository->release($position);
+        $repository->replace(($repository->loaded($position) ?? throw new \LogicException('Chunk was not loaded.'))
+            ->withBlockState(1, 0, 1, new InternalBlockStateId(1)));
+        self::assertFalse($repository->evictIfCleanAndUnretained($position));
+        self::assertTrue($repository->acknowledgePersisted($position, 1));
+        self::assertTrue($repository->evictIfCleanAndUnretained($position));
+        self::assertFalse($repository->contains($position));
+        self::assertSame(1, $repository->snapshot()->evictions);
+    }
+
+    public function testEvictionWithoutSynchronousSaverUsesOnlyCleanCandidates(): void
+    {
+        $air = new InternalBlockStateId(0);
+        $repository = new ChunkRepository(2);
+        $dirty = new ChunkPosition(0, 0);
+        $clean = new ChunkPosition(1, 0);
+        $replacement = new ChunkPosition(2, 0);
+        foreach ([$dirty, $clean] as $position) {
+            $repository->get($position, static fn(ChunkPosition $requested): Chunk => new Chunk($requested, $air, []));
+        }
+        $repository->replace(($repository->loaded($dirty) ?? throw new \LogicException('Chunk was not loaded.'))
+            ->withBlockState(1, 0, 1, new InternalBlockStateId(1)));
+
+        $repository->get(
+            $replacement,
+            static fn(ChunkPosition $requested): Chunk => new Chunk($requested, $air, []),
+        );
+
+        self::assertTrue($repository->contains($dirty));
+        self::assertFalse($repository->contains($clean));
+        self::assertTrue($repository->contains($replacement));
+        self::assertSame(1, $repository->dirtyCount());
+    }
+
+    public function testEvictionWithoutSynchronousSaverPreservesDirtyCandidate(): void
+    {
+        $air = new InternalBlockStateId(0);
+        $repository = new ChunkRepository(1);
+        $dirty = new ChunkPosition(0, 0);
+        $repository->get($dirty, static fn(ChunkPosition $requested): Chunk => new Chunk($requested, $air, []));
+        $repository->replace(($repository->loaded($dirty) ?? throw new \LogicException('Chunk was not loaded.'))
+            ->withBlockState(1, 0, 1, new InternalBlockStateId(1)));
+
+        try {
+            $repository->get(
+                new ChunkPosition(1, 0),
+                static fn(ChunkPosition $requested): Chunk => new Chunk($requested, $air, []),
+            );
+            self::fail('Dirty chunk was evicted without an exact persistence acknowledgement.');
+        } catch (OverflowException) {
+            self::assertTrue($repository->contains($dirty));
+            self::assertSame(1, $repository->dirtyCount());
+        }
+    }
+
     private static function failLoader(ChunkPosition $_position): never
     {
         throw new \LogicException('Cached chunk unexpectedly invoked its loader.');

@@ -26,6 +26,11 @@ use Bedriox\Server\Login\LoginAuthenticator;
 use Bedriox\Server\Login\SecureHandshakeMaterialFactory;
 use Bedriox\Server\Login\SystemMonotonicClock;
 use Bedriox\Server\Observability\CrashContextPublisher;
+use Bedriox\Server\Observability\Memory\EmergencyMemoryReserve;
+use Bedriox\Server\Observability\Memory\GarbageCollector;
+use Bedriox\Server\Observability\Memory\MemoryManager;
+use Bedriox\Server\Observability\Memory\PhpGarbageCollectorBackend;
+use Bedriox\Server\Observability\Memory\PhpMemoryUsageProvider;
 use Bedriox\Server\Observability\PerformanceMonitor;
 use Bedriox\Server\Permission\PermissionStore;
 use Bedriox\Server\Player\Persistence\FilePlayerDataStore;
@@ -51,6 +56,9 @@ use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\DefaultBlockPalette;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\ChunkRepository;
+use Bedriox\Server\World\ChunkUnloadManager;
+use Bedriox\Server\World\Collision\BlockCollisionRegistry;
+use Bedriox\Server\World\Generation\GenerationBlockPalette;
 use Bedriox\Server\World\Provider\WorldData;
 use Bedriox\Server\World\SpawnPosition;
 use Bedriox\Server\World\World;
@@ -96,6 +104,19 @@ final class ServerBootstrap
         // A listener that cannot complete Bedrock's P-384 handshake is not joinable.
         // Qualify the exact production key factory before opening the world or binding UDP.
         $ephemeralKeys->generate();
+        $garbageCollector = new GarbageCollector(new PhpGarbageCollectorBackend());
+        $memoryManager = $config->memoryManagementEnabled
+            ? new MemoryManager(
+                new PhpMemoryUsageProvider($config->memoryLimitBytes),
+                new EmergencyMemoryReserve(),
+                elevatedPercent: $config->memorySoftThreshold,
+                highPercent: $config->memoryHighThreshold,
+                criticalPercent: $config->memoryCriticalThreshold,
+                elevatedUnloadBudget: $config->chunkUnloadPerTick,
+                highUnloadBudget: min(1_024, $config->chunkUnloadPerTick * 2),
+                criticalUnloadBudget: min(1_024, $config->chunkUnloadPerTick * 4),
+            )
+            : null;
         $runtimeLimits = new RuntimeLimits(
             maximumSessions: $config->maximumPlayers,
             maximumChunkRadius: $config->viewDistance,
@@ -111,12 +132,16 @@ final class ServerBootstrap
             maximumQueuedLifecycleBytes: max(65_536, $config->maximumPlayers * 144),
         );
         $data = BedrockDataSet::bundled();
-        $blockCatalog = BlockCatalog::vanilla();
-        $itemCatalog ??= ItemCatalog::vanilla($data->itemNetworkRegistry(), $blockCatalog);
         $networkStates = $data->blockStateRegistry();
         $internalStates = new BlockStateRegistry($networkStates->states());
+        $blockCatalog = BlockCatalog::vanilla($internalStates);
+        $itemCatalog ??= ItemCatalog::vanilla($data->itemNetworkRegistry(), $blockCatalog);
         $flatPalette = FixedFlatBlockPalette::fromRegistry($internalStates);
         $defaultPalette = DefaultBlockPalette::fromRegistry($internalStates);
+        $blockCollisions = BlockCollisionRegistry::forGenerationPalette(
+            $internalStates,
+            GenerationBlockPalette::fromRegistry($internalStates),
+        );
         $openedWorld = $this->worldFactory?->open($config, $data)
             ?? $this->ephemeralWorld($config, $internalStates);
         $flatWorld = $openedWorld->world;
@@ -183,10 +208,10 @@ final class ServerBootstrap
                 $itemCatalog,
                 $blockCatalog,
                 $internalStates,
+                $blockCollisions,
             );
             $chunkSerializer = new BedrockChunkPacketSerializer(
                 $blockTranslator = new BlockNetworkTranslator($internalStates, $networkStates),
-                $data->plainsBiomeRuntimeId(),
             );
             $inventoryProjector = BedrockInventoryPacketProjector::fromData($data, $blockTranslator, $itemCatalog);
             $serverGuid = random_int(1, PHP_INT_MAX);
@@ -262,6 +287,9 @@ final class ServerBootstrap
                 simulationTickBoundary: $simulationTickBoundary,
                 performance: $performance,
                 preparedChunks: $preparedChunks,
+                memoryManager: $memoryManager,
+                garbageCollector: $garbageCollector,
+                chunkUnloadPerTick: $config->chunkUnloadPerTick,
             );
         } catch (Throwable $exception) {
             $discovery?->close();
@@ -304,6 +332,9 @@ final class ServerBootstrap
             $generator,
             new ChunkRepository($config->chunkCacheLimit),
             $spawnOverride,
+            chunkUnloads: new ChunkUnloadManager(
+                intdiv($config->chunkUnloadGraceTicks * 1_000_000_000, $config->ticksPerSecond),
+            ),
         );
 
         return new OpenedWorld($world, new WorldData(

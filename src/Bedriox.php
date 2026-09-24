@@ -6,11 +6,14 @@ namespace Bedriox\Server;
 
 use Bedriox\Api\Plugin\PluginContext;
 use Bedriox\Server\Command\BuiltinCommandRegistrar;
+use Bedriox\Server\Command\Default\GarbageCollectionStatus;
 use Bedriox\Server\Observability\BackgroundLogWriter;
 use Bedriox\Server\Observability\CrashContextProvider;
 use Bedriox\Server\Observability\CrashContextPublisher;
 use Bedriox\Server\Observability\CrashHandler;
 use Bedriox\Server\Observability\CrashReporter;
+use Bedriox\Server\Observability\Memory\MemoryPressure;
+use Bedriox\Server\Observability\Memory\PhpMemoryUsageProvider;
 use Bedriox\Server\Observability\MutableCrashContextProvider;
 use Bedriox\Server\Observability\PerformanceMonitor;
 use Bedriox\Server\Observability\ServerLogger;
@@ -240,7 +243,58 @@ final class Bedriox
                         worldPersistence: $world?->persistenceQueueSnapshot(),
                         playerPersistence: $playerStore->persistenceQueueSnapshot(),
                         preparedChunkCache: $runtime?->preparedChunkCacheSnapshot(),
+                        memoryManagement: $runtime?->lastMemoryManagementDecision(),
+                        garbageCollection: $runtime?->lastGarbageCollectionReport(),
+                        garbageCollectorRuns: $runtime?->garbageCollectorRuns() ?? 0,
+                        garbageCollectorThreshold: $runtime?->garbageCollectorThreshold() ?? 0,
+                        chunkUnload: $runtime?->lastChunkUnloadResult(),
+                        totalChunksUnloaded: $runtime?->totalChunksUnloaded() ?? 0,
+                        preparedBytesTrimmed: $runtime?->totalPreparedBytesTrimmed() ?? 0,
                     );
+                },
+                static fn(
+                    \Bedriox\Api\Player\Player $player,
+                    \Bedriox\Api\World\Position $position,
+                    ?float $yaw,
+                    ?float $pitch,
+                ): bool => $composition->server?->runtime->teleportPlayer(
+                    $player->uuid,
+                    $position,
+                    $yaw,
+                    $pitch,
+                ) ?? false,
+                garbageCollectionStatus: static function () use ($composition, $config): GarbageCollectionStatus {
+                    $runtime = $composition->server?->runtime;
+                    $repository = $composition->server?->world->chunkRepositorySnapshot();
+                    if ($runtime === null || $repository === null) {
+                        throw new \LogicException('Garbage collection runtime is unavailable.');
+                    }
+                    $decision = $runtime->lastMemoryManagementDecision();
+                    $memory = $decision === null
+                        ? (new PhpMemoryUsageProvider($config->memoryLimitBytes))->snapshot()
+                        : $decision->snapshot;
+                    $pressure = $decision === null ? MemoryPressure::NORMAL : $decision->pressure;
+
+                    return new GarbageCollectionStatus(
+                        $memory,
+                        $pressure,
+                        $runtime->garbageCollectorRuns(),
+                        $runtime->garbageCollectorThreshold(),
+                        $runtime->lastGarbageCollectionReport(),
+                        $repository->loaded,
+                        $repository->retainedChunks,
+                        $repository->dirty,
+                        $runtime->pendingChunkUnloadCount(),
+                        $runtime->totalChunksUnloaded(),
+                    );
+                },
+                collectGarbage: static function () use ($composition): \Bedriox\Server\Observability\Memory\GarbageCollectionReport {
+                    return $composition->server?->runtime->forceGarbageCollection()
+                        ?? throw new \LogicException('Garbage collection runtime is unavailable.');
+                },
+                unloadChunks: static function () use ($composition): \Bedriox\Server\World\ChunkUnloadResult {
+                    return $composition->server?->runtime->runChunkUnloadMaintenance()
+                        ?? throw new \LogicException('Chunk unload runtime is unavailable.');
                 },
             ))->register();
             $server = (new ServerBootstrap(

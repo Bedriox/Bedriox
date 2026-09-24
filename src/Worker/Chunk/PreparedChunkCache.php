@@ -190,6 +190,33 @@ final class PreparedChunkCache
         );
     }
 
+    /**
+     * Releases disposable completed envelopes and optionally cancels pending preparation work.
+     *
+     * Authoritative chunk state is never stored here, so pressure cleanup can safely rebuild
+     * every removed entry on demand.
+     */
+    public function trim(bool $cancelPending = false): int
+    {
+        $released = $this->entryBytes;
+        $this->evictions += count($this->entries);
+        $this->entries = [];
+        $this->entryBytes = 0;
+        $this->failedAttempts = [];
+
+        if ($cancelPending) {
+            $released += $this->pendingBytes;
+            foreach ($this->pending as $pending) {
+                $this->workers->cancel($pending['receipt']);
+            }
+            $this->pending = [];
+            $this->pendingBytes = 0;
+            $this->currentKeys = [];
+        }
+
+        return $released;
+    }
+
     public function close(): void
     {
         if ($this->closed) {

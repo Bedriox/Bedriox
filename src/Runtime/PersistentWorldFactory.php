@@ -7,6 +7,7 @@ namespace Bedriox\Server\Runtime;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\ChunkRepository;
+use Bedriox\Server\World\ChunkUnloadManager;
 use Bedriox\Server\World\Provider\LevelDbWorldProviderFactory;
 use Bedriox\Server\World\Provider\WorldData;
 use Bedriox\Server\World\Provider\WorldProviderFactory;
@@ -104,6 +105,7 @@ final readonly class PersistentWorldFactory implements ConfiguredWorldFactory
             new ChunkRepository($config->chunkCacheLimit),
             $configuredSpawn,
             provider: $provider,
+            chunkUnloads: new ChunkUnloadManager(self::unloadGraceNanoseconds($config)),
         );
         $effectiveData = new WorldData(
             $stored->metadata,
@@ -169,5 +171,10 @@ final readonly class PersistentWorldFactory implements ConfiguredWorldFactory
             'hard' => 3,
             default => throw new InvalidArgumentException('Difficulty is unsupported.'),
         };
+    }
+
+    private static function unloadGraceNanoseconds(ServerConfig $config): int
+    {
+        return intdiv($config->chunkUnloadGraceTicks * 1_000_000_000, $config->ticksPerSecond);
     }
 }

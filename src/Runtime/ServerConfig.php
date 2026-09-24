@@ -42,6 +42,12 @@ final readonly class ServerConfig
         'chunk-loading.prefetch-radius' => '1',
         'chunk-cache.limit' => 'auto',
         'chunk-saving.per-tick' => '8',
+        'chunk-unloading.grace-ticks' => '600',
+        'chunk-unloading.per-tick' => '96',
+        'memory-management.enabled' => 'true',
+        'memory-management.soft-threshold' => '70',
+        'memory-management.high-threshold' => '85',
+        'memory-management.critical-threshold' => '92',
         'level.autosave-interval-ticks' => '6000',
         'players.autosave-interval-ticks' => '6000',
         'players.save-per-tick' => '8',
@@ -86,6 +92,12 @@ final readonly class ServerConfig
         'chunk-loading.prefetch-radius' => true,
         'chunk-cache.limit' => true,
         'chunk-saving.per-tick' => true,
+        'chunk-unloading.grace-ticks' => true,
+        'chunk-unloading.per-tick' => true,
+        'memory-management.enabled' => true,
+        'memory-management.soft-threshold' => true,
+        'memory-management.high-threshold' => true,
+        'memory-management.critical-threshold' => true,
         'level.autosave-interval-ticks' => true,
         'players.autosave-interval-ticks' => true,
         'players.save-per-tick' => true,
@@ -187,6 +199,12 @@ final readonly class ServerConfig
         public int $memoryLimitBytes = 500_000_000,
         public int $chunkGenerationQueueSize = 1_024,
         public int $chunkLoadingPrefetchRadius = 1,
+        public int $chunkUnloadGraceTicks = 600,
+        public int $chunkUnloadPerTick = 96,
+        public bool $memoryManagementEnabled = true,
+        public int $memorySoftThreshold = 70,
+        public int $memoryHighThreshold = 85,
+        public int $memoryCriticalThreshold = 92,
     ) {
         if (filter_var($this->bindAddress, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
             throw new InvalidArgumentException('Bind address must be a literal IPv4 address.');
@@ -226,6 +244,15 @@ final readonly class ServerConfig
         }
         self::range($this->chunkCacheLimit, 16, 65_536, 'Chunk cache limit');
         self::range($this->chunksSavePerTick, 1, 64, 'Chunks saved per tick');
+        self::range($this->chunkUnloadGraceTicks, 0, 6_000, 'Chunk unload grace period');
+        self::range($this->chunkUnloadPerTick, 1, 1_024, 'Chunks unloaded per tick');
+        self::range($this->memorySoftThreshold, 1, 98, 'Memory soft threshold');
+        self::range($this->memoryHighThreshold, 2, 99, 'Memory high threshold');
+        self::range($this->memoryCriticalThreshold, 3, 100, 'Memory critical threshold');
+        if ($this->memorySoftThreshold >= $this->memoryHighThreshold
+            || $this->memoryHighThreshold >= $this->memoryCriticalThreshold) {
+            throw new InvalidArgumentException('Memory thresholds must be strictly increasing.');
+        }
         self::range($this->playersAutosaveIntervalTicks, 20, 72_000, 'Player autosave interval');
         self::range($this->playersSavePerTick, 1, 64, 'Players saved per tick');
         self::range($this->movementRewindHistorySize, 1, 1_200, 'Movement rewind history size');
@@ -243,9 +270,9 @@ final readonly class ServerConfig
         }
         $retainedRadius = $this->viewDistance + $this->chunkLoadingPrefetchRadius;
         $retainedDiameter = 2 * $retainedRadius + 1;
-        $maximumRetainedChunks = $this->maximumPlayers * $retainedDiameter * $retainedDiameter;
+        $maximumRetainedChunks = $this->maximumPlayers * $retainedDiameter * $retainedDiameter + 5;
         if ($maximumRetainedChunks > 65_536 || $this->chunkCacheLimit < $maximumRetainedChunks) {
-            throw new InvalidArgumentException('Chunk cache limit must hold every configured player view within 65536 chunks.');
+            throw new InvalidArgumentException('Chunk cache limit must hold every configured player view, the world spawn, and four transition chunks within 65536 chunks.');
         }
         $spawnCount = (int) ($this->spawnX !== null) + (int) ($this->spawnY !== null) + (int) ($this->spawnZ !== null);
         if ($spawnCount !== 0 && $spawnCount !== 3) {
@@ -326,7 +353,7 @@ final readonly class ServerConfig
             throw new InvalidArgumentException('View distance plus chunk loading prefetch radius must not exceed 32.');
         }
         $viewDiameter = 2 * ($viewDistance + $chunkLoadingPrefetchRadius) + 1;
-        $maximumRetainedChunks = $maximumPlayers * $viewDiameter * $viewDiameter;
+        $maximumRetainedChunks = $maximumPlayers * $viewDiameter * $viewDiameter + 5;
         $chunkCacheLimit = $values['chunk-cache.limit'] === 'auto'
             ? max(2_048, $maximumRetainedChunks)
             : self::integer($values['chunk-cache.limit'], 'chunk-cache.limit', 16, 65_536);
@@ -383,6 +410,37 @@ final readonly class ServerConfig
                 65_536,
             ),
             chunkLoadingPrefetchRadius: $chunkLoadingPrefetchRadius,
+            chunkUnloadGraceTicks: self::integer(
+                $values['chunk-unloading.grace-ticks'],
+                'chunk-unloading.grace-ticks',
+                0,
+                6_000,
+            ),
+            chunkUnloadPerTick: self::integer(
+                $values['chunk-unloading.per-tick'],
+                'chunk-unloading.per-tick',
+                1,
+                1_024,
+            ),
+            memoryManagementEnabled: self::boolean($values['memory-management.enabled'], 'memory-management.enabled'),
+            memorySoftThreshold: self::integer(
+                $values['memory-management.soft-threshold'],
+                'memory-management.soft-threshold',
+                1,
+                98,
+            ),
+            memoryHighThreshold: self::integer(
+                $values['memory-management.high-threshold'],
+                'memory-management.high-threshold',
+                2,
+                99,
+            ),
+            memoryCriticalThreshold: self::integer(
+                $values['memory-management.critical-threshold'],
+                'memory-management.critical-threshold',
+                3,
+                100,
+            ),
         );
     }
 

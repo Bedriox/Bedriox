@@ -24,6 +24,8 @@ use Bedriox\Api\Event\Player\PlayerMoveEvent;
 use Bedriox\Api\Event\Player\PlayerPreJoinEvent;
 use Bedriox\Api\Event\Player\PlayerRespawnedEvent;
 use Bedriox\Api\Event\Player\PlayerRespawnEvent;
+use Bedriox\Api\Event\Player\PlayerTeleportedEvent;
+use Bedriox\Api\Event\Player\PlayerTeleportEvent;
 use Bedriox\Api\Inventory\Inventory as ApiInventory;
 use Bedriox\Api\Player\Player as ApiPlayer;
 use Bedriox\Api\Player\PlayerInteractionType;
@@ -242,6 +244,50 @@ final class PluginGameplayEventBridgeTest extends TestCase
         self::assertSame('plugin_cancelled', $event->reason);
         self::assertSame(0.0, $event->authoritativePlayer->position->x);
         self::assertSame(1, $event->authoritativePlayer->movementSequence);
+    }
+
+    public function testTeleportCanBeChangedOrCancelledAndPublishesCommittedState(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $post = null;
+        $dispatcher->register('Example', PlayerTeleportEvent::class, static function (PlayerTeleportEvent $event): void {
+            self::assertSame(0.0, $event->from->x);
+            $event->setDestination(new ApiPosition(8.0, 63.0, -4.0));
+            $event->setOrientation(120.0, -30.0);
+        });
+        $dispatcher->register('Example', PlayerTeleportedEvent::class, static function (PlayerTeleportedEvent $event) use (&$post): void {
+            $post = [$event->from, $event->destination, $event->yaw, $event->pitch];
+        });
+        [$simulation, $factory] = self::simulation($bridge);
+        $simulation->enqueue($factory->join('one', 'identity-one', 'One'));
+        $simulation->tick();
+
+        $simulation->enqueue($factory->teleport('one', 2.0, 70.0, 3.0));
+        $event = $simulation->tick()->events[0];
+
+        self::assertInstanceOf(MovementCorrected::class, $event);
+        self::assertSame('plugin_teleport', $event->reason);
+        self::assertSame(8.0, $event->authoritativePlayer->position->x);
+        self::assertSame(63.0, $event->authoritativePlayer->position->y);
+        self::assertSame(120.0, $event->authoritativePlayer->yaw);
+        self::assertSame(-30.0, $event->authoritativePlayer->pitch);
+        self::assertNotNull($post);
+        self::assertSame(0.0, $post[0]->x);
+        self::assertSame(8.0, $post[1]->x);
+
+        [$dispatcher, $bridge] = self::bridge();
+        $dispatcher->register('Example', PlayerTeleportEvent::class, static function (PlayerTeleportEvent $event): void {
+            $event->cancel();
+        });
+        [$simulation, $factory] = self::simulation($bridge);
+        $simulation->enqueue($factory->join('one', 'identity-one', 'One'));
+        $simulation->tick();
+        $simulation->enqueue($factory->teleport('one', 2.0, 70.0, 3.0));
+
+        $cancelled = $simulation->tick()->events[0];
+        self::assertInstanceOf(CommandRejected::class, $cancelled);
+        self::assertSame('plugin_cancelled', $cancelled->reason);
+        self::assertSame(0.0, $simulation->snapshot()->players[0]->position->x);
     }
 
     public function testCancelledPlacementRepairsThePredictedBlockAndPreservesInventory(): void

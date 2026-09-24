@@ -385,6 +385,64 @@ final class WorldSimulationTest extends TestCase
         }
     }
 
+    public function testPillarPlacementUsesTheClickedFaceAndAuthoritativeHeldItem(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $registry = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $blocks = new World(
+            new WorldMetadata('pillar-placement-faces-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+        );
+        $blockCatalog = BlockCatalog::vanilla($registry);
+        $world = new WorldSimulation(
+            blockWorld: $blocks,
+            blockPalette: $palette,
+            itemCatalog: ItemCatalog::vanilla($data->itemNetworkRegistry(), $blockCatalog),
+            blockCatalog: $blockCatalog,
+            blockStateRegistry: $registry,
+        );
+        $factory = new SimulationCommandFactory();
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->giveItem('one', 'minecraft:oak_log', 6)));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->selectHotbarSlot('one', 1)));
+        $world->tick();
+        $cases = [
+            [0, 'y', new BlockPosition(2, 65, 0)],
+            [1, 'y', new BlockPosition(2, 63, 2)],
+            [2, 'z', new BlockPosition(-2, 64, 2)],
+            [3, 'z', new BlockPosition(-2, 64, -2)],
+            [4, 'x', new BlockPosition(2, 64, -2)],
+            [5, 'x', new BlockPosition(-3, 65, 0)],
+        ];
+        foreach ($cases as [, , $clicked]) {
+            $blocks->setBlockState($clicked->x, $clicked->y, $clicked->z, $palette->grassBlock);
+        }
+
+        foreach ($cases as $index => [$face, $expectedAxis, $clicked]) {
+            self::assertTrue($world->enqueue($factory->placeBlock(
+                'one',
+                $index + 1,
+                $clicked,
+                $face,
+                1,
+                0,
+                0.5,
+                0.5,
+                0.5,
+            )));
+            $event = $world->tick()->events[0];
+            self::assertInstanceOf(BlockPlaced::class, $event);
+            $placed = $registry->state($event->state);
+            self::assertSame('minecraft:oak_log', $placed->identifier());
+            self::assertSame($expectedAxis, $placed->properties()['pillar_axis'] ?? null);
+            self::assertSame(5 - $index ?: null, $event->remainingStack?->count);
+        }
+    }
+
     public function testPlacementCapacityFailureDoesNotConsumeTheHeldStack(): void
     {
         $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());

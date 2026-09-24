@@ -15,6 +15,7 @@ use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\ChunkPosition;
+use Bedriox\Server\World\DefaultWorldGenerator;
 use Bedriox\Server\World\FlatWorldGenerator;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
@@ -29,7 +30,6 @@ final class BedrockChunkPacketSerializerTest extends TestCase
         $palette = FixedFlatBlockPalette::fromRegistry($internal);
         $serializer = new BedrockChunkPacketSerializer(
             new BlockNetworkTranslator($internal, $network),
-            $data->plainsBiomeRuntimeId(),
         );
 
         $packet = $serializer->serialize(
@@ -54,7 +54,7 @@ final class BedrockChunkPacketSerializerTest extends TestCase
         $internal = new BlockStateRegistry($network->states());
         $palette = FixedFlatBlockPalette::fromRegistry($internal);
         $translator = new BlockNetworkTranslator($internal, $network);
-        $serializer = new BedrockChunkPacketSerializer($translator, $data->plainsBiomeRuntimeId());
+        $serializer = new BedrockChunkPacketSerializer($translator);
         $chunk = (new FlatWorldGenerator($palette))->generate(new ChunkPosition(-1, -1));
 
         self::assertSame(
@@ -78,7 +78,6 @@ final class BedrockChunkPacketSerializerTest extends TestCase
         $palette = FixedFlatBlockPalette::fromRegistry($internal);
         $serializer = new BedrockChunkPacketSerializer(
             new BlockNetworkTranslator($internal, $network),
-            $data->plainsBiomeRuntimeId(),
             2,
         );
         $chunk = (new FlatWorldGenerator($palette))->generate(new ChunkPosition(0, 0));
@@ -104,7 +103,7 @@ final class BedrockChunkPacketSerializerTest extends TestCase
         $chunk = (new FlatWorldGenerator($palette))->generate(new ChunkPosition(0, 0))
             ->withBlockState(3, 64, 7, $palette->dirt)
             ->withBlockState(11, 69, 2, $palette->bedrock);
-        $serializer = new BedrockChunkPacketSerializer($translator, $data->plainsBiomeRuntimeId());
+        $serializer = new BedrockChunkPacketSerializer($translator);
 
         $sections = [];
         for ($sectionY = -4; $sectionY <= 4; ++$sectionY) {
@@ -130,5 +129,19 @@ final class BedrockChunkPacketSerializerTest extends TestCase
         ));
 
         self::assertSame($expanded->data, $serializer->serialize($chunk)->data);
+    }
+
+    public function testDefaultGeneratorMixedBiomeChunkHasUniqueWirePalette(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $network = $data->blockStateRegistry();
+        $internal = new BlockStateRegistry($network->states());
+        $chunk = (new DefaultWorldGenerator(0, $internal))->generate(new ChunkPosition(2, -14));
+
+        $packet = (new BedrockChunkPacketSerializer(
+            new BlockNetworkTranslator($internal, $network),
+        ))->serialize($chunk);
+
+        self::assertNotSame('', $packet->data);
     }
 }

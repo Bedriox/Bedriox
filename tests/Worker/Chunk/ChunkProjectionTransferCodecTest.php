@@ -14,6 +14,7 @@ use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\ChunkPosition;
+use Bedriox\Server\World\DefaultWorldGenerator;
 use Bedriox\Server\World\FlatWorldGenerator;
 use PHPUnit\Framework\TestCase;
 
@@ -31,10 +32,10 @@ final class ChunkProjectionTransferCodecTest extends TestCase
         $codec = new ChunkProjectionTransferCodec();
 
         $packed = $codec->encode($chunk, $states);
-        $column = $codec->decodeColumn($packed, $states, $blocks, $data->plainsBiomeRuntimeId());
+        $column = $codec->decodeColumn($packed, $states, $blocks);
 
         self::assertEquals(
-            (new BedrockChunkPacketSerializer($blocks, $data->plainsBiomeRuntimeId()))->serialize($chunk),
+            (new BedrockChunkPacketSerializer($blocks))->serialize($chunk),
             ChunkSerializer::fullColumn($column),
         );
         self::assertLessThan(strlen((new ChunkTransferCodec())->encode($chunk, $states)) / 4, strlen($packed));
@@ -55,11 +56,29 @@ final class ChunkProjectionTransferCodecTest extends TestCase
 
         foreach ([$corrupt, substr($encoded, 0, -1), $encoded . "\0"] as $invalid) {
             try {
-                $codec->decodeColumn($invalid, $states, $blocks, $data->plainsBiomeRuntimeId());
+                $codec->decodeColumn($invalid, $states, $blocks);
                 self::fail('A malformed chunk projection was accepted.');
             } catch (ChunkTransferException) {
                 self::addToAssertionCount(1);
             }
         }
+    }
+
+    public function testMixedBiomeGeneratorChunkSurvivesWorkerProjection(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $networkStates = $data->blockStateRegistry();
+        $states = new BlockStateRegistry($networkStates->states());
+        $chunk = (new DefaultWorldGenerator(0, $states))->generate(new ChunkPosition(2, -14));
+        $blocks = new BlockNetworkTranslator($states, $networkStates);
+        $codec = new ChunkProjectionTransferCodec();
+
+        $column = $codec->decodeColumn(
+            $codec->encode($chunk, $states),
+            $states,
+            $blocks,
+        );
+
+        self::assertNotSame('', ChunkSerializer::fullColumn($column)->data);
     }
 }

@@ -37,6 +37,13 @@ final class World
     /** @var array<string, ChunkLoadCompletion> */
     private array $completedChunkLoads = [];
 
+    /** @var array<string, int> Newest revision queued or in flight with the asynchronous provider. */
+    private array $pendingChunkSaveRevisions = [];
+
+    private readonly ChunkUnloadManager $chunkUnloads;
+
+    private bool $spawnChunkRetained = false;
+
     public function __construct(
         public readonly WorldMetadata $metadata,
         private readonly WorldGenerator $generator,
@@ -45,8 +52,10 @@ final class World
         ?BlockOverrideStore $overrides = null,
         private readonly ?WorldProvider $provider = null,
         ?AsyncChunkGenerator $asyncChunks = null,
+        ?ChunkUnloadManager $chunkUnloads = null,
     ) {
         $this->asyncChunks = $asyncChunks;
+        $this->chunkUnloads = $chunkUnloads ?? new ChunkUnloadManager();
         $this->overrides = $overrides ?? new BlockOverrideStore();
         $worldData = $provider?->worldData();
         if ($worldData !== null && (
@@ -73,12 +82,20 @@ final class World
 
     public function chunk(ChunkPosition $position): Chunk
     {
-        return $this->chunks->get($position, $this->loadChunk(...), $this->evictionSaver());
+        $chunk = $this->chunks->get($position, $this->loadChunk(...), $this->evictionSaver());
+        if (!$this->chunks->isRetained($position)) {
+            $this->chunkUnloads->queue($position);
+        }
+
+        return $chunk;
     }
 
     public function retainChunk(ChunkPosition $position): Chunk
     {
-        return $this->chunks->retain($position, $this->loadChunk(...), $this->evictionSaver());
+        $chunk = $this->chunks->retain($position, $this->loadChunk(...), $this->evictionSaver());
+        $this->chunkUnloads->cancel($position);
+
+        return $chunk;
     }
 
     /**
@@ -92,6 +109,7 @@ final class World
         $this->pollAsynchronousProvider();
         if ($this->chunks->contains($position)) {
             $this->chunks->retain($position, $this->loadChunk(...), $this->evictionSaver());
+            $this->chunkUnloads->cancel($position);
 
             return true;
         }
@@ -162,6 +180,9 @@ final class World
                 }
             }
             $this->chunks->get($position, static fn(ChunkPosition $_position): Chunk => $chunk, $this->evictionSaver());
+            if (!$this->chunks->isRetained($position)) {
+                $this->chunkUnloads->queue($position);
+            }
         });
         if ($accepted) {
             return false;
@@ -172,9 +193,27 @@ final class World
         return true;
     }
 
+    /** Keeps the configured world spawn available without blocking on asynchronous storage or generation. */
+    public function requestRetainSpawnChunk(): bool
+    {
+        if ($this->spawnChunkRetained) {
+            return true;
+        }
+        $spawn = $this->spawn();
+        if (!$this->requestRetainChunk(self::chunkPosition($spawn->x, $spawn->z))) {
+            return false;
+        }
+        $this->spawnChunkRetained = true;
+
+        return true;
+    }
+
     public function releaseChunk(ChunkPosition $position): void
     {
         $this->chunks->release($position);
+        if (!$this->chunks->isRetained($position)) {
+            $this->chunkUnloads->queue($position);
+        }
     }
 
     public function blockStateAt(int $x, int $y, int $z): InternalBlockStateId
@@ -230,18 +269,90 @@ final class World
 
         $this->pollAsynchronousProvider();
         $submitted = 0;
-        foreach ($this->chunks->dirtySnapshots($maximumChunks) as $chunk) {
-            $result = $this->provider->enqueueChunkSave(new ChunkSaveData($chunk));
-            if ($result->status === PersistenceSubmission::SATURATED) {
+        foreach ($this->chunks->dirtySnapshots($maximumChunks, $this->pendingChunkSaveRevisions) as $chunk) {
+            $status = $this->submitAsynchronousChunkSave($chunk);
+            if ($status === PersistenceSubmission::SATURATED) {
                 break;
             }
-            if ($result->status !== PersistenceSubmission::STALE) {
+            if ($status !== PersistenceSubmission::STALE) {
                 ++$submitted;
             }
         }
         $this->pollAsynchronousProvider();
 
         return $submitted;
+    }
+
+    /**
+     * Processes due unretained chunks within both count and elapsed-time bounds.
+     *
+     * Dirty asynchronous chunks remain resident until their exact revision is acknowledged.
+     */
+    public function processChunkUnloads(int $maximumChunks = 96, int $timeBudgetMicroseconds = 2_000): ChunkUnloadResult
+    {
+        $this->pollAsynchronousProvider();
+        $due = $this->chunkUnloads->due($maximumChunks, $timeBudgetMicroseconds);
+        $examined = 0;
+        $evicted = 0;
+        $saveSubmissions = 0;
+        $saturated = false;
+        foreach ($due as $position) {
+            ++$examined;
+            if (!$this->chunks->contains($position)) {
+                $this->chunkUnloads->cancel($position);
+
+                continue;
+            }
+            if ($this->chunks->isRetained($position)) {
+                $this->chunkUnloads->cancel($position);
+
+                continue;
+            }
+            $chunk = $this->chunks->loaded($position);
+            if (!$chunk instanceof Chunk) {
+                $this->chunkUnloads->cancel($position);
+
+                continue;
+            }
+            if ($chunk->isDirty()) {
+                if ($this->provider instanceof AsynchronousWorldProvider) {
+                    $status = $this->submitAsynchronousChunkSave($chunk);
+                    if ($status === PersistenceSubmission::SATURATED) {
+                        $this->chunkUnloads->defer($position);
+                        $saturated = true;
+                        break;
+                    }
+                    if ($status !== PersistenceSubmission::STALE) {
+                        ++$saveSubmissions;
+                    }
+                    $this->chunkUnloads->defer($position);
+
+                    continue;
+                }
+                if ($this->provider instanceof WritableWorldProvider) {
+                    $this->chunks->save($position, $this->saveChunk(...));
+                } elseif ($this->provider === null) {
+                    $this->chunks->save($position, static function (Chunk $_chunk): void {});
+                } else {
+                    $this->chunkUnloads->defer($position);
+
+                    continue;
+                }
+            }
+            if ($this->chunks->evictIfCleanAndUnretained($position)) {
+                $this->chunkUnloads->cancel($position);
+                unset($this->pendingChunkSaveRevisions[$position->key()]);
+                ++$evicted;
+            }
+        }
+
+        return new ChunkUnloadResult(
+            $examined,
+            $evicted,
+            $saveSubmissions,
+            $saturated,
+            $this->chunkUnloads->count(),
+        );
     }
 
     /** Saves all dirty chunks and current format-independent world metadata. */
@@ -307,6 +418,11 @@ final class World
         return $this->chunks->count();
     }
 
+    public function pendingChunkUnloadCount(): int
+    {
+        return $this->chunkUnloads->count();
+    }
+
     public function generatingChunkCount(): int
     {
         return $this->asyncChunks?->pendingCount() ?? 0;
@@ -361,6 +477,9 @@ final class World
     /** @return null|Closure(Chunk): void */
     private function evictionSaver(): ?Closure
     {
+        if ($this->provider instanceof AsynchronousWorldProvider) {
+            return null;
+        }
         if ($this->provider instanceof WritableWorldProvider) {
             return $this->saveChunk(...);
         }
@@ -390,14 +509,36 @@ final class World
             $this->completedChunkLoads[$completion->position->key()] = $completion;
         }
         foreach ($this->provider->pollChunkSaves() as $completion) {
+            $position = self::positionFromPersistenceKey($completion->key);
+            $key = $position->key();
+            if (($this->pendingChunkSaveRevisions[$key] ?? -1) <= $completion->revision) {
+                unset($this->pendingChunkSaveRevisions[$key]);
+            }
             if (!$completion->successful) {
                 continue;
             }
-            $position = self::positionFromPersistenceKey($completion->key);
             if ($this->chunks->contains($position)) {
                 $this->chunks->acknowledgePersisted($position, $completion->revision);
             }
         }
+    }
+
+    private function submitAsynchronousChunkSave(Chunk $chunk): PersistenceSubmission
+    {
+        if (!$this->provider instanceof AsynchronousWorldProvider) {
+            throw new LogicException('This world does not have an asynchronous provider.');
+        }
+        $key = $chunk->position->key();
+        if (($this->pendingChunkSaveRevisions[$key] ?? -1) >= $chunk->revision) {
+            return PersistenceSubmission::STALE;
+        }
+
+        $result = $this->provider->enqueueChunkSave(new ChunkSaveData($chunk));
+        if ($result->status !== PersistenceSubmission::SATURATED) {
+            $this->pendingChunkSaveRevisions[$key] = $chunk->revision;
+        }
+
+        return $result->status;
     }
 
     private function flushAsynchronousChunks(AsynchronousWorldProvider $provider): int

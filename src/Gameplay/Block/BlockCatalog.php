@@ -10,6 +10,7 @@ use Bedriox\Server\Gameplay\Item\ToolType;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\InternalBlockStateId;
 use Bedriox\Server\World\Block\VanillaBlockStates;
+use Bedriox\Server\World\Generation\GenerationBlockPalette;
 use InvalidArgumentException;
 
 /** Bounded gameplay definitions for the states emitted by built-in generators. */
@@ -42,13 +43,13 @@ final readonly class BlockCatalog
         $this->typesByIdentifier = $byIdentifier;
     }
 
-    public static function vanilla(): self
+    public static function vanilla(?BlockStateRegistry $registry = null): self
     {
         $pickaxe = ToolType::Pickaxe;
         $shovel = ToolType::Shovel;
         $axe = ToolType::Axe;
 
-        return new self([
+        $types = [
             new BlockType(VanillaBlockStates::air(), -1.0, null, null, BlockDropKind::None, false),
             new BlockType(VanillaBlockStates::bedrock(), -1.0, null, null, BlockDropKind::None),
             new BlockType(VanillaBlockStates::stone(), 1.5, $pickaxe, ToolTier::Wood, BlockDropKind::Cobblestone),
@@ -79,18 +80,46 @@ final readonly class BlockCatalog
             new BlockType(VanillaBlockStates::birchLeaves(), 0.2, ToolType::Hoe, null, BlockDropKind::BirchLeaves),
             new BlockType(VanillaBlockStates::spruceLog(), 2.0, $axe, null, BlockDropKind::Self),
             new BlockType(VanillaBlockStates::spruceLeaves(), 0.2, ToolType::Hoe, null, BlockDropKind::SpruceLeaves),
-        ]);
+        ];
+        if ($registry !== null) {
+            $knownIdentifiers = [];
+            foreach ($types as $type) {
+                $knownIdentifiers[$type->identifier()] = true;
+            }
+            foreach (GenerationBlockPalette::fromRegistry($registry)->states() as $stateId) {
+                $state = $registry->state($stateId);
+                if (!isset($knownIdentifiers[$state->identifier()])) {
+                    $types[] = self::generatedType($state);
+                    $knownIdentifiers[$state->identifier()] = true;
+                }
+            }
+        }
+
+        return new self($types);
     }
 
     public function typeForState(CanonicalBlockState $state): BlockType
     {
         return $this->typesByStateKey[$state->canonicalKey()]
+            ?? $this->typesByIdentifier[$state->identifier()]
             ?? throw new InvalidArgumentException('Block state is not present in the gameplay catalog.');
+    }
+
+    public function findTypeForState(CanonicalBlockState $state): ?BlockType
+    {
+        return $this->typesByStateKey[$state->canonicalKey()]
+            ?? $this->typesByIdentifier[$state->identifier()]
+            ?? null;
     }
 
     public function typeForInternalId(InternalBlockStateId $id, BlockStateRegistry $registry): BlockType
     {
         return $this->typeForState($registry->state($id));
+    }
+
+    public function findTypeForInternalId(InternalBlockStateId $id, BlockStateRegistry $registry): ?BlockType
+    {
+        return $this->findTypeForState($registry->state($id));
     }
 
     public function type(string $identifier): BlockType
@@ -108,5 +137,89 @@ final readonly class BlockCatalog
     public function all(): array
     {
         return array_values($this->typesByStateKey);
+    }
+
+    private static function generatedType(CanonicalBlockState $state): BlockType
+    {
+        $identifier = $state->identifier();
+        $hasItemForm = !in_array($identifier, [
+            'minecraft:air',
+            'minecraft:water',
+            'minecraft:lava',
+            'minecraft:farmland',
+            'minecraft:wheat',
+            'minecraft:grass_path',
+        ], true);
+        if (in_array($identifier, self::unbreakableGeneratedIdentifiers(), true)) {
+            return new BlockType($state, -1.0, null, null, BlockDropKind::None, $hasItemForm);
+        }
+        if (in_array($identifier, self::instantGeneratedIdentifiers(), true)) {
+            return new BlockType(
+                $state,
+                0.0,
+                null,
+                null,
+                BlockDropKind::None,
+                $hasItemForm,
+            );
+        }
+        if (str_ends_with($identifier, '_log') || str_ends_with($identifier, '_planks')
+            || $identifier === 'minecraft:bookshelf' || $identifier === 'minecraft:hay_block'
+            || $identifier === 'minecraft:bamboo') {
+            return new BlockType($state, 2.0, ToolType::Axe, null, BlockDropKind::None, $hasItemForm);
+        }
+        if (str_ends_with($identifier, '_leaves') || $identifier === 'minecraft:azalea_leaves_flowered') {
+            return new BlockType($state, 0.2, ToolType::Hoe, null, BlockDropKind::None, $hasItemForm);
+        }
+        if (in_array($identifier, self::shovelGeneratedIdentifiers(), true)) {
+            return new BlockType(
+                $state,
+                $identifier === 'minecraft:snow_layer' ? 0.1 : 0.5,
+                ToolType::Shovel,
+                null,
+                BlockDropKind::None,
+                $hasItemForm,
+            );
+        }
+
+        return new BlockType(
+            $state,
+            1.5,
+            ToolType::Pickaxe,
+            null,
+            BlockDropKind::None,
+            $hasItemForm,
+        );
+    }
+
+    /** @return list<string> */
+    private static function unbreakableGeneratedIdentifiers(): array
+    {
+        return ['minecraft:air', 'minecraft:bedrock', 'minecraft:water', 'minecraft:lava'];
+    }
+
+    /** @return list<string> */
+    private static function instantGeneratedIdentifiers(): array
+    {
+        return [
+            'minecraft:wheat', 'minecraft:deadbush', 'minecraft:short_grass', 'minecraft:tall_grass',
+            'minecraft:dandelion', 'minecraft:poppy', 'minecraft:blue_orchid', 'minecraft:allium',
+            'minecraft:azure_bluet', 'minecraft:red_tulip', 'minecraft:white_tulip',
+            'minecraft:pink_tulip', 'minecraft:oxeye_daisy', 'minecraft:lily_of_the_valley',
+            'minecraft:glow_lichen', 'minecraft:hanging_roots', 'minecraft:spore_blossom',
+            'minecraft:brown_mushroom', 'minecraft:red_mushroom', 'minecraft:vine',
+            'minecraft:kelp', 'minecraft:seagrass', 'minecraft:rail', 'minecraft:torch',
+        ];
+    }
+
+    /** @return list<string> */
+    private static function shovelGeneratedIdentifiers(): array
+    {
+        return [
+            'minecraft:dirt', 'minecraft:grass_block', 'minecraft:sand', 'minecraft:red_sand',
+            'minecraft:gravel', 'minecraft:clay', 'minecraft:snow', 'minecraft:snow_layer',
+            'minecraft:podzol', 'minecraft:coarse_dirt', 'minecraft:mud', 'minecraft:farmland',
+            'minecraft:grass_path', 'minecraft:soul_sand',
+        ];
     }
 }

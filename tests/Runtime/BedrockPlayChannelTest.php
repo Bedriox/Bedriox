@@ -1489,7 +1489,6 @@ final class BedrockPlayChannelTest extends TestCase
         );
         $serializer = new BedrockChunkPacketSerializer(
             new BlockNetworkTranslator($internal, $network),
-            $data->plainsBiomeRuntimeId(),
         );
         [$channel, $client, $server] = $this->channel(
             [new ChunkRadiusUpdatedPacket(4)],
@@ -1608,7 +1607,6 @@ final class BedrockPlayChannelTest extends TestCase
         );
         $serializer = new BedrockChunkPacketSerializer(
             new BlockNetworkTranslator($internal, $network),
-            $data->plainsBiomeRuntimeId(),
         );
         [$channel, $client, $server] = $this->channel(
             [new ChunkRadiusUpdatedPacket(1)],
@@ -1658,7 +1656,6 @@ final class BedrockPlayChannelTest extends TestCase
         );
         $serializer = new BedrockChunkPacketSerializer(
             new BlockNetworkTranslator($internal, $network),
-            $data->plainsBiomeRuntimeId(),
         );
         $workers = new ImmediatePreparationWorkerDispatcher();
         $cache = new PreparedChunkCache($workers, 5, $internal, str_repeat('b', 32));
@@ -1731,7 +1728,6 @@ final class BedrockPlayChannelTest extends TestCase
         $world = new World(new WorldMetadata('invalid-stream-test', 0), $generator, $repository);
         $serializer = new BedrockChunkPacketSerializer(
             new BlockNetworkTranslator($internal, $network),
-            $data->plainsBiomeRuntimeId(),
         );
         [$channel, $client] = $this->channel(
             [new ChunkRadiusUpdatedPacket(1)],
@@ -1767,7 +1763,6 @@ final class BedrockPlayChannelTest extends TestCase
             world: $world,
             serializer: new BedrockChunkPacketSerializer(
                 new BlockNetworkTranslator($internal, $network),
-                $data->plainsBiomeRuntimeId(),
             ),
             generatePerTick: 64,
             sendPerTick: 1,
@@ -1804,7 +1799,6 @@ final class BedrockPlayChannelTest extends TestCase
             world: $world,
             serializer: new BedrockChunkPacketSerializer(
                 new BlockNetworkTranslator($internal, $network),
-                $data->plainsBiomeRuntimeId(),
             ),
             generatePerTick: 64,
             sendPerTick: 1,
@@ -1863,7 +1857,6 @@ final class BedrockPlayChannelTest extends TestCase
             world: $world,
             serializer: new BedrockChunkPacketSerializer(
                 new BlockNetworkTranslator($internal, $network),
-                $data->plainsBiomeRuntimeId(),
             ),
             generatePerTick: 4,
             sendPerTick: 3,
@@ -2334,7 +2327,7 @@ final class BedrockPlayChannelTest extends TestCase
         [$channel, $client, $server, $entityId] = $this->channel(
             [new ChunkRadiusUpdatedPacket(1)],
             world: $world,
-            serializer: new BedrockChunkPacketSerializer($translator, $data->plainsBiomeRuntimeId()),
+            serializer: new BedrockChunkPacketSerializer($translator),
             viewDistance: 1,
             spawnRadius: 1,
             fixedFlatRuntimeIds: $palette->toNetworkRuntimeIds($translator),
@@ -2456,7 +2449,7 @@ final class BedrockPlayChannelTest extends TestCase
         [$channel, $client, $server, $entityId] = $this->channel(
             [new ChunkRadiusUpdatedPacket(1)],
             world: $world,
-            serializer: new BedrockChunkPacketSerializer($translator, $data->plainsBiomeRuntimeId()),
+            serializer: new BedrockChunkPacketSerializer($translator),
             viewDistance: 1,
             spawnRadius: 1,
             fixedFlatRuntimeIds: $palette->toNetworkRuntimeIds($translator),
@@ -2593,7 +2586,7 @@ final class BedrockPlayChannelTest extends TestCase
         [$channel, $client, $server, $entityId] = $this->channel(
             [new ChunkRadiusUpdatedPacket(1)],
             world: $world,
-            serializer: new BedrockChunkPacketSerializer($translator, $data->plainsBiomeRuntimeId()),
+            serializer: new BedrockChunkPacketSerializer($translator),
             viewDistance: 1,
             spawnRadius: 1,
             fixedFlatRuntimeIds: $palette->toNetworkRuntimeIds($translator),

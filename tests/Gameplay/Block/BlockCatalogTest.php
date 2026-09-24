@@ -4,12 +4,14 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Gameplay\Block;
 
+use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Gameplay\Block\BlockCatalog;
 use Bedriox\Server\Gameplay\Block\BlockDropKind;
 use Bedriox\Server\Gameplay\Item\ToolTier;
 use Bedriox\Server\Gameplay\Item\ToolType;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\VanillaBlockStates;
+use Bedriox\Server\World\Generation\GenerationBlockPalette;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 
@@ -49,5 +51,24 @@ final class BlockCatalogTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
 
         BlockCatalog::vanilla()->type('minecraft:not_supported');
+    }
+
+    public function testOptionalLookupDoesNotThrowForAnUnsupportedCanonicalState(): void
+    {
+        self::assertNull(BlockCatalog::vanilla()->findTypeForState(
+            \Bedriox\Data\CanonicalBlockState::from('minecraft:short_grass'),
+        ));
+    }
+
+    public function testRegistryBackedCatalogDefinesEveryGeneratedState(): void
+    {
+        $states = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $generation = GenerationBlockPalette::fromRegistry($states);
+        $catalog = BlockCatalog::vanilla($states);
+
+        foreach ($generation->states() as $state) {
+            self::assertNotNull($catalog->findTypeForInternalId($state, $states));
+        }
+        self::assertTrue($catalog->type('minecraft:short_grass')->isBreakable());
     }
 }

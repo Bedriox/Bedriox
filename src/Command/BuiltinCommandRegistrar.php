@@ -8,6 +8,8 @@ use Bedriox\Api\Player\Player;
 use Bedriox\Server\Command\Default\BuiltinCommand;
 use Bedriox\Server\Command\Default\DeopCommand;
 use Bedriox\Server\Command\Default\GamemodeCommand;
+use Bedriox\Server\Command\Default\GarbageCollectionStatus;
+use Bedriox\Server\Command\Default\GarbageCollectorCommand;
 use Bedriox\Server\Command\Default\GiveCommand;
 use Bedriox\Server\Command\Default\HelpCommand;
 use Bedriox\Server\Command\Default\ListCommand;
@@ -16,10 +18,13 @@ use Bedriox\Server\Command\Default\OpCommand;
 use Bedriox\Server\Command\Default\PermissionCommand;
 use Bedriox\Server\Command\Default\StatusCommand;
 use Bedriox\Server\Command\Default\StopCommand;
+use Bedriox\Server\Command\Default\TeleportCommand;
 use Bedriox\Server\Command\Default\VersionCommand;
+use Bedriox\Server\Observability\Memory\GarbageCollectionReport;
 use Bedriox\Server\Observability\PerformanceSnapshot;
 use Bedriox\Server\Permission\PermissionStore;
 use Bedriox\Server\Plugin\Command\CommandRegistry;
+use Bedriox\Server\World\ChunkUnloadResult;
 use Closure;
 
 /** Coordinates registration of the server-owned default command set. */
@@ -32,6 +37,10 @@ final readonly class BuiltinCommandRegistrar
      * @param Closure(Player, string, int): bool|null $giveItem
      * @param Closure(string): bool|null $itemExists
      * @param Closure(): PerformanceSnapshot|null $status
+     * @param Closure(Player, \Bedriox\Api\World\Position, ?float, ?float): bool|null $teleport
+     * @param Closure(): GarbageCollectionStatus|null $garbageCollectionStatus
+     * @param Closure(): GarbageCollectionReport|null $collectGarbage
+     * @param Closure(): ChunkUnloadResult|null $unloadChunks
      */
     public function __construct(
         private CommandRegistry $commands,
@@ -43,6 +52,10 @@ final readonly class BuiltinCommandRegistrar
         private ?Closure $giveItem = null,
         private ?Closure $itemExists = null,
         private ?Closure $status = null,
+        private ?Closure $teleport = null,
+        private ?Closure $garbageCollectionStatus = null,
+        private ?Closure $collectGarbage = null,
+        private ?Closure $unloadChunks = null,
     ) {}
 
     public function register(): void
@@ -66,9 +79,17 @@ final readonly class BuiltinCommandRegistrar
             new PermissionCommand($this->permissions, $players, $this->authorityChanged),
             new GamemodeCommand($players, $this->changeGameMode),
             new GiveCommand($players, $this->giveItem, $this->itemExists),
+            new TeleportCommand($players, $this->teleport),
         ];
         if ($this->status !== null) {
             $commands[] = new StatusCommand($this->status);
+        }
+        if ($this->garbageCollectionStatus !== null && $this->collectGarbage !== null && $this->unloadChunks !== null) {
+            $commands[] = new GarbageCollectorCommand(
+                $this->garbageCollectionStatus,
+                $this->collectGarbage,
+                $this->unloadChunks,
+            );
         }
 
         return $commands;

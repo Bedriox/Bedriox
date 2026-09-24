@@ -78,6 +78,32 @@ final readonly class SeededNoise
         return self::lerp($z0Value, $z1Value, $ty);
     }
 
+    /** Returns normalized multi-octave three-dimensional noise in approximately [-32768, 32767]. */
+    public function fractal3d(
+        int $x,
+        int $y,
+        int $z,
+        int $scale,
+        int $octaves,
+        int $persistencePercent,
+        int $salt = 0,
+    ): int {
+        if ($octaves < 1 || $octaves > 8 || $persistencePercent < 1 || $persistencePercent > 100) {
+            throw new InvalidArgumentException('Fractal noise parameters are outside the supported bounds.');
+        }
+        $weighted = 0;
+        $totalWeight = 0;
+        $weight = 1_024;
+        for ($octave = 0; $octave < $octaves; ++$octave) {
+            $weighted += $this->sample3d($x, $y, $z, max(1, $scale), $salt + $octave * 131) * $weight;
+            $totalWeight += $weight;
+            $scale = max(1, intdiv($scale, 2));
+            $weight = max(1, intdiv($weight * $persistencePercent, 100));
+        }
+
+        return intdiv($weighted, $totalWeight);
+    }
+
     public function chance(int $x, int $y, int $z, int $salt, int $outOf): int
     {
         if ($outOf < 1) {

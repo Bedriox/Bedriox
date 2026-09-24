@@ -50,10 +50,12 @@ final readonly class SimulationPluginApiBackend
             function (string $identity, string $message): void {
                 $this->requireQueued($this->simulation->enqueuePluginMessage($identity, $message));
             },
-            function (string $identity, ApiPosition $position): void {
-                $this->requireQueued($this->simulation->enqueuePluginTeleport(
+            function (string $identity, ApiPosition $position, ?float $yaw, ?float $pitch): void {
+                $this->requireQueued($this->simulation->enqueueTeleport(
                     $identity,
                     new Position($position->x, $position->y, $position->z),
+                    $yaw,
+                    $pitch,
                 ));
             },
             function (ApiBlockPosition $position, string $identifier) use ($plugin): void {

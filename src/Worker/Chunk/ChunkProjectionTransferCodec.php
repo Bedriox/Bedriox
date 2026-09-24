@@ -78,8 +78,9 @@ final class ChunkProjectionTransferCodec
         string $encoded,
         BlockStateRegistry $states,
         BlockNetworkTranslator $blocks,
-        int $plainsBiomeRuntimeId,
+        ?BiomeRuntimeIdMap $biomeMap = null,
     ): ChunkColumnData {
+        $biomeMap ??= BiomeRuntimeIdMap::bundled();
         $reader = new ChunkTransferReader($this->verifiedBody($encoded));
         try {
             $chunkX = $reader->signedInt();
@@ -130,7 +131,7 @@ final class ChunkProjectionTransferCodec
             if ($biomeCount !== Chunk::SECTION_COUNT) {
                 throw new ChunkTransferException('Chunk projection must contain every biome section.');
             }
-            $biomes = [];
+            $biomeStorages = [];
             $previousBiome = null;
             for ($offset = 0; $offset < $biomeCount; ++$offset) {
                 $sectionY = $reader->signedByte();
@@ -142,7 +143,7 @@ final class ChunkProjectionTransferCodec
                     if (!$previousBiome instanceof PackedPalettedStorage) {
                         throw new ChunkTransferException('Chunk projection begins with a repeated biome palette.');
                     }
-                    $biomes[] = $previousBiome;
+                    $biomeStorages[] = $previousBiome;
                     continue;
                 }
                 $paletteCount = $reader->unsignedShort();
@@ -152,9 +153,7 @@ final class ChunkProjectionTransferCodec
                 $palette = [];
                 for ($paletteIndex = 0; $paletteIndex < $paletteCount; ++$paletteIndex) {
                     $identifier = $reader->boundedString(128);
-                    $palette[] = $identifier === 'minecraft:plains'
-                        ? $plainsBiomeRuntimeId
-                        : BiomeRuntimeIdMap::id(new \Bedriox\Server\World\Biome($identifier));
+                    $palette[] = $biomeMap->id(new \Bedriox\Server\World\Biome($identifier));
                 }
                 $bits = $reader->byte();
                 if ($bits !== PackedPaletteWords::bitsForPaletteSize($paletteCount, 2)) {
@@ -166,7 +165,7 @@ final class ChunkProjectionTransferCodec
                     $reader->bytes(self::wordBytes($bits)),
                     ChunkColumnData::BIOME_CELL_COUNT,
                 );
-                $biomes[] = $previousBiome;
+                $biomeStorages[] = $previousBiome;
             }
             $reader->finish();
 
@@ -177,7 +176,7 @@ final class ChunkProjectionTransferCodec
                 Chunk::MIN_SECTION_Y,
                 Chunk::MAX_SECTION_Y,
                 $sections,
-                $biomes,
+                $biomeStorages,
             );
         } catch (ChunkTransferException $error) {
             throw $error;

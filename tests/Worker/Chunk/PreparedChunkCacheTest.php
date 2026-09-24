@@ -110,6 +110,25 @@ final class PreparedChunkCacheTest extends TestCase
         self::assertSame(3, $cache->snapshot()->failures);
     }
 
+    public function testPressureTrimReleasesCompletedEntriesAndCanCancelPendingWork(): void
+    {
+        [$cache, $workers, $chunk, $palette] = $this->fixture();
+        $cache->lookupOrRequest($chunk, ProtocolVersion::CURRENT);
+        $workers->complete(1, (new PrepareChunkTask())->execute($workers->payloads[1]));
+        self::assertGreaterThan(0, $cache->trim());
+        self::assertSame(0, $cache->snapshot()->entries);
+
+        $changed = $chunk->withBlockState(0, 63, 0, $palette->air);
+        self::assertSame(
+            PreparedChunkAvailability::PENDING,
+            $cache->lookupOrRequest($changed, ProtocolVersion::CURRENT)->availability,
+        );
+        self::assertGreaterThan(0, $cache->snapshot()->pendingBytes);
+        self::assertGreaterThan(0, $cache->trim(true));
+        self::assertSame(0, $cache->snapshot()->pending);
+        self::assertSame(0, $cache->snapshot()->pendingBytes);
+    }
+
     /** @return array{PreparedChunkCache, FakePreparationWorkerDispatcher, \Bedriox\Server\World\Chunk, FixedFlatBlockPalette} */
     private function fixture(): array
     {

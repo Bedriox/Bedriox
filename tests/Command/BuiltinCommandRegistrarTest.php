@@ -12,9 +12,13 @@ use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\Player\Player;
 use Bedriox\Api\World\Position;
 use Bedriox\Server\Command\BuiltinCommandRegistrar;
+use Bedriox\Server\Command\Default\GarbageCollectionStatus;
 use Bedriox\Server\Command\Default\OnlinePlayerResolver;
 use Bedriox\Server\Observability\BackgroundLogWriterSnapshot;
 use Bedriox\Server\Observability\LogQueueSnapshot;
+use Bedriox\Server\Observability\Memory\GarbageCollectionReport;
+use Bedriox\Server\Observability\Memory\MemoryPressure;
+use Bedriox\Server\Observability\Memory\MemorySnapshot;
 use Bedriox\Server\Observability\PerformanceSnapshot;
 use Bedriox\Server\Observability\PerformanceSubsystem;
 use Bedriox\Server\Permission\PermissionStore;
@@ -30,6 +34,7 @@ use Bedriox\Server\Runtime\ChunkStreamingSnapshot;
 use Bedriox\Server\Worker\Chunk\PreparedChunkCacheSnapshot;
 use Bedriox\Server\Worker\WorkerPoolSnapshot;
 use Bedriox\Server\World\ChunkRepositorySnapshot;
+use Bedriox\Server\World\ChunkUnloadResult;
 use PHPUnit\Framework\TestCase;
 use Throwable;
 
@@ -61,10 +66,10 @@ final class BuiltinCommandRegistrarTest extends TestCase
         [$registry, $permissions] = $this->registry();
         (new BuiltinCommandRegistrar($registry, $permissions, static fn(): array => [], static function (): void {}))->register();
 
-        self::assertSame(9, $registry->count());
+        self::assertSame(10, $registry->count());
         $definitions = $registry->availableDefinitions(CommandSenderType::CONSOLE, static fn(string $permission): bool => true);
         self::assertSame(
-            ['version', 'help', 'list', 'stop', 'op', 'deop', 'permission', 'gamemode', 'give'],
+            ['version', 'help', 'list', 'stop', 'op', 'deop', 'permission', 'gamemode', 'give', 'tp'],
             array_map(static fn($definition): string => $definition->name, $definitions),
         );
         self::assertSame(['ver'], $definitions[0]->aliases);
@@ -77,6 +82,8 @@ final class BuiltinCommandRegistrarTest extends TestCase
         self::assertSame('bedriox.command.permission', $definitions[6]->permission);
         self::assertSame('bedriox.command.gamemode', $definitions[7]->permission);
         self::assertSame('bedriox.command.give', $definitions[8]->permission);
+        self::assertSame(['teleport'], $definitions[9]->aliases);
+        self::assertSame('bedriox.command.teleport', $definitions[9]->permission);
 
         $sender = new BuiltinCommandSender();
         self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'ver'));
@@ -86,7 +93,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
         );
         self::assertSame('Visit https://bedriox.com', $sender->messages[1]);
         self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'commands'));
-        self::assertContains('Available commands (9):', $sender->messages);
+        self::assertContains('Available commands (10):', $sender->messages);
     }
 
     public function testPlayerListOperatorAndPermissionCommandsPreserveBehavior(): void
@@ -318,6 +325,63 @@ final class BuiltinCommandRegistrarTest extends TestCase
         self::assertSame('bedriox.command.status', $definitions[count($definitions) - 1]->permission);
         self::assertNotContains(
             'status',
+            array_map(
+                static fn($definition): string => $definition->name,
+                $registry->availableDefinitions(CommandSenderType::PLAYER, static fn(string $permission): bool => false),
+            ),
+        );
+    }
+
+    public function testGarbageCollectorCommandIsRegisteredOnlyWithCompleteRuntimeCallbacks(): void
+    {
+        [$registry, $permissions] = $this->registry();
+        $statusCalls = 0;
+        (new BuiltinCommandRegistrar(
+            $registry,
+            $permissions,
+            static fn(): array => [],
+            static function (): void {},
+            garbageCollectionStatus: static function () use (&$statusCalls): GarbageCollectionStatus {
+                ++$statusCalls;
+
+                return new GarbageCollectionStatus(
+                    new MemorySnapshot(1_024, 2_048, 4_096, 8_192, 1),
+                    MemoryPressure::NORMAL,
+                    0,
+                    10_001,
+                    null,
+                    1,
+                    0,
+                    0,
+                    0,
+                    0,
+                );
+            },
+            collectGarbage: static fn(): GarbageCollectionReport => new GarbageCollectionReport(
+                true,
+                true,
+                true,
+                1,
+                0,
+                1,
+                0,
+                1,
+                10_001,
+                10_001,
+            ),
+            unloadChunks: static fn(): ChunkUnloadResult => new ChunkUnloadResult(1, 1, 0, false, 0),
+        ))->register();
+
+        self::assertSame(11, $registry->count());
+        $sender = new BuiltinCommandSender();
+        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'gc'));
+        self::assertSame(1, $statusCalls);
+
+        $definitions = $registry->availableDefinitions(CommandSenderType::CONSOLE, static fn(string $permission): bool => true);
+        self::assertSame('gc', $definitions[count($definitions) - 1]->name);
+        self::assertSame('bedriox.command.gc', $definitions[count($definitions) - 1]->permission);
+        self::assertNotContains(
+            'gc',
             array_map(
                 static fn($definition): string => $definition->name,
                 $registry->availableDefinitions(CommandSenderType::PLAYER, static fn(string $permission): bool => false),
