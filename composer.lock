@@ -60,7 +60,7 @@
             "dist": {
                 "type": "path",
                 "url": "../Protocol",
-                "reference": "4618ffd607213e24ce2e5eb83f3bcd1b049157d5"
+                "reference": "0d953bce5cd48ecb865788e39ea805cd8d51e71b"
             },
             "require": {
                 "ext-openssl": "*",
