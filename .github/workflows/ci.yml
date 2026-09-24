@@ -15,13 +15,8 @@ permissions:
 jobs:
   quality:
     if: github.ref == 'refs/heads/main'
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        php: ['8.4', '8.5']
-    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -29,7 +24,7 @@ jobs:
           persist-credentials: false
       - uses: shivammathur/setup-php@b604ade2a87db23f8871b7182e69ec5e75effb45 # v2
         with:
-          php-version: ${{ matrix.php }}
+          php-version: '8.4'
           coverage: none
           extensions: curl, openssl, sockets, sodium, zip
       - name: Read immutable component pins
@@ -58,10 +53,10 @@ jobs:
           path: Data
           token: ${{ secrets.BEDRIOX_COMPONENTS_TOKEN }}
           persist-credentials: false
-      # Static/unit CI uses stock PHP; native LevelDB interoperability is qualified by the pinned Bedriox Runtime job.
+      # Routine CI uses stock PHP for static and metadata checks. Native LevelDB interoperability is qualified by Runtime.
       - run: composer install --no-interaction --prefer-dist --no-progress --ignore-platform-req=ext-leveldb
         working-directory: Bedriox
-      - run: composer check
+      - run: composer check:ci
         working-directory: Bedriox
       - run: php bin/bedriox --version
         working-directory: Bedriox

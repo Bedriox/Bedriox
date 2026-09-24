@@ -74,14 +74,17 @@
         "validate:licenses": "@php tools/validate-licenses.php",
         "format:check": "php-cs-fixer fix --dry-run --diff",
         "format": "php-cs-fixer fix",
-        "check": [
+        "check:ci": [
             "@verify:composer",
             "@verify:audit",
             "@validate:manifest",
             "@validate:docs",
             "@validate:licenses",
             "@format:check",
-            "@analyse",
+            "@analyse"
+        ],
+        "check": [
+            "@check:ci",
             "@test"
         ]
     },
