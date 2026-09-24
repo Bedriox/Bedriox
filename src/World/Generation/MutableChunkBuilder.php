@@ -22,7 +22,9 @@ final class MutableChunkBuilder
         public readonly ChunkPosition $position,
         private readonly GenerationBlockPalette $palette,
     ) {
-        $this->emptySection = str_repeat(chr($palette->index($palette->state('minecraft:air'))), SubChunk::BLOCK_COUNT);
+        $this->emptySection = str_repeat(self::encodePaletteIndex(
+            $palette->index($palette->state('minecraft:air')),
+        ), SubChunk::BLOCK_COUNT);
     }
 
     public function set(int $localX, int $y, int $localZ, InternalBlockStateId $state): void
@@ -32,7 +34,9 @@ final class MutableChunkBuilder
         }
         $sectionY = $y >> 4;
         $this->sections[$sectionY] ??= $this->emptySection;
-        $this->sections[$sectionY][$localX + $localZ * 16 + (($y & 0x0f) * 256)] = chr($this->palette->index($state));
+        $this->sections[$sectionY][$localX + $localZ * 16 + (($y & 0x0f) * 256)] = self::encodePaletteIndex(
+            $this->palette->index($state),
+        );
     }
 
     public function setWorld(int $x, int $y, int $z, InternalBlockStateId $state, bool $onlyAir = false): void
@@ -88,8 +92,8 @@ final class MutableChunkBuilder
             $targetBytes = '';
             foreach ($sourceIndices as $target => $source) {
                 $palette[] = $this->palette->states()[$source];
-                $sourceBytes .= chr($source);
-                $targetBytes .= chr($target);
+                $sourceBytes .= self::encodePaletteIndex($source);
+                $targetBytes .= self::encodePaletteIndex($target);
             }
             $compacted = strtr($indices, $sourceBytes, $targetBytes);
             $sections[] = SubChunk::fromBlockStorageLayers(
@@ -99,5 +103,14 @@ final class MutableChunkBuilder
         }
 
         return $sections;
+    }
+
+    private static function encodePaletteIndex(int $index): string
+    {
+        if ($index < 0 || $index > 255) {
+            throw new \LogicException('Generation palette index is outside its byte bound.');
+        }
+
+        return pack('C', $index);
     }
 }

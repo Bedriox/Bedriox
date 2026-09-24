@@ -27,12 +27,12 @@ final class ChunkTransferCodec
         $body = pack('N2', $chunk->position->x, $chunk->position->z)
             . self::encodeDecimal($chunk->revision)
             . self::encodeDecimal($chunk->persistedRevision)
-            . chr($chunk->dirtyFlags)
-            . chr($chunk->finalizationState->value)
+            . self::encodeByte($chunk->dirtyFlags)
+            . self::encodeByte($chunk->finalizationState->value)
             . self::encodeString($chunk->biome()->identifier)
             . self::encodeState($states->state($chunk->airState()));
         $sections = $chunk->populatedSections();
-        $body .= chr(count($sections));
+        $body .= self::encodeByte(count($sections));
         foreach ($sections as $section) {
             $layers = $section->blockStorageLayers();
             $body .= pack('cC', $section->sectionY, count($layers));
@@ -47,7 +47,7 @@ final class ChunkTransferCodec
             }
         }
         $biomes = $chunk->biomeStorages();
-        $body .= chr(count($biomes));
+        $body .= self::encodeByte(count($biomes));
         foreach ($biomes as $sectionY => $storage) {
             $palette = $storage->palette();
             $body .= pack('cn', $sectionY, count($palette));
@@ -204,6 +204,15 @@ final class ChunkTransferCodec
         }
 
         return self::encodeString((string) $value);
+    }
+
+    private static function encodeByte(int $value): string
+    {
+        if ($value < 0 || $value > 255) {
+            throw new ChunkTransferException('Chunk transfer byte value is outside its bound.');
+        }
+
+        return pack('C', $value);
     }
 
     private static function decodeDecimal(ChunkTransferReader $reader): int

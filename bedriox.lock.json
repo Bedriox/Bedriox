@@ -26,7 +26,7 @@
         "data": {
             "package": "bedriox/data",
             "version": "0.1.0-alpha.1",
-            "commit": "479576d3d44295e5f1fb5f259214ec347143116a"
+            "commit": "70777f3035b5a6b35141b1d60ec13130b2202bbb"
         }
     },
     "runtime": {

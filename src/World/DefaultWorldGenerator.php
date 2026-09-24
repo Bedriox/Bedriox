@@ -1401,7 +1401,7 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
                         for ($dy = 0; $dy < 4; ++$dy) {
                             for ($dz = 0; $dz < 4; ++$dz) {
                                 for ($dx = 0; $dx < 4; ++$dx) {
-                                    $indices[($quartX + $dx) + (($quartZ + $dz) * 16) + (($quartY + $dy) * 256)] = chr($index);
+                                    $indices[($quartX + $dx) + (($quartZ + $dz) * 16) + (($quartY + $dy) * 256)] = self::encodeBiomeIndex($index);
                                 }
                             }
                         }
@@ -1412,6 +1412,15 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
         }
 
         return $storages;
+    }
+
+    private static function encodeBiomeIndex(int $index): string
+    {
+        if ($index < 0 || $index > 255) {
+            throw new \LogicException('Generated biome palette index is outside its byte bound.');
+        }
+
+        return pack('C', $index);
     }
 
     /** @return array<string, OverworldTerrainSample> */

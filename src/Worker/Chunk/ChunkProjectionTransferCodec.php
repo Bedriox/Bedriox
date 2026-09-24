@@ -29,18 +29,18 @@ final class ChunkProjectionTransferCodec
             . self::encodeState($states->state($chunk->airState()));
 
         $sections = $chunk->populatedSections();
-        $body .= chr(count($sections));
+        $body .= self::encodeByte(count($sections));
         foreach ($sections as $section) {
             $storage = $section->blockStorageLayer(0);
             $body .= pack('c', $section->sectionY)
                 . self::encodeBlockPalette($storage->palette(), $states)
-                . chr($storage->networkBitsPerEntry())
+                . self::encodeByte($storage->networkBitsPerEntry())
                 . $storage->networkWordArray();
             self::guardBody($body);
         }
 
         $biomes = $chunk->biomeStorages();
-        $body .= chr(count($biomes));
+        $body .= self::encodeByte(count($biomes));
         $previousPaletteBody = null;
         $previousBits = null;
         $previousWords = null;
@@ -57,7 +57,7 @@ final class ChunkProjectionTransferCodec
             } else {
                 $body .= pack('cCn', $sectionY, 1, count($storage->palette()))
                     . $paletteBody
-                    . chr($bits)
+                    . self::encodeByte($bits)
                     . $words;
             }
             $previousPaletteBody = $paletteBody;
@@ -265,6 +265,15 @@ final class ChunkProjectionTransferCodec
         }
 
         return self::encodeString((string) $value);
+    }
+
+    private static function encodeByte(int $value): string
+    {
+        if ($value < 0 || $value > 255) {
+            throw new ChunkTransferException('Chunk projection byte value is outside its bound.');
+        }
+
+        return pack('C', $value);
     }
 
     private static function decodeDecimal(ChunkTransferReader $reader): int
