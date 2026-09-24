@@ -25,7 +25,13 @@ final class ItemExtraDataCodec
             ? $nbt->withoutTag('Damage')
             : $nbt->withTag('Damage', Tag::int($damage));
 
-        return $nbt->isEmpty()
+        return self::encodeCreative($nbt);
+    }
+
+    /** Encodes admitted creative NBT verbatim; variant data belongs in the wire auxiliary field. */
+    public static function encodeCreative(?ItemNbt $nbt): string
+    {
+        return $nbt === null || $nbt->isEmpty()
             ? self::EMPTY
             : self::NBT_PREFIX . $nbt->toBinary() . self::EMPTY_RESTRICTIONS;
     }

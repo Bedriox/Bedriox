@@ -82,6 +82,7 @@ final readonly class SimulationPluginApiBackend
                     $stack->count,
                     $stack->damage,
                     $stack->nbt,
+                    $stack->auxValue,
                 ));
             },
         );
@@ -121,13 +122,29 @@ final readonly class SimulationPluginApiBackend
                 ? null
                 : $this->blockStateRegistry->internalId($type->placedBlockState);
 
-            return new InventoryStack($stack->identifier, $stack->count, 1, $placed, $stack->damage, $stack->nbt);
+            return new InventoryStack(
+                $stack->identifier,
+                $stack->count,
+                1,
+                $placed,
+                $stack->damage,
+                $stack->nbt,
+                $stack->auxValue,
+            );
         }
         if ($stack->identifier !== 'minecraft:grass_block') {
             throw new InvalidArgumentException('The inventory stack is outside the current gameplay catalog.');
         }
 
-        return new InventoryStack($stack->identifier, $stack->count, 1, $this->palette->grassBlock, $stack->damage, $stack->nbt);
+        return new InventoryStack(
+            $stack->identifier,
+            $stack->count,
+            1,
+            $this->palette->grassBlock,
+            $stack->damage,
+            $stack->nbt,
+            $stack->auxValue,
+        );
     }
 
     private function requireQueued(bool $queued): void

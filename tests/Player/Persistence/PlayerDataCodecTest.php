@@ -55,9 +55,9 @@ final class PlayerDataCodecTest extends TestCase
     public function testRoundTripsArbitraryItemsAndDamageWithoutSessionNetworkIds(): void
     {
         $profile = self::profileWithInventory(new PlayerInventoryState([
-            new PlayerInventoryEntry(3, new PlayerInventoryStackState('minecraft:diamond_pickaxe', 1, 713, ItemNbt::empty()->withString('bedriox:feature', 'saved'))),
-            new PlayerInventoryEntry(9, new PlayerInventoryStackState('example:custom_item', 12, 4)),
-        ], 3, new PlayerInventoryStackState('minecraft:iron_shovel', 1, 122)));
+            new PlayerInventoryEntry(3, new PlayerInventoryStackState('minecraft:diamond_pickaxe', 1, 713, ItemNbt::empty()->withString('bedriox:feature', 'saved'), 12)),
+            new PlayerInventoryEntry(9, new PlayerInventoryStackState('example:custom_item', 12, 4, auxValue: 305)),
+        ], 3, new PlayerInventoryStackState('minecraft:iron_shovel', 1, 122, auxValue: 32_767)));
 
         $decoded = (new PlayerDataCodec())->decode((new PlayerDataCodec())->encode($profile));
 
@@ -65,7 +65,9 @@ final class PlayerDataCodecTest extends TestCase
         self::assertSame(713, $decoded->inventory->entries[0]->stack->damage);
         self::assertSame('saved', $decoded->inventory->entries[0]->stack->nbt?->string('bedriox:feature'));
         self::assertSame('example:custom_item', $decoded->inventory->entries[1]->stack->identifier);
+        self::assertSame(305, $decoded->inventory->entries[1]->stack->auxValue);
         self::assertSame(122, $decoded->inventory->cursor?->damage);
+        self::assertSame(32_767, $decoded->inventory->cursor->auxValue);
     }
 
     public function testPersistsHealthAndMigratesSchemaOneProfilesAtFullHealth(): void
@@ -112,6 +114,49 @@ final class PlayerDataCodecTest extends TestCase
             }
             self::assertSame(0, $decoded->inventory->cursor?->damage);
         }
+    }
+
+    public function testSchemasOneThroughFourInventoryStacksMigrateWithZeroAux(): void
+    {
+        $codec = new PlayerDataCodec();
+        foreach ([1, 2, 3, 4] as $schema) {
+            $legacy = self::withoutStackTags(self::root(), match ($schema) {
+                1, 2 => ['Damage', 'ItemNbt', 'Aux'],
+                3 => ['ItemNbt', 'Aux'],
+                4 => ['Aux'],
+            });
+            $legacy['SchemaVersion'] = LittleEndianNbtTag::int($schema);
+            if ($schema === 1) {
+                unset($legacy['Health']);
+            }
+
+            $decoded = $codec->decode((new LittleEndianNbtCodec())->encodeRootCompound($legacy));
+            foreach ($decoded->inventory->entries as $entry) {
+                self::assertSame(0, $entry->stack->auxValue);
+            }
+            self::assertSame(0, $decoded->inventory->cursor?->auxValue);
+        }
+    }
+
+    public function testRejectsAuxOutsideThePersistedRange(): void
+    {
+        $root = self::root();
+        $entries = self::listValues($root['Inventory']);
+        $tags = self::compoundValues($entries[0]);
+        $tags['Aux'] = LittleEndianNbtTag::int(PlayerInventoryStackState::MAX_AUX_VALUE + 1);
+        $entries[0] = LittleEndianNbtTag::compound($tags);
+        $root['Inventory'] = LittleEndianNbtTag::list(LittleEndianNbtTag::COMPOUND, $entries);
+
+        $this->expectException(CorruptPlayerDataException::class);
+        (new PlayerDataCodec())->decode((new LittleEndianNbtCodec())->encodeRootCompound($root));
+    }
+
+    public function testSchemaFiveRequiresTheExactAuxTag(): void
+    {
+        $root = self::withoutStackTags(self::root(), ['Aux']);
+
+        $this->expectException(CorruptPlayerDataException::class);
+        (new PlayerDataCodec())->decode((new LittleEndianNbtCodec())->encodeRootCompound($root));
     }
 
     public function testRejectsHealthOutsideTheAuthoritativeRange(): void
@@ -245,33 +290,73 @@ final class PlayerDataCodecTest extends TestCase
      */
     private static function withoutDamageTags(array $root): array
     {
+        return self::withoutStackTags($root, ['Damage', 'ItemNbt', 'Aux']);
+    }
+
+    /**
+     * @param array<string, LittleEndianNbtTag> $root
+     * @param list<string> $removed
+     * @return array<string, LittleEndianNbtTag>
+     */
+    private static function withoutStackTags(array $root, array $removed): array
+    {
         $inventory = $root['Inventory'];
         self::assertIsArray($inventory->value);
         $entries = [];
         foreach ($inventory->value as $entry) {
             self::assertInstanceOf(LittleEndianNbtTag::class, $entry);
-            $entries[] = self::withoutDamageTag($entry);
+            $entries[] = self::withoutStackTagNames($entry, $removed);
         }
         $root['Inventory'] = LittleEndianNbtTag::list(LittleEndianNbtTag::COMPOUND, $entries);
         if (isset($root['Cursor'])) {
-            $root['Cursor'] = self::withoutDamageTag($root['Cursor']);
+            $root['Cursor'] = self::withoutStackTagNames($root['Cursor'], $removed);
         }
 
         return $root;
     }
 
-    private static function withoutDamageTag(LittleEndianNbtTag $compound): LittleEndianNbtTag
+    /** @param list<string> $removed */
+    private static function withoutStackTagNames(LittleEndianNbtTag $compound, array $removed): LittleEndianNbtTag
     {
         self::assertIsArray($compound->value);
         $tags = [];
         foreach ($compound->value as $name => $tag) {
             self::assertIsString($name);
             self::assertInstanceOf(LittleEndianNbtTag::class, $tag);
-            if ($name !== 'Damage' && $name !== 'ItemNbt') {
+            if (!in_array($name, $removed, true)) {
                 $tags[$name] = $tag;
             }
         }
 
         return LittleEndianNbtTag::compound($tags);
+    }
+
+    /** @return list<LittleEndianNbtTag> */
+    private static function listValues(LittleEndianNbtTag $tag): array
+    {
+        self::assertSame(LittleEndianNbtTag::LIST, $tag->type);
+        self::assertIsArray($tag->value);
+        $values = [];
+        foreach ($tag->value as $value) {
+            self::assertInstanceOf(LittleEndianNbtTag::class, $value);
+            $values[] = $value;
+        }
+
+        return $values;
+    }
+
+    /** @return array<string, LittleEndianNbtTag> */
+    private static function compoundValues(LittleEndianNbtTag $tag): array
+    {
+        self::assertSame(LittleEndianNbtTag::COMPOUND, $tag->type);
+        self::assertIsArray($tag->value);
+        $values = [];
+        foreach ($tag->value as $name => $value) {
+            self::assertIsString($name);
+            self::assertInstanceOf(LittleEndianNbtTag::class, $value);
+            $values[$name] = $value;
+        }
+
+        return $values;
     }
 }

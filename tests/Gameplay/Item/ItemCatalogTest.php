@@ -21,16 +21,36 @@ final class ItemCatalogTest extends TestCase
 {
     public function testVanillaCatalogAdmitsInitialItemsAgainstCurrentData(): void
     {
-        $catalog = ItemCatalog::vanilla(BedrockDataSet::bundled()->itemNetworkRegistry());
+        $data = BedrockDataSet::bundled();
+        $catalog = ItemCatalog::vanilla(
+            $data->itemNetworkRegistry(),
+            creative: $data->creativeInventoryRegistry(),
+            blockItems: $data->blockItemMappingRegistry(),
+        );
 
-        self::assertCount(77, $catalog->all());
-        self::assertCount(77, $catalog->creativeItems());
+        self::assertCount(count($data->itemNetworkRegistry()->definitions()) - 1, $catalog->all());
+        foreach ($data->itemNetworkRegistry()->definitions() as $identifier => $_definition) {
+            if ($identifier === 'minecraft:air') {
+                self::assertFalse($catalog->has($identifier));
+                continue;
+            }
+            self::assertSame($identifier, $catalog->type($identifier)->identifier);
+        }
+
+        $creativeIdentifiers = [];
+        foreach ($data->creativeInventoryRegistry()->entries() as $entry) {
+            $creativeIdentifiers[$entry->item()->identifier()] = true;
+        }
+        self::assertCount(count($creativeIdentifiers), $catalog->creativeItems());
         self::assertTrue($catalog->type('minecraft:grass_block')->isPlaceable());
         self::assertSame('minecraft:grass_block', $catalog->type('minecraft:grass_block')->placedBlockState?->identifier());
         self::assertSame('minecraft:cobblestone', $catalog->type('minecraft:cobblestone')->placedBlockState?->identifier());
         self::assertSame('minecraft:cobbled_deepslate', $catalog->type('minecraft:cobbled_deepslate')->placedBlockState?->identifier());
         self::assertSame(16, $catalog->type('minecraft:snowball')->maximumStackSize);
         self::assertSame(64, $catalog->type('minecraft:diamond')->maximumStackSize);
+        self::assertCount(count($catalog->all()), $catalog->commandIdentifiers());
+        self::assertContains('diamond', $catalog->commandIdentifiers());
+        self::assertNotContains('minecraft:diamond', $catalog->commandIdentifiers());
     }
 
     public function testBlockItemFormsComeFromTheSuppliedBlockCatalog(): void
@@ -42,7 +62,7 @@ final class ItemCatalogTest extends TestCase
         $items = ItemCatalog::vanilla(BedrockDataSet::bundled()->itemNetworkRegistry(), $blocks);
 
         self::assertFalse($items->has('minecraft:air'));
-        self::assertFalse($items->has('minecraft:stone'));
+        self::assertFalse($items->type('minecraft:stone')->isPlaceable());
         self::assertSame(
             VanillaBlockStates::cobblestone()->canonicalKey(),
             $items->type('minecraft:cobblestone')->placedBlockState?->canonicalKey(),
@@ -50,19 +70,25 @@ final class ItemCatalogTest extends TestCase
         self::assertFalse($items->type('minecraft:diamond')->isPlaceable());
     }
 
-    public function testGeneratedCatalogAdmitsOnlyPlaceableBlockItemForms(): void
+    public function testGeneratedCatalogUsesEveryAdmittedBlockItemMapping(): void
     {
         $data = BedrockDataSet::bundled();
         $blocks = BlockCatalog::vanilla(new BlockStateRegistry($data->blockStateRegistry()->states()));
-        $items = ItemCatalog::vanilla($data->itemNetworkRegistry(), $blocks);
+        $items = ItemCatalog::vanilla(
+            $data->itemNetworkRegistry(),
+            $blocks,
+            $data->creativeInventoryRegistry(),
+            $data->blockItemMappingRegistry(),
+        );
 
         self::assertTrue($items->type('minecraft:short_grass')->isPlaceable());
         self::assertTrue($items->type('minecraft:glass_pane')->isPlaceable());
-        self::assertFalse($items->has('minecraft:farmland'));
-        self::assertFalse($items->has('minecraft:grass_path'));
-        self::assertFalse($items->has('minecraft:wheat'));
-        self::assertFalse($items->has('minecraft:water'));
-        self::assertFalse($items->has('minecraft:lava'));
+        foreach ($data->blockItemMappingRegistry()->mappings() as $mapping) {
+            self::assertSame(
+                $mapping->blockState()->canonicalKey(),
+                $items->type($mapping->itemIdentifier())->placedBlockState?->canonicalKey(),
+            );
+        }
     }
 
     public function testTieredToolsAndShearsHaveAuthoritativeProperties(): void

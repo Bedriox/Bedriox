@@ -14,6 +14,7 @@ final readonly class GiveItem implements WorldCommand
         public int $amount,
         public int $damage = 0,
         public ?ItemNbt $nbt = null,
+        public int $auxValue = 0,
     ) {}
 
     public function sessionId(): string

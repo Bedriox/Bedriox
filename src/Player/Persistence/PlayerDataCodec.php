@@ -23,7 +23,7 @@ use InvalidArgumentException;
 /** Bounded schema-versioned player profile encoding with no session-local identifiers. */
 final readonly class PlayerDataCodec
 {
-    public const int SCHEMA_VERSION = 4;
+    public const int SCHEMA_VERSION = 5;
     public const int MAX_BYTES = 131_072;
 
     private const array REQUIRED_ROOT_TAGS = [
@@ -49,13 +49,19 @@ final readonly class PlayerDataCodec
         try {
             self::validateIdentity($player->identity->uuid, $player->identity->xuid, $player->identity->displayName);
             foreach ($player->inventory->entries as $entry) {
-                self::validateStack($entry->stack->identifier, $entry->stack->count, $entry->stack->damage);
+                self::validateStack(
+                    $entry->stack->identifier,
+                    $entry->stack->count,
+                    $entry->stack->damage,
+                    $entry->stack->auxValue,
+                );
             }
             if ($player->inventory->cursor !== null) {
                 self::validateStack(
                     $player->inventory->cursor->identifier,
                     $player->inventory->cursor->count,
                     $player->inventory->cursor->damage,
+                    $player->inventory->cursor->auxValue,
                 );
             }
         } catch (CorruptPlayerDataException $error) {
@@ -69,6 +75,7 @@ final readonly class PlayerDataCodec
                 'Count' => LittleEndianNbtTag::byte($entry->stack->count),
                 'Damage' => LittleEndianNbtTag::int($entry->stack->damage),
                 'ItemNbt' => new LittleEndianNbtTag(LittleEndianNbtTag::BYTE_ARRAY, $entry->stack->nbt?->toBinary() ?? ''),
+                'Aux' => LittleEndianNbtTag::int($entry->stack->auxValue),
             ]);
         }
         $root = [
@@ -99,6 +106,7 @@ final readonly class PlayerDataCodec
                 'Count' => LittleEndianNbtTag::byte($player->inventory->cursor->count),
                 'Damage' => LittleEndianNbtTag::int($player->inventory->cursor->damage),
                 'ItemNbt' => new LittleEndianNbtTag(LittleEndianNbtTag::BYTE_ARRAY, $player->inventory->cursor->nbt?->toBinary() ?? ''),
+                'Aux' => LittleEndianNbtTag::int($player->inventory->cursor->auxValue),
             ]);
         }
         try {
@@ -226,9 +234,12 @@ final readonly class PlayerDataCodec
             }
             $itemNbt = $bytes === '' ? null : ItemNbt::fromBinary($bytes);
         }
-        self::validateStack($identifier, $count, $damage);
+        $auxValue = $schemaVersion >= 5
+            ? self::integer($tags['Aux'], LittleEndianNbtTag::INT, "$path.Aux")
+            : 0;
+        self::validateStack($identifier, $count, $damage, $auxValue);
 
-        return new PlayerInventoryStackState($identifier, $count, $damage, $itemNbt);
+        return new PlayerInventoryStackState($identifier, $count, $damage, $itemNbt, $auxValue);
     }
 
     private static function tag(LittleEndianNbtTag $tag, int $type, string $name): LittleEndianNbtTag
@@ -343,15 +354,19 @@ final readonly class PlayerDataCodec
         if ($schemaVersion >= 4) {
             $tags[] = 'ItemNbt';
         }
+        if ($schemaVersion >= 5) {
+            $tags[] = 'Aux';
+        }
 
         return $tags;
     }
 
-    private static function validateStack(string $identifier, int $count, int $damage): void
+    private static function validateStack(string $identifier, int $count, int $damage, int $auxValue): void
     {
         if (strlen($identifier) > 256 || preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $identifier) !== 1
             || $count < 1 || $count > 64
-            || $damage < 0 || $damage > PlayerInventoryStackState::MAX_DAMAGE) {
+            || $damage < 0 || $damage > PlayerInventoryStackState::MAX_DAMAGE
+            || $auxValue < 0 || $auxValue > PlayerInventoryStackState::MAX_AUX_VALUE) {
             throw new CorruptPlayerDataException('Player inventory stack is invalid.');
         }
     }

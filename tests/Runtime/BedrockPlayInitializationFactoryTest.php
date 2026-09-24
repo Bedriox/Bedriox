@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Runtime;
 
+use Bedriox\Api\Inventory\ItemDefinition;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Identity\VerifiedClientData;
 use Bedriox\Protocol\Packet\AvailableActorIdentifiersPacket;
@@ -32,12 +33,14 @@ use Bedriox\Protocol\Packet\VoxelShapesPacket;
 use Bedriox\Protocol\Security\OpenSslEphemeralKeyFactory;
 use Bedriox\Protocol\Value\BuildPlatform;
 use Bedriox\Protocol\Value\UnsignedLong;
+use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Login\AuthenticatedLogin;
 use Bedriox\Server\Player\PlayerBootstrap;
 use Bedriox\Server\Player\PlayerIdentity;
 use Bedriox\Server\Player\PlayerInventoryEntry;
 use Bedriox\Server\Player\PlayerInventoryStackState;
 use Bedriox\Server\Player\PlayerInventoryState;
+use Bedriox\Server\Plugin\OwnedItemRegistrar;
 use Bedriox\Server\Runtime\BedrockPlayInitializationFactory;
 use Bedriox\Server\Runtime\RuntimeLimits;
 use Bedriox\Server\Simulation\Position;
@@ -187,6 +190,31 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
         self::assertSame(3, $equipment->inventorySlot);
         self::assertSame(3, $equipment->hotbarSlot);
         self::assertEquals($inventory->items[3], $equipment->item);
+    }
+
+    public function testInitializationUsesTheSharedLiveItemCatalog(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $catalog = ItemCatalog::vanilla(
+            $data->itemNetworkRegistry(),
+            creative: $data->creativeInventoryRegistry(),
+            blockItems: $data->blockItemMappingRegistry(),
+        );
+        (new OwnedItemRegistrar('TestPlugin', $catalog))->register(
+            new ItemDefinition('minecraft:grass_block', creative: false),
+            true,
+        );
+
+        $packets = (new BedrockPlayInitializationFactory($data, itemCatalog: $catalog))
+            ->create($this->login(), UnsignedLong::fromInt(7));
+        $creative = $packets[16];
+        self::assertInstanceOf(CreativeContentPacket::class, $creative);
+        $grassRuntimeId = $data->itemNetworkRegistry()
+            ->definitionForIdentifier('minecraft:grass_block')
+            ->networkRuntimeId();
+        foreach ($creative->entries as $entry) {
+            self::assertNotSame($grassRuntimeId, $entry->item->runtimeId);
+        }
     }
 
     private function login(): AuthenticatedLogin

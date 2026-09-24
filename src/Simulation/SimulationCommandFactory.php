@@ -244,15 +244,22 @@ final readonly class SimulationCommandFactory
         return new ChangeGameMode($session, $gameMode);
     }
 
-    public function giveItem(string $session, string $identifier, int $amount, int $damage = 0, ?\Bedriox\Api\Inventory\ItemNbt $nbt = null): GiveItem
-    {
+    public function giveItem(
+        string $session,
+        string $identifier,
+        int $amount,
+        int $damage = 0,
+        ?\Bedriox\Api\Inventory\ItemNbt $nbt = null,
+        int $auxValue = 0,
+    ): GiveItem {
         $this->assertOpaqueId($session, 128, 'session');
         if (preg_match('/^[a-z0-9_.-]+:[a-z0-9_.-]+$/D', $identifier) !== 1
-            || $amount < 1 || $amount > 32_767 || $damage < 0 || $damage > 65_535) {
+            || $amount < 1 || $amount > 32_767 || $damage < 0 || $damage > 65_535
+            || $auxValue < 0 || $auxValue > 32_767) {
             throw new CommandValidationException('Given item is invalid or outside its bounded amount.');
         }
 
-        return new GiveItem($session, $identifier, $amount, $damage, $nbt);
+        return new GiveItem($session, $identifier, $amount, $damage, $nbt, $auxValue);
     }
 
     public function dropItem(

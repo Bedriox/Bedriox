@@ -18,6 +18,7 @@ final readonly class InventoryStack
         public ?InternalBlockStateId $placedBlockState = null,
         public int $damage = 0,
         public ?ItemNbt $nbt = null,
+        public int $auxValue = 0,
     ) {
         if (preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $identifier) !== 1) {
             throw new InvalidArgumentException('Inventory identifier must be canonical and namespaced.');
@@ -35,22 +36,49 @@ final readonly class InventoryStack
         if ($damage < 0 || $damage > PlayerInventoryStackState::MAX_DAMAGE) {
             throw new InvalidArgumentException('Inventory stack damage is outside its supported range.');
         }
+        if ($auxValue < 0 || $auxValue > PlayerInventoryStackState::MAX_AUX_VALUE) {
+            throw new InvalidArgumentException('Inventory stack aux value is outside its supported range.');
+        }
     }
 
     public function decrement(): ?self
     {
         return $this->count === 1
             ? null
-            : new self($this->identifier, $this->count - 1, $this->stackNetworkId, $this->placedBlockState, $this->damage, $this->nbt);
+            : new self(
+                $this->identifier,
+                $this->count - 1,
+                $this->stackNetworkId,
+                $this->placedBlockState,
+                $this->damage,
+                $this->nbt,
+                $this->auxValue,
+            );
     }
 
     public function withCountAndNetworkId(int $count, int $stackNetworkId): self
     {
-        return new self($this->identifier, $count, $stackNetworkId, $this->placedBlockState, $this->damage, $this->nbt);
+        return new self(
+            $this->identifier,
+            $count,
+            $stackNetworkId,
+            $this->placedBlockState,
+            $this->damage,
+            $this->nbt,
+            $this->auxValue,
+        );
     }
 
     public function withDamage(int $damage): self
     {
-        return new self($this->identifier, $this->count, $this->stackNetworkId, $this->placedBlockState, $damage, $this->nbt);
+        return new self(
+            $this->identifier,
+            $this->count,
+            $this->stackNetworkId,
+            $this->placedBlockState,
+            $damage,
+            $this->nbt,
+            $this->auxValue,
+        );
     }
 }

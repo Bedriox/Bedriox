@@ -2003,9 +2003,24 @@ final class BedrockPlayChannelTest extends TestCase
             Reliability::ReliableOrdered,
             0,
         )));
-        $grass = $projector->creativeStack(1, 1);
+        $grassCreativeId = null;
+        foreach ($data->creativeInventoryRegistry()->entries() as $entry) {
+            if ($entry->item()->identifier() === 'minecraft:grass_block') {
+                $grassCreativeId = $entry->creativeNetworkId();
+                break;
+            }
+        }
+        self::assertNotNull($grassCreativeId);
+        $grass = $projector->creativeStack($grassCreativeId, 1);
         $projected = $projector->toProtocol($grass);
-        $grass64 = $projected;
+        $grass64 = new InventoryItemStack(
+            $projected->runtimeId,
+            64,
+            $projected->aux,
+            1,
+            $projected->blockRuntimeId,
+            $projected->userData,
+        );
         $grass63 = new InventoryItemStack(
             $projected->runtimeId,
             63,

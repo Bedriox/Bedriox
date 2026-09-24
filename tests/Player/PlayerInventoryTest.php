@@ -6,6 +6,8 @@ namespace Bedriox\Server\Tests\Player;
 
 use Bedriox\Api\Inventory\ItemNbt;
 use Bedriox\Data\BedrockDataSet;
+use Bedriox\Server\Gameplay\Item\ItemCatalog;
+use Bedriox\Server\Gameplay\Item\ItemType;
 use Bedriox\Server\Player\InventoryContainer;
 use Bedriox\Server\Player\InventorySlotReference;
 use Bedriox\Server\Player\InventoryStack;
@@ -17,6 +19,7 @@ use Bedriox\Server\Player\PlayerInventoryStackState;
 use Bedriox\Server\Player\PlayerInventoryState;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
+use Bedriox\Server\World\Block\VanillaBlockStates;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 
@@ -320,6 +323,61 @@ final class PlayerInventoryTest extends TestCase
         self::assertEquals($state, $inventory->exportState());
     }
 
+    public function testAuxIsPreservedAcrossStackCopiesInventoryStateAndCursorRestore(): void
+    {
+        $stack = new InventoryStack('minecraft:grass_block', 3, 7, $this->palette()->grassBlock, 11, auxValue: 42);
+        self::assertSame(42, $stack->decrement()?->auxValue);
+        self::assertSame(42, $stack->withCountAndNetworkId(2, 8)->auxValue);
+        self::assertSame(42, $stack->withDamage(12)->auxValue);
+
+        $state = new PlayerInventoryState([
+            new PlayerInventoryEntry(0, new PlayerInventoryStackState('minecraft:grass_block', 3, 11, auxValue: 42)),
+        ], 0, new PlayerInventoryStackState('minecraft:grass_block', 1, 9, auxValue: 73));
+        $inventory = PlayerInventory::restore($state, $this->palette());
+
+        self::assertSame(42, $inventory->stackAt(0)?->auxValue);
+        self::assertSame(73, $inventory->cursorStack()?->auxValue);
+        self::assertEquals($state, $inventory->exportState());
+    }
+
+    public function testStacksWithDifferentAuxValuesDoNotMerge(): void
+    {
+        $inventory = PlayerInventory::restore(new PlayerInventoryState([
+            new PlayerInventoryEntry(0, new PlayerInventoryStackState('minecraft:grass_block', 2, auxValue: 1)),
+            new PlayerInventoryEntry(1, new PlayerInventoryStackState('minecraft:grass_block', 2, auxValue: 2)),
+        ], 0), $this->palette());
+
+        $result = $inventory->applyStackRequest(0, [new InventoryStackRequestAction(
+            InventoryStackRequestActionType::Take,
+            new InventorySlotReference(InventoryContainer::Main, 1, 2, expectedCount: 2),
+            new InventorySlotReference(InventoryContainer::Main, 0, 1, expectedCount: 2),
+            1,
+        )]);
+
+        self::assertFalse($result->success);
+        self::assertSame('destination_item', $result->reason);
+    }
+
+    public function testCatalogAndBlockRegistryRestorePlaceableCreativeBlockState(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $blockStates = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($blockStates);
+        $catalog = new ItemCatalog([
+            new ItemType('minecraft:cobblestone', placedBlockState: VanillaBlockStates::cobblestone()),
+        ], $data->itemNetworkRegistry());
+        $state = new PlayerInventoryState([
+            new PlayerInventoryEntry(0, new PlayerInventoryStackState('minecraft:cobblestone', 4)),
+        ], 0, new PlayerInventoryStackState('minecraft:cobblestone', 1));
+
+        $inventory = PlayerInventory::restore($state, $palette, $catalog, $blockStates);
+
+        $expected = $blockStates->internalId(VanillaBlockStates::cobblestone())->value;
+        self::assertSame($expected, $inventory->stackAt(0)?->placedBlockState?->value);
+        self::assertSame($expected, $inventory->cursorStack()?->placedBlockState?->value);
+        self::assertEquals($state, $inventory->exportState());
+    }
+
     public function testStacksWithDifferentDamageDoNotMerge(): void
     {
         $inventory = PlayerInventory::restore(new PlayerInventoryState([
@@ -444,6 +502,27 @@ final class PlayerInventoryTest extends TestCase
             new PlayerInventoryEntry(4, $stack),
             new PlayerInventoryEntry(4, $stack),
         ], 0);
+    }
+
+    public function testInventoryStackRejectsAuxOutsideItsBoundedRange(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        new InventoryStack(
+            'minecraft:grass_block',
+            1,
+            1,
+            auxValue: PlayerInventoryStackState::MAX_AUX_VALUE + 1,
+        );
+    }
+
+    public function testPersistentInventoryStackRejectsAuxOutsideItsBoundedRange(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        new PlayerInventoryStackState(
+            'minecraft:grass_block',
+            1,
+            auxValue: PlayerInventoryStackState::MAX_AUX_VALUE + 1,
+        );
     }
 
     private function palette(): FixedFlatBlockPalette

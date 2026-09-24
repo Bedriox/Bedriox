@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Gameplay\Item;
 
+use Bedriox\Data\BlockItemMappingRegistry;
 use Bedriox\Data\CanonicalBlockState;
+use Bedriox\Data\CreativeInventoryRegistry;
 use Bedriox\Data\ItemNetworkRegistry;
 use Bedriox\Server\Gameplay\Block\BlockCatalog;
 use InvalidArgumentException;
@@ -20,7 +22,7 @@ final class ItemCatalog
     /** @param list<ItemType> $types */
     public function __construct(array $types, ItemNetworkRegistry $networkRegistry)
     {
-        if ($types === [] || count($types) > 1_024) {
+        if ($types === [] || count($types) > 5_000) {
             throw new InvalidArgumentException('Item catalog must be non-empty and bounded.');
         }
         $indexed = [];
@@ -35,17 +37,22 @@ final class ItemCatalog
         $this->networkRegistry = $networkRegistry;
     }
 
-    public static function vanilla(ItemNetworkRegistry $networkRegistry, ?BlockCatalog $blocks = null): self
-    {
+    public static function vanilla(
+        ItemNetworkRegistry $networkRegistry,
+        ?BlockCatalog $blocks = null,
+        ?CreativeInventoryRegistry $creative = null,
+        ?BlockItemMappingRegistry $blockItems = null,
+    ): self {
+        /** @var array<string, ItemType> $types */
         $types = [];
         foreach (($blocks ?? BlockCatalog::vanilla())->all() as $block) {
             $state = $block->itemFormState();
             if ($state !== null) {
-                $types[] = new ItemType($block->identifier(), placedBlockState: $state);
+                $types[$block->identifier()] = new ItemType($block->identifier(), placedBlockState: $state);
             }
         }
         foreach (self::dropOnlyIdentifiers() as $identifier => $maximumStackSize) {
-            $types[] = new ItemType(
+            $types[$identifier] = new ItemType(
                 $identifier,
                 $maximumStackSize,
                 networkBlockState: self::dropOnlyBlockState($identifier),
@@ -53,16 +60,52 @@ final class ItemCatalog
         }
         foreach (self::tierIdentifiers() as [$toolTier, $prefix]) {
             foreach (self::tieredToolNames() as $suffix => $toolType) {
-                $types[] = new ItemType(
-                    'minecraft:' . $prefix . '_' . $suffix,
+                $identifier = 'minecraft:' . $prefix . '_' . $suffix;
+                $types[$identifier] = new ItemType(
+                    $identifier,
                     1,
                     ToolDefinition::tiered($toolType, $toolTier),
                 );
             }
         }
-        $types[] = new ItemType('minecraft:shears', 1, ToolDefinition::shears());
+        $types['minecraft:shears'] = new ItemType('minecraft:shears', 1, ToolDefinition::shears());
 
-        return new self($types, $networkRegistry);
+        /** @var array<string, CanonicalBlockState> $creativeBlockStates */
+        $creativeBlockStates = [];
+        /** @var array<string, true> $creativeIdentifiers */
+        $creativeIdentifiers = [];
+        if ($creative !== null) {
+            foreach ($creative->entries() as $entry) {
+                $item = $entry->item();
+                $creativeIdentifiers[$item->identifier()] = true;
+                if ($item->blockState() !== null) {
+                    $creativeBlockStates[$item->identifier()] ??= $item->blockState();
+                }
+            }
+        }
+        if ($blockItems !== null) {
+            foreach ($blockItems->mappings() as $mapping) {
+                $creativeBlockStates[$mapping->itemIdentifier()] = $mapping->blockState();
+            }
+        }
+        foreach ($networkRegistry->definitions() as $identifier => $_definition) {
+            if ($identifier === 'minecraft:air') {
+                continue;
+            }
+            $existing = $types[$identifier] ?? null;
+            $mappedBlockState = $creativeBlockStates[$identifier] ?? null;
+            $types[$identifier] = new ItemType(
+                $identifier,
+                maximumStackSize: $existing === null ? 64 : $existing->maximumStackSize,
+                tool: $existing?->tool,
+                placedBlockState: $mappedBlockState ?? $existing?->placedBlockState,
+                networkBlockState: $mappedBlockState ?? $existing?->networkBlockState,
+                creative: $creative === null ? ($existing !== null && $existing->creative) : isset($creativeIdentifiers[$identifier]),
+                owner: $existing?->owner,
+            );
+        }
+
+        return new self(array_values($types), $networkRegistry);
     }
 
     public function type(string $identifier): ItemType
@@ -81,7 +124,7 @@ final class ItemCatalog
         if (isset($this->types[$type->identifier]) && !$replace) {
             throw new InvalidArgumentException('Item definition already exists.');
         }
-        if (!isset($this->types[$type->identifier]) && count($this->types) >= 1_024) {
+        if (!isset($this->types[$type->identifier]) && count($this->types) >= 5_000) {
             throw new InvalidArgumentException('Item catalog capacity is exhausted.');
         }
         $this->networkRegistry->definitionForIdentifier($type->identifier);
@@ -104,6 +147,20 @@ final class ItemCatalog
     public function creativeItems(): array
     {
         return array_values(array_filter($this->types, static fn(ItemType $type): bool => $type->creative));
+    }
+
+    /** @return list<string> */
+    public function commandIdentifiers(): array
+    {
+        $identifiers = [];
+        foreach ($this->types as $type) {
+            $identifiers[] = str_starts_with($type->identifier, 'minecraft:')
+                ? substr($type->identifier, strlen('minecraft:'))
+                : $type->identifier;
+        }
+        natcasesort($identifiers);
+
+        return array_values($identifiers);
     }
 
     /** @return array<string, int> */

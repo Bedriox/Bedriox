@@ -11,12 +11,14 @@ use InvalidArgumentException;
 final readonly class PlayerInventoryStackState
 {
     public const int MAX_DAMAGE = 65_535;
+    public const int MAX_AUX_VALUE = 32_767;
 
     public function __construct(
         public string $identifier,
         public int $count,
         public int $damage = 0,
         public ?ItemNbt $nbt = null,
+        public int $auxValue = 0,
     ) {
         if (preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $this->identifier) !== 1) {
             throw new InvalidArgumentException('Inventory identifier must be canonical and namespaced.');
@@ -26,6 +28,9 @@ final readonly class PlayerInventoryStackState
         }
         if ($this->damage < 0 || $this->damage > self::MAX_DAMAGE) {
             throw new InvalidArgumentException('Inventory stack damage is outside its supported range.');
+        }
+        if ($this->auxValue < 0 || $this->auxValue > self::MAX_AUX_VALUE) {
+            throw new InvalidArgumentException('Inventory stack aux value is outside its supported range.');
         }
     }
 }

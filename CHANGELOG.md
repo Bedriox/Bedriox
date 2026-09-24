@@ -22,6 +22,7 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Added
 
+- Admit every item definition and block-item mapping from the active Data release, project its complete ordered creative catalog with stable variant IDs, and preserve auxiliary, NBT, and block-state variants through authoritative selection and persistence without claiming unsupported item-specific mechanics.
 - Add plugin-owned named command soft enums with bounded live updates, lifecycle cleanup, authoritative binding, and item-catalog suggestions for `give`.
 - Replace the pre-alpha closure and raw-argument command API with class-based `Command` and `AbstractCommand` definitions, fluent typed argument schemas and overloads, generated usage, typed `CommandValues`, Bedrock enum autocomplete with live connected-player updates, and result messages.
 - Preserve validated X-Z-Y palette word arrays in authoritative block and biome storages, transfer compact revision-specific projection snapshots, and write packed chunk words directly in workers while translating each canonical palette only once.

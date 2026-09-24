@@ -156,8 +156,11 @@ final class Bedriox
             $performance = new PerformanceMonitor($config->ticksPerSecond);
             $stop = false;
             $permissionStore = new PermissionStore($workingDirectory . DIRECTORY_SEPARATOR . 'permissions.json');
+            $data = \Bedriox\Data\BedrockDataSet::bundled();
             $itemCatalog = \Bedriox\Server\Gameplay\Item\ItemCatalog::vanilla(
-                \Bedriox\Data\BedrockDataSet::bundled()->itemNetworkRegistry(),
+                $data->itemNetworkRegistry(),
+                creative: $data->creativeInventoryRegistry(),
+                blockItems: $data->blockItemMappingRegistry(),
             );
             $itemCommandEnum = null;
             $pluginHost = new PluginHost(
@@ -210,18 +213,7 @@ final class Bedriox
                 static function () use (&$stop): void {
                     $stop = true;
                 },
-                static function () use ($itemCatalog): array {
-                    $identifiers = [];
-                    foreach ($itemCatalog->all() as $type) {
-                        $identifiers[] = $type->identifier;
-                        if (str_starts_with($type->identifier, 'minecraft:')) {
-                            $identifiers[] = substr($type->identifier, strlen('minecraft:'));
-                        }
-                    }
-                    natcasesort($identifiers);
-
-                    return array_values($identifiers);
-                },
+                $itemCatalog->commandIdentifiers(...),
                 static function (\Bedriox\Api\Player\Player $player, bool $includeAbilities) use ($composition): void {
                     $composition->server?->runtime->refreshPlayerAuthority($player->uuid, $includeAbilities);
                 },

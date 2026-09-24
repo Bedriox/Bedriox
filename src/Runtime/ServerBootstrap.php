@@ -135,7 +135,12 @@ final class ServerBootstrap
         $networkStates = $data->blockStateRegistry();
         $internalStates = new BlockStateRegistry($networkStates->states());
         $blockCatalog = BlockCatalog::vanilla($internalStates);
-        $itemCatalog ??= ItemCatalog::vanilla($data->itemNetworkRegistry(), $blockCatalog);
+        $itemCatalog ??= ItemCatalog::vanilla(
+            $data->itemNetworkRegistry(),
+            $blockCatalog,
+            $data->creativeInventoryRegistry(),
+            $data->blockItemMappingRegistry(),
+        );
         $flatPalette = FixedFlatBlockPalette::fromRegistry($internalStates);
         $defaultPalette = DefaultBlockPalette::fromRegistry($internalStates);
         $blockCollisions = BlockCollisionRegistry::forGenerationPalette(
@@ -183,6 +188,7 @@ final class ServerBootstrap
                 $openedWorld->data,
                 $config->movementRewindHistorySize,
                 $config->defaultGamemode,
+                $itemCatalog,
             );
             $spawn = $flatWorld->spawn();
             $playerStore = $this->playerDataStore

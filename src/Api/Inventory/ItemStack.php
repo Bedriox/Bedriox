@@ -13,6 +13,7 @@ final readonly class ItemStack
         public int $count,
         public int $damage = 0,
         public ?ItemNbt $nbt = null,
+        public int $auxValue = 0,
     ) {
         if (preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $identifier) !== 1) {
             throw new InvalidArgumentException('Item identifier must be canonical and namespaced.');
@@ -22,6 +23,9 @@ final readonly class ItemStack
         }
         if ($damage < 0 || $damage > 65_535) {
             throw new InvalidArgumentException('Item damage must be between 0 and 65535.');
+        }
+        if ($auxValue < 0 || $auxValue > 32_767) {
+            throw new InvalidArgumentException('Item auxiliary value must be between 0 and 32767.');
         }
     }
 }

@@ -80,7 +80,7 @@ Cancellable pre-events cover join, movement, teleportation, chat, player attacks
 
 Blocks and items use canonical identifiers such as `minecraft:grass_block`; process-local numeric IDs never enter the public API. The gameplay catalogs expose the admitted terrain blocks, their drops, and supported tools without exposing network runtime IDs. Inventory writes accept catalog items or an empty slot.
 
-Item stacks may carry immutable, bounded custom NBT. `ItemNbt` supports every ordinary NBT value through typed `Tag` factories: byte, short, int, long, float, double, string, byte/int/long arrays, homogeneous lists, and nested compounds. Bedriox compares NBT when stacking, preserves it across moves, drops, pickups, player saves, and rejoins, and writes it through the Bedrock item extra-data envelope. The top-level `Damage` tag is reserved for Bedriox's authoritative durability field; plugins should use their own namespaced keys.
+Item stacks may carry immutable, bounded custom NBT and a Bedrock auxiliary variant value from `0` through `32767`. `ItemNbt` supports every ordinary NBT value through typed `Tag` factories: byte, short, int, long, float, double, string, byte/int/long arrays, homogeneous lists, and nested compounds. Bedriox compares NBT and auxiliary values when stacking, preserves both across moves, drops, pickups, player saves, and rejoins, and writes them through their separate Bedrock item fields. The top-level `Damage` tag is reserved for Bedriox's authoritative durability field; plugins should use their own namespaced keys. Auxiliary values identify admitted variants and are not a substitute for implementing an item's unique gameplay mechanic.
 
 ```php
 use Bedriox\Api\Inventory\ItemNbt;

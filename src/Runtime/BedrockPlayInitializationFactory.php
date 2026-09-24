@@ -34,6 +34,7 @@ use Bedriox\Protocol\Packet\VoxelShapesPacket;
 use Bedriox\Protocol\ProtocolVersion;
 use Bedriox\Protocol\Value\BuildPlatform;
 use Bedriox\Protocol\Value\UnsignedLong;
+use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Login\AuthenticatedLogin;
 use Bedriox\Server\Player\PlayerBootstrap;
 use Bedriox\Server\Player\PlayerInventory;
@@ -54,7 +55,11 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
 
     private BlockNetworkTranslator $blockNetworkTranslator;
 
+    private BlockStateRegistry $internalBlockStates;
+
     private FixedFlatBlockPalette $fixedFlatBlockPalette;
+
+    private ItemCatalog $itemCatalog;
 
     private BedrockInventoryPacketProjector $inventoryProjector;
 
@@ -72,6 +77,7 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
         private string $generatorName = 'flat',
         private int $rewindHistorySize = 40,
         private string $defaultGamemode = 'survival',
+        ?ItemCatalog $itemCatalog = null,
     ) {
         if ($this->difficulty < 0 || $this->difficulty > 3) {
             throw new \InvalidArgumentException('Difficulty must be a Bedrock value between 0 and 3.');
@@ -87,10 +93,19 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
         }
         $this->biomeDefinitions = $data->biomeDefinitions();
         $networkBlockStates = $data->blockStateRegistry();
-        $internalBlockStates = new BlockStateRegistry($networkBlockStates->states());
-        $this->blockNetworkTranslator = new BlockNetworkTranslator($internalBlockStates, $networkBlockStates);
-        $this->fixedFlatBlockPalette = FixedFlatBlockPalette::fromRegistry($internalBlockStates);
-        $this->inventoryProjector = BedrockInventoryPacketProjector::fromData($data, $this->blockNetworkTranslator);
+        $this->internalBlockStates = new BlockStateRegistry($networkBlockStates->states());
+        $this->blockNetworkTranslator = new BlockNetworkTranslator($this->internalBlockStates, $networkBlockStates);
+        $this->fixedFlatBlockPalette = FixedFlatBlockPalette::fromRegistry($this->internalBlockStates);
+        $this->itemCatalog = $itemCatalog ?? ItemCatalog::vanilla(
+            $data->itemNetworkRegistry(),
+            creative: $data->creativeInventoryRegistry(),
+            blockItems: $data->blockItemMappingRegistry(),
+        );
+        $this->inventoryProjector = BedrockInventoryPacketProjector::fromData(
+            $data,
+            $this->blockNetworkTranslator,
+            $this->itemCatalog,
+        );
         $blockProperties = [];
         foreach ($data->dataDrivenBlockProperties() as $identifier => $littleEndianNbt) {
             $blockProperties[] = BlockPropertyData::fromLittleEndianNbt($identifier, $littleEndianNbt);
@@ -104,6 +119,7 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
         WorldData $world,
         int $rewindHistorySize = 40,
         string $defaultGamemode = 'survival',
+        ?ItemCatalog $itemCatalog = null,
     ): self {
         return new self(
             $data,
@@ -116,6 +132,7 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
             $world->generatorName,
             $rewindHistorySize,
             $defaultGamemode,
+            $itemCatalog,
         );
     }
 
@@ -125,8 +142,13 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
         $gameMode = GameMode::from($bootstrap === null ? $this->defaultGamemode : $bootstrap->gamemode);
         $gameModePackets = new GameModePacketProjector();
         $initialInventory = $bootstrap === null
-            ? PlayerInventory::starter($this->fixedFlatBlockPalette)
-            : PlayerInventory::restore($bootstrap->inventory, $this->fixedFlatBlockPalette);
+            ? PlayerInventory::starter($this->fixedFlatBlockPalette, $this->itemCatalog)
+            : PlayerInventory::restore(
+                $bootstrap->inventory,
+                $this->fixedFlatBlockPalette,
+                $this->itemCatalog,
+                $this->internalBlockStates,
+            );
         if ($bootstrap === null) {
             $positionX = (float) $this->spawn->x;
             $positionY = (float) $this->spawn->y;

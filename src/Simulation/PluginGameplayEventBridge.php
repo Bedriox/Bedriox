@@ -302,7 +302,7 @@ final readonly class PluginGameplayEventBridge
     {
         $event = new PlayerPickupItemEvent(
             $this->playerView($player),
-            new ApiItemStack($stack->identifier, $stack->count, $stack->damage, $stack->nbt),
+            new ApiItemStack($stack->identifier, $stack->count, $stack->damage, $stack->nbt, $stack->auxValue),
             $stack->count,
         );
         $this->events->dispatch($event);
@@ -314,7 +314,7 @@ final readonly class PluginGameplayEventBridge
     {
         $this->events->dispatch(new PlayerPickedUpItemEvent(
             $this->playerView($player),
-            new ApiItemStack($stack->identifier, $stack->count, $stack->damage, $stack->nbt),
+            new ApiItemStack($stack->identifier, $stack->count, $stack->damage, $stack->nbt, $stack->auxValue),
         ));
     }
 
@@ -322,7 +322,7 @@ final readonly class PluginGameplayEventBridge
     {
         $event = new PlayerDropItemEvent(
             $this->playerView($player),
-            new ApiItemStack($stack->identifier, $stack->count, $stack->damage, $stack->nbt),
+            new ApiItemStack($stack->identifier, $stack->count, $stack->damage, $stack->nbt, $stack->auxValue),
             $stack->count,
         );
         $this->events->dispatch($event);
@@ -334,7 +334,7 @@ final readonly class PluginGameplayEventBridge
     {
         $this->events->dispatch(new PlayerDroppedItemEvent(
             $this->playerView($player),
-            new ApiItemStack($stack->identifier, $stack->count, $stack->damage, $stack->nbt),
+            new ApiItemStack($stack->identifier, $stack->count, $stack->damage, $stack->nbt, $stack->auxValue),
         ));
     }
 
@@ -393,7 +393,9 @@ final readonly class PluginGameplayEventBridge
 
     private static function item(?InventoryStack $stack): ?ApiItemStack
     {
-        return $stack === null ? null : new ApiItemStack($stack->identifier, $stack->count, $stack->damage, $stack->nbt);
+        return $stack === null
+            ? null
+            : new ApiItemStack($stack->identifier, $stack->count, $stack->damage, $stack->nbt, $stack->auxValue);
     }
 
     private static function position(Position $position): ApiPosition

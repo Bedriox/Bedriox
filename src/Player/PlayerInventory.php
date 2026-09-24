@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Player;
 
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
+use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use InvalidArgumentException;
 use OverflowException;
@@ -51,15 +52,22 @@ final class PlayerInventory
         PlayerInventoryState $state,
         FixedFlatBlockPalette $palette,
         ?ItemCatalog $catalog = null,
+        ?BlockStateRegistry $blockStates = null,
     ): self {
         $stacks = [];
         $nextStackNetworkId = 1;
         foreach ($state->entries as $entry) {
-            $stacks[$entry->slot] = self::restoreStack($entry->stack, $palette, $nextStackNetworkId++);
+            $stacks[$entry->slot] = self::restoreStack(
+                $entry->stack,
+                $palette,
+                $nextStackNetworkId++,
+                $catalog,
+                $blockStates,
+            );
         }
         $cursor = $state->cursor === null
             ? null
-            : self::restoreStack($state->cursor, $palette, $nextStackNetworkId++);
+            : self::restoreStack($state->cursor, $palette, $nextStackNetworkId++, $catalog, $blockStates);
 
         return new self($stacks, $state->selectedHotbarSlot, $cursor, $nextStackNetworkId, $catalog);
     }
@@ -70,7 +78,13 @@ final class PlayerInventory
         foreach ($this->stacks as $slot => $stack) {
             $entries[] = new PlayerInventoryEntry(
                 $slot,
-                new PlayerInventoryStackState($stack->identifier, $stack->count, $stack->damage, $stack->nbt),
+                new PlayerInventoryStackState(
+                    $stack->identifier,
+                    $stack->count,
+                    $stack->damage,
+                    $stack->nbt,
+                    $stack->auxValue,
+                ),
             );
         }
 
@@ -79,7 +93,13 @@ final class PlayerInventory
             $this->selectedHotbarSlot,
             $this->cursor === null
                 ? null
-                : new PlayerInventoryStackState($this->cursor->identifier, $this->cursor->count, $this->cursor->damage, $this->cursor->nbt),
+                : new PlayerInventoryStackState(
+                    $this->cursor->identifier,
+                    $this->cursor->count,
+                    $this->cursor->damage,
+                    $this->cursor->nbt,
+                    $this->cursor->auxValue,
+                ),
         );
     }
 
@@ -598,6 +618,7 @@ final class PlayerInventory
     {
         return $left->identifier === $right->identifier
             && $left->damage === $right->damage
+            && $left->auxValue === $right->auxValue
             && ($left->nbt?->toBinary() ?? '') === ($right->nbt?->toBinary() ?? '')
             && $left->placedBlockState?->value === $right->placedBlockState?->value;
     }
@@ -606,10 +627,29 @@ final class PlayerInventory
         PlayerInventoryStackState $state,
         FixedFlatBlockPalette $palette,
         int $stackNetworkId,
+        ?ItemCatalog $catalog,
+        ?BlockStateRegistry $blockStates,
     ): InventoryStack {
-        $placedBlockState = $state->identifier === 'minecraft:grass_block' ? $palette->grassBlock : null;
+        $placedBlockState = null;
+        if ($catalog !== null && $blockStates !== null && $catalog->has($state->identifier)) {
+            $canonicalState = $catalog->type($state->identifier)->placedBlockState;
+            if ($canonicalState !== null) {
+                $placedBlockState = $blockStates->internalId($canonicalState);
+            }
+        }
+        if ($placedBlockState === null && $state->identifier === 'minecraft:grass_block') {
+            $placedBlockState = $palette->grassBlock;
+        }
 
-        return new InventoryStack($state->identifier, $state->count, $stackNetworkId, $placedBlockState, $state->damage, $state->nbt);
+        return new InventoryStack(
+            $state->identifier,
+            $state->count,
+            $stackNetworkId,
+            $placedBlockState,
+            $state->damage,
+            $state->nbt,
+            $state->auxValue,
+        );
     }
 
     private static function sameContent(?InventoryStack $left, ?InventoryStack $right): bool

@@ -218,7 +218,12 @@ final class WorldSimulation
             $this->limits->chatBucketCapacity,
             $this->tick,
             $this->limits->flatGroundY,
-            PlayerInventory::restore($bootstrap->inventory, $this->blockPalette, $this->itemCatalog),
+            PlayerInventory::restore(
+                $bootstrap->inventory,
+                $this->blockPalette,
+                $this->itemCatalog,
+                $this->blockStateRegistry,
+            ),
             $bootstrap->worldName,
             $bootstrap->firstPlayedAt,
             $bootstrap->gamemode,
@@ -514,12 +519,25 @@ final class WorldSimulation
             && $this->enqueue($this->validator->changeGameMode($player->sessionId, $gameMode));
     }
 
-    public function enqueueGiveItem(string $identity, string $identifier, int $amount, int $damage = 0, ?\Bedriox\Api\Inventory\ItemNbt $nbt = null): bool
-    {
+    public function enqueueGiveItem(
+        string $identity,
+        string $identifier,
+        int $amount,
+        int $damage = 0,
+        ?\Bedriox\Api\Inventory\ItemNbt $nbt = null,
+        int $auxValue = 0,
+    ): bool {
         $player = $this->players->playerByIdentity($identity);
 
         return $player !== null
-            && $this->enqueue($this->validator->giveItem($player->sessionId, $identifier, $amount, $damage, $nbt));
+            && $this->enqueue($this->validator->giveItem(
+                $player->sessionId,
+                $identifier,
+                $amount,
+                $damage,
+                $nbt,
+                $auxValue,
+            ));
     }
 
     private function apply(WorldCommand $command): ?WorldEvent
@@ -605,7 +623,15 @@ final class WorldSimulation
         $placed = $type->placedBlockState === null || $this->blockStateRegistry === null
             ? null
             : $this->blockStateRegistry->internalId($type->placedBlockState);
-        $prototype = new InventoryStack($command->identifier, 1, 1, $placed, $command->damage, $command->nbt);
+        $prototype = new InventoryStack(
+            $command->identifier,
+            1,
+            1,
+            $placed,
+            $command->damage,
+            $command->nbt,
+            $command->auxValue,
+        );
         $overflow = max(0, $command->amount - $player->inventory->addableQuantity($prototype));
         $requiredEntities = (int) ceil($overflow / $type->maximumStackSize);
         if ($requiredEntities > self::MAXIMUM_ITEM_ENTITIES_SPAWNED_PER_COMMAND
@@ -615,7 +641,15 @@ final class WorldSimulation
         $remaining = $command->amount;
         while ($remaining > 0) {
             $count = min($remaining, $type->maximumStackSize);
-            $overflow = $player->inventory->add(new InventoryStack($command->identifier, $count, 1, $placed, $command->damage, $command->nbt));
+            $overflow = $player->inventory->add(new InventoryStack(
+                $command->identifier,
+                $count,
+                1,
+                $placed,
+                $command->damage,
+                $command->nbt,
+                $command->auxValue,
+            ));
             $remaining -= $count;
             if ($overflow !== null) {
                 $entity = $this->itemEntities->spawn(
@@ -828,7 +862,12 @@ final class WorldSimulation
             $gamemode = $bootstrap->gamemode;
         }
         $inventory = $bootstrap !== null && $this->blockPalette !== null
-            ? PlayerInventory::restore($bootstrap->inventory, $this->blockPalette, $this->itemCatalog)
+            ? PlayerInventory::restore(
+                $bootstrap->inventory,
+                $this->blockPalette,
+                $this->itemCatalog,
+                $this->blockStateRegistry,
+            )
             : ($this->blockPalette === null
                 ? PlayerInventory::empty($this->itemCatalog)
                 : PlayerInventory::starter($this->blockPalette, $this->itemCatalog));

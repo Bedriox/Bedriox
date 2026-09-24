@@ -33,15 +33,7 @@ final readonly class OwnedItemRegistrar implements ItemRegistrar
             owner: $this->plugin,
         ), $replace);
         if ($this->itemIdentifiers !== null) {
-            $identifiers = [];
-            foreach ($this->items->all() as $type) {
-                $identifiers[] = $type->identifier;
-                if (str_starts_with($type->identifier, 'minecraft:')) {
-                    $identifiers[] = substr($type->identifier, strlen('minecraft:'));
-                }
-            }
-            natcasesort($identifiers);
-            $this->itemIdentifiers->replace(array_values($identifiers));
+            $this->itemIdentifiers->replace($this->items->commandIdentifiers());
         }
     }
 }
