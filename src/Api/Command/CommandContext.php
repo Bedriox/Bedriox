@@ -6,11 +6,10 @@ namespace Bedriox\Api\Command;
 
 final readonly class CommandContext
 {
-    /** @param list<string> $arguments */
     public function __construct(
         private CommandSender $sender,
         private string $label,
-        private array $arguments,
+        private CommandValues $values,
     ) {}
 
     public function sender(): CommandSender
@@ -23,9 +22,8 @@ final readonly class CommandContext
         return $this->label;
     }
 
-    /** @return list<string> */
-    public function arguments(): array
+    public function values(): CommandValues
     {
-        return $this->arguments;
+        return $this->values;
     }
 }

@@ -113,6 +113,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
     private ?ChunkUnloadResult $lastChunkUnload = null;
     private int $totalChunksUnloaded = 0;
     private int $totalPreparedBytesTrimmed = 0;
+    private int $commandSchemaRevision = 0;
 
     /** @var array<string, array{SessionInfo, int}> */
     private array $pendingTransportCloses = [];
@@ -164,6 +165,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         $this->actorVisibility = new PlayerActorVisibilityRegistry($this->limits->maximumSessions);
         $this->playerConnections = $playerConnections ?? new PlayerConnectionDirectory();
         $this->closeClock = $closeClock ?? new SystemSimulationClock();
+        $this->commandSchemaRevision = $this->commandRegistry?->schemaRevision() ?? 0;
     }
 
     public function __destruct()
@@ -174,7 +176,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
     /** @return list<\Bedriox\Api\Player\Player> */
     public function onlinePlayers(): array
     {
-        return $this->world->pluginPlayers();
+        return array_map($this->playerConnections->attach(...), $this->world->pluginPlayers());
     }
 
     public function changePlayerGameMode(string $uuid, GameMode $gameMode): bool
@@ -225,12 +227,68 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
 
                 return;
             }
-            if (!$session->play->queuePacket($projector->availableCommands($uuid))) {
+            if (!$session->play->queuePacket($projector->availableCommands($uuid, $this->onlinePlayers()))) {
                 $this->disconnect($key);
             }
 
             return;
         }
+    }
+
+    private function queueOnlinePlayerCommandUpdate(): bool
+    {
+        if ($this->commandRegistry === null || $this->permissionStore === null) {
+            return true;
+        }
+        $packet = (new BedrockCommandPacketProjector(
+            $this->commandRegistry,
+            $this->permissionStore,
+        ))->onlinePlayerUpdate($this->onlinePlayers());
+        foreach ($this->sessions as $session) {
+            if ($session->joined && $session->play !== null && !$session->play->queuePacket($packet)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function queueCommandMetadataUpdates(): bool
+    {
+        if ($this->commandRegistry === null) {
+            return true;
+        }
+        $updates = $this->commandRegistry->drainSoftEnumUpdates();
+        if ($this->permissionStore === null) {
+            $this->commandSchemaRevision = $this->commandRegistry->schemaRevision();
+
+            return true;
+        }
+        $projector = new BedrockCommandPacketProjector($this->commandRegistry, $this->permissionStore);
+        $schemaRevision = $this->commandRegistry->schemaRevision();
+        $schemaChanged = $schemaRevision !== $this->commandSchemaRevision;
+        foreach ($this->sessions as $session) {
+            if (!$session->joined || $session->play === null) {
+                continue;
+            }
+            if ($schemaChanged) {
+                if (!$session->play->queuePacket($projector->availableCommands(
+                    $session->play->login()->identity,
+                    $this->onlinePlayers(),
+                ))) {
+                    return false;
+                }
+                continue;
+            }
+            foreach ($updates as $update) {
+                if (!$session->play->queuePacket($projector->softEnumUpdate($update->name, $update->values))) {
+                    return false;
+                }
+            }
+        }
+        $this->commandSchemaRevision = $schemaRevision;
+
+        return true;
     }
 
     /** Runs one non-blocking, explicitly bounded network and simulation iteration. */
@@ -381,6 +439,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                             if (!$this->dispatchWorldEvent($visibilityEvent, $directedCount)) {
                                 return false;
                             }
+                        }
+                        if (!$this->queueOnlinePlayerCommandUpdate()) {
+                            return false;
                         }
                         continue;
                     }
@@ -626,6 +687,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                     if (!$this->dispatchWorldEvent($event, $directedCount)) {
                         return false;
                     }
+                    if ($event instanceof PlayerDisconnected && !$this->queueOnlinePlayerCommandUpdate()) {
+                        return false;
+                    }
                 }
                 $persistenceTiming = $this->performance?->startSubsystem(PerformanceSubsystem::PERSISTENCE);
                 if ($this->persistentWorld !== null && $tick->number % $this->autosaveIntervalTicks === 0) {
@@ -653,6 +717,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                 }
                 $this->runMemoryMaintenance($tick->number);
                 $persistenceTiming?->end();
+            }
+            if (!$this->queueCommandMetadataUpdates()) {
+                return false;
             }
             foreach (array_keys($this->sessions) as $key) {
                 $this->flush($key, $this->sessions[$key]);
@@ -987,10 +1054,13 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         foreach ($session->play->drainPlayerCommands() as $request) {
             $messages = [];
             $outputTruncated = false;
-            $result = CommandResult::FAILURE;
+            $result = CommandResult::failure('Commands are not available yet.');
             $player = $session->phase === SessionPhase::SPAWNED
                 ? $this->world->pluginPlayer($session->play->login()->identity)
                 : null;
+            if ($player !== null) {
+                $player = $this->playerConnections->attach($player);
+            }
             if ($this->commandRegistry !== null && $player !== null) {
                 $sender = new ServerPlayerCommandSender(
                     $player,
@@ -1013,12 +1083,12 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
             }
             $outputMessages = array_map(
                 static fn(string $message): CommandOutputMessage => new CommandOutputMessage($message),
-                $messages === [] ? [$result === CommandResult::SUCCESS ? 'Command completed.' : 'Command failed.'] : $messages,
+                $messages === [] ? [$result->message() ?? ($result->isSuccess() ? 'Command completed.' : 'Command failed.')] : $messages,
             );
             if (!$session->play->queuePacket(new CommandOutputPacket(
                 $request->origin,
                 CommandOutputType::AllOutput,
-                $result === CommandResult::SUCCESS ? 1 : 0,
+                $result->isSuccess() ? 1 : 0,
                 $outputMessages,
             ))) {
                 return false;

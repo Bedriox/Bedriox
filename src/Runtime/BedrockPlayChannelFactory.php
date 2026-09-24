@@ -71,7 +71,10 @@ final readonly class BedrockPlayChannelFactory implements PlayChannelFactory
                 $initializationPackets,
             ), static fn($packet): bool => !$packet instanceof SetCommandsEnabledPacket));
             $initializationPackets[] = new SetCommandsEnabledPacket(true);
-            $initializationPackets[] = $projector->availableCommands($ready->login->identity);
+            $initializationPackets[] = $projector->availableCommands(
+                $ready->login->identity,
+                [],
+            );
         }
 
         return new BedrockPlayChannel(

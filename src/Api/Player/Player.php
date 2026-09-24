@@ -36,6 +36,11 @@ final readonly class Player
         return $this->playerConnection ?? PlayerConnection::disconnected();
     }
 
+    public function isConnected(): bool
+    {
+        return $this->connection()->isConnected();
+    }
+
     public function getGamemode(): GameMode
     {
         return $this->gameMode;

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
+use Bedriox\Api\Player\Player;
 use Bedriox\Api\Player\PlayerConnection;
 use Bedriox\Protocol\Packet\Packet;
 use Closure;
@@ -47,6 +48,26 @@ final class PlayerConnectionDirectory
                 && ($this->connections[$key]['send'])($packet, $immediate),
             fn(string $reason, ?string $quitMessage, ?string $screenMessage): bool => isset($this->connections[$key])
                 && ($this->connections[$key]['kick'])($reason, $quitMessage, $screenMessage),
+        );
+    }
+
+    /** Rebinds an immutable public snapshot to its current runtime connection. */
+    public function attach(Player $player): Player
+    {
+        return new Player(
+            $player->name,
+            $player->uuid,
+            $player->position,
+            $player->yaw,
+            $player->pitch,
+            $player->sneaking,
+            $player->sprinting,
+            $player->inventory,
+            $player->health,
+            $player->maxHealth,
+            $player->alive,
+            $player->gameMode,
+            $this->connection($player->uuid),
         );
     }
 

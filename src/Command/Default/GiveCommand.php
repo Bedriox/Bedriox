@@ -4,9 +4,12 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Command\Default;
 
+use Bedriox\Api\Command\CommandArguments;
 use Bedriox\Api\Command\CommandContext;
 use Bedriox\Api\Command\CommandDefinition;
+use Bedriox\Api\Command\CommandParameter;
 use Bedriox\Api\Command\CommandResult;
+use Bedriox\Api\Command\CommandSoftEnum;
 use Bedriox\Api\Player\Player;
 use Closure;
 
@@ -19,7 +22,7 @@ final readonly class GiveCommand implements BuiltinCommand
      * @param Closure(string): bool|null $itemExists
      */
     public function __construct(
-        private OnlinePlayerResolver $players,
+        private CommandSoftEnum $itemIdentifiers,
         private ?Closure $giveItem = null,
         private ?Closure $itemExists = null,
     ) {}
@@ -29,43 +32,34 @@ final readonly class GiveCommand implements BuiltinCommand
         return new CommandDefinition(
             'give',
             'Gives an item to an online player.',
-            'give <player> <item> [amount]',
             permission: 'bedriox.command.give',
         );
     }
 
+    public function defineArguments(): CommandArguments
+    {
+        return CommandArguments::create()
+            ->addArgument(CommandParameter::onlinePlayer('player'))
+            ->addArgument(CommandParameter::softEnum('item', $this->itemIdentifiers))
+            ->addArgument(CommandParameter::integer('amount')
+                ->minimum(1)
+                ->maximum(self::MAXIMUM_AMOUNT)
+                ->optional(default: 1));
+    }
+
     public function execute(CommandContext $context): CommandResult
     {
-        $arguments = $context->arguments();
-        if (count($arguments) < 2 || count($arguments) > 3) {
-            return CommandResult::USAGE;
-        }
-        $player = $this->players->find($arguments[0]);
-        if ($player === null) {
-            $context->sender()->sendMessage('Player is not online.');
-
-            return CommandResult::FAILURE;
-        }
-        $identifier = self::canonicalIdentifier($arguments[1]);
+        $values = $context->values();
+        $player = $values->player('player');
+        $identifier = self::canonicalIdentifier($values->string('item'));
         if ($identifier === null || $this->itemExists === null || !($this->itemExists)($identifier)) {
-            $context->sender()->sendMessage('Unknown item.');
-
-            return CommandResult::FAILURE;
+            return CommandResult::failure('Unknown item.');
         }
-        $amount = count($arguments) === 3 ? self::parseAmount($arguments[2]) : 1;
-        if ($amount === null) {
-            $context->sender()->sendMessage('Amount must be a whole number between 1 and ' . self::MAXIMUM_AMOUNT . '.');
-
-            return CommandResult::FAILURE;
-        }
+        $amount = $values->integer('amount');
         if ($this->giveItem === null || !($this->giveItem)($player, $identifier, $amount)) {
-            $context->sender()->sendMessage('Unable to give the item.');
-
-            return CommandResult::FAILURE;
+            return CommandResult::failure('Unable to give the item.');
         }
-        $context->sender()->sendMessage("Gave {$amount} {$identifier} to {$player->name}.");
-
-        return CommandResult::SUCCESS;
+        return CommandResult::success("Gave {$amount} {$identifier} to {$player->name}.");
     }
 
     private static function canonicalIdentifier(string $value): ?string
@@ -73,15 +67,5 @@ final readonly class GiveCommand implements BuiltinCommand
         $identifier = strtolower(str_contains($value, ':') ? $value : 'minecraft:' . $value);
 
         return preg_match('/^[a-z0-9_.-]+:[a-z0-9_.-]+$/D', $identifier) === 1 ? $identifier : null;
-    }
-
-    private static function parseAmount(string $value): ?int
-    {
-        if (preg_match('/^[1-9][0-9]*$/D', $value) !== 1 || strlen($value) > 5) {
-            return null;
-        }
-        $amount = (int) $value;
-
-        return $amount <= self::MAXIMUM_AMOUNT ? $amount : null;
     }
 }

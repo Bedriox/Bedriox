@@ -15,14 +15,12 @@ final readonly class CommandDefinition
     public function __construct(
         public string $name,
         public string $description,
-        public string $usage,
         array $aliases = [],
         public ?string $permission = null,
         public AllowedCommandSenders $allowedSenders = AllowedCommandSenders::ANY,
     ) {
         self::validateName($name);
         self::validateText($description, 'description', 256);
-        self::validateText($usage, 'usage', 256);
         if ($permission !== null) {
             self::validateIdentifier($permission, 'permission', 128);
         }

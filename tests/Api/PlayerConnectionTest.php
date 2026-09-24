@@ -35,6 +35,7 @@ final class PlayerConnectionTest extends TestCase
         );
         $player = self::player($connection);
 
+        self::assertTrue($player->isConnected());
         self::assertTrue($player->connection()->isConnected());
         self::assertTrue($player->sendMessage('message'));
         self::assertTrue($player->sendMessage(new TranslatableMessage('translation.key', ['value'])));
@@ -87,6 +88,7 @@ final class PlayerConnectionTest extends TestCase
     {
         $player = self::player();
 
+        self::assertFalse($player->isConnected());
         self::assertFalse($player->connection()->isConnected());
         self::assertFalse($player->sendTip('offline'));
         self::assertFalse($player->connection()->sendPacket(TextPacket::raw('offline'), true));

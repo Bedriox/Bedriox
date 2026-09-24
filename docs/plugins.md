@@ -140,11 +140,116 @@ Direct packet access is deliberately version-specific. A plugin using it is resp
 
 ## Commands
 
-Plugins register typed commands through `PluginContext::commands()`. A `CommandDefinition` declares the lowercase name, description, usage, aliases, optional permission, and whether console, players, or either sender type may invoke it. Bedriox resolves names and aliases case-insensitively, provides the deterministic `<plugin>:<command>` fallback, checks sender and permission policy centrally, and removes every command when its owner disables.
+The pre-alpha command API is class based. This is a breaking replacement: closure registration, handwritten usage strings, raw `CommandContext::arguments()`, and the old `CommandResult` constants have been removed without a compatibility adapter. Each command implements `Command` directly or extends `AbstractCommand`, declares an ordered argument schema, and receives validated values through `CommandContext::values()`.
+
+`AbstractCommand` supplies the definition, a no-argument default, aliases, permission and sender-policy hooks, and `success()` and `failure()` result helpers. This command supports two forms, whose usage is generated from the same schema used for parsing and Bedrock autocomplete:
+
+```php
+use Bedriox\Api\Command\AbstractCommand;
+use Bedriox\Api\Command\CommandArguments;
+use Bedriox\Api\Command\CommandContext;
+use Bedriox\Api\Command\CommandOverload;
+use Bedriox\Api\Command\CommandParameter;
+use Bedriox\Api\Command\CommandResult;
+use Bedriox\Api\Command\PlayerCommandSender;
+
+final class PlayerInfoCommand extends AbstractCommand
+{
+    public function __construct()
+    {
+        parent::__construct('playerinfo', 'Show information about a connected player');
+    }
+
+    protected function aliases(): array
+    {
+        return ['pinfo'];
+    }
+
+    protected function permission(): ?string
+    {
+        return 'example.command.playerinfo';
+    }
+
+    public function defineArguments(): CommandArguments
+    {
+        return CommandArguments::create()
+            ->addOverload(
+                CommandOverload::create()
+                    ->addArgument(CommandParameter::literal('show'))
+                    ->addArgument(CommandParameter::onlinePlayer('player'))
+                    ->addArgument(CommandParameter::choice('detail', ['summary', 'full'])
+                        ->optional(default: 'summary')),
+            )
+            ->addOverload(
+                CommandOverload::create()
+                    ->addArgument(CommandParameter::literal('self'))
+                    ->addArgument(CommandParameter::choice('detail', ['summary', 'full'])
+                        ->optional(default: 'summary')),
+            );
+    }
+
+    public function execute(CommandContext $context): CommandResult
+    {
+        $values = $context->values();
+        if ($values->has('self')) {
+            $sender = $context->sender();
+            if (!$sender instanceof PlayerCommandSender) {
+                return $this->failure('The self form requires a player sender.');
+            }
+            $player = $sender->player();
+        } else {
+            $player = $values->player('player');
+        }
+
+        if (!$player->isConnected()) {
+            return $this->failure('That player is no longer connected.');
+        }
+
+        $detail = $values->choice('detail');
+
+        return $this->success("{$player->name}: {$detail}");
+    }
+}
+```
+
+Register the command from the plugin lifecycle:
+
+```php
+public function onEnable(): void
+{
+    $this->context()->commands()->register(new PlayerInfoCommand());
+}
+```
+
+The example generates `/playerinfo show <player> [detail:summary|full]` and `/playerinfo self [detail:summary|full]`. Invalid input is rejected before `execute()`, and Bedriox sends the binding error followed by every generated usage form. A message carried by `CommandResult::success()` or `CommandResult::failure()` is sent to the command sender.
+
+For a command with one form, use `CommandArguments::create()->addArgument(...)` directly. Available parameter factories are `string`, `integer`, `float`, `boolean`, `onlinePlayer`, `players`, `choice`, backed `enum`, registered `softEnum`, `position`, `blockPosition`, `message`, `json`, `rawText`, and `literal`. Numeric parameters support `minimum()` and `maximum()`; non-literal parameters support `optional()` with an optional typed default. Required parameters cannot follow optional parameters, and greedy `message`, `json`, or `rawText` parameters must be last.
+
+`CommandValues` provides matching named accessors such as `string()`, `integer()`, `float()`, `boolean()`, `player()`, `players()`, `choice()`, `enum()`, `position()`, `blockPosition()`, `message()`, `json()`, and `rawText()`. `onlinePlayer()` advertises a live soft enum of connected player names to the Bedrock command UI and resolves exactly one connected `Player` case insensitively. Join and disconnect updates refresh those suggestions. Because a player can disconnect after binding, command code may recheck `Player::isConnected()` before acting.
+
+Plugins can register a bounded named soft enum when suggestions may change while the server is running. The returned handle belongs to the plugin, is removed automatically when that plugin disables, and can be reused by any of that plugin's commands:
+
+```php
+$kits = $this->context()->commands()->registerSoftEnum(
+    'kits',
+    ['starter', 'builder'],
+);
+
+$arguments = CommandArguments::create()
+    ->addArgument(CommandParameter::softEnum('kit', $kits));
+
+$kits->add('vip');
+$kits->remove('builder');
+$kits->replace(['starter', 'vip', 'moderator']);
+```
+
+Soft-enum changes are deduplicated and sent to connected clients using the current Bedrock update packet. Parsing uses the same current value set and remains server-authoritative; client autocomplete never authorizes an unknown value. Names are automatically scoped to the registering plugin, values are unique ignoring case, and foreign plugins cannot borrow another plugin's enum handle.
+
+Bedriox resolves command names and aliases case insensitively, provides the deterministic `<plugin>:<command>` fallback, checks sender and permission policy centrally, and removes every command when its owner disables. Plugins that implement `Command` directly return their own `CommandDefinition`; handwritten usage remains unnecessary because `defineArguments()` is authoritative.
 
 Player-facing messages may use the complete current Bedrock set in `Bedriox\Api\TextFormat`: the classic colors, Minecoin Gold, Quartz through Resin material colors, obfuscated, bold, italic, and reset. Concatenate constants such as `TextFormat::GREEN`, `TextFormat::MATERIAL_DIAMOND`, `TextFormat::BOLD`, and `TextFormat::RESET` with message text; do not embed raw section-sign formatting codes in plugin source. Bedrock assigns `§m` and `§n` to the Redstone and Copper material colors, so Bedriox deliberately does not expose the conflicting Java strikethrough or underline meanings. Console output should remain plain text.
 
-Handlers receive a `CommandContext` and return `CommandResult::SUCCESS`, `FAILURE`, or `USAGE`. Use `ConsoleCommandSender` and `PlayerCommandSender` type checks when behavior depends on the caller; a player sender exposes only the immutable public player view. Console senders have console authority. Player commands use the same dispatcher and centrally enforce UUID-based operators, explicit permission grants, sender restrictions, and command events before plugin code runs.
+Use `ConsoleCommandSender` and `PlayerCommandSender` type checks when behavior depends on the caller; a player sender exposes only the immutable public player view. Console senders have console authority. Player commands use the same dispatcher and centrally enforce UUID-based operators, explicit permission grants, sender restrictions, and command events before plugin code runs.
 
 `CommandPreDispatchEvent` is cancellable after command resolution, sender policy, and permission validation. `CommandDispatchedEvent` observes successful handler completion. A throwing handler is attributed to its owning plugin, its staged API work is discarded, and that plugin's commands and listeners are released without stopping the server.
 

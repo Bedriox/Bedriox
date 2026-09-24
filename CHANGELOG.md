@@ -22,6 +22,8 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Added
 
+- Add plugin-owned named command soft enums with bounded live updates, lifecycle cleanup, authoritative binding, and item-catalog suggestions for `give`.
+- Replace the pre-alpha closure and raw-argument command API with class-based `Command` and `AbstractCommand` definitions, fluent typed argument schemas and overloads, generated usage, typed `CommandValues`, Bedrock enum autocomplete with live connected-player updates, and result messages.
 - Preserve validated X-Z-Y palette word arrays in authoritative block and biome storages, transfer compact revision-specific projection snapshots, and write packed chunk words directly in workers while translating each canonical palette only once.
 - Move complete revision-specific chunk packet projection, framing, and compression to managed workers; deduplicate and cache compressed clear envelopes across players; invalidate stale work on immutable revision changes; and enforce count, byte, and elapsed-time streaming budgets without placing unfinished chunks ahead of chat or control traffic.
 - Report prepared-chunk cache entries, bytes, pending work, hits, misses, evictions, invalidations, failures, and hit ratio in `status advanced`, and include bounded worker completion polling in runtime-poll latency measurements.

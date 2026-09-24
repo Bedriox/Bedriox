@@ -4,13 +4,14 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Command;
 
-use Bedriox\Api\Command\CommandResult;
 use Bedriox\Api\Command\CommandSender;
 use Bedriox\Api\Command\CommandSenderType;
 use Bedriox\Api\Inventory\Inventory;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\Player\Player;
+use Bedriox\Api\Player\PlayerConnection;
 use Bedriox\Api\World\Position;
+use Bedriox\Protocol\Packet\Packet;
 use Bedriox\Server\Command\BuiltinCommandRegistrar;
 use Bedriox\Server\Command\Default\GarbageCollectionStatus;
 use Bedriox\Server\Command\Default\OnlinePlayerResolver;
@@ -35,6 +36,7 @@ use Bedriox\Server\Worker\Chunk\PreparedChunkCacheSnapshot;
 use Bedriox\Server\Worker\WorkerPoolSnapshot;
 use Bedriox\Server\World\ChunkRepositorySnapshot;
 use Bedriox\Server\World\ChunkUnloadResult;
+use Closure;
 use PHPUnit\Framework\TestCase;
 use Throwable;
 
@@ -64,7 +66,13 @@ final class BuiltinCommandRegistrarTest extends TestCase
     public function testRegistrarPreservesDefaultCommandDefinitionsAndAliases(): void
     {
         [$registry, $permissions] = $this->registry();
-        (new BuiltinCommandRegistrar($registry, $permissions, static fn(): array => [], static function (): void {}))->register();
+        (new BuiltinCommandRegistrar(
+            $registry,
+            $permissions,
+            static fn(): array => [],
+            static function (): void {},
+            static fn(): array => [],
+        ))->register();
 
         self::assertSame(10, $registry->count());
         $definitions = $registry->availableDefinitions(CommandSenderType::CONSOLE, static fn(string $permission): bool => true);
@@ -86,54 +94,58 @@ final class BuiltinCommandRegistrarTest extends TestCase
         self::assertSame('bedriox.command.teleport', $definitions[9]->permission);
 
         $sender = new BuiltinCommandSender();
-        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'ver'));
+        self::assertTrue(($registry->dispatch($sender, 'ver'))->isSuccess());
         self::assertSame(
             'This server is running Bedriox version 0.2.0-alpha.1 (protocol 2193).',
             $sender->messages[0],
         );
         self::assertSame('Visit https://bedriox.com', $sender->messages[1]);
-        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'commands'));
+        self::assertTrue(($registry->dispatch($sender, 'commands'))->isSuccess());
         self::assertContains('Available commands (10):', $sender->messages);
     }
 
     public function testPlayerListOperatorAndPermissionCommandsPreserveBehavior(): void
     {
-        [$registry, $permissions] = $this->registry();
         $amy = $this->player('Amy', '00000000-0000-0000-0000-000000000001');
         $zed = $this->player('zed', '00000000-0000-0000-0000-000000000002');
+        [$registry, $permissions] = $this->registry(static fn(): array => [$zed, $amy]);
         (new BuiltinCommandRegistrar(
             $registry,
             $permissions,
             static fn(): array => [$zed, $amy],
             static function (): void {},
+            static fn(): array => [],
         ))->register();
         $sender = new BuiltinCommandSender();
 
-        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'list'));
+        self::assertTrue(($registry->dispatch($sender, 'list'))->isSuccess());
         self::assertSame('There are 2 players online.', $sender->messages[0]);
         self::assertSame('Players: Amy, zed', $sender->messages[1]);
-        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'op aMY'));
+        self::assertTrue(($registry->dispatch($sender, 'op aMY'))->isSuccess());
         self::assertSame('Amy is now an operator.', array_pop($sender->messages));
         self::assertTrue($permissions->isOperator($amy->uuid));
-        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'op Amy'));
+        self::assertTrue(($registry->dispatch($sender, 'op Amy'))->isSuccess());
         self::assertSame('Amy is already an operator.', array_pop($sender->messages));
-        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'deop AMY'));
+        self::assertTrue(($registry->dispatch($sender, 'deop AMY'))->isSuccess());
         self::assertSame('Amy is no longer an operator.', array_pop($sender->messages));
         self::assertFalse($permissions->isOperator($amy->uuid));
 
-        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'perm grant amy example.use'));
+        self::assertTrue(($registry->dispatch($sender, 'perm grant amy example.use'))->isSuccess());
         self::assertSame('Permission assignment updated.', array_pop($sender->messages));
         self::assertTrue($permissions->hasPermission($amy->uuid, 'example.use'));
-        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'permission list Amy'));
+        self::assertTrue(($registry->dispatch($sender, 'permission list Amy'))->isSuccess());
         self::assertSame('Permissions for Amy: example.use', array_pop($sender->messages));
-        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'permission revoke Amy example.use'));
+        self::assertTrue(($registry->dispatch($sender, 'permission revoke Amy example.use'))->isSuccess());
         self::assertSame('Permission assignment updated.', array_pop($sender->messages));
         self::assertFalse($permissions->hasPermission($amy->uuid, 'example.use'));
 
-        self::assertSame(CommandResult::FAILURE, $registry->dispatch($sender, 'op Missing'));
-        self::assertSame('Player is not online.', array_pop($sender->messages));
-        self::assertSame(CommandResult::USAGE, $registry->dispatch($sender, 'permission invalid Amy'));
-        self::assertSame('Usage: permission <list|grant|revoke> <player> [node]', array_pop($sender->messages));
+        self::assertFalse(($registry->dispatch($sender, 'op Missing'))->isSuccess());
+        self::assertSame("Player 'Missing' is not connected.", $sender->messages[count($sender->messages) - 2]);
+        self::assertSame('Usage: /op <player>', array_pop($sender->messages));
+        self::assertFalse(($registry->dispatch($sender, 'permission invalid Amy'))->isSuccess());
+        self::assertContains('Usage: /permission list <player>', $sender->messages);
+        self::assertContains('Usage: /permission grant <player> <node>', $sender->messages);
+        self::assertSame('Usage: /permission revoke <player> <node>', array_pop($sender->messages));
     }
 
     public function testStopCommandInvokesTheExistingShutdownBoundaryOnlyAfterValidUsage(): void
@@ -147,13 +159,14 @@ final class BuiltinCommandRegistrarTest extends TestCase
             static function () use (&$stops): void {
                 ++$stops;
             },
+            static fn(): array => [],
         ))->register();
         $sender = new BuiltinCommandSender();
 
-        self::assertSame(CommandResult::USAGE, $registry->dispatch($sender, 'stop now'));
+        self::assertFalse(($registry->dispatch($sender, 'stop now'))->isSuccess());
         self::assertSame(0, $stops);
-        self::assertSame('Usage: stop', array_pop($sender->messages));
-        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'stop'));
+        self::assertSame('Usage: /stop', array_pop($sender->messages));
+        self::assertTrue(($registry->dispatch($sender, 'stop'))->isSuccess());
         self::assertSame(1, $stops);
         self::assertSame('Stopping the server...', array_pop($sender->messages));
     }
@@ -174,22 +187,23 @@ final class BuiltinCommandRegistrarTest extends TestCase
 
     public function testPlayerFacingListAndVersionMessagesUseSeparateColors(): void
     {
-        [$registry, $permissions] = $this->registry();
         $player = $this->player('Amy', '00000000-0000-0000-0000-000000000001');
+        [$registry, $permissions] = $this->registry(static fn(): array => [$player]);
         (new BuiltinCommandRegistrar(
             $registry,
             $permissions,
             static fn(): array => [$player],
             static function (): void {},
+            static fn(): array => [],
         ))->register();
         $sender = new BuiltinCommandSender(CommandSenderType::PLAYER);
 
-        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'list'));
+        self::assertTrue(($registry->dispatch($sender, 'list'))->isSuccess());
         self::assertSame("\u{00a7}aThere is 1 player online.\u{00a7}r", $sender->messages[0]);
         self::assertSame("\u{00a7}bPlayers: Amy\u{00a7}r", $sender->messages[1]);
 
         $versionSender = new BuiltinCommandSender(CommandSenderType::PLAYER);
-        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($versionSender, 'version'));
+        self::assertTrue(($registry->dispatch($versionSender, 'version'))->isSuccess());
         self::assertSame(
             "\u{00a7}aThis server is running Bedriox version 0.2.0-alpha.1 (protocol 2193).\u{00a7}r",
             $versionSender->messages[0],
@@ -199,8 +213,8 @@ final class BuiltinCommandRegistrarTest extends TestCase
 
     public function testGameplayCommandCallbacksAreWiredThroughTheRegistrar(): void
     {
-        [$registry, $permissions] = $this->registry();
         $player = $this->player('Amy', '00000000-0000-0000-0000-000000000001');
+        [$registry, $permissions] = $this->registry(static fn(): array => [$player]);
         $changes = [];
         $grants = [];
         (new BuiltinCommandRegistrar(
@@ -208,6 +222,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
             $permissions,
             static fn(): array => [$player],
             static function (): void {},
+            static fn(): array => ['diamond', 'minecraft:diamond'],
             changeGameMode: static function (Player $target, GameMode $mode) use (&$changes): bool {
                 $changes[] = [$target->uuid, $mode];
 
@@ -222,9 +237,9 @@ final class BuiltinCommandRegistrarTest extends TestCase
         ))->register();
         $sender = new BuiltinCommandSender();
 
-        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'gamemode creative Amy'));
+        self::assertTrue(($registry->dispatch($sender, 'gamemode creative Amy'))->isSuccess());
         self::assertSame([[$player->uuid, GameMode::CREATIVE]], $changes);
-        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'give Amy diamond 3'));
+        self::assertTrue(($registry->dispatch($sender, 'give Amy diamond 3'))->isSuccess());
         self::assertSame([[$player->uuid, 'minecraft:diamond', 3]], $grants);
     }
 
@@ -236,6 +251,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
             $permissions,
             static fn(): array => [],
             static function (): void {},
+            static fn(): array => [],
             status: static fn(): PerformanceSnapshot => new PerformanceSnapshot(
                 90_061,
                 20.0,
@@ -276,7 +292,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
         ))->register();
 
         $sender = new BuiltinCommandSender();
-        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'status'));
+        self::assertTrue(($registry->dispatch($sender, 'status'))->isSuccess());
         self::assertSame([
             '--------- Bedriox Status ---------',
             'Version: Bedriox 0.2.0-alpha.1',
@@ -291,7 +307,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
         ], $sender->messages);
 
         $advanced = new BuiltinCommandSender();
-        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($advanced, 'status advanced'));
+        self::assertTrue(($registry->dispatch($advanced, 'status advanced'))->isSuccess());
         self::assertSame('--------- Bedriox Status: Advanced ---------', $advanced->messages[0]);
         self::assertContains('--------- Tick Performance ---------', $advanced->messages);
         self::assertContains('TPS history: 19.95 average, 18.50 minimum', $advanced->messages);
@@ -315,10 +331,10 @@ final class BuiltinCommandRegistrarTest extends TestCase
         self::assertSame('--------- End Status ---------', $advanced->messages[count($advanced->messages) - 1]);
 
         $alias = new BuiltinCommandSender();
-        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($alias, 'status advance'));
+        self::assertTrue(($registry->dispatch($alias, 'status advance'))->isSuccess());
         self::assertSame($advanced->messages, $alias->messages);
-        self::assertSame(CommandResult::USAGE, $registry->dispatch($sender, 'status extra'));
-        self::assertSame('Usage: status [advanced]', $sender->messages[count($sender->messages) - 1]);
+        self::assertFalse(($registry->dispatch($sender, 'status extra'))->isSuccess());
+        self::assertSame('Usage: /status [detail:advanced|advance]', $sender->messages[count($sender->messages) - 1]);
 
         $definitions = $registry->availableDefinitions(CommandSenderType::CONSOLE, static fn(string $permission): bool => true);
         self::assertNotEmpty($definitions);
@@ -341,6 +357,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
             $permissions,
             static fn(): array => [],
             static function (): void {},
+            static fn(): array => [],
             garbageCollectionStatus: static function () use (&$statusCalls): GarbageCollectionStatus {
                 ++$statusCalls;
 
@@ -374,7 +391,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
 
         self::assertSame(11, $registry->count());
         $sender = new BuiltinCommandSender();
-        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'gc'));
+        self::assertTrue(($registry->dispatch($sender, 'gc'))->isSuccess());
         self::assertSame(1, $statusCalls);
 
         $definitions = $registry->availableDefinitions(CommandSenderType::CONSOLE, static fn(string $permission): bool => true);
@@ -397,6 +414,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
             $permissions,
             static fn(): array => [],
             static function (): void {},
+            static fn(): array => [],
             status: static fn(): PerformanceSnapshot => new PerformanceSnapshot(
                 1,
                 20.0,
@@ -447,14 +465,14 @@ final class BuiltinCommandRegistrarTest extends TestCase
         ))->register();
 
         $basic = new BuiltinCommandSender();
-        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($basic, 'status'));
+        self::assertTrue(($registry->dispatch($basic, 'status'))->isSuccess());
         self::assertSame([], array_values(array_filter(
             $basic->messages,
             static fn(string $message): bool => str_starts_with($message, 'Network:'),
         )));
 
         $sender = new BuiltinCommandSender();
-        self::assertSame(CommandResult::SUCCESS, $registry->dispatch($sender, 'status advanced'));
+        self::assertTrue(($registry->dispatch($sender, 'status advanced'))->isSuccess());
         self::assertContains('Core workers: disabled, 0/0 busy', $sender->messages);
         self::assertContains('Core queue: 1 pending (1.0 KiB), 2 ready (2.0 KiB)', $sender->messages);
         self::assertContains('Core totals: 3 submitted, 4 completed, 5 rejected, 6 cancelled', $sender->messages);
@@ -468,8 +486,11 @@ final class BuiltinCommandRegistrarTest extends TestCase
         self::assertContains('Logging failures: 4 service, 3 write', $sender->messages);
     }
 
-    /** @return array{CommandRegistry, PermissionStore} */
-    private function registry(): array
+    /**
+     * @param Closure(): list<Player>|null $players
+     * @return array{CommandRegistry, PermissionStore}
+     */
+    private function registry(?Closure $players = null): array
     {
         $plugins = new BuiltinPluginControl();
         $execution = new PluginExecutionContext();
@@ -480,7 +501,14 @@ final class BuiltinCommandRegistrarTest extends TestCase
         $this->temporaryDirectories[] = $directory;
 
         return [
-            new CommandRegistry($plugins, $execution, $actions, $ownership, $events),
+            new CommandRegistry(
+                $plugins,
+                $execution,
+                $actions,
+                $ownership,
+                $events,
+                onlinePlayers: $players,
+            ),
             new PermissionStore($directory . DIRECTORY_SEPARATOR . 'permissions.json'),
         ];
     }
@@ -496,6 +524,10 @@ final class BuiltinCommandRegistrarTest extends TestCase
             false,
             false,
             new Inventory(array_fill(0, 36, null), 0),
+            playerConnection: new PlayerConnection(
+                static fn(): bool => true,
+                static fn(Packet $packet, bool $immediate): bool => true,
+            ),
         );
     }
 }

@@ -159,6 +159,7 @@ final class Bedriox
             $itemCatalog = \Bedriox\Server\Gameplay\Item\ItemCatalog::vanilla(
                 \Bedriox\Data\BedrockDataSet::bundled()->itemNetworkRegistry(),
             );
+            $itemCommandEnum = null;
             $pluginHost = new PluginHost(
                 $workingDirectory . DIRECTORY_SEPARATOR . 'plugins',
                 $workingDirectory . DIRECTORY_SEPARATOR . 'plugin_data',
@@ -170,7 +171,7 @@ final class Bedriox
                     OwnedCommandRegistrar $commands,
                     OwnedSourcePluginRegistrar $sourcePlugins,
                     ServerPluginLogger $pluginLogger,
-                ) use ($composition, $itemCatalog): PluginContext {
+                ) use ($composition, $itemCatalog, &$itemCommandEnum): PluginContext {
                     if ($composition->server === null || $composition->host === null) {
                         throw new \LogicException('Plugin API composition is not ready.');
                     }
@@ -187,7 +188,7 @@ final class Bedriox
                             $composition->host->actions(),
                         ),
                         $dataFolder,
-                        new OwnedItemRegistrar($manifest->name, $itemCatalog),
+                        new OwnedItemRegistrar($manifest->name, $itemCatalog, $itemCommandEnum),
                     );
                 },
                 maximumPlugins: $config->maximumPlugins,
@@ -195,18 +196,31 @@ final class Bedriox
                     ? $this->crashContextProvider
                     : null,
                 asyncTaskExecutor: $pluginAsync,
+                onlinePlayers: static fn(): array => $composition->server?->runtime->onlinePlayers() ?? [],
             );
             $composition->host = $pluginHost;
             $playerStore = ProcessPlayerDataStore::start(
                 self::VERSION,
                 $workingDirectory . DIRECTORY_SEPARATOR . 'player_data',
             );
-            (new BuiltinCommandRegistrar(
+            $itemCommandEnum = (new BuiltinCommandRegistrar(
                 $pluginHost->commands(),
                 $permissionStore,
                 static fn(): array => $composition->server?->runtime->onlinePlayers() ?? [],
                 static function () use (&$stop): void {
                     $stop = true;
+                },
+                static function () use ($itemCatalog): array {
+                    $identifiers = [];
+                    foreach ($itemCatalog->all() as $type) {
+                        $identifiers[] = $type->identifier;
+                        if (str_starts_with($type->identifier, 'minecraft:')) {
+                            $identifiers[] = substr($type->identifier, strlen('minecraft:'));
+                        }
+                    }
+                    natcasesort($identifiers);
+
+                    return array_values($identifiers);
                 },
                 static function (\Bedriox\Api\Player\Player $player, bool $includeAbilities) use ($composition): void {
                     $composition->server?->runtime->refreshPlayerAuthority($player->uuid, $includeAbilities);

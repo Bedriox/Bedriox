@@ -10,13 +10,13 @@ use Closure;
 
 final readonly class OpCommand extends OperatorCommand
 {
-    public function __construct(PermissionStore $permissions, OnlinePlayerResolver $players, ?Closure $authorityChanged = null)
+    public function __construct(PermissionStore $permissions, ?Closure $authorityChanged = null)
     {
-        parent::__construct($permissions, $players, true, $authorityChanged);
+        parent::__construct($permissions, true, $authorityChanged);
     }
 
     public function definition(): CommandDefinition
     {
-        return new CommandDefinition('op', 'Grants operator authority to an online player.', 'op <player>', permission: 'bedriox.command.op');
+        return new CommandDefinition('op', 'Grants operator authority to an online player.', permission: 'bedriox.command.op');
     }
 }

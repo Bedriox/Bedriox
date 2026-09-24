@@ -44,6 +44,7 @@ final class PluginHost
         private readonly int $maximumPlugins = 64,
         ?CrashContextPublisher $crashContext = null,
         ?PluginAsyncTaskExecutor $asyncTaskExecutor = null,
+        ?Closure $onlinePlayers = null,
     ) {
         $this->ownership = new PluginOwnershipRegistry();
         $this->actions = new PluginActionBuffer();
@@ -63,6 +64,7 @@ final class PluginHost
             $this->actions,
             $this->ownership,
             $this->events,
+            onlinePlayers: $onlinePlayers,
         );
         $this->scheduler = new MainThreadPluginScheduler(
             $this->manager,

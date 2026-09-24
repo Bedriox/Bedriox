@@ -5,9 +5,10 @@ declare(strict_types=1);
 namespace Bedriox\Server\Tests\Command;
 
 use Bedriox\Api\Command\CommandContext;
-use Bedriox\Api\Command\CommandResult;
 use Bedriox\Api\Command\CommandSender;
 use Bedriox\Api\Command\CommandSenderType;
+use Bedriox\Api\Command\CommandSoftEnum;
+use Bedriox\Api\Command\CommandValues;
 use Bedriox\Api\Command\PlayerCommandSender;
 use Bedriox\Api\Inventory\Inventory;
 use Bedriox\Api\Player\GameMode;
@@ -15,7 +16,6 @@ use Bedriox\Api\Player\Player;
 use Bedriox\Api\World\Position;
 use Bedriox\Server\Command\Default\GamemodeCommand;
 use Bedriox\Server\Command\Default\GiveCommand;
-use Bedriox\Server\Command\Default\OnlinePlayerResolver;
 use Bedriox\Server\Command\Default\TeleportCommand;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -40,113 +40,84 @@ final class BuiltinGameplayCommandTest extends TestCase
     {
         $player = $this->player('Target', $expected === GameMode::SURVIVAL ? GameMode::CREATIVE : GameMode::SURVIVAL);
         $changes = [];
-        $command = new GamemodeCommand(
-            new OnlinePlayerResolver(static fn(): array => [$player]),
-            static function (Player $target, GameMode $mode) use (&$changes): bool {
-                $changes[] = [$target->uuid, $mode];
+        $command = new GamemodeCommand(static function (Player $target, GameMode $mode) use (&$changes): bool {
+            $changes[] = [$target->uuid, $mode];
 
-                return true;
-            },
-        );
-        $sender = new GameplayConsoleSender();
+            return true;
+        });
 
-        self::assertSame(CommandResult::SUCCESS, $command->execute(new CommandContext(
-            $sender,
+        $result = $command->execute(new CommandContext(
+            new GameplayConsoleSender(),
             'gamemode',
-            [$argument, 'target'],
-        )));
+            new CommandValues(['mode' => $argument, 'player' => $player]),
+        ));
+
+        self::assertTrue($result->isSuccess());
+        self::assertSame("Set Target's game mode to {$expected->value}.", $result->message());
         self::assertSame([[$player->uuid, $expected]], $changes);
-        self::assertSame("Set Target's game mode to {$expected->value}.", $sender->messages[0]);
         self::assertSame('bedriox.command.gamemode', $command->definition()->permission);
+        self::assertSame(
+            '/gamemode <mode:survival|creative|adventure|spectator|0|1|2|3|s|c|a|sp> [player]',
+            $command->defineArguments()->usage('gamemode')[0],
+        );
     }
 
     public function testGamemodeDefaultsToPlayerSenderButRequiresConsoleTarget(): void
     {
         $player = $this->player('Self');
         $changes = [];
-        $command = new GamemodeCommand(
-            new OnlinePlayerResolver(static fn(): array => [$player]),
-            static function (Player $target, GameMode $mode) use (&$changes): bool {
-                $changes[] = [$target->uuid, $mode];
+        $command = new GamemodeCommand(static function (Player $target, GameMode $mode) use (&$changes): bool {
+            $changes[] = [$target->uuid, $mode];
 
-                return true;
-            },
-        );
+            return true;
+        });
 
-        self::assertSame(CommandResult::USAGE, $command->execute(new CommandContext(
+        $consoleResult = $command->execute(new CommandContext(
             new GameplayConsoleSender(),
             'gamemode',
-            ['creative'],
-        )));
+            new CommandValues(['mode' => 'creative']),
+        ));
+        self::assertFalse($consoleResult->isSuccess());
+        self::assertSame('A player target is required when running this command from the console.', $consoleResult->message());
         self::assertSame([], $changes);
 
-        $sender = new GameplayPlayerSender($player);
-        self::assertSame(CommandResult::SUCCESS, $command->execute(new CommandContext(
-            $sender,
+        $playerResult = $command->execute(new CommandContext(
+            new GameplayPlayerSender($player),
             'gamemode',
-            ['creative'],
-        )));
+            new CommandValues(['mode' => 'creative']),
+        ));
+        self::assertTrue($playerResult->isSuccess());
         self::assertSame([[$player->uuid, GameMode::CREATIVE]], $changes);
     }
 
-    public function testGamemodeRejectsUnknownModesAndOfflinePlayersBeforeMutation(): void
-    {
-        $mutations = 0;
-        $command = new GamemodeCommand(
-            new OnlinePlayerResolver(static fn(): array => []),
-            static function () use (&$mutations): bool {
-                ++$mutations;
-
-                return true;
-            },
-        );
-        $sender = new GameplayConsoleSender();
-
-        self::assertSame(CommandResult::FAILURE, $command->execute(new CommandContext(
-            $sender,
-            'gamemode',
-            ['builder', 'Nobody'],
-        )));
-        self::assertSame('Unknown game mode.', array_pop($sender->messages));
-        self::assertSame(CommandResult::FAILURE, $command->execute(new CommandContext(
-            $sender,
-            'gamemode',
-            ['creative', 'Nobody'],
-        )));
-        self::assertSame('Player is not online.', array_pop($sender->messages));
-        self::assertSame(0, $mutations);
-    }
-
-    public function testGamemodeReportsAnAlreadyActiveModeWithoutEnqueueingMutation(): void
+    public function testGamemodeReportsAnAlreadyActiveModeWithoutMutation(): void
     {
         $player = $this->player('Target', GameMode::CREATIVE);
         $mutations = 0;
-        $command = new GamemodeCommand(
-            new OnlinePlayerResolver(static fn(): array => [$player]),
-            static function () use (&$mutations): bool {
-                ++$mutations;
+        $command = new GamemodeCommand(static function () use (&$mutations): bool {
+            ++$mutations;
 
-                return true;
-            },
-        );
-        $sender = new GameplayConsoleSender();
+            return true;
+        });
 
-        self::assertSame(CommandResult::SUCCESS, $command->execute(new CommandContext(
-            $sender,
+        $result = $command->execute(new CommandContext(
+            new GameplayConsoleSender(),
             'gamemode',
-            ['creative', 'Target'],
-        )));
+            new CommandValues(['mode' => 'creative', 'player' => $player]),
+        ));
+
+        self::assertTrue($result->isSuccess());
         self::assertSame(0, $mutations);
-        self::assertSame('Target is already in creative mode.', $sender->messages[0]);
+        self::assertSame('Target is already in creative mode.', $result->message());
     }
 
-    public function testGiveCanonicalizesItemsAndUsesDefaultOrExplicitAmounts(): void
+    public function testGiveUsesTypedPlayerAndDefaultOrExplicitAmounts(): void
     {
         $player = $this->player('Target');
         $grants = [];
         $validated = [];
         $command = new GiveCommand(
-            new OnlinePlayerResolver(static fn(): array => [$player]),
+            $this->itemEnum(['minecraft:diamond']),
             static function (Player $target, string $identifier, int $amount) use (&$grants): bool {
                 $grants[] = [$target->uuid, $identifier, $amount];
 
@@ -158,32 +129,31 @@ final class BuiltinGameplayCommandTest extends TestCase
                 return $identifier === 'minecraft:diamond';
             },
         );
-        $sender = new GameplayConsoleSender();
 
-        self::assertSame(CommandResult::SUCCESS, $command->execute(new CommandContext(
-            $sender,
-            'give',
-            ['target', 'DIAMOND'],
-        )));
-        self::assertSame(CommandResult::SUCCESS, $command->execute(new CommandContext(
-            $sender,
-            'give',
-            ['Target', 'minecraft:diamond', '64'],
-        )));
+        foreach ([1, 64] as $amount) {
+            $result = $command->execute(new CommandContext(
+                new GameplayConsoleSender(),
+                'give',
+                new CommandValues(['player' => $player, 'item' => $amount === 1 ? 'DIAMOND' : 'minecraft:diamond', 'amount' => $amount]),
+            ));
+            self::assertTrue($result->isSuccess());
+        }
+
         self::assertSame(['minecraft:diamond', 'minecraft:diamond'], $validated);
         self::assertSame([
             [$player->uuid, 'minecraft:diamond', 1],
             [$player->uuid, 'minecraft:diamond', 64],
         ], $grants);
         self::assertSame('bedriox.command.give', $command->definition()->permission);
+        self::assertSame('/give <player> <item> [amount]', $command->defineArguments()->usage('give')[0]);
     }
 
-    public function testGiveRejectsUnknownItemsInvalidAmountsAndOfflinePlayers(): void
+    public function testGiveRejectsUnknownItemsBeforeMutation(): void
     {
         $player = $this->player('Target');
         $grants = 0;
         $command = new GiveCommand(
-            new OnlinePlayerResolver(static fn(): array => [$player]),
+            $this->itemEnum(['minecraft:diamond']),
             static function () use (&$grants): bool {
                 ++$grants;
 
@@ -191,34 +161,19 @@ final class BuiltinGameplayCommandTest extends TestCase
             },
             static fn(string $identifier): bool => $identifier === 'minecraft:diamond',
         );
-        $sender = new GameplayConsoleSender();
 
-        self::assertSame(CommandResult::FAILURE, $command->execute(new CommandContext(
-            $sender,
+        $result = $command->execute(new CommandContext(
+            new GameplayConsoleSender(),
             'give',
-            ['Missing', 'diamond'],
-        )));
-        self::assertSame('Player is not online.', array_pop($sender->messages));
-        self::assertSame(CommandResult::FAILURE, $command->execute(new CommandContext(
-            $sender,
-            'give',
-            ['Target', 'not_real'],
-        )));
-        self::assertSame('Unknown item.', array_pop($sender->messages));
-        foreach (['0', '-1', '1.5', '32768'] as $amount) {
-            self::assertSame(CommandResult::FAILURE, $command->execute(new CommandContext(
-                $sender,
-                'give',
-                ['Target', 'diamond', $amount],
-            )));
-            $message = array_pop($sender->messages);
-            self::assertIsString($message);
-            self::assertStringStartsWith('Amount must be a whole number', $message);
-        }
+            new CommandValues(['player' => $player, 'item' => 'not_real', 'amount' => 1]),
+        ));
+
+        self::assertFalse($result->isSuccess());
+        self::assertSame('Unknown item.', $result->message());
         self::assertSame(0, $grants);
     }
 
-    public function testTeleportSupportsPlayerTargetsCoordinatesRotationAndRelativeValues(): void
+    public function testTeleportSupportsPlayerTargetsCoordinatesAndRotation(): void
     {
         $subject = $this->player('Subject');
         $destination = new Player(
@@ -233,7 +188,6 @@ final class BuiltinGameplayCommandTest extends TestCase
         );
         $teleports = [];
         $command = new TeleportCommand(
-            new OnlinePlayerResolver(static fn(): array => [$subject, $destination]),
             static function (Player $player, Position $position, ?float $yaw, ?float $pitch) use (&$teleports): bool {
                 $teleports[] = [$player->name, $position, $yaw, $pitch];
 
@@ -242,16 +196,27 @@ final class BuiltinGameplayCommandTest extends TestCase
         );
         $sender = new GameplayPlayerSender($subject);
 
-        self::assertSame(CommandResult::SUCCESS, $command->execute(new CommandContext($sender, 'tp', ['Destination'])));
+        $toPlayer = $command->execute(new CommandContext(
+            $sender,
+            'tp',
+            new CommandValues(['destinationPlayer' => $destination]),
+        ));
+        self::assertTrue($toPlayer->isSuccess());
+        self::assertSame('Teleported Subject to Destination.', $toPlayer->message());
         self::assertSame(50.0, $teleports[0][1]->x);
         self::assertSame(135.0, $teleports[0][2]);
         self::assertSame(-20.0, $teleports[0][3]);
 
-        self::assertSame(CommandResult::SUCCESS, $command->execute(new CommandContext(
+        $toPosition = $command->execute(new CommandContext(
             $sender,
             'teleport',
-            ['~2.5', '~', '~-3', '90', '30'],
-        )));
+            new CommandValues([
+                'destination' => new Position(2.5, 64.0, -3.0),
+                'yaw' => 90.0,
+                'pitch' => 30.0,
+            ]),
+        ));
+        self::assertTrue($toPosition->isSuccess());
         self::assertSame(2.5, $teleports[1][1]->x);
         self::assertSame(64.0, $teleports[1][1]->y);
         self::assertSame(-3.0, $teleports[1][1]->z);
@@ -274,7 +239,6 @@ final class BuiltinGameplayCommandTest extends TestCase
         );
         $calls = 0;
         $command = new TeleportCommand(
-            new OnlinePlayerResolver(static fn(): array => [$subject, $target]),
             static function () use (&$calls): bool {
                 ++$calls;
 
@@ -283,18 +247,25 @@ final class BuiltinGameplayCommandTest extends TestCase
         );
         $sender = new GameplayPlayerSender($subject, []);
 
-        self::assertSame(CommandResult::FAILURE, $command->execute(new CommandContext(
+        $permissionResult = $command->execute(new CommandContext(
             $sender,
             'tp',
-            ['Target', '0', '70', '0'],
-        )));
+            new CommandValues([
+                'subject' => $target,
+                'destination' => new Position(0.0, 70.0, 0.0),
+            ]),
+        ));
+        self::assertFalse($permissionResult->isSuccess());
+        self::assertSame('You do not have permission to teleport other players.', $permissionResult->message());
         self::assertSame(0, $calls);
 
-        self::assertSame(CommandResult::FAILURE, $command->execute(new CommandContext(
+        $boundsResult = $command->execute(new CommandContext(
             new GameplayPlayerSender($subject),
             'tp',
-            ['NaN', '64', '0'],
-        )));
+            new CommandValues(['destination' => new Position(30_000_001.0, 64.0, 0.0)]),
+        ));
+        self::assertFalse($boundsResult->isSuccess());
+        self::assertSame('Coordinates are outside the supported world bounds.', $boundsResult->message());
         self::assertSame(0, $calls);
     }
 
@@ -311,6 +282,61 @@ final class BuiltinGameplayCommandTest extends TestCase
             new Inventory(array_fill(0, 36, null), 0),
             gameMode: $gameMode,
         );
+    }
+
+    /** @param list<string> $values */
+    private function itemEnum(array $values): CommandSoftEnum
+    {
+        return new class ($values) implements CommandSoftEnum {
+            /** @param list<string> $values */
+            public function __construct(private array $values) {}
+
+            public function name(): string
+            {
+                return 'bedriox:item_identifiers';
+            }
+
+            public function values(): array
+            {
+                return $this->values;
+            }
+
+            public function replace(array $values): bool
+            {
+                if ($this->values === $values) {
+                    return false;
+                }
+                $this->values = $values;
+
+                return true;
+            }
+
+            public function add(string $value): bool
+            {
+                if (in_array($value, $this->values, true)) {
+                    return false;
+                }
+                $this->values[] = $value;
+
+                return true;
+            }
+
+            public function remove(string $value): bool
+            {
+                $index = array_search($value, $this->values, true);
+                if ($index === false) {
+                    return false;
+                }
+                array_splice($this->values, $index, 1);
+
+                return true;
+            }
+
+            public function isRegistered(): bool
+            {
+                return true;
+            }
+        };
     }
 }
 

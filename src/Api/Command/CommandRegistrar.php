@@ -6,8 +6,10 @@ namespace Bedriox\Api\Command;
 
 interface CommandRegistrar
 {
-    /** @param callable(CommandContext): CommandResult $handler */
-    public function register(CommandDefinition $definition, callable $handler): CommandSubscription;
+    public function register(Command $command): CommandSubscription;
+
+    /** @param list<string> $values */
+    public function registerSoftEnum(string $name, array $values = []): CommandSoftEnum;
 
     public function submitJob(CommandJob $job): CommandJobSubscription;
 }

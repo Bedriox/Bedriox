@@ -5,9 +5,9 @@ declare(strict_types=1);
 namespace Bedriox\Server\Tests\Command;
 
 use Bedriox\Api\Command\CommandContext;
-use Bedriox\Api\Command\CommandResult;
 use Bedriox\Api\Command\CommandSender;
 use Bedriox\Api\Command\CommandSenderType;
+use Bedriox\Api\Command\CommandValues;
 use Bedriox\Server\Command\Default\GarbageCollectionStatus;
 use Bedriox\Server\Command\Default\GarbageCollectorCommand;
 use Bedriox\Server\Observability\Memory\GarbageCollectionReport;
@@ -30,7 +30,11 @@ final class GarbageCollectorCommandTest extends TestCase
         $command = new GarbageCollectorCommand($status, self::collector(...), self::chunkUnload(...));
 
         $bare = new GarbageCollectorTestSender();
-        self::assertSame(CommandResult::SUCCESS, $command->execute(new CommandContext($bare, 'gc', [])));
+        self::assertTrue($command->execute(new CommandContext(
+            $bare,
+            'gc',
+            new CommandValues(['operation' => 'status']),
+        ))->isSuccess());
         self::assertSame([
             '--------- Bedriox Garbage Collection ---------',
             'Memory: 100.0 MiB used, 128.0 MiB allocated, 256.0 MiB peak, 512.0 MiB limit (25.0%)',
@@ -41,7 +45,11 @@ final class GarbageCollectorCommandTest extends TestCase
         ], $bare->messages);
 
         $explicit = new GarbageCollectorTestSender();
-        self::assertSame(CommandResult::SUCCESS, $command->execute(new CommandContext($explicit, 'gc', ['StAtUs'])));
+        self::assertTrue($command->execute(new CommandContext(
+            $explicit,
+            'gc',
+            new CommandValues(['operation' => 'status']),
+        ))->isSuccess());
         self::assertSame($bare->messages, $explicit->messages);
         self::assertSame(2, $statusCalls);
     }
@@ -60,7 +68,11 @@ final class GarbageCollectorCommandTest extends TestCase
         );
         $sender = new GarbageCollectorTestSender();
 
-        self::assertSame(CommandResult::SUCCESS, $command->execute(new CommandContext($sender, 'gc', ['run'])));
+        self::assertTrue($command->execute(new CommandContext(
+            $sender,
+            'gc',
+            new CommandValues(['operation' => 'run']),
+        ))->isSuccess());
         self::assertSame(1, $collectionCalls);
         self::assertSame([
             '--------- Garbage Collection Result ---------',
@@ -86,7 +98,11 @@ final class GarbageCollectorCommandTest extends TestCase
         );
         $sender = new GarbageCollectorTestSender();
 
-        self::assertSame(CommandResult::SUCCESS, $command->execute(new CommandContext($sender, 'gc', ['chunks'])));
+        self::assertTrue($command->execute(new CommandContext(
+            $sender,
+            'gc',
+            new CommandValues(['operation' => 'chunks']),
+        ))->isSuccess());
         self::assertSame(1, $unloadCalls);
         self::assertSame([
             '--------- Chunk Cleanup Result ---------',
@@ -97,7 +113,7 @@ final class GarbageCollectorCommandTest extends TestCase
         ], $sender->messages);
     }
 
-    public function testInvalidUsageDoesNotInvokeRuntimeCallbacks(): void
+    public function testSchemaDefinesTheBoundedOperationsWithoutInvokingRuntimeCallbacks(): void
     {
         $calls = 0;
         $status = static function () use (&$calls): GarbageCollectionStatus {
@@ -116,12 +132,8 @@ final class GarbageCollectorCommandTest extends TestCase
             return self::chunkUnload();
         };
         $command = new GarbageCollectorCommand($status, $collect, $chunks);
-        $sender = new GarbageCollectorTestSender();
-
-        self::assertSame(CommandResult::USAGE, $command->execute(new CommandContext($sender, 'gc', ['unknown'])));
-        self::assertSame(CommandResult::USAGE, $command->execute(new CommandContext($sender, 'gc', ['run', 'extra'])));
+        self::assertSame(['/gc [operation:status|run|chunks]'], $command->defineArguments()->usage('gc'));
         self::assertSame(0, $calls);
-        self::assertSame([], $sender->messages);
     }
 
     public function testStatusRejectsNegativeCounters(): void

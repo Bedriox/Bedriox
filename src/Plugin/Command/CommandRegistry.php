@@ -4,13 +4,16 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Plugin\Command;
 
+use Bedriox\Api\Command\Command;
 use Bedriox\Api\Command\CommandContext;
 use Bedriox\Api\Command\CommandDefinition;
 use Bedriox\Api\Command\CommandJob;
 use Bedriox\Api\Command\CommandJobSubscription;
+use Bedriox\Api\Command\CommandParameterType;
 use Bedriox\Api\Command\CommandResult;
 use Bedriox\Api\Command\CommandSender;
 use Bedriox\Api\Command\CommandSenderType;
+use Bedriox\Api\Command\CommandSoftEnum;
 use Bedriox\Api\Command\CommandSubscription;
 use Bedriox\Api\Event\Command\CommandDispatchedEvent;
 use Bedriox\Api\Event\Command\CommandPreDispatchEvent;
@@ -37,6 +40,17 @@ final class CommandRegistry
     private int $nextJobId = 1;
     private ?int $pollingJobId = null;
     private bool $pollingJobCancelled = false;
+    /** @var array<int, CommandSoftEnumRecord> */
+    private array $softEnums = [];
+    /** @var array<int, int> Object ID to registry ID. */
+    private array $softEnumObjects = [];
+    /** @var array<string, int> Lowercase wire name to registry ID. */
+    private array $softEnumNames = [];
+    /** @var array<string, CommandSoftEnumUpdate> */
+    private array $pendingSoftEnumUpdates = [];
+    private int $nextSoftEnumId = 1;
+    private int $schemaRevision = 0;
+    private readonly CommandArgumentBinder $binder;
 
     public function __construct(
         private readonly PluginRuntimeControl $plugins,
@@ -48,15 +62,21 @@ final class CommandRegistry
         private readonly int $maximumCommands = 1024,
         private readonly int $maximumCommandsPerPlugin = 128,
         private readonly int $maximumJobs = 64,
+        private readonly int $maximumSoftEnums = 256,
+        private readonly int $maximumSoftEnumsPerPlugin = 32,
+        ?Closure $onlinePlayers = null,
     ) {
         if ($maximumCommands < 1 || $maximumCommands > 4096
             || $maximumCommandsPerPlugin < 1 || $maximumCommandsPerPlugin > $maximumCommands
-            || $maximumJobs < 1 || $maximumJobs > 1024) {
+            || $maximumJobs < 1 || $maximumJobs > 1024
+            || $maximumSoftEnums < 1 || $maximumSoftEnums > 1_024
+            || $maximumSoftEnumsPerPlugin < 1 || $maximumSoftEnumsPerPlugin > $maximumSoftEnums) {
             throw new \InvalidArgumentException('Invalid command registry limits.');
         }
+        $this->binder = new CommandArgumentBinder($onlinePlayers ?? static fn(): array => []);
     }
 
-    public function register(string $plugin, CommandDefinition $definition, callable $handler): CommandSubscription
+    public function register(string $plugin, Command $command): CommandSubscription
     {
         if (!$this->plugins->isEnabled($plugin)) {
             throw new PluginException("Disabled plugin {$plugin} cannot register commands.");
@@ -73,6 +93,9 @@ final class CommandRegistry
         if ($owned >= $this->maximumCommandsPerPlugin) {
             throw new PluginException("Plugin {$plugin} reached its command registration limit.");
         }
+        $definition = $command->definition();
+        $arguments = $command->defineArguments();
+        $this->requireOwnedSoftEnums($plugin, true, $arguments);
         $id = $this->nextId++;
         $primary = strtolower($definition->name);
         if (isset($this->labels[$primary])) {
@@ -83,32 +106,27 @@ final class CommandRegistry
                 throw new PluginException("Command alias already registered: {$alias}");
             }
         }
-        $callback = static function (CommandContext $context) use ($handler): CommandResult {
-            $result = $handler($context);
-            if (!$result instanceof CommandResult) {
-                throw new PluginException('Command handlers must return CommandResult.');
-            }
-
-            return $result;
-        };
-        $command = new RegisteredCommand($id, $this->sequence++, $plugin, true, $definition, $callback);
-        $this->commands[$id] = $command;
+        $registered = new RegisteredCommand($id, $this->sequence++, $plugin, true, $command, $definition, $arguments);
+        $this->commands[$id] = $registered;
         $this->labels[$primary] = $id;
         $this->labels[strtolower($plugin . ':' . $definition->name)] = $id;
         foreach ($definition->aliases as $alias) {
             $this->labels[strtolower($alias)] = $id;
         }
         $this->ownership->own($plugin, "command:{$id}", fn() => $this->unregister($id));
+        ++$this->schemaRevision;
 
         return new OwnedCommandSubscription($this, $id);
     }
 
-    /** @param callable(CommandContext): CommandResult $handler */
-    public function registerServer(CommandDefinition $definition, callable $handler): CommandSubscription
+    public function registerServer(Command $command): CommandSubscription
     {
         if (count($this->commands) >= $this->maximumCommands) {
             throw new PluginException('The command registration limit has been reached.');
         }
+        $definition = $command->definition();
+        $arguments = $command->defineArguments();
+        $this->requireOwnedSoftEnums('Bedriox', false, $arguments);
         $id = $this->nextId++;
         $primary = strtolower($definition->name);
         $labels = [$primary, 'bedriox:' . $primary];
@@ -120,12 +138,98 @@ final class CommandRegistry
                 throw new PluginException("Command label already registered: {$label}");
             }
         }
-        $callback = Closure::fromCallable($handler);
-        $this->commands[$id] = new RegisteredCommand($id, $this->sequence++, 'Bedriox', false, $definition, $callback);
+        $this->commands[$id] = new RegisteredCommand(
+            $id,
+            $this->sequence++,
+            'Bedriox',
+            false,
+            $command,
+            $definition,
+            $arguments,
+        );
         foreach ($labels as $label) {
             $this->labels[$label] = $id;
         }
+        ++$this->schemaRevision;
         return new OwnedCommandSubscription($this, $id);
+    }
+
+    /** @param list<string> $values */
+    public function registerSoftEnum(string $plugin, string $name, array $values = []): CommandSoftEnum
+    {
+        if (!$this->plugins->isEnabled($plugin)) {
+            throw new PluginException("Disabled plugin {$plugin} cannot register command soft enums.");
+        }
+        $owned = 0;
+        foreach ($this->softEnums as $record) {
+            if ($record->pluginOwned && strcasecmp($record->owner, $plugin) === 0) {
+                ++$owned;
+            }
+        }
+        if ($owned >= $this->maximumSoftEnumsPerPlugin) {
+            throw new PluginException("Plugin {$plugin} reached its command soft-enum registration limit.");
+        }
+        self::validateLocalSoftEnumName($name);
+        $pluginNamespace = strtolower((string) preg_replace('/[^a-z0-9_.-]+/i', '_', $plugin));
+
+        return $this->createSoftEnum(
+            $plugin,
+            true,
+            "bedriox:plugin:{$pluginNamespace}:" . strtolower($name),
+            $values,
+        );
+    }
+
+    /** @param list<string> $values */
+    public function registerServerSoftEnum(string $name, array $values = []): CommandSoftEnum
+    {
+        if (preg_match('/^[a-z0-9_.-]+:[a-z0-9_.:-]+$/D', $name) !== 1 || strlen($name) > 128) {
+            throw new PluginException('A server command soft-enum name must be canonical, namespaced, and bounded.');
+        }
+
+        return $this->createSoftEnum('Bedriox', false, strtolower($name), $values);
+    }
+
+    /** @return list<string> */
+    public function softEnumValues(int $id): array
+    {
+        return ($this->softEnums[$id] ?? throw new PluginException('Command soft enum is no longer registered.'))->values;
+    }
+
+    /** @param list<string> $values */
+    public function replaceSoftEnum(int $id, array $values): bool
+    {
+        $record = $this->softEnums[$id] ?? throw new PluginException('Command soft enum is no longer registered.');
+        $normalized = self::normalizeSoftEnumValues($values);
+        if ($record->values === $normalized) {
+            return false;
+        }
+        $record->values = $normalized;
+        $this->pendingSoftEnumUpdates[strtolower($record->name)] = new CommandSoftEnumUpdate(
+            $record->name,
+            $normalized,
+        );
+
+        return true;
+    }
+
+    public function hasSoftEnum(int $id): bool
+    {
+        return isset($this->softEnums[$id]);
+    }
+
+    public function schemaRevision(): int
+    {
+        return $this->schemaRevision;
+    }
+
+    /** @return list<CommandSoftEnumUpdate> */
+    public function drainSoftEnumUpdates(): array
+    {
+        $updates = array_values($this->pendingSoftEnumUpdates);
+        $this->pendingSoftEnumUpdates = [];
+
+        return $updates;
     }
 
     public function dispatch(CommandSender $sender, string $line): CommandResult
@@ -139,33 +243,43 @@ final class CommandRegistry
         } catch (PluginException $failure) {
             $sender->sendMessage($failure->getMessage());
 
-            return CommandResult::FAILURE;
+            return CommandResult::failure($failure->getMessage());
         }
         $rawLabel = array_shift($tokens);
         if (!is_string($rawLabel)) {
-            return CommandResult::FAILURE;
+            return CommandResult::failure('The command line did not contain a command.');
         }
         $label = strtolower($rawLabel);
         $command = isset($this->labels[$label]) ? ($this->commands[$this->labels[$label]] ?? null) : null;
         if (!$command instanceof RegisteredCommand || ($command->pluginOwned && !$this->plugins->isEnabled($command->owner))) {
             $sender->sendMessage('Unknown command.');
 
-            return CommandResult::FAILURE;
+            return CommandResult::failure('Unknown command.');
         }
         if (!$command->definition->allowedSenders->allows($sender->type())) {
             $sender->sendMessage('This command cannot be used by this sender.');
 
-            return CommandResult::FAILURE;
+            return CommandResult::failure('This command cannot be used by this sender.');
         }
         if ($command->definition->permission !== null && !$sender->hasPermission($command->definition->permission)) {
             $sender->sendMessage('You do not have permission to use this command.');
 
-            return CommandResult::FAILURE;
+            return CommandResult::failure('You do not have permission to use this command.');
         }
-        $pre = new CommandPreDispatchEvent($sender, $command->definition->name, $tokens, $command->owner);
+        try {
+            $values = $this->binder->bind($command->arguments, $sender, $tokens);
+        } catch (CommandBindingException $failure) {
+            $sender->sendMessage($failure->getMessage());
+            foreach ($command->arguments->usage($command->definition->name) as $usage) {
+                $sender->sendMessage('Usage: ' . $usage);
+            }
+
+            return CommandResult::failure($failure->getMessage());
+        }
+        $pre = new CommandPreDispatchEvent($sender, $command->definition->name, $values, $command->owner);
         $this->events->dispatch($pre);
         if ($pre->isCancelled() || !$this->has($command->id)) {
-            return CommandResult::FAILURE;
+            return CommandResult::failure('Command dispatch was cancelled.');
         }
         $frame = $command->pluginOwned ? new PluginExecutionFrame(
             $command->owner,
@@ -179,11 +293,11 @@ final class CommandRegistry
             $this->actions->begin();
         }
         try {
-            $result = ($command->handler)(new CommandContext($sender, $label, $tokens));
+            $result = $command->command->execute(new CommandContext($sender, $label, $values));
             if ($command->pluginOwned && !$this->plugins->isEnabled($command->owner)) {
                 $this->actions->discard();
 
-                return CommandResult::FAILURE;
+                return CommandResult::failure('The command owner was disabled during execution.');
             }
             if ($frame !== null) {
                 $this->actions->commit();
@@ -198,19 +312,19 @@ final class CommandRegistry
                 $sender->sendMessage('The command failed internally.');
             }
 
-            return CommandResult::FAILURE;
+            return CommandResult::failure('The command failed internally.');
         } finally {
             if ($frame !== null) {
                 $this->execution->leave();
             }
         }
-        if ($result === CommandResult::USAGE) {
-            $sender->sendMessage('Usage: ' . $command->definition->usage);
+        if ($result->message() !== null) {
+            $sender->sendMessage($result->message());
         }
         $this->events->dispatch(new CommandDispatchedEvent(
             $sender,
             $command->definition->name,
-            $tokens,
+            $values,
             $command->owner,
             $result,
         ));
@@ -315,6 +429,7 @@ final class CommandRegistry
             }
         }
         unset($this->commands[$id]);
+        ++$this->schemaRevision;
         if ($command->pluginOwned) {
             $this->ownership->forget($command->owner, "command:{$id}");
         }
@@ -328,6 +443,116 @@ final class CommandRegistry
     public function count(): int
     {
         return count($this->commands);
+    }
+
+    private function unregisterSoftEnum(int $id): void
+    {
+        $record = $this->softEnums[$id] ?? null;
+        if (!$record instanceof CommandSoftEnumRecord) {
+            return;
+        }
+        foreach ($this->commands as $command) {
+            if ($this->commandUsesSoftEnum($command, $record->handle)) {
+                $this->unregister($command->id);
+            }
+        }
+        unset(
+            $this->softEnums[$id],
+            $this->softEnumObjects[spl_object_id($record->handle)],
+            $this->softEnumNames[strtolower($record->name)],
+            $this->pendingSoftEnumUpdates[strtolower($record->name)],
+        );
+        if ($record->pluginOwned) {
+            $this->ownership->forget($record->owner, "command-soft-enum:{$id}");
+        }
+    }
+
+    /** @param list<string> $values */
+    private function createSoftEnum(string $owner, bool $pluginOwned, string $name, array $values): CommandSoftEnum
+    {
+        if (count($this->softEnums) >= $this->maximumSoftEnums) {
+            throw new PluginException('The command soft-enum registration limit has been reached.');
+        }
+        $key = strtolower($name);
+        if (isset($this->softEnumNames[$key])) {
+            throw new PluginException("Command soft-enum name already registered: {$name}");
+        }
+        $values = self::normalizeSoftEnumValues($values);
+        $id = $this->nextSoftEnumId++;
+        $handle = new RegisteredCommandSoftEnum($id, $name, $this);
+        $record = new CommandSoftEnumRecord($id, $owner, $pluginOwned, $name, $values, $handle);
+        $this->softEnums[$id] = $record;
+        $this->softEnumObjects[spl_object_id($handle)] = $id;
+        $this->softEnumNames[$key] = $id;
+        if ($pluginOwned) {
+            $this->ownership->own($owner, "command-soft-enum:{$id}", fn() => $this->unregisterSoftEnum($id));
+        }
+
+        return $handle;
+    }
+
+    private function requireOwnedSoftEnums(string $owner, bool $pluginOwned, \Bedriox\Api\Command\CommandArguments $arguments): void
+    {
+        foreach ($arguments->overloads() as $overload) {
+            foreach ($overload->parameters() as $parameter) {
+                if ($parameter->type() !== CommandParameterType::SOFT_ENUM) {
+                    continue;
+                }
+                $softEnum = $parameter->softEnumValue();
+                $id = $softEnum === null ? null : ($this->softEnumObjects[spl_object_id($softEnum)] ?? null);
+                $record = $id === null ? null : ($this->softEnums[$id] ?? null);
+                if (!$record instanceof CommandSoftEnumRecord
+                    || $record->pluginOwned !== $pluginOwned
+                    || strcasecmp($record->owner, $owner) !== 0) {
+                    throw new PluginException('Command soft enums must be registered by the command owner.');
+                }
+            }
+        }
+    }
+
+    private function commandUsesSoftEnum(RegisteredCommand $command, CommandSoftEnum $softEnum): bool
+    {
+        foreach ($command->arguments->overloads() as $overload) {
+            foreach ($overload->parameters() as $parameter) {
+                if ($parameter->softEnumValue() === $softEnum) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static function validateLocalSoftEnumName(string $name): void
+    {
+        if (preg_match('/^[a-z][a-z0-9_.-]{0,63}$/D', $name) !== 1) {
+            throw new PluginException('A command soft-enum name must be a bounded lowercase identifier.');
+        }
+    }
+
+    /**
+     * @param array<array-key, mixed> $values
+     * @return list<string>
+     */
+    private static function normalizeSoftEnumValues(array $values): array
+    {
+        if (count($values) > 4_096) {
+            throw new PluginException('A command soft enum may contain at most 4096 values.');
+        }
+        $normalized = [];
+        foreach ($values as $value) {
+            if (!is_string($value) || $value === '' || strlen($value) > 256
+                || preg_match('//u', $value) !== 1 || str_contains($value, "\0")) {
+                throw new PluginException('Command soft-enum values must be valid, non-empty, bounded text.');
+            }
+            $key = strtolower($value);
+            if (isset($normalized[$key])) {
+                throw new PluginException('Command soft-enum values must be unique ignoring case.');
+            }
+            $normalized[$key] = $value;
+        }
+
+        return array_values($normalized);
     }
 
     /** @return list<CommandDefinition> */
@@ -352,5 +577,19 @@ final class CommandRegistry
             $definitions[] = $command->definition;
         }
         return $definitions;
+    }
+
+    /**
+     * @param callable(string): bool $permissionResolver
+     * @return list<RegisteredCommand>
+     */
+    public function availableCommands(CommandSenderType $senderType, callable $permissionResolver): array
+    {
+        return array_values(array_filter(
+            $this->commands,
+            fn(RegisteredCommand $command): bool => (!$command->pluginOwned || $this->plugins->isEnabled($command->owner))
+                && $command->definition->allowedSenders->allows($senderType)
+                && ($command->definition->permission === null || $permissionResolver($command->definition->permission)),
+        ));
     }
 }

@@ -4,19 +4,25 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Plugin\Command;
 
-use Bedriox\Api\Command\CommandDefinition;
+use Bedriox\Api\Command\Command;
 use Bedriox\Api\Command\CommandJob;
 use Bedriox\Api\Command\CommandJobSubscription;
 use Bedriox\Api\Command\CommandRegistrar;
+use Bedriox\Api\Command\CommandSoftEnum;
 use Bedriox\Api\Command\CommandSubscription;
 
 final readonly class OwnedCommandRegistrar implements CommandRegistrar
 {
     public function __construct(private string $plugin, private CommandRegistry $registry) {}
 
-    public function register(CommandDefinition $definition, callable $handler): CommandSubscription
+    public function register(Command $command): CommandSubscription
     {
-        return $this->registry->register($this->plugin, $definition, $handler);
+        return $this->registry->register($this->plugin, $command);
+    }
+
+    public function registerSoftEnum(string $name, array $values = []): CommandSoftEnum
+    {
+        return $this->registry->registerSoftEnum($this->plugin, $name, $values);
     }
 
     public function submitJob(CommandJob $job): CommandJobSubscription

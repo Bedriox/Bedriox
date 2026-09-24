@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Command\Default;
 
+use Bedriox\Api\Command\CommandArguments;
 use Bedriox\Api\Command\CommandContext;
 use Bedriox\Api\Command\CommandDefinition;
+use Bedriox\Api\Command\CommandParameter;
 use Bedriox\Api\Command\CommandResult;
 use Bedriox\Api\Command\CommandSender;
 use Bedriox\Api\TextFormat;
@@ -31,25 +33,26 @@ final readonly class StatusCommand implements BuiltinCommand
         return new CommandDefinition(
             'status',
             'Shows server performance and workload information.',
-            'status [advanced]',
             permission: 'bedriox.command.status',
         );
     }
 
+    public function defineArguments(): CommandArguments
+    {
+        return CommandArguments::create()
+            ->addArgument(CommandParameter::choice('detail', ['advanced', 'advance'])->optional());
+    }
+
     public function execute(CommandContext $context): CommandResult
     {
-        $arguments = $context->arguments();
-        if ($arguments === []) {
+        if (!$context->values()->has('detail')) {
             $this->sendBasic($context->sender(), ($this->snapshot)());
 
-            return CommandResult::SUCCESS;
-        }
-        if (count($arguments) !== 1 || !in_array(strtolower($arguments[0]), ['advanced', 'advance'], true)) {
-            return CommandResult::USAGE;
+            return CommandResult::success();
         }
         $this->sendAdvanced($context->sender(), ($this->snapshot)());
 
-        return CommandResult::SUCCESS;
+        return CommandResult::success();
     }
 
     private function sendBasic(CommandSender $sender, PerformanceSnapshot $status): void

@@ -7,11 +7,11 @@ namespace Bedriox\Server\Tests\Command;
 use Bedriox\Api\Command\CommandContext;
 use Bedriox\Api\Command\CommandSender;
 use Bedriox\Api\Command\CommandSenderType;
+use Bedriox\Api\Command\CommandValues;
 use Bedriox\Api\Inventory\Inventory;
 use Bedriox\Api\Player\Player;
 use Bedriox\Api\World\Position;
 use Bedriox\Server\Command\Default\DeopCommand;
-use Bedriox\Server\Command\Default\OnlinePlayerResolver;
 use Bedriox\Server\Command\Default\OpCommand;
 use Bedriox\Server\Command\Default\PermissionCommand;
 use Bedriox\Server\Permission\PermissionStore;
@@ -42,25 +42,24 @@ final class DefaultCommandAuthorityTest extends TestCase
     {
         $store = $this->store();
         $player = $this->player();
-        $resolver = new OnlinePlayerResolver(static fn(): array => [$player]);
         $changes = [];
         $refresh = static function (Player $changed, bool $includeAbilities) use (&$changes): void {
             $changes[] = [$changed->uuid, $includeAbilities];
         };
         $sender = new AuthorityCommandSender();
 
-        (new OpCommand($store, $resolver, $refresh))->execute(new CommandContext($sender, 'op', ['Player']));
+        (new OpCommand($store, $refresh))->execute(new CommandContext($sender, 'op', new CommandValues(['player' => $player])));
         self::assertSame([[self::UUID, true]], $changes);
         self::assertTrue($store->isOperator(self::UUID));
 
-        (new OpCommand($store, $resolver, $refresh))->execute(new CommandContext($sender, 'op', ['Player']));
+        (new OpCommand($store, $refresh))->execute(new CommandContext($sender, 'op', new CommandValues(['player' => $player])));
         self::assertSame([[self::UUID, true]], $changes, 'An unchanged operator assignment must not refresh the client.');
 
-        (new DeopCommand($store, $resolver, $refresh))->execute(new CommandContext($sender, 'deop', ['Player']));
+        (new DeopCommand($store, $refresh))->execute(new CommandContext($sender, 'deop', new CommandValues(['player' => $player])));
         self::assertSame([[self::UUID, true], [self::UUID, true]], $changes);
         self::assertFalse($store->isOperator(self::UUID));
 
-        (new DeopCommand($store, $resolver, $refresh))->execute(new CommandContext($sender, 'deop', ['Player']));
+        (new DeopCommand($store, $refresh))->execute(new CommandContext($sender, 'deop', new CommandValues(['player' => $player])));
         self::assertCount(2, $changes, 'An unchanged deoperator assignment must not refresh the client.');
     }
 
@@ -68,24 +67,39 @@ final class DefaultCommandAuthorityTest extends TestCase
     {
         $store = $this->store();
         $player = $this->player();
-        $resolver = new OnlinePlayerResolver(static fn(): array => [$player]);
         $changes = [];
         $refresh = static function (Player $changed, bool $includeAbilities) use (&$changes): void {
             $changes[] = [$changed->uuid, $includeAbilities];
         };
-        $command = new PermissionCommand($store, $resolver, $refresh);
+        $command = new PermissionCommand($store, $refresh);
         $sender = new AuthorityCommandSender();
 
-        $command->execute(new CommandContext($sender, 'permission', ['grant', 'Player', 'example.use']));
+        $command->execute(new CommandContext($sender, 'permission', new CommandValues([
+            'grant' => 'grant',
+            'player' => $player,
+            'node' => 'example.use',
+        ])));
         self::assertSame([[self::UUID, false]], $changes);
 
-        $command->execute(new CommandContext($sender, 'permission', ['grant', 'Player', 'example.use']));
+        $command->execute(new CommandContext($sender, 'permission', new CommandValues([
+            'grant' => 'grant',
+            'player' => $player,
+            'node' => 'example.use',
+        ])));
         self::assertSame([[self::UUID, false]], $changes, 'An unchanged grant must not refresh the client.');
 
-        $command->execute(new CommandContext($sender, 'permission', ['revoke', 'Player', 'example.use']));
+        $command->execute(new CommandContext($sender, 'permission', new CommandValues([
+            'revoke' => 'revoke',
+            'player' => $player,
+            'node' => 'example.use',
+        ])));
         self::assertSame([[self::UUID, false], [self::UUID, false]], $changes);
 
-        $command->execute(new CommandContext($sender, 'permission', ['revoke', 'Player', 'example.use']));
+        $command->execute(new CommandContext($sender, 'permission', new CommandValues([
+            'revoke' => 'revoke',
+            'player' => $player,
+            'node' => 'example.use',
+        ])));
         self::assertCount(2, $changes, 'An unchanged revoke must not refresh the client.');
     }
 

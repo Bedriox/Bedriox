@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Command;
 
+use Bedriox\Api\Command\CommandSoftEnum;
 use Bedriox\Api\Player\Player;
 use Bedriox\Server\Command\Default\BuiltinCommand;
 use Bedriox\Server\Command\Default\DeopCommand;
@@ -33,6 +34,7 @@ final readonly class BuiltinCommandRegistrar
     /**
      * @param Closure(): list<Player> $players
      * @param Closure(): void $stop
+     * @param Closure(): list<string> $itemIdentifiers
      * @param Closure(Player, \Bedriox\Api\Player\GameMode): bool|null $changeGameMode
      * @param Closure(Player, string, int): bool|null $giveItem
      * @param Closure(string): bool|null $itemExists
@@ -47,6 +49,7 @@ final readonly class BuiltinCommandRegistrar
         private PermissionStore $permissions,
         private Closure $players,
         private Closure $stop,
+        private Closure $itemIdentifiers,
         private ?Closure $authorityChanged = null,
         private ?Closure $changeGameMode = null,
         private ?Closure $giveItem = null,
@@ -58,28 +61,34 @@ final readonly class BuiltinCommandRegistrar
         private ?Closure $unloadChunks = null,
     ) {}
 
-    public function register(): void
+    public function register(): CommandSoftEnum
     {
+        $itemIdentifiers = $this->commands->registerServerSoftEnum(
+            'bedriox:item_identifiers',
+            ($this->itemIdentifiers)(),
+        );
         $players = new OnlinePlayerResolver($this->players);
-        foreach ($this->commands($players) as $command) {
-            $this->commands->registerServer($command->definition(), $command->execute(...));
+        foreach ($this->commands($players, $itemIdentifiers) as $command) {
+            $this->commands->registerServer($command);
         }
+
+        return $itemIdentifiers;
     }
 
     /** @return list<BuiltinCommand> */
-    private function commands(OnlinePlayerResolver $players): array
+    private function commands(OnlinePlayerResolver $players, CommandSoftEnum $itemIdentifiers): array
     {
         $commands = [
             new VersionCommand(),
             new HelpCommand($this->commands),
             new ListCommand($players),
             new StopCommand($this->stop),
-            new OpCommand($this->permissions, $players, $this->authorityChanged),
-            new DeopCommand($this->permissions, $players, $this->authorityChanged),
-            new PermissionCommand($this->permissions, $players, $this->authorityChanged),
-            new GamemodeCommand($players, $this->changeGameMode),
-            new GiveCommand($players, $this->giveItem, $this->itemExists),
-            new TeleportCommand($players, $this->teleport),
+            new OpCommand($this->permissions, $this->authorityChanged),
+            new DeopCommand($this->permissions, $this->authorityChanged),
+            new PermissionCommand($this->permissions, $this->authorityChanged),
+            new GamemodeCommand($this->changeGameMode),
+            new GiveCommand($itemIdentifiers, $this->giveItem, $this->itemExists),
+            new TeleportCommand($this->teleport),
         ];
         if ($this->status !== null) {
             $commands[] = new StatusCommand($this->status);

@@ -4,9 +4,12 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Runtime;
 
+use Bedriox\Api\Command\AbstractCommand;
+use Bedriox\Api\Command\CommandArguments;
 use Bedriox\Api\Command\CommandContext;
-use Bedriox\Api\Command\CommandDefinition;
+use Bedriox\Api\Command\CommandParameter;
 use Bedriox\Api\Command\CommandResult;
+use Bedriox\Api\Command\CommandSoftEnum;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Batch\BatchLimits;
 use Bedriox\Protocol\Batch\BedrockBatch;
@@ -49,10 +52,12 @@ use Bedriox\Protocol\Packet\ResourcePackClientResponsePacket;
 use Bedriox\Protocol\Packet\ResourcePackResponseStatus;
 use Bedriox\Protocol\Packet\ServerToClientHandshakePacket;
 use Bedriox\Protocol\Packet\SetLocalPlayerAsInitializedPacket;
+use Bedriox\Protocol\Packet\SoftEnumUpdateType;
 use Bedriox\Protocol\Packet\SubChunkRequestPacket;
 use Bedriox\Protocol\Packet\SwapItemStackRequestAction;
 use Bedriox\Protocol\Packet\TextPacket;
 use Bedriox\Protocol\Packet\UpdateAbilitiesPacket;
+use Bedriox\Protocol\Packet\UpdateSoftEnumPacket;
 use Bedriox\Protocol\Packet\VoxelShapesPacket;
 use Bedriox\Protocol\ProtocolVersion;
 use Bedriox\Protocol\Security\HandshakeJwt;
@@ -435,6 +440,151 @@ final class ServerRuntimeTest extends TestCase
         $clock->advance(50_000_000);
         self::assertTrue($runtime->poll());
         self::assertSame([], $world->snapshot()->players);
+    }
+
+    public function testPlayerLifecycleReplacesOnlinePlayerCommandSuggestions(): void
+    {
+        $directory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'bedriox-runtime-command-enum-' . bin2hex(random_bytes(8));
+        $permissions = new PermissionStore($directory . DIRECTORY_SEPARATOR . 'permissions.json');
+        $commands = $this->authorityCommands();
+        $transport = new FakeConnectedTransport();
+        $clock = new RuntimeTestClock();
+        $world = new WorldSimulation();
+        $loginFactory = new RuntimeLoginFactory(uniqueIdentities: true, uniqueDisplayNames: true);
+        $runtime = new ServerRuntime(
+            $transport,
+            $loginFactory,
+            new BedrockPlayChannelFactory(
+                new EmptyInitializationFactory(),
+                commandRegistry: $commands,
+                permissionStore: $permissions,
+            ),
+            $world,
+            new FixedRateWorldLoop($world, $clock),
+            new RecordingEventEncoder(),
+            commandRegistry: $commands,
+            permissionStore: $permissions,
+        );
+        $first = new SessionInfo('127.0.0.1', 20_001, 41, 1_400, 11);
+        $second = new SessionInfo('127.0.0.1', 20_002, 42, 1_400, 11);
+
+        try {
+            $firstClient = $this->advanceToInitializing($runtime, $transport, $first, $loginFactory);
+            $firstDecryptor = $loginFactory->clientDecryptor();
+            $this->decodeEncryptedPackets($transport->sent, $firstDecryptor);
+            $transport->sent = [];
+
+            $secondClient = $this->advanceToInitializing($runtime, $transport, $second, $loginFactory);
+            $secondDecryptor = $loginFactory->clientDecryptor();
+            $this->decodeEncryptedPackets($transport->sent, $secondDecryptor);
+            $transport->sent = [];
+
+            $this->receiveEncrypted($transport, $first, $firstClient, new SetLocalPlayerAsInitializedPacket(UnsignedLong::fromInt(1)));
+            $this->receiveEncrypted($transport, $second, $secondClient, new SetLocalPlayerAsInitializedPacket(UnsignedLong::fromInt(2)));
+            self::assertTrue($runtime->poll());
+            $clock->advance(50_000_000);
+            self::assertTrue($runtime->poll());
+
+            $joinedPackets = $this->decodeEncryptedPackets(self::sentTo($transport->sent, $first), $firstDecryptor);
+            $joinedUpdates = array_values(array_filter(
+                $joinedPackets,
+                static fn(Packet $packet): bool => $packet instanceof UpdateSoftEnumPacket,
+            ));
+            self::assertNotEmpty($joinedUpdates);
+            $joinedUpdate = array_pop($joinedUpdates);
+            self::assertInstanceOf(UpdateSoftEnumPacket::class, $joinedUpdate);
+            self::assertSame(SoftEnumUpdateType::Replace, $joinedUpdate->type);
+            self::assertSame(['Player20001', 'Player20002'], $joinedUpdate->values);
+
+            $transport->sent = [];
+            $transport->events[] = new SessionClosedEvent($second, SessionCloseReason::RemoteDisconnect);
+            self::assertTrue($runtime->poll());
+            $clock->advance(50_000_000);
+            self::assertTrue($runtime->poll());
+
+            $disconnectedPackets = $this->decodeEncryptedPackets(self::sentTo($transport->sent, $first), $firstDecryptor);
+            $disconnectedUpdates = array_values(array_filter(
+                $disconnectedPackets,
+                static fn(Packet $packet): bool => $packet instanceof UpdateSoftEnumPacket,
+            ));
+            self::assertCount(1, $disconnectedUpdates);
+            self::assertInstanceOf(UpdateSoftEnumPacket::class, $disconnectedUpdates[0]);
+            self::assertSame(SoftEnumUpdateType::Replace, $disconnectedUpdates[0]->type);
+            self::assertSame(['Player20001'], $disconnectedUpdates[0]->values);
+        } finally {
+            $runtime->close();
+            foreach (glob($directory . DIRECTORY_SEPARATOR . '*') ?: [] as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
+            if (is_dir($directory)) {
+                rmdir($directory);
+            }
+        }
+    }
+
+    public function testRegisteredSoftEnumChangesAreSentToJoinedPlayers(): void
+    {
+        $directory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'bedriox-runtime-dynamic-enum-' . bin2hex(random_bytes(8));
+        $permissions = new PermissionStore($directory . DIRECTORY_SEPARATOR . 'permissions.json');
+        $commands = $this->authorityCommands();
+        $kits = $commands->registerServerSoftEnum('bedriox:test_kits', ['starter']);
+        $commands->registerServer(new RuntimeSoftEnumCommand($kits));
+        $transport = new FakeConnectedTransport();
+        $clock = new RuntimeTestClock();
+        $world = new WorldSimulation();
+        $loginFactory = new RuntimeLoginFactory();
+        $runtime = new ServerRuntime(
+            $transport,
+            $loginFactory,
+            new BedrockPlayChannelFactory(
+                new EmptyInitializationFactory(),
+                commandRegistry: $commands,
+                permissionStore: $permissions,
+            ),
+            $world,
+            new FixedRateWorldLoop($world, $clock),
+            new RecordingEventEncoder(),
+            commandRegistry: $commands,
+            permissionStore: $permissions,
+        );
+        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+
+        try {
+            $client = $this->advanceToInitializing($runtime, $transport, $info, $loginFactory);
+            $decryptor = $loginFactory->clientDecryptor();
+            $this->decodeEncryptedPackets($transport->sent, $decryptor);
+            $transport->sent = [];
+            $this->receiveEncrypted($transport, $info, $client, new SetLocalPlayerAsInitializedPacket(UnsignedLong::fromInt(1)));
+            self::assertTrue($runtime->poll());
+            $clock->advance(50_000_000);
+            self::assertTrue($runtime->poll());
+            $this->decodeEncryptedPackets($transport->sent, $decryptor);
+            $transport->sent = [];
+
+            self::assertTrue($kits->add('vip'));
+            self::assertTrue($runtime->poll());
+            $updates = array_values(array_filter(
+                $this->decodeEncryptedPackets($transport->sent, $decryptor),
+                static fn(Packet $packet): bool => $packet instanceof UpdateSoftEnumPacket,
+            ));
+            self::assertCount(1, $updates);
+            self::assertInstanceOf(UpdateSoftEnumPacket::class, $updates[0]);
+            self::assertSame('bedriox:test_kits', $updates[0]->enumName);
+            self::assertSame(['starter', 'vip'], $updates[0]->values);
+            self::assertSame(SoftEnumUpdateType::Replace, $updates[0]->type);
+        } finally {
+            $runtime->close();
+            foreach (glob($directory . DIRECTORY_SEPARATOR . '*') ?: [] as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
+            if (is_dir($directory)) {
+                rmdir($directory);
+            }
+        }
     }
 
     public function testRetailEquipmentEchoBeforeInitializationIsAppliedAfterAdmission(): void
@@ -1317,24 +1467,9 @@ final class ServerRuntimeTest extends TestCase
         $ownership = new PluginOwnershipRegistry();
         $events = new EventDispatcher($plugins, $execution, $actions, $ownership);
         $commands = new CommandRegistry($plugins, $execution, $actions, $ownership, $events);
-        $commands->registerServer(
-            new CommandDefinition('public', 'Public command', 'public'),
-            static fn(): CommandResult => CommandResult::SUCCESS,
-        );
-        $commands->registerServer(
-            new CommandDefinition('protected', 'Protected command', 'protected', permission: 'example.use'),
-            static fn(): CommandResult => CommandResult::SUCCESS,
-        );
-        $commands->registerServer(
-            new CommandDefinition('verbose', 'Verbose command', 'verbose'),
-            static function (CommandContext $context): CommandResult {
-                for ($line = 0; $line < 70; ++$line) {
-                    $context->sender()->sendMessage('line ' . $line);
-                }
-
-                return CommandResult::SUCCESS;
-            },
-        );
+        $commands->registerServer(new RuntimeAuthorityCommand('public', 'Public command'));
+        $commands->registerServer(new RuntimeAuthorityCommand('protected', 'Protected command', 'example.use'));
+        $commands->registerServer(new RuntimeAuthorityCommand('verbose', 'Verbose command', verbose: true));
 
         return $commands;
     }
@@ -1362,6 +1497,8 @@ final class ServerRuntimeTest extends TestCase
                     $packets[] = AvailableCommandsPacket::decode($frame->payload);
                 } elseif ($frame->header->packetId === PacketIds::COMMAND_OUTPUT) {
                     $packets[] = CommandOutputPacket::decode($frame->payload);
+                } elseif ($frame->header->packetId === PacketIds::UPDATE_SOFT_ENUM) {
+                    $packets[] = UpdateSoftEnumPacket::decode($frame->payload);
                 } elseif ($frame->header->packetId === PacketIds::TEXT || $frame->header->packetId === PacketIds::DISCONNECT) {
                     $packets[] = BedrockPacketCodec::decode($frame->header->packetId, $frame->payload);
                 }
@@ -1369,6 +1506,19 @@ final class ServerRuntimeTest extends TestCase
         }
 
         return $packets;
+    }
+
+    /**
+     * @param list<array{string, int, string, Reliability, int}> $sent
+     * @return list<array{string, int, string, Reliability, int}>
+     */
+    private static function sentTo(array $sent, SessionInfo $recipient): array
+    {
+        return array_values(array_filter(
+            $sent,
+            static fn(array $payload): bool => $payload[0] === $recipient->remoteAddress
+                && $payload[1] === $recipient->remotePort,
+        ));
     }
 
     private function receive(FakeConnectedTransport $transport, SessionInfo $info, string $payload): void
@@ -1467,6 +1617,52 @@ final class ServerRuntimeTest extends TestCase
     }
 }
 
+final class RuntimeAuthorityCommand extends AbstractCommand
+{
+    public function __construct(
+        string $name,
+        string $description,
+        private readonly ?string $requiredPermission = null,
+        private readonly bool $verbose = false,
+    ) {
+        parent::__construct($name, $description);
+    }
+
+    protected function permission(): ?string
+    {
+        return $this->requiredPermission;
+    }
+
+    public function execute(CommandContext $context): CommandResult
+    {
+        if ($this->verbose) {
+            for ($line = 0; $line < 70; ++$line) {
+                $context->sender()->sendMessage('line ' . $line);
+            }
+        }
+
+        return CommandResult::success();
+    }
+}
+
+final class RuntimeSoftEnumCommand extends AbstractCommand
+{
+    public function __construct(private readonly CommandSoftEnum $kits)
+    {
+        parent::__construct('kit', 'Select a kit');
+    }
+
+    public function defineArguments(): CommandArguments
+    {
+        return CommandArguments::create()->addArgument(CommandParameter::softEnum('kit', $this->kits));
+    }
+
+    public function execute(CommandContext $context): CommandResult
+    {
+        return CommandResult::success($context->values()->string('kit'));
+    }
+}
+
 final class FakeConnectedTransport implements ConnectedTransport
 {
     /** @var list<SessionOpenedEvent|SessionClosedEvent> */ public array $events = [];
@@ -1536,6 +1732,7 @@ final class RuntimeLoginFactory implements LoginChannelFactory
         private readonly ?int $failPort = null,
         private readonly string $displayName = 'Player',
         private readonly bool $uniqueIdentities = false,
+        private readonly bool $uniqueDisplayNames = false,
     ) {
         $this->keys = new OpenSslEphemeralKeyFactory(dirname(__DIR__) . '/Fixtures/openssl.cnf');
         $this->client = $this->keys->generate();
@@ -1546,7 +1743,7 @@ final class RuntimeLoginFactory implements LoginChannelFactory
             throw new \RuntimeException('factory');
         }
         $login = new AuthenticatedLogin(
-            $this->displayName,
+            $this->uniqueDisplayNames ? $this->displayName . $session->remotePort : $this->displayName,
             $this->uniqueIdentities
                 ? sprintf('00000000-0000-0000-0000-%012d', $session->remotePort)
                 : '00000000-0000-0000-0000-000000000001',

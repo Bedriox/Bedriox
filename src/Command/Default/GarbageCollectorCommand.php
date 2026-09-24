@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Command\Default;
 
+use Bedriox\Api\Command\CommandArguments;
 use Bedriox\Api\Command\CommandContext;
 use Bedriox\Api\Command\CommandDefinition;
+use Bedriox\Api\Command\CommandParameter;
 use Bedriox\Api\Command\CommandResult;
 use Bedriox\Api\Command\CommandSender;
 use Bedriox\Api\TextFormat;
@@ -32,24 +34,23 @@ final readonly class GarbageCollectorCommand implements BuiltinCommand
         return new CommandDefinition(
             'gc',
             'Shows or runs bounded memory and chunk cleanup.',
-            'gc [status|run|chunks]',
             permission: 'bedriox.command.gc',
         );
     }
 
+    public function defineArguments(): CommandArguments
+    {
+        return CommandArguments::create()
+            ->addArgument(CommandParameter::choice('operation', ['status', 'run', 'chunks'])->optional(default: 'status'));
+    }
+
     public function execute(CommandContext $context): CommandResult
     {
-        $arguments = $context->arguments();
-        if (count($arguments) > 1) {
-            return CommandResult::USAGE;
-        }
-        $operation = strtolower($arguments[0] ?? 'status');
-
-        return match ($operation) {
+        return match ($context->values()->choice('operation')) {
             'status' => $this->showStatus($context->sender()),
             'run' => $this->runCollection($context->sender()),
             'chunks' => $this->unloadChunks($context->sender()),
-            default => CommandResult::USAGE,
+            default => CommandResult::failure('Unknown garbage collection operation.'),
         };
     }
 
@@ -91,7 +92,7 @@ final readonly class GarbageCollectorCommand implements BuiltinCommand
         ));
         self::send($sender, TextFormat::GOLD, '--------- End Garbage Collection ---------');
 
-        return CommandResult::SUCCESS;
+        return CommandResult::success();
     }
 
     private function runCollection(CommandSender $sender): CommandResult
@@ -117,7 +118,7 @@ final readonly class GarbageCollectorCommand implements BuiltinCommand
         ));
         self::send($sender, TextFormat::GOLD, '--------- End Garbage Collection ---------');
 
-        return CommandResult::SUCCESS;
+        return CommandResult::success();
     }
 
     private function unloadChunks(CommandSender $sender): CommandResult
@@ -136,7 +137,7 @@ final readonly class GarbageCollectorCommand implements BuiltinCommand
         }
         self::send($sender, TextFormat::GOLD, '--------- End Chunk Cleanup ---------');
 
-        return CommandResult::SUCCESS;
+        return CommandResult::success();
     }
 
     private static function send(CommandSender $sender, string $color, string $message): void

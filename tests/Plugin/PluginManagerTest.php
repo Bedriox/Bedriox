@@ -4,10 +4,11 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Plugin;
 
-use Bedriox\Api\Command\CommandDefinition;
+use Bedriox\Api\Command\Command;
 use Bedriox\Api\Command\CommandJob;
 use Bedriox\Api\Command\CommandJobSubscription;
 use Bedriox\Api\Command\CommandRegistrar;
+use Bedriox\Api\Command\CommandSoftEnum;
 use Bedriox\Api\Command\CommandSubscription;
 use Bedriox\Api\Event\Event;
 use Bedriox\Api\Event\EventPriority;
@@ -173,7 +174,12 @@ final class NullEventRegistrar implements EventRegistrar
 
 final class NullCommandRegistrar implements CommandRegistrar
 {
-    public function register(CommandDefinition $definition, callable $handler): CommandSubscription
+    public function register(Command $command): CommandSubscription
+    {
+        throw new RuntimeException('Not used by this fixture.');
+    }
+
+    public function registerSoftEnum(string $name, array $values = []): CommandSoftEnum
     {
         throw new RuntimeException('Not used by this fixture.');
     }
