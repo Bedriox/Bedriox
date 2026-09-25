@@ -22,6 +22,7 @@ use Bedriox\Api\Event\Player\PlayerFoodLevelChangeEvent;
 use Bedriox\Api\Event\Player\PlayerJoinEvent;
 use Bedriox\Api\Event\Player\PlayerKickEvent;
 use Bedriox\Api\Event\Player\PlayerLoginEvent;
+use Bedriox\Api\Event\Player\PlayerMissSwingEvent;
 use Bedriox\Api\Event\Player\PlayerMoveEvent;
 use Bedriox\Api\Event\Player\PlayerPreJoinEvent;
 use Bedriox\Api\Event\Player\PlayerRegainedHealthEvent;
@@ -45,6 +46,7 @@ use Bedriox\Server\Plugin\PluginExecutionContext;
 use Bedriox\Server\Plugin\PluginExecutionFrame;
 use Bedriox\Server\Plugin\PluginOwnershipRegistry;
 use Bedriox\Server\Plugin\PluginRuntimeControl;
+use Bedriox\Server\Simulation\ArmSwingSource;
 use Bedriox\Server\Simulation\BlockBreakAction;
 use Bedriox\Server\Simulation\Event\BlockChanged;
 use Bedriox\Server\Simulation\Event\BlockPlacementCorrected;
@@ -632,6 +634,23 @@ final class PluginGameplayEventBridgeTest extends TestCase
         self::assertSame(20.0, $player->food);
         self::assertSame(20.0, $player->saturation);
         self::assertSame(0.0, $player->exhaustion);
+    }
+
+    public function testPluginCanCancelAMissedSwing(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $dispatcher->register('Example', PlayerMissSwingEvent::class, static function (PlayerMissSwingEvent $event): void {
+            $event->cancel();
+        });
+        [$simulation, $factory] = self::simulation($bridge);
+        $simulation->enqueue($factory->join('one', 'identity-one', 'One'));
+        $simulation->tick();
+
+        $simulation->enqueue($factory->swingArm('one', ArmSwingSource::Missed));
+        $event = $simulation->tick()->events[0];
+
+        self::assertInstanceOf(CommandRejected::class, $event);
+        self::assertSame('plugin_cancelled', $event->reason);
     }
 
     /** @return array{EventDispatcher, PluginGameplayEventBridge} */

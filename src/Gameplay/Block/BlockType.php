@@ -19,12 +19,20 @@ final readonly class BlockType
         public ?ToolTier $requiredTier,
         public BlockDropKind $dropKind,
         public bool $hasItemForm = true,
+        public ?string $itemFormIdentifier = null,
     ) {
         if (!is_finite($hardness) || $hardness < -1.0) {
             throw new InvalidArgumentException('Block hardness must be finite and at least negative one.');
         }
         if ($requiredTier !== null && $preferredTool === null) {
             throw new InvalidArgumentException('A tier requirement needs a preferred tool type.');
+        }
+        if ($itemFormIdentifier !== null
+            && preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $itemFormIdentifier) !== 1) {
+            throw new InvalidArgumentException('Block item-form identifier must be canonical and namespaced.');
+        }
+        if (!$hasItemForm && $itemFormIdentifier !== null) {
+            throw new InvalidArgumentException('A block without an item form cannot define an item identifier.');
         }
     }
 
@@ -41,5 +49,23 @@ final readonly class BlockType
     public function itemFormState(): ?CanonicalBlockState
     {
         return $this->hasItemForm ? $this->state : null;
+    }
+
+    public function itemIdentifier(): ?string
+    {
+        return $this->hasItemForm ? ($this->itemFormIdentifier ?? $this->identifier()) : null;
+    }
+
+    public function withItemIdentifier(string $identifier): self
+    {
+        return new self(
+            $this->state,
+            $this->hardness,
+            $this->preferredTool,
+            $this->requiredTier,
+            $this->dropKind,
+            true,
+            $identifier,
+        );
     }
 }

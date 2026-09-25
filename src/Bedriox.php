@@ -28,11 +28,13 @@ use Bedriox\Server\Plugin\Command\StreamConsoleInput;
 use Bedriox\Server\Plugin\Command\WindowsConsoleInput;
 use Bedriox\Server\Plugin\Event\OwnedEventRegistrar;
 use Bedriox\Server\Plugin\OwnedItemRegistrar;
+use Bedriox\Server\Plugin\OwnedRecipeRegistrar;
 use Bedriox\Server\Plugin\OwnedSourcePluginRegistrar;
 use Bedriox\Server\Plugin\PluginComposition;
 use Bedriox\Server\Plugin\PluginHost;
 use Bedriox\Server\Plugin\PluginItemBehaviorRegistrar;
 use Bedriox\Server\Plugin\PluginManifest;
+use Bedriox\Server\Plugin\PluginRecipeRegistrar;
 use Bedriox\Server\Plugin\Scheduler\Worker\ManagedPluginAsyncTaskExecutor;
 use Bedriox\Server\Plugin\ServerPluginLogger;
 use Bedriox\Server\Runtime\PersistentWorldFactory;
@@ -182,6 +184,9 @@ final class Bedriox
                     if ($composition->itemBehaviors === null) {
                         throw new \LogicException('Plugin item behavior composition is not ready.');
                     }
+                    if ($composition->recipes === null) {
+                        throw new \LogicException('Plugin crafting recipe composition is not ready.');
+                    }
 
                     return new PluginContext(
                         $manifest->name,
@@ -201,6 +206,7 @@ final class Bedriox
                             $itemCommandEnum,
                             $composition->itemBehaviors->register(...),
                         ),
+                        recipes: new OwnedRecipeRegistrar($manifest->name, $composition->recipes),
                     );
                 },
                 maximumPlugins: $config->maximumPlugins,
@@ -337,6 +343,12 @@ final class Bedriox
                 $server->pluginApi->itemBehaviorRegistry(),
                 $pluginHost->ownership(),
                 $itemCatalog,
+            );
+            $composition->recipes = new PluginRecipeRegistrar(
+                $server->craftingCatalog,
+                $pluginHost->ownership(),
+                $itemCatalog,
+                $server->pluginApi->blockStateRegistry(),
             );
             $logger->info(sprintf(
                 'Loaded world "%s" using %s generator',

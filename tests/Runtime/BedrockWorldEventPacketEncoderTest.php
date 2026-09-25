@@ -11,7 +11,10 @@ use Bedriox\Protocol\Identity\VerifiedClientData;
 use Bedriox\Protocol\Packet\ActorEventPacket;
 use Bedriox\Protocol\Packet\ActorFlag;
 use Bedriox\Protocol\Packet\AddPlayerPacket;
+use Bedriox\Protocol\Packet\AnimatePacket;
 use Bedriox\Protocol\Packet\ChatPacket;
+use Bedriox\Protocol\Packet\ContainerOpenPacket;
+use Bedriox\Protocol\Packet\ContainerType;
 use Bedriox\Protocol\Packet\CorrectPlayerMovePredictionPacket;
 use Bedriox\Protocol\Packet\EmoteFlag;
 use Bedriox\Protocol\Packet\EmotePacket;
@@ -56,12 +59,15 @@ use Bedriox\Server\Runtime\BedrockPlayChannel;
 use Bedriox\Server\Runtime\BedrockWorldEventPacketEncoder;
 use Bedriox\Server\Runtime\DirectedPacket;
 use Bedriox\Server\Runtime\RuntimeSession;
+use Bedriox\Server\Simulation\ArmSwingSource;
 use Bedriox\Server\Simulation\ClientInputTick;
+use Bedriox\Server\Simulation\Event\ArmSwung;
 use Bedriox\Server\Simulation\Event\BlockBreakStarted;
 use Bedriox\Server\Simulation\Event\BlockChanged;
 use Bedriox\Server\Simulation\Event\BlockPlaced;
 use Bedriox\Server\Simulation\Event\BlockPlacementCorrected;
 use Bedriox\Server\Simulation\Event\ChatBroadcast;
+use Bedriox\Server\Simulation\Event\CraftingTableOpened;
 use Bedriox\Server\Simulation\Event\EmotePerformed;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
@@ -90,6 +96,25 @@ use PHPUnit\Framework\TestCase;
 
 final class BedrockWorldEventPacketEncoderTest extends TestCase
 {
+    public function testCraftingTableOpenUsesTheWorkbenchContainerConversation(): void
+    {
+        $packets = (new BedrockWorldEventPacketEncoder())->encode(new CraftingTableOpened(
+            'owner',
+            new BlockPosition(4, 65, -3),
+        ), []);
+
+        self::assertCount(1, $packets);
+        self::assertSame('owner', $packets[0]->sessionId);
+        self::assertInstanceOf(ContainerOpenPacket::class, $packets[0]->packet);
+        self::assertSame(1, $packets[0]->packet->containerId);
+        self::assertSame(ContainerType::Workbench, $packets[0]->packet->containerType);
+        self::assertSame([4, 65, -3], [
+            $packets[0]->packet->position->x,
+            $packets[0]->packet->position->y,
+            $packets[0]->packet->position->z,
+        ]);
+    }
+
     public function testItemUseAndNutritionProjectCompleteClientFeedback(): void
     {
         [$encoder] = $this->inventoryEncoder();
@@ -467,6 +492,87 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         self::assertSame(7, $slot->stackNetworkId);
     }
 
+    public function testCraftingResponsePreservesTheClientGridSlotAndAuthoritativeStack(): void
+    {
+        [$encoder] = $this->inventoryEncoder();
+        $crafting = array_fill(0, 9, null);
+        $crafting[4] = new InventoryStack('minecraft:oak_planks', 2, 19);
+        $event = new InventoryStackRequestProcessed(
+            'one',
+            -20,
+            true,
+            [new InventorySlotReference(
+                InventoryContainer::CraftingInput,
+                4,
+                18,
+                FullContainerName::CRAFTING_INPUT,
+                responseSlot: 36,
+            )],
+            array_fill(0, 36, null),
+            null,
+            0,
+            null,
+            false,
+            41,
+            [],
+            craftingInventory: $crafting,
+        );
+
+        $packets = $encoder->encode($event, []);
+
+        self::assertCount(1, $packets);
+        self::assertInstanceOf(ItemStackResponsePacket::class, $packets[0]->packet);
+        $container = $packets[0]->packet->responses[0]->containers[0];
+        self::assertSame(FullContainerName::CRAFTING_INPUT, $container->containerName->containerNameId);
+        self::assertSame(36, $container->slots[0]->slot);
+        self::assertSame(2, $container->slots[0]->amount);
+        self::assertSame(19, $container->slots[0]->stackNetworkId);
+    }
+
+    public function testRejectedTableCraftCorrectsAllNineGridSlots(): void
+    {
+        [$encoder] = $this->inventoryEncoder();
+        $crafting = array_fill(0, 9, null);
+        $crafting[0] = new InventoryStack('minecraft:oak_planks', 1, 23);
+        $event = new InventoryStackRequestProcessed(
+            'one',
+            -21,
+            false,
+            [],
+            array_fill(0, 36, null),
+            null,
+            0,
+            null,
+            false,
+            41,
+            [],
+            'recipe_mismatch',
+            craftingInventory: $crafting,
+        );
+
+        $packets = $encoder->encode($event, []);
+        $grid = [];
+        foreach ($packets as $directed) {
+            $packet = $directed->packet;
+            if (!$packet instanceof InventorySlotPacket
+                || $packet->containerId !== InventoryContainerId::UI
+                || $packet->slot < 32
+                || $packet->slot > 40) {
+                continue;
+            }
+            $grid[] = $packet;
+        }
+
+        self::assertCount(10, $grid);
+        self::assertSame([32, 32, 33, 34, 35, 36, 37, 38, 39, 40], array_map(
+            static fn(InventorySlotPacket $packet): int => $packet->slot,
+            $grid,
+        ));
+        self::assertSame(0, $grid[0]->item->count);
+        self::assertSame(1, $grid[1]->item->count);
+        self::assertSame(23, $grid[1]->item->stackNetworkId);
+    }
+
     public function testRejectedInventoryRequestReturnsErrorAndFullMainAndCursorCorrection(): void
     {
         [$encoder, $palette] = $this->inventoryEncoder();
@@ -546,6 +652,45 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         ]);
         self::assertInstanceOf(MobEquipmentPacket::class, $packets[4]->packet);
         self::assertSame('two', $packets[4]->sessionId);
+    }
+
+    public function testClosingAnEmptyCraftingGridDoesNotRefreshTheWholeInventory(): void
+    {
+        [$encoder] = $this->inventoryEncoder();
+        $affected = [];
+        for ($slot = 0; $slot < 4; ++$slot) {
+            $affected[] = new InventorySlotReference(
+                InventoryContainer::CraftingInput,
+                $slot,
+                0,
+                responseSlot: 28 + $slot,
+            );
+        }
+        $event = new InventoryStackRequestProcessed(
+            'one',
+            0,
+            true,
+            $affected,
+            array_fill(0, 36, null),
+            null,
+            0,
+            null,
+            false,
+            41,
+            [],
+            responseMode: InventoryResponseMode::LegacySlotSync,
+            craftingInventory: array_fill(0, 4, null),
+        );
+
+        $packets = $encoder->encode($event, []);
+
+        self::assertCount(4, $packets);
+        foreach ($packets as $index => $packet) {
+            self::assertInstanceOf(InventorySlotPacket::class, $packet->packet);
+            self::assertSame(InventoryContainerId::UI, $packet->packet->containerId);
+            self::assertSame(28 + $index, $packet->packet->slot);
+            self::assertSame(0, $packet->packet->item->count);
+        }
     }
 
     public function testEquipmentResponsePreservesClientSlotWhileProjectingAuthoritativePeers(): void
@@ -804,6 +949,23 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         self::assertSame('', $packets[0]->packet->xuid);
         self::assertSame('', $packets[0]->packet->platformId);
         self::assertSame([EmoteFlag::ServerSide, EmoteFlag::MuteEmoteChat], $packets[0]->packet->flags);
+    }
+
+    public function testArmSwingIsProjectedOnlyToPeersWithItsAuthoritativeActor(): void
+    {
+        $packets = (new BedrockWorldEventPacketEncoder())->encode(new ArmSwung(
+            'sender',
+            7,
+            ArmSwingSource::Mining,
+            ['peer', 'sender'],
+        ), []);
+
+        self::assertCount(1, $packets);
+        self::assertSame('peer', $packets[0]->sessionId);
+        self::assertInstanceOf(AnimatePacket::class, $packets[0]->packet);
+        self::assertSame(AnimatePacket::SWING, $packets[0]->packet->action);
+        self::assertTrue($packets[0]->packet->runtimeEntityId->equals(UnsignedLong::fromInt(7)));
+        self::assertNull($packets[0]->packet->swingSource);
     }
 
     public function testMovementProjectsAuthoritativeFeetToWireEyePosition(): void

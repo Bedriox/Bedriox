@@ -11,6 +11,7 @@ use Bedriox\Protocol\Packet\AvailableActorIdentifiersPacket;
 use Bedriox\Protocol\Packet\BiomeDefinitionListPacket;
 use Bedriox\Protocol\Packet\ChunkRadiusUpdatedPacket;
 use Bedriox\Protocol\Packet\CraftingDataPacket;
+use Bedriox\Protocol\Packet\CraftingRecipe;
 use Bedriox\Protocol\Packet\CreativeContentPacket;
 use Bedriox\Protocol\Packet\GameRulesChangedPacket;
 use Bedriox\Protocol\Packet\InventoryContainerId;
@@ -34,6 +35,10 @@ use Bedriox\Protocol\Packet\VoxelShapesPacket;
 use Bedriox\Protocol\Security\OpenSslEphemeralKeyFactory;
 use Bedriox\Protocol\Value\BuildPlatform;
 use Bedriox\Protocol\Value\UnsignedLong;
+use Bedriox\Server\Gameplay\Crafting\CraftingCatalog;
+use Bedriox\Server\Gameplay\Crafting\RecipeIngredient;
+use Bedriox\Server\Gameplay\Crafting\RecipeOutput;
+use Bedriox\Server\Gameplay\Crafting\ShapelessRecipe;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Login\AuthenticatedLogin;
 use Bedriox\Server\Player\PlayerBootstrap;
@@ -42,9 +47,12 @@ use Bedriox\Server\Player\PlayerInventoryEntry;
 use Bedriox\Server\Player\PlayerInventoryStackState;
 use Bedriox\Server\Player\PlayerInventoryState;
 use Bedriox\Server\Plugin\OwnedItemRegistrar;
+use Bedriox\Server\Runtime\BedrockInventoryPacketProjector;
 use Bedriox\Server\Runtime\BedrockPlayInitializationFactory;
 use Bedriox\Server\Runtime\RuntimeLimits;
 use Bedriox\Server\Simulation\Position;
+use Bedriox\Server\World\Block\BlockNetworkTranslator;
+use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Provider\WorldData;
 use Bedriox\Server\World\SpawnPosition;
 use Bedriox\Server\World\WorldMetadata;
@@ -52,6 +60,48 @@ use PHPUnit\Framework\TestCase;
 
 final class BedrockPlayInitializationFactoryTest extends TestCase
 {
+    public function testInitializationUsesTheCurrentCraftingCatalogRevision(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $states = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $items = ItemCatalog::vanilla(
+            $data->itemNetworkRegistry(),
+            creative: $data->creativeInventoryRegistry(),
+            blockItems: $data->blockItemMappingRegistry(),
+        );
+        $catalog = CraftingCatalog::fromData(
+            $data,
+            $items,
+            $states,
+            BedrockInventoryPacketProjector::fromData(
+                $data,
+                new BlockNetworkTranslator($states, $data->blockStateRegistry()),
+                $items,
+            ),
+        );
+        $factory = new BedrockPlayInitializationFactory(
+            $data,
+            itemCatalog: $items,
+            craftingCatalog: $catalog,
+        );
+
+        $catalog->register(new ShapelessRecipe(
+            'example:initial_recipe',
+            [RecipeIngredient::exact('minecraft:stone')],
+            [new RecipeOutput('minecraft:dirt')],
+            recipeOwner: 'Example',
+        ));
+        $packets = $factory->create($this->login(), UnsignedLong::fromInt(7));
+
+        self::assertInstanceOf(CraftingDataPacket::class, $packets[22]);
+        self::assertCount(4_143, $packets[22]->recipes);
+        self::assertNotEmpty(array_filter(
+            $packets[22]->recipes,
+            static fn(CraftingRecipe $recipe): bool => $recipe->networkId()
+                === $catalog->recipes()->networkId('example:initial_recipe'),
+        ));
+    }
+
     public function testAuthoritativeWorldDataDrivesInitializationMetadataAndTime(): void
     {
         $login = $this->login();
@@ -141,6 +191,15 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
         self::assertEquals($mainInventory->items[0], $equipment->item);
         self::assertInstanceOf(TrimDataPacket::class, $packets[21]);
         self::assertInstanceOf(CraftingDataPacket::class, $packets[22]);
+        self::assertTrue($packets[22]->cleanRecipes);
+        self::assertCount(4_142, $packets[22]->recipes);
+        self::assertCount(4_142, array_unique(array_map(
+            static fn(CraftingRecipe $recipe): int => $recipe->networkId(),
+            $packets[22]->recipes,
+        )));
+        $decodedCrafting = CraftingDataPacket::decode($packets[22]->encode());
+        self::assertTrue($decodedCrafting->cleanRecipes);
+        self::assertCount(4_142, $decodedCrafting->recipes);
         self::assertInstanceOf(SetActorDataPacket::class, $packets[23]);
         self::assertSame(400, $packets[23]->metadata[4]->value);
         self::assertSame(400, $packets[23]->metadata[7]->value);

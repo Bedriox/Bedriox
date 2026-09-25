@@ -201,6 +201,26 @@ final class BedrockInventoryPacketProjectorTest extends TestCase
         self::assertNull($roundTrip->nbt->tag('Damage'));
     }
 
+    public function testLargeInventoryBearingNbtStillLeavesRoomForTheWireEnvelopeAndDamage(): void
+    {
+        $nbt = ItemNbt::empty()->withTag(
+            'contents',
+            Tag::list(TagType::STRING, array_fill(0, 90, Tag::string(str_repeat('x', 1_024)))),
+        );
+        $wire = $this->projector()->toProtocol(new InventoryStack(
+            'minecraft:iron_pickaxe',
+            1,
+            9,
+            damage: 17,
+            nbt: $nbt,
+        ));
+
+        self::assertLessThanOrEqual(ProtocolInventoryItemStack::MAXIMUM_USER_DATA_BYTES, strlen($wire->userData));
+        $roundTrip = $this->projector()->fromProtocol($wire);
+        self::assertSame(17, $roundTrip->damage);
+        self::assertTrue($nbt->equals($roundTrip->nbt ?? ItemNbt::empty()));
+    }
+
     public function testMalformedItemExtraDataIsRejected(): void
     {
         $projector = $this->projector();

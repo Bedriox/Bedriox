@@ -10,7 +10,7 @@ played timestamps, world name, exact position and rotation, game mode, the
 36-slot main inventory, selected hotbar slot, and cursor stack.
 Current health is stored as a bounded float from 0 through 20.
 Inventory entries contain canonical names such as `minecraft:grass_block` and
-counts, bounded durability damage, and up to 2 KiB of typed custom item NBT per stack. Bedrock stack network IDs are never persisted and are allocated again
+counts, bounded durability damage, and up to 100 KB of typed custom item NBT per stack. Bedrock stack network IDs are never persisted and are allocated again
 for each play session.
 
 Authentication completes before a profile is loaded. A returning position is

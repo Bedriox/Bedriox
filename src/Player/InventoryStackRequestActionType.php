@@ -9,5 +9,7 @@ enum InventoryStackRequestActionType
     case Take;
     case Place;
     case Swap;
+    case Consume;
+    case SelectCraftingResult;
     case MineBlock;
 }

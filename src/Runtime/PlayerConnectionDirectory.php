@@ -12,21 +12,29 @@ use Closure;
 /** @internal Binds immutable public player handles to the current runtime session without exposing it. */
 final class PlayerConnectionDirectory
 {
-    /** @var array<string, array{session: string, connected: Closure(): bool, send: Closure(Packet, bool): bool, kick: Closure(string, ?string, ?string): bool}> */
+    /** @var array<string, array{session: string, connected: Closure(): bool, send: Closure(Packet, bool): bool, kick: Closure(string, ?string, ?string): bool, swing: Closure(): bool}> */
     private array $connections = [];
 
     /**
      * @param Closure(): bool             $connected
      * @param Closure(Packet, bool): bool $send
      * @param Closure(string, ?string, ?string): bool $kick
+     * @param Closure(): bool $swingArm
      */
-    public function connect(string $identity, string $sessionId, Closure $connected, Closure $send, ?Closure $kick = null): void
-    {
+    public function connect(
+        string $identity,
+        string $sessionId,
+        Closure $connected,
+        Closure $send,
+        ?Closure $kick = null,
+        ?Closure $swingArm = null,
+    ): void {
         $this->connections[self::key($identity)] = [
             'session' => $sessionId,
             'connected' => $connected,
             'send' => $send,
             'kick' => $kick ?? static fn(string $reason, ?string $quitMessage, ?string $screenMessage): bool => false,
+            'swing' => $swingArm ?? static fn(): bool => false,
         ];
     }
 
@@ -48,6 +56,8 @@ final class PlayerConnectionDirectory
                 && ($this->connections[$key]['send'])($packet, $immediate),
             fn(string $reason, ?string $quitMessage, ?string $screenMessage): bool => isset($this->connections[$key])
                 && ($this->connections[$key]['kick'])($reason, $quitMessage, $screenMessage),
+            fn(): bool => isset($this->connections[$key])
+                && ($this->connections[$key]['swing'])(),
         );
     }
 

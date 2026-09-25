@@ -18,6 +18,7 @@ final class Player
     public int $chatTokens;
     public int $lastChatRefillTick;
     public ?int $lastEmoteTick = null;
+    public ?int $lastArmSwingTick = null;
     public int $placementSequence = -1;
     public readonly PlayerMovement $movement;
     public readonly PlayerInventory $inventory;

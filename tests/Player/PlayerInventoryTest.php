@@ -6,6 +6,7 @@ namespace Bedriox\Server\Tests\Player;
 
 use Bedriox\Api\Inventory\ItemNbt;
 use Bedriox\Data\BedrockDataSet;
+use Bedriox\Protocol\Packet\FullContainerName;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Gameplay\Item\ItemType;
 use Bedriox\Server\Player\InventoryContainer;
@@ -25,6 +26,140 @@ use PHPUnit\Framework\TestCase;
 
 final class PlayerInventoryTest extends TestCase
 {
+    public function testCraftingInputRequiresTheActiveGridWireOffset(): void
+    {
+        $inventory = PlayerInventory::empty();
+        $inventory->replaceSlot(0, new InventoryStack('minecraft:oak_planks', 1, 1));
+        $main = $inventory->stackAt(0);
+        self::assertNotNull($main);
+
+        $wrongPlayerOffset = $inventory->applyStackRequest(1, [new InventoryStackRequestAction(
+            InventoryStackRequestActionType::Take,
+            new InventorySlotReference(InventoryContainer::Main, 0, $main->stackNetworkId),
+            new InventorySlotReference(
+                InventoryContainer::CraftingInput,
+                0,
+                0,
+                FullContainerName::CRAFTING_INPUT,
+                responseSlot: 32,
+            ),
+            1,
+        )]);
+        self::assertFalse($wrongPlayerOffset->success);
+        self::assertSame('slot', $wrongPlayerOffset->reason);
+        self::assertNotNull($inventory->stackAt(0));
+        self::assertNull($inventory->craftingStack(0));
+
+        $inventory->setCraftingGridWidth(3);
+        $wrongTableOffset = $inventory->applyStackRequest(2, [new InventoryStackRequestAction(
+            InventoryStackRequestActionType::Take,
+            new InventorySlotReference(InventoryContainer::Main, 0, $main->stackNetworkId),
+            new InventorySlotReference(
+                InventoryContainer::CraftingInput,
+                0,
+                0,
+                FullContainerName::CRAFTING_INPUT,
+                responseSlot: 28,
+            ),
+            1,
+        )]);
+        self::assertFalse($wrongTableOffset->success);
+        self::assertSame('slot', $wrongTableOffset->reason);
+
+        $accepted = $inventory->applyStackRequest(3, [new InventoryStackRequestAction(
+            InventoryStackRequestActionType::Take,
+            new InventorySlotReference(InventoryContainer::Main, 0, $main->stackNetworkId),
+            new InventorySlotReference(
+                InventoryContainer::CraftingInput,
+                0,
+                0,
+                FullContainerName::CRAFTING_INPUT,
+                responseSlot: 32,
+            ),
+            1,
+        )]);
+        self::assertTrue($accepted->success, $accepted->reason);
+        self::assertNull($inventory->stackAt(0));
+        self::assertSame('minecraft:oak_planks', $inventory->craftingStack(0)?->identifier);
+    }
+
+    public function testIncompleteCraftingOutputRollsBackConsumedIngredients(): void
+    {
+        $inventory = PlayerInventory::empty();
+        $inventory->replaceSlot(0, new InventoryStack('minecraft:oak_planks', 1, 1));
+        $main = $inventory->stackAt(0);
+        self::assertNotNull($main);
+        self::assertTrue($inventory->applyStackRequest(1, [new InventoryStackRequestAction(
+            InventoryStackRequestActionType::Take,
+            new InventorySlotReference(InventoryContainer::Main, 0, $main->stackNetworkId),
+            new InventorySlotReference(InventoryContainer::CraftingInput, 0, 0),
+            1,
+        )])->success);
+        $input = $inventory->craftingStack(0);
+        self::assertNotNull($input);
+
+        $result = $inventory->applyStackRequest(
+            2,
+            [new InventoryStackRequestAction(
+                InventoryStackRequestActionType::Consume,
+                new InventorySlotReference(InventoryContainer::CraftingInput, 0, $input->stackNetworkId),
+                new InventorySlotReference(InventoryContainer::CraftingInput, 0, $input->stackNetworkId),
+                1,
+            )],
+            createdOutputUnlimited: false,
+            createdOutputs: [new InventoryStack('minecraft:oak_button', 1, 1)],
+        );
+
+        self::assertFalse($result->success);
+        self::assertSame('unfinished_crafting_result', $result->reason);
+        self::assertSame(1, $inventory->craftingStack(0)?->count);
+        self::assertNull($inventory->stackAt(0));
+    }
+
+    public function testCraftingInputAndBoundedCreatedOutputCommitAtomically(): void
+    {
+        $inventory = PlayerInventory::empty();
+        $inventory->replaceSlot(0, new InventoryStack('minecraft:oak_planks', 2, 1));
+        $main = $inventory->stackAt(0);
+        self::assertNotNull($main);
+        $move = $inventory->applyStackRequest(10, [new InventoryStackRequestAction(
+            InventoryStackRequestActionType::Take,
+            new InventorySlotReference(InventoryContainer::Main, 0, $main->stackNetworkId),
+            new InventorySlotReference(InventoryContainer::CraftingInput, 0, 0),
+            2,
+        )]);
+        self::assertTrue($move->success);
+        $input = $inventory->craftingStack(0);
+        self::assertNotNull($input);
+
+        $result = $inventory->applyStackRequest(
+            11,
+            [
+                new InventoryStackRequestAction(
+                    InventoryStackRequestActionType::Consume,
+                    new InventorySlotReference(InventoryContainer::CraftingInput, 0, $input->stackNetworkId),
+                    new InventorySlotReference(InventoryContainer::CraftingInput, 0, $input->stackNetworkId),
+                    2,
+                ),
+                new InventoryStackRequestAction(
+                    InventoryStackRequestActionType::Take,
+                    new InventorySlotReference(InventoryContainer::CreatedOutput, 50, 0),
+                    new InventorySlotReference(InventoryContainer::Main, 1, 0),
+                    4,
+                ),
+            ],
+            createdOutputUnlimited: false,
+            createdOutputs: [new InventoryStack('minecraft:stick', 4, 1)],
+        );
+
+        self::assertTrue($result->success, $result->reason);
+        self::assertNull($inventory->craftingStack(0));
+        $crafted = $inventory->stackAt(1);
+        self::assertNotNull($crafted);
+        self::assertSame('minecraft:stick', $crafted->identifier);
+        self::assertSame(4, $crafted->count);
+    }
+
     public function testStarterInventoryHasOneSelectedGrassStackAndExactlyThirtySixSlots(): void
     {
         $palette = FixedFlatBlockPalette::fromRegistry(new BlockStateRegistry(

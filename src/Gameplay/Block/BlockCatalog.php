@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Gameplay\Block;
 
+use Bedriox\Data\BlockItemMappingRegistry;
 use Bedriox\Data\CanonicalBlockState;
 use Bedriox\Server\Gameplay\Item\ToolTier;
 use Bedriox\Server\Gameplay\Item\ToolType;
@@ -13,7 +14,7 @@ use Bedriox\Server\World\Block\VanillaBlockStates;
 use Bedriox\Server\World\Generation\GenerationBlockPalette;
 use InvalidArgumentException;
 
-/** Bounded gameplay definitions for the states emitted by built-in generators. */
+/** Bounded gameplay definitions for generated terrain and admitted block-item states. */
 final readonly class BlockCatalog
 {
     /** @var array<string, BlockType> */
@@ -25,7 +26,7 @@ final readonly class BlockCatalog
     /** @param list<BlockType> $types */
     public function __construct(array $types)
     {
-        if ($types === [] || count($types) > 1_024) {
+        if ($types === [] || count($types) > 2_048) {
             throw new InvalidArgumentException('Block catalog must be non-empty and bounded.');
         }
         $byState = [];
@@ -43,8 +44,10 @@ final readonly class BlockCatalog
         $this->typesByIdentifier = $byIdentifier;
     }
 
-    public static function vanilla(?BlockStateRegistry $registry = null): self
-    {
+    public static function vanilla(
+        ?BlockStateRegistry $registry = null,
+        ?BlockItemMappingRegistry $blockItems = null,
+    ): self {
         $pickaxe = ToolType::Pickaxe;
         $shovel = ToolType::Shovel;
         $axe = ToolType::Axe;
@@ -81,21 +84,36 @@ final readonly class BlockCatalog
             new BlockType(VanillaBlockStates::spruceLog(), 2.0, $axe, null, BlockDropKind::Self),
             new BlockType(VanillaBlockStates::spruceLeaves(), 0.2, ToolType::Hoe, null, BlockDropKind::SpruceLeaves),
         ];
+        $indicesByIdentifier = [];
+        foreach ($types as $index => $type) {
+            $indicesByIdentifier[$type->identifier()] = $index;
+        }
         if ($registry !== null) {
-            $knownIdentifiers = [];
-            foreach ($types as $type) {
-                $knownIdentifiers[$type->identifier()] = true;
-            }
             foreach (GenerationBlockPalette::fromRegistry($registry)->states() as $stateId) {
                 $state = $registry->state($stateId);
-                if (!isset($knownIdentifiers[$state->identifier()])) {
+                if (!isset($indicesByIdentifier[$state->identifier()])) {
                     $types[] = self::generatedType($state);
-                    $knownIdentifiers[$state->identifier()] = true;
+                    $indicesByIdentifier[$state->identifier()] = count($types) - 1;
                 }
             }
         }
+        if ($blockItems !== null) {
+            foreach ($blockItems->mappings() as $mapping) {
+                $state = $mapping->blockState();
+                if ($registry !== null) {
+                    $registry->internalId($state);
+                }
+                $index = $indicesByIdentifier[$state->identifier()] ?? null;
+                if ($index !== null) {
+                    $types[$index] = $types[$index]->withItemIdentifier($mapping->itemIdentifier());
+                    continue;
+                }
+                $types[] = self::mappedType($state, $mapping->itemIdentifier());
+                $indicesByIdentifier[$state->identifier()] = count($types) - 1;
+            }
+        }
 
-        return new self($types);
+        return new self(array_values($types));
     }
 
     public function typeForState(CanonicalBlockState $state): BlockType
@@ -189,6 +207,32 @@ final readonly class BlockCatalog
             null,
             BlockDropKind::None,
             $hasItemForm,
+        );
+    }
+
+    private static function mappedType(CanonicalBlockState $state, string $itemIdentifier): BlockType
+    {
+        if ($state->identifier() === 'minecraft:crafting_table') {
+            return new BlockType(
+                $state,
+                2.5,
+                ToolType::Axe,
+                null,
+                BlockDropKind::Self,
+                true,
+                $itemIdentifier,
+            );
+        }
+        $generated = self::generatedType($state);
+
+        return new BlockType(
+            $state,
+            $generated->hardness,
+            $generated->preferredTool,
+            $generated->requiredTier,
+            $generated->isBreakable() ? BlockDropKind::Self : BlockDropKind::None,
+            true,
+            $itemIdentifier,
         );
     }
 

@@ -16,6 +16,7 @@ use Bedriox\Protocol\Packet\Ability;
 use Bedriox\Protocol\Packet\AbilityLayer;
 use Bedriox\Protocol\Packet\ActorEventPacket;
 use Bedriox\Protocol\Packet\AnimatePacket;
+use Bedriox\Protocol\Packet\AutoCraftRecipeItemStackRequestAction;
 use Bedriox\Protocol\Packet\BasicInventoryTransaction;
 use Bedriox\Protocol\Packet\BedrockPacketCodec;
 use Bedriox\Protocol\Packet\BlockPosition;
@@ -25,10 +26,12 @@ use Bedriox\Protocol\Packet\ClientCacheStatusPacket;
 use Bedriox\Protocol\Packet\CommandOrigin;
 use Bedriox\Protocol\Packet\CommandOriginType;
 use Bedriox\Protocol\Packet\CommandRequestPacket;
+use Bedriox\Protocol\Packet\ConsumeItemStackRequestAction;
 use Bedriox\Protocol\Packet\ContainerClosePacket;
 use Bedriox\Protocol\Packet\ContainerOpenPacket;
 use Bedriox\Protocol\Packet\ContainerType;
 use Bedriox\Protocol\Packet\CraftCreativeItemStackRequestAction;
+use Bedriox\Protocol\Packet\CraftRecipeItemStackRequestAction;
 use Bedriox\Protocol\Packet\CraftResultsItemStackRequestAction;
 use Bedriox\Protocol\Packet\CreateItemStackRequestAction;
 use Bedriox\Protocol\Packet\DropItemStackRequestAction;
@@ -98,8 +101,10 @@ use Bedriox\Server\Player\InventorySlotReference;
 use Bedriox\Server\Player\InventoryStackRequestAction;
 use Bedriox\Server\Player\InventoryStackRequestActionType;
 use Bedriox\Server\Player\PlayerInventory;
+use Bedriox\Server\Simulation\ArmSwingSource;
 use Bedriox\Server\Simulation\BlockBreakAction;
 use Bedriox\Server\Simulation\ClientInputTick;
+use Bedriox\Server\Simulation\Command\CraftingRequest;
 use Bedriox\Server\Simulation\Command\WorldCommand;
 use Bedriox\Server\Simulation\MovementMode;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
@@ -919,6 +924,18 @@ final class BedrockPlayChannel
             if (!$this->initialized) {
                 return false;
             }
+            if (!$this->mainInventoryOpen && $packet->containerId === 1) {
+                if ($this->commands->count() >= $this->limits->maximumCommandsPerPayload) {
+                    return false;
+                }
+                $this->commands->enqueue($this->commandFactory->closeCraftingGrid($this->sessionId));
+
+                return $this->queuePacket(new ContainerClosePacket(
+                    1,
+                    ContainerType::Workbench->value & 0xff,
+                    false,
+                ));
+            }
             if (!$this->mainInventoryOpen
                 || !in_array($packet->containerId, [0, $this->mainInventoryId, 0xff], true)) {
                 return true;
@@ -926,6 +943,10 @@ final class BedrockPlayChannel
             $this->mainInventoryOpen = false;
             $containerId = $this->mainInventoryId;
             $this->mainInventoryId = 0;
+            if ($this->commands->count() >= $this->limits->maximumCommandsPerPayload) {
+                return false;
+            }
+            $this->commands->enqueue($this->commandFactory->closeCraftingGrid($this->sessionId));
 
             return $this->queuePacket(new ContainerClosePacket(
                 $containerId,
@@ -1145,6 +1166,12 @@ final class BedrockPlayChannel
                     new ClientInputTick($packet->tick->high, $packet->tick->low),
                     $this->lastRequestedFlyingState === true,
                 ));
+                if ($packet->hasInput(PlayerAuthInputFlag::MissedSwing)) {
+                    $this->commands->enqueue($this->commandFactory->swingArm(
+                        $this->sessionId,
+                        ArmSwingSource::Missed,
+                    ));
+                }
             }
 
             if ($packet->itemUseTransaction !== null && !$this->handleEmbeddedPlacement($packet->itemUseTransaction)) {
@@ -1559,6 +1586,7 @@ final class BedrockPlayChannel
             $dropSource = null;
             $dropCount = 0;
             $creativeStack = null;
+            $crafting = null;
             $sawCreativeSelection = false;
             $sawMineBlock = false;
             $rejectionReason = $request->actions === [] ? 'empty_actions' : null;
@@ -1601,25 +1629,81 @@ final class BedrockPlayChannel
                         break;
                     }
                     $sawCreativeSelection = true;
+                } elseif ($action instanceof CraftRecipeItemStackRequestAction
+                    || $action instanceof AutoCraftRecipeItemStackRequestAction) {
+                    $this->diagnostics->record('play.inventory_request.protocol_trace', [
+                        'request_id' => $request->requestId,
+                        'action' => $action instanceof AutoCraftRecipeItemStackRequestAction
+                            ? 'craft_recipe_auto'
+                            : 'craft_recipe',
+                        'recipe_network_id' => $action->recipeNetworkId,
+                        'requested_crafts' => $action->requestedCrafts,
+                    ]);
+                    if ($crafting !== null || $sawCreativeSelection) {
+                        $rejectionReason = 'duplicate_crafting_selection';
+                        break;
+                    }
+                    try {
+                        $crafting = new CraftingRequest(
+                            $action->recipeNetworkId,
+                            $action->requestedCrafts,
+                            $action instanceof AutoCraftRecipeItemStackRequestAction,
+                        );
+                    } catch (\InvalidArgumentException) {
+                        $rejectionReason = 'invalid_crafting_selection';
+                        break;
+                    }
+                } elseif ($action instanceof ConsumeItemStackRequestAction) {
+                    $source = self::inventorySlotReference($action->source);
+                    if ($crafting === null || $source === null
+                        || (!$crafting->automatic && $source->container !== InventoryContainer::CraftingInput)
+                        || ($crafting->automatic && !in_array(
+                            $source->container,
+                            [InventoryContainer::Main, InventoryContainer::CraftingInput],
+                            true,
+                        ))) {
+                        $rejectionReason = 'invalid_crafting_consume';
+                        break;
+                    }
+                    $actions[] = new InventoryStackRequestAction(
+                        InventoryStackRequestActionType::Consume,
+                        $source,
+                        $source,
+                        $action->amount,
+                    );
                 } elseif ($action instanceof CreateItemStackRequestAction) {
                     $this->diagnostics->record('play.inventory_request.protocol_trace', [
                         'request_id' => $request->requestId,
                         'action' => 'create',
                         'slot' => $action->slot,
                     ]);
-                    if (!$sawCreativeSelection) {
-                        $rejectionReason = 'create_without_creative_selection';
+                    if (!$sawCreativeSelection && $crafting === null) {
+                        $rejectionReason = 'create_without_selection';
                         break;
                     }
-                    // Current clients may include this advisory result marker. CraftCreative already staged the output.
+                    if ($crafting !== null) {
+                        $createdOutput = new InventorySlotReference(
+                            InventoryContainer::CreatedOutput,
+                            50,
+                            0,
+                            FullContainerName::CREATED_OUTPUT,
+                            responseSlot: 50,
+                        );
+                        $actions[] = new InventoryStackRequestAction(
+                            InventoryStackRequestActionType::SelectCraftingResult,
+                            $createdOutput,
+                            $createdOutput,
+                            $action->slot,
+                        );
+                    }
                 } elseif ($action instanceof CraftResultsItemStackRequestAction) {
                     $this->diagnostics->record('play.inventory_request.protocol_trace', [
                         'request_id' => $request->requestId,
                         'action' => 'craft_results',
                         'result_count' => count($action->results),
                     ]);
-                    if (!$sawCreativeSelection) {
-                        $rejectionReason = 'craft_results_without_creative_selection';
+                    if (!$sawCreativeSelection && $crafting === null) {
+                        $rejectionReason = 'craft_results_without_selection';
                         break;
                     }
                     // This client report is advisory; the advertised creative ID determines the server-owned stack.
@@ -1641,7 +1725,7 @@ final class BedrockPlayChannel
                         $rejectionReason = 'unsupported_container';
                         break;
                     }
-                    if (!$sawCreativeSelection
+                    if (!$sawCreativeSelection && $crafting === null
                         && ($source->container === InventoryContainer::CreatedOutput
                             || $destination->container === InventoryContainer::CreatedOutput)) {
                         $rejectionReason = 'created_output_before_selection';
@@ -1672,7 +1756,7 @@ final class BedrockPlayChannel
                         $rejectionReason = 'unsupported_container';
                         break;
                     }
-                    if (!$sawCreativeSelection
+                    if (!$sawCreativeSelection && $crafting === null
                         && ($source->container === InventoryContainer::CreatedOutput
                             || $destination->container === InventoryContainer::CreatedOutput)) {
                         $rejectionReason = 'created_output_before_selection';
@@ -1734,6 +1818,7 @@ final class BedrockPlayChannel
                 $actions,
                 $rejectionReason,
                 authoritativeCreativeStack: $creativeStack,
+                crafting: $crafting,
             ));
         }
 
@@ -1766,15 +1851,25 @@ final class BedrockPlayChannel
             FullContainerName::ARMOR => InventoryContainer::Armor,
             FullContainerName::OFFHAND => InventoryContainer::Offhand,
             FullContainerName::CURSOR => InventoryContainer::Cursor,
+            FullContainerName::CRAFTING_INPUT => InventoryContainer::CraftingInput,
             FullContainerName::CREATED_OUTPUT => InventoryContainer::CreatedOutput,
             default => null,
         };
-        $internalSlot = $container === InventoryContainer::Offhand ? 0 : $slot->slot;
+        $internalSlot = match ($container) {
+            InventoryContainer::Offhand => 0,
+            InventoryContainer::CraftingInput => match (true) {
+                $slot->slot >= 28 && $slot->slot <= 31 => $slot->slot - 28,
+                $slot->slot >= 32 && $slot->slot <= 40 => $slot->slot - 32,
+                default => -1,
+            },
+            default => $slot->slot,
+        };
         if ($container === null
             || $slot->slot < 0
             || ($container === InventoryContainer::Main && $slot->slot >= PlayerInventory::SLOT_COUNT)
             || ($container === InventoryContainer::Armor && $slot->slot >= PlayerInventory::ARMOR_SLOT_COUNT)
             || ($container === InventoryContainer::Cursor && $slot->slot !== 0)
+            || ($container === InventoryContainer::CraftingInput && $internalSlot < 0)
             || ($container === InventoryContainer::CreatedOutput && $slot->slot !== 50)) {
             return null;
         }

@@ -10,9 +10,12 @@ use Bedriox\Protocol\Packet\ActorEventPacket;
 use Bedriox\Protocol\Packet\ActorEventType;
 use Bedriox\Protocol\Packet\AddItemActorPacket;
 use Bedriox\Protocol\Packet\AddPlayerPacket;
+use Bedriox\Protocol\Packet\AnimatePacket;
 use Bedriox\Protocol\Packet\BlockPosition as ProtocolBlockPosition;
 use Bedriox\Protocol\Packet\ChatPacket;
 use Bedriox\Protocol\Packet\CommandPermissionLevel;
+use Bedriox\Protocol\Packet\ContainerOpenPacket;
+use Bedriox\Protocol\Packet\ContainerType;
 use Bedriox\Protocol\Packet\CorrectPlayerMovePredictionPacket;
 use Bedriox\Protocol\Packet\DeathInfoPacket;
 use Bedriox\Protocol\Packet\EmoteFlag;
@@ -65,6 +68,7 @@ use Bedriox\Protocol\Value\BuildPlatform;
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\Server\Player\InventoryContainer;
 use Bedriox\Server\Player\InventoryResponseMode;
+use Bedriox\Server\Simulation\Event\ArmSwung;
 use Bedriox\Server\Simulation\Event\BlockBreakStarted;
 use Bedriox\Server\Simulation\Event\BlockBreakStopped;
 use Bedriox\Server\Simulation\Event\BlockChanged;
@@ -72,6 +76,7 @@ use Bedriox\Server\Simulation\Event\BlockPlaced;
 use Bedriox\Server\Simulation\Event\BlockPlacementCorrected;
 use Bedriox\Server\Simulation\Event\BlockPunch;
 use Bedriox\Server\Simulation\Event\ChatBroadcast;
+use Bedriox\Server\Simulation\Event\CraftingTableOpened;
 use Bedriox\Server\Simulation\Event\EmotePerformed;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
@@ -136,7 +141,17 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
                 ),
                 $event->recipientSessionIds,
             ),
+            $event instanceof CraftingTableOpened => [new DirectedPacket(
+                $event->ownerSessionId,
+                new ContainerOpenPacket(
+                    1,
+                    ContainerType::Workbench,
+                    new ProtocolBlockPosition($event->position->x, $event->position->y, $event->position->z),
+                    -1,
+                ),
+            )],
             $event instanceof EmotePerformed => $this->emote($event, $sessions),
+            $event instanceof ArmSwung => $this->armSwung($event),
             $event instanceof PlayerDisconnected => $this->disconnected($event),
             $event instanceof BlockBreakStarted => $this->blockBreakStarted($event),
             $event instanceof BlockPunch => $this->blockPunch($event),
@@ -513,6 +528,25 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
             array_values(array_filter(
                 $event->recipientSessionIds,
                 static fn(string $recipient): bool => $recipient !== $event->senderSessionId,
+            )),
+        );
+    }
+
+    /** @return list<DirectedPacket> */
+    private function armSwung(ArmSwung $event): array
+    {
+        $packet = new AnimatePacket(
+            AnimatePacket::SWING,
+            UnsignedLong::fromInt($event->runtimeActorId),
+            0.0,
+            null,
+        );
+
+        return array_map(
+            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
+            array_values(array_filter(
+                $event->recipientSessionIds,
+                static fn(string $recipient): bool => $recipient !== $event->ownerSessionId,
             )),
         );
     }
@@ -1083,6 +1117,7 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
                     InventoryContainerId::OFFHAND,
                     [$event->offhandStack],
                 ),
+                ...$this->craftingGridCorrection($event),
             ];
         } elseif (!$event->success) {
             $packets = [
@@ -1108,6 +1143,7 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
                     InventoryContainerId::OFFHAND,
                     [$event->offhandStack],
                 ),
+                ...$this->craftingGridCorrection($event),
             ];
         } elseif ($event->responseMode === InventoryResponseMode::LegacySlotSync) {
             $synchronized = [];
@@ -1132,7 +1168,7 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
                         ...$this->inventorySlotCorrection(
                             $event->ownerSessionId,
                             self::windowId($reference->container),
-                            $reference->slot,
+                            $reference->responseSlotId(),
                             $stack,
                         ),
                     ];
@@ -1271,6 +1307,7 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
             InventoryContainer::Cursor => $event->cursorStack,
             InventoryContainer::Armor => $event->armorInventory[$reference->slot] ?? null,
             InventoryContainer::Offhand => $event->offhandStack,
+            InventoryContainer::CraftingInput => $event->craftingInventory[$reference->slot] ?? null,
             InventoryContainer::CreatedOutput => null,
         };
     }
@@ -1282,6 +1319,7 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
             InventoryContainer::Cursor => FullContainerName::CURSOR,
             InventoryContainer::Armor => FullContainerName::ARMOR,
             InventoryContainer::Offhand => FullContainerName::OFFHAND,
+            InventoryContainer::CraftingInput => FullContainerName::CRAFTING_INPUT,
             InventoryContainer::CreatedOutput => FullContainerName::CREATED_OUTPUT,
         };
     }
@@ -1293,7 +1331,32 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
             InventoryContainer::Cursor, InventoryContainer::CreatedOutput => InventoryContainerId::UI,
             InventoryContainer::Armor => InventoryContainerId::ARMOR,
             InventoryContainer::Offhand => InventoryContainerId::OFFHAND,
+            InventoryContainer::CraftingInput => InventoryContainerId::UI,
         };
+    }
+
+    /** @return list<DirectedPacket> */
+    private function craftingGridCorrection(InventoryStackRequestProcessed $event): array
+    {
+        $count = count($event->craftingInventory);
+        if ($count !== 4 && $count !== 9) {
+            return [];
+        }
+        $offset = $count === 4 ? 28 : 32;
+        $packets = [];
+        foreach ($event->craftingInventory as $slot => $stack) {
+            $packets = [
+                ...$packets,
+                ...$this->inventorySlotCorrection(
+                    $event->ownerSessionId,
+                    InventoryContainerId::UI,
+                    $offset + $slot,
+                    $stack,
+                ),
+            ];
+        }
+
+        return $packets;
     }
 
     private function updateBlock(

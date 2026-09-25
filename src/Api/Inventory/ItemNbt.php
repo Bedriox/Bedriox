@@ -13,7 +13,7 @@ use InvalidArgumentException;
 /** Immutable, bounded little-endian NBT compound attached to one item stack. */
 final readonly class ItemNbt
 {
-    public const int MAX_BYTES = 2_048;
+    public const int MAX_BYTES = 100_000;
 
     private function __construct(private string $binary) {}
 

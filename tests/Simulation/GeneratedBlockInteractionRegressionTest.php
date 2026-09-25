@@ -4,11 +4,17 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Simulation;
 
+use Bedriox\Api\Player\GameMode;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Gameplay\Block\BlockCatalog;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
+use Bedriox\Server\Simulation\ArmSwingSource;
 use Bedriox\Server\Simulation\BlockBreakAction;
+use Bedriox\Server\Simulation\Event\ArmSwung;
+use Bedriox\Server\Simulation\Event\BlockBreakStarted;
 use Bedriox\Server\Simulation\Event\BlockChanged;
+use Bedriox\Server\Simulation\Event\CommandRejected;
+use Bedriox\Server\Simulation\Event\ItemEntitySpawned;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
 use Bedriox\Server\Simulation\MovementMode;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
@@ -111,6 +117,127 @@ final class GeneratedBlockInteractionRegressionTest extends TestCase
         self::assertSame($vegetation->value, $event->state->value);
         self::assertTrue($event->stopBreaking);
         self::assertSame($vegetation->value, $blocks->blockStateAt($position->x, $position->y, $position->z)->value);
+    }
+
+    public function testMappedCraftingTableCanBeBrokenAndDropsItsItem(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $states = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $flat = FixedFlatBlockPalette::fromRegistry($states);
+        $catalog = BlockCatalog::vanilla($states, $data->blockItemMappingRegistry());
+        $items = ItemCatalog::vanilla(
+            $data->itemNetworkRegistry(),
+            $catalog,
+            $data->creativeInventoryRegistry(),
+            $data->blockItemMappingRegistry(),
+        );
+        $position = new BlockPosition(1, 64, 0);
+        $table = $states->internalId($data->blockItemMappingRegistry()
+            ->mappingForItem('minecraft:crafting_table')->blockState());
+        $blocks = new World(
+            new WorldMetadata('mapped-crafting-table-regression', 0),
+            new FlatWorldGenerator($flat),
+            new ChunkRepository(4),
+        );
+        $blocks->setBlockState($position->x, $position->y, $position->z, $table);
+        $simulation = new WorldSimulation(
+            blockWorld: $blocks,
+            blockPalette: $flat,
+            itemCatalog: $items,
+            blockCatalog: $catalog,
+            blockStateRegistry: $states,
+        );
+        $commands = new SimulationCommandFactory();
+        self::assertTrue($simulation->enqueue($commands->join('player', 'identity', 'Player')));
+        self::assertTrue($simulation->enqueue($commands->join('peer', 'peer-identity', 'Peer')));
+        $simulation->tick();
+
+        self::assertTrue($simulation->enqueue($commands->breakBlock(
+            'player',
+            1,
+            BlockBreakAction::Start,
+            $position,
+            1,
+        )));
+        $started = $simulation->tick()->events;
+        $swings = array_values(array_filter($started, static fn($event): bool => $event instanceof ArmSwung));
+        self::assertCount(1, $swings);
+        self::assertSame(ArmSwingSource::Mining, $swings[0]->source);
+        self::assertSame(['peer'], $swings[0]->recipients());
+        self::assertTrue($simulation->enqueue($commands->breakBlock(
+            'player',
+            2,
+            BlockBreakAction::Complete,
+            $position,
+            1,
+        )));
+        $events = $simulation->tick()->events;
+        $changed = array_values(array_filter($events, static fn($event): bool => $event instanceof BlockChanged));
+        $drops = array_values(array_filter($events, static fn($event): bool => $event instanceof ItemEntitySpawned));
+
+        self::assertCount(1, $changed);
+        self::assertSame($flat->air->value, $changed[0]->state->value);
+        self::assertSame($flat->air->value, $blocks->blockStateAt($position->x, $position->y, $position->z)->value);
+        self::assertCount(1, $drops);
+        self::assertSame('minecraft:crafting_table', $drops[0]->entity->stack->identifier);
+        self::assertSame(1, $drops[0]->entity->stack->count);
+    }
+
+    public function testMappedBedrockRemainsProtectedInSurvivalButCanBeRemovedInCreative(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $states = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $flat = FixedFlatBlockPalette::fromRegistry($states);
+        $catalog = BlockCatalog::vanilla($states, $data->blockItemMappingRegistry());
+        $position = new BlockPosition(1, 64, 0);
+        $blocks = new World(
+            new WorldMetadata('mapped-bedrock-regression', 0),
+            new FlatWorldGenerator($flat),
+            new ChunkRepository(4),
+        );
+        $blocks->setBlockState($position->x, $position->y, $position->z, $flat->bedrock);
+        $simulation = new WorldSimulation(
+            blockWorld: $blocks,
+            blockPalette: $flat,
+            blockCatalog: $catalog,
+            blockStateRegistry: $states,
+        );
+        $commands = new SimulationCommandFactory();
+        self::assertTrue($simulation->enqueue($commands->join('player', 'identity', 'Player')));
+        $simulation->tick();
+
+        self::assertTrue($simulation->enqueue($commands->breakBlock(
+            'player',
+            1,
+            BlockBreakAction::Start,
+            $position,
+            1,
+        )));
+        $survival = $simulation->tick()->events[0];
+        self::assertInstanceOf(CommandRejected::class, $survival);
+        self::assertSame('block_not_breakable', $survival->reason);
+
+        self::assertTrue($simulation->enqueue($commands->changeGameMode('player', GameMode::CREATIVE)));
+        $simulation->tick();
+        self::assertTrue($simulation->enqueue($commands->breakBlock(
+            'player',
+            2,
+            BlockBreakAction::Start,
+            $position,
+            1,
+        )));
+        self::assertInstanceOf(BlockBreakStarted::class, $simulation->tick()->events[0]);
+        self::assertTrue($simulation->enqueue($commands->breakBlock(
+            'player',
+            3,
+            BlockBreakAction::Complete,
+            $position,
+            1,
+        )));
+        $changed = $simulation->tick()->events[0];
+        self::assertInstanceOf(BlockChanged::class, $changed);
+        self::assertEquals($flat->air, $changed->state);
+        self::assertSame($flat->air->value, $blocks->blockStateAt($position->x, $position->y, $position->z)->value);
     }
 
     public function testAuthoritativeMovementPassesThroughGeneratedVegetation(): void

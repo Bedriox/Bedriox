@@ -22,6 +22,8 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Fixed
 
+- Encode peer arm swings without an optional source label and report allowlisted RakNet send-overflow categories with bounded payload, reliability, ordering-channel, and session-phase context.
+- Admit every data-mapped creative block to authoritative break handling so crafting tables and other placed blocks no longer revert when mined.
 - Keep the world spawn retained and wait for every chunk touched by the player collision footprint before committing a respawn, preventing persistence backlogs from turning respawn into a blocking storage read and whole-server disconnect.
 - Give every block emitted by the default generator an admitted gameplay definition and collision shape, allow generated vegetation to be broken normally, and correct truly unknown block predictions without terminating the server.
 - Treat grasses, flowers, mushrooms, vines, aquatic plants, rails, and torches as non-colliding while applying bounded partial geometry to snow layers, paths, farmland, cactus, bamboo, panes, bars, lanterns, dripstone, mud, and soul sand for both players and dropped items.
@@ -31,6 +33,10 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Added
 
+- Broadcast visibility-scoped arm swings for missed attacks, mining, combat, and plugin requests, with a cancellable missed-swing event.
+- Add server-authoritative personal and crafting-table grids, the complete current crafting-grid catalog, ordinary and automatic recipe requests, dynamic special recipes, atomic inventory rollback, and clean recipe synchronization for connected players.
+- Add owner-scoped plugin shaped and shapeless recipe registration plus cancellable pre-craft and observational post-craft events with lifecycle cleanup.
+- Model durability for non-tool damageable items so repair crafting covers bows, shields, elytra, fishing rods, tridents, crossbows, and the other admitted damageable item families.
 - Admit every item definition and block-item mapping from the active Data release, project its complete ordered creative catalog with stable variant IDs, and preserve auxiliary, NBT, and block-state variants through authoritative selection and persistence without claiming unsupported item-specific mechanics.
 - Add plugin-owned named command soft enums with bounded live updates, lifecycle cleanup, authoritative binding, and item-catalog suggestions for `give`.
 - Replace the pre-alpha closure and raw-argument command API with class-based `Command` and `AbstractCommand` definitions, fluent typed argument schemas and overloads, generated usage, typed `CommandValues`, Bedrock enum autocomplete with live connected-player updates, and result messages.

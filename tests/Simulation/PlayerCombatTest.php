@@ -15,6 +15,7 @@ use Bedriox\Server\Player\PlayerInventoryState;
 use Bedriox\Server\Simulation\ClientInputTick;
 use Bedriox\Server\Simulation\Command\AttackPlayer;
 use Bedriox\Server\Simulation\DamageCause;
+use Bedriox\Server\Simulation\Event\ArmSwung;
 use Bedriox\Server\Simulation\Event\CommandRejected;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\PlayerDamaged;
@@ -38,7 +39,7 @@ final class PlayerCombatTest extends TestCase
         self::assertTrue($world->enqueue($factory->attack('one', 2, 0)));
         $events = $world->tick()->events;
 
-        self::assertCount(2, $events);
+        self::assertCount(3, $events);
         self::assertInstanceOf(PlayerDamaged::class, $events[0]);
         self::assertSame('two', $events[0]->player->sessionId);
         self::assertSame(1.0, $events[0]->damage);
@@ -47,6 +48,8 @@ final class PlayerCombatTest extends TestCase
         self::assertSame(0.0, $events[1]->motionX);
         self::assertSame(0.4, $events[1]->motionY);
         self::assertSame(0.4, $events[1]->motionZ);
+        self::assertInstanceOf(ArmSwung::class, $events[2]);
+        self::assertSame('one', $events[2]->ownerSessionId);
         self::assertSame(19.0, $world->snapshot()->players[1]->health);
     }
 
@@ -220,7 +223,7 @@ final class PlayerCombatTest extends TestCase
         $world->enqueue($factory->attack('one', 2, 0));
         $events = $world->tick()->events;
 
-        self::assertCount(3, $events);
+        self::assertCount(4, $events);
         self::assertInstanceOf(PlayerKnockedBack::class, $events[1]);
         self::assertInstanceOf(PlayerMotionChanged::class, $events[2]);
         self::assertEqualsWithDelta(0.04, $events[2]->motionX, 0.000_001);

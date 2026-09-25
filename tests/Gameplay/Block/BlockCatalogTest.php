@@ -71,4 +71,26 @@ final class BlockCatalogTest extends TestCase
         }
         self::assertTrue($catalog->type('minecraft:short_grass')->isBreakable());
     }
+
+    public function testMappedCatalogDefinesEveryPlaceableBlockAndItsItemIdentity(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $states = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $catalog = BlockCatalog::vanilla($states, $data->blockItemMappingRegistry());
+
+        foreach ($data->blockItemMappingRegistry()->mappings() as $mapping) {
+            $type = $catalog->findTypeForState($mapping->blockState());
+            self::assertNotNull($type, $mapping->blockState()->identifier());
+            self::assertSame($mapping->itemIdentifier(), $type->itemIdentifier());
+            if ($mapping->blockState()->identifier() !== 'minecraft:bedrock') {
+                self::assertTrue($type->isBreakable(), $mapping->blockState()->identifier());
+            }
+        }
+
+        $craftingTable = $catalog->type('minecraft:crafting_table');
+        self::assertSame(2.5, $craftingTable->hardness);
+        self::assertSame(ToolType::Axe, $craftingTable->preferredTool);
+        self::assertSame(BlockDropKind::Self, $craftingTable->dropKind);
+        self::assertSame('minecraft:crafting_table', $craftingTable->itemIdentifier());
+    }
 }

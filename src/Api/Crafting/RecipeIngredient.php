@@ -1,0 +1,58 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Bedriox\Api\Crafting;
+
+use Bedriox\Api\Inventory\ItemNbt;
+use InvalidArgumentException;
+
+/** Immutable ingredient alternatives for one occupied crafting-grid cell. */
+final readonly class RecipeIngredient
+{
+    public const int MAXIMUM_ALTERNATIVES = 512;
+
+    /** @var list<string> */
+    public array $identifiers;
+
+    /** @param list<string> $identifiers */
+    public function __construct(
+        array $identifiers,
+        public int $count = 1,
+        public ?int $auxValue = null,
+        public ?int $damage = null,
+        public ?ItemNbt $nbt = null,
+    ) {
+        if ($identifiers === [] || count($identifiers) > self::MAXIMUM_ALTERNATIVES) {
+            throw new InvalidArgumentException('Recipe ingredient alternatives are outside their supported bounds.');
+        }
+        $unique = [];
+        foreach ($identifiers as $identifier) {
+            if (preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $identifier) !== 1) {
+                throw new InvalidArgumentException('Recipe ingredient identifier must be canonical and namespaced.');
+            }
+            $unique[$identifier] = true;
+        }
+        if ($count < 1 || $count > 64) {
+            throw new InvalidArgumentException('Recipe ingredient count must be between 1 and 64.');
+        }
+        if ($auxValue !== null && ($auxValue < 0 || $auxValue > 32_767)) {
+            throw new InvalidArgumentException('Recipe ingredient auxiliary value is outside its supported range.');
+        }
+        if ($damage !== null && ($damage < 0 || $damage > 65_535)) {
+            throw new InvalidArgumentException('Recipe ingredient damage is outside its supported range.');
+        }
+
+        $this->identifiers = array_keys($unique);
+    }
+
+    public static function exact(
+        string $identifier,
+        int $count = 1,
+        ?int $auxValue = null,
+        ?int $damage = null,
+        ?ItemNbt $nbt = null,
+    ): self {
+        return new self([$identifier], $count, $auxValue, $damage, $nbt);
+    }
+}

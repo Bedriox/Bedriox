@@ -18,6 +18,7 @@ use Bedriox\Server\Authentication\Discovery\MinecraftDiscoveryJwkProvider;
 use Bedriox\Server\Authentication\FullTokenAuthenticator;
 use Bedriox\Server\Authentication\SystemAuthenticationClock;
 use Bedriox\Server\Gameplay\Block\BlockCatalog;
+use Bedriox\Server\Gameplay\Crafting\CraftingCatalog;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Login\AuthenticationMode;
 use Bedriox\Server\Login\ExplicitSelfSignedLoginAuthenticator;
@@ -134,12 +135,20 @@ final class ServerBootstrap
         $data = BedrockDataSet::bundled();
         $networkStates = $data->blockStateRegistry();
         $internalStates = new BlockStateRegistry($networkStates->states());
-        $blockCatalog = BlockCatalog::vanilla($internalStates);
+        $blockCatalog = BlockCatalog::vanilla($internalStates, $data->blockItemMappingRegistry());
         $itemCatalog ??= ItemCatalog::vanilla(
             $data->itemNetworkRegistry(),
             $blockCatalog,
             $data->creativeInventoryRegistry(),
             $data->blockItemMappingRegistry(),
+        );
+        $blockTranslator = new BlockNetworkTranslator($internalStates, $networkStates);
+        $inventoryProjector = BedrockInventoryPacketProjector::fromData($data, $blockTranslator, $itemCatalog);
+        $craftingCatalog = CraftingCatalog::fromData(
+            $data,
+            $itemCatalog,
+            $internalStates,
+            $inventoryProjector,
         );
         $flatPalette = FixedFlatBlockPalette::fromRegistry($internalStates);
         $defaultPalette = DefaultBlockPalette::fromRegistry($internalStates);
@@ -189,6 +198,7 @@ final class ServerBootstrap
                 $config->movementRewindHistorySize,
                 $config->defaultGamemode,
                 $itemCatalog,
+                $craftingCatalog,
             );
             $spawn = $flatWorld->spawn();
             $playerStore = $this->playerDataStore
@@ -215,11 +225,11 @@ final class ServerBootstrap
                 $blockCatalog,
                 $internalStates,
                 $blockCollisions,
+                craftingCatalog: $craftingCatalog,
             );
             $chunkSerializer = new BedrockChunkPacketSerializer(
-                $blockTranslator = new BlockNetworkTranslator($internalStates, $networkStates),
+                $blockTranslator,
             );
-            $inventoryProjector = BedrockInventoryPacketProjector::fromData($data, $blockTranslator, $itemCatalog);
             $serverGuid = random_int(1, PHP_INT_MAX);
             $advertisement = new BedrockServerAdvertisement(
                 motd: $config->serverName,
@@ -296,6 +306,7 @@ final class ServerBootstrap
                 memoryManager: $memoryManager,
                 garbageCollector: $garbageCollector,
                 chunkUnloadPerTick: $config->chunkUnloadPerTick,
+                craftingCatalog: $craftingCatalog,
             );
         } catch (Throwable $exception) {
             $discovery?->close();
@@ -321,6 +332,7 @@ final class ServerBootstrap
                 $internalStates,
             ),
             $flatWorld,
+            $craftingCatalog,
         );
     }
 

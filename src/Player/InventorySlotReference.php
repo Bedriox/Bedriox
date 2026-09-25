@@ -22,6 +22,7 @@ final readonly class InventorySlotReference
             InventoryContainer::Cursor => 'cursor:',
             InventoryContainer::Armor => 'armor:',
             InventoryContainer::Offhand => 'offhand:',
+            InventoryContainer::CraftingInput => 'crafting_input:',
             InventoryContainer::CreatedOutput => 'created_output:',
         } . $this->slot;
     }
@@ -33,6 +34,7 @@ final readonly class InventorySlotReference
             InventoryContainer::Cursor => 'cursor:',
             InventoryContainer::Armor => 'armor:',
             InventoryContainer::Offhand => 'offhand:',
+            InventoryContainer::CraftingInput => 'crafting_input:',
             InventoryContainer::CreatedOutput => 'created_output:',
         }
         . ($this->responseContainerId ?? -1) . ':' . $this->responseSlotId();

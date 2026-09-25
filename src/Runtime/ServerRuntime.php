@@ -28,6 +28,7 @@ use Bedriox\RakNet\ReceivedPayload;
 use Bedriox\RakNet\SessionInfo;
 use Bedriox\RakNet\SessionOpenedEvent;
 use Bedriox\Server\Entity\Item\DroppedItemEntity;
+use Bedriox\Server\Gameplay\Crafting\CraftingCatalog;
 use Bedriox\Server\Observability\CrashContextPublisher;
 use Bedriox\Server\Observability\CrashPlayer;
 use Bedriox\Server\Observability\Memory\GarbageCollectionReport;
@@ -41,6 +42,7 @@ use Bedriox\Server\Permission\PermissionStore;
 use Bedriox\Server\Player\Persistence\PlayerPersistenceManager;
 use Bedriox\Server\Plugin\Command\CommandRegistry;
 use Bedriox\Server\Plugin\Command\ServerPlayerCommandSender;
+use Bedriox\Server\Simulation\Event\ArmSwung;
 use Bedriox\Server\Simulation\Event\BlockBreakStarted;
 use Bedriox\Server\Simulation\Event\BlockBreakStopped;
 use Bedriox\Server\Simulation\Event\BlockChanged;
@@ -154,6 +156,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         private readonly ?MemoryManager $memoryManager = null,
         private readonly ?GarbageCollector $garbageCollector = null,
         private readonly int $chunkUnloadPerTick = 96,
+        private readonly ?CraftingCatalog $craftingCatalog = null,
     ) {
         if ($this->autosaveIntervalTicks < 1 || $this->autosaveChunkBudget < 1
             || $this->playerAutosaveIntervalTicks < 1 || $this->playerAutosaveBudget < 1
@@ -289,6 +292,28 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         $this->commandSchemaRevision = $schemaRevision;
 
         return true;
+    }
+
+    /** Queues one clean replacement snapshot per joined session and catalog revision. */
+    private function queueCraftingCatalogUpdates(): void
+    {
+        if ($this->craftingCatalog === null) {
+            return;
+        }
+        $revision = $this->craftingCatalog->revision();
+        $packet = null;
+        foreach (array_keys($this->sessions) as $key) {
+            $session = $this->sessions[$key];
+            if (!$session->joined || $session->play === null || $session->craftingCatalogRevision === $revision) {
+                continue;
+            }
+            $packet ??= $this->craftingCatalog->protocolPacket();
+            if (!$session->play->queuePacket($packet)) {
+                $this->disconnect($key);
+                continue;
+            }
+            $session->craftingCatalogRevision = $revision;
+        }
     }
 
     /** Runs one non-blocking, explicitly bounded network and simulation iteration. */
@@ -646,6 +671,16 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                                 $this->actorVisibility->viewersOf($event->senderSessionId),
                             )),
                         );
+                    } elseif ($event instanceof ArmSwung) {
+                        $event = new ArmSwung(
+                            $event->ownerSessionId,
+                            $event->runtimeActorId,
+                            $event->source,
+                            array_values(array_intersect(
+                                $event->recipientSessionIds,
+                                $this->actorVisibility->viewersOf($event->ownerSessionId),
+                            )),
+                        );
                     } elseif ($event instanceof HeldItemChanged) {
                         $event = new HeldItemChanged(
                             $event->ownerSessionId,
@@ -685,6 +720,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                             $event->fullSync,
                             $event->armorInventory,
                             $event->offhandStack,
+                            $event->craftingInventory,
                         );
                     }
                     if (!$this->dispatchWorldEvent($event, $directedCount)) {
@@ -724,6 +760,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
             if (!$this->queueCommandMetadataUpdates()) {
                 return false;
             }
+            $this->queueCraftingCatalogUpdates();
             foreach (array_keys($this->sessions) as $key) {
                 $this->flush($key, $this->sessions[$key]);
             }
@@ -1136,6 +1173,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                 }
             }
             $play = $this->playChannels->create($ready, $session->id, $session->runtimeEntityId, $bootstrap);
+            $session->craftingCatalogRevision = $this->craftingCatalog?->revision() ?? 0;
             $session->bootstrap = $bootstrap;
             $session->promote($play);
             $identity = $bootstrap?->identity->uuid ?? $ready->login->identity;
@@ -1159,6 +1197,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                     $quitMessage,
                     $screenMessage,
                 ),
+                fn(): bool => $this->world->enqueuePluginArmSwing($identity),
             );
             $this->flush($key, $session);
         } catch (Throwable $exception) {
@@ -1240,12 +1279,36 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                 );
                 $this->performance?->recordNetworkSent(strlen($payload->payload));
             } catch (Throwable $exception) {
-                $this->diagnostics->record('runtime.transport_send_failed', ['exception' => $exception::class]);
+                $this->diagnostics->record('runtime.transport_send_failed', [
+                    'exception' => $exception::class,
+                    'reason' => self::transportSendFailureReason($exception),
+                    'payload_bytes' => strlen($payload->payload),
+                    'reliability' => strtolower((string) preg_replace(
+                        '/(?<!^)[A-Z]/',
+                        '_$0',
+                        $payload->reliability->name,
+                    )),
+                    'ordering_channel' => $payload->orderingChannel,
+                    'phase' => strtolower($session->phase->name),
+                ]);
                 $this->disconnect($key);
 
                 return;
             }
         }
+    }
+
+    private static function transportSendFailureReason(Throwable $exception): string
+    {
+        return match ($exception->getMessage()) {
+            'Outbound frame queue limit reached.' => 'outbound_frame_queue',
+            'Reliable frame tracking limit reached.' => 'reliable_frame_tracking',
+            'Payload requires too many fragments.' => 'payload_fragment_limit',
+            'Reliable index space collided with a pending frame.' => 'reliable_index_collision',
+            'Outbound split-ID lease limit reached.' => 'split_id_lease',
+            'No outbound split ID is available.' => 'split_id_exhausted',
+            default => 'send_failure',
+        };
     }
 
     private function disconnect(string $key): void
@@ -1517,6 +1580,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
             $event instanceof BlockPlaced, $event instanceof BlockPlacementCorrected, $event instanceof HeldItemChanged => $event->ownerSessionId,
             $event instanceof CommandRejected => $event->sessionId,
             $event instanceof EmotePerformed => $event->senderSessionId,
+            $event instanceof ArmSwung => $event->ownerSessionId,
             $event instanceof MovementCorrected => $event->authoritativePlayer->sessionId,
             $event instanceof PlayerDisconnected => $event->sessionId,
             $event instanceof PlayerBecameHidden => $event->playerSessionId,

@@ -16,6 +16,7 @@ final class PlayerConnectionDirectoryTest extends TestCase
         $directory = new PlayerConnectionDirectory();
         $connection = $directory->connection('PLAYER-UUID');
         $sent = [];
+        $swings = 0;
 
         self::assertFalse($connection->isConnected());
         $directory->connect(
@@ -27,12 +28,19 @@ final class PlayerConnectionDirectoryTest extends TestCase
 
                 return true;
             },
+            swingArm: static function () use (&$swings): bool {
+                ++$swings;
+
+                return true;
+            },
         );
 
         self::assertTrue($connection->isConnected());
         $packet = TextPacket::tip('tip');
         self::assertTrue($connection->sendPacket($packet, true));
         self::assertSame([[$packet, true]], $sent);
+        self::assertTrue($connection->swingArm());
+        self::assertSame(1, $swings);
 
         $directory->connect(
             'player-uuid',
@@ -45,5 +53,6 @@ final class PlayerConnectionDirectoryTest extends TestCase
         $directory->disconnect('player-uuid', 'session-two');
         self::assertFalse($connection->isConnected());
         self::assertFalse($connection->sendPacket($packet));
+        self::assertFalse($connection->swingArm());
     }
 }

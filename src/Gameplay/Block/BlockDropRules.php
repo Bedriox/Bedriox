@@ -25,7 +25,7 @@ final class BlockDropRules
 
         return match ($block->dropKind) {
             BlockDropKind::None => [],
-            BlockDropKind::Self => [new BlockDrop($block->identifier(), 1)],
+            BlockDropKind::Self => [new BlockDrop($block->itemIdentifier() ?? $block->identifier(), 1)],
             BlockDropKind::Dirt => [new BlockDrop('minecraft:dirt', 1)],
             BlockDropKind::Cobblestone => [new BlockDrop('minecraft:cobblestone', 1)],
             BlockDropKind::CobbledDeepslate => [new BlockDrop('minecraft:cobbled_deepslate', 1)],

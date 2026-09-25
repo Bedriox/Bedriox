@@ -118,6 +118,11 @@ final class ItemCatalogTest extends TestCase
         self::assertSame(239, $shears->tool->durability);
         self::assertSame(0, $shears->tool->durabilityDamagePerAttack);
         self::assertSame(1, $shears->maximumStackSize);
+
+        $bow = $catalog->type('minecraft:bow');
+        self::assertSame(1, $bow->maximumStackSize);
+        self::assertSame(385, $bow->durability());
+        self::assertSame(60, $woodenSword->durability());
     }
 
     public function testPluginReplacementPreservesExistingGameplayBehavior(): void

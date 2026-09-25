@@ -17,6 +17,8 @@ use Bedriox\Server\Simulation\Command\ApplyInventoryStackRequest;
 use Bedriox\Server\Simulation\Command\AttackPlayer;
 use Bedriox\Server\Simulation\Command\BreakBlock;
 use Bedriox\Server\Simulation\Command\ChangeGameMode;
+use Bedriox\Server\Simulation\Command\CloseCraftingGrid;
+use Bedriox\Server\Simulation\Command\CraftingRequest;
 use Bedriox\Server\Simulation\Command\DamagePlayer;
 use Bedriox\Server\Simulation\Command\DisconnectPlayer;
 use Bedriox\Server\Simulation\Command\DropItem;
@@ -32,6 +34,7 @@ use Bedriox\Server\Simulation\Command\SendChat;
 use Bedriox\Server\Simulation\Command\SendPluginMessage;
 use Bedriox\Server\Simulation\Command\SetPluginBlock;
 use Bedriox\Server\Simulation\Command\SetPluginInventorySlot;
+use Bedriox\Server\Simulation\Command\SwingArm;
 use Bedriox\Server\Simulation\Command\SyncInventory;
 use Bedriox\Server\Simulation\Command\SyncInventorySlots;
 use Bedriox\Server\Simulation\Command\TeleportPlayer;
@@ -214,6 +217,13 @@ final readonly class SimulationCommandFactory
         return new PerformEmote($session, $emoteId);
     }
 
+    public function swingArm(string $session, ArmSwingSource $source): SwingArm
+    {
+        $this->assertOpaqueId($session, 128, 'session');
+
+        return new SwingArm($session, $source);
+    }
+
     public function disconnect(string $session): DisconnectPlayer
     {
         $this->assertOpaqueId($session, 128, 'session');
@@ -281,6 +291,7 @@ final readonly class SimulationCommandFactory
                 InventoryContainer::Cursor,
                 InventoryContainer::Armor,
                 InventoryContainer::Offhand,
+                InventoryContainer::CraftingInput,
             ], true)
             || ($source->container === InventoryContainer::Main
                 && ($source->slot < 0 || $source->slot >= PlayerInventory::SLOT_COUNT))
@@ -288,6 +299,8 @@ final readonly class SimulationCommandFactory
             || ($source->container === InventoryContainer::Armor
                 && ($source->slot < 0 || $source->slot >= PlayerInventory::ARMOR_SLOT_COUNT))
             || ($source->container === InventoryContainer::Offhand && $source->slot !== 0)
+            || ($source->container === InventoryContainer::CraftingInput
+                && ($source->slot < 0 || $source->slot >= 9))
             || $source->expectedStackNetworkId < -0x80000000
             || $source->expectedStackNetworkId > 0x7fffffff
             || $count < 1 || $count > 64
@@ -305,11 +318,18 @@ final readonly class SimulationCommandFactory
         return new SyncInventory($session);
     }
 
+    public function closeCraftingGrid(string $session): CloseCraftingGrid
+    {
+        $this->assertOpaqueId($session, 128, 'session');
+
+        return new CloseCraftingGrid($session);
+    }
+
     /** @param list<mixed> $slots */
     public function syncInventorySlots(string $session, array $slots): SyncInventorySlots
     {
         $this->assertOpaqueId($session, 128, 'session');
-        if ($slots === [] || count($slots) > PlayerInventory::SLOT_COUNT + PlayerInventory::ARMOR_SLOT_COUNT + 2) {
+        if ($slots === [] || count($slots) > PlayerInventory::SLOT_COUNT + PlayerInventory::ARMOR_SLOT_COUNT + 11) {
             throw new CommandValidationException('Inventory slot sync is outside its bounded range.');
         }
         $seen = [];
@@ -322,6 +342,8 @@ final readonly class SimulationCommandFactory
                     && ($slot->slot < 0 || $slot->slot >= PlayerInventory::ARMOR_SLOT_COUNT))
                 || ($slot->container === InventoryContainer::Cursor && $slot->slot !== 0)
                 || ($slot->container === InventoryContainer::Offhand && $slot->slot !== 0)
+                || ($slot->container === InventoryContainer::CraftingInput
+                    && ($slot->slot < 0 || $slot->slot >= 9))
                 || isset($seen[$slot->key()])) {
                 throw new CommandValidationException('Inventory slot sync contains an invalid slot.');
             }
@@ -432,6 +454,7 @@ final readonly class SimulationCommandFactory
         ?string $rejectionReason = null,
         InventoryResponseMode $responseMode = InventoryResponseMode::ItemStackResponse,
         ?InventoryStack $authoritativeCreativeStack = null,
+        ?CraftingRequest $crafting = null,
     ): ApplyInventoryStackRequest {
         $this->assertOpaqueId($session, 128, 'session');
         if ($actions === [] && $rejectionReason === null) {
@@ -458,6 +481,10 @@ final readonly class SimulationCommandFactory
                 || ($action->source->container === InventoryContainer::Offhand && $action->source->slot !== 0)
                 || ($action->destination->container === InventoryContainer::Offhand
                     && $action->destination->slot !== 0)
+                || ($action->source->container === InventoryContainer::CraftingInput
+                    && ($action->source->slot < 0 || $action->source->slot >= 9))
+                || ($action->destination->container === InventoryContainer::CraftingInput
+                    && ($action->destination->slot < 0 || $action->destination->slot >= 9))
                 || ($action->source->container === InventoryContainer::CreatedOutput && $action->source->slot !== 50)
                 || ($action->destination->container === InventoryContainer::CreatedOutput
                     && $action->destination->slot !== 50)) {
@@ -473,6 +500,7 @@ final readonly class SimulationCommandFactory
             $rejectionReason,
             $responseMode,
             $authoritativeCreativeStack,
+            $crafting,
         );
     }
 

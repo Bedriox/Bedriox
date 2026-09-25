@@ -4,6 +4,11 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Simulation;
 
+use Bedriox\Api\Crafting\CraftingGrid as ApiCraftingGrid;
+use Bedriox\Api\Crafting\CraftingRecipe as ApiCraftingRecipe;
+use Bedriox\Api\Crafting\RecipeIngredient as ApiRecipeIngredient;
+use Bedriox\Api\Crafting\ShapedRecipe as ApiShapedRecipe;
+use Bedriox\Api\Crafting\ShapelessRecipe as ApiShapelessRecipe;
 use Bedriox\Api\Inventory\ConsumptionResult as ApiConsumptionResult;
 use Bedriox\Api\Inventory\EquipmentSlot as ApiEquipmentSlot;
 use Bedriox\Api\Inventory\ItemDamageCause as ApiItemDamageCause;
@@ -22,8 +27,18 @@ use Bedriox\Server\Gameplay\Block\BlockBreakRules;
 use Bedriox\Server\Gameplay\Block\BlockCatalog;
 use Bedriox\Server\Gameplay\Block\BlockDropRules;
 use Bedriox\Server\Gameplay\Block\BlockPlacementStateResolver;
+use Bedriox\Server\Gameplay\Block\BlockType;
 use Bedriox\Server\Gameplay\Block\DropRandom;
 use Bedriox\Server\Gameplay\Block\SystemDropRandom;
+use Bedriox\Server\Gameplay\Crafting\ComplexCraftingRecipeEvaluator;
+use Bedriox\Server\Gameplay\Crafting\CraftingCatalog;
+use Bedriox\Server\Gameplay\Crafting\CraftingGrid;
+use Bedriox\Server\Gameplay\Crafting\CraftingRecipe;
+use Bedriox\Server\Gameplay\Crafting\CraftingRecipeMatch;
+use Bedriox\Server\Gameplay\Crafting\RecipeIngredient;
+use Bedriox\Server\Gameplay\Crafting\RecipeOutput;
+use Bedriox\Server\Gameplay\Crafting\ShapedRecipe;
+use Bedriox\Server\Gameplay\Crafting\ShapelessRecipe;
 use Bedriox\Server\Gameplay\Item\ArmorSlot;
 use Bedriox\Server\Gameplay\Item\ItemBehaviorRegistry;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
@@ -46,6 +61,7 @@ use Bedriox\Server\Simulation\Command\ApplyInventoryStackRequest;
 use Bedriox\Server\Simulation\Command\AttackPlayer;
 use Bedriox\Server\Simulation\Command\BreakBlock;
 use Bedriox\Server\Simulation\Command\ChangeGameMode;
+use Bedriox\Server\Simulation\Command\CloseCraftingGrid;
 use Bedriox\Server\Simulation\Command\DamagePlayer;
 use Bedriox\Server\Simulation\Command\DisconnectPlayer;
 use Bedriox\Server\Simulation\Command\DropItem;
@@ -61,11 +77,13 @@ use Bedriox\Server\Simulation\Command\SendChat;
 use Bedriox\Server\Simulation\Command\SendPluginMessage;
 use Bedriox\Server\Simulation\Command\SetPluginBlock;
 use Bedriox\Server\Simulation\Command\SetPluginInventorySlot;
+use Bedriox\Server\Simulation\Command\SwingArm;
 use Bedriox\Server\Simulation\Command\SyncInventory;
 use Bedriox\Server\Simulation\Command\SyncInventorySlots;
 use Bedriox\Server\Simulation\Command\TeleportPlayer;
 use Bedriox\Server\Simulation\Command\UseItem;
 use Bedriox\Server\Simulation\Command\WorldCommand;
+use Bedriox\Server\Simulation\Event\ArmSwung;
 use Bedriox\Server\Simulation\Event\BlockBreakStarted;
 use Bedriox\Server\Simulation\Event\BlockBreakStopped;
 use Bedriox\Server\Simulation\Event\BlockChanged;
@@ -74,6 +92,7 @@ use Bedriox\Server\Simulation\Event\BlockPlacementCorrected;
 use Bedriox\Server\Simulation\Event\BlockPunch;
 use Bedriox\Server\Simulation\Event\ChatBroadcast;
 use Bedriox\Server\Simulation\Event\CommandRejected;
+use Bedriox\Server\Simulation\Event\CraftingTableOpened;
 use Bedriox\Server\Simulation\Event\EmotePerformed;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InstantItemUsed;
@@ -120,6 +139,7 @@ final class WorldSimulation
     private const int MAXIMUM_ITEM_MOVEMENT_EVENTS_PER_TICK = 256;
     private const int MAXIMUM_ITEM_DESPAWN_EVENTS_PER_TICK = 256;
     private const int EMOTE_COOLDOWN_TICKS = 5;
+    private const int ARM_SWING_INTERVAL_TICKS = 6;
     private const int EMPTY_HAND_GRASS_BREAK_RATE = 3640;
     private const float MAXIMUM_BLOCK_REACH = 6.0;
     private const int MAXIMUM_ITEM_USE_HOLD_TICKS = 1_200;
@@ -180,7 +200,9 @@ final class WorldSimulation
 
     private readonly ItemBehaviorRegistry $itemBehaviors;
 
-    /** @var array<string, array{position: BlockPosition, state: int, sequence: int, face: int, lastParticleTick: int}> */
+    private readonly ?ComplexCraftingRecipeEvaluator $complexCraftingRecipes;
+
+    /** @var array<string, array{position: BlockPosition, state: int, sequence: int, face: int, lastParticleTick: int, lastSwingTick: int}> */
     private array $breakingBlocks = [];
 
     /** @var array<string, array{session: string, position: Position, acknowledge: bool}> */
@@ -203,6 +225,7 @@ final class WorldSimulation
         ?DropRandom $dropRandom = null,
         ?ItemEntityRegistry $itemEntities = null,
         ?ItemBehaviorRegistry $itemBehaviors = null,
+        private readonly ?CraftingCatalog $craftingCatalog = null,
     ) {
         $this->commands = new SplQueue();
         $this->lifecycleCommands = new SplQueue();
@@ -212,6 +235,9 @@ final class WorldSimulation
         $this->dropRandom = $dropRandom ?? new SystemDropRandom();
         $this->itemEntities = $itemEntities ?? new ItemEntityRegistry(firstEntityId: 1_000_000_000);
         $this->itemBehaviors = $itemBehaviors ?? ItemBehaviorRegistry::vanilla();
+        $this->complexCraftingRecipes = $itemCatalog !== null && $blockStateRegistry !== null
+            ? new ComplexCraftingRecipeEvaluator($itemCatalog, $blockStateRegistry)
+            : null;
         $this->collisionResolver = $blockWorld !== null && $blockPalette !== null
             ? new PlayerCollisionResolver(new BlockCollisionQuery(
                 $blockWorld,
@@ -518,6 +544,14 @@ final class WorldSimulation
         return $player !== null && $this->enqueue($this->validator->pluginMessage($player->sessionId, $message));
     }
 
+    public function enqueuePluginArmSwing(string $identity): bool
+    {
+        $player = $this->players->playerByIdentity($identity);
+
+        return $player !== null
+            && $this->enqueue($this->validator->swingArm($player->sessionId, ArmSwingSource::Plugin));
+    }
+
     public function enqueuePluginTeleport(string $identity, Position $position): bool
     {
         return $this->enqueueTeleport($identity, $position);
@@ -605,6 +639,7 @@ final class WorldSimulation
             $command instanceof JoinPlayer => $this->join($command),
             $command instanceof SendChat => $this->chat($command),
             $command instanceof PerformEmote => $this->emote($command),
+            $command instanceof SwingArm => $this->swingArm($command),
             $command instanceof BreakBlock => $this->breakBlock($command),
             $command instanceof PlaceBlock => $this->placeBlock($command),
             $command instanceof ApplyInventoryStackRequest => $this->inventoryStackRequest($command),
@@ -614,6 +649,7 @@ final class WorldSimulation
             $command instanceof GiveItem => $this->giveItem($command),
             $command instanceof SyncInventory => $this->syncInventory($command),
             $command instanceof SyncInventorySlots => $this->syncInventorySlots($command),
+            $command instanceof CloseCraftingGrid => $this->closeCraftingGrid($command),
             $command instanceof SelectHotbarSlot => $this->selectHotbarSlot($command),
             $command instanceof DisconnectPlayer => $this->disconnect($command),
             $command instanceof SendPluginMessage => $this->pluginMessage($command),
@@ -746,6 +782,7 @@ final class WorldSimulation
             responseMode: InventoryResponseMode::LegacySlotSync,
             armorInventory: $player->inventory->armorSlots(),
             offhandStack: $player->inventory->offhandStack(),
+            craftingInventory: $player->inventory->craftingSlots(),
         );
     }
 
@@ -774,6 +811,7 @@ final class WorldSimulation
             InventoryContainer::Cursor => $player->inventory->cursorStack(),
             InventoryContainer::Armor => $player->inventory->armorStack($command->source->slot),
             InventoryContainer::Offhand => $player->inventory->offhandStack(),
+            InventoryContainer::CraftingInput => $player->inventory->craftingStack($command->source->slot),
             InventoryContainer::CreatedOutput => null,
         };
         $reason = match (true) {
@@ -862,6 +900,7 @@ final class WorldSimulation
             $command->responseMode,
             armorInventory: $player->inventory->armorSlots(),
             offhandStack: $player->inventory->offhandStack(),
+            craftingInventory: $player->inventory->craftingSlots(),
         );
     }
 
@@ -892,6 +931,7 @@ final class WorldSimulation
             fullSync: true,
             armorInventory: $player->inventory->armorSlots(),
             offhandStack: $player->inventory->offhandStack(),
+            craftingInventory: $player->inventory->craftingSlots(),
         );
     }
 
@@ -917,6 +957,47 @@ final class WorldSimulation
             responseMode: InventoryResponseMode::LegacySlotSync,
             armorInventory: $player->inventory->armorSlots(),
             offhandStack: $player->inventory->offhandStack(),
+            craftingInventory: $player->inventory->craftingSlots(),
+        );
+    }
+
+    private function closeCraftingGrid(CloseCraftingGrid $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        if ($player === null) {
+            return new CommandRejected($command->session, 'not_joined');
+        }
+        $before = clone $player->inventory;
+        $gridWidth = $before->craftingGridWidth();
+        $gridSlotCount = $gridWidth ** 2;
+        $responseOffset = $gridWidth === 2 ? 28 : 32;
+        $this->evacuateCraftingGrid($player, $this->players->recipients());
+        $affected = self::changedMainInventorySlots($before, $player->inventory);
+        for ($slot = 0; $slot < $gridSlotCount; ++$slot) {
+            $affected[] = new InventorySlotReference(
+                InventoryContainer::CraftingInput,
+                $slot,
+                0,
+                responseSlot: $responseOffset + $slot,
+            );
+        }
+
+        return new InventoryStackRequestProcessed(
+            $player->sessionId,
+            0,
+            true,
+            $affected,
+            $player->inventory->slots(),
+            $player->inventory->cursorStack(),
+            $player->inventory->selectedHotbarSlot(),
+            $player->inventory->selectedStack(),
+            !self::sameInventoryStack($before->selectedStack(), $player->inventory->selectedStack()),
+            $player->runtimeActorId,
+            $this->players->recipients($player->sessionId),
+            responseMode: InventoryResponseMode::LegacySlotSync,
+            armorInventory: $player->inventory->armorSlots(),
+            offhandStack: $player->inventory->offhandStack(),
+            craftingInventory: array_fill(0, $gridSlotCount, null),
         );
     }
 
@@ -1352,6 +1433,10 @@ final class WorldSimulation
             $target->movement->fallDistance = 0.0;
             $this->deferredEvents[] = $this->deathEvent($target, DamageCause::Attack, $damage, $attacker);
         }
+        $swing = $this->armSwingEvent($attacker, ArmSwingSource::Attack);
+        if ($swing !== null) {
+            $this->deferredEvents[] = $swing;
+        }
 
         return new PlayerDamaged(
             $target->snapshot(),
@@ -1408,6 +1493,7 @@ final class WorldSimulation
         float $damage,
         ?Player $killer = null,
     ): PlayerDied {
+        $this->evacuateCraftingGrid($player, $this->players->recipients());
         $player->movement->velocityX = 0.0;
         $player->movement->verticalVelocity = 0.0;
         $player->movement->velocityZ = 0.0;
@@ -1669,6 +1755,22 @@ final class WorldSimulation
         );
     }
 
+    private function swingArm(SwingArm $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        if ($player === null) {
+            return new CommandRejected($command->session, 'not_joined');
+        }
+        if ($command->source === ArmSwingSource::Missed
+            && $this->pluginEvents !== null
+            && !$this->pluginEvents->allowMissSwing($player)) {
+            return new CommandRejected($command->session, 'plugin_cancelled');
+        }
+        $event = $this->armSwingEvent($player, $command->source);
+
+        return $event ?? new CommandRejected($command->session, 'arm_swing_rate');
+    }
+
     private function disconnect(DisconnectPlayer $command): WorldEvent
     {
         $key = self::sessionKey($command->session);
@@ -1679,6 +1781,7 @@ final class WorldSimulation
         }
         $this->deferItemUseCancellation($player, ItemUseCancellationReason::DISCONNECTED);
         unset($this->itemCooldowns[$key], $this->lastItemUseCompletionTicks[$key]);
+        $this->evacuateCraftingGrid($player, $this->players->recipients($player->sessionId));
         $this->pluginEvents?->quit($player);
         $this->playerPersistence?->save($player);
         $this->players->remove($command->session);
@@ -1689,6 +1792,32 @@ final class WorldSimulation
             $player->runtimeActorId,
             $this->players->recipients(),
         );
+    }
+
+    /** @param list<string> $recipients */
+    private function evacuateCraftingGrid(Player $player, array $recipients): void
+    {
+        $hadContents = array_filter($player->inventory->craftingSlots()) !== [];
+        $wasTable = $player->inventory->craftingGridWidth() === 3;
+        foreach ($player->inventory->closeCraftingGrid() as $overflow) {
+            if (!$this->itemEntities->canSpawn()) {
+                continue;
+            }
+            $entity = $this->itemEntities->spawn(
+                $overflow,
+                new Position(
+                    $player->movement->position->x,
+                    $player->movement->position->y + 1.0,
+                    $player->movement->position->z,
+                ),
+                new ItemEntityMotion(0.0, 0.05, 0.0),
+                10,
+            );
+            $this->deferredEvents[] = new ItemEntitySpawned($entity, $recipients);
+        }
+        if ($hadContents || $wasTable) {
+            $player->markDirty();
+        }
     }
 
     private function isValid(WorldCommand $command): bool
@@ -1727,6 +1856,10 @@ final class WorldSimulation
                     $command->session,
                     $command->emoteId,
                 ),
+                $command instanceof SwingArm => $this->validator->swingArm(
+                    $command->session,
+                    $command->source,
+                ),
                 $command instanceof DisconnectPlayer => $this->validator->disconnect($command->session),
                 $command instanceof BreakBlock => $this->validator->breakBlock(
                     $command->session,
@@ -1753,6 +1886,7 @@ final class WorldSimulation
                     $command->rejectionReason,
                     $command->responseMode,
                     $command->authoritativeCreativeStack,
+                    $command->crafting,
                 ),
                 $command instanceof DropItem => $this->validator->dropItem(
                     $command->session,
@@ -1783,6 +1917,7 @@ final class WorldSimulation
                     $command->session,
                     $command->slots,
                 ),
+                $command instanceof CloseCraftingGrid => $this->validator->closeCraftingGrid($command->session),
                 $command instanceof SelectHotbarSlot => $this->validator->selectHotbarSlot(
                     $command->session,
                     $command->hotbarSlot,
@@ -1952,11 +2087,14 @@ final class WorldSimulation
         }
         $events = [];
         foreach ($this->breakingBlocks as $key => $active) {
-            if ($this->tick - $active['lastParticleTick'] < 5) {
+            $particleDue = $this->tick - $active['lastParticleTick'] >= 5;
+            $swingDue = $this->tick - $active['lastSwingTick'] >= self::ARM_SWING_INTERVAL_TICKS;
+            if (!$particleDue && !$swingDue) {
                 continue;
             }
             $sessionId = substr($key, strlen('session:'));
-            if ($this->players->player($sessionId) === null) {
+            $player = $this->players->player($sessionId);
+            if ($player === null) {
                 unset($this->breakingBlocks[$key]);
                 continue;
             }
@@ -1965,14 +2103,23 @@ final class WorldSimulation
                 unset($this->breakingBlocks[$key]);
                 continue;
             }
-            $this->breakingBlocks[$key]['lastParticleTick'] = $this->tick;
-            $events[] = new BlockPunch(
-                $sessionId,
-                $position,
-                new InternalBlockStateId($active['state']),
-                $active['face'],
-                $this->players->recipients(),
-            );
+            if ($particleDue) {
+                $this->breakingBlocks[$key]['lastParticleTick'] = $this->tick;
+                $events[] = new BlockPunch(
+                    $sessionId,
+                    $position,
+                    new InternalBlockStateId($active['state']),
+                    $active['face'],
+                    $this->players->recipients(),
+                );
+            }
+            if ($swingDue) {
+                $this->breakingBlocks[$key]['lastSwingTick'] = $this->tick;
+                $swing = $this->armSwingEvent($player, ArmSwingSource::Mining);
+                if ($swing !== null) {
+                    $events[] = $swing;
+                }
+            }
         }
 
         return $events;
@@ -2008,12 +2155,7 @@ final class WorldSimulation
             return new BlockChanged($command->session, $position, $state, [$command->session], true);
         }
         if ($command->action === BlockBreakAction::Start) {
-            if (!$player->gameMode()->canBuild()
-                || ($blockType !== null && !$blockType->isBreakable())
-                || ($blockType === null && ($state->value === $this->blockPalette->air->value
-                    || $state->value === $this->blockPalette->bedrock->value
-                    || $state->value === $this->waterState?->value
-                    || $state->value === $this->lavaState?->value))) {
+            if (!$this->playerCanBreakBlock($player, $state, $blockType)) {
                 return new CommandRejected($command->session, 'block_not_breakable');
             }
             if ($active !== null && $command->sequence <= $active['sequence']) {
@@ -2026,6 +2168,7 @@ final class WorldSimulation
                 'sequence' => $command->sequence,
                 'face' => $command->face,
                 'lastParticleTick' => $sameTarget ? $active['lastParticleTick'] : $this->tick,
+                'lastSwingTick' => $sameTarget ? $active['lastSwingTick'] : $this->tick,
             ];
             if (!$sameTarget) {
                 $this->deferredEvents[] = new BlockPunch(
@@ -2035,6 +2178,10 @@ final class WorldSimulation
                     $command->face,
                     $this->players->recipients(),
                 );
+                $swing = $this->armSwingEvent($player, ArmSwingSource::Mining);
+                if ($swing !== null) {
+                    $this->deferredEvents[] = $swing;
+                }
             }
 
             $heldType = $this->heldItemType($player);
@@ -2055,12 +2202,7 @@ final class WorldSimulation
             );
         }
         $stopsActiveBreak = $active !== null && $active['position']->equals($position);
-        if (!$player->gameMode()->canBuild()
-            || ($blockType !== null && !$blockType->isBreakable())
-            || $state->value === $this->blockPalette->air->value
-            || $state->value === $this->blockPalette->bedrock->value
-            || $state->value === $this->waterState?->value
-            || $state->value === $this->lavaState?->value
+        if (!$this->playerCanBreakBlock($player, $state, $blockType)
             || ($stopsActiveBreak && $command->sequence <= $active['sequence'])) {
             unset($this->breakingBlocks[$key]);
 
@@ -2085,6 +2227,10 @@ final class WorldSimulation
             : [];
         if (count($drops) > $this->itemEntities->remainingCapacity()) {
             return new BlockChanged($command->session, $position, $state, [$command->session], $stopsActiveBreak);
+        }
+        $swing = $this->armSwingEvent($player, ArmSwingSource::Mining);
+        if ($swing !== null) {
+            $this->deferredEvents[] = $swing;
         }
         try {
             $this->blockWorld->setBlockState($position->x, $position->y, $position->z, $this->blockPalette->air);
@@ -2123,6 +2269,49 @@ final class WorldSimulation
             $this->players->recipients(),
             $stopsActiveBreak,
             $state,
+        );
+    }
+
+    private function playerCanBreakBlock(
+        Player $player,
+        InternalBlockStateId $state,
+        ?BlockType $blockType,
+    ): bool {
+        if (!$player->gameMode()->canBuild()) {
+            return false;
+        }
+        $identifier = $blockType?->identifier();
+        if ($identifier === 'minecraft:air'
+            || $identifier === 'minecraft:water'
+            || $identifier === 'minecraft:lava') {
+            return false;
+        }
+        if ($blockType !== null) {
+            return $blockType->isBreakable()
+                || ($identifier === 'minecraft:bedrock' && $player->gameMode()->instantlyBreaksBlocks());
+        }
+        if ($state->value === $this->blockPalette?->air->value
+            || $state->value === $this->waterState?->value
+            || $state->value === $this->lavaState?->value) {
+            return false;
+        }
+
+        return $state->value !== $this->blockPalette?->bedrock->value
+            || $player->gameMode()->instantlyBreaksBlocks();
+    }
+
+    private function armSwingEvent(Player $player, ArmSwingSource $source): ?ArmSwung
+    {
+        if ($player->lastArmSwingTick === $this->tick) {
+            return null;
+        }
+        $player->lastArmSwingTick = $this->tick;
+
+        return new ArmSwung(
+            $player->sessionId,
+            $player->runtimeActorId,
+            $source,
+            $this->players->recipients($player->sessionId),
         );
     }
 
@@ -2355,6 +2544,337 @@ final class WorldSimulation
             $player->inventory->slots(),
             $droppedResidue,
             $this->players->recipients(),
+        );
+    }
+
+    /**
+     * @return array{
+     *     list<InventoryStack>,
+     *     ?string,
+     *     ?ApiCraftingRecipe,
+     *     ?CraftingGrid,
+     *     list<InventoryStack>,
+     *     list<RecipeOutput>
+     * }
+     */
+    private function resolveCraftingRequest(Player $player, ApplyInventoryStackRequest $command): array
+    {
+        if ($command->crafting === null || $this->craftingCatalog === null || $this->itemCatalog === null) {
+            return [[], 'crafting_unavailable', null, null, [], []];
+        }
+        $width = $player->inventory->craftingGridWidth();
+        $grid = new CraftingGrid($width, $width, $player->inventory->craftingSlots());
+        /** @var array<string, array{InventorySlotReference, int}> $claimed */
+        $claimed = [];
+        foreach ($command->actions as $action) {
+            if ($action->type !== InventoryStackRequestActionType::Consume) {
+                continue;
+            }
+            $key = $action->source->key();
+            $current = $claimed[$key] ?? [$action->source, 0];
+            $claimed[$key] = [$current[0], $current[1] + $action->count];
+        }
+
+        $outputs = [];
+        $consumed = [];
+        $recipeOutputs = [];
+        $apiRecipe = null;
+        $complexUuid = $this->craftingCatalog->complexUuid($command->crafting->recipeNetworkId);
+        if ($complexUuid !== null) {
+            if ($command->crafting->automatic || $this->complexCraftingRecipes === null) {
+                return [[], 'complex_recipe_unavailable', null, null, [], []];
+            }
+            $match = $this->complexCraftingRecipes->match(
+                $complexUuid,
+                $grid,
+                $command->crafting->repetitions,
+            );
+            if ($match === null) {
+                return [[], 'complex_recipe_mismatch', null, null, [], []];
+            }
+            $claimedBySlot = [];
+            foreach ($claimed as [$reference, $count]) {
+                if ($reference->container !== InventoryContainer::CraftingInput
+                    || isset($claimedBySlot[$reference->slot])) {
+                    return [[], 'crafting_consumption_mismatch', null, null, [], []];
+                }
+                $claimedBySlot[$reference->slot] = $count;
+                $stack = $grid->slots[$reference->slot] ?? null;
+                if ($stack === null || $stack->count < $count) {
+                    return [[], 'crafting_consumption_mismatch', null, null, [], []];
+                }
+                $consumed[] = $stack->withCountAndNetworkId($count, $stack->stackNetworkId);
+            }
+            ksort($claimedBySlot);
+            if ($claimedBySlot !== $match->consumptionBySlot) {
+                return [[], 'crafting_consumption_mismatch', null, null, [], []];
+            }
+            $recipeOutputs = $match->outputs;
+            $apiRecipe = self::apiComplexCraftingRecipe($match, $grid);
+        } else {
+            $recipe = $this->craftingCatalog->recipes()->recipeByNetworkId($command->crafting->recipeNetworkId);
+            if ($recipe === null) {
+                return [[], 'unknown_recipe', null, null, [], []];
+            }
+            $apiRecipe = self::apiCraftingRecipe($recipe);
+        }
+
+        if ($complexUuid === null && $command->crafting->automatic) {
+            $provided = [];
+            $main = $player->inventory->slots();
+            foreach ($claimed as [$reference, $count]) {
+                $stack = match ($reference->container) {
+                    InventoryContainer::Main => $main[$reference->slot] ?? null,
+                    InventoryContainer::CraftingInput => $player->inventory->craftingStack($reference->slot),
+                    default => null,
+                };
+                if ($stack === null || $count < 1 || $stack->count < $count) {
+                    return [[], 'crafting_consumption_mismatch', null, null, [], []];
+                }
+                $provided[] = $stack->withCountAndNetworkId($count, $stack->stackNetworkId);
+            }
+            if (!self::matchesCraftingIngredients(
+                $provided,
+                $recipe->ingredients(),
+                $command->crafting->repetitions,
+            )) {
+                return [[], 'crafting_consumption_mismatch', null, null, [], []];
+            }
+            $consumed = $provided;
+            $recipeOutputs = $recipe->outputsForInputs($provided);
+        } elseif ($complexUuid === null) {
+            $match = $recipe->match($grid, $command->crafting->repetitions);
+            if ($match === null) {
+                return [[], 'recipe_mismatch', null, null, [], []];
+            }
+            $claimedBySlot = [];
+            foreach ($claimed as [$reference, $count]) {
+                if ($reference->container !== InventoryContainer::CraftingInput
+                    || isset($claimedBySlot[$reference->slot])) {
+                    return [[], 'crafting_consumption_mismatch', null, null, [], []];
+                }
+                $claimedBySlot[$reference->slot] = $count;
+                $stack = $grid->slots[$reference->slot] ?? null;
+                if ($stack === null || $stack->count < $count) {
+                    return [[], 'crafting_consumption_mismatch', null, null, [], []];
+                }
+                $consumed[] = $stack->withCountAndNetworkId($count, $stack->stackNetworkId);
+            }
+            ksort($claimedBySlot);
+            if ($claimedBySlot !== $match->consumptionBySlot) {
+                return [[], 'crafting_consumption_mismatch', null, null, [], []];
+            }
+            $recipeOutputs = $match->outputs;
+        }
+
+        foreach ($recipeOutputs as $output) {
+            $count = $output->count * $command->crafting->repetitions;
+            if ($count > $this->itemCatalog->type($output->identifier)->maximumStackSize) {
+                return [[], 'crafting_output_capacity', null, null, [], []];
+            }
+            $outputs[] = $output->toInventoryStack(1, $count);
+        }
+
+        return [$outputs, null, $apiRecipe, $grid, $consumed, $recipeOutputs];
+    }
+
+    /**
+     * Matches the exact stacks consumed by an automatic craft against recipe requirements.
+     *
+     * @param list<InventoryStack> $provided
+     * @param list<\Bedriox\Server\Gameplay\Crafting\RecipeIngredient> $ingredients
+     */
+    private static function matchesCraftingIngredients(array $provided, array $ingredients, int $repetitions): bool
+    {
+        if ($provided === [] || $ingredients === [] || $repetitions < 1) {
+            return false;
+        }
+        $required = 0;
+        foreach ($ingredients as $ingredient) {
+            $required += $ingredient->count * $repetitions;
+        }
+        $supplied = array_sum(array_map(
+            static fn(InventoryStack $stack): int => $stack->count,
+            $provided,
+        ));
+        if ($required !== $supplied) {
+            return false;
+        }
+
+        $source = 0;
+        $ingredientOffset = 1;
+        $stackOffset = $ingredientOffset + count($ingredients);
+        $sink = $stackOffset + count($provided);
+        /** @var array<int, list<int>> $adjacent */
+        $adjacent = array_fill(0, $sink + 1, []);
+        /** @var array<int, array<int, int>> $capacity */
+        $capacity = array_fill(0, $sink + 1, []);
+        $addEdge = static function (int $from, int $to, int $amount) use (&$adjacent, &$capacity): void {
+            if (!isset($capacity[$from][$to])) {
+                $adjacent[$from][] = $to;
+                $adjacent[$to][] = $from;
+                $capacity[$from][$to] = 0;
+                $capacity[$to][$from] = 0;
+            }
+            $capacity[$from][$to] += $amount;
+        };
+
+        foreach ($ingredients as $ingredientIndex => $ingredient) {
+            $ingredientNode = $ingredientOffset + $ingredientIndex;
+            $demand = $ingredient->count * $repetitions;
+            $addEdge($source, $ingredientNode, $demand);
+            foreach ($provided as $stackIndex => $stack) {
+                if ($ingredient->matches($stack)) {
+                    $addEdge($ingredientNode, $stackOffset + $stackIndex, $demand);
+                }
+            }
+        }
+        foreach ($provided as $stackIndex => $stack) {
+            $addEdge($stackOffset + $stackIndex, $sink, $stack->count);
+        }
+
+        $flow = 0;
+        while (true) {
+            $parents = array_fill(0, $sink + 1, -1);
+            $parents[$source] = $source;
+            /** @var SplQueue<int> $queue */
+            $queue = new SplQueue();
+            $queue->enqueue($source);
+            while (!$queue->isEmpty() && $parents[$sink] === -1) {
+                $node = $queue->dequeue();
+                foreach ($adjacent[$node] as $next) {
+                    if ($parents[$next] === -1 && ($capacity[$node][$next] ?? 0) > 0) {
+                        $parents[$next] = $node;
+                        $queue->enqueue($next);
+                    }
+                }
+            }
+            if ($parents[$sink] === -1) {
+                break;
+            }
+            $increment = PHP_INT_MAX;
+            /** @var list<array{int, int}> $path */
+            $path = [];
+            for ($node = $sink; $node !== $source;) {
+                $parent = $parents[$node] ?? -1;
+                if ($parent < 0) {
+                    return false;
+                }
+                $path[] = [$parent, $node];
+                $increment = min($increment, $capacity[$parent][$node] ?? 0);
+                $node = $parent;
+            }
+            foreach ($path as [$parent, $node]) {
+                $capacity[$parent][$node] = ($capacity[$parent][$node] ?? 0) - $increment;
+                $capacity[$node][$parent] = ($capacity[$node][$parent] ?? 0) + $increment;
+            }
+            $flow += $increment;
+        }
+
+        return $flow === $required;
+    }
+
+    private static function apiCraftingRecipe(CraftingRecipe $recipe): ApiCraftingRecipe
+    {
+        $outputs = array_map(self::apiRecipeOutput(...), $recipe->outputs());
+        if ($recipe instanceof ShapedRecipe) {
+            return new ApiShapedRecipe(
+                $recipe->identifier(),
+                $recipe->width,
+                $recipe->height,
+                array_map(
+                    static fn(?RecipeIngredient $ingredient): ?ApiRecipeIngredient => $ingredient === null
+                        ? null
+                        : self::apiRecipeIngredient($ingredient),
+                    $recipe->ingredientSlots(),
+                ),
+                $outputs,
+                $recipe->priority(),
+                $recipe->allowMirror,
+            );
+        }
+        if ($recipe instanceof ShapelessRecipe) {
+            return new ApiShapelessRecipe(
+                $recipe->identifier(),
+                array_map(self::apiRecipeIngredient(...), $recipe->ingredients()),
+                $outputs,
+                $recipe->priority(),
+            );
+        }
+
+        throw new InvalidArgumentException('Crafting recipe cannot be represented by the public API.');
+    }
+
+    private static function apiComplexCraftingRecipe(
+        CraftingRecipeMatch $match,
+        CraftingGrid $grid,
+    ): ApiCraftingRecipe {
+        $ingredients = [];
+        foreach ($match->consumptionBySlot as $slot => $totalCount) {
+            $stack = $grid->slots[$slot] ?? null;
+            if ($stack === null || $totalCount % $match->repetitions !== 0) {
+                throw new InvalidArgumentException('Complex crafting match cannot be represented by the public API.');
+            }
+            $ingredients[] = ApiRecipeIngredient::exact(
+                $stack->identifier,
+                intdiv($totalCount, $match->repetitions),
+                $stack->auxValue,
+                $stack->damage,
+                $stack->nbt,
+            );
+        }
+
+        return new ApiShapelessRecipe(
+            $match->recipeIdentifier,
+            $ingredients,
+            array_map(self::apiRecipeOutput(...), $match->outputs),
+        );
+    }
+
+    private static function apiRecipeIngredient(RecipeIngredient $ingredient): ApiRecipeIngredient
+    {
+        return new ApiRecipeIngredient(
+            $ingredient->identifiers,
+            $ingredient->count,
+            $ingredient->auxValue,
+            $ingredient->damage,
+            $ingredient->nbt,
+        );
+    }
+
+    private static function apiRecipeOutput(RecipeOutput $output): ApiItemStack
+    {
+        return new ApiItemStack(
+            $output->identifier,
+            $output->count,
+            $output->damage,
+            $output->nbt,
+            $output->auxValue,
+        );
+    }
+
+    private static function apiInventoryStack(InventoryStack $stack): ApiItemStack
+    {
+        return new ApiItemStack(
+            $stack->identifier,
+            $stack->count,
+            $stack->damage,
+            $stack->nbt,
+            $stack->auxValue,
+        );
+    }
+
+    private static function apiCraftingGrid(CraftingGrid $grid): ApiCraftingGrid
+    {
+        return new ApiCraftingGrid(
+            $grid->width,
+            $grid->height,
+            array_map(
+                static fn(?InventoryStack $stack): ?ApiItemStack => $stack === null
+                    ? null
+                    : self::apiInventoryStack($stack),
+                $grid->slots,
+            ),
         );
     }
 
@@ -2773,6 +3293,12 @@ final class WorldSimulation
             return new CommandRejected($command->session, 'not_joined');
         }
         $rejectionReason = $command->rejectionReason;
+        $craftingOutputs = [];
+        $craftingRecipe = null;
+        $craftingGrid = null;
+        $craftingConsumed = [];
+        $craftingEventOutputs = [];
+        $automaticCrafting = $command->crafting !== null && $command->crafting->automatic;
         $predictionOnly = $command->actions !== [];
         $usesCreatedOutput = false;
         foreach ($command->actions as $action) {
@@ -2783,12 +3309,72 @@ final class WorldSimulation
                 break;
             }
         }
+        if ($command->authoritativeCreativeStack !== null && $command->crafting !== null) {
+            $rejectionReason = 'mixed_created_output';
+        } elseif ($command->crafting !== null && $rejectionReason === null) {
+            [
+                $craftingOutputs,
+                $rejectionReason,
+                $craftingRecipe,
+                $craftingGrid,
+                $craftingConsumed,
+                $recipeOutputs,
+            ] = $this->resolveCraftingRequest($player, $command);
+            if ($rejectionReason === null) {
+                $craftingEventOutputs = array_map(self::apiRecipeOutput(...), $recipeOutputs);
+            }
+        }
         if ($command->authoritativeCreativeStack !== null && $player->gameMode() !== GameMode::CREATIVE) {
             $rejectionReason = 'creative_requires_creative_mode';
         } elseif ($command->authoritativeCreativeStack !== null && !$usesCreatedOutput) {
             $rejectionReason = 'unused_creative_output';
-        } elseif ($usesCreatedOutput && $command->authoritativeCreativeStack === null) {
+        } elseif ($usesCreatedOutput && $command->authoritativeCreativeStack === null && $craftingOutputs === []) {
             $rejectionReason = 'missing_created_output';
+        } elseif ($craftingOutputs !== [] && !$usesCreatedOutput) {
+            $rejectionReason = 'unused_crafting_output';
+        }
+        if ($rejectionReason === null && $command->crafting !== null && $this->pluginEvents !== null) {
+            $preflight = clone $player->inventory;
+            $preflightResult = $preflight->applyStackRequest(
+                $command->requestId,
+                $command->actions,
+                createdOutputUnlimited: false,
+                createdOutputs: $craftingOutputs,
+                allowMainConsumption: $automaticCrafting,
+            );
+            if (!$preflightResult->success) {
+                $rejectionReason = $preflightResult->reason;
+            }
+        }
+        if ($rejectionReason === null && $command->crafting !== null && $this->pluginEvents !== null
+            && $craftingRecipe !== null && $craftingGrid !== null) {
+            try {
+                $pluginOutputs = $this->pluginEvents->craft(
+                    $player,
+                    $craftingRecipe,
+                    self::apiCraftingGrid($craftingGrid),
+                    $command->crafting->repetitions,
+                    array_map(self::apiInventoryStack(...), $craftingConsumed),
+                    $craftingEventOutputs,
+                );
+                if ($pluginOutputs === null) {
+                    $rejectionReason = 'plugin_cancelled';
+                } else {
+                    $craftingEventOutputs = $pluginOutputs;
+                    $craftingOutputs = [];
+                    foreach ($craftingEventOutputs as $eventOutput) {
+                        $output = $this->inventoryStackFromApi($eventOutput);
+                        $count = $eventOutput->count * $command->crafting->repetitions;
+                        if ($this->itemCatalog === null
+                            || $count > $this->itemCatalog->type($eventOutput->identifier)->maximumStackSize) {
+                            throw new InvalidArgumentException('Plugin craft output exceeds the admitted stack capacity.');
+                        }
+                        $craftingOutputs[] = $output->withCountAndNetworkId($count, 1);
+                    }
+                }
+            } catch (InvalidArgumentException|OverflowException) {
+                $rejectionReason = 'plugin_result';
+            }
         }
         if ($this->pluginEvents === null || $predictionOnly) {
             $result = $rejectionReason === null
@@ -2796,6 +3382,9 @@ final class WorldSimulation
                     $command->requestId,
                     $command->actions,
                     $command->authoritativeCreativeStack,
+                    createdOutputUnlimited: $command->authoritativeCreativeStack !== null,
+                    createdOutputs: $craftingOutputs,
+                    allowMainConsumption: $automaticCrafting,
                 )
                 : new InventoryStackRequestResult(false, reason: $rejectionReason);
         } else {
@@ -2808,6 +3397,9 @@ final class WorldSimulation
                     $command->requestId,
                     $command->actions,
                     $command->authoritativeCreativeStack,
+                    createdOutputUnlimited: $command->authoritativeCreativeStack !== null,
+                    createdOutputs: $craftingOutputs,
+                    allowMainConsumption: $automaticCrafting,
                 )
                 : new InventoryStackRequestResult(false, reason: $rejectionReason);
             if ($result->success) {
@@ -2835,6 +3427,9 @@ final class WorldSimulation
                     $command->requestId,
                     $command->actions,
                     $command->authoritativeCreativeStack,
+                    createdOutputUnlimited: $command->authoritativeCreativeStack !== null,
+                    createdOutputs: $craftingOutputs,
+                    allowMainConsumption: $automaticCrafting,
                 );
                 if ($result->success) {
                     foreach ($equipmentChanges as [$slot, $previous, $replacement]) {
@@ -2842,6 +3437,16 @@ final class WorldSimulation
                         $this->pluginEvents->equipmentChanged($player, $slot, $previous, $replacement);
                     }
                     $this->pluginEvents->inventoryChanged($player, $before);
+                    if ($craftingRecipe !== null && $craftingGrid !== null && $command->crafting !== null) {
+                        $this->pluginEvents->crafted(
+                            $player,
+                            $craftingRecipe,
+                            self::apiCraftingGrid($craftingGrid),
+                            $command->crafting->repetitions,
+                            array_map(self::apiInventoryStack(...), $craftingConsumed),
+                            $craftingEventOutputs,
+                        );
+                    }
                 }
             }
         }
@@ -2865,6 +3470,7 @@ final class WorldSimulation
             $command->responseMode,
             armorInventory: $player->inventory->armorSlots(),
             offhandStack: $player->inventory->offhandStack(),
+            craftingInventory: $player->inventory->craftingSlots(),
         );
     }
 
@@ -2956,6 +3562,16 @@ final class WorldSimulation
             $command->clickedPosition->y,
             $command->clickedPosition->z,
         );
+        if ($this->blockIdentifier($clickedState->value) === 'minecraft:crafting_table'
+            && !$player->movement->sneaking
+            && $this->blockIsReachable($player->snapshot(), $command->clickedPosition)) {
+            $player->inventory->setCraftingGridWidth(3);
+            if ($command->sequence > $player->placementSequence) {
+                $player->placementSequence = $command->sequence;
+            }
+
+            return new CraftingTableOpened($player->sessionId, $command->clickedPosition);
+        }
         $placedState = $this->blockWorld->blockStateAt($placedPosition->x, $placedPosition->y, $placedPosition->z);
         $key = self::sessionKey($command->session);
         $activeBreak = $this->breakingBlocks[$key] ?? null;
@@ -3217,16 +3833,14 @@ final class WorldSimulation
             responseMode: InventoryResponseMode::LegacySlotSync,
             armorInventory: $player->inventory->armorSlots(),
             offhandStack: $player->inventory->offhandStack(),
+            craftingInventory: $player->inventory->craftingSlots(),
         );
     }
 
     private function blockIdentifier(int $state): string
     {
-        if ($this->blockCatalog !== null && $this->blockStateRegistry !== null) {
-            return $this->blockCatalog->typeForInternalId(
-                new InternalBlockStateId($state),
-                $this->blockStateRegistry,
-            )->identifier();
+        if ($this->blockStateRegistry !== null) {
+            return $this->blockStateRegistry->state(new InternalBlockStateId($state))->identifier();
         }
         if ($this->blockPalette === null) {
             return 'minecraft:air';

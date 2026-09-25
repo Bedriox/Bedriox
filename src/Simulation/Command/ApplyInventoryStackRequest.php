@@ -18,6 +18,7 @@ final readonly class ApplyInventoryStackRequest implements WorldCommand
         public ?string $rejectionReason = null,
         public InventoryResponseMode $responseMode = InventoryResponseMode::ItemStackResponse,
         public ?InventoryStack $authoritativeCreativeStack = null,
+        public ?CraftingRequest $crafting = null,
     ) {}
 
     public function sessionId(): string
@@ -28,6 +29,7 @@ final readonly class ApplyInventoryStackRequest implements WorldCommand
     public function estimatedBytes(): int
     {
         return 32 + strlen($this->session) + strlen($this->rejectionReason ?? '') + count($this->actions) * 48
-            + ($this->authoritativeCreativeStack === null ? 0 : 64 + strlen($this->authoritativeCreativeStack->identifier));
+            + ($this->authoritativeCreativeStack === null ? 0 : 64 + strlen($this->authoritativeCreativeStack->identifier))
+            + ($this->crafting === null ? 0 : 16);
     }
 }

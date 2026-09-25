@@ -47,8 +47,9 @@ final class ItemCatalog
         $types = [];
         foreach (($blocks ?? BlockCatalog::vanilla())->all() as $block) {
             $state = $block->itemFormState();
-            if ($state !== null) {
-                $types[$block->identifier()] = new ItemType($block->identifier(), placedBlockState: $state);
+            $identifier = $block->itemIdentifier();
+            if ($state !== null && $identifier !== null) {
+                $types[$identifier] = new ItemType($identifier, placedBlockState: $state);
             }
         }
         foreach (self::dropOnlyIdentifiers() as $identifier => $maximumStackSize) {
@@ -95,9 +96,12 @@ final class ItemCatalog
             $existing = $types[$identifier] ?? null;
             $mappedBlockState = $creativeBlockStates[$identifier] ?? null;
             $armor = VanillaArmorDefinitions::definition($identifier) ?? $existing?->armor;
+            $maximumDurability = VanillaItemDurability::maximum($identifier) ?? $existing?->maximumDurability;
             $types[$identifier] = new ItemType(
                 $identifier,
-                maximumStackSize: $armor === null ? ($existing === null ? 64 : $existing->maximumStackSize) : 1,
+                maximumStackSize: $armor !== null || $maximumDurability !== null
+                    ? 1
+                    : ($existing === null ? 64 : $existing->maximumStackSize),
                 tool: $existing?->tool,
                 placedBlockState: $mappedBlockState ?? $existing?->placedBlockState,
                 networkBlockState: $mappedBlockState ?? $existing?->networkBlockState,
@@ -105,6 +109,7 @@ final class ItemCatalog
                 owner: $existing?->owner,
                 armor: $armor,
                 allowedInOffhand: true,
+                maximumDurability: $maximumDurability,
             );
         }
 

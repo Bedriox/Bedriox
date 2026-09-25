@@ -23,10 +23,13 @@ use Bedriox\Protocol\Packet\ChatPacket;
 use Bedriox\Protocol\Packet\ChunkRadiusUpdatedPacket;
 use Bedriox\Protocol\Packet\ClientCacheStatusPacket;
 use Bedriox\Protocol\Packet\CommandRequestPacket;
+use Bedriox\Protocol\Packet\ConsumeItemStackRequestAction;
 use Bedriox\Protocol\Packet\ContainerClosePacket;
 use Bedriox\Protocol\Packet\ContainerOpenPacket;
+use Bedriox\Protocol\Packet\ContainerType;
 use Bedriox\Protocol\Packet\CorrectPlayerMovePredictionPacket;
 use Bedriox\Protocol\Packet\CraftCreativeItemStackRequestAction;
+use Bedriox\Protocol\Packet\CraftRecipeItemStackRequestAction;
 use Bedriox\Protocol\Packet\CreateItemStackRequestAction;
 use Bedriox\Protocol\Packet\DeathInfoPacket;
 use Bedriox\Protocol\Packet\DropItemStackRequestAction;
@@ -106,11 +109,13 @@ use Bedriox\Server\Runtime\BedrockPlayChannel;
 use Bedriox\Server\Runtime\BedrockWorldEventPacketEncoder;
 use Bedriox\Server\Runtime\RuntimeDiagnostics;
 use Bedriox\Server\Runtime\RuntimeLimits;
+use Bedriox\Server\Simulation\ArmSwingSource;
 use Bedriox\Server\Simulation\BlockBreakAction;
 use Bedriox\Server\Simulation\Command\AcknowledgeRespawn;
 use Bedriox\Server\Simulation\Command\ApplyInventoryStackRequest;
 use Bedriox\Server\Simulation\Command\AttackPlayer;
 use Bedriox\Server\Simulation\Command\BreakBlock;
+use Bedriox\Server\Simulation\Command\CloseCraftingGrid;
 use Bedriox\Server\Simulation\Command\DropItem;
 use Bedriox\Server\Simulation\Command\MovePlayer;
 use Bedriox\Server\Simulation\Command\PerformEmote;
@@ -119,6 +124,7 @@ use Bedriox\Server\Simulation\Command\ReleaseItem;
 use Bedriox\Server\Simulation\Command\RespawnPlayer;
 use Bedriox\Server\Simulation\Command\SelectHotbarSlot;
 use Bedriox\Server\Simulation\Command\SendChat;
+use Bedriox\Server\Simulation\Command\SwingArm;
 use Bedriox\Server\Simulation\Command\SyncInventory;
 use Bedriox\Server\Simulation\Command\SyncInventorySlots;
 use Bedriox\Server\Simulation\Command\UseItem;
@@ -693,6 +699,33 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertSame([], $channel->drainCommands());
     }
 
+    public function testMissedSwingInputBecomesAPlayerOwnedSimulationCommand(): void
+    {
+        [$channel, $client, , $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([$this->movementPacket(
+                UnsignedLong::fromInt(1),
+                inputFlags: [PlayerAuthInputFlag::MissedSwing->value],
+            )])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        $commands = $channel->drainCommands();
+        self::assertCount(2, $commands);
+        self::assertInstanceOf(MovePlayer::class, $commands[0]);
+        self::assertInstanceOf(SwingArm::class, $commands[1]);
+        self::assertSame(ArmSwingSource::Missed, $commands[1]->source);
+        self::assertSame('session', $commands[1]->session);
+        self::assertFalse($channel->isClosed());
+    }
+
     public function testWrongEntityEmoteListFailsClosed(): void
     {
         [$channel, $client] = $this->channel();
@@ -863,10 +896,11 @@ final class BedrockPlayChannelTest extends TestCase
 
         self::assertFalse($channel->isClosed());
         $commands = $channel->drainCommands();
-        self::assertCount(2, $commands);
+        self::assertCount(3, $commands);
         self::assertInstanceOf(SyncInventory::class, $commands[0]);
         self::assertInstanceOf(SelectHotbarSlot::class, $commands[1]);
         self::assertSame(8, $commands[1]->hotbarSlot);
+        self::assertInstanceOf(CloseCraftingGrid::class, $commands[2]);
     }
 
     public function testLiteralInventoryRequestOpensOneBoundedMainWindowUntilMatchingClose(): void
@@ -918,6 +952,9 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertSame(1, $close->containerId);
         self::assertSame(0xff, $close->containerType);
         self::assertFalse($close->serverInitiated);
+        $closeCommands = $channel->drainCommands();
+        self::assertCount(1, $closeCommands);
+        self::assertInstanceOf(CloseCraftingGrid::class, $closeCommands[0]);
 
         self::assertTrue($channel->accept(new ConnectedPayloadEvent(
             $client->encryptEnvelope($this->encodeFrames([$openFrame])),
@@ -925,6 +962,37 @@ final class BedrockPlayChannelTest extends TestCase
             0,
         )));
         self::assertCount(1, $channel->drainOutgoing());
+        self::assertFalse($channel->isClosed());
+    }
+
+    public function testWorkbenchCloseIsAcknowledgedAndEvacuatesTheCraftingGrid(): void
+    {
+        [$channel, $client, $server, $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new ContainerClosePacket(
+                1,
+                ContainerType::Workbench->value,
+                false,
+            )])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(CloseCraftingGrid::class, $commands[0]);
+        $outgoing = $channel->drainOutgoing();
+        self::assertCount(1, $outgoing);
+        $close = $this->decode($server->decryptEnvelope($outgoing[0]->payload));
+        self::assertInstanceOf(ContainerClosePacket::class, $close);
+        self::assertSame(1, $close->containerId);
+        self::assertSame(ContainerType::Workbench->value, $close->containerType);
+        self::assertFalse($close->serverInitiated);
         self::assertFalse($channel->isClosed());
     }
 
@@ -1366,7 +1434,7 @@ final class BedrockPlayChannelTest extends TestCase
             0,
         )));
 
-        $wire = hex2bin('010001101000ffffffff');
+        $wire = hex2bin('010001121200ffffffff');
         self::assertNotFalse($wire);
         self::assertFalse($channel->accept(new ConnectedPayloadEvent(
             $client->encryptEnvelope($this->encodeFrames([
@@ -1379,7 +1447,7 @@ final class BedrockPlayChannelTest extends TestCase
         $diagnostic = implode('', $lines);
         self::assertStringContainsString('"event":"play.inventory_decode.protocol_trace"', $diagnostic);
         self::assertStringContainsString('"detail":"unsupported_action_type"', $diagnostic);
-        self::assertStringContainsString('"action_type":16', $diagnostic);
+        self::assertStringContainsString('"action_type":18', $diagnostic);
         self::assertStringContainsString('"byte_offset":3', $diagnostic);
         self::assertStringNotContainsString(bin2hex($wire), $diagnostic);
         self::assertTrue($channel->isClosed());
@@ -2402,6 +2470,56 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertSame(FullContainerName::OFFHAND, $destination->responseContainerId);
     }
 
+    public function testCraftingRequestMapsPlayerAndTableGridOffsetsWithoutTrustingTheResult(): void
+    {
+        foreach ([28, 32] as $wireSlot) {
+            [$channel, $clientEncryptor, , $entityId] = $this->channel();
+            self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+                $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+                Reliability::ReliableOrdered,
+                0,
+            )));
+            $request = new ItemStackRequest(-12, [
+                new CraftRecipeItemStackRequestAction(77, 1),
+                new ConsumeItemStackRequestAction(
+                    1,
+                    new ItemStackRequestSlot(
+                        new FullContainerName(FullContainerName::CRAFTING_INPUT),
+                        $wireSlot,
+                        31,
+                    ),
+                ),
+                new TakeItemStackRequestAction(
+                    1,
+                    new ItemStackRequestSlot(
+                        new FullContainerName(FullContainerName::CREATED_OUTPUT),
+                        50,
+                        -12,
+                    ),
+                    new ItemStackRequestSlot(new FullContainerName(FullContainerName::HOTBAR), 1, 0),
+                ),
+            ]);
+
+            self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+                $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([$request])])),
+                Reliability::ReliableOrdered,
+                0,
+            )));
+            $commands = $channel->drainCommands();
+            self::assertCount(1, $commands);
+            self::assertInstanceOf(ApplyInventoryStackRequest::class, $commands[0]);
+            self::assertNull($commands[0]->rejectionReason);
+            self::assertSame(77, $commands[0]->crafting?->recipeNetworkId);
+            self::assertCount(2, $commands[0]->actions);
+            self::assertSame(InventoryStackRequestActionType::Consume, $commands[0]->actions[0]->type);
+            self::assertSame(InventoryContainer::CraftingInput, $commands[0]->actions[0]->source->container);
+            self::assertSame(0, $commands[0]->actions[0]->source->slot);
+            self::assertSame($wireSlot, $commands[0]->actions[0]->source->responseSlotId());
+            self::assertSame(InventoryContainer::CreatedOutput, $commands[0]->actions[1]->source->container);
+            self::assertFalse($channel->isClosed());
+        }
+    }
+
     public function testCreativeRequestResolvesAdvertisedItemAndCreatedOutputAuthoritatively(): void
     {
         $data = BedrockDataSet::bundled();
@@ -3018,6 +3136,7 @@ final class BedrockPlayChannelTest extends TestCase
         ];
     }
 
+    /** @param list<int> $inputFlags */
     private function movementPacket(
         UnsignedLong $tick,
         float $yaw = 0.0,
@@ -3025,6 +3144,7 @@ final class BedrockPlayChannelTest extends TestCase
         float $x = 0.0,
         float $y = 64.0,
         float $z = 0.0,
+        array $inputFlags = [],
     ): PlayerAuthInputPacket {
         return new PlayerAuthInputPacket(
             pitch: $pitch,
@@ -3035,7 +3155,7 @@ final class BedrockPlayChannelTest extends TestCase
             moveX: 0.0,
             moveZ: 0.0,
             headYaw: $yaw,
-            inputFlags: [],
+            inputFlags: $inputFlags,
             inputMode: 1,
             playMode: 0,
             interactionMode: 0,

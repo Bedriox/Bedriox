@@ -15,6 +15,7 @@ final class RuntimeSession
     public SessionPhase $phase = SessionPhase::LOGIN;
     public ?BedrockPlayChannel $play = null;
     public bool $joined = false;
+    public int $craftingCatalogRevision = 0;
     public ?PlayerBootstrap $bootstrap = null;
 
     public function __construct(

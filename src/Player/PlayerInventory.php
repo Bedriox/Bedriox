@@ -28,6 +28,14 @@ final class PlayerInventory
 
     private ?int $offhandLastRequestId = null;
 
+    /** @var array<int, InventoryStack> Ephemeral crafting input slots. */
+    private array $crafting = [];
+
+    /** @var array<int, int> Last request ID which changed each crafting input slot. */
+    private array $craftingLastRequestIds = [];
+
+    private int $craftingGridWidth = 2;
+
     /**
      * @param array<int, InventoryStack> $stacks
      * @param array<int, InventoryStack> $armor
@@ -193,6 +201,64 @@ final class PlayerInventory
         return $this->offhand;
     }
 
+    public function craftingGridWidth(): int
+    {
+        return $this->craftingGridWidth;
+    }
+
+    public function setCraftingGridWidth(int $width): void
+    {
+        if (!in_array($width, [2, 3], true)) {
+            throw new InvalidArgumentException('Crafting grid width must be two or three.');
+        }
+        if ($width === 2) {
+            foreach (array_keys($this->crafting) as $slot) {
+                if ($slot >= 4) {
+                    throw new InvalidArgumentException('The three-by-three crafting grid must be emptied before closing.');
+                }
+            }
+        }
+        $this->craftingGridWidth = $width;
+    }
+
+    public function craftingStack(int $slot): ?InventoryStack
+    {
+        $this->validateCraftingSlot($slot);
+
+        return $this->crafting[$slot] ?? null;
+    }
+
+    /** @return list<InventoryStack|null> */
+    public function craftingSlots(): array
+    {
+        $slots = array_fill(0, $this->craftingGridWidth ** 2, null);
+        foreach ($this->crafting as $slot => $stack) {
+            if ($slot < count($slots)) {
+                $slots[$slot] = $stack;
+            }
+        }
+
+        return array_values($slots);
+    }
+
+    /** @return list<InventoryStack> Stacks which could not be restored to the main inventory. */
+    public function closeCraftingGrid(): array
+    {
+        $contents = array_values($this->crafting);
+        $this->crafting = [];
+        $this->craftingLastRequestIds = [];
+        $this->craftingGridWidth = 2;
+        $overflow = [];
+        foreach ($contents as $stack) {
+            $remaining = $this->add($stack);
+            if ($remaining !== null) {
+                $overflow[] = $remaining;
+            }
+        }
+
+        return $overflow;
+    }
+
     public function defensePoints(): int
     {
         $points = 0;
@@ -330,12 +396,17 @@ final class PlayerInventory
             InventoryContainer::Cursor,
             InventoryContainer::Armor,
             InventoryContainer::Offhand,
+            InventoryContainer::CraftingInput,
         ], true)
             || ($source->container === InventoryContainer::Main && ($source->slot < 0 || $source->slot >= self::SLOT_COUNT))
             || ($source->container === InventoryContainer::Cursor && $source->slot !== 0)
             || ($source->container === InventoryContainer::Armor
                 && ($source->slot < 0 || $source->slot >= self::ARMOR_SLOT_COUNT))
             || ($source->container === InventoryContainer::Offhand && $source->slot !== 0)
+            || ($source->container === InventoryContainer::CraftingInput
+                && ($source->slot < 0
+                    || $source->slot >= $this->craftingGridWidth ** 2
+                    || !$this->craftingResponseSlotMatchesActiveGrid($source)))
             || $count < 1) {
             return new InventoryStackRemovalResult(false, reason: 'drop_source');
         }
@@ -383,14 +454,18 @@ final class PlayerInventory
     }
 
     /**
-     * Applies one PMMP-style item-stack request atomically against staged authoritative state.
+     * Applies one item-stack request atomically against staged authoritative state.
      *
      * @param list<InventoryStackRequestAction> $actions
+     * @param list<InventoryStack> $createdOutputs
      */
     public function applyStackRequest(
         int $requestId,
         array $actions,
         ?InventoryStack $createdOutput = null,
+        bool $createdOutputUnlimited = true,
+        array $createdOutputs = [],
+        bool $allowMainConsumption = false,
     ): InventoryStackRequestResult {
         if ($actions === []) {
             return new InventoryStackRequestResult(false, reason: 'empty_actions');
@@ -399,15 +474,32 @@ final class PlayerInventory
         $stagedCursor = $this->cursor;
         $stagedArmor = $this->armor;
         $stagedOffhand = $this->offhand;
-        $stagedCreatedOutput = $createdOutput;
+        $stagedCrafting = $this->crafting;
+        /** @var list<InventoryStack|null> $stagedCreatedOutputs */
+        $stagedCreatedOutputs = $createdOutputs;
+        $createdOutputIndex = 0;
+        $stagedCreatedOutput = $stagedCreatedOutputs[0] ?? $createdOutput;
         $stagedLastRequestIds = $this->lastRequestIds;
         $stagedCursorLastRequestId = $this->cursorLastRequestId;
         $stagedArmorLastRequestIds = $this->armorLastRequestIds;
         $stagedOffhandLastRequestId = $this->offhandLastRequestId;
+        $stagedCraftingLastRequestIds = $this->craftingLastRequestIds;
         $affected = [];
         $mutated = [];
 
         foreach ($actions as $action) {
+            if ($action->type === InventoryStackRequestActionType::SelectCraftingResult) {
+                if ($stagedCreatedOutputs === [] || !array_key_exists($action->count, $stagedCreatedOutputs)
+                    || $stagedCreatedOutputs[$action->count] === null) {
+                    return new InventoryStackRequestResult(false, reason: 'crafting_result');
+                }
+                if ($action->count !== $createdOutputIndex && $stagedCreatedOutput !== null) {
+                    return new InventoryStackRequestResult(false, reason: 'unfinished_crafting_result');
+                }
+                $createdOutputIndex = $action->count;
+                $stagedCreatedOutput = $stagedCreatedOutputs[$createdOutputIndex];
+                continue;
+            }
             if ($action->type === InventoryStackRequestActionType::MineBlock) {
                 if ($action->source->key() !== $action->destination->key()
                     || $action->source->container !== InventoryContainer::Main
@@ -425,11 +517,13 @@ final class PlayerInventory
                 $stagedCursor,
                 $stagedArmor,
                 $stagedOffhand,
+                $stagedCrafting,
                 $stagedCreatedOutput,
                 $stagedLastRequestIds,
                 $stagedCursorLastRequestId,
                 $stagedArmorLastRequestIds,
                 $stagedOffhandLastRequestId,
+                $stagedCraftingLastRequestIds,
             ) ?? $this->validateReference(
                 $action->destination,
                 $requestId,
@@ -437,17 +531,21 @@ final class PlayerInventory
                 $stagedCursor,
                 $stagedArmor,
                 $stagedOffhand,
+                $stagedCrafting,
                 $stagedCreatedOutput,
                 $stagedLastRequestIds,
                 $stagedCursorLastRequestId,
                 $stagedArmorLastRequestIds,
                 $stagedOffhandLastRequestId,
+                $stagedCraftingLastRequestIds,
             );
             if ($reason !== null) {
                 return new InventoryStackRequestResult(false, reason: $reason);
             }
             if ($action->source->key() === $action->destination->key()) {
-                return new InventoryStackRequestResult(false, reason: 'same_slot');
+                if ($action->type !== InventoryStackRequestActionType::Consume) {
+                    return new InventoryStackRequestResult(false, reason: 'same_slot');
+                }
             }
             if ($action->source->container !== InventoryContainer::CreatedOutput) {
                 $affected[$action->source->responseKey()] = $action->source;
@@ -458,7 +556,41 @@ final class PlayerInventory
                 $mutated[$action->destination->key()] = $action->destination;
             }
 
-            if ($action->type === InventoryStackRequestActionType::Swap) {
+            if ($action->type === InventoryStackRequestActionType::Consume) {
+                if (!in_array(
+                    $action->source->container,
+                    $allowMainConsumption
+                        ? [InventoryContainer::Main, InventoryContainer::CraftingInput]
+                        : [InventoryContainer::CraftingInput],
+                    true,
+                ) || $action->count < 1) {
+                    return new InventoryStackRequestResult(false, reason: 'crafting_consume');
+                }
+                $source = self::readSlot(
+                    $action->source,
+                    $stagedStacks,
+                    $stagedCursor,
+                    $stagedArmor,
+                    $stagedOffhand,
+                    $stagedCrafting,
+                    $stagedCreatedOutput,
+                );
+                if ($source === null || $source->count < $action->count) {
+                    return new InventoryStackRequestResult(false, reason: 'source_count');
+                }
+                self::writeSlot(
+                    $action->source,
+                    $source->count === $action->count
+                        ? null
+                        : $source->withCountAndNetworkId($source->count - $action->count, $source->stackNetworkId),
+                    $stagedStacks,
+                    $stagedCursor,
+                    $stagedArmor,
+                    $stagedOffhand,
+                    $stagedCrafting,
+                    $stagedCreatedOutput,
+                );
+            } elseif ($action->type === InventoryStackRequestActionType::Swap) {
                 if ($action->destination->container === InventoryContainer::CreatedOutput) {
                     return new InventoryStackRequestResult(false, reason: 'created_output_destination');
                 }
@@ -468,6 +600,7 @@ final class PlayerInventory
                     $stagedCursor,
                     $stagedArmor,
                     $stagedOffhand,
+                    $stagedCrafting,
                     $stagedCreatedOutput,
                 );
                 $destination = self::readSlot(
@@ -476,6 +609,7 @@ final class PlayerInventory
                     $stagedCursor,
                     $stagedArmor,
                     $stagedOffhand,
+                    $stagedCrafting,
                     $stagedCreatedOutput,
                 );
                 if (!$this->canOccupy($action->source, $destination)
@@ -490,6 +624,7 @@ final class PlayerInventory
                         $stagedCursor,
                         $stagedArmor,
                         $stagedOffhand,
+                        $stagedCrafting,
                         $stagedCreatedOutput,
                     );
                 }
@@ -500,6 +635,7 @@ final class PlayerInventory
                     $stagedCursor,
                     $stagedArmor,
                     $stagedOffhand,
+                    $stagedCrafting,
                     $stagedCreatedOutput,
                 );
             } else {
@@ -515,9 +651,11 @@ final class PlayerInventory
                     $stagedCursor,
                     $stagedArmor,
                     $stagedOffhand,
+                    $stagedCrafting,
                     $stagedCreatedOutput,
                 );
-                $unlimitedCreatedOutput = $action->source->container === InventoryContainer::CreatedOutput;
+                $unlimitedCreatedOutput = $createdOutputUnlimited
+                    && $action->source->container === InventoryContainer::CreatedOutput;
                 if ($source === null || (!$unlimitedCreatedOutput && $source->count < $action->count)) {
                     return new InventoryStackRequestResult(false, reason: 'source_count');
                 }
@@ -532,8 +670,13 @@ final class PlayerInventory
                         $stagedCursor,
                         $stagedArmor,
                         $stagedOffhand,
+                        $stagedCrafting,
                         $stagedCreatedOutput,
                     );
+                    if ($action->source->container === InventoryContainer::CreatedOutput
+                        && $stagedCreatedOutputs !== []) {
+                        $stagedCreatedOutputs[$createdOutputIndex] = $sourceRemaining;
+                    }
                 }
                 $destination = self::readSlot(
                     $action->destination,
@@ -541,6 +684,7 @@ final class PlayerInventory
                     $stagedCursor,
                     $stagedArmor,
                     $stagedOffhand,
+                    $stagedCrafting,
                     $stagedCreatedOutput,
                 );
                 if ($destination !== null && !self::canStack($source, $destination)) {
@@ -565,6 +709,7 @@ final class PlayerInventory
                     $stagedCursor,
                     $stagedArmor,
                     $stagedOffhand,
+                    $stagedCrafting,
                     $stagedCreatedOutput,
                 );
             }
@@ -576,6 +721,7 @@ final class PlayerInventory
                 $stagedCursorLastRequestId,
                 $stagedArmorLastRequestIds,
                 $stagedOffhandLastRequestId,
+                $stagedCraftingLastRequestIds,
             );
             self::writeLastRequestId(
                 $action->destination,
@@ -584,7 +730,16 @@ final class PlayerInventory
                 $stagedCursorLastRequestId,
                 $stagedArmorLastRequestIds,
                 $stagedOffhandLastRequestId,
+                $stagedCraftingLastRequestIds,
             );
+        }
+
+        if ($stagedCreatedOutputs !== []) {
+            foreach ($stagedCreatedOutputs as $remainingOutput) {
+                if ($remainingOutput !== null) {
+                    return new InventoryStackRequestResult(false, reason: 'unfinished_crafting_result');
+                }
+            }
         }
 
         $selectedBefore = $this->selectedStack();
@@ -601,6 +756,9 @@ final class PlayerInventory
         if ($stagedOffhand !== null) {
             $usedIds[$stagedOffhand->stackNetworkId] = true;
         }
+        foreach ($stagedCrafting as $stack) {
+            $usedIds[$stack->stackNetworkId] = true;
+        }
         $nextId = $this->nextStackNetworkId;
         foreach ($mutated as $reference) {
             $before = $this->readAuthoritativeSlot($reference);
@@ -610,6 +768,7 @@ final class PlayerInventory
                 $stagedCursor,
                 $stagedArmor,
                 $stagedOffhand,
+                $stagedCrafting,
                 $stagedCreatedOutput,
             );
             if (self::sameContent($before, $after)) {
@@ -620,6 +779,7 @@ final class PlayerInventory
                     $stagedCursorLastRequestId,
                     $stagedArmorLastRequestIds,
                     $stagedOffhandLastRequestId,
+                    $stagedCraftingLastRequestIds,
                 );
                 continue;
             }
@@ -636,6 +796,7 @@ final class PlayerInventory
                     $stagedCursor,
                     $stagedArmor,
                     $stagedOffhand,
+                    $stagedCrafting,
                     $stagedCreatedOutput,
                 );
                 $usedIds[$id] = true;
@@ -646,10 +807,12 @@ final class PlayerInventory
         $this->cursor = $stagedCursor;
         $this->armor = $stagedArmor;
         $this->offhand = $stagedOffhand;
+        $this->crafting = $stagedCrafting;
         $this->lastRequestIds = $stagedLastRequestIds;
         $this->cursorLastRequestId = $stagedCursorLastRequestId;
         $this->armorLastRequestIds = $stagedArmorLastRequestIds;
         $this->offhandLastRequestId = $stagedOffhandLastRequestId;
+        $this->craftingLastRequestIds = $stagedCraftingLastRequestIds;
         $this->nextStackNetworkId = $nextId;
 
         return new InventoryStackRequestResult(
@@ -723,8 +886,10 @@ final class PlayerInventory
     /**
      * @param array<int, InventoryStack> $stacks
      * @param array<int, InventoryStack> $armor
+     * @param array<int, InventoryStack> $crafting
      * @param array<int, int> $lastRequestIds
      * @param array<int, int> $armorLastRequestIds
+     * @param array<int, int> $craftingLastRequestIds
      */
     private function validateReference(
         InventorySlotReference $reference,
@@ -733,21 +898,27 @@ final class PlayerInventory
         ?InventoryStack $cursor,
         array $armor,
         ?InventoryStack $offhand,
+        array $crafting,
         ?InventoryStack $createdOutput,
         array $lastRequestIds,
         ?int $cursorLastRequestId,
         array $armorLastRequestIds,
         ?int $offhandLastRequestId,
+        array $craftingLastRequestIds,
     ): ?string {
         if (($reference->container === InventoryContainer::Main && ($reference->slot < 0 || $reference->slot >= self::SLOT_COUNT))
             || ($reference->container === InventoryContainer::Cursor && $reference->slot !== 0)
             || ($reference->container === InventoryContainer::Armor
                 && ($reference->slot < 0 || $reference->slot >= self::ARMOR_SLOT_COUNT))
             || ($reference->container === InventoryContainer::Offhand && $reference->slot !== 0)
+            || ($reference->container === InventoryContainer::CraftingInput
+                && ($reference->slot < 0
+                    || $reference->slot >= $this->craftingGridWidth ** 2
+                    || !$this->craftingResponseSlotMatchesActiveGrid($reference)))
             || ($reference->container === InventoryContainer::CreatedOutput && $reference->slot !== 50)) {
             return 'slot';
         }
-        $stack = self::readSlot($reference, $stacks, $cursor, $armor, $offhand, $createdOutput);
+        $stack = self::readSlot($reference, $stacks, $cursor, $armor, $offhand, $crafting, $createdOutput);
         $stackCount = $stack === null ? 0 : $stack->count;
         if ($reference->expectedCount !== null && $stackCount !== $reference->expectedCount) {
             return 'stack_count';
@@ -760,6 +931,7 @@ final class PlayerInventory
             InventoryContainer::Cursor => $cursorLastRequestId,
             InventoryContainer::Armor => $armorLastRequestIds[$reference->slot] ?? null,
             InventoryContainer::Offhand => $offhandLastRequestId,
+            InventoryContainer::CraftingInput => $craftingLastRequestIds[$reference->slot] ?? null,
         };
         $matches = $reference->expectedStackNetworkId < 0
             ? $lastRequestId === $reference->expectedStackNetworkId
@@ -772,6 +944,7 @@ final class PlayerInventory
     /**
      * @param array<int, InventoryStack> $stacks
      * @param array<int, InventoryStack> $armor
+     * @param array<int, InventoryStack> $crafting
      */
     private static function readSlot(
         InventorySlotReference $reference,
@@ -779,6 +952,7 @@ final class PlayerInventory
         ?InventoryStack $cursor,
         array $armor,
         ?InventoryStack $offhand,
+        array $crafting,
         ?InventoryStack $createdOutput,
     ): ?InventoryStack {
         return match ($reference->container) {
@@ -786,6 +960,7 @@ final class PlayerInventory
             InventoryContainer::Cursor => $cursor,
             InventoryContainer::Armor => $armor[$reference->slot] ?? null,
             InventoryContainer::Offhand => $offhand,
+            InventoryContainer::CraftingInput => $crafting[$reference->slot] ?? null,
             InventoryContainer::CreatedOutput => $createdOutput,
         };
     }
@@ -793,6 +968,7 @@ final class PlayerInventory
     /**
      * @param array<int, InventoryStack> $stacks
      * @param array<int, InventoryStack> $armor
+     * @param array<int, InventoryStack> $crafting
      */
     private static function writeSlot(
         InventorySlotReference $reference,
@@ -801,6 +977,7 @@ final class PlayerInventory
         ?InventoryStack &$cursor,
         array &$armor,
         ?InventoryStack &$offhand,
+        array &$crafting,
         ?InventoryStack &$createdOutput,
     ): void {
         if ($reference->container === InventoryContainer::Cursor) {
@@ -809,6 +986,12 @@ final class PlayerInventory
             $offhand = $stack;
         } elseif ($reference->container === InventoryContainer::CreatedOutput) {
             $createdOutput = $stack;
+        } elseif ($reference->container === InventoryContainer::CraftingInput) {
+            if ($stack === null) {
+                unset($crafting[$reference->slot]);
+            } else {
+                $crafting[$reference->slot] = $stack;
+            }
         } elseif ($reference->container === InventoryContainer::Armor) {
             if ($stack === null) {
                 unset($armor[$reference->slot]);
@@ -825,6 +1008,7 @@ final class PlayerInventory
     /**
      * @param array<int, int> $lastRequestIds
      * @param array<int, int> $armorLastRequestIds
+     * @param array<int, int> $craftingLastRequestIds
      */
     private static function writeLastRequestId(
         InventorySlotReference $reference,
@@ -833,6 +1017,7 @@ final class PlayerInventory
         ?int &$cursorLastRequestId,
         array &$armorLastRequestIds,
         ?int &$offhandLastRequestId,
+        array &$craftingLastRequestIds,
     ): void {
         if ($reference->container === InventoryContainer::Cursor) {
             $cursorLastRequestId = $requestId;
@@ -840,6 +1025,12 @@ final class PlayerInventory
             $offhandLastRequestId = $requestId;
         } elseif ($reference->container === InventoryContainer::CreatedOutput) {
             return;
+        } elseif ($reference->container === InventoryContainer::CraftingInput) {
+            if ($requestId === null) {
+                unset($craftingLastRequestIds[$reference->slot]);
+            } else {
+                $craftingLastRequestIds[$reference->slot] = $requestId;
+            }
         } elseif ($reference->container === InventoryContainer::Armor) {
             if ($requestId === null) {
                 unset($armorLastRequestIds[$reference->slot]);
@@ -860,6 +1051,7 @@ final class PlayerInventory
             InventoryContainer::Cursor => $this->cursor,
             InventoryContainer::Armor => $this->armor[$reference->slot] ?? null,
             InventoryContainer::Offhand => $this->offhand,
+            InventoryContainer::CraftingInput => $this->crafting[$reference->slot] ?? null,
             InventoryContainer::CreatedOutput => null,
         };
     }
@@ -871,6 +1063,7 @@ final class PlayerInventory
             InventoryContainer::Cursor => $this->cursorLastRequestId,
             InventoryContainer::Armor => $this->armorLastRequestIds[$reference->slot] ?? null,
             InventoryContainer::Offhand => $this->offhandLastRequestId,
+            InventoryContainer::CraftingInput => $this->craftingLastRequestIds[$reference->slot] ?? null,
             InventoryContainer::CreatedOutput => null,
         };
     }
@@ -893,6 +1086,12 @@ final class PlayerInventory
             }
         } elseif ($reference->container === InventoryContainer::Offhand) {
             $this->offhand = $stack;
+        } elseif ($reference->container === InventoryContainer::CraftingInput) {
+            if ($stack === null) {
+                unset($this->crafting[$reference->slot]);
+            } else {
+                $this->crafting[$reference->slot] = $stack;
+            }
         }
     }
 
@@ -903,6 +1102,7 @@ final class PlayerInventory
             InventoryContainer::Cursor => $this->cursorLastRequestId = $requestId,
             InventoryContainer::Armor => $this->armorLastRequestIds[$reference->slot] = $requestId,
             InventoryContainer::Offhand => $this->offhandLastRequestId = $requestId,
+            InventoryContainer::CraftingInput => $this->craftingLastRequestIds[$reference->slot] = $requestId,
             InventoryContainer::CreatedOutput => null,
         };
     }
@@ -1013,6 +1213,9 @@ final class PlayerInventory
         if ($this->offhand !== null) {
             $used[$this->offhand->stackNetworkId] = true;
         }
+        foreach ($this->crafting as $stack) {
+            $used[$stack->stackNetworkId] = true;
+        }
 
         return $used;
     }
@@ -1052,5 +1255,22 @@ final class PlayerInventory
         if ($slot < 0 || $slot >= self::ARMOR_SLOT_COUNT) {
             throw new InvalidArgumentException('Inventory slot is outside the armor inventory.');
         }
+    }
+
+    private function validateCraftingSlot(int $slot): void
+    {
+        if ($slot < 0 || $slot >= $this->craftingGridWidth ** 2) {
+            throw new InvalidArgumentException('Inventory slot is outside the active crafting grid.');
+        }
+    }
+
+    private function craftingResponseSlotMatchesActiveGrid(InventorySlotReference $reference): bool
+    {
+        if ($reference->responseContainerId === null) {
+            return true;
+        }
+        $offset = $this->craftingGridWidth === 2 ? 28 : 32;
+
+        return $reference->responseSlotId() === $offset + $reference->slot;
     }
 }

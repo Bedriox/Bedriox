@@ -53,6 +53,12 @@ final readonly class Player
         return $this->connection()->kick($reason, $quitMessage, $disconnectScreenMessage);
     }
 
+    /** Requests a visibility-scoped arm-swing animation for this player. */
+    public function swingArm(): bool
+    {
+        return $this->connection()->swingArm();
+    }
+
     public function sendMessage(string|TranslatableMessage $message): bool
     {
         return $this->connection()->sendPacket($message instanceof TranslatableMessage

@@ -41,4 +41,15 @@ final class ItemNbtTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
         ItemNbt::fromBinary("\x0a\x00\x00\x00\x01");
     }
+
+    public function testInventoryBearingUserDataHasBoundedHeadroom(): void
+    {
+        $data = ItemNbt::empty()->withTag('contents', Tag::byteArray(str_repeat("\x01", 4_096)));
+
+        self::assertGreaterThan(2_048, strlen($data->toBinary()));
+        self::assertTrue($data->equals(ItemNbt::fromBinary($data->toBinary())));
+
+        $this->expectException(InvalidArgumentException::class);
+        ItemNbt::empty()->withTag('contents', Tag::byteArray(str_repeat("\x01", ItemNbt::MAX_BYTES)));
+    }
 }

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Simulation;
 
+use Bedriox\Api\Crafting\CraftingGrid as ApiCraftingGrid;
+use Bedriox\Api\Crafting\CraftingRecipe as ApiCraftingRecipe;
 use Bedriox\Api\Event\Block\BlockBreakEvent;
 use Bedriox\Api\Event\Block\BlockBrokenEvent;
 use Bedriox\Api\Event\Block\BlockPlacedEvent;
@@ -14,6 +16,8 @@ use Bedriox\Api\Event\Player\PlayerAttackedEvent;
 use Bedriox\Api\Event\Player\PlayerAttackEvent;
 use Bedriox\Api\Event\Player\PlayerChatBroadcastEvent;
 use Bedriox\Api\Event\Player\PlayerChatEvent;
+use Bedriox\Api\Event\Player\PlayerCraftedItemEvent;
+use Bedriox\Api\Event\Player\PlayerCraftItemEvent;
 use Bedriox\Api\Event\Player\PlayerDamagedEvent;
 use Bedriox\Api\Event\Player\PlayerDamageEvent;
 use Bedriox\Api\Event\Player\PlayerDeathEvent;
@@ -35,6 +39,7 @@ use Bedriox\Api\Event\Player\PlayerItemUseEvent;
 use Bedriox\Api\Event\Player\PlayerJoinEvent;
 use Bedriox\Api\Event\Player\PlayerKickEvent;
 use Bedriox\Api\Event\Player\PlayerLoginEvent;
+use Bedriox\Api\Event\Player\PlayerMissSwingEvent;
 use Bedriox\Api\Event\Player\PlayerMovedEvent;
 use Bedriox\Api\Event\Player\PlayerMoveEvent;
 use Bedriox\Api\Event\Player\PlayerPickedUpItemEvent;
@@ -454,6 +459,14 @@ final readonly class PluginGameplayEventBridge
         $this->events->dispatch(new PlayerChatBroadcastEvent($this->playerView($player), $message));
     }
 
+    public function allowMissSwing(Player $player): bool
+    {
+        $event = new PlayerMissSwingEvent($this->playerView($player));
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
     public function allowBlockBreak(Player $player, BlockPosition $position, string $identifier): bool
     {
         $event = new BlockBreakEvent($this->playerView($player), self::block($position, $identifier));
@@ -534,6 +547,63 @@ final readonly class PluginGameplayEventBridge
         $this->events->dispatch(new PlayerDroppedItemEvent(
             $this->playerView($player),
             new ApiItemStack($stack->identifier, $stack->count, $stack->damage, $stack->nbt, $stack->auxValue),
+        ));
+    }
+
+    /**
+     * @param list<ApiItemStack> $consumedInputs
+     * @param list<ApiItemStack> $outputs
+     * @param list<ApiItemStack> $remainders
+     * @return null|list<ApiItemStack>
+     */
+    public function craft(
+        Player $player,
+        ApiCraftingRecipe $recipe,
+        ApiCraftingGrid $grid,
+        int $craftCount,
+        array $consumedInputs,
+        array $outputs,
+        array $remainders = [],
+    ): ?array {
+        $event = new PlayerCraftItemEvent(
+            $this->playerView($player),
+            $recipe,
+            $grid,
+            $craftCount,
+            $consumedInputs,
+            $outputs,
+            $remainders,
+        );
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->outputs();
+    }
+
+    /**
+     * @param list<ApiItemStack> $consumedInputs
+     * @param list<ApiItemStack> $outputs
+     * @param list<ApiItemStack> $remainders
+     * @param list<ApiItemStack> $overflow
+     */
+    public function crafted(
+        Player $player,
+        ApiCraftingRecipe $recipe,
+        ApiCraftingGrid $grid,
+        int $craftCount,
+        array $consumedInputs,
+        array $outputs,
+        array $remainders = [],
+        array $overflow = [],
+    ): void {
+        $this->events->dispatch(new PlayerCraftedItemEvent(
+            $this->playerView($player),
+            $recipe,
+            $grid,
+            $craftCount,
+            $consumedInputs,
+            $outputs,
+            $remainders,
+            $overflow,
         ));
     }
 

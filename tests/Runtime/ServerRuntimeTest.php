@@ -30,11 +30,14 @@ use Bedriox\Protocol\Packet\CommandOriginType;
 use Bedriox\Protocol\Packet\CommandOutputPacket;
 use Bedriox\Protocol\Packet\CommandPermissionLevel;
 use Bedriox\Protocol\Packet\CommandRequestPacket;
+use Bedriox\Protocol\Packet\CraftingDataPacket;
 use Bedriox\Protocol\Packet\DisconnectPacket;
 use Bedriox\Protocol\Packet\FullContainerName;
+use Bedriox\Protocol\Packet\InventoryContentPacket;
 use Bedriox\Protocol\Packet\ItemStackRequest;
 use Bedriox\Protocol\Packet\ItemStackRequestPacket;
 use Bedriox\Protocol\Packet\ItemStackRequestSlot;
+use Bedriox\Protocol\Packet\ItemStackResponsePacket;
 use Bedriox\Protocol\Packet\LoginAuthentication;
 use Bedriox\Protocol\Packet\LoginPacket;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
@@ -52,6 +55,7 @@ use Bedriox\Protocol\Packet\ResourcePackClientResponsePacket;
 use Bedriox\Protocol\Packet\ResourcePackResponseStatus;
 use Bedriox\Protocol\Packet\ServerToClientHandshakePacket;
 use Bedriox\Protocol\Packet\SetLocalPlayerAsInitializedPacket;
+use Bedriox\Protocol\Packet\ShapelessCraftingRecipe;
 use Bedriox\Protocol\Packet\SoftEnumUpdateType;
 use Bedriox\Protocol\Packet\SubChunkRequestPacket;
 use Bedriox\Protocol\Packet\SwapItemStackRequestAction;
@@ -72,6 +76,10 @@ use Bedriox\RakNet\SessionClosedEvent;
 use Bedriox\RakNet\SessionCloseReason;
 use Bedriox\RakNet\SessionInfo;
 use Bedriox\RakNet\SessionOpenedEvent;
+use Bedriox\Server\Gameplay\Crafting\CraftingCatalog;
+use Bedriox\Server\Gameplay\Crafting\RecipeIngredient;
+use Bedriox\Server\Gameplay\Crafting\RecipeOutput;
+use Bedriox\Server\Gameplay\Crafting\ShapelessRecipe;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Login\AuthenticatedLogin;
 use Bedriox\Server\Login\BedrockLoginChannel;
@@ -95,7 +103,9 @@ use Bedriox\Server\Plugin\PluginExecutionContext;
 use Bedriox\Server\Plugin\PluginExecutionFrame;
 use Bedriox\Server\Plugin\PluginOwnershipRegistry;
 use Bedriox\Server\Plugin\PluginRuntimeControl;
+use Bedriox\Server\Runtime\BedrockInventoryPacketProjector;
 use Bedriox\Server\Runtime\BedrockPlayChannelFactory;
+use Bedriox\Server\Runtime\BedrockWorldEventPacketEncoder;
 use Bedriox\Server\Runtime\DirectedPacket;
 use Bedriox\Server\Runtime\LoginChannelFactory;
 use Bedriox\Server\Runtime\PlayerConnectionDirectory;
@@ -123,6 +133,7 @@ use Bedriox\Server\Simulation\VerticalState;
 use Bedriox\Server\Simulation\WorldSimulation;
 use Bedriox\Server\Tests\World\InMemoryWorldProvider;
 use Bedriox\Server\Transport\ConnectedTransport;
+use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\ChunkPosition;
@@ -137,6 +148,78 @@ use Throwable;
 
 final class ServerRuntimeTest extends TestCase
 {
+    public function testJoinedPlayerReceivesOneCleanCatalogForLateRegisterReplaceAndRemoval(): void
+    {
+        $catalog = self::craftingCatalog();
+        $transport = new FakeConnectedTransport();
+        $clock = new RuntimeTestClock();
+        $world = new WorldSimulation();
+        $loginFactory = new RuntimeLoginFactory();
+        $runtime = new ServerRuntime(
+            $transport,
+            $loginFactory,
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $world,
+            new FixedRateWorldLoop($world, $clock),
+            new RecordingEventEncoder(),
+            craftingCatalog: $catalog,
+        );
+        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $client = $this->advanceToInitializing($runtime, $transport, $info, $loginFactory);
+        $decryptor = $loginFactory->clientDecryptor();
+        $this->decodeEncryptedPackets($transport->sent, $decryptor);
+        $transport->sent = [];
+        $this->receiveEncrypted($transport, $info, $client, new SetLocalPlayerAsInitializedPacket(UnsignedLong::fromInt(1)));
+        self::assertTrue($runtime->poll());
+        $clock->advance(50_000_000);
+        self::assertTrue($runtime->poll());
+        $this->decodeEncryptedPackets($transport->sent, $decryptor);
+        $transport->sent = [];
+
+        $catalog->register(new ShapelessRecipe(
+            'example:late_recipe',
+            [RecipeIngredient::exact('minecraft:stone')],
+            [new RecipeOutput('minecraft:dirt')],
+            recipeOwner: 'Example',
+        ));
+        $networkId = $catalog->recipes()->networkId('example:late_recipe');
+        self::assertTrue($runtime->poll());
+        $packets = $this->decodeEncryptedPackets($transport->sent, $decryptor);
+        self::assertCount(1, $packets);
+        self::assertInstanceOf(CraftingDataPacket::class, $packets[0]);
+        self::assertTrue($packets[0]->cleanRecipes);
+        self::assertCount(4_143, $packets[0]->recipes);
+        $transport->sent = [];
+
+        $catalog->register(new ShapelessRecipe(
+            'example:late_recipe',
+            [RecipeIngredient::exact('minecraft:stone')],
+            [new RecipeOutput('minecraft:dirt', 2)],
+            recipeOwner: 'Example',
+        ), true);
+        self::assertSame($networkId, $catalog->recipes()->networkId('example:late_recipe'));
+        self::assertTrue($runtime->poll());
+        $packets = $this->decodeEncryptedPackets($transport->sent, $decryptor);
+        self::assertCount(1, $packets);
+        self::assertInstanceOf(CraftingDataPacket::class, $packets[0]);
+        $replacement = array_values(array_filter(
+            $packets[0]->recipes,
+            static fn($recipe): bool => property_exists($recipe, 'recipeId')
+                && $recipe->recipeId === 'example:late_recipe',
+        ));
+        self::assertCount(1, $replacement);
+        self::assertInstanceOf(ShapelessCraftingRecipe::class, $replacement[0]);
+        self::assertSame(2, $replacement[0]->results[0]->count);
+        $transport->sent = [];
+
+        self::assertSame(1, $catalog->unregisterOwnedBy('Example'));
+        self::assertTrue($runtime->poll());
+        $packets = $this->decodeEncryptedPackets($transport->sent, $decryptor);
+        self::assertCount(1, $packets);
+        self::assertInstanceOf(CraftingDataPacket::class, $packets[0]);
+        self::assertCount(4_142, $packets[0]->recipes);
+    }
+
     public function testRuntimePublishesCompletedPhaseTimingsAndInboundPayloadRate(): void
     {
         $transport = new FakeConnectedTransport();
@@ -358,6 +441,44 @@ final class ServerRuntimeTest extends TestCase
         self::assertTrue($runtime->poll());
         self::assertFalse($connection->isConnected());
         self::assertFalse($connection->sendPacket(TextPacket::tip('offline')));
+    }
+
+    public function testTransportSendOverflowRecordsAnAllowlistedReasonAndDisconnectsOnlyItsSession(): void
+    {
+        $transport = new FakeConnectedTransport();
+        $clock = new RuntimeTestClock();
+        $world = new WorldSimulation();
+        $loginFactory = new RuntimeLoginFactory();
+        $connections = new PlayerConnectionDirectory();
+        $lines = [];
+        $diagnostics = new RuntimeDiagnostics(static function (string $line) use (&$lines): void {
+            $lines[] = $line;
+        });
+        $runtime = new ServerRuntime(
+            $transport,
+            $loginFactory,
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $world,
+            new FixedRateWorldLoop($world, $clock),
+            new RecordingEventEncoder(),
+            diagnostics: $diagnostics,
+            playerConnections: $connections,
+        );
+        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $this->advanceToInitializing($runtime, $transport, $info, $loginFactory);
+        $connection = $connections->connection('00000000-0000-0000-0000-000000000001');
+        $transport->sendFailure = new \OverflowException('Reliable frame tracking limit reached.');
+
+        self::assertFalse($connection->sendPacket(TextPacket::tip('diagnostic'), immediate: true));
+        self::assertFalse($connection->isConnected());
+        self::assertSame(0, $runtime->sessionCount());
+        self::assertContains(['127.0.0.1', 20_001], $transport->removed);
+        $output = implode('', $lines);
+        self::assertStringContainsString('"event":"runtime.transport_send_failed"', $output);
+        self::assertStringContainsString('"reason":"reliable_frame_tracking"', $output);
+        self::assertStringContainsString('"reliability":"reliable_ordered"', $output);
+        self::assertStringContainsString('"phase":"initializing"', $output);
+        self::assertStringNotContainsString('Reliable frame tracking limit reached.', $output);
     }
 
     public function testFullLoginTransfersCipherThenJoinsOnlyAfterInitializationAck(): void
@@ -870,6 +991,140 @@ final class ServerRuntimeTest extends TestCase
         self::assertSame([], $processed[0]->peerSessionIds);
         self::assertSame('minecraft:iron_helmet', $processed[0]->armorInventory[0]?->identifier);
         self::assertNull($processed[0]->offhandStack);
+    }
+
+    public function testCraftingInventorySurvivesRuntimeVisibilityProjection(): void
+    {
+        $transport = new FakeConnectedTransport();
+        $clock = new RuntimeTestClock();
+        $world = new WorldSimulation(
+            itemCatalog: ItemCatalog::vanilla(BedrockDataSet::bundled()->itemNetworkRegistry()),
+        );
+        $loginFactory = new RuntimeLoginFactory();
+        $events = new RecordingEventEncoder(delegate: self::inventoryEventEncoder());
+        $runtime = new ServerRuntime(
+            $transport,
+            $loginFactory,
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $world,
+            new FixedRateWorldLoop($world, $clock),
+            $events,
+        );
+        $session = new SessionInfo('127.0.0.1', 20_001, 41, 1_400, 11);
+        $client = $this->advanceToInitializing($runtime, $transport, $session, $loginFactory);
+        $this->receiveEncrypted(
+            $transport,
+            $session,
+            $client,
+            new SetLocalPlayerAsInitializedPacket(UnsignedLong::fromInt(1)),
+        );
+        self::assertTrue($runtime->poll());
+        $clock->advance(50_000_000);
+        self::assertTrue($runtime->poll());
+        self::assertCount(1, $world->snapshot()->players);
+
+        self::assertTrue($world->enqueuePluginInventorySlot(
+            $world->snapshot()->players[0]->identity,
+            0,
+            new InventoryStack('minecraft:oak_planks', 2, 1),
+        ));
+        $clock->advance(50_000_000);
+        self::assertTrue($runtime->poll());
+        $planks = $world->snapshot()->players[0]->selectedStack;
+        self::assertNotNull($planks);
+
+        $events->clearEvents();
+        $events->clearDirectedPackets();
+        $this->receiveEncrypted($transport, $session, $client, new ItemStackRequestPacket([
+            new ItemStackRequest(-1, [new TakeItemStackRequestAction(
+                1,
+                new ItemStackRequestSlot(
+                    new FullContainerName(FullContainerName::HOTBAR),
+                    0,
+                    $planks->stackNetworkId,
+                ),
+                new ItemStackRequestSlot(
+                    new FullContainerName(FullContainerName::CRAFTING_INPUT),
+                    28,
+                    0,
+                ),
+            )]),
+        ]));
+        self::assertTrue($runtime->poll());
+        $clock->advance(50_000_000);
+        self::assertTrue($runtime->poll());
+
+        $processed = array_values(array_filter(
+            $events->events,
+            static fn(WorldEvent $event): bool => $event instanceof InventoryStackRequestProcessed,
+        ));
+        self::assertCount(1, $processed);
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $processed[0]);
+        self::assertTrue($processed[0]->success, $processed[0]->reason);
+        self::assertCount(4, $processed[0]->craftingInventory);
+        $craftingStack = $processed[0]->craftingInventory[0];
+        $mainStack = $processed[0]->mainInventory[0];
+        self::assertNotNull($craftingStack);
+        self::assertNotNull($mainStack);
+        self::assertSame('minecraft:oak_planks', $craftingStack->identifier);
+        $craftingStackId = $craftingStack->stackNetworkId;
+        $mainStackId = $mainStack->stackNetworkId;
+        self::assertGreaterThan(0, $craftingStackId);
+        self::assertGreaterThan(0, $mainStackId);
+        $responses = array_values(array_filter(
+            $events->directedPackets,
+            static fn(DirectedPacket $packet): bool => $packet->packet instanceof ItemStackResponsePacket,
+        ));
+        self::assertCount(1, $responses);
+        $response = $responses[0]->packet;
+        self::assertInstanceOf(ItemStackResponsePacket::class, $response);
+        $craftingContainers = array_values(array_filter(
+            $response->responses[0]->containers,
+            static fn($container): bool => $container->containerName->containerNameId
+                === FullContainerName::CRAFTING_INPUT,
+        ));
+        self::assertCount(1, $craftingContainers);
+        self::assertSame(28, $craftingContainers[0]->slots[0]->slot);
+        self::assertSame(1, $craftingContainers[0]->slots[0]->amount);
+        self::assertSame($craftingStackId, $craftingContainers[0]->slots[0]->stackNetworkId);
+        self::assertSame([], array_values(array_filter(
+            $events->directedPackets,
+            static fn(DirectedPacket $packet): bool => $packet->packet instanceof InventoryContentPacket,
+        )));
+
+        $events->clearEvents();
+        $events->clearDirectedPackets();
+        $this->receiveEncrypted($transport, $session, $client, new ItemStackRequestPacket([
+            new ItemStackRequest(-2, [new TakeItemStackRequestAction(
+                1,
+                new ItemStackRequestSlot(
+                    new FullContainerName(FullContainerName::HOTBAR),
+                    0,
+                    $mainStackId,
+                ),
+                new ItemStackRequestSlot(
+                    new FullContainerName(FullContainerName::CRAFTING_INPUT),
+                    28,
+                    $craftingStackId,
+                ),
+            )]),
+        ]));
+        self::assertTrue($runtime->poll());
+        $clock->advance(50_000_000);
+        self::assertTrue($runtime->poll());
+
+        $processed = array_values(array_filter(
+            $events->events,
+            static fn(WorldEvent $event): bool => $event instanceof InventoryStackRequestProcessed,
+        ));
+        self::assertCount(1, $processed);
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $processed[0]);
+        self::assertTrue($processed[0]->success, $processed[0]->reason);
+        self::assertSame(2, $processed[0]->craftingInventory[0]?->count);
+        self::assertSame([], array_values(array_filter(
+            $events->directedPackets,
+            static fn(DirectedPacket $packet): bool => $packet->packet instanceof InventoryContentPacket,
+        )));
     }
 
     public function testFactoryFailureAndInvalidPeerInputAreIsolated(): void
@@ -1497,6 +1752,41 @@ final class ServerRuntimeTest extends TestCase
         return $commands;
     }
 
+    private static function craftingCatalog(): CraftingCatalog
+    {
+        $data = BedrockDataSet::bundled();
+        $states = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $items = ItemCatalog::vanilla(
+            $data->itemNetworkRegistry(),
+            creative: $data->creativeInventoryRegistry(),
+            blockItems: $data->blockItemMappingRegistry(),
+        );
+
+        return CraftingCatalog::fromData(
+            $data,
+            $items,
+            $states,
+            BedrockInventoryPacketProjector::fromData(
+                $data,
+                new BlockNetworkTranslator($states, $data->blockStateRegistry()),
+                $items,
+            ),
+        );
+    }
+
+    private static function inventoryEventEncoder(): BedrockWorldEventPacketEncoder
+    {
+        $data = BedrockDataSet::bundled();
+        $states = new BlockStateRegistry($data->blockStateRegistry()->states());
+
+        return new BedrockWorldEventPacketEncoder(
+            inventory: BedrockInventoryPacketProjector::fromData(
+                $data,
+                new BlockNetworkTranslator($states, $data->blockStateRegistry()),
+            ),
+        );
+    }
+
     /**
      * @param list<array{string, int, string, Reliability, int}> $sent
      * @return list<Packet>
@@ -1522,6 +1812,8 @@ final class ServerRuntimeTest extends TestCase
                     $packets[] = CommandOutputPacket::decode($frame->payload);
                 } elseif ($frame->header->packetId === PacketIds::UPDATE_SOFT_ENUM) {
                     $packets[] = UpdateSoftEnumPacket::decode($frame->payload);
+                } elseif ($frame->header->packetId === PacketIds::CRAFTING_DATA) {
+                    $packets[] = CraftingDataPacket::decode($frame->payload);
                 } elseif ($frame->header->packetId === PacketIds::TEXT || $frame->header->packetId === PacketIds::DISCONNECT) {
                     $packets[] = BedrockPacketCodec::decode($frame->header->packetId, $frame->payload);
                 }
@@ -1694,6 +1986,7 @@ final class FakeConnectedTransport implements ConnectedTransport
     /** @var list<array{string, int}> */ public array $removed = [];
     public bool $throwOnClose = false;
     public bool $throwOnPoll = false;
+    public ?Throwable $sendFailure = null;
     public int $closeCalls = 0;
 
     public function poll(int $maximumDatagrams): int
@@ -1717,6 +2010,9 @@ final class FakeConnectedTransport implements ConnectedTransport
     }
     public function sendPayload(string $remoteAddress, int $remotePort, string $payload, Reliability $reliability, int $orderingChannel = 0): void
     {
+        if ($this->sendFailure !== null) {
+            throw $this->sendFailure;
+        }
         $this->sent[] = [$remoteAddress, $remotePort, $payload, $reliability, $orderingChannel];
     }
     public function removeSession(string $remoteAddress, int $remotePort): bool
@@ -1873,6 +2169,7 @@ final class RecordingEventEncoder implements WorldEventPacketEncoder
 {
     /** @var list<class-string> */ public array $classes = [];
     /** @var list<WorldEvent> */ public array $events = [];
+    /** @var list<DirectedPacket> */ public array $directedPackets = [];
 
     /**
      * @param class-string|null $failOnClass
@@ -1882,11 +2179,17 @@ final class RecordingEventEncoder implements WorldEventPacketEncoder
         private readonly ?string $failOnClass = null,
         private readonly ?string $packetCountOnClass = null,
         private readonly int $packetCount = 0,
+        private readonly ?WorldEventPacketEncoder $delegate = null,
     ) {}
 
     public function clearEvents(): void
     {
         $this->events = [];
+    }
+
+    public function clearDirectedPackets(): void
+    {
+        $this->directedPackets = [];
     }
 
     public function encode(WorldEvent $event, array $sessions): array
@@ -1906,8 +2209,15 @@ final class RecordingEventEncoder implements WorldEventPacketEncoder
                 $packets[] = new DirectedPacket($sessionId, new ChatPacket('server', 'fixture'));
             }
 
+            $this->directedPackets = [...$this->directedPackets, ...$packets];
+
             return $packets;
         }
-        return [];
+        $packets = $event instanceof InventoryStackRequestProcessed
+            ? ($this->delegate?->encode($event, $sessions) ?? [])
+            : [];
+        $this->directedPackets = [...$this->directedPackets, ...$packets];
+
+        return $packets;
     }
 }

@@ -6,8 +6,11 @@ namespace Bedriox\Server\Tests\Simulation;
 
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Data\BedrockDataSet;
+use Bedriox\Protocol\Packet\MultiCraftingRecipe;
 use Bedriox\Server\Entity\Item\ItemEntityRegistry;
 use Bedriox\Server\Gameplay\Block\BlockCatalog;
+use Bedriox\Server\Gameplay\Crafting\ComplexCraftingRecipeEvaluator;
+use Bedriox\Server\Gameplay\Crafting\CraftingCatalog;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Player\InventoryContainer;
 use Bedriox\Server\Player\InventoryResponseMode;
@@ -20,9 +23,12 @@ use Bedriox\Server\Player\PlayerIdentity;
 use Bedriox\Server\Player\PlayerInventoryEntry;
 use Bedriox\Server\Player\PlayerInventoryStackState;
 use Bedriox\Server\Player\PlayerInventoryState;
+use Bedriox\Server\Runtime\BedrockInventoryPacketProjector;
 use Bedriox\Server\Simulation\BlockBreakAction;
 use Bedriox\Server\Simulation\ClientInputTick;
+use Bedriox\Server\Simulation\Command\CraftingRequest;
 use Bedriox\Server\Simulation\Command\JoinPlayer as UnvalidatedJoinPlayer;
+use Bedriox\Server\Simulation\Event\ArmSwung;
 use Bedriox\Server\Simulation\Event\BlockBreakStarted;
 use Bedriox\Server\Simulation\Event\BlockChanged;
 use Bedriox\Server\Simulation\Event\BlockPlaced;
@@ -30,6 +36,7 @@ use Bedriox\Server\Simulation\Event\BlockPlacementCorrected;
 use Bedriox\Server\Simulation\Event\BlockPunch;
 use Bedriox\Server\Simulation\Event\ChatBroadcast;
 use Bedriox\Server\Simulation\Event\CommandRejected;
+use Bedriox\Server\Simulation\Event\CraftingTableOpened;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
 use Bedriox\Server\Simulation\Event\ItemEntityMoved;
@@ -46,6 +53,7 @@ use Bedriox\Server\Simulation\SimulationCommandFactory;
 use Bedriox\Server\Simulation\SimulationLimits;
 use Bedriox\Server\Simulation\VerticalState;
 use Bedriox\Server\Simulation\WorldSimulation;
+use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\Block\VanillaBlockStates;
@@ -104,6 +112,483 @@ final class WorldSimulationTest extends TestCase
         self::assertSame(InventoryResponseMode::LegacySlotSync, $event->responseMode);
         self::assertFalse($event->fullSync);
         self::assertSame($slots, $event->affectedSlots);
+    }
+
+    public function testCraftingConsumesTheMatchedGridAndCreatesOnlyTheRegisteredOutput(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $registry = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $items = ItemCatalog::vanilla(
+            $data->itemNetworkRegistry(),
+            creative: $data->creativeInventoryRegistry(),
+            blockItems: $data->blockItemMappingRegistry(),
+        );
+        $projector = BedrockInventoryPacketProjector::fromData(
+            $data,
+            new BlockNetworkTranslator($registry, $data->blockStateRegistry()),
+            $items,
+        );
+        $crafting = CraftingCatalog::fromData($data, $items, $registry, $projector);
+        $recipe = null;
+        foreach ($crafting->recipes()->all() as $candidate) {
+            if (count($candidate->ingredients()) === 1 && count($candidate->outputs()) === 1) {
+                $recipe = $candidate;
+                break;
+            }
+        }
+        self::assertNotNull($recipe);
+        $ingredient = $recipe->ingredients()[0];
+        $output = $recipe->outputs()[0];
+        $networkId = $crafting->recipes()->networkId($recipe->identifier());
+        self::assertNotNull($networkId);
+        $bootstrap = new PlayerBootstrap(
+            new PlayerIdentity('identity-one', 'One'),
+            'world',
+            new Position(0.0, 64.0, 0.0),
+            0.0,
+            0.0,
+            new PlayerInventoryState([
+                new PlayerInventoryEntry(0, new PlayerInventoryStackState(
+                    $ingredient->identifiers[0],
+                    $ingredient->count,
+                )),
+            ], 0),
+            1,
+            1,
+        );
+        $world = new WorldSimulation(
+            blockPalette: $palette,
+            itemCatalog: $items,
+            blockStateRegistry: $registry,
+            craftingCatalog: $crafting,
+        );
+        $factory = new SimulationCommandFactory();
+        self::assertTrue($world->enqueue($factory->join(
+            'one',
+            'identity-one',
+            'One',
+            bootstrap: $bootstrap,
+        )));
+        $world->tick();
+
+        self::assertTrue($world->enqueue($factory->inventoryStackRequest('one', -1, [
+            new InventoryStackRequestAction(
+                InventoryStackRequestActionType::Take,
+                new InventorySlotReference(InventoryContainer::Main, 0, 1),
+                new InventorySlotReference(InventoryContainer::CraftingInput, 0, 0),
+                $ingredient->count,
+            ),
+        ])));
+        $moved = $world->tick()->events[0];
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $moved);
+        self::assertTrue($moved->success, $moved->reason);
+        $input = $moved->craftingInventory[0] ?? null;
+        self::assertNotNull($input);
+
+        self::assertTrue($world->enqueue($factory->inventoryStackRequest(
+            'one',
+            -2,
+            [
+                new InventoryStackRequestAction(
+                    InventoryStackRequestActionType::Consume,
+                    new InventorySlotReference(InventoryContainer::CraftingInput, 0, $input->stackNetworkId),
+                    new InventorySlotReference(InventoryContainer::CraftingInput, 0, $input->stackNetworkId),
+                    $ingredient->count,
+                ),
+                new InventoryStackRequestAction(
+                    InventoryStackRequestActionType::Take,
+                    new InventorySlotReference(InventoryContainer::CreatedOutput, 50, -2),
+                    new InventorySlotReference(InventoryContainer::Main, 0, 0),
+                    $output->count,
+                ),
+            ],
+            crafting: new CraftingRequest($networkId, 1),
+        )));
+        $crafted = $world->tick()->events[0];
+
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $crafted);
+        self::assertTrue($crafted->success, $crafted->reason);
+        self::assertNull($crafted->craftingInventory[0]);
+        $craftedStack = $crafted->mainInventory[0];
+        self::assertNotNull($craftedStack);
+        self::assertSame($output->identifier, $craftedStack->identifier);
+        self::assertSame($output->count, $craftedStack->count);
+    }
+
+    public function testAutomaticCraftingConsumesOnlyTheClaimedAuthoritativeMainInventoryIngredients(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $registry = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $items = ItemCatalog::vanilla(
+            $data->itemNetworkRegistry(),
+            creative: $data->creativeInventoryRegistry(),
+            blockItems: $data->blockItemMappingRegistry(),
+        );
+        $projector = BedrockInventoryPacketProjector::fromData(
+            $data,
+            new BlockNetworkTranslator($registry, $data->blockStateRegistry()),
+            $items,
+        );
+        $crafting = CraftingCatalog::fromData($data, $items, $registry, $projector);
+        $recipe = null;
+        foreach ($crafting->recipes()->all() as $candidate) {
+            if (count($candidate->ingredients()) === 1 && count($candidate->outputs()) === 1) {
+                $recipe = $candidate;
+                break;
+            }
+        }
+        self::assertNotNull($recipe);
+        $ingredient = $recipe->ingredients()[0];
+        $output = $recipe->outputs()[0];
+        $networkId = $crafting->recipes()->networkId($recipe->identifier());
+        self::assertNotNull($networkId);
+        $bootstrap = new PlayerBootstrap(
+            new PlayerIdentity('identity-one', 'One'),
+            'world',
+            new Position(0.0, 64.0, 0.0),
+            0.0,
+            0.0,
+            new PlayerInventoryState([
+                new PlayerInventoryEntry(0, new PlayerInventoryStackState(
+                    $ingredient->identifiers[0],
+                    $ingredient->count,
+                )),
+            ], 0),
+            1,
+            1,
+        );
+        $world = new WorldSimulation(
+            blockPalette: $palette,
+            itemCatalog: $items,
+            blockStateRegistry: $registry,
+            craftingCatalog: $crafting,
+        );
+        $factory = new SimulationCommandFactory();
+        self::assertTrue($world->enqueue($factory->join(
+            'one',
+            'identity-one',
+            'One',
+            bootstrap: $bootstrap,
+        )));
+        $world->tick();
+
+        self::assertTrue($world->enqueue($factory->inventoryStackRequest('one', -1, [
+            new InventoryStackRequestAction(
+                InventoryStackRequestActionType::Consume,
+                new InventorySlotReference(InventoryContainer::Main, 0, 1),
+                new InventorySlotReference(InventoryContainer::Main, 0, 1),
+                $ingredient->count,
+            ),
+        ])));
+        $manual = $world->tick()->events[0];
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $manual);
+        self::assertFalse($manual->success);
+        self::assertSame('crafting_consume', $manual->reason);
+        self::assertSame($ingredient->count, $manual->mainInventory[0]?->count);
+
+        self::assertTrue($world->enqueue($factory->inventoryStackRequest(
+            'one',
+            -2,
+            [
+                new InventoryStackRequestAction(
+                    InventoryStackRequestActionType::Consume,
+                    new InventorySlotReference(InventoryContainer::Main, 0, 1),
+                    new InventorySlotReference(InventoryContainer::Main, 0, 1),
+                    $ingredient->count,
+                ),
+                new InventoryStackRequestAction(
+                    InventoryStackRequestActionType::Take,
+                    new InventorySlotReference(InventoryContainer::CreatedOutput, 50, -2),
+                    new InventorySlotReference(InventoryContainer::Main, 0, 0),
+                    $output->count,
+                ),
+            ],
+            crafting: new CraftingRequest($networkId, 1, automatic: true),
+        )));
+        $crafted = $world->tick()->events[0];
+
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $crafted);
+        self::assertTrue($crafted->success, $crafted->reason);
+        self::assertSame(array_fill(0, 4, null), $crafted->craftingInventory);
+        $craftedStack = $crafted->mainInventory[0];
+        self::assertNotNull($craftedStack);
+        self::assertSame($output->identifier, $craftedStack->identifier);
+        self::assertSame($output->count, $craftedStack->count);
+    }
+
+    public function testComplexRepairCraftCommitsOnlyItsAuthoritativeDerivedResult(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $registry = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $items = ItemCatalog::vanilla(
+            $data->itemNetworkRegistry(),
+            creative: $data->creativeInventoryRegistry(),
+            blockItems: $data->blockItemMappingRegistry(),
+        );
+        $projector = BedrockInventoryPacketProjector::fromData(
+            $data,
+            new BlockNetworkTranslator($registry, $data->blockStateRegistry()),
+            $items,
+        );
+        $crafting = CraftingCatalog::fromData($data, $items, $registry, $projector);
+        $networkId = null;
+        foreach ($crafting->protocolRecipes() as $recipe) {
+            if ($recipe instanceof MultiCraftingRecipe
+                && $recipe->uuid === ComplexCraftingRecipeEvaluator::REPAIR_ITEM) {
+                $networkId = $recipe->recipeNetworkId;
+                break;
+            }
+        }
+        self::assertNotNull($networkId);
+
+        $world = new WorldSimulation(
+            blockPalette: $palette,
+            itemCatalog: $items,
+            blockStateRegistry: $registry,
+            craftingCatalog: $crafting,
+        );
+        $factory = new SimulationCommandFactory();
+        self::assertTrue($world->enqueue($factory->join(
+            'one',
+            'identity-one',
+            'One',
+            bootstrap: new PlayerBootstrap(
+                new PlayerIdentity('identity-one', 'One'),
+                'world',
+                new Position(0.0, 64.0, 0.0),
+                0.0,
+                0.0,
+                new PlayerInventoryState([
+                    new PlayerInventoryEntry(0, new PlayerInventoryStackState('minecraft:iron_pickaxe', 1, 200)),
+                    new PlayerInventoryEntry(1, new PlayerInventoryStackState('minecraft:iron_pickaxe', 1, 100)),
+                ], 0),
+                1,
+                1,
+            ),
+        )));
+        $world->tick();
+
+        self::assertTrue($world->enqueue($factory->inventoryStackRequest('one', -1, [
+            new InventoryStackRequestAction(
+                InventoryStackRequestActionType::Take,
+                new InventorySlotReference(InventoryContainer::Main, 0, 1),
+                new InventorySlotReference(InventoryContainer::CraftingInput, 0, 0),
+                1,
+            ),
+            new InventoryStackRequestAction(
+                InventoryStackRequestActionType::Take,
+                new InventorySlotReference(InventoryContainer::Main, 1, 2),
+                new InventorySlotReference(InventoryContainer::CraftingInput, 1, 0),
+                1,
+            ),
+        ])));
+        $moved = $world->tick()->events[0];
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $moved);
+        self::assertTrue($moved->success, $moved->reason);
+        $left = $moved->craftingInventory[0] ?? null;
+        $right = $moved->craftingInventory[1] ?? null;
+        self::assertNotNull($left);
+        self::assertNotNull($right);
+
+        self::assertTrue($world->enqueue($factory->inventoryStackRequest(
+            'one',
+            -2,
+            [
+                new InventoryStackRequestAction(
+                    InventoryStackRequestActionType::Consume,
+                    new InventorySlotReference(InventoryContainer::CraftingInput, 0, $left->stackNetworkId),
+                    new InventorySlotReference(InventoryContainer::CraftingInput, 0, $left->stackNetworkId),
+                    1,
+                ),
+                new InventoryStackRequestAction(
+                    InventoryStackRequestActionType::Consume,
+                    new InventorySlotReference(InventoryContainer::CraftingInput, 1, $right->stackNetworkId),
+                    new InventorySlotReference(InventoryContainer::CraftingInput, 1, $right->stackNetworkId),
+                    1,
+                ),
+                new InventoryStackRequestAction(
+                    InventoryStackRequestActionType::Take,
+                    new InventorySlotReference(InventoryContainer::CreatedOutput, 50, -2),
+                    new InventorySlotReference(InventoryContainer::Main, 0, 0),
+                    1,
+                ),
+            ],
+            crafting: new CraftingRequest($networkId, 1),
+        )));
+        $crafted = $world->tick()->events[0];
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $crafted);
+        self::assertTrue($crafted->success, $crafted->reason);
+        $result = $crafted->mainInventory[0];
+        self::assertNotNull($result);
+        self::assertSame('minecraft:iron_pickaxe', $result->identifier);
+        self::assertSame(37, $result->damage);
+        self::assertSame(array_fill(0, 4, null), $crafted->craftingInventory);
+    }
+
+    public function testCraftingTableOpenAndCloseUseAThreeByThreeGrid(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $registry = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $blocks = new World(new WorldMetadata('crafting-table-test', 0), new FlatWorldGenerator($palette), new ChunkRepository(4));
+        $table = null;
+        foreach ($registry->states() as $state) {
+            if ($state->identifier() === 'minecraft:crafting_table') {
+                $table = $registry->internalId($state);
+                break;
+            }
+        }
+        self::assertNotNull($table);
+        $blocks->setBlockState(1, 64, 0, $table);
+        $world = new WorldSimulation(
+            blockWorld: $blocks,
+            blockPalette: $palette,
+            blockCatalog: BlockCatalog::vanilla($registry),
+            blockStateRegistry: $registry,
+        );
+        $factory = new SimulationCommandFactory();
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->placeBlock(
+            'one',
+            1,
+            new BlockPosition(1, 64, 0),
+            1,
+            0,
+            0,
+            0.5,
+            0.5,
+            0.5,
+        )));
+
+        $opened = $world->tick()->events[0];
+        self::assertInstanceOf(CraftingTableOpened::class, $opened);
+        self::assertTrue($world->enqueue($factory->closeCraftingGrid('one')));
+        $closed = $world->tick()->events[0];
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $closed);
+        self::assertTrue($closed->success);
+        self::assertFalse($closed->fullSync);
+        self::assertCount(9, $closed->craftingInventory);
+        self::assertSame(array_fill(0, 9, null), $closed->craftingInventory);
+        self::assertSame(range(32, 40), array_map(
+            static fn(InventorySlotReference $slot): int => $slot->responseSlotId(),
+            array_values(array_filter(
+                $closed->affectedSlots,
+                static fn(InventorySlotReference $slot): bool => $slot->container === InventoryContainer::CraftingInput,
+            )),
+        ));
+    }
+
+    public function testDeathReturnsCraftingInputsToTheAuthoritativeInventory(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $registry = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $world = new WorldSimulation(blockPalette: $palette);
+        $factory = new SimulationCommandFactory();
+        $bootstrap = new PlayerBootstrap(
+            new PlayerIdentity('identity-one', 'One'),
+            'world',
+            new Position(0.0, 64.0, 0.0),
+            0.0,
+            0.0,
+            new PlayerInventoryState([
+                new PlayerInventoryEntry(0, new PlayerInventoryStackState('minecraft:oak_planks', 1)),
+            ], 0),
+            1,
+            1,
+        );
+        self::assertTrue($world->enqueue($factory->join(
+            'one',
+            'identity-one',
+            'One',
+            bootstrap: $bootstrap,
+        )));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->inventoryStackRequest('one', -1, [
+            new InventoryStackRequestAction(
+                InventoryStackRequestActionType::Take,
+                new InventorySlotReference(InventoryContainer::Main, 0, 1),
+                new InventorySlotReference(InventoryContainer::CraftingInput, 0, 0),
+                1,
+            ),
+        ])));
+        $world->tick();
+
+        self::assertTrue($world->enqueue($factory->damage('one', 20.0)));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->respawn('one')));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->syncInventory('one')));
+        $synced = $world->tick()->events[0];
+
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $synced);
+        $restored = $synced->mainInventory[0];
+        self::assertNotNull($restored);
+        self::assertSame('minecraft:oak_planks', $restored->identifier);
+        self::assertSame(1, $restored->count);
+        self::assertSame(array_fill(0, 4, null), $synced->craftingInventory);
+    }
+
+    public function testDisconnectDropsCraftingInputsWhenTheMainInventoryIsFull(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $palette = FixedFlatBlockPalette::fromRegistry(new BlockStateRegistry(
+            $data->blockStateRegistry()->states(),
+        ));
+        $items = new ItemEntityRegistry(firstEntityId: 1_000_000_000);
+        $world = new WorldSimulation(blockPalette: $palette, itemEntities: $items);
+        $factory = new SimulationCommandFactory();
+        $entries = [new PlayerInventoryEntry(0, new PlayerInventoryStackState('minecraft:oak_planks', 1))];
+        for ($slot = 1; $slot < 36; ++$slot) {
+            $entries[] = new PlayerInventoryEntry($slot, new PlayerInventoryStackState('minecraft:stone', 64));
+        }
+        $bootstrap = new PlayerBootstrap(
+            new PlayerIdentity('identity-one', 'One'),
+            'world',
+            new Position(0.0, 64.0, 0.0),
+            0.0,
+            0.0,
+            new PlayerInventoryState($entries, 0),
+            1,
+            1,
+        );
+        self::assertTrue($world->enqueue($factory->join(
+            'one',
+            'identity-one',
+            'One',
+            bootstrap: $bootstrap,
+        )));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->inventoryStackRequest('one', -1, [
+            new InventoryStackRequestAction(
+                InventoryStackRequestActionType::Take,
+                new InventorySlotReference(InventoryContainer::Main, 0, 1),
+                new InventorySlotReference(InventoryContainer::CraftingInput, 0, 0),
+                1,
+            ),
+        ])));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->pluginInventorySlot(
+            'one',
+            0,
+            new InventoryStack('minecraft:stone', 64, 1),
+        )));
+        $world->tick();
+
+        self::assertTrue($world->enqueue($factory->disconnect('one')));
+        $events = $world->tick()->events;
+
+        self::assertCount(1, $items->all());
+        self::assertSame('minecraft:oak_planks', $items->all()[0]->stack->identifier);
+        self::assertSame(1, $items->all()[0]->stack->count);
+        self::assertCount(1, array_values(array_filter(
+            $events,
+            static fn($event): bool => $event instanceof PlayerDisconnected,
+        )));
     }
 
     public function testMiningEmitsBlockTexturedPunchEffectsAtBoundedIntervals(): void
@@ -200,11 +685,13 @@ final class WorldSimulationTest extends TestCase
         self::assertTrue($world->enqueue($factory->breakBlock('one', 1, BlockBreakAction::Start, $position, 1)));
         self::assertTrue($world->enqueue($factory->breakBlock('two', 1, BlockBreakAction::Start, $position, 1)));
         $started = $world->tick()->events;
-        self::assertCount(4, $started);
+        self::assertCount(6, $started);
         self::assertInstanceOf(BlockBreakStarted::class, $started[0]);
         self::assertInstanceOf(BlockPunch::class, $started[1]);
-        self::assertInstanceOf(BlockBreakStarted::class, $started[2]);
-        self::assertInstanceOf(BlockPunch::class, $started[3]);
+        self::assertInstanceOf(ArmSwung::class, $started[2]);
+        self::assertInstanceOf(BlockBreakStarted::class, $started[3]);
+        self::assertInstanceOf(BlockPunch::class, $started[4]);
+        self::assertInstanceOf(ArmSwung::class, $started[5]);
         for ($tick = 0; $tick < 17; ++$tick) {
             $world->tick();
         }
@@ -212,13 +699,14 @@ final class WorldSimulationTest extends TestCase
         self::assertTrue($world->enqueue($factory->breakBlock('one', 2, BlockBreakAction::Complete, $position, 1)));
         self::assertTrue($world->enqueue($factory->breakBlock('two', 2, BlockBreakAction::Complete, $position, 1)));
         $events = $world->tick()->events;
-        self::assertCount(2, $events);
+        self::assertCount(3, $events);
         self::assertInstanceOf(BlockChanged::class, $events[0]);
         self::assertSame(['one', 'two'], $events[0]->recipients());
         self::assertSame($palette->air->value, $events[0]->state->value);
-        self::assertInstanceOf(BlockChanged::class, $events[1]);
-        self::assertSame(['two'], $events[1]->recipients());
-        self::assertSame($palette->air->value, $events[1]->state->value);
+        self::assertInstanceOf(ArmSwung::class, $events[1]);
+        self::assertInstanceOf(BlockChanged::class, $events[2]);
+        self::assertSame(['two'], $events[2]->recipients());
+        self::assertSame($palette->air->value, $events[2]->state->value);
     }
 
     public function testBlockOverrideExhaustionCorrectsOnlyTheOwnerWithoutCrashingTheWorld(): void
@@ -245,8 +733,9 @@ final class WorldSimulationTest extends TestCase
             }
             self::assertTrue($world->enqueue($factory->breakBlock('one', $sequence + 1, BlockBreakAction::Complete, $position, 1)));
             $events = $world->tick()->events;
-            self::assertCount(1, $events);
+            self::assertCount(2, $events);
             self::assertInstanceOf(BlockChanged::class, $events[0]);
+            self::assertInstanceOf(ArmSwung::class, $events[1]);
         }
 
         self::assertSame($palette->air->value, $blocks->blockStateAt(1, 63, 0)->value);

@@ -41,6 +41,13 @@ final readonly class SimulationPluginApiBackend
         return $this->simulation->itemBehaviorRegistry();
     }
 
+    /** @internal Used to translate admitted plugin recipe outputs without exposing process-local IDs. */
+    public function blockStateRegistry(): BlockStateRegistry
+    {
+        return $this->blockStateRegistry
+            ?? throw new \LogicException('The internal block-state registry is unavailable.');
+    }
+
     public function serverFor(
         string $plugin,
         PluginRuntimeControl $plugins,

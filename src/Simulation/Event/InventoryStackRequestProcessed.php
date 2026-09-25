@@ -14,6 +14,7 @@ final readonly class InventoryStackRequestProcessed implements WorldEvent
      * @param list<InventorySlotReference> $affectedSlots
      * @param list<InventoryStack|null> $mainInventory
      * @param list<InventoryStack|null> $armorInventory
+     * @param list<InventoryStack|null> $craftingInventory
      * @param list<string> $peerSessionIds
      */
     public function __construct(
@@ -33,6 +34,7 @@ final readonly class InventoryStackRequestProcessed implements WorldEvent
         public bool $fullSync = false,
         public array $armorInventory = [],
         public ?InventoryStack $offhandStack = null,
+        public array $craftingInventory = [],
     ) {}
 
     public function recipients(): array

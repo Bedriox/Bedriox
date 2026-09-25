@@ -35,6 +35,7 @@ use Bedriox\Protocol\Packet\VoxelShapesPacket;
 use Bedriox\Protocol\ProtocolVersion;
 use Bedriox\Protocol\Value\BuildPlatform;
 use Bedriox\Protocol\Value\UnsignedLong;
+use Bedriox\Server\Gameplay\Crafting\CraftingCatalog;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Login\AuthenticatedLogin;
 use Bedriox\Server\Player\PlayerBootstrap;
@@ -64,6 +65,8 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
 
     private BedrockInventoryPacketProjector $inventoryProjector;
 
+    private CraftingCatalog $craftingCatalog;
+
     /** @var list<BlockPropertyData> */
     private array $blockProperties;
 
@@ -79,6 +82,7 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
         private int $rewindHistorySize = 40,
         private string $defaultGamemode = 'survival',
         ?ItemCatalog $itemCatalog = null,
+        ?CraftingCatalog $craftingCatalog = null,
     ) {
         if ($this->difficulty < 0 || $this->difficulty > 3) {
             throw new \InvalidArgumentException('Difficulty must be a Bedrock value between 0 and 3.');
@@ -107,6 +111,12 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
             $this->blockNetworkTranslator,
             $this->itemCatalog,
         );
+        $this->craftingCatalog = $craftingCatalog ?? CraftingCatalog::fromData(
+            $data,
+            $this->itemCatalog,
+            $this->internalBlockStates,
+            $this->inventoryProjector,
+        );
         $blockProperties = [];
         foreach ($data->dataDrivenBlockProperties() as $identifier => $littleEndianNbt) {
             $blockProperties[] = BlockPropertyData::fromLittleEndianNbt($identifier, $littleEndianNbt);
@@ -121,6 +131,7 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
         int $rewindHistorySize = 40,
         string $defaultGamemode = 'survival',
         ?ItemCatalog $itemCatalog = null,
+        ?CraftingCatalog $craftingCatalog = null,
     ): self {
         return new self(
             $data,
@@ -134,6 +145,7 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
             $rewindHistorySize,
             $defaultGamemode,
             $itemCatalog,
+            $craftingCatalog,
         );
     }
 
@@ -248,7 +260,7 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
                 $heldItem,
             ),
             new TrimDataPacket(),
-            new CraftingDataPacket(),
+            new CraftingDataPacket($this->craftingCatalog->protocolRecipes()),
             SetActorDataPacket::baselinePlayer($runtimeEntityId, UnsignedLong::fromInt(0), $login->displayName),
         ];
 

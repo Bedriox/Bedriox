@@ -10,6 +10,8 @@ enum InventoryContainer
     case Cursor;
     case Armor;
     case Offhand;
+    /** Ephemeral player-owned 2x2 or crafting-table 3x3 input grid. */
+    case CraftingInput;
     /** Ephemeral request-local slot populated by an authoritative craft or creative selection. */
     case CreatedOutput;
 }
