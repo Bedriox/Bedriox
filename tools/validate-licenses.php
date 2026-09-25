@@ -30,12 +30,12 @@ $approvedProduction = [
     ],
     'bedriox/protocol' => [
         'version' => '0.1.0-alpha.1',
-        'reference' => '0d953bce5cd48ecb865788e39ea805cd8d51e71b',
+        'reference' => '73fedfe7b356c9fa64c0113e88d1e4d287e3e656',
         'license' => 'GPL-3.0-only',
     ],
     'bedriox/data' => [
         'version' => '0.1.0-alpha.1',
-        'reference' => 'c20eb1e8da02e8f8afdc492384ca0bcd6d424a3a',
+        'reference' => 'c1887897ba56ef1e9cd978822a6eb5bb99ee8d1b',
         'license' => 'GPL-3.0-only',
     ],
     'bedriox/raknet' => [
