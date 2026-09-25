@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\Player;
 
+use Bedriox\Api\Inventory\Container;
 use Bedriox\Api\Inventory\Inventory;
 use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\Position;
@@ -57,6 +58,18 @@ final readonly class Player
     public function swingArm(): bool
     {
         return $this->connection()->swingArm();
+    }
+
+    /** Opens a real or virtual authoritative inventory through its public handle. */
+    public function openInventory(Container $container): bool
+    {
+        return $container->open($this);
+    }
+
+    /** Closes this inventory for the player through the same authoritative lifecycle path. */
+    public function closeInventory(Container $container): bool
+    {
+        return $container->close($this);
     }
 
     public function sendMessage(string|TranslatableMessage $message): bool

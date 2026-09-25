@@ -13,6 +13,10 @@ use Bedriox\Server\Worker\Chunk\ChunkTransferException;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
+use Bedriox\Server\World\BlockEntity\BlockEntityType;
+use Bedriox\Server\World\BlockEntity\ContainerBlockEntity;
+use Bedriox\Server\World\BlockEntity\ContainerItemStack;
+use Bedriox\Server\World\BlockPosition;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\DefaultWorldGenerator;
 use Bedriox\Server\World\FlatWorldGenerator;
@@ -80,5 +84,35 @@ final class ChunkProjectionTransferCodecTest extends TestCase
         );
 
         self::assertNotSame('', ChunkSerializer::fullColumn($column)->data);
+    }
+
+    public function testPreparedProjectionPreservesClientBlockEntitiesWithoutContainerContents(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $networkStates = $data->blockStateRegistry();
+        $states = new BlockStateRegistry($networkStates->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($states);
+        $chest = ContainerBlockEntity::empty(BlockEntityType::Chest, new BlockPosition(1, 64, 1))
+            ->withCustomName('Prepared')
+            ->withPair(new BlockPosition(2, 64, 1), false);
+        $chest = $chest->withInventory($chest->inventory->withStack(
+            7,
+            new ContainerItemStack('minecraft:emerald', 3),
+        ));
+        $chunk = (new FlatWorldGenerator($palette))->generate(new ChunkPosition(0, 0))
+            ->withBlockEntity($chest);
+        $blocks = new BlockNetworkTranslator($states, $networkStates);
+        $codec = new ChunkProjectionTransferCodec();
+
+        $column = $codec->decodeColumn($codec->encode($chunk, $states), $states, $blocks);
+
+        self::assertCount(1, $column->blockEntityNbt);
+        self::assertStringContainsString('Prepared', $column->blockEntityNbt[0]);
+        self::assertStringContainsString('pairx', $column->blockEntityNbt[0]);
+        self::assertStringNotContainsString('Items', $column->blockEntityNbt[0]);
+        self::assertEquals(
+            (new BedrockChunkPacketSerializer($blocks))->serialize($chunk),
+            ChunkSerializer::fullColumn($column),
+        );
     }
 }

@@ -6,7 +6,7 @@ namespace Bedriox\Server\Player;
 
 use InvalidArgumentException;
 
-/** One occupied main-inventory slot in a session-independent inventory state. */
+/** One occupied slot in a session-independent player-owned inventory state. */
 final readonly class PlayerInventoryEntry
 {
     public function __construct(

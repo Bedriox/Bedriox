@@ -15,6 +15,7 @@ use Bedriox\Server\Gameplay\Item\ItemBehaviorRegistry;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Plugin\PluginActionBuffer;
+use Bedriox\Server\Plugin\PluginOwnershipRegistry;
 use Bedriox\Server\Plugin\PluginRuntimeControl;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
@@ -52,7 +53,17 @@ final readonly class SimulationPluginApiBackend
         string $plugin,
         PluginRuntimeControl $plugins,
         PluginActionBuffer $actions,
+        PluginOwnershipRegistry $ownership,
     ): Server {
+        $containers = new SimulationPluginContainerService(
+            $plugin,
+            $plugins,
+            $actions,
+            $ownership,
+            $this->simulation,
+            $this->itemCatalog,
+        );
+
         return new SimulationPluginServer(
             $plugin,
             $plugins,
@@ -99,6 +110,7 @@ final readonly class SimulationPluginApiBackend
                     $stack->auxValue,
                 ));
             },
+            containerManager: $containers->manager(),
         );
     }
 

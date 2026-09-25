@@ -8,6 +8,7 @@ use Bedriox\Data\LittleEndianBlockStateNbtCodec;
 use Bedriox\Data\PersistentBlockStateRegistry;
 use Bedriox\Protocol\ProtocolVersion;
 use Bedriox\Server\World\Block\BlockStateRegistry;
+use Bedriox\Server\World\BlockEntity\BlockEntityCollection;
 use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkFinalizationState;
 use Bedriox\Server\World\ChunkPosition;
@@ -27,6 +28,7 @@ use Bedriox\Server\World\Storage\LevelDb\LevelDbDatabase;
 use Bedriox\Server\World\Storage\LevelDb\LevelDbIoException;
 use Bedriox\Server\World\Storage\LevelDb\LevelDbStorageException;
 use Bedriox\Server\World\Storage\LevelDb\NativeLevelDbDatabase;
+use Bedriox\Server\World\Storage\LevelDb\PersistentBlockEntityCodec;
 use Bedriox\Server\World\Storage\LevelDb\PersistentChunkMapper;
 use Bedriox\Server\World\Storage\LevelDb\PersistentSubChunkCodec;
 use Bedriox\Server\World\Storage\LevelNameStore;
@@ -59,10 +61,13 @@ final class LevelDbWorldProvider implements WritableWorldProvider
         $this->data = self::worldDataFromMetadata($levelDat);
         $stateCodec = new LittleEndianBlockStateNbtCodec($persistentBlockStates);
         $this->subChunks = new PersistentSubChunkCodec($stateCodec);
+        $this->blockEntities = new PersistentBlockEntityCodec();
         $this->mapper = new PersistentChunkMapper($blockStates, $persistentBlockStates);
     }
 
     private readonly PersistentSubChunkCodec $subChunks;
+
+    private readonly PersistentBlockEntityCodec $blockEntities;
 
     private readonly PersistentChunkMapper $mapper;
 
@@ -191,7 +196,15 @@ final class LevelDbWorldProvider implements WritableWorldProvider
                 throw new CorruptChunkException('Chunk finalization state is outside the supported range.');
             }
 
-            return new LoadedChunkData($this->mapper->chunk($position, $sections, $biomes, $finalization), $upgraded);
+            $blockEntityBytes = $this->database->get(LevelDbChunkKey::blockEntities($position->x, $position->z));
+            $blockEntities = $blockEntityBytes === null
+                ? new BlockEntityCollection($position)
+                : $this->blockEntities->decode($blockEntityBytes, $position);
+
+            return new LoadedChunkData(
+                $this->mapper->chunk($position, $sections, $biomes, $finalization, $blockEntities),
+                $upgraded,
+            );
         } catch (CorruptChunkException|UnsupportedWorldFormatException $error) {
             throw $error;
         } catch (LevelDbIoException $error) {
@@ -257,6 +270,12 @@ final class LevelDbWorldProvider implements WritableWorldProvider
                     $puts[$key] = $this->subChunks->encode($this->mapper->storedSubChunk($section));
                 }
             }
+            $blockEntityKey = LevelDbChunkKey::blockEntities($x, $z);
+            if ($chunk->blockEntityCollection()->count() === 0) {
+                $deletes[] = $blockEntityKey;
+            } else {
+                $puts[$blockEntityKey] = $this->blockEntities->encode($chunk->blockEntityCollection());
+            }
             $this->database->writeBatch($puts, $deletes);
         } catch (LevelDbIoException|LevelDbStorageException|InvalidArgumentException $error) {
             throw new WorldStorageException('Unable to atomically save the chunk.', previous: $error);
@@ -280,7 +299,8 @@ final class LevelDbWorldProvider implements WritableWorldProvider
     private function hasOrphanedChunkData(ChunkPosition $position): bool
     {
         if ($this->database->get(LevelDbChunkKey::data3d($position->x, $position->z)) !== null
-            || $this->database->get(LevelDbChunkKey::finalization($position->x, $position->z)) !== null) {
+            || $this->database->get(LevelDbChunkKey::finalization($position->x, $position->z)) !== null
+            || $this->database->get(LevelDbChunkKey::blockEntities($position->x, $position->z)) !== null) {
             return true;
         }
         for ($sectionY = Chunk::MIN_SECTION_Y; $sectionY <= Chunk::MAX_SECTION_Y; ++$sectionY) {

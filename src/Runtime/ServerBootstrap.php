@@ -226,6 +226,7 @@ final class ServerBootstrap
                 $internalStates,
                 $blockCollisions,
                 craftingCatalog: $craftingCatalog,
+                blockProperties: $data->blockPropertyRegistry(),
             );
             $chunkSerializer = new BedrockChunkPacketSerializer(
                 $blockTranslator,

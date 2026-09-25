@@ -89,6 +89,10 @@ final class ItemCatalog
                 $creativeBlockStates[$mapping->itemIdentifier()] = $mapping->blockState();
             }
         }
+        if (!isset($creativeBlockStates['minecraft:shulker_box'])
+            && isset($creativeBlockStates['minecraft:undyed_shulker_box'])) {
+            $creativeBlockStates['minecraft:shulker_box'] = $creativeBlockStates['minecraft:undyed_shulker_box'];
+        }
         foreach ($networkRegistry->definitions() as $identifier => $_definition) {
             if ($identifier === 'minecraft:air') {
                 continue;
@@ -99,7 +103,7 @@ final class ItemCatalog
             $maximumDurability = VanillaItemDurability::maximum($identifier) ?? $existing?->maximumDurability;
             $types[$identifier] = new ItemType(
                 $identifier,
-                maximumStackSize: $armor !== null || $maximumDurability !== null
+                maximumStackSize: $armor !== null || $maximumDurability !== null || self::isShulkerBox($identifier)
                     ? 1
                     : ($existing === null ? 64 : $existing->maximumStackSize),
                 tool: $existing?->tool,
@@ -114,6 +118,11 @@ final class ItemCatalog
         }
 
         return new self(array_values($types), $networkRegistry);
+    }
+
+    private static function isShulkerBox(string $identifier): bool
+    {
+        return $identifier === 'minecraft:shulker_box' || str_ends_with($identifier, '_shulker_box');
     }
 
     public function type(string $identifier): ItemType

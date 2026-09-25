@@ -9,6 +9,7 @@ use Bedriox\Data\OpaquePersistentBlockState;
 use Bedriox\Data\PersistentBlockStateRegistry;
 use Bedriox\Server\World\BiomeStorage;
 use Bedriox\Server\World\Block\BlockStateRegistry;
+use Bedriox\Server\World\BlockEntity\BlockEntityCollection;
 use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkFinalizationState;
 use Bedriox\Server\World\ChunkPosition;
@@ -136,6 +137,7 @@ final readonly class PersistentChunkMapper
         array $sections,
         array $biomes,
         ChunkFinalizationState $finalization,
+        ?BlockEntityCollection $blockEntities = null,
     ): Chunk {
         try {
             $air = $this->blockStates->internalId(\Bedriox\Server\World\Block\VanillaBlockStates::air());
@@ -146,6 +148,14 @@ final readonly class PersistentChunkMapper
         $defaultBiome = $defaultBiomeStorage?->biomeAt(0, 0, 0)
             ?? throw new LevelDbStorageException('Decoded Data3D has no minimum-height biome storage.');
 
-        return new Chunk($position, $air, $sections, $defaultBiome, finalizationState: $finalization, biomeStorages: $biomes);
+        return new Chunk(
+            $position,
+            $air,
+            $sections,
+            $defaultBiome,
+            finalizationState: $finalization,
+            biomeStorages: $biomes,
+            blockEntities: $blockEntities,
+        );
     }
 }

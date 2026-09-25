@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Simulation;
 
+use Bedriox\Api\Inventory\ContainerManager;
 use Bedriox\Api\Inventory\ItemStack;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\Player\Player;
@@ -47,6 +48,7 @@ final readonly class SimulationPluginServer implements Server
         private ?Closure $damage = null,
         private ?Closure $setGameMode = null,
         private ?Closure $giveItem = null,
+        private ?ContainerManager $containerManager = null,
     ) {}
 
     public function world(): World
@@ -75,6 +77,14 @@ final readonly class SimulationPluginServer implements Server
         $this->assertEnabled();
 
         return ($this->block)($position);
+    }
+
+    public function containers(): ContainerManager
+    {
+        $this->assertEnabled();
+
+        return $this->containerManager
+            ?? throw new \LogicException('The container capability is unavailable.');
     }
 
     public function sendMessage(Player $player, string $message): void

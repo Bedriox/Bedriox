@@ -35,6 +35,13 @@ final class PlayerDataCodecTest extends TestCase
             array_map(static fn(PlayerInventoryEntry $entry): string => $entry->stack->identifier, $decoded->inventory->armor),
         );
         self::assertSame('minecraft:shield', $decoded->inventory->offhand?->identifier);
+        self::assertSame(
+            ['minecraft:ender_pearl', 'minecraft:diamond'],
+            array_map(
+                static fn(PlayerInventoryEntry $entry): string => $entry->stack->identifier,
+                $decoded->inventory->enderChest,
+            ),
+        );
     }
 
     public function testPersistsAnIronTool(): void
@@ -137,6 +144,17 @@ final class PlayerDataCodecTest extends TestCase
         self::assertSame(0.0, $decodedLegacy->exhaustion);
         self::assertSame([], $decodedLegacy->inventory->armor);
         self::assertNull($decodedLegacy->inventory->offhand);
+    }
+
+    public function testSchemaSixProfilesMigrateToAnEmptyEnderChest(): void
+    {
+        $legacy = self::root();
+        $legacy['SchemaVersion'] = LittleEndianNbtTag::int(6);
+        unset($legacy['EnderChest']);
+
+        $decoded = (new PlayerDataCodec())->decode((new LittleEndianNbtCodec())->encodeRootCompound($legacy));
+
+        self::assertSame([], $decoded->inventory->enderChest);
     }
 
     public function testSchemaOneAndTwoInventoryStacksMigrateWithZeroDamage(): void
@@ -321,6 +339,33 @@ final class PlayerDataCodecTest extends TestCase
         (new PlayerDataCodec())->decode((new LittleEndianNbtCodec())->encodeRootCompound($root));
     }
 
+    public function testRejectsDuplicateAndOutOfRangeEnderChestEntries(): void
+    {
+        $root = self::root();
+        $enderChest = self::listValues($root['EnderChest']);
+        $root['EnderChest'] = LittleEndianNbtTag::list(
+            LittleEndianNbtTag::COMPOUND,
+            [$enderChest[0], $enderChest[0]],
+        );
+        try {
+            (new PlayerDataCodec())->decode((new LittleEndianNbtCodec())->encodeRootCompound($root));
+            self::fail('Duplicate Ender Chest slots were accepted.');
+        } catch (CorruptPlayerDataException) {
+        }
+
+        $root = self::root();
+        $enderChest = self::listValues($root['EnderChest']);
+        $tags = self::compoundValues($enderChest[0]);
+        $tags['Slot'] = LittleEndianNbtTag::byte(27);
+        $root['EnderChest'] = LittleEndianNbtTag::list(
+            LittleEndianNbtTag::COMPOUND,
+            [LittleEndianNbtTag::compound($tags)],
+        );
+
+        $this->expectException(CorruptPlayerDataException::class);
+        (new PlayerDataCodec())->decode((new LittleEndianNbtCodec())->encodeRootCompound($root));
+    }
+
     /** @return array<string, LittleEndianNbtTag> */
     private static function root(): array
     {
@@ -343,7 +388,10 @@ final class PlayerDataCodecTest extends TestCase
                 new PlayerInventoryEntry(1, new PlayerInventoryStackState('minecraft:diamond_chestplate', 1)),
                 new PlayerInventoryEntry(2, new PlayerInventoryStackState('minecraft:diamond_leggings', 1)),
                 new PlayerInventoryEntry(3, new PlayerInventoryStackState('minecraft:diamond_boots', 1)),
-            ], new PlayerInventoryStackState('minecraft:shield', 1)),
+            ], new PlayerInventoryStackState('minecraft:shield', 1), [
+                new PlayerInventoryEntry(3, new PlayerInventoryStackState('minecraft:ender_pearl', 12)),
+                new PlayerInventoryEntry(24, new PlayerInventoryStackState('minecraft:diamond', 5)),
+            ]),
             1_700_000_000_000,
             1_700_000_001_000,
         );
@@ -370,7 +418,14 @@ final class PlayerDataCodecTest extends TestCase
     /** @param array<string, LittleEndianNbtTag> $root */
     private static function removeSchemaSixTags(array &$root): void
     {
-        unset($root['Armor'], $root['Offhand'], $root['FoodLevel'], $root['Saturation'], $root['Exhaustion']);
+        unset(
+            $root['Armor'],
+            $root['Offhand'],
+            $root['EnderChest'],
+            $root['FoodLevel'],
+            $root['Saturation'],
+            $root['Exhaustion'],
+        );
     }
 
     /**
@@ -409,6 +464,13 @@ final class PlayerDataCodecTest extends TestCase
         }
         if (isset($root['Offhand'])) {
             $root['Offhand'] = self::withoutStackTagNames($root['Offhand'], $removed);
+        }
+        if (isset($root['EnderChest'])) {
+            $enderChest = self::listValues($root['EnderChest']);
+            foreach ($enderChest as $index => $entry) {
+                $enderChest[$index] = self::withoutStackTagNames($entry, $removed);
+            }
+            $root['EnderChest'] = LittleEndianNbtTag::list(LittleEndianNbtTag::COMPOUND, $enderChest);
         }
 
         return $root;

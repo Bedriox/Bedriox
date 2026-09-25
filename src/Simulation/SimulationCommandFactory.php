@@ -17,6 +17,7 @@ use Bedriox\Server\Simulation\Command\ApplyInventoryStackRequest;
 use Bedriox\Server\Simulation\Command\AttackPlayer;
 use Bedriox\Server\Simulation\Command\BreakBlock;
 use Bedriox\Server\Simulation\Command\ChangeGameMode;
+use Bedriox\Server\Simulation\Command\CloseContainer;
 use Bedriox\Server\Simulation\Command\CloseCraftingGrid;
 use Bedriox\Server\Simulation\Command\CraftingRequest;
 use Bedriox\Server\Simulation\Command\DamagePlayer;
@@ -292,6 +293,7 @@ final readonly class SimulationCommandFactory
                 InventoryContainer::Armor,
                 InventoryContainer::Offhand,
                 InventoryContainer::CraftingInput,
+                InventoryContainer::OpenedContainer,
             ], true)
             || ($source->container === InventoryContainer::Main
                 && ($source->slot < 0 || $source->slot >= PlayerInventory::SLOT_COUNT))
@@ -301,6 +303,8 @@ final readonly class SimulationCommandFactory
             || ($source->container === InventoryContainer::Offhand && $source->slot !== 0)
             || ($source->container === InventoryContainer::CraftingInput
                 && ($source->slot < 0 || $source->slot >= 9))
+            || ($source->container === InventoryContainer::OpenedContainer
+                && ($source->slot < 0 || $source->slot > 0xff))
             || $source->expectedStackNetworkId < -0x80000000
             || $source->expectedStackNetworkId > 0x7fffffff
             || $count < 1 || $count > 64
@@ -325,11 +329,22 @@ final readonly class SimulationCommandFactory
         return new CloseCraftingGrid($session);
     }
 
+    public function closeContainer(string $session, int $windowId): CloseContainer
+    {
+        $this->assertOpaqueId($session, 128, 'session');
+        if ($windowId < 0 || $windowId > 0xff) {
+            throw new CommandValidationException('Container window ID must fit one byte.');
+        }
+
+        return new CloseContainer($session, $windowId);
+    }
+
     /** @param list<mixed> $slots */
     public function syncInventorySlots(string $session, array $slots): SyncInventorySlots
     {
         $this->assertOpaqueId($session, 128, 'session');
-        if ($slots === [] || count($slots) > PlayerInventory::SLOT_COUNT + PlayerInventory::ARMOR_SLOT_COUNT + 11) {
+        if ($slots === [] || count($slots) > PlayerInventory::SLOT_COUNT
+            + PlayerInventory::ARMOR_SLOT_COUNT + 11 + 256) {
             throw new CommandValidationException('Inventory slot sync is outside its bounded range.');
         }
         $seen = [];
@@ -344,6 +359,8 @@ final readonly class SimulationCommandFactory
                 || ($slot->container === InventoryContainer::Offhand && $slot->slot !== 0)
                 || ($slot->container === InventoryContainer::CraftingInput
                     && ($slot->slot < 0 || $slot->slot >= 9))
+                || ($slot->container === InventoryContainer::OpenedContainer
+                    && ($slot->slot < 0 || $slot->slot > 0xff))
                 || isset($seen[$slot->key()])) {
                 throw new CommandValidationException('Inventory slot sync contains an invalid slot.');
             }
@@ -487,7 +504,11 @@ final readonly class SimulationCommandFactory
                     && ($action->destination->slot < 0 || $action->destination->slot >= 9))
                 || ($action->source->container === InventoryContainer::CreatedOutput && $action->source->slot !== 50)
                 || ($action->destination->container === InventoryContainer::CreatedOutput
-                    && $action->destination->slot !== 50)) {
+                    && $action->destination->slot !== 50)
+                || ($action->source->container === InventoryContainer::OpenedContainer
+                    && ($action->source->slot < 0 || $action->source->slot > 0xff))
+                || ($action->destination->container === InventoryContainer::OpenedContainer
+                    && ($action->destination->slot < 0 || $action->destination->slot > 0xff))) {
                 throw new CommandValidationException('Inventory stack request action is invalid.');
             }
             $validatedActions[] = $action;

@@ -14,9 +14,14 @@ use Bedriox\Server\Runtime\BedrockChunkPacketSerializer;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
+use Bedriox\Server\World\BlockEntity\BlockEntityType;
+use Bedriox\Server\World\BlockEntity\ContainerBlockEntity;
+use Bedriox\Server\World\BlockEntity\ContainerItemStack;
+use Bedriox\Server\World\BlockPosition;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\DefaultWorldGenerator;
 use Bedriox\Server\World\FlatWorldGenerator;
+use Bedriox\Server\World\Storage\LevelDb\PersistentBlockEntityCodec;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 
@@ -91,6 +96,33 @@ final class BedrockChunkPacketSerializerTest extends TestCase
         self::assertNotSame($first, $changedPacket);
         self::assertNotSame($first->data, $changedPacket->data);
         self::assertSame(['entries' => 2, 'hits' => 1, 'misses' => 2], $serializer->cacheMetrics());
+    }
+
+    public function testChunkPayloadAppendsBoundedClientBlockEntityProjection(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $network = $data->blockStateRegistry();
+        $internal = new BlockStateRegistry($network->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($internal);
+        $serializer = new BedrockChunkPacketSerializer(new BlockNetworkTranslator($internal, $network));
+        $chunk = (new FlatWorldGenerator($palette))->generate(new ChunkPosition(0, 0));
+        $chest = ContainerBlockEntity::empty(BlockEntityType::Chest, new BlockPosition(1, 64, 1))
+            ->withCustomName('Shared')
+            ->withPair(new BlockPosition(2, 64, 1), true);
+        $chest = $chest->withInventory($chest->inventory->withStack(
+            0,
+            new ContainerItemStack('minecraft:apple', 8),
+        ));
+        $shulker = ContainerBlockEntity::empty(BlockEntityType::ShulkerBox, new BlockPosition(3, 64, 1))
+            ->withFacing(4);
+        $changed = $chunk->withBlockEntity($chest)->withBlockEntity($shulker);
+        $networkNbt = (new PersistentBlockEntityCodec())->encodeNetwork($changed->blockEntityCollection());
+
+        self::assertSame(
+            $serializer->serialize($chunk)->data . implode('', $networkNbt),
+            $serializer->serialize($changed)->data,
+        );
+        self::assertStringNotContainsString('Items', implode('', $networkNbt));
     }
 
     public function testPackedProjectionPreservesAsymmetricCellCoordinates(): void

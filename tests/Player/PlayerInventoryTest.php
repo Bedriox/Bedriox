@@ -733,6 +733,63 @@ final class PlayerInventoryTest extends TestCase
         self::assertSame(3, $exported->armor[0]->slot);
     }
 
+    public function testEnderChestStateRestoresWithFreshSessionIds(): void
+    {
+        $state = new PlayerInventoryState(
+            [new PlayerInventoryEntry(0, new PlayerInventoryStackState('minecraft:grass_block', 1))],
+            0,
+            enderChest: [
+                new PlayerInventoryEntry(26, new PlayerInventoryStackState('minecraft:diamond', 3)),
+                new PlayerInventoryEntry(2, new PlayerInventoryStackState('minecraft:ender_pearl', 8)),
+            ],
+        );
+
+        $inventory = PlayerInventory::restore($state, $this->palette());
+
+        self::assertCount(PlayerInventory::ENDER_CHEST_SLOT_COUNT, $inventory->enderChestSlots());
+        self::assertSame(2, $inventory->enderChestStack(2)?->stackNetworkId);
+        self::assertSame(3, $inventory->enderChestStack(26)?->stackNetworkId);
+        self::assertEquals($state, $inventory->exportState());
+    }
+
+    public function testEnderChestMutationSignalsPersistenceChangesAndExportsCanonicalState(): void
+    {
+        $inventory = PlayerInventory::empty();
+        self::assertFalse($inventory->replaceEnderChestSlot(4, null));
+
+        self::assertTrue($inventory->replaceEnderChestSlot(
+            4,
+            new InventoryStack('minecraft:diamond', 5, 41),
+        ));
+        self::assertFalse($inventory->replaceEnderChestSlot(
+            4,
+            new InventoryStack('minecraft:diamond', 5, 99),
+        ));
+
+        $exported = $inventory->exportState();
+        self::assertCount(1, $exported->enderChest);
+        self::assertSame(4, $exported->enderChest[0]->slot);
+        self::assertSame('minecraft:diamond', $exported->enderChest[0]->stack->identifier);
+        self::assertSame(5, $exported->enderChest[0]->stack->count);
+        self::assertTrue($inventory->replaceEnderChestSlot(4, null));
+        self::assertSame([], $inventory->exportState()->enderChest);
+    }
+
+    public function testEnderChestRejectsOutOfRangeSlotsAndOversizedItemStacks(): void
+    {
+        $inventory = PlayerInventory::empty(ItemCatalog::vanilla(BedrockDataSet::bundled()->itemNetworkRegistry()));
+        foreach ([-1, PlayerInventory::ENDER_CHEST_SLOT_COUNT] as $slot) {
+            try {
+                $inventory->enderChestStack($slot);
+                self::fail('Out-of-range Ender Chest slot was accepted.');
+            } catch (InvalidArgumentException) {
+            }
+        }
+
+        $this->expectException(InvalidArgumentException::class);
+        $inventory->replaceEnderChestSlot(0, new InventoryStack('minecraft:iron_pickaxe', 2, 1));
+    }
+
     public function testInventoryStackRejectsAuxOutsideItsBoundedRange(): void
     {
         $this->expectException(InvalidArgumentException::class);

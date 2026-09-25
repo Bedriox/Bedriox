@@ -46,6 +46,7 @@ final class SimulationCommandFactoryTest extends TestCase
         self::assertFalse($move->sprinting);
         self::assertSame('Hello, world', $chat->message);
         self::assertSame('00112233-4455-6677-8899-aabbccddeeff', $emote->emoteId);
+        self::assertSame(7, $factory->closeContainer('session-1', 7)->windowId);
         self::assertGreaterThan(0, $factory->disconnect('session-1')->estimatedBytes());
     }
 
@@ -77,6 +78,7 @@ final class SimulationCommandFactoryTest extends TestCase
         yield 'chat byte limit' => [static fn(SimulationCommandFactory $factory) => $factory->chat('session', 1, str_repeat('界', 10))];
         yield 'command-shaped chat' => [static fn(SimulationCommandFactory $factory) => $factory->chat('session', 1, '/stop')];
         yield 'non-canonical emote UUID' => [static fn(SimulationCommandFactory $factory) => $factory->emote('session', '00112233-4455-6677-8899-AABBCCDDEEFF')];
+        yield 'container window outside byte range' => [static fn(SimulationCommandFactory $factory) => $factory->closeContainer('session', 256)];
     }
 
     #[DataProvider('invalidInputProvider')]

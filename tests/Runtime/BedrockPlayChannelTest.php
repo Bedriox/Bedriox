@@ -115,6 +115,7 @@ use Bedriox\Server\Simulation\Command\AcknowledgeRespawn;
 use Bedriox\Server\Simulation\Command\ApplyInventoryStackRequest;
 use Bedriox\Server\Simulation\Command\AttackPlayer;
 use Bedriox\Server\Simulation\Command\BreakBlock;
+use Bedriox\Server\Simulation\Command\CloseContainer;
 use Bedriox\Server\Simulation\Command\CloseCraftingGrid;
 use Bedriox\Server\Simulation\Command\DropItem;
 use Bedriox\Server\Simulation\Command\MovePlayer;
@@ -887,7 +888,7 @@ final class BedrockPlayChannelTest extends TestCase
                     new BlockPosition(0, 64, 0),
                     0,
                 ),
-                new ContainerClosePacket(0, 0, false),
+                new ContainerClosePacket(0, ContainerType::Container, false),
                 new RequestAbilityPacket(0, AbilityValueType::Bool, true, 0.0),
             ])),
             Reliability::ReliableOrdered,
@@ -950,7 +951,7 @@ final class BedrockPlayChannelTest extends TestCase
         $close = BedrockPacketCodec::decode($closeFrame->header->packetId, $closeFrame->payload);
         self::assertInstanceOf(ContainerClosePacket::class, $close);
         self::assertSame(1, $close->containerId);
-        self::assertSame(0xff, $close->containerType);
+        self::assertSame(ContainerType::Inventory, $close->containerType);
         self::assertFalse($close->serverInitiated);
         $closeCommands = $channel->drainCommands();
         self::assertCount(1, $closeCommands);
@@ -976,7 +977,7 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertTrue($channel->accept(new ConnectedPayloadEvent(
             $client->encryptEnvelope($this->encode([new ContainerClosePacket(
                 1,
-                ContainerType::Workbench->value,
+                ContainerType::Workbench,
                 false,
             )])),
             Reliability::ReliableOrdered,
@@ -991,9 +992,85 @@ final class BedrockPlayChannelTest extends TestCase
         $close = $this->decode($server->decryptEnvelope($outgoing[0]->payload));
         self::assertInstanceOf(ContainerClosePacket::class, $close);
         self::assertSame(1, $close->containerId);
-        self::assertSame(ContainerType::Workbench->value, $close->containerType);
+        self::assertSame(ContainerType::Workbench, $close->containerType);
         self::assertFalse($close->serverInitiated);
         self::assertFalse($channel->isClosed());
+    }
+
+    public function testStorageContainerCloseIsAcknowledgedAndBecomesAuthoritativeIntent(): void
+    {
+        [$channel, $client, $server, $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new ContainerClosePacket(
+                7,
+                ContainerType::Container,
+                false,
+            )])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(CloseContainer::class, $commands[0]);
+        self::assertSame(7, $commands[0]->windowId);
+
+        $outgoing = $channel->drainOutgoing();
+        self::assertCount(1, $outgoing);
+        $close = $this->decode($server->decryptEnvelope($outgoing[0]->payload));
+        self::assertInstanceOf(ContainerClosePacket::class, $close);
+        self::assertSame(7, $close->containerId);
+        self::assertSame(ContainerType::Container, $close->containerType);
+        self::assertFalse($close->serverInitiated);
+    }
+
+    public function testStorageWindowRejectionAliasClosesTheActualOpenWindow(): void
+    {
+        [$channel, $client, $server, $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        self::assertTrue($channel->queuePacket(ContainerOpenPacket::blockInventory(
+            7,
+            ContainerType::Container,
+            new BlockPosition(1, 64, 1),
+        )));
+        $opened = $channel->drainOutgoing();
+        self::assertCount(1, $opened);
+        self::assertInstanceOf(
+            ContainerOpenPacket::class,
+            $this->decode($server->decryptEnvelope($opened[0]->payload)),
+        );
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new ContainerClosePacket(
+                0xff,
+                ContainerType::None,
+                false,
+            )])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(CloseContainer::class, $commands[0]);
+        self::assertSame(7, $commands[0]->windowId);
+
+        $outgoing = $channel->drainOutgoing();
+        self::assertCount(1, $outgoing);
+        $close = $this->decode($server->decryptEnvelope($outgoing[0]->payload));
+        self::assertInstanceOf(ContainerClosePacket::class, $close);
+        self::assertSame(7, $close->containerId);
+        self::assertSame(ContainerType::Container, $close->containerType);
+        self::assertFalse($close->serverInitiated);
     }
 
     public function testFlightToggleIsRejectedWithoutDroppingTheSameFrameJump(): void
@@ -2341,6 +2418,37 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertSame(3, $commands[0]->count);
         self::assertSame(-17, $commands[0]->requestId);
         self::assertSame(InventoryResponseMode::ItemStackResponse, $commands[0]->responseMode);
+    }
+
+    public function testStorageStackRequestRetainsItsContainerNameAndDynamicIdentity(): void
+    {
+        [$channel, $clientEncryptor, , $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $request = new ItemStackRequest(-18, [new TakeItemStackRequestAction(
+            1,
+            new ItemStackRequestSlot(new FullContainerName(FullContainerName::DYNAMIC, 73), 4, 11),
+            new ItemStackRequestSlot(new FullContainerName(FullContainerName::HOTBAR), 0, 0),
+        )]);
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([$request])])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(ApplyInventoryStackRequest::class, $commands[0]);
+        self::assertCount(1, $commands[0]->actions);
+        $source = $commands[0]->actions[0]->source;
+        self::assertSame(InventoryContainer::OpenedContainer, $source->container);
+        self::assertSame(4, $source->slot);
+        self::assertSame(FullContainerName::DYNAMIC, $source->responseContainerId);
+        self::assertSame(73, $source->responseContainerDynamicId);
     }
 
     public function testEmbeddedInventoryRequestBecomesACommandAfterItsMovementFrame(): void

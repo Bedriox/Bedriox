@@ -22,7 +22,7 @@ final class InventorySlotReferenceTest extends TestCase
         );
 
         self::assertSame('offhand:0', $reference->key());
-        self::assertSame('offhand:' . FullContainerName::OFFHAND . ':40', $reference->responseKey());
+        self::assertSame('offhand:' . FullContainerName::OFFHAND . ':-1:40', $reference->responseKey());
         self::assertSame(40, $reference->responseSlotId());
     }
 
@@ -31,6 +31,23 @@ final class InventorySlotReferenceTest extends TestCase
         $reference = new InventorySlotReference(InventoryContainer::Armor, 2, 9, FullContainerName::ARMOR);
 
         self::assertSame(2, $reference->responseSlotId());
-        self::assertSame('armor:' . FullContainerName::ARMOR . ':2', $reference->responseKey());
+        self::assertSame('armor:' . FullContainerName::ARMOR . ':-1:2', $reference->responseKey());
+    }
+
+    public function testOpenedContainerResponseIdentityIncludesItsDynamicWindow(): void
+    {
+        $reference = new InventorySlotReference(
+            InventoryContainer::OpenedContainer,
+            4,
+            12,
+            FullContainerName::DYNAMIC,
+            responseContainerDynamicId: 7,
+        );
+
+        self::assertSame('opened_container:4', $reference->key());
+        self::assertSame(
+            'opened_container:' . FullContainerName::DYNAMIC . ':7:4',
+            $reference->responseKey(),
+        );
     }
 }

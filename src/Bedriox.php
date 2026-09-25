@@ -198,6 +198,7 @@ final class Bedriox
                             $manifest->name,
                             $composition->host->manager(),
                             $composition->host->actions(),
+                            $composition->host->ownership(),
                         ),
                         $dataFolder,
                         new OwnedItemRegistrar(

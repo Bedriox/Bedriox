@@ -9,8 +9,18 @@ use Bedriox\Api\Crafting\CraftingRecipe as ApiCraftingRecipe;
 use Bedriox\Api\Crafting\RecipeIngredient as ApiRecipeIngredient;
 use Bedriox\Api\Crafting\ShapedRecipe as ApiShapedRecipe;
 use Bedriox\Api\Crafting\ShapelessRecipe as ApiShapelessRecipe;
+use Bedriox\Api\Event\Inventory\InventoryCloseReason as ApiInventoryCloseReason;
 use Bedriox\Api\Inventory\ConsumptionResult as ApiConsumptionResult;
+use Bedriox\Api\Inventory\Container as ApiContainer;
+use Bedriox\Api\Inventory\ContainerLayout as ApiContainerLayout;
+use Bedriox\Api\Inventory\ContainerType as ApiContainerType;
+use Bedriox\Api\Inventory\ContainerView as ApiContainerView;
 use Bedriox\Api\Inventory\EquipmentSlot as ApiEquipmentSlot;
+use Bedriox\Api\Inventory\InventoryActionType as ApiInventoryActionType;
+use Bedriox\Api\Inventory\InventoryTransaction as ApiInventoryTransaction;
+use Bedriox\Api\Inventory\InventoryTransactionAction as ApiInventoryTransactionAction;
+use Bedriox\Api\Inventory\InventoryTransactionCause as ApiInventoryTransactionCause;
+use Bedriox\Api\Inventory\InventoryView as ApiInventoryView;
 use Bedriox\Api\Inventory\ItemDamageCause as ApiItemDamageCause;
 use Bedriox\Api\Inventory\ItemStack as ApiItemStack;
 use Bedriox\Api\Inventory\ItemUseKind as ApiItemUseKind;
@@ -19,6 +29,8 @@ use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\Player\HealthRegainCause as ApiHealthRegainCause;
 use Bedriox\Api\Player\Nutrition as ApiNutrition;
 use Bedriox\Api\TranslatableMessage;
+use Bedriox\Data\BlockPropertyRegistry;
+use Bedriox\Data\CanonicalBlockState;
 use Bedriox\Server\Entity\Item\DroppedItemCollisionResolver;
 use Bedriox\Server\Entity\Item\ItemEntityMotion;
 use Bedriox\Server\Entity\Item\ItemEntityRegistry;
@@ -43,10 +55,18 @@ use Bedriox\Server\Gameplay\Item\ArmorSlot;
 use Bedriox\Server\Gameplay\Item\ItemBehaviorRegistry;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Gameplay\Item\ItemUseSession;
+use Bedriox\Server\Inventory\ContainerInventory as LiveContainerInventory;
+use Bedriox\Server\Inventory\ContainerRevisionMismatchException;
+use Bedriox\Server\Inventory\ResolvedWorldContainer;
+use Bedriox\Server\Inventory\ShulkerBoxItemNbtCodec;
+use Bedriox\Server\Inventory\SimpleContainerInventory;
+use Bedriox\Server\Inventory\VirtualContainer;
+use Bedriox\Server\Inventory\WorldContainerStore;
 use Bedriox\Server\Player\InventoryContainer;
 use Bedriox\Server\Player\InventoryResponseMode;
 use Bedriox\Server\Player\InventorySlotReference;
 use Bedriox\Server\Player\InventoryStack;
+use Bedriox\Server\Player\InventoryStackRequestAction;
 use Bedriox\Server\Player\InventoryStackRequestActionType;
 use Bedriox\Server\Player\InventoryStackRequestResult;
 use Bedriox\Server\Player\Persistence\PlayerPersistenceManager;
@@ -61,6 +81,7 @@ use Bedriox\Server\Simulation\Command\ApplyInventoryStackRequest;
 use Bedriox\Server\Simulation\Command\AttackPlayer;
 use Bedriox\Server\Simulation\Command\BreakBlock;
 use Bedriox\Server\Simulation\Command\ChangeGameMode;
+use Bedriox\Server\Simulation\Command\CloseContainer;
 use Bedriox\Server\Simulation\Command\CloseCraftingGrid;
 use Bedriox\Server\Simulation\Command\DamagePlayer;
 use Bedriox\Server\Simulation\Command\DisconnectPlayer;
@@ -87,11 +108,16 @@ use Bedriox\Server\Simulation\Event\ArmSwung;
 use Bedriox\Server\Simulation\Event\BlockBreakStarted;
 use Bedriox\Server\Simulation\Event\BlockBreakStopped;
 use Bedriox\Server\Simulation\Event\BlockChanged;
+use Bedriox\Server\Simulation\Event\BlockEntityChanged;
 use Bedriox\Server\Simulation\Event\BlockPlaced;
 use Bedriox\Server\Simulation\Event\BlockPlacementCorrected;
 use Bedriox\Server\Simulation\Event\BlockPunch;
 use Bedriox\Server\Simulation\Event\ChatBroadcast;
 use Bedriox\Server\Simulation\Event\CommandRejected;
+use Bedriox\Server\Simulation\Event\ContainerClosed;
+use Bedriox\Server\Simulation\Event\ContainerContentsChanged;
+use Bedriox\Server\Simulation\Event\ContainerOpened;
+use Bedriox\Server\Simulation\Event\ContainerViewerProjection;
 use Bedriox\Server\Simulation\Event\CraftingTableOpened;
 use Bedriox\Server\Simulation\Event\EmotePerformed;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
@@ -121,6 +147,10 @@ use Bedriox\Server\Simulation\Event\WorldEvent;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\Block\InternalBlockStateId;
+use Bedriox\Server\World\BlockEntity\BlockEntityType;
+use Bedriox\Server\World\BlockEntity\ContainerBlockEntity;
+use Bedriox\Server\World\BlockEntity\ContainerItemStack;
+use Bedriox\Server\World\BlockEntity\SimpleBlockEntity;
 use Bedriox\Server\World\BlockPosition;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\Collision\AxisAlignedBox;
@@ -148,6 +178,7 @@ final class WorldSimulation
     private const float NATURAL_REGENERATION_HEALTH = 1.0;
     private const float NATURAL_REGENERATION_EXHAUSTION = 6.0;
     private const float SPRINTING_EXHAUSTION_PER_BLOCK = 0.1;
+    private const int MAXIMUM_VIRTUAL_CONTAINERS = 1_024;
 
     /** @var SplQueue<WorldCommand> */
     private SplQueue $commands;
@@ -200,6 +231,21 @@ final class WorldSimulation
 
     private readonly ItemBehaviorRegistry $itemBehaviors;
 
+    private readonly ?WorldContainerStore $worldContainers;
+
+    private readonly ShulkerBoxItemNbtCodec $shulkerItems;
+
+    /** @var array<string, PlayerContainerSession> Session map key to its one authorized dynamic window. */
+    private array $openContainers = [];
+
+    /** @var array<string, int> Session map key to the next candidate dynamic window ID. */
+    private array $nextContainerWindowIds = [];
+
+    /** @var array<string, VirtualContainer> Plugin-owned virtual inventories. */
+    private array $virtualContainers = [];
+
+    private int $nextVirtualContainerId = 1;
+
     private readonly ?ComplexCraftingRecipeEvaluator $complexCraftingRecipes;
 
     /** @var array<string, array{position: BlockPosition, state: int, sequence: int, face: int, lastParticleTick: int, lastSwingTick: int}> */
@@ -226,6 +272,7 @@ final class WorldSimulation
         ?ItemEntityRegistry $itemEntities = null,
         ?ItemBehaviorRegistry $itemBehaviors = null,
         private readonly ?CraftingCatalog $craftingCatalog = null,
+        private readonly ?BlockPropertyRegistry $blockProperties = null,
     ) {
         $this->commands = new SplQueue();
         $this->lifecycleCommands = new SplQueue();
@@ -235,6 +282,8 @@ final class WorldSimulation
         $this->dropRandom = $dropRandom ?? new SystemDropRandom();
         $this->itemEntities = $itemEntities ?? new ItemEntityRegistry(firstEntityId: 1_000_000_000);
         $this->itemBehaviors = $itemBehaviors ?? ItemBehaviorRegistry::vanilla();
+        $this->worldContainers = $blockWorld === null ? null : new WorldContainerStore($blockWorld);
+        $this->shulkerItems = new ShulkerBoxItemNbtCodec();
         $this->complexCraftingRecipes = $itemCatalog !== null && $blockStateRegistry !== null
             ? new ComplexCraftingRecipeEvaluator($itemCatalog, $blockStateRegistry)
             : null;
@@ -437,6 +486,7 @@ final class WorldSimulation
         array_push($events, ...$this->advanceNutrition());
         array_push($events, ...$this->advanceBlockBreakParticles());
         array_push($events, ...$this->advanceItemEntities());
+        array_push($events, ...$this->drainDeferredEvents());
 
         return new SimulationTick($this->tick, $processed, $events);
     }
@@ -535,6 +585,206 @@ final class WorldSimulation
 
         return $player === null ? null : ($this->pluginEvents?->playerView($player)
             ?? PluginGameplayEventBridge::detachedPlayerView($player));
+    }
+
+    public function pluginWorldContainerView(BlockPosition $position): ?ApiContainerView
+    {
+        $resolved = $this->resolveWorldContainer($position);
+
+        return $resolved === null ? null : self::containerInventoryView(
+            $resolved->type,
+            $resolved->inventory,
+            $resolved->position,
+            $resolved->pairedPosition,
+            $resolved->customName,
+        );
+    }
+
+    /** @param list<ApiItemStack|null> $contents */
+    public function pluginReplaceWorldContainer(
+        BlockPosition $position,
+        array $contents,
+        string $expectedRevision,
+    ): bool {
+        $resolved = $this->resolveWorldContainer($position);
+        if ($resolved === null || !hash_equals($resolved->inventory->revision(), $expectedRevision)) {
+            return false;
+        }
+        $this->validateApiContainerContents($contents, $resolved->inventory->size());
+        try {
+            if ($this->worldContainers === null
+                || !$this->worldContainers->replaceAndPersist($resolved, $contents, $expectedRevision)) {
+                return false;
+            }
+        } catch (ContainerRevisionMismatchException) {
+            return false;
+        }
+        $this->synchronizeContainerInventory($resolved->inventory);
+
+        return true;
+    }
+
+    public function createPluginVirtualContainer(
+        string $plugin,
+        ApiContainerLayout $layout,
+        ?string $title,
+    ): string {
+        if (count($this->virtualContainers) >= self::MAXIMUM_VIRTUAL_CONTAINERS) {
+            throw new OverflowException('Virtual container capacity has been reached.');
+        }
+        do {
+            if ($this->nextVirtualContainerId === PHP_INT_MAX) {
+                $this->nextVirtualContainerId = 1;
+            }
+            $identifier = 'virtual/' . $this->nextVirtualContainerId++;
+        } while (isset($this->virtualContainers[$identifier]));
+        $this->virtualContainers[$identifier] = new VirtualContainer(
+            $identifier,
+            $plugin,
+            $layout,
+            $title,
+            new SimpleContainerInventory($identifier, $layout->size()),
+        );
+
+        return $identifier;
+    }
+
+    public function removePluginVirtualContainer(string $plugin, string $identifier): bool
+    {
+        $virtual = $this->virtualContainers[$identifier] ?? null;
+        if (!$virtual instanceof VirtualContainer || strcasecmp($virtual->ownerPlugin, $plugin) !== 0) {
+            return false;
+        }
+        foreach ($this->openContainers as $key => $session) {
+            if ($session->inventory->identifier() !== $identifier) {
+                continue;
+            }
+            $player = $this->players->player(substr($key, strlen('session:')));
+            if ($player === null) {
+                continue;
+            }
+            $closed = $this->closeContainer($player, ApiInventoryCloseReason::PLUGIN, true);
+            if ($closed !== null) {
+                $this->deferredEvents[] = $closed;
+            }
+        }
+        unset($this->virtualContainers[$identifier]);
+
+        return true;
+    }
+
+    public function pluginVirtualContainerView(string $plugin, string $identifier): ?ApiContainerView
+    {
+        $virtual = $this->ownedVirtualContainer($plugin, $identifier);
+
+        return $virtual === null ? null : self::containerInventoryView(
+            ApiContainerType::VIRTUAL,
+            $virtual->inventory,
+            title: $virtual->title,
+        );
+    }
+
+    /** @param list<ApiItemStack|null> $contents */
+    public function pluginReplaceVirtualContainer(
+        string $plugin,
+        string $identifier,
+        array $contents,
+        string $expectedRevision,
+    ): bool {
+        $virtual = $this->ownedVirtualContainer($plugin, $identifier);
+        if ($virtual === null || !hash_equals($virtual->inventory->revision(), $expectedRevision)) {
+            return false;
+        }
+        $this->validateApiContainerContents($contents, $virtual->inventory->size());
+        try {
+            if (!$virtual->inventory->replaceContents($contents, $expectedRevision)) {
+                return false;
+            }
+        } catch (ContainerRevisionMismatchException) {
+            return false;
+        }
+        $this->synchronizeContainerInventory($virtual->inventory);
+
+        return true;
+    }
+
+    public function pluginOpenWorldContainer(string $identity, BlockPosition $position): bool
+    {
+        $player = $this->players->playerByIdentity($identity);
+        if ($player === null || $this->blockWorld === null) {
+            return false;
+        }
+        $identifier = $this->blockIdentifier($this->blockWorld->blockStateAt(
+            $position->x,
+            $position->y,
+            $position->z,
+        )->value);
+        $event = $this->openWorldContainer($player, $position, $identifier);
+        if ($event instanceof CommandRejected) {
+            return false;
+        }
+        $this->deferredEvents[] = $event;
+
+        return true;
+    }
+
+    public function pluginCloseWorldContainer(string $identity, BlockPosition $position): bool
+    {
+        $player = $this->players->playerByIdentity($identity);
+        $session = $player === null ? null : $this->openContainers[self::sessionKey($player->sessionId)] ?? null;
+        if (!$player instanceof Player || !$session instanceof PlayerContainerSession
+            || ($session->position?->equals($position) !== true
+                && $session->pairedPosition?->equals($position) !== true)) {
+            return false;
+        }
+        $event = $this->closeContainer($player, ApiInventoryCloseReason::PLUGIN, true);
+        if ($event === null) {
+            return false;
+        }
+        $this->deferredEvents[] = $event;
+
+        return true;
+    }
+
+    public function pluginOpenVirtualContainer(string $plugin, string $identifier, string $identity): bool
+    {
+        $virtual = $this->ownedVirtualContainer($plugin, $identifier);
+        $player = $this->players->playerByIdentity($identity);
+        if ($virtual === null || $player === null) {
+            return false;
+        }
+        $event = $this->openContainerInventory(
+            $player,
+            ApiContainerType::VIRTUAL,
+            $virtual->inventory,
+            title: $virtual->title,
+            layout: $virtual->layout,
+            owningPlugin: $virtual->ownerPlugin,
+        );
+        if ($event instanceof CommandRejected) {
+            return false;
+        }
+        $this->deferredEvents[] = $event;
+
+        return true;
+    }
+
+    public function pluginCloseVirtualContainer(string $plugin, string $identifier, string $identity): bool
+    {
+        $virtual = $this->ownedVirtualContainer($plugin, $identifier);
+        $player = $this->players->playerByIdentity($identity);
+        $session = $player === null ? null : $this->openContainers[self::sessionKey($player->sessionId)] ?? null;
+        if ($virtual === null || !$player instanceof Player || !$session instanceof PlayerContainerSession
+            || $session->inventory !== $virtual->inventory) {
+            return false;
+        }
+        $event = $this->closeContainer($player, ApiInventoryCloseReason::PLUGIN, true);
+        if ($event === null) {
+            return false;
+        }
+        $this->deferredEvents[] = $event;
+
+        return true;
     }
 
     public function enqueuePluginMessage(string $identity, string $message): bool
@@ -650,6 +900,7 @@ final class WorldSimulation
             $command instanceof SyncInventory => $this->syncInventory($command),
             $command instanceof SyncInventorySlots => $this->syncInventorySlots($command),
             $command instanceof CloseCraftingGrid => $this->closeCraftingGrid($command),
+            $command instanceof CloseContainer => $this->closeContainerCommand($command),
             $command instanceof SelectHotbarSlot => $this->selectHotbarSlot($command),
             $command instanceof DisconnectPlayer => $this->disconnect($command),
             $command instanceof SendPluginMessage => $this->pluginMessage($command),
@@ -806,13 +1057,16 @@ final class WorldSimulation
                 $command->responseMode,
             );
         }
+        if ($command->source->container === InventoryContainer::OpenedContainer) {
+            return $this->dropOpenedContainerItem($player, $command);
+        }
         $stack = match ($command->source->container) {
             InventoryContainer::Main => $player->inventory->stackAt($command->source->slot),
             InventoryContainer::Cursor => $player->inventory->cursorStack(),
             InventoryContainer::Armor => $player->inventory->armorStack($command->source->slot),
             InventoryContainer::Offhand => $player->inventory->offhandStack(),
             InventoryContainer::CraftingInput => $player->inventory->craftingStack($command->source->slot),
-            InventoryContainer::CreatedOutput => null,
+            default => null,
         };
         $reason = match (true) {
             $player->gameMode() === GameMode::SPECTATOR => 'gamemode',
@@ -901,6 +1155,167 @@ final class WorldSimulation
             armorInventory: $player->inventory->armorSlots(),
             offhandStack: $player->inventory->offhandStack(),
             craftingInventory: $player->inventory->craftingSlots(),
+        );
+    }
+
+    private function dropOpenedContainerItem(Player $player, DropItem $command): InventoryStackRequestProcessed
+    {
+        $session = $this->openContainers[self::sessionKey($player->sessionId)] ?? null;
+        if (!$session instanceof PlayerContainerSession) {
+            return new InventoryStackRequestProcessed(
+                $player->sessionId,
+                $command->requestId,
+                false,
+                [$command->source],
+                $player->inventory->slots(),
+                $player->inventory->cursorStack(),
+                $player->inventory->selectedHotbarSlot(),
+                $player->inventory->selectedStack(),
+                false,
+                $player->runtimeActorId,
+                $this->players->recipients($player->sessionId),
+                'container_not_open',
+                $command->responseMode,
+                armorInventory: $player->inventory->armorSlots(),
+                offhandStack: $player->inventory->offhandStack(),
+                craftingInventory: $player->inventory->craftingSlots(),
+            );
+        }
+        $reason = null;
+        if (!hash_equals($session->canonicalRevision, $session->inventory->revision())) {
+            $reason = 'container_revision';
+            $this->refreshContainerProjection($player, $session);
+        } elseif ($command->source->slot < 0 || $command->source->slot >= $session->projection->size) {
+            $reason = 'slot';
+        } elseif ($command->responseMode === InventoryResponseMode::ItemStackResponse
+            && $command->source->expectedStackNetworkId === 0) {
+            $reason = 'stack_network_id';
+        }
+        $stack = $reason === null ? $session->projection->stackAt($command->source->slot) : null;
+        if ($reason === null && $player->gameMode() === GameMode::SPECTATOR) {
+            $reason = 'gamemode';
+        } elseif ($reason === null && $stack === null) {
+            $reason = 'source_count';
+        } elseif ($reason === null && !$this->itemEntities->canSpawn()) {
+            $reason = 'item_entity_capacity';
+        }
+        $dropCount = $command->count;
+        if ($reason === null && $this->pluginEvents !== null) {
+            $dropCount = $this->pluginEvents->dropItem(
+                $player,
+                $stack->withCountAndNetworkId($dropCount, $stack->stackNetworkId),
+            ) ?? 0;
+            if ($dropCount === 0) {
+                $reason = 'plugin_cancelled';
+            }
+        }
+
+        $beforePlayer = clone $player->inventory;
+        $beforeProjection = clone $session->projection;
+        $proposedPlayer = clone $player->inventory;
+        $proposedProjection = clone $session->projection;
+        $result = $reason === null
+            ? $proposedPlayer->removeOpenedContainerForDrop(
+                $command->requestId,
+                $command->source,
+                $dropCount,
+                $proposedProjection,
+                $command->expectedStack,
+            )
+            : new \Bedriox\Server\Player\InventoryStackRemovalResult(false, reason: $reason);
+        $transaction = null;
+        if ($result->success) {
+            $transaction = $this->containerDropTransactionView(
+                $player,
+                $command,
+                $beforePlayer,
+                $beforeProjection,
+                $proposedPlayer,
+                $proposedProjection,
+                $session->inventory,
+            );
+            if ($this->pluginEvents !== null
+                && !$this->pluginEvents->allowContainerTransaction($player, $transaction)) {
+                $result = new \Bedriox\Server\Player\InventoryStackRemovalResult(
+                    false,
+                    reason: 'plugin_cancelled',
+                );
+            }
+        }
+        if ($result->success && $result->removed !== null) {
+            try {
+                if (($this->openContainers[self::sessionKey($player->sessionId)] ?? null) !== $session
+                    || !hash_equals($session->canonicalRevision, $session->inventory->revision())
+                    || !$player->inventory->matchesState($beforePlayer)) {
+                    throw new ContainerRevisionMismatchException();
+                }
+                if ($session->playerOwnedEnderChest) {
+                    $this->stageEnderChestContents($proposedPlayer, $proposedProjection);
+                }
+                $this->commitContainerContents($session, array_map(
+                    static fn(?InventoryStack $item): ?ApiItemStack => $item === null
+                        ? null
+                        : self::apiInventoryStack($item),
+                    $proposedProjection->slots(),
+                ));
+                if (!$player->inventory->commitStagedState($beforePlayer, $proposedPlayer)) {
+                    throw new ContainerRevisionMismatchException();
+                }
+                $session->projection->commit(
+                    $proposedProjection->indexedStacks(),
+                    $proposedProjection->lastRequestIds(),
+                );
+                $session->canonicalRevision = $session->inventory->revision();
+                if ($session->playerOwnedEnderChest) {
+                    $player->markDirty();
+                }
+                $yaw = deg2rad($player->movement->yaw);
+                $pitch = deg2rad($player->movement->pitch);
+                $horizontal = cos($pitch) * 0.4;
+                $entity = $this->itemEntities->spawn(
+                    $result->removed,
+                    new Position(
+                        $player->movement->position->x,
+                        $player->movement->position->y + 1.3,
+                        $player->movement->position->z,
+                    ),
+                    new ItemEntityMotion(-sin($yaw) * $horizontal, -sin($pitch) * 0.4, cos($yaw) * $horizontal),
+                    40,
+                );
+                if ($transaction !== null) {
+                    $this->pluginEvents?->containerTransactionCommitted($player, $transaction);
+                }
+                $this->pluginEvents?->droppedItem($player, $result->removed);
+                $this->deferredEvents[] = new ItemEntitySpawned($entity, $this->players->recipients());
+                $this->deferContainerViewerSync($player, $session, [$command->source]);
+            } catch (InvalidArgumentException|OverflowException|ContainerRevisionMismatchException) {
+                $result = new \Bedriox\Server\Player\InventoryStackRemovalResult(
+                    false,
+                    reason: 'container_commit',
+                );
+                $this->refreshContainerProjection($player, $session);
+            }
+        }
+
+        return new InventoryStackRequestProcessed(
+            $player->sessionId,
+            $command->requestId,
+            $result->success,
+            [$command->source],
+            $player->inventory->slots(),
+            $player->inventory->cursorStack(),
+            $player->inventory->selectedHotbarSlot(),
+            $player->inventory->selectedStack(),
+            false,
+            $player->runtimeActorId,
+            $this->players->recipients($player->sessionId),
+            $result->reason,
+            $command->responseMode,
+            armorInventory: $player->inventory->armorSlots(),
+            offhandStack: $player->inventory->offhandStack(),
+            craftingInventory: $player->inventory->craftingSlots(),
+            openedContainerInventory: $session->projection->slots(),
+            openedContainerWindowId: $session->windowId,
         );
     }
 
@@ -1230,6 +1645,14 @@ final class WorldSimulation
                 $command->clientTick,
             );
         }
+        $openContainer = $this->openContainers[self::sessionKey($player->sessionId)] ?? null;
+        if ($openContainer instanceof PlayerContainerSession && $openContainer->position !== null
+            && !$this->blockIsReachable($snapshot, $openContainer->position)) {
+            $closed = $this->closeContainer($player, ApiInventoryCloseReason::OUT_OF_RANGE, true);
+            if ($closed !== null) {
+                $this->deferredEvents[] = $closed;
+            }
+        }
 
         return new PlayerMoved($snapshot, $this->players->recipients($player->sessionId), $postureChanged);
     }
@@ -1493,6 +1916,10 @@ final class WorldSimulation
         float $damage,
         ?Player $killer = null,
     ): PlayerDied {
+        $closed = $this->closeContainer($player, ApiInventoryCloseReason::DEATH, true);
+        if ($closed !== null) {
+            $this->deferredEvents[] = $closed;
+        }
         $this->evacuateCraftingGrid($player, $this->players->recipients());
         $player->movement->velocityX = 0.0;
         $player->movement->verticalVelocity = 0.0;
@@ -1780,6 +2207,10 @@ final class WorldSimulation
             return new CommandRejected($command->session, 'not_joined');
         }
         $this->deferItemUseCancellation($player, ItemUseCancellationReason::DISCONNECTED);
+        $closed = $this->closeContainer($player, ApiInventoryCloseReason::DISCONNECT, false);
+        if ($closed !== null) {
+            $this->deferredEvents[] = $closed;
+        }
         unset($this->itemCooldowns[$key], $this->lastItemUseCompletionTicks[$key]);
         $this->evacuateCraftingGrid($player, $this->players->recipients($player->sessionId));
         $this->pluginEvents?->quit($player);
@@ -1916,6 +2347,10 @@ final class WorldSimulation
                 $command instanceof SyncInventorySlots => $this->validator->syncInventorySlots(
                     $command->session,
                     $command->slots,
+                ),
+                $command instanceof CloseContainer => $this->validator->closeContainer(
+                    $command->session,
+                    $command->windowId,
                 ),
                 $command instanceof CloseCraftingGrid => $this->validator->closeCraftingGrid($command->session),
                 $command instanceof SelectHotbarSlot => $this->validator->selectHotbarSlot(
@@ -2225,7 +2660,28 @@ final class WorldSimulation
         $drops = $survivalBreak
             ? BlockDropRules::drops($blockType, $heldType, $this->dropRandom)
             : [];
-        if (count($drops) > $this->itemEntities->remainingCapacity()) {
+        $storageEntity = $this->blockWorld->blockEntityAt($position);
+        $storageDrops = $storageEntity instanceof ContainerBlockEntity
+            && $storageEntity->type !== BlockEntityType::ShulkerBox
+            ? array_values($storageEntity->inventory->contents())
+            : [];
+        $shulkerNbt = null;
+        if ($survivalBreak
+            && $storageEntity instanceof ContainerBlockEntity
+            && $storageEntity->type === BlockEntityType::ShulkerBox) {
+            try {
+                $shulkerNbt = $this->shulkerItems->encode($storageEntity);
+            } catch (InvalidArgumentException) {
+                return new BlockChanged(
+                    $command->session,
+                    $position,
+                    $state,
+                    [$command->session],
+                    $stopsActiveBreak,
+                );
+            }
+        }
+        if (count($drops) + count($storageDrops) > $this->itemEntities->remainingCapacity()) {
             return new BlockChanged($command->session, $position, $state, [$command->session], $stopsActiveBreak);
         }
         $swing = $this->armSwingEvent($player, ArmSwingSource::Mining);
@@ -2243,6 +2699,8 @@ final class WorldSimulation
                 $stopsActiveBreak,
             );
         }
+        $this->closeContainersAt($position, ApiInventoryCloseReason::BLOCK_REMOVED);
+        $this->removeStorageBlockEntity($position, $storageEntity);
         $this->refreshPlayerGroundStates();
         if ($survivalBreak) {
             foreach ($drops as $drop) {
@@ -2251,7 +2709,7 @@ final class WorldSimulation
                     ? null
                     : $this->blockStateRegistry->internalId($type->placedBlockState);
                 $entity = $this->itemEntities->spawn(
-                    new InventoryStack($drop->identifier, $drop->count, 1, $placed),
+                    new InventoryStack($drop->identifier, $drop->count, 1, $placed, nbt: $shulkerNbt),
                     new Position($position->x + 0.5, $position->y + 0.5, $position->z + 0.5),
                     new ItemEntityMotion(0.0, 0.1, 0.0),
                     10,
@@ -2259,6 +2717,15 @@ final class WorldSimulation
                 $this->deferredEvents[] = new ItemEntitySpawned($entity, $this->players->recipients());
             }
             $this->damageHeldTool($player, $heldType);
+        }
+        foreach ($storageDrops as $storageDrop) {
+            $entity = $this->itemEntities->spawn(
+                $this->inventoryStackFromContainerItem($storageDrop),
+                new Position($position->x + 0.5, $position->y + 0.5, $position->z + 0.5),
+                new ItemEntityMotion(0.0, 0.1, 0.0),
+                10,
+            );
+            $this->deferredEvents[] = new ItemEntitySpawned($entity, $this->players->recipients());
         }
         $this->pluginEvents?->blockBroken($player, $position, $identifier);
 
@@ -2269,6 +2736,68 @@ final class WorldSimulation
             $this->players->recipients(),
             $stopsActiveBreak,
             $state,
+        );
+    }
+
+    private function removeStorageBlockEntity(
+        BlockPosition $position,
+        ?\Bedriox\Server\World\BlockEntity\BlockEntity $entity,
+    ): void {
+        if ($this->blockWorld === null || $entity === null) {
+            return;
+        }
+        $this->blockWorld->removeBlockEntity($position);
+        $this->worldContainers?->forget($position);
+        if (!$entity instanceof ContainerBlockEntity
+            || $entity->type !== BlockEntityType::Chest
+            || $entity->pairedPosition === null) {
+            return;
+        }
+        $pair = $this->blockWorld->blockEntityAt($entity->pairedPosition);
+        if ($pair instanceof ContainerBlockEntity
+            && $pair->type === BlockEntityType::Chest
+            && $pair->pairedPosition?->equals($position) === true) {
+            $pair = $pair->withoutPair();
+            $this->blockWorld->setBlockEntity($pair);
+            $this->worldContainers?->forget($pair->position);
+            $this->deferredEvents[] = new BlockEntityChanged($pair, $this->players->recipients());
+        }
+    }
+
+    private function closeContainersAt(BlockPosition $position, ApiInventoryCloseReason $reason): void
+    {
+        foreach ($this->openContainers as $key => $session) {
+            if ($session->position?->equals($position) !== true
+                && $session->pairedPosition?->equals($position) !== true) {
+                continue;
+            }
+            $player = $this->players->player(substr($key, strlen('session:')));
+            if ($player === null) {
+                continue;
+            }
+            $closed = $this->closeContainer($player, $reason, true);
+            if ($closed !== null) {
+                $this->deferredEvents[] = $closed;
+            }
+        }
+    }
+
+    private function inventoryStackFromContainerItem(ContainerItemStack $stack): InventoryStack
+    {
+        $placed = null;
+        if ($this->itemCatalog?->has($stack->identifier) === true && $this->blockStateRegistry !== null) {
+            $state = $this->itemCatalog->type($stack->identifier)->placedBlockState;
+            $placed = $state === null ? null : $this->blockStateRegistry->internalId($state);
+        }
+
+        return new InventoryStack(
+            $stack->identifier,
+            $stack->count,
+            1,
+            $placed,
+            $stack->damage,
+            $stack->nbt,
+            $stack->auxValue,
         );
     }
 
@@ -3292,6 +3821,12 @@ final class WorldSimulation
         if ($player === null) {
             return new CommandRejected($command->session, 'not_joined');
         }
+        foreach ($command->actions as $action) {
+            if ($action->source->container === InventoryContainer::OpenedContainer
+                || $action->destination->container === InventoryContainer::OpenedContainer) {
+                return $this->openedContainerStackRequest($player, $command);
+            }
+        }
         $rejectionReason = $command->rejectionReason;
         $craftingOutputs = [];
         $craftingRecipe = null;
@@ -3474,6 +4009,464 @@ final class WorldSimulation
         );
     }
 
+    private function openedContainerStackRequest(
+        Player $player,
+        ApplyInventoryStackRequest $command,
+    ): InventoryStackRequestProcessed {
+        $key = self::sessionKey($player->sessionId);
+        $session = $this->openContainers[$key] ?? null;
+        if (!$session instanceof PlayerContainerSession) {
+            return new InventoryStackRequestProcessed(
+                $player->sessionId,
+                $command->requestId,
+                false,
+                [],
+                $player->inventory->slots(),
+                $player->inventory->cursorStack(),
+                $player->inventory->selectedHotbarSlot(),
+                $player->inventory->selectedStack(),
+                false,
+                $player->runtimeActorId,
+                $this->players->recipients($player->sessionId),
+                'container_not_open',
+                $command->responseMode,
+                armorInventory: $player->inventory->armorSlots(),
+                offhandStack: $player->inventory->offhandStack(),
+                craftingInventory: $player->inventory->craftingSlots(),
+            );
+        }
+        $reason = $command->rejectionReason;
+        if ($command->authoritativeCreativeStack !== null || $command->crafting !== null) {
+            $reason = 'container_mixed_action';
+        } elseif (!hash_equals($session->canonicalRevision, $session->inventory->revision())) {
+            $reason = 'container_revision';
+            $this->refreshContainerProjection($player, $session);
+        }
+        $beforePlayer = clone $player->inventory;
+        $beforeProjection = clone $session->projection;
+        $proposedPlayer = clone $player->inventory;
+        $proposedProjection = clone $session->projection;
+        $result = $reason === null
+            ? $proposedPlayer->applyOpenedContainerStackRequest(
+                $command->requestId,
+                $command->actions,
+                $proposedProjection,
+            )
+            : new InventoryStackRequestResult(false, reason: $reason);
+        if ($result->success
+            && $session->type === ApiContainerType::SHULKER_BOX
+            && self::requestPlacesShulkerInOpenedContainer($command->actions, $beforePlayer, $beforeProjection)) {
+            $result = new InventoryStackRequestResult(false, reason: 'shulker_nesting');
+        }
+        $transaction = null;
+        if ($result->success) {
+            try {
+                $transaction = $this->containerTransactionView(
+                    $player,
+                    $command,
+                    $beforePlayer,
+                    $beforeProjection,
+                    $proposedPlayer,
+                    $proposedProjection,
+                    $session->inventory,
+                );
+                if ($this->pluginEvents !== null
+                    && !$this->pluginEvents->allowContainerTransaction($player, $transaction)) {
+                    $result = new InventoryStackRequestResult(false, reason: 'plugin_cancelled');
+                }
+            } catch (InvalidArgumentException|OverflowException) {
+                $result = new InventoryStackRequestResult(false, reason: 'plugin_result');
+            }
+        }
+        if ($result->success) {
+            try {
+                if (!hash_equals($session->canonicalRevision, $session->inventory->revision())) {
+                    throw new ContainerRevisionMismatchException();
+                }
+                if (($this->openContainers[self::sessionKey($player->sessionId)] ?? null) !== $session) {
+                    throw new ContainerRevisionMismatchException();
+                }
+                if (!$player->inventory->matchesState($beforePlayer)) {
+                    throw new ContainerRevisionMismatchException();
+                }
+                if ($session->playerOwnedEnderChest) {
+                    $this->stageEnderChestContents($proposedPlayer, $proposedProjection);
+                }
+                $playerInventoryChanged = $beforePlayer->exportState() != $proposedPlayer->exportState();
+                $this->commitContainerContents($session, array_map(
+                    static fn(?InventoryStack $stack): ?ApiItemStack => $stack === null
+                        ? null
+                        : self::apiInventoryStack($stack),
+                    $proposedProjection->slots(),
+                ));
+                if (!$player->inventory->commitStagedState($beforePlayer, $proposedPlayer)) {
+                    throw new ContainerRevisionMismatchException();
+                }
+                $session->projection->commit(
+                    $proposedProjection->indexedStacks(),
+                    $proposedProjection->lastRequestIds(),
+                );
+                $session->canonicalRevision = $session->inventory->revision();
+                $player->markDirty();
+                if ($playerInventoryChanged) {
+                    $this->pluginEvents?->inventoryChanged($player, $beforePlayer);
+                }
+                if ($transaction !== null) {
+                    $this->pluginEvents?->containerTransactionCommitted($player, $transaction);
+                }
+                $this->deferContainerViewerSync($player, $session, $result->affectedSlots);
+            } catch (InvalidArgumentException|OverflowException|ContainerRevisionMismatchException) {
+                $result = new InventoryStackRequestResult(false, reason: 'container_commit');
+                $this->refreshContainerProjection($player, $session);
+            }
+        }
+
+        return new InventoryStackRequestProcessed(
+            $player->sessionId,
+            $command->requestId,
+            $result->success,
+            $result->affectedSlots,
+            $player->inventory->slots(),
+            $player->inventory->cursorStack(),
+            $player->inventory->selectedHotbarSlot(),
+            $player->inventory->selectedStack(),
+            $result->selectedStackChanged,
+            $player->runtimeActorId,
+            $this->players->recipients($player->sessionId),
+            $result->reason,
+            $command->responseMode,
+            armorInventory: $player->inventory->armorSlots(),
+            offhandStack: $player->inventory->offhandStack(),
+            craftingInventory: $player->inventory->craftingSlots(),
+            openedContainerInventory: $session->projection->slots(),
+            openedContainerWindowId: $session->windowId,
+        );
+    }
+
+    private function refreshContainerProjection(Player $player, PlayerContainerSession $session): void
+    {
+        $session->projection = $player->inventory->projectOpenedContainer(
+            $session->inventory->identifier(),
+            array_map(
+                fn(?ApiItemStack $stack): ?InventoryStack => $stack === null
+                    ? null
+                    : $this->inventoryStackFromApi($stack),
+                $session->inventory->contents(),
+            ),
+        );
+        $session->canonicalRevision = $session->inventory->revision();
+    }
+
+    private function containerTransactionView(
+        Player $player,
+        ApplyInventoryStackRequest $command,
+        PlayerInventory $beforePlayer,
+        \Bedriox\Server\Player\OpenedContainerInventory $beforeOpened,
+        PlayerInventory $afterPlayer,
+        \Bedriox\Server\Player\OpenedContainerInventory $afterOpened,
+        LiveContainerInventory $container,
+    ): ApiInventoryTransaction {
+        $before = $this->containerTransactionInventoryViews($player, $beforePlayer, $beforeOpened, $container);
+        $after = $this->containerTransactionInventoryViews($player, $afterPlayer, $afterOpened, $container);
+        $actions = [];
+        $seen = [];
+        foreach ($command->actions as $action) {
+            $type = self::containerTransactionActionType($action, $beforePlayer, $beforeOpened, $afterPlayer, $afterOpened);
+            foreach ([$action->source, $action->destination] as $reference) {
+                [$inventoryIdentifier, $slot, $previous] = self::containerTransactionSlot(
+                    $player,
+                    $beforePlayer,
+                    $beforeOpened,
+                    $container,
+                    $reference,
+                );
+                [, , $next] = self::containerTransactionSlot(
+                    $player,
+                    $afterPlayer,
+                    $afterOpened,
+                    $container,
+                    $reference,
+                );
+                $key = $inventoryIdentifier . ':' . $slot;
+                if (isset($seen[$key])) {
+                    continue;
+                }
+                $seen[$key] = true;
+                $actions[] = new ApiInventoryTransactionAction(
+                    $type,
+                    $inventoryIdentifier,
+                    $slot,
+                    $previous === null ? null : self::apiInventoryStack($previous),
+                    $next === null ? null : self::apiInventoryStack($next),
+                );
+            }
+        }
+
+        return new ApiInventoryTransaction(
+            'container:' . $command->requestId . ':' . strtolower($player->identity->uuid),
+            ApiInventoryTransactionCause::PLAYER,
+            $before,
+            $after,
+            $actions,
+        );
+    }
+
+    private function containerDropTransactionView(
+        Player $player,
+        DropItem $command,
+        PlayerInventory $beforePlayer,
+        \Bedriox\Server\Player\OpenedContainerInventory $beforeOpened,
+        PlayerInventory $afterPlayer,
+        \Bedriox\Server\Player\OpenedContainerInventory $afterOpened,
+        LiveContainerInventory $container,
+    ): ApiInventoryTransaction {
+        [, $slot, $previous] = self::containerTransactionSlot(
+            $player,
+            $beforePlayer,
+            $beforeOpened,
+            $container,
+            $command->source,
+        );
+        [$identifier, , $next] = self::containerTransactionSlot(
+            $player,
+            $afterPlayer,
+            $afterOpened,
+            $container,
+            $command->source,
+        );
+
+        return new ApiInventoryTransaction(
+            'container-drop:' . $command->requestId . ':' . strtolower($player->identity->uuid),
+            ApiInventoryTransactionCause::PLAYER,
+            $this->containerTransactionInventoryViews($player, $beforePlayer, $beforeOpened, $container),
+            $this->containerTransactionInventoryViews($player, $afterPlayer, $afterOpened, $container),
+            [new ApiInventoryTransactionAction(
+                ApiInventoryActionType::DROP,
+                $identifier,
+                $slot,
+                $previous === null ? null : self::apiInventoryStack($previous),
+                $next === null ? null : self::apiInventoryStack($next),
+            )],
+        );
+    }
+
+    /**
+     * @return list<ApiInventoryView>
+     */
+    private function containerTransactionInventoryViews(
+        Player $player,
+        PlayerInventory $inventory,
+        \Bedriox\Server\Player\OpenedContainerInventory $opened,
+        LiveContainerInventory $container,
+    ): array {
+        $prefix = 'player/' . strtolower($player->identity->uuid);
+
+        return [
+            self::transactionInventoryView($prefix . '/main', $inventory->slots()),
+            self::transactionInventoryView($prefix . '/cursor', [$inventory->cursorStack()]),
+            self::transactionInventoryView($prefix . '/armor', $inventory->armorSlots()),
+            self::transactionInventoryView($prefix . '/offhand', [$inventory->offhandStack()]),
+            self::transactionInventoryView($container->identifier(), $opened->slots()),
+        ];
+    }
+
+    /** @param list<InventoryStack|null> $slots */
+    private static function transactionInventoryView(string $identifier, array $slots): ApiInventoryView
+    {
+        if ($identifier === '') {
+            throw new InvalidArgumentException('Transaction inventory identifier must not be empty.');
+        }
+        $apiSlots = array_map(
+            static fn(?InventoryStack $stack): ?ApiItemStack => $stack === null
+                ? null
+                : self::apiInventoryStack($stack),
+            $slots,
+        );
+        $hash = hash_init('sha256');
+        foreach ($apiSlots as $slot => $stack) {
+            hash_update($hash, pack('V', $slot));
+            if ($stack === null) {
+                hash_update($hash, "\0");
+                continue;
+            }
+            hash_update($hash, "\1" . $stack->identifier . "\0");
+            hash_update($hash, pack('V3', $stack->count, $stack->damage, $stack->auxValue));
+            hash_update($hash, $stack->nbt?->toBinary() ?? '');
+        }
+
+        return new ApiInventoryView($identifier, $apiSlots, hash_final($hash));
+    }
+
+    /** @return array{non-empty-string, int, ?InventoryStack} */
+    private static function containerTransactionSlot(
+        Player $player,
+        PlayerInventory $inventory,
+        \Bedriox\Server\Player\OpenedContainerInventory $opened,
+        LiveContainerInventory $container,
+        InventorySlotReference $reference,
+    ): array {
+        $prefix = 'player/' . strtolower($player->identity->uuid);
+        $containerIdentifier = self::containerInventoryIdentifier($container);
+
+        return match ($reference->container) {
+            InventoryContainer::Main => [$prefix . '/main', $reference->slot, $inventory->stackAt($reference->slot)],
+            InventoryContainer::Cursor => [$prefix . '/cursor', 0, $inventory->cursorStack()],
+            InventoryContainer::Armor => [$prefix . '/armor', $reference->slot, $inventory->armorStack($reference->slot)],
+            InventoryContainer::Offhand => [$prefix . '/offhand', 0, $inventory->offhandStack()],
+            InventoryContainer::OpenedContainer => [
+                $containerIdentifier,
+                $reference->slot,
+                $opened->stackAt($reference->slot),
+            ],
+            default => throw new InvalidArgumentException('Unsupported storage-container transaction slot.'),
+        };
+    }
+
+    /** @return non-empty-string */
+    private static function containerInventoryIdentifier(LiveContainerInventory $container): string
+    {
+        $identifier = $container->identifier();
+        if ($identifier === '') {
+            throw new InvalidArgumentException('Container inventory identifier must not be empty.');
+        }
+
+        return $identifier;
+    }
+
+    private static function containerTransactionActionType(
+        InventoryStackRequestAction $action,
+        PlayerInventory $beforePlayer,
+        \Bedriox\Server\Player\OpenedContainerInventory $beforeOpened,
+        PlayerInventory $afterPlayer,
+        \Bedriox\Server\Player\OpenedContainerInventory $afterOpened,
+    ): ApiInventoryActionType {
+        if ($action->type === InventoryStackRequestActionType::Swap) {
+            return ApiInventoryActionType::SWAP;
+        }
+        $beforeSource = self::containerTransactionStack($beforePlayer, $beforeOpened, $action->source);
+        $afterSource = self::containerTransactionStack($afterPlayer, $afterOpened, $action->source);
+        $beforeDestination = self::containerTransactionStack($beforePlayer, $beforeOpened, $action->destination);
+        if ($afterSource !== null && ($beforeSource === null || $afterSource->count < $beforeSource->count)) {
+            return ApiInventoryActionType::SPLIT;
+        }
+        if ($beforeDestination !== null) {
+            return ApiInventoryActionType::MERGE;
+        }
+
+        return ApiInventoryActionType::MOVE;
+    }
+
+    private static function containerTransactionStack(
+        PlayerInventory $inventory,
+        \Bedriox\Server\Player\OpenedContainerInventory $opened,
+        InventorySlotReference $reference,
+    ): ?InventoryStack {
+        return match ($reference->container) {
+            InventoryContainer::Main => $inventory->stackAt($reference->slot),
+            InventoryContainer::Cursor => $inventory->cursorStack(),
+            InventoryContainer::Armor => $inventory->armorStack($reference->slot),
+            InventoryContainer::Offhand => $inventory->offhandStack(),
+            InventoryContainer::OpenedContainer => $opened->stackAt($reference->slot),
+            default => null,
+        };
+    }
+
+    /**
+     * @param list<InventoryStackRequestAction> $actions
+     */
+    private static function requestPlacesShulkerInOpenedContainer(
+        array $actions,
+        PlayerInventory $player,
+        \Bedriox\Server\Player\OpenedContainerInventory $opened,
+    ): bool {
+        foreach ($actions as $action) {
+            if ($action->destination->container !== InventoryContainer::OpenedContainer) {
+                continue;
+            }
+            $stack = self::containerTransactionStack($player, $opened, $action->source);
+            if ($stack !== null && WorldContainerStore::isShulkerBoxIdentifier($stack->identifier)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function stageEnderChestContents(
+        PlayerInventory $inventory,
+        \Bedriox\Server\Player\OpenedContainerInventory $projection,
+    ): void {
+        if ($projection->size !== PlayerInventory::ENDER_CHEST_SLOT_COUNT) {
+            throw new InvalidArgumentException('Ender Chest projection has an invalid size.');
+        }
+        foreach ($projection->slots() as $slot => $stack) {
+            $inventory->replaceEnderChestSlot($slot, $stack);
+        }
+    }
+
+    /** @param list<ApiItemStack|null> $contents */
+    private function commitContainerContents(PlayerContainerSession $session, array $contents): void
+    {
+        if ($session->worldContainer !== null) {
+            if ($this->worldContainers === null) {
+                throw new \LogicException('World container storage is unavailable.');
+            }
+            $this->worldContainers->replaceAndPersist(
+                $session->worldContainer,
+                $contents,
+                $session->canonicalRevision,
+            );
+
+            return;
+        }
+        $session->inventory->replaceContents($contents, $session->canonicalRevision);
+    }
+
+    /** @param list<InventorySlotReference> $affectedSlots */
+    private function deferContainerViewerSync(
+        Player $owner,
+        PlayerContainerSession $session,
+        array $affectedSlots,
+    ): void {
+        $changedSlots = [];
+        foreach ($affectedSlots as $reference) {
+            if ($reference->container === InventoryContainer::OpenedContainer) {
+                $changedSlots[$reference->slot] = $reference->slot;
+            }
+        }
+        if ($changedSlots === []) {
+            return;
+        }
+        $additional = [];
+        foreach ($this->openContainers as $key => $otherSession) {
+            if ($otherSession === $session
+                || $otherSession->inventory->identifier() !== $session->inventory->identifier()) {
+                continue;
+            }
+            $other = $this->players->player(substr($key, strlen('session:')));
+            if ($other === null) {
+                continue;
+            }
+            $this->refreshContainerProjection($other, $otherSession);
+            $additional[] = new ContainerViewerProjection(
+                $other->sessionId,
+                $otherSession->windowId,
+                $otherSession->projection->slots(),
+            );
+        }
+        $this->deferredEvents[] = new ContainerContentsChanged(
+            $owner->sessionId,
+            $session->windowId,
+            $session->type,
+            $session->position,
+            $session->projection->slots(),
+            $additional === [] ? array_values($changedSlots) : [],
+            $additional,
+            $session->pairedPosition,
+            $session->layout,
+        );
+    }
+
     /**
      * @return list<array{ApiEquipmentSlot, ?InventoryStack, ?InventoryStack}>
      */
@@ -3562,7 +4555,17 @@ final class WorldSimulation
             $command->clickedPosition->y,
             $command->clickedPosition->z,
         );
-        if ($this->blockIdentifier($clickedState->value) === 'minecraft:crafting_table'
+        $clickedIdentifier = $this->blockIdentifier($clickedState->value);
+        if (WorldContainerStore::isStorageBlock($clickedIdentifier)
+            && !$player->movement->sneaking
+            && $this->blockIsReachable($player->snapshot(), $command->clickedPosition)) {
+            if ($command->sequence > $player->placementSequence) {
+                $player->placementSequence = $command->sequence;
+            }
+
+            return $this->openWorldContainer($player, $command->clickedPosition, $clickedIdentifier);
+        }
+        if ($clickedIdentifier === 'minecraft:crafting_table'
             && !$player->movement->sneaking
             && $this->blockIsReachable($player->snapshot(), $command->clickedPosition)) {
             $player->inventory->setCraftingGridWidth(3);
@@ -3581,13 +4584,32 @@ final class WorldSimulation
             ? $this->itemCatalog->type($held->identifier)
             : null;
         $placementStateValid = true;
+        $storageEntityValid = true;
+        $storageEntity = null;
         try {
             $placedBlockState = $heldType?->placedBlockState !== null && $this->blockPlacementStates !== null
-                ? $this->blockPlacementStates->resolve($heldType->placedBlockState, $command->face)
+                ? $this->blockPlacementStates->resolve(
+                    $heldType->placedBlockState,
+                    $command->face,
+                    $player->movement->yaw,
+                )
                 : $held?->placedBlockState;
         } catch (InvalidArgumentException) {
             $placedBlockState = null;
             $placementStateValid = false;
+        }
+        $placedIdentifier = $heldType?->placedBlockState?->identifier() ?? $held?->identifier;
+        if ($placedIdentifier !== null) {
+            try {
+                $storageEntity = $this->storageBlockEntityForPlacement(
+                    $placedPosition,
+                    $placedIdentifier,
+                    $command->face,
+                    $held,
+                );
+            } catch (InvalidArgumentException) {
+                $storageEntityValid = false;
+            }
         }
         $correctionReason = match (true) {
             !$player->gameMode()->canBuild() => 'gamemode',
@@ -3595,6 +4617,7 @@ final class WorldSimulation
             $command->hotbarSlot !== $player->inventory->selectedHotbarSlot() => 'selected_slot',
             $held === null => 'empty_hand',
             !$placementStateValid => 'unsupported_state',
+            !$storageEntityValid => 'invalid_block_entity_item',
             $placedBlockState === null => 'unsupported_item',
             $clickedState->value === $this->blockPalette->air->value => 'clicked_air',
             $placedState->value !== $this->blockPalette->air->value => 'occupied',
@@ -3652,6 +4675,10 @@ final class WorldSimulation
                 'capacity',
             );
         }
+        $placedIdentifier = $heldType?->placedBlockState?->identifier() ?? $held->identifier;
+        if ($storageEntity !== null) {
+            $this->installStorageBlockEntity($player, $storageEntity, $placedIdentifier);
+        }
         $this->refreshPlayerGroundStates();
         $remaining = $player->gameMode()->consumesItems()
             ? $player->inventory->decrementSelectedOne()
@@ -3671,6 +4698,532 @@ final class WorldSimulation
             $this->players->recipients(),
             $activeBreak['position'] ?? null,
         );
+    }
+
+    private function storageBlockEntityForPlacement(
+        BlockPosition $position,
+        string $blockIdentifier,
+        int $clickedFace,
+        ?InventoryStack $held,
+    ): ?\Bedriox\Server\World\BlockEntity\BlockEntity {
+        $type = WorldContainerStore::blockEntityType($blockIdentifier);
+        if ($type === null) {
+            return null;
+        }
+        if ($type === BlockEntityType::ShulkerBox) {
+            return $this->shulkerItems->decode($held?->nbt, $position, $clickedFace);
+        }
+
+        return $type->ownsPersistentInventory()
+            ? ContainerBlockEntity::empty($type, $position)
+            : new SimpleBlockEntity($type, $position);
+    }
+
+    private function installStorageBlockEntity(
+        Player $player,
+        \Bedriox\Server\World\BlockEntity\BlockEntity $entity,
+        string $blockIdentifier,
+    ): void {
+        if ($this->blockWorld === null) {
+            return;
+        }
+        $this->blockWorld->setBlockEntity($entity);
+        $changed = [$entity];
+        if ($entity instanceof ContainerBlockEntity && $entity->type === BlockEntityType::Chest) {
+            $paired = $this->pairPlacedChest($player, $entity, $blockIdentifier);
+            if ($paired !== []) {
+                $changed = $paired;
+            }
+        }
+        foreach ($changed as $blockEntity) {
+            $this->deferredEvents[] = new BlockEntityChanged($blockEntity, $this->players->recipients());
+        }
+    }
+
+    /** @return list<ContainerBlockEntity> */
+    private function pairPlacedChest(
+        Player $player,
+        ContainerBlockEntity $placed,
+        string $blockIdentifier,
+    ): array {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null) {
+            return [];
+        }
+        $placedState = $this->blockWorld->blockStateAt(
+            $placed->position->x,
+            $placed->position->y,
+            $placed->position->z,
+        );
+        $facing = $this->blockStateRegistry->state($placedState)->properties()['minecraft:cardinal_direction'] ?? null;
+        $sides = match ($facing) {
+            'north' => [[-1, 0, false], [1, 0, true]],
+            'south' => [[1, 0, false], [-1, 0, true]],
+            'west' => [[0, 1, false], [0, -1, true]],
+            'east' => [[0, -1, false], [0, 1, true]],
+            default => [],
+        };
+        foreach ($sides as [$offsetX, $offsetZ, $clockwise]) {
+            $candidatePosition = new BlockPosition(
+                $placed->position->x + $offsetX,
+                $placed->position->y,
+                $placed->position->z + $offsetZ,
+            );
+            $candidateState = $this->blockWorld->blockStateAt(
+                $candidatePosition->x,
+                $candidatePosition->y,
+                $candidatePosition->z,
+            );
+            if ($candidateState->value !== $placedState->value
+                || $this->blockIdentifier($candidateState->value) !== $blockIdentifier) {
+                continue;
+            }
+            $candidate = $this->blockWorld->blockEntityAt($candidatePosition);
+            if (!$candidate instanceof ContainerBlockEntity
+                || $candidate->type !== BlockEntityType::Chest
+                || $candidate->pairedPosition !== null) {
+                continue;
+            }
+            [$lead, $other] = $clockwise ? [$candidate, $placed] : [$placed, $candidate];
+            if ($this->pluginEvents !== null
+                && !$this->pluginEvents->allowChestPair($player, $lead->position, $other->position, $blockIdentifier)) {
+                return [];
+            }
+            $lead = $lead->withPair($other->position, true);
+            $other = $other->withPair($lead->position, false);
+            $this->blockWorld->setBlockEntities($lead, $other);
+            $this->pluginEvents?->chestPaired($player, $lead->position, $other->position, $blockIdentifier);
+
+            return [$lead, $other];
+        }
+
+        return [];
+    }
+
+    private function openWorldContainer(
+        Player $player,
+        BlockPosition $position,
+        string $blockIdentifier,
+    ): WorldEvent {
+        if ($this->blockWorld === null || $this->worldContainers === null) {
+            return new CommandRejected($player->sessionId, 'container_world_unavailable');
+        }
+        $type = WorldContainerStore::containerType($blockIdentifier);
+        if ($type === null || $this->containerIsObstructed($position, $type)) {
+            return new CommandRejected($player->sessionId, $type === null ? 'container_type' : 'container_obstructed');
+        }
+        $worldContainer = null;
+        $playerOwnedEnderChest = $type === ApiContainerType::ENDER_CHEST;
+        if ($playerOwnedEnderChest) {
+            if (!$this->blockWorld->blockEntityAt($position) instanceof SimpleBlockEntity) {
+                return new CommandRejected($player->sessionId, 'container_block_entity');
+            }
+            $inventory = new SimpleContainerInventory(
+                'player/' . strtolower($player->identity->uuid) . '/ender_chest',
+                PlayerInventory::ENDER_CHEST_SLOT_COUNT,
+                array_map(
+                    static fn(?InventoryStack $stack): ?ApiItemStack => $stack === null
+                        ? null
+                        : self::apiInventoryStack($stack),
+                    $player->inventory->enderChestSlots(),
+                ),
+            );
+        } else {
+            $worldContainer = $this->worldContainers->resolve($position, $blockIdentifier);
+            if (!$worldContainer instanceof ResolvedWorldContainer) {
+                return new CommandRejected($player->sessionId, 'container_block_entity');
+            }
+            $inventory = $worldContainer->inventory;
+            $type = $worldContainer->type;
+            if ($worldContainer->pairedPosition !== null
+                && $this->containerIsObstructed($worldContainer->pairedPosition, $type)) {
+                return new CommandRejected($player->sessionId, 'container_obstructed');
+            }
+        }
+        return $this->openContainerInventory(
+            $player,
+            $type,
+            $inventory,
+            $playerOwnedEnderChest ? $position : $worldContainer->position,
+            $playerOwnedEnderChest ? null : $worldContainer->pairedPosition,
+            $playerOwnedEnderChest ? null : $worldContainer->customName,
+            worldContainer: $worldContainer,
+            playerOwnedEnderChest: $playerOwnedEnderChest,
+        );
+    }
+
+    private function openContainerInventory(
+        Player $player,
+        ApiContainerType $type,
+        LiveContainerInventory $inventory,
+        ?BlockPosition $position = null,
+        ?BlockPosition $pairedPosition = null,
+        ?string $title = null,
+        ?ApiContainerLayout $layout = null,
+        ?ResolvedWorldContainer $worldContainer = null,
+        bool $playerOwnedEnderChest = false,
+        ?string $owningPlugin = null,
+    ): WorldEvent {
+        $key = self::sessionKey($player->sessionId);
+        if (isset($this->openContainers[$key])) {
+            return new CommandRejected($player->sessionId, 'container_already_open');
+        }
+        try {
+            $projection = $player->inventory->projectOpenedContainer(
+                $inventory->identifier(),
+                array_map(
+                    fn(?ApiItemStack $stack): ?InventoryStack => $stack === null
+                        ? null
+                        : $this->inventoryStackFromApi($stack),
+                    $inventory->contents(),
+                ),
+            );
+            $windowId = $this->allocateContainerWindowId($key);
+            $session = new PlayerContainerSession(
+                $windowId,
+                $type,
+                $inventory,
+                $projection,
+                $inventory->revision(),
+                $position,
+                $pairedPosition,
+                $title,
+                $layout,
+                worldContainer: $worldContainer,
+                playerOwnedEnderChest: $playerOwnedEnderChest,
+                owningPlugin: $owningPlugin,
+            );
+            $view = $this->containerView($session, [$player->identity->uuid]);
+            if ($this->pluginEvents !== null && !$this->pluginEvents->allowContainerOpen($player, $view)) {
+                return new CommandRejected($player->sessionId, 'plugin_cancelled');
+            }
+            $firstViewer = !$this->hasContainerPresentationViewer($type, $position, $pairedPosition);
+            $inventory->addViewer($player->identity->uuid);
+            $this->openContainers[$key] = $session;
+            if ($firstViewer && $type === ApiContainerType::BARREL && $position !== null) {
+                $barrelChanged = $this->setBarrelOpen($player->sessionId, $position, true);
+                if ($barrelChanged !== null) {
+                    $this->deferredEvents[] = $barrelChanged;
+                }
+            }
+            $this->pluginEvents?->containerOpened($player, $this->containerView($session));
+
+            return new ContainerOpened(
+                $player->sessionId,
+                $windowId,
+                $type,
+                $session->position,
+                $projection->slots(),
+                $firstViewer ? $this->players->recipients() : [],
+                $session->pairedPosition,
+                $session->title,
+                $session->layout,
+            );
+        } catch (InvalidArgumentException|OverflowException) {
+            return new CommandRejected($player->sessionId, 'container_projection');
+        }
+    }
+
+    private function closeContainerCommand(CloseContainer $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        $session = $this->openContainers[self::sessionKey($command->session)] ?? null;
+        if ($player === null || $session === null
+            || ($command->windowId !== 0xff && $command->windowId !== $session->windowId)) {
+            return new CommandRejected($command->session, 'container_not_open');
+        }
+
+        return $this->closeContainer($player, ApiInventoryCloseReason::CLIENT, false)
+            ?? new CommandRejected($command->session, 'container_not_open');
+    }
+
+    private function closeContainer(
+        Player $player,
+        ApiInventoryCloseReason $reason,
+        bool $serverInitiated,
+    ): ?ContainerClosed {
+        $key = self::sessionKey($player->sessionId);
+        $session = $this->openContainers[$key] ?? null;
+        if (!$session instanceof PlayerContainerSession) {
+            return null;
+        }
+        unset($this->openContainers[$key]);
+        $session->inventory->removeViewer($player->identity->uuid);
+        $view = $this->containerView($session);
+        $lastViewer = !$this->hasContainerPresentationViewer(
+            $session->type,
+            $session->position,
+            $session->pairedPosition,
+        );
+        if ($session->type === ApiContainerType::BARREL
+            && $session->position !== null
+            && $lastViewer) {
+            $barrelChanged = $this->setBarrelOpen($player->sessionId, $session->position, false);
+            if ($barrelChanged !== null) {
+                $this->deferredEvents[] = $barrelChanged;
+            }
+        }
+        $this->pluginEvents?->containerClosed($player, $view, $reason);
+
+        return new ContainerClosed(
+            $player->sessionId,
+            $session->windowId,
+            $session->type,
+            $session->position,
+            $lastViewer ? $this->players->recipients() : [],
+            $session->pairedPosition,
+            $serverInitiated,
+            $session->layout,
+        );
+    }
+
+    private function resolveWorldContainer(BlockPosition $position): ?ResolvedWorldContainer
+    {
+        if ($this->blockWorld === null || $this->worldContainers === null) {
+            return null;
+        }
+        $identifier = $this->blockIdentifier($this->blockWorld->blockStateAt(
+            $position->x,
+            $position->y,
+            $position->z,
+        )->value);
+
+        return $this->worldContainers->resolve($position, $identifier);
+    }
+
+    private function ownedVirtualContainer(string $plugin, string $identifier): ?VirtualContainer
+    {
+        $virtual = $this->virtualContainers[$identifier] ?? null;
+
+        return $virtual instanceof VirtualContainer && strcasecmp($virtual->ownerPlugin, $plugin) === 0
+            ? $virtual
+            : null;
+    }
+
+    /** @param list<ApiItemStack|null> $contents */
+    private function validateApiContainerContents(array $contents, int $size): void
+    {
+        if (count($contents) !== $size) {
+            throw new InvalidArgumentException('Container replacement must preserve its typed layout.');
+        }
+        foreach ($contents as $stack) {
+            if ($stack !== null) {
+                $this->inventoryStackFromApi($stack);
+            }
+        }
+    }
+
+    private function synchronizeContainerInventory(LiveContainerInventory $inventory): void
+    {
+        $viewers = [];
+        foreach ($this->openContainers as $key => $session) {
+            if ($session->inventory->identifier() !== $inventory->identifier()) {
+                continue;
+            }
+            $player = $this->players->player(substr($key, strlen('session:')));
+            if ($player === null) {
+                continue;
+            }
+            $this->refreshContainerProjection($player, $session);
+            $viewers[] = [$player, $session];
+        }
+        if ($viewers === []) {
+            return;
+        }
+        [$owner, $ownerSession] = array_shift($viewers);
+        $additional = [];
+        foreach ($viewers as [$viewer, $viewerSession]) {
+            $additional[] = new ContainerViewerProjection(
+                $viewer->sessionId,
+                $viewerSession->windowId,
+                $viewerSession->projection->slots(),
+            );
+        }
+        $this->deferredEvents[] = new ContainerContentsChanged(
+            $owner->sessionId,
+            $ownerSession->windowId,
+            $ownerSession->type,
+            $ownerSession->position,
+            $ownerSession->projection->slots(),
+            [],
+            $additional,
+            $ownerSession->pairedPosition,
+            $ownerSession->layout,
+        );
+    }
+
+    private static function containerInventoryView(
+        ApiContainerType $type,
+        LiveContainerInventory $inventory,
+        ?BlockPosition $position = null,
+        ?BlockPosition $pairedPosition = null,
+        ?string $title = null,
+    ): ApiContainerView {
+        $viewerUuids = $inventory->viewerUuids();
+        if ($pairedPosition !== null) {
+            sort($viewerUuids, SORT_STRING);
+        }
+
+        return new ApiContainerView(
+            $type,
+            new ApiInventoryView(
+                self::containerInventoryIdentifier($inventory),
+                $inventory->contents(),
+                $inventory->revision(),
+            ),
+            $position === null
+                ? null
+                : new \Bedriox\Api\World\BlockPosition($position->x, $position->y, $position->z),
+            $title,
+            $viewerUuids,
+        );
+    }
+
+    /** @param list<string>|null $viewerUuids */
+    private function containerView(PlayerContainerSession $session, ?array $viewerUuids = null): ApiContainerView
+    {
+        return new ApiContainerView(
+            $session->type,
+            new ApiInventoryView(
+                self::containerInventoryIdentifier($session->inventory),
+                $session->inventory->contents(),
+                $session->inventory->revision(),
+            ),
+            $session->position === null
+                ? null
+                : new \Bedriox\Api\World\BlockPosition(
+                    $session->position->x,
+                    $session->position->y,
+                    $session->position->z,
+                ),
+            $session->title,
+            $viewerUuids ?? $session->inventory->viewerUuids(),
+        );
+    }
+
+    private function containerIsObstructed(BlockPosition $position, ApiContainerType $type): bool
+    {
+        if ($this->blockWorld === null || $this->blockPalette === null) {
+            return false;
+        }
+        if ($type === ApiContainerType::SHULKER_BOX) {
+            $entity = $this->blockWorld->blockEntityAt($position);
+            if (!$entity instanceof ContainerBlockEntity || $entity->type !== BlockEntityType::ShulkerBox) {
+                return true;
+            }
+            $extension = self::adjacentBlock($position, $entity->facing);
+
+            return $extension === null || $this->blockAtIsSolid($extension);
+        }
+        if (!in_array($type, [
+            ApiContainerType::CHEST,
+            ApiContainerType::DOUBLE_CHEST,
+            ApiContainerType::TRAPPED_CHEST,
+            ApiContainerType::DOUBLE_TRAPPED_CHEST,
+            ApiContainerType::ENDER_CHEST,
+        ], true)
+            || $position->y >= \Bedriox\Server\World\Chunk::MAX_Y) {
+            return false;
+        }
+
+        return $this->blockAtIsSolid(new BlockPosition($position->x, $position->y + 1, $position->z));
+    }
+
+    private function blockAtIsSolid(BlockPosition $position): bool
+    {
+        if ($this->blockWorld === null || $this->blockPalette === null) {
+            return true;
+        }
+        $state = $this->blockWorld->blockStateAt($position->x, $position->y, $position->z);
+        if ($state->value === $this->blockPalette->air->value) {
+            return false;
+        }
+        if ($this->blockProperties !== null && $this->blockStateRegistry !== null) {
+            try {
+                return $this->blockProperties->propertiesForState($this->blockStateRegistry->state($state))->solid();
+            } catch (InvalidArgumentException) {
+                // Fall back to admitted collision data for a state not present in the active physical-property set.
+            }
+        }
+        $shape = $this->blockCollisionRegistry?->find($state);
+
+        return $shape === null || !$shape->isEmpty();
+    }
+
+    private function hasContainerPresentationViewer(
+        ApiContainerType $type,
+        ?BlockPosition $position,
+        ?BlockPosition $pairedPosition,
+    ): bool {
+        $identity = self::containerPresentationIdentity($type, $position, $pairedPosition);
+        if ($identity === null) {
+            return false;
+        }
+        foreach ($this->openContainers as $session) {
+            if (self::containerPresentationIdentity(
+                $session->type,
+                $session->position,
+                $session->pairedPosition,
+            ) === $identity) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static function containerPresentationIdentity(
+        ApiContainerType $type,
+        ?BlockPosition $position,
+        ?BlockPosition $pairedPosition,
+    ): ?string {
+        if ($position === null || $type === ApiContainerType::VIRTUAL) {
+            return null;
+        }
+        $positions = [self::containerPositionIdentity($position)];
+        if ($pairedPosition !== null) {
+            $positions[] = self::containerPositionIdentity($pairedPosition);
+            sort($positions, SORT_STRING);
+        }
+
+        return $type->value . '/' . implode('/', $positions);
+    }
+
+    private static function containerPositionIdentity(BlockPosition $position): string
+    {
+        return $position->x . ':' . $position->y . ':' . $position->z;
+    }
+
+    private function setBarrelOpen(string $ownerSessionId, BlockPosition $position, bool $open): ?BlockChanged
+    {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null) {
+            return null;
+        }
+        $current = $this->blockWorld->blockStateAt($position->x, $position->y, $position->z);
+        $canonical = $this->blockStateRegistry->state($current);
+        if ($canonical->identifier() !== 'minecraft:barrel') {
+            return null;
+        }
+        $properties = $canonical->properties();
+        $openBit = $open ? 1 : 0;
+        if (($properties['open_bit'] ?? null) === $openBit) {
+            return null;
+        }
+        $properties['open_bit'] = $openBit;
+        $updated = $this->blockStateRegistry->internalId(CanonicalBlockState::from('minecraft:barrel', $properties));
+        $this->blockWorld->setBlockState($position->x, $position->y, $position->z, $updated);
+
+        return new BlockChanged($ownerSessionId, $position, $updated, $this->players->recipients());
+    }
+
+    private function allocateContainerWindowId(string $sessionKey): int
+    {
+        $candidate = $this->nextContainerWindowIds[$sessionKey] ?? 2;
+        if ($candidate < 2 || $candidate > 99) {
+            $candidate = 2;
+        }
+        $this->nextContainerWindowIds[$sessionKey] = $candidate === 99 ? 2 : $candidate + 1;
+
+        return $candidate;
     }
 
     private function placementIntersectsPlayer(BlockPosition $block): bool
@@ -3740,6 +5293,10 @@ final class WorldSimulation
             $pitch = $decision->pitch;
         }
         $this->deferItemUseCancellation($player, ItemUseCancellationReason::TELEPORT);
+        $closed = $this->closeContainer($player, ApiInventoryCloseReason::TELEPORT, true);
+        if ($closed !== null) {
+            $this->deferredEvents[] = $closed;
+        }
         $player->movement->position = $destination;
         $player->movement->yaw = $yaw;
         $player->movement->headYaw = $yaw;

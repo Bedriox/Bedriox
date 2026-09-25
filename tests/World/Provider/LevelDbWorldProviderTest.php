@@ -9,6 +9,10 @@ use Bedriox\Data\LittleEndianBlockStateNbtCodec;
 use Bedriox\Data\OpaquePersistentBlockState;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
+use Bedriox\Server\World\BlockEntity\BlockEntityType;
+use Bedriox\Server\World\BlockEntity\ContainerBlockEntity;
+use Bedriox\Server\World\BlockEntity\ContainerItemStack;
+use Bedriox\Server\World\BlockPosition;
 use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\DefaultWorldGenerator;
@@ -48,6 +52,7 @@ final class LevelDbWorldProviderTest extends TestCase
         self::assertArrayHasKey(LevelDbChunkKey::data3d(-1, -2), $database->records);
         self::assertArrayHasKey(LevelDbChunkKey::subChunk(-1, -2, 3), $database->records);
         self::assertArrayHasKey(LevelDbChunkKey::finalization(-1, -2), $database->records);
+        self::assertArrayNotHasKey(LevelDbChunkKey::blockEntities(-1, -2), $database->records);
 
         $loaded = $provider->loadChunk(new ChunkPosition(-1, -2));
         self::assertNotNull($loaded);
@@ -84,6 +89,41 @@ final class LevelDbWorldProviderTest extends TestCase
                 }
             }
         }
+    }
+
+    public function testContainerBlockEntitiesRoundTripInTheAtomicChunkBatch(): void
+    {
+        [$provider, $database, $registry] = self::provider();
+        $chunkPosition = new ChunkPosition(3, -4);
+        $blockPosition = new BlockPosition(49, 65, -63);
+        $entity = ContainerBlockEntity::empty(BlockEntityType::Barrel, $blockPosition);
+        $entity = $entity->withInventory($entity->inventory->withStack(
+            12,
+            new ContainerItemStack('minecraft:gold_ingot', 23),
+        ));
+        $chunk = (new FlatWorldGenerator(FixedFlatBlockPalette::fromRegistry($registry)))
+            ->generate($chunkPosition)
+            ->withBlockEntity($entity);
+
+        $provider->saveChunk(new ChunkSaveData($chunk));
+        self::assertArrayHasKey(LevelDbChunkKey::blockEntities(3, -4), $database->records);
+
+        $loaded = $provider->loadChunk($chunkPosition)?->chunk->blockEntityAt($blockPosition);
+        self::assertInstanceOf(ContainerBlockEntity::class, $loaded);
+        self::assertSame(23, $loaded->inventory->stackAt(12)?->count);
+    }
+
+    public function testMalformedBlockEntityRecordFailsAsChunkCorruption(): void
+    {
+        [$provider, $database, $registry] = self::provider();
+        $position = new ChunkPosition(6, 7);
+        $chunk = (new FlatWorldGenerator(FixedFlatBlockPalette::fromRegistry($registry)))->generate($position);
+        $provider->saveChunk(new ChunkSaveData($chunk));
+        $database->records[LevelDbChunkKey::blockEntities(6, 7)] = "\x0a";
+
+        $this->expectException(CorruptChunkException::class);
+        $this->expectExceptionMessage('cannot be represented safely');
+        $provider->loadChunk($position);
     }
 
     public function testMissingChunkIsDistinctFromOrphanedAndMalformedChunkData(): void

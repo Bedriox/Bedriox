@@ -11,6 +11,7 @@ use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkFinalizationState;
 use Bedriox\Server\World\ChunkPosition;
+use Bedriox\Server\World\Storage\LevelDb\PersistentBlockEntityCodec;
 use Bedriox\Server\World\SubChunk;
 use Bedriox\Server\World\SubChunkBlockStorage;
 
@@ -57,6 +58,9 @@ final class ChunkTransferCodec
             $body .= $storage->paletteIndices();
             self::guardBody($body);
         }
+        $blockEntities = (new PersistentBlockEntityCodec())->encode($chunk->blockEntityCollection());
+        $body .= pack('N', strlen($blockEntities)) . $blockEntities;
+        self::guardBody($body);
 
         $encoded = self::MAGIC . pack('N', strlen($body)) . $body . hash('sha256', $body, true);
         if (strlen($encoded) > self::MAXIMUM_ENCODED_BYTES) {
@@ -133,6 +137,14 @@ final class ChunkTransferCodec
                     $reader->bytes(BiomeStorage::BIOME_COUNT),
                 );
             }
+            $blockEntityLength = $reader->signedInt();
+            if ($blockEntityLength < 0 || $blockEntityLength > PersistentBlockEntityCodec::MAXIMUM_BYTES) {
+                throw new ChunkTransferException('Chunk transfer block-entity length is outside its bound.');
+            }
+            $blockEntities = (new PersistentBlockEntityCodec())->decode(
+                $reader->bytes($blockEntityLength),
+                $position,
+            );
             $reader->finish();
 
             return new Chunk(
@@ -145,6 +157,7 @@ final class ChunkTransferCodec
                 $dirtyFlags,
                 $finalization,
                 $biomeStorages,
+                $blockEntities,
             );
         } catch (ChunkTransferException $error) {
             throw $error;

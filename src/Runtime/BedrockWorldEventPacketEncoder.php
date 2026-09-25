@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
+use Bedriox\Api\Inventory\ContainerLayout;
+use Bedriox\Api\Inventory\ContainerType as ApiContainerType;
 use Bedriox\Api\TranslatableMessage;
 use Bedriox\Protocol\Packet\AbilityLayer;
 use Bedriox\Protocol\Packet\ActorEventPacket;
@@ -11,9 +13,12 @@ use Bedriox\Protocol\Packet\ActorEventType;
 use Bedriox\Protocol\Packet\AddItemActorPacket;
 use Bedriox\Protocol\Packet\AddPlayerPacket;
 use Bedriox\Protocol\Packet\AnimatePacket;
+use Bedriox\Protocol\Packet\BlockActorDataPacket;
+use Bedriox\Protocol\Packet\BlockEventPacket;
 use Bedriox\Protocol\Packet\BlockPosition as ProtocolBlockPosition;
 use Bedriox\Protocol\Packet\ChatPacket;
 use Bedriox\Protocol\Packet\CommandPermissionLevel;
+use Bedriox\Protocol\Packet\ContainerClosePacket;
 use Bedriox\Protocol\Packet\ContainerOpenPacket;
 use Bedriox\Protocol\Packet\ContainerType;
 use Bedriox\Protocol\Packet\CorrectPlayerMovePredictionPacket;
@@ -72,10 +77,14 @@ use Bedriox\Server\Simulation\Event\ArmSwung;
 use Bedriox\Server\Simulation\Event\BlockBreakStarted;
 use Bedriox\Server\Simulation\Event\BlockBreakStopped;
 use Bedriox\Server\Simulation\Event\BlockChanged;
+use Bedriox\Server\Simulation\Event\BlockEntityChanged;
 use Bedriox\Server\Simulation\Event\BlockPlaced;
 use Bedriox\Server\Simulation\Event\BlockPlacementCorrected;
 use Bedriox\Server\Simulation\Event\BlockPunch;
 use Bedriox\Server\Simulation\Event\ChatBroadcast;
+use Bedriox\Server\Simulation\Event\ContainerClosed;
+use Bedriox\Server\Simulation\Event\ContainerContentsChanged;
+use Bedriox\Server\Simulation\Event\ContainerOpened;
 use Bedriox\Server\Simulation\Event\CraftingTableOpened;
 use Bedriox\Server\Simulation\Event\EmotePerformed;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
@@ -105,14 +114,20 @@ use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
 use Bedriox\Server\Simulation\Event\WorldEvent;
 use Bedriox\Server\Simulation\PlayerSnapshot;
 use Bedriox\Server\Simulation\VerticalState;
+use Bedriox\Server\World\Storage\LevelDb\PersistentBlockEntityCodec;
 
 /** Stateless current-Bedrock projection of authoritative simulation events. */
 final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
 {
+    private readonly PersistentBlockEntityCodec $blockEntities;
+
     public function __construct(
         private readonly ?BedrockChunkPacketSerializer $chunks = null,
         private readonly ?BedrockInventoryPacketProjector $inventory = null,
-    ) {}
+        ?PersistentBlockEntityCodec $blockEntities = null,
+    ) {
+        $this->blockEntities = $blockEntities ?? new PersistentBlockEntityCodec();
+    }
 
     public function encode(WorldEvent $event, array $sessions): array
     {
@@ -150,6 +165,9 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
                     -1,
                 ),
             )],
+            $event instanceof ContainerOpened => $this->containerOpened($event),
+            $event instanceof ContainerClosed => $this->containerClosed($event),
+            $event instanceof ContainerContentsChanged => $this->containerContentsChanged($event),
             $event instanceof EmotePerformed => $this->emote($event, $sessions),
             $event instanceof ArmSwung => $this->armSwung($event),
             $event instanceof PlayerDisconnected => $this->disconnected($event),
@@ -157,6 +175,7 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
             $event instanceof BlockPunch => $this->blockPunch($event),
             $event instanceof BlockBreakStopped => $this->blockBreakStopped($event),
             $event instanceof BlockChanged => $this->blockChanged($event),
+            $event instanceof BlockEntityChanged => $this->blockEntityChanged($event),
             $event instanceof BlockPlaced => $this->blockPlaced($event),
             $event instanceof BlockPlacementCorrected => $this->blockPlacementCorrected($event),
             $event instanceof HeldItemChanged => $this->heldItemChanged($event),
@@ -206,6 +225,143 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
             )],
             default => [],
         };
+    }
+
+    /** @return list<DirectedPacket> */
+    private function containerOpened(ContainerOpened $event): array
+    {
+        $position = $event->position === null
+            ? new ProtocolBlockPosition(0, 0, 0)
+            : self::protocolBlockPosition($event->position);
+        $packets = [
+            new DirectedPacket($event->ownerSessionId, ContainerOpenPacket::blockInventory(
+                $event->windowId,
+                self::protocolContainerType($event->containerType, $event->layout),
+                $position,
+            )),
+            new DirectedPacket($event->ownerSessionId, new InventoryContentPacket(
+                $event->windowId,
+                array_map($this->requireInventoryProjector()->toProtocol(...), $event->slots),
+            )),
+        ];
+
+        // A custom virtual title requires a future bounded presentation adapter which supplies a temporary
+        // block actor. The wire layer deliberately does not spoof world state merely to carry that title.
+        array_push($packets, ...$this->containerBlockStatePackets(
+            $event->containerType,
+            $event->position,
+            $event->pairedPosition,
+            $event->blockEventRecipientSessionIds,
+            true,
+        ));
+
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function containerClosed(ContainerClosed $event): array
+    {
+        $packets = [];
+        if ($event->serverInitiated) {
+            $packets[] = new DirectedPacket($event->ownerSessionId, new ContainerClosePacket(
+                $event->windowId,
+                self::protocolContainerType($event->containerType, $event->layout),
+                true,
+            ));
+        }
+        array_push($packets, ...$this->containerBlockStatePackets(
+            $event->containerType,
+            $event->position,
+            $event->pairedPosition,
+            $event->blockEventRecipientSessionIds,
+            false,
+        ));
+
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function containerContentsChanged(ContainerContentsChanged $event): array
+    {
+        $viewers = [new \Bedriox\Server\Simulation\Event\ContainerViewerProjection(
+            $event->ownerSessionId,
+            $event->windowId,
+            $event->slots,
+        ), ...$event->additionalViewers];
+        $packets = [];
+        foreach ($viewers as $viewer) {
+            if ($event->changedSlots === []) {
+                $packets[] = new DirectedPacket($viewer->sessionId, new InventoryContentPacket(
+                    $viewer->windowId,
+                    array_map($this->requireInventoryProjector()->toProtocol(...), $viewer->slots),
+                ));
+                continue;
+            }
+            foreach ($event->changedSlots as $slot) {
+                array_push($packets, ...$this->inventorySlotCorrection(
+                    $viewer->sessionId,
+                    $viewer->windowId,
+                    $slot,
+                    $viewer->slots[$slot],
+                ));
+            }
+        }
+
+        return $packets;
+    }
+
+    /**
+     * @param list<string> $recipients
+     * @return list<DirectedPacket>
+     */
+    private function containerBlockStatePackets(
+        ApiContainerType $type,
+        ?\Bedriox\Server\World\BlockPosition $position,
+        ?\Bedriox\Server\World\BlockPosition $pairedPosition,
+        array $recipients,
+        bool $open,
+    ): array {
+        if ($position === null || in_array($type, [ApiContainerType::VIRTUAL, ApiContainerType::BARREL], true)) {
+            return [];
+        }
+        $positions = [$position];
+        if ($pairedPosition !== null) {
+            $positions[] = $pairedPosition;
+        }
+        $packets = [];
+        foreach (array_values(array_unique($recipients)) as $recipient) {
+            foreach ($positions as $blockPosition) {
+                $packets[] = new DirectedPacket(
+                    $recipient,
+                    BlockEventPacket::containerState(self::protocolBlockPosition($blockPosition), $open),
+                );
+            }
+        }
+
+        return $packets;
+    }
+
+    private static function protocolContainerType(
+        ApiContainerType $type,
+        ?ContainerLayout $layout,
+    ): ContainerType {
+        if ($type !== ApiContainerType::VIRTUAL) {
+            return ContainerType::Container;
+        }
+
+        return match ($layout) {
+            ContainerLayout::HOPPER => ContainerType::Hopper,
+            ContainerLayout::DISPENSER => ContainerType::Dispenser,
+            ContainerLayout::DROPPER => ContainerType::Dropper,
+            ContainerLayout::SINGLE_CHEST, ContainerLayout::DOUBLE_CHEST => ContainerType::Container,
+            null => throw new \LogicException('Virtual container projection requires a layout.'),
+        };
+    }
+
+    private static function protocolBlockPosition(
+        \Bedriox\Server\World\BlockPosition $position,
+    ): ProtocolBlockPosition {
+        return new ProtocolBlockPosition($position->x, $position->y, $position->z);
     }
 
     /** @return list<DirectedPacket> */
@@ -846,6 +1002,20 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
         return $packets;
     }
 
+    /** @return list<DirectedPacket> */
+    private function blockEntityChanged(BlockEntityChanged $event): array
+    {
+        $packet = new BlockActorDataPacket(
+            self::protocolBlockPosition($event->blockEntity->position),
+            $this->blockEntities->encodeNetworkEntity($event->blockEntity),
+        );
+
+        return array_map(
+            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
+            $event->recipientSessionIds,
+        );
+    }
+
     private function blockLevelEvent(int $eventId, \Bedriox\Server\World\BlockPosition $position, int $data): LevelEventPacket
     {
         return new LevelEventPacket(
@@ -1072,16 +1242,23 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
             foreach ($event->affectedSlots as $reference) {
                 $containerId = $reference->responseContainerId ?? self::fullContainerNameId($reference->container);
                 $stack = self::processedStack($event, $reference);
-                $slotsByContainer[$containerId][] = new ItemStackResponseSlot(
+                $containerKey = $containerId . ':' . ($reference->responseContainerDynamicId ?? '');
+                $slotsByContainer[$containerKey][] = new ItemStackResponseSlot(
                     $reference->responseSlotId(),
                     $reference->responseSlotId(),
                     $stack === null ? 0 : $stack->count,
                     $stack?->stackNetworkId,
+                    filteredCustomName: '',
                     durabilityCorrection: $stack === null ? 0 : $stack->damage,
                 );
             }
-            foreach ($slotsByContainer as $containerId => $slots) {
-                $containers[] = new ItemStackResponseContainer(new FullContainerName($containerId), $slots);
+            foreach ($slotsByContainer as $containerKey => $slots) {
+                [$containerId, $dynamicPart] = explode(':', (string) $containerKey, 2);
+                $dynamicId = $dynamicPart === '' ? null : (int) $dynamicPart;
+                $containers[] = new ItemStackResponseContainer(
+                    new FullContainerName((int) $containerId, $dynamicId),
+                    $slots,
+                );
             }
         }
         $packets = [];
@@ -1118,6 +1295,7 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
                     [$event->offhandStack],
                 ),
                 ...$this->craftingGridCorrection($event),
+                ...$this->openedContainerCorrection($event),
             ];
         } elseif (!$event->success) {
             $packets = [
@@ -1144,6 +1322,7 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
                     [$event->offhandStack],
                 ),
                 ...$this->craftingGridCorrection($event),
+                ...$this->openedContainerCorrection($event),
             ];
         } elseif ($event->responseMode === InventoryResponseMode::LegacySlotSync) {
             $synchronized = [];
@@ -1167,7 +1346,11 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
                         ...$packets,
                         ...$this->inventorySlotCorrection(
                             $event->ownerSessionId,
-                            self::windowId($reference->container),
+                            $reference->container === InventoryContainer::OpenedContainer
+                                ? ($event->openedContainerWindowId ?? throw new \LogicException(
+                                    'Opened-container correction requires its dynamic window ID.',
+                                ))
+                                : self::windowId($reference->container),
                             $reference->responseSlotId(),
                             $stack,
                         ),
@@ -1309,6 +1492,7 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
             InventoryContainer::Offhand => $event->offhandStack,
             InventoryContainer::CraftingInput => $event->craftingInventory[$reference->slot] ?? null,
             InventoryContainer::CreatedOutput => null,
+            InventoryContainer::OpenedContainer => $event->openedContainerInventory[$reference->slot] ?? null,
         };
     }
 
@@ -1321,6 +1505,7 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
             InventoryContainer::Offhand => FullContainerName::OFFHAND,
             InventoryContainer::CraftingInput => FullContainerName::CRAFTING_INPUT,
             InventoryContainer::CreatedOutput => FullContainerName::CREATED_OUTPUT,
+            InventoryContainer::OpenedContainer => FullContainerName::LEVEL_ENTITY,
         };
     }
 
@@ -1332,7 +1517,24 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
             InventoryContainer::Armor => InventoryContainerId::ARMOR,
             InventoryContainer::Offhand => InventoryContainerId::OFFHAND,
             InventoryContainer::CraftingInput => InventoryContainerId::UI,
+            InventoryContainer::OpenedContainer => throw new \LogicException(
+                'Opened-container correction requires its dynamic window ID.',
+            ),
         };
+    }
+
+    /** @return list<DirectedPacket> */
+    private function openedContainerCorrection(InventoryStackRequestProcessed $event): array
+    {
+        if ($event->openedContainerWindowId === null || $event->openedContainerInventory === []) {
+            return [];
+        }
+
+        return $this->inventoryContentCorrection(
+            $event->ownerSessionId,
+            $event->openedContainerWindowId,
+            $event->openedContainerInventory,
+        );
     }
 
     /** @return list<DirectedPacket> */

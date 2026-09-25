@@ -10,6 +10,7 @@ use Bedriox\Server\Persistence\PersistenceSubmission;
 use Bedriox\Server\Persistence\World\ChunkLoadCompletion;
 use Bedriox\Server\Worker\Chunk\AsyncChunkGenerator;
 use Bedriox\Server\World\Block\InternalBlockStateId;
+use Bedriox\Server\World\BlockEntity\BlockEntity;
 use Bedriox\Server\World\Provider\AsynchronousWorldProvider;
 use Bedriox\Server\World\Provider\ChunkSaveData;
 use Bedriox\Server\World\Provider\WorldData;
@@ -221,6 +222,93 @@ final class World
         $position = self::chunkPosition($x, $z);
 
         return $this->chunk($position)->blockStateAt(self::localCoordinate($x), $y, self::localCoordinate($z));
+    }
+
+    public function blockEntityAt(BlockPosition $position): ?BlockEntity
+    {
+        return $this->chunk(self::chunkPosition($position->x, $position->z))->blockEntityAt($position);
+    }
+
+    /** Installs immutable durable state and returns the block entity previously stored at the position. */
+    public function setBlockEntity(BlockEntity $blockEntity): ?BlockEntity
+    {
+        $chunkPosition = self::chunkPosition($blockEntity->position->x, $blockEntity->position->z);
+        $chunk = $this->chunk($chunkPosition);
+        $previous = $chunk->blockEntityAt($blockEntity->position);
+        $replacement = $chunk->withBlockEntity($blockEntity);
+        if ($replacement !== $chunk) {
+            $this->chunks->replace($replacement);
+        }
+
+        return $previous;
+    }
+
+    /**
+     * Installs a bounded block-entity batch from immutable chunk snapshots.
+     *
+     * Every replacement is prepared before any authoritative chunk is changed, so paired
+     * storage cannot expose only one updated half if validation or chunk loading fails.
+     *
+     * @return list<BlockEntity|null> previous entities in argument order
+     */
+    public function setBlockEntities(BlockEntity ...$blockEntities): array
+    {
+        if ($blockEntities === [] || count($blockEntities) > 16) {
+            throw new InvalidArgumentException('A block entity batch must contain between one and sixteen entries.');
+        }
+
+        /** @var array<string, ChunkPosition> $positions */
+        $positions = [];
+        /** @var array<string, true> $entityPositions */
+        $entityPositions = [];
+        foreach ($blockEntities as $blockEntity) {
+            $entityKey = $blockEntity->position->x . ':' . $blockEntity->position->y . ':' . $blockEntity->position->z;
+            if (isset($entityPositions[$entityKey])) {
+                throw new InvalidArgumentException('A block entity batch may not replace the same position twice.');
+            }
+            $entityPositions[$entityKey] = true;
+            $chunkPosition = self::chunkPosition($blockEntity->position->x, $blockEntity->position->z);
+            $positions[$chunkPosition->key()] = $chunkPosition;
+        }
+
+        /** @var array<string, Chunk> $prepared */
+        $prepared = [];
+        $retained = [];
+        $previous = [];
+        try {
+            foreach ($positions as $key => $position) {
+                $prepared[$key] = $this->retainChunk($position);
+                $retained[] = $position;
+            }
+            foreach ($blockEntities as $blockEntity) {
+                $chunkPosition = self::chunkPosition($blockEntity->position->x, $blockEntity->position->z);
+                $key = $chunkPosition->key();
+                $chunk = $prepared[$key];
+                $previous[] = $chunk->blockEntityAt($blockEntity->position);
+                $prepared[$key] = $chunk->withBlockEntity($blockEntity);
+            }
+            foreach ($prepared as $chunk) {
+                $this->chunks->replace($chunk);
+            }
+        } finally {
+            foreach ($retained as $position) {
+                $this->releaseChunk($position);
+            }
+        }
+
+        return $previous;
+    }
+
+    public function removeBlockEntity(BlockPosition $position): ?BlockEntity
+    {
+        $chunkPosition = self::chunkPosition($position->x, $position->z);
+        $chunk = $this->chunk($chunkPosition);
+        $previous = $chunk->blockEntityAt($position);
+        if ($previous !== null) {
+            $this->chunks->replace($chunk->withoutBlockEntity($position));
+        }
+
+        return $previous;
     }
 
     /** Atomically replaces one process-local block state and returns its previous value. */
@@ -595,6 +683,7 @@ final class World
             $chunk->dirtyFlags | Chunk::DIRTY_ALL,
             $chunk->finalizationState,
             $chunk->biomeStorages(),
+            $chunk->blockEntityCollection(),
         );
     }
 }

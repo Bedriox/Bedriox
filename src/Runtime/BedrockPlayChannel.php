@@ -170,6 +170,10 @@ final class BedrockPlayChannel
     private bool $mainInventoryOpen = false;
     private int $mainInventoryId = 0;
     private int $nextMainInventoryId = 1;
+    private ?int $storageContainerId = null;
+    private ?ContainerType $storageContainerType = null;
+    private ?int $pendingStorageCloseId = null;
+    private ?ContainerType $pendingStorageCloseType = null;
     private ?int $pendingHotbarSlot = null;
     private bool $closed = false;
     private bool $spawnStatusQueued = false;
@@ -380,9 +384,7 @@ final class BedrockPlayChannel
                     }
                     $this->deferredCompressionBatches->enqueue($clearBatch);
                     $this->deferredCompressionBytes += strlen($clearBatch);
-                    if ($packet instanceof UpdateAbilitiesPacket) {
-                        $this->authoritativeAbilities = $packet;
-                    }
+                    $this->recordQueuedPacket($packet);
 
                     return true;
                 }
@@ -394,9 +396,7 @@ final class BedrockPlayChannel
                     }
                     $this->deferredCompressionBatches->enqueue($clearBatch);
                     $this->deferredCompressionBytes += strlen($clearBatch);
-                    if ($packet instanceof UpdateAbilitiesPacket) {
-                        $this->authoritativeAbilities = $packet;
-                    }
+                    $this->recordQueuedPacket($packet);
 
                     return true;
                 }
@@ -405,9 +405,7 @@ final class BedrockPlayChannel
                 }
                 $this->diagnose('queued ' . $packet::class . ' as packet ' . BedrockPacketCodec::packetId($packet)
                     . ($submission->synchronousFallback ? ' with synchronous compression' : ' for worker compression'));
-                if ($packet instanceof UpdateAbilitiesPacket) {
-                    $this->authoritativeAbilities = $packet;
-                }
+                $this->recordQueuedPacket($packet);
 
                 return true;
             }
@@ -424,11 +422,34 @@ final class BedrockPlayChannel
         }
         $this->outgoing->enqueue(new OutgoingPlayPayload($envelope));
         $this->outgoingBytes += strlen($envelope);
+        $this->recordQueuedPacket($packet);
+
+        return true;
+    }
+
+    private function recordQueuedPacket(Packet $packet): void
+    {
         if ($packet instanceof UpdateAbilitiesPacket) {
             $this->authoritativeAbilities = $packet;
         }
+        if ($packet instanceof ContainerOpenPacket
+            && $packet->actorUniqueId === -1
+            && $packet->containerType !== ContainerType::Workbench) {
+            $this->storageContainerId = $packet->containerId;
+            $this->storageContainerType = $packet->containerType;
+            $this->pendingStorageCloseId = null;
+            $this->pendingStorageCloseType = null;
 
-        return true;
+            return;
+        }
+        if ($packet instanceof ContainerClosePacket
+            && $packet->serverInitiated
+            && $packet->containerId === $this->storageContainerId) {
+            $this->pendingStorageCloseId = $this->storageContainerId;
+            $this->pendingStorageCloseType = $this->storageContainerType;
+            $this->storageContainerId = null;
+            $this->storageContainerType = null;
+        }
     }
 
     /** Encodes a bounded amount of deferred world bootstrap and request-driven terrain work. */
@@ -655,6 +676,10 @@ final class BedrockPlayChannel
         $this->chunkView = null;
         $this->mainInventoryOpen = false;
         $this->mainInventoryId = 0;
+        $this->storageContainerId = null;
+        $this->storageContainerType = null;
+        $this->pendingStorageCloseId = null;
+        $this->pendingStorageCloseType = null;
         $this->pendingHotbarSlot = null;
         $this->bootstrapSent = false;
         $this->spawnAcknowledged = false;
@@ -932,12 +957,44 @@ final class BedrockPlayChannel
 
                 return $this->queuePacket(new ContainerClosePacket(
                     1,
-                    ContainerType::Workbench->value & 0xff,
+                    ContainerType::Workbench,
                     false,
                 ));
             }
-            if (!$this->mainInventoryOpen
-                || !in_array($packet->containerId, [0, $this->mainInventoryId, 0xff], true)) {
+            if (!$this->mainInventoryOpen) {
+                if ($this->commands->count() >= $this->limits->maximumCommandsPerPayload) {
+                    return false;
+                }
+                $containerId = $packet->containerId === 0xff
+                    ? ($this->pendingStorageCloseId ?? $this->storageContainerId ?? 0xff)
+                    : $packet->containerId;
+                $containerType = $packet->containerId === 0xff
+                    ? ($this->pendingStorageCloseType ?? $this->storageContainerType ?? $packet->containerType)
+                    : $packet->containerType;
+                $this->commands->enqueue($this->commandFactory->closeContainer(
+                    $this->sessionId,
+                    $containerId,
+                ));
+
+                if (!$this->queuePacket(new ContainerClosePacket(
+                    $containerId,
+                    $containerType,
+                    false,
+                ))) {
+                    return false;
+                }
+                if ($containerId === $this->storageContainerId) {
+                    $this->storageContainerId = null;
+                    $this->storageContainerType = null;
+                }
+                if ($containerId === $this->pendingStorageCloseId) {
+                    $this->pendingStorageCloseId = null;
+                    $this->pendingStorageCloseType = null;
+                }
+
+                return true;
+            }
+            if (!in_array($packet->containerId, [0, $this->mainInventoryId, 0xff], true)) {
                 return true;
             }
             $this->mainInventoryOpen = false;
@@ -950,7 +1007,7 @@ final class BedrockPlayChannel
 
             return $this->queuePacket(new ContainerClosePacket(
                 $containerId,
-                ContainerType::Inventory->value & 0xff,
+                ContainerType::Inventory,
                 false,
             ));
         }
@@ -1293,6 +1350,10 @@ final class BedrockPlayChannel
                     FullContainerName::ARMOR => InventoryContainer::Armor,
                     FullContainerName::OFFHAND => InventoryContainer::Offhand,
                     FullContainerName::CURSOR => InventoryContainer::Cursor,
+                    FullContainerName::LEVEL_ENTITY,
+                    FullContainerName::SHULKER_BOX,
+                    FullContainerName::BARREL,
+                    FullContainerName::DYNAMIC => InventoryContainer::OpenedContainer,
                     default => null,
                 };
                 $internalSlot = $container === InventoryContainer::Offhand ? 0 : $networkSlot;
@@ -1484,13 +1545,16 @@ final class BedrockPlayChannel
             InventoryContainerId::UI => InventoryContainer::Cursor,
             InventoryContainerId::ARMOR => InventoryContainer::Armor,
             InventoryContainerId::OFFHAND => InventoryContainer::Offhand,
-            default => null,
+            default => $containerId !== null && $containerId >= 2 && $containerId <= 99
+                ? InventoryContainer::OpenedContainer
+                : null,
         };
         if ($container === null || $slot < 0
             || ($container === InventoryContainer::Main && $slot >= PlayerInventory::SLOT_COUNT)
             || ($container === InventoryContainer::Armor && $slot >= PlayerInventory::ARMOR_SLOT_COUNT)
             || (($container === InventoryContainer::Cursor || $container === InventoryContainer::Offhand)
-                && $slot !== 0)) {
+                && $slot !== 0)
+            || ($container === InventoryContainer::OpenedContainer && $slot > 0xff)) {
             return null;
         }
         $networkId = $fromItem->runtimeId === 0 && $fromItem->count === 0
@@ -1841,7 +1905,8 @@ final class BedrockPlayChannel
 
     private static function inventorySlotReference(ItemStackRequestSlot $slot): ?InventorySlotReference
     {
-        if ($slot->containerName->dynamicId !== null) {
+        if (($slot->containerName->containerNameId === FullContainerName::DYNAMIC)
+            !== ($slot->containerName->dynamicId !== null)) {
             return null;
         }
         $container = match ($slot->containerName->containerNameId) {
@@ -1853,6 +1918,10 @@ final class BedrockPlayChannel
             FullContainerName::CURSOR => InventoryContainer::Cursor,
             FullContainerName::CRAFTING_INPUT => InventoryContainer::CraftingInput,
             FullContainerName::CREATED_OUTPUT => InventoryContainer::CreatedOutput,
+            FullContainerName::LEVEL_ENTITY,
+            FullContainerName::SHULKER_BOX,
+            FullContainerName::BARREL,
+            FullContainerName::DYNAMIC => InventoryContainer::OpenedContainer,
             default => null,
         };
         $internalSlot = match ($container) {
@@ -1870,7 +1939,8 @@ final class BedrockPlayChannel
             || ($container === InventoryContainer::Armor && $slot->slot >= PlayerInventory::ARMOR_SLOT_COUNT)
             || ($container === InventoryContainer::Cursor && $slot->slot !== 0)
             || ($container === InventoryContainer::CraftingInput && $internalSlot < 0)
-            || ($container === InventoryContainer::CreatedOutput && $slot->slot !== 50)) {
+            || ($container === InventoryContainer::CreatedOutput && $slot->slot !== 50)
+            || ($container === InventoryContainer::OpenedContainer && $slot->slot > 0xff)) {
             return null;
         }
 
@@ -1880,6 +1950,7 @@ final class BedrockPlayChannel
             $slot->stackNetworkId,
             $slot->containerName->containerNameId,
             responseSlot: $slot->slot,
+            responseContainerDynamicId: $slot->containerName->dynamicId,
         );
     }
 

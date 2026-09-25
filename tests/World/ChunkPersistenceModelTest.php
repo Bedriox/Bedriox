@@ -88,7 +88,7 @@ final class ChunkPersistenceModelTest extends TestCase
         $invalid = [
             static fn(): Chunk => new Chunk(new ChunkPosition(0, 0), $air, [], revision: -1),
             static fn(): Chunk => new Chunk(new ChunkPosition(0, 0), $air, [], revision: 1, persistedRevision: 2),
-            static fn(): Chunk => new Chunk(new ChunkPosition(0, 0), $air, [], dirtyFlags: 8),
+            static fn(): Chunk => new Chunk(new ChunkPosition(0, 0), $air, [], dirtyFlags: 1 << 4),
             static fn(): BiomeStorage => BiomeStorage::fromPaletteIndices([Biome::plains()], str_repeat("\x01", 4096)),
             static fn(): SubChunkBlockStorage => SubChunkBlockStorage::fromPaletteIndices([$air], str_repeat("\x01", 4096)),
         ];

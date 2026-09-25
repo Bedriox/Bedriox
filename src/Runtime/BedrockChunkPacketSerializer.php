@@ -12,6 +12,7 @@ use Bedriox\Protocol\Packet\PackedPalettedStorage;
 use Bedriox\Server\World\BiomeRuntimeIdMap;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Chunk;
+use Bedriox\Server\World\Storage\LevelDb\PersistentBlockEntityCodec;
 use InvalidArgumentException;
 
 /** Translates Bedriox-owned world state into the current Bedrock full-column wire model. */
@@ -26,15 +27,19 @@ final class BedrockChunkPacketSerializer
 
     private readonly BiomeRuntimeIdMap $biomes;
 
+    private readonly PersistentBlockEntityCodec $blockEntities;
+
     public function __construct(
         private readonly BlockNetworkTranslator $blocks,
         private readonly int $maximumCachedPackets = 256,
         ?BiomeRuntimeIdMap $biomes = null,
+        ?PersistentBlockEntityCodec $blockEntities = null,
     ) {
         if ($maximumCachedPackets < 1 || $maximumCachedPackets > 4_096) {
             throw new InvalidArgumentException('Chunk packet cache limit must be between 1 and 4096.');
         }
         $this->biomes = $biomes ?? BiomeRuntimeIdMap::bundled();
+        $this->blockEntities = $blockEntities ?? new PersistentBlockEntityCodec();
         $this->cache = new \WeakMap();
     }
 
@@ -104,6 +109,7 @@ final class BedrockChunkPacketSerializer
             Chunk::MAX_SECTION_Y,
             $sections,
             $biomes,
+            $this->blockEntities->encodeNetwork($chunk->blockEntityCollection()),
         ));
         if (count($this->cache) >= $this->maximumCachedPackets) {
             $this->cache = new \WeakMap();

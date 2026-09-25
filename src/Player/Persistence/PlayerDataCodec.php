@@ -24,7 +24,7 @@ use InvalidArgumentException;
 /** Bounded schema-versioned player profile encoding with no session-local identifiers. */
 final readonly class PlayerDataCodec
 {
-    public const int SCHEMA_VERSION = 6;
+    public const int SCHEMA_VERSION = 7;
     public const int MAX_BYTES = 131_072;
 
     private const array REQUIRED_ROOT_TAGS = [
@@ -40,6 +40,7 @@ final readonly class PlayerDataCodec
         'GameMode',
         'Inventory',
         'Armor',
+        'EnderChest',
         'SelectedHotbarSlot',
         'Health',
         'FoodLevel',
@@ -72,6 +73,14 @@ final readonly class PlayerDataCodec
                     throw new CorruptPlayerDataException('Persisted armor stacks must contain exactly one item.');
                 }
             }
+            foreach ($player->inventory->enderChest as $entry) {
+                self::validateStack(
+                    $entry->stack->identifier,
+                    $entry->stack->count,
+                    $entry->stack->damage,
+                    $entry->stack->auxValue,
+                );
+            }
             if ($player->inventory->cursor !== null) {
                 self::validateStack(
                     $player->inventory->cursor->identifier,
@@ -99,6 +108,10 @@ final readonly class PlayerDataCodec
         foreach ($player->inventory->armor as $entry) {
             $armor[] = self::encodedStack($entry->stack, $entry->slot);
         }
+        $enderChest = [];
+        foreach ($player->inventory->enderChest as $entry) {
+            $enderChest[] = self::encodedStack($entry->stack, $entry->slot);
+        }
         $root = [
             'SchemaVersion' => LittleEndianNbtTag::int(self::SCHEMA_VERSION),
             'Uuid' => LittleEndianNbtTag::string($player->identity->uuid),
@@ -119,6 +132,7 @@ final readonly class PlayerDataCodec
             'GameMode' => LittleEndianNbtTag::string($player->gamemode),
             'Inventory' => LittleEndianNbtTag::list(LittleEndianNbtTag::COMPOUND, $inventory),
             'Armor' => LittleEndianNbtTag::list(LittleEndianNbtTag::COMPOUND, $armor),
+            'EnderChest' => LittleEndianNbtTag::list(LittleEndianNbtTag::COMPOUND, $enderChest),
             'SelectedHotbarSlot' => LittleEndianNbtTag::byte($player->inventory->selectedHotbarSlot),
             'Health' => LittleEndianNbtTag::float($player->health),
             'FoodLevel' => LittleEndianNbtTag::float($player->food),
@@ -171,7 +185,8 @@ final readonly class PlayerDataCodec
                     $name,
                     ['Armor', 'FoodLevel', 'Saturation', 'Exhaustion'],
                     true,
-                )),
+                ))
+                && !($schemaVersion < 7 && $name === 'EnderChest'),
         );
         $allowed = array_fill_keys([
             ...$required,
@@ -259,6 +274,31 @@ final readonly class PlayerDataCodec
                 );
                 $offhand = self::stack($offhandTags, 'Offhand', $schemaVersion);
             }
+            $enderChest = [];
+            if ($schemaVersion >= 7) {
+                $enderChestTag = self::tag($root['EnderChest'], LittleEndianNbtTag::LIST, 'EnderChest');
+                if ($enderChestTag->listType !== LittleEndianNbtTag::COMPOUND || !is_array($enderChestTag->value)
+                    || count($enderChestTag->value) > PlayerInventory::ENDER_CHEST_SLOT_COUNT) {
+                    throw new CorruptPlayerDataException(
+                        'Player Ender Chest list is malformed or exceeds its slot limit.',
+                    );
+                }
+                foreach ($enderChestTag->value as $item) {
+                    if (!$item instanceof LittleEndianNbtTag) {
+                        throw new CorruptPlayerDataException('Player Ender Chest contains an invalid entry.');
+                    }
+                    $itemTags = self::compound($item, 'EnderChest');
+                    self::assertExactTags(
+                        $itemTags,
+                        self::stackTagNames($schemaVersion, true),
+                        'Ender Chest entry',
+                    );
+                    $enderChest[] = new PlayerInventoryEntry(
+                        self::integer($itemTags['Slot'], LittleEndianNbtTag::BYTE, 'EnderChest.Slot'),
+                        self::stack($itemTags, 'EnderChest', $schemaVersion),
+                    );
+                }
+            }
 
             return new PlayerBootstrap(
                 new PlayerIdentity($uuid, $name, $xuid),
@@ -272,6 +312,7 @@ final readonly class PlayerDataCodec
                     $cursor,
                     $armor,
                     $offhand,
+                    $enderChest,
                 ),
                 self::integer($root['FirstPlayed'], LittleEndianNbtTag::LONG, 'FirstPlayed'),
                 self::integer($root['LastPlayed'], LittleEndianNbtTag::LONG, 'LastPlayed'),

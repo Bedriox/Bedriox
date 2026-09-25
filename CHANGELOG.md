@@ -33,6 +33,8 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Added
 
+- Add durable chest, trapped-chest, barrel, shulker-box, and player-owned Ender Chest inventories with authoritative dynamic-window transactions, current affected-slot responses, multiplayer synchronization, live block-actor state, first/last-viewer animation, shulker item preservation, typed lifecycle events, and plugin-owned virtual containers.
+
 - Broadcast visibility-scoped arm swings for missed attacks, mining, combat, and plugin requests, with a cancellable missed-swing event.
 - Add server-authoritative personal and crafting-table grids, the complete current crafting-grid catalog, ordinary and automatic recipe requests, dynamic special recipes, atomic inventory rollback, and clean recipe synchronization for connected players.
 - Add owner-scoped plugin shaped and shapeless recipe registration plus cancellable pre-craft and observational post-craft events with lifecycle cleanup.

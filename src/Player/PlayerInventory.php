@@ -17,6 +17,7 @@ final class PlayerInventory
     public const int SLOT_COUNT = 36;
     public const int HOTBAR_SIZE = 9;
     public const int ARMOR_SLOT_COUNT = 4;
+    public const int ENDER_CHEST_SLOT_COUNT = 27;
 
     /** @var array<int, int> Last request ID which changed each main slot. */
     private array $lastRequestIds = [];
@@ -39,6 +40,7 @@ final class PlayerInventory
     /**
      * @param array<int, InventoryStack> $stacks
      * @param array<int, InventoryStack> $armor
+     * @param array<int, InventoryStack> $enderChest
      */
     private function __construct(
         private array $stacks = [],
@@ -48,6 +50,7 @@ final class PlayerInventory
         private ?ItemCatalog $catalog = null,
         private array $armor = [],
         private ?InventoryStack $offhand = null,
+        private array $enderChest = [],
     ) {
         foreach ($stacks as $slot => $stack) {
             self::validateSlot($slot);
@@ -61,6 +64,9 @@ final class PlayerInventory
         }
         if ($offhand !== null && !$this->acceptsOffhand($offhand)) {
             throw new InvalidArgumentException('Inventory item is not accepted by the offhand slot.');
+        }
+        foreach ($enderChest as $slot => $_stack) {
+            self::validateEnderChestSlot($slot);
         }
     }
 
@@ -112,7 +118,27 @@ final class PlayerInventory
             ? null
             : self::restoreStack($state->offhand, $palette, $nextStackNetworkId++, $catalog, $blockStates);
 
-        return new self($stacks, $state->selectedHotbarSlot, $cursor, $nextStackNetworkId, $catalog, $armor, $offhand);
+        $enderChest = [];
+        foreach ($state->enderChest as $entry) {
+            $enderChest[$entry->slot] = self::restoreStack(
+                $entry->stack,
+                $palette,
+                $nextStackNetworkId++,
+                $catalog,
+                $blockStates,
+            );
+        }
+
+        return new self(
+            $stacks,
+            $state->selectedHotbarSlot,
+            $cursor,
+            $nextStackNetworkId,
+            $catalog,
+            $armor,
+            $offhand,
+            $enderChest,
+        );
     }
 
     public function exportState(): PlayerInventoryState
@@ -137,6 +163,13 @@ final class PlayerInventory
                 self::exportStack($stack),
             );
         }
+        $enderChest = [];
+        foreach ($this->enderChest as $slot => $stack) {
+            $enderChest[] = new PlayerInventoryEntry(
+                $slot,
+                self::exportStack($stack),
+            );
+        }
 
         return new PlayerInventoryState(
             $entries,
@@ -152,6 +185,7 @@ final class PlayerInventory
                 ),
             $armor,
             $this->offhand === null ? null : self::exportStack($this->offhand),
+            $enderChest,
         );
     }
 
@@ -199,6 +233,53 @@ final class PlayerInventory
     public function offhandStack(): ?InventoryStack
     {
         return $this->offhand;
+    }
+
+    public function enderChestStack(int $slot): ?InventoryStack
+    {
+        self::validateEnderChestSlot($slot);
+
+        return $this->enderChest[$slot] ?? null;
+    }
+
+    /** @return list<InventoryStack|null> */
+    public function enderChestSlots(): array
+    {
+        $slots = array_fill(0, self::ENDER_CHEST_SLOT_COUNT, null);
+        foreach ($this->enderChest as $slot => $stack) {
+            $slots[$slot] = $stack;
+        }
+
+        return array_values($slots);
+    }
+
+    /**
+     * Replaces one player-owned Ender Chest slot.
+     *
+     * The return value tells the authoritative simulation whether persisted player state changed.
+     */
+    public function replaceEnderChestSlot(int $slot, ?InventoryStack $stack): bool
+    {
+        self::validateEnderChestSlot($slot);
+        $current = $this->enderChest[$slot] ?? null;
+        if (self::sameContent($current, $stack)) {
+            return false;
+        }
+        if ($stack === null) {
+            unset($this->enderChest[$slot]);
+
+            return true;
+        }
+        if ($stack->count > $this->maximumStackSize($stack->identifier)) {
+            throw new InvalidArgumentException('Ender Chest stack exceeds the item capacity.');
+        }
+        $networkId = self::allocateStackNetworkId($this->nextStackNetworkId, $this->usedNetworkIds());
+        if ($networkId === null) {
+            throw new OverflowException('Inventory stack network ID space is exhausted.');
+        }
+        $this->enderChest[$slot] = $stack->withCountAndNetworkId($stack->count, $networkId);
+
+        return true;
     }
 
     public function craftingGridWidth(): int
@@ -451,6 +532,57 @@ final class PlayerInventory
             $removed,
             $source->container === InventoryContainer::Main && $source->slot === $this->selectedHotbarSlot,
         );
+    }
+
+    public function removeOpenedContainerForDrop(
+        int $requestId,
+        InventorySlotReference $source,
+        int $count,
+        OpenedContainerInventory $opened,
+        ?InventoryStack $expectedStack = null,
+    ): InventoryStackRemovalResult {
+        if ($source->container !== InventoryContainer::OpenedContainer
+            || $source->slot < 0 || $source->slot >= $opened->size || $count < 1) {
+            return new InventoryStackRemovalResult(false, reason: 'drop_source');
+        }
+        $stack = $opened->stackAt($source->slot);
+        if ($stack === null || $stack->count < $count) {
+            return new InventoryStackRemovalResult(false, reason: 'source_count');
+        }
+        if ($source->expectedCount !== null && $source->expectedCount !== $stack->count) {
+            return new InventoryStackRemovalResult(false, reason: 'stack_count');
+        }
+        $lastRequestIds = $opened->lastRequestIds();
+        $lastRequestId = $lastRequestIds[$source->slot] ?? null;
+        $networkIdMatches = $source->expectedStackNetworkId === 0
+            || ($source->expectedStackNetworkId < 0
+                ? $lastRequestId === $source->expectedStackNetworkId
+                    || $source->expectedStackNetworkId === $requestId
+                : $source->expectedStackNetworkId === $stack->stackNetworkId);
+        if (!$networkIdMatches || ($expectedStack !== null && !self::sameContent($stack, $expectedStack))) {
+            return new InventoryStackRemovalResult(false, reason: $networkIdMatches ? 'source_item' : 'stack_network_id');
+        }
+        $stacks = $opened->indexedStacks();
+        $removed = $stack->withCountAndNetworkId($count, $stack->stackNetworkId);
+        $remaining = $stack->count - $count;
+        if ($remaining === 0) {
+            unset($stacks[$source->slot]);
+        } else {
+            $usedIds = $this->usedNetworkIds();
+            foreach ($stacks as $existing) {
+                $usedIds[$existing->stackNetworkId] = true;
+            }
+            unset($usedIds[$stack->stackNetworkId]);
+            $networkId = self::allocateStackNetworkId($this->nextStackNetworkId, $usedIds);
+            if ($networkId === null) {
+                return new InventoryStackRemovalResult(false, reason: 'stack_id_capacity');
+            }
+            $stacks[$source->slot] = $stack->withCountAndNetworkId($remaining, $networkId);
+        }
+        $lastRequestIds[$source->slot] = $requestId;
+        $opened->commit($stacks, $lastRequestIds);
+
+        return new InventoryStackRemovalResult(true, $removed);
     }
 
     /**
@@ -822,6 +954,486 @@ final class PlayerInventory
         );
     }
 
+    /**
+     * Applies a normal move/split/merge/swap request atomically across the player and one open container.
+     *
+     * @param list<InventoryStackRequestAction> $actions
+     */
+    public function applyOpenedContainerStackRequest(
+        int $requestId,
+        array $actions,
+        OpenedContainerInventory $opened,
+    ): InventoryStackRequestResult {
+        if ($actions === []) {
+            return new InventoryStackRequestResult(false, reason: 'empty_actions');
+        }
+        /** @var array<int, InventoryStack> $stagedStacks */
+        $stagedStacks = $this->stacks;
+        $stagedCursor = $this->cursor;
+        /** @var array<int, InventoryStack> $stagedArmor */
+        $stagedArmor = $this->armor;
+        $stagedOffhand = $this->offhand;
+        /** @var array<int, InventoryStack> $stagedOpened */
+        $stagedOpened = $opened->indexedStacks();
+        /** @var array<int, int> $stagedLastRequestIds */
+        $stagedLastRequestIds = $this->lastRequestIds;
+        $stagedCursorLastRequestId = $this->cursorLastRequestId;
+        /** @var array<int, int> $stagedArmorLastRequestIds */
+        $stagedArmorLastRequestIds = $this->armorLastRequestIds;
+        $stagedOffhandLastRequestId = $this->offhandLastRequestId;
+        /** @var array<int, int> $stagedOpenedLastRequestIds */
+        $stagedOpenedLastRequestIds = $opened->lastRequestIds();
+        $affected = [];
+        $mutated = [];
+
+        foreach ($actions as $action) {
+            if (!in_array($action->type, [
+                InventoryStackRequestActionType::Take,
+                InventoryStackRequestActionType::Place,
+                InventoryStackRequestActionType::Swap,
+            ], true)) {
+                return new InventoryStackRequestResult(false, reason: 'container_action');
+            }
+            $reason = $this->validateOpenedReference(
+                $action->source,
+                $requestId,
+                $opened->size,
+                $stagedStacks,
+                $stagedCursor,
+                $stagedArmor,
+                $stagedOffhand,
+                $stagedOpened,
+                $stagedLastRequestIds,
+                $stagedCursorLastRequestId,
+                $stagedArmorLastRequestIds,
+                $stagedOffhandLastRequestId,
+                $stagedOpenedLastRequestIds,
+            ) ?? $this->validateOpenedReference(
+                $action->destination,
+                $requestId,
+                $opened->size,
+                $stagedStacks,
+                $stagedCursor,
+                $stagedArmor,
+                $stagedOffhand,
+                $stagedOpened,
+                $stagedLastRequestIds,
+                $stagedCursorLastRequestId,
+                $stagedArmorLastRequestIds,
+                $stagedOffhandLastRequestId,
+                $stagedOpenedLastRequestIds,
+            );
+            if ($reason !== null) {
+                return new InventoryStackRequestResult(false, reason: $reason);
+            }
+            if ($action->source->key() === $action->destination->key()) {
+                return new InventoryStackRequestResult(false, reason: 'same_slot');
+            }
+            $affected[$action->source->responseKey()] = $action->source;
+            $affected[$action->destination->responseKey()] = $action->destination;
+            $mutated[$action->source->key()] = $action->source;
+            $mutated[$action->destination->key()] = $action->destination;
+            $source = self::readOpenedSlot(
+                $action->source,
+                $stagedStacks,
+                $stagedCursor,
+                $stagedArmor,
+                $stagedOffhand,
+                $stagedOpened,
+            );
+            $destination = self::readOpenedSlot(
+                $action->destination,
+                $stagedStacks,
+                $stagedCursor,
+                $stagedArmor,
+                $stagedOffhand,
+                $stagedOpened,
+            );
+            if ($action->type === InventoryStackRequestActionType::Swap) {
+                if (!$this->canOccupy($action->source, $destination)
+                    || !$this->canOccupy($action->destination, $source)) {
+                    return new InventoryStackRequestResult(false, reason: 'equipment_slot');
+                }
+                self::writeOpenedSlot(
+                    $action->source,
+                    $destination,
+                    $stagedStacks,
+                    $stagedCursor,
+                    $stagedArmor,
+                    $stagedOffhand,
+                    $stagedOpened,
+                );
+                self::writeOpenedSlot(
+                    $action->destination,
+                    $source,
+                    $stagedStacks,
+                    $stagedCursor,
+                    $stagedArmor,
+                    $stagedOffhand,
+                    $stagedOpened,
+                );
+            } else {
+                if ($action->count < 1 || $source === null || $source->count < $action->count) {
+                    return new InventoryStackRequestResult(false, reason: 'source_count');
+                }
+                if ($destination !== null && !self::canStack($source, $destination)) {
+                    return new InventoryStackRequestResult(false, reason: 'destination_item');
+                }
+                $destinationCount = ($destination === null ? 0 : $destination->count) + $action->count;
+                if ($destinationCount > $this->maximumStackSize($source->identifier)) {
+                    return new InventoryStackRequestResult(false, reason: 'destination_capacity');
+                }
+                $sourceRemaining = $source->count === $action->count
+                    ? null
+                    : $source->withCountAndNetworkId($source->count - $action->count, $source->stackNetworkId);
+                $destinationResult = ($destination ?? $source)->withCountAndNetworkId(
+                    $destinationCount,
+                    ($destination ?? $source)->stackNetworkId,
+                );
+                if (!$this->canOccupy($action->destination, $destinationResult)) {
+                    return new InventoryStackRequestResult(false, reason: 'equipment_slot');
+                }
+                self::writeOpenedSlot(
+                    $action->source,
+                    $sourceRemaining,
+                    $stagedStacks,
+                    $stagedCursor,
+                    $stagedArmor,
+                    $stagedOffhand,
+                    $stagedOpened,
+                );
+                self::writeOpenedSlot(
+                    $action->destination,
+                    $destinationResult,
+                    $stagedStacks,
+                    $stagedCursor,
+                    $stagedArmor,
+                    $stagedOffhand,
+                    $stagedOpened,
+                );
+            }
+            self::writeOpenedLastRequestId(
+                $action->source,
+                $requestId,
+                $stagedLastRequestIds,
+                $stagedCursorLastRequestId,
+                $stagedArmorLastRequestIds,
+                $stagedOffhandLastRequestId,
+                $stagedOpenedLastRequestIds,
+            );
+            self::writeOpenedLastRequestId(
+                $action->destination,
+                $requestId,
+                $stagedLastRequestIds,
+                $stagedCursorLastRequestId,
+                $stagedArmorLastRequestIds,
+                $stagedOffhandLastRequestId,
+                $stagedOpenedLastRequestIds,
+            );
+        }
+
+        $selectedBefore = $this->selectedStack();
+        /** @var array<int, true> $usedIds */
+        $usedIds = [];
+        foreach ($stagedStacks as $stack) {
+            $usedIds[$stack->stackNetworkId] = true;
+        }
+        foreach ($stagedArmor as $stack) {
+            $usedIds[$stack->stackNetworkId] = true;
+        }
+        foreach ($this->crafting as $stack) {
+            $usedIds[$stack->stackNetworkId] = true;
+        }
+        foreach ($this->enderChest as $stack) {
+            $usedIds[$stack->stackNetworkId] = true;
+        }
+        foreach ($stagedOpened as $stack) {
+            $usedIds[$stack->stackNetworkId] = true;
+        }
+        foreach ([$stagedCursor, $stagedOffhand] as $stack) {
+            if ($stack !== null) {
+                $usedIds[$stack->stackNetworkId] = true;
+            }
+        }
+        $nextId = $this->nextStackNetworkId;
+        foreach ($mutated as $reference) {
+            $before = $reference->container === InventoryContainer::OpenedContainer
+                ? $opened->stackAt($reference->slot)
+                : $this->readAuthoritativeSlot($reference);
+            $after = self::readOpenedSlot(
+                $reference,
+                $stagedStacks,
+                $stagedCursor,
+                $stagedArmor,
+                $stagedOffhand,
+                $stagedOpened,
+            );
+            if (self::sameContent($before, $after)) {
+                continue;
+            }
+            if ($after !== null) {
+                $networkId = self::allocateStackNetworkId($nextId, $usedIds);
+                if ($networkId === null) {
+                    return new InventoryStackRequestResult(false, reason: 'stack_id_capacity');
+                }
+                $after = $after->withCountAndNetworkId($after->count, $networkId);
+                self::writeOpenedSlot(
+                    $reference,
+                    $after,
+                    $stagedStacks,
+                    $stagedCursor,
+                    $stagedArmor,
+                    $stagedOffhand,
+                    $stagedOpened,
+                );
+                $usedIds[$networkId] = true;
+            }
+        }
+
+        $this->stacks = $stagedStacks;
+        $this->cursor = $stagedCursor;
+        $this->armor = $stagedArmor;
+        $this->offhand = $stagedOffhand;
+        $this->lastRequestIds = $stagedLastRequestIds;
+        $this->cursorLastRequestId = $stagedCursorLastRequestId;
+        $this->armorLastRequestIds = $stagedArmorLastRequestIds;
+        $this->offhandLastRequestId = $stagedOffhandLastRequestId;
+        $this->nextStackNetworkId = $nextId;
+        $opened->commit($stagedOpened, $stagedOpenedLastRequestIds);
+
+        return new InventoryStackRequestResult(
+            true,
+            array_values($affected),
+            selectedStackChanged: !self::sameContent($selectedBefore, $this->selectedStack()),
+        );
+    }
+
+    /** @param list<InventoryStack|null> $slots */
+    public function projectOpenedContainer(string $identifier, array $slots): OpenedContainerInventory
+    {
+        if ($slots === [] || count($slots) > 256) {
+            throw new InvalidArgumentException('Opened container projection must be a non-empty bounded slot list.');
+        }
+        $usedIds = $this->usedNetworkIds();
+        $projected = [];
+        $nextId = $this->nextStackNetworkId;
+        foreach ($slots as $slot => $stack) {
+            if ($stack === null) {
+                continue;
+            }
+            if ($stack->count > $this->maximumStackSize($stack->identifier)) {
+                throw new InvalidArgumentException('Opened container contains an invalid or oversized stack.');
+            }
+            $networkId = self::allocateStackNetworkId($nextId, $usedIds);
+            if ($networkId === null) {
+                throw new OverflowException('Inventory stack network ID space is exhausted.');
+            }
+            $projected[$slot] = $stack->withCountAndNetworkId($stack->count, $networkId);
+            $usedIds[$networkId] = true;
+        }
+        $this->nextStackNetworkId = $nextId;
+
+        return new OpenedContainerInventory($identifier, count($slots), $projected);
+    }
+
+    /** Atomically adopts staged state only if the authoritative baseline is still current. */
+    public function commitStagedState(self $expected, self $staged): bool
+    {
+        if ($expected->catalog !== $this->catalog || $staged->catalog !== $this->catalog) {
+            throw new InvalidArgumentException('Staged inventory does not share the authoritative item catalog.');
+        }
+        if (!$this->matchesState($expected)) {
+            return false;
+        }
+        $this->stacks = $staged->stacks;
+        $this->selectedHotbarSlot = $staged->selectedHotbarSlot;
+        $this->cursor = $staged->cursor;
+        $this->nextStackNetworkId = $staged->nextStackNetworkId;
+        $this->armor = $staged->armor;
+        $this->offhand = $staged->offhand;
+        $this->enderChest = $staged->enderChest;
+        $this->lastRequestIds = $staged->lastRequestIds;
+        $this->cursorLastRequestId = $staged->cursorLastRequestId;
+        $this->armorLastRequestIds = $staged->armorLastRequestIds;
+        $this->offhandLastRequestId = $staged->offhandLastRequestId;
+        $this->crafting = $staged->crafting;
+        $this->craftingLastRequestIds = $staged->craftingLastRequestIds;
+        $this->craftingGridWidth = $staged->craftingGridWidth;
+
+        return true;
+    }
+
+    public function matchesState(self $expected): bool
+    {
+        return $expected->catalog === $this->catalog
+            && $this->stacks === $expected->stacks
+            && $this->selectedHotbarSlot === $expected->selectedHotbarSlot
+            && $this->cursor === $expected->cursor
+            && $this->nextStackNetworkId === $expected->nextStackNetworkId
+            && $this->armor === $expected->armor
+            && $this->offhand === $expected->offhand
+            && $this->enderChest === $expected->enderChest
+            && $this->lastRequestIds === $expected->lastRequestIds
+            && $this->cursorLastRequestId === $expected->cursorLastRequestId
+            && $this->armorLastRequestIds === $expected->armorLastRequestIds
+            && $this->offhandLastRequestId === $expected->offhandLastRequestId
+            && $this->crafting === $expected->crafting
+            && $this->craftingLastRequestIds === $expected->craftingLastRequestIds
+            && $this->craftingGridWidth === $expected->craftingGridWidth;
+    }
+
+    /**
+     * @param array<int, InventoryStack> $stacks
+     * @param array<int, InventoryStack> $armor
+     * @param array<int, InventoryStack> $opened
+     * @param array<int, int> $lastRequestIds
+     * @param array<int, int> $armorLastRequestIds
+     * @param array<int, int> $openedLastRequestIds
+     */
+    private function validateOpenedReference(
+        InventorySlotReference $reference,
+        int $requestId,
+        int $openedSize,
+        array $stacks,
+        ?InventoryStack $cursor,
+        array $armor,
+        ?InventoryStack $offhand,
+        array $opened,
+        array $lastRequestIds,
+        ?int $cursorLastRequestId,
+        array $armorLastRequestIds,
+        ?int $offhandLastRequestId,
+        array $openedLastRequestIds,
+    ): ?string {
+        if (!in_array($reference->container, [
+            InventoryContainer::Main,
+            InventoryContainer::Cursor,
+            InventoryContainer::Armor,
+            InventoryContainer::Offhand,
+            InventoryContainer::OpenedContainer,
+        ], true)
+            || ($reference->container === InventoryContainer::Main
+                && ($reference->slot < 0 || $reference->slot >= self::SLOT_COUNT))
+            || ($reference->container === InventoryContainer::Cursor && $reference->slot !== 0)
+            || ($reference->container === InventoryContainer::Armor
+                && ($reference->slot < 0 || $reference->slot >= self::ARMOR_SLOT_COUNT))
+            || ($reference->container === InventoryContainer::Offhand && $reference->slot !== 0)
+            || ($reference->container === InventoryContainer::OpenedContainer
+                && ($reference->slot < 0 || $reference->slot >= $openedSize))) {
+            return 'slot';
+        }
+        $stack = self::readOpenedSlot($reference, $stacks, $cursor, $armor, $offhand, $opened);
+        if ($reference->expectedCount !== null
+            && $reference->expectedCount !== ($stack === null ? 0 : $stack->count)) {
+            return 'stack_count';
+        }
+        $lastRequestId = match ($reference->container) {
+            InventoryContainer::Main => $lastRequestIds[$reference->slot] ?? null,
+            InventoryContainer::Cursor => $cursorLastRequestId,
+            InventoryContainer::Armor => $armorLastRequestIds[$reference->slot] ?? null,
+            InventoryContainer::Offhand => $offhandLastRequestId,
+            default => $openedLastRequestIds[$reference->slot] ?? null,
+        };
+        $matches = $reference->expectedStackNetworkId < 0
+            ? $lastRequestId === $reference->expectedStackNetworkId
+                || $reference->expectedStackNetworkId === $requestId
+            : ($stack === null ? 0 : $stack->stackNetworkId) === $reference->expectedStackNetworkId;
+
+        return $matches ? null : 'stack_network_id';
+    }
+
+    /**
+     * @param array<int, InventoryStack> $stacks
+     * @param array<int, InventoryStack> $armor
+     * @param array<int, InventoryStack> $opened
+     */
+    private static function readOpenedSlot(
+        InventorySlotReference $reference,
+        array $stacks,
+        ?InventoryStack $cursor,
+        array $armor,
+        ?InventoryStack $offhand,
+        array $opened,
+    ): ?InventoryStack {
+        $stack = match ($reference->container) {
+            InventoryContainer::Main => $stacks[$reference->slot] ?? null,
+            InventoryContainer::Cursor => $cursor,
+            InventoryContainer::Armor => $armor[$reference->slot] ?? null,
+            InventoryContainer::Offhand => $offhand,
+            default => $opened[$reference->slot] ?? null,
+        };
+
+        return $stack;
+    }
+
+    /**
+     * @param array<int, InventoryStack> $stacks
+     * @param array<int, InventoryStack> $armor
+     * @param array<int, InventoryStack> $opened
+     */
+    private static function writeOpenedSlot(
+        InventorySlotReference $reference,
+        ?InventoryStack $stack,
+        array &$stacks,
+        ?InventoryStack &$cursor,
+        array &$armor,
+        ?InventoryStack &$offhand,
+        array &$opened,
+    ): void {
+        if ($reference->container === InventoryContainer::Cursor) {
+            $cursor = $stack;
+        } elseif ($reference->container === InventoryContainer::Offhand) {
+            $offhand = $stack;
+        } elseif ($reference->container === InventoryContainer::Main) {
+            if ($stack === null) {
+                unset($stacks[$reference->slot]);
+            } else {
+                $stacks[$reference->slot] = $stack;
+            }
+        } elseif ($reference->container === InventoryContainer::Armor) {
+            if ($stack === null) {
+                unset($armor[$reference->slot]);
+            } else {
+                $armor[$reference->slot] = $stack;
+            }
+        } elseif ($reference->container === InventoryContainer::OpenedContainer) {
+            if ($stack === null) {
+                unset($opened[$reference->slot]);
+            } else {
+                $opened[$reference->slot] = $stack;
+            }
+        } else {
+            throw new InvalidArgumentException('Unsupported opened-container slot reference.');
+        }
+    }
+
+    /**
+     * @param array<int, int> $lastRequestIds
+     * @param array<int, int> $armorLastRequestIds
+     * @param array<int, int> $openedLastRequestIds
+     */
+    private static function writeOpenedLastRequestId(
+        InventorySlotReference $reference,
+        int $requestId,
+        array &$lastRequestIds,
+        ?int &$cursorLastRequestId,
+        array &$armorLastRequestIds,
+        ?int &$offhandLastRequestId,
+        array &$openedLastRequestIds,
+    ): void {
+        if ($reference->container === InventoryContainer::Main) {
+            $lastRequestIds[$reference->slot] = $requestId;
+        } elseif ($reference->container === InventoryContainer::Cursor) {
+            $cursorLastRequestId = $requestId;
+        } elseif ($reference->container === InventoryContainer::Armor) {
+            $armorLastRequestIds[$reference->slot] = $requestId;
+        } elseif ($reference->container === InventoryContainer::Offhand) {
+            $offhandLastRequestId = $requestId;
+        } else {
+            $openedLastRequestIds[$reference->slot] = $requestId;
+        }
+    }
+
     /** Adds as much as possible using existing compatible stacks before empty slots. */
     public function add(InventoryStack $incoming): ?InventoryStack
     {
@@ -906,7 +1518,8 @@ final class PlayerInventory
         ?int $offhandLastRequestId,
         array $craftingLastRequestIds,
     ): ?string {
-        if (($reference->container === InventoryContainer::Main && ($reference->slot < 0 || $reference->slot >= self::SLOT_COUNT))
+        if ($reference->container === InventoryContainer::OpenedContainer
+            || ($reference->container === InventoryContainer::Main && ($reference->slot < 0 || $reference->slot >= self::SLOT_COUNT))
             || ($reference->container === InventoryContainer::Cursor && $reference->slot !== 0)
             || ($reference->container === InventoryContainer::Armor
                 && ($reference->slot < 0 || $reference->slot >= self::ARMOR_SLOT_COUNT))
@@ -926,13 +1539,17 @@ final class PlayerInventory
         if ($reference->container === InventoryContainer::CreatedOutput) {
             return null;
         }
-        $lastRequestId = match ($reference->container) {
-            InventoryContainer::Main => $lastRequestIds[$reference->slot] ?? null,
-            InventoryContainer::Cursor => $cursorLastRequestId,
-            InventoryContainer::Armor => $armorLastRequestIds[$reference->slot] ?? null,
-            InventoryContainer::Offhand => $offhandLastRequestId,
-            InventoryContainer::CraftingInput => $craftingLastRequestIds[$reference->slot] ?? null,
-        };
+        if ($reference->container === InventoryContainer::Main) {
+            $lastRequestId = $lastRequestIds[$reference->slot] ?? null;
+        } elseif ($reference->container === InventoryContainer::Cursor) {
+            $lastRequestId = $cursorLastRequestId;
+        } elseif ($reference->container === InventoryContainer::Armor) {
+            $lastRequestId = $armorLastRequestIds[$reference->slot] ?? null;
+        } elseif ($reference->container === InventoryContainer::Offhand) {
+            $lastRequestId = $offhandLastRequestId;
+        } else {
+            $lastRequestId = $craftingLastRequestIds[$reference->slot] ?? null;
+        }
         $matches = $reference->expectedStackNetworkId < 0
             ? $lastRequestId === $reference->expectedStackNetworkId
                 || $reference->expectedStackNetworkId === $requestId
@@ -962,6 +1579,7 @@ final class PlayerInventory
             InventoryContainer::Offhand => $offhand,
             InventoryContainer::CraftingInput => $crafting[$reference->slot] ?? null,
             InventoryContainer::CreatedOutput => $createdOutput,
+            InventoryContainer::OpenedContainer => null,
         };
     }
 
@@ -980,7 +1598,9 @@ final class PlayerInventory
         array &$crafting,
         ?InventoryStack &$createdOutput,
     ): void {
-        if ($reference->container === InventoryContainer::Cursor) {
+        if ($reference->container === InventoryContainer::OpenedContainer) {
+            throw new InvalidArgumentException('Opened-container slots require the cross-inventory transaction path.');
+        } elseif ($reference->container === InventoryContainer::Cursor) {
             $cursor = $stack;
         } elseif ($reference->container === InventoryContainer::Offhand) {
             $offhand = $stack;
@@ -1019,7 +1639,9 @@ final class PlayerInventory
         ?int &$offhandLastRequestId,
         array &$craftingLastRequestIds,
     ): void {
-        if ($reference->container === InventoryContainer::Cursor) {
+        if ($reference->container === InventoryContainer::OpenedContainer) {
+            throw new InvalidArgumentException('Opened-container lineage requires the cross-inventory transaction path.');
+        } elseif ($reference->container === InventoryContainer::Cursor) {
             $cursorLastRequestId = $requestId;
         } elseif ($reference->container === InventoryContainer::Offhand) {
             $offhandLastRequestId = $requestId;
@@ -1053,6 +1675,7 @@ final class PlayerInventory
             InventoryContainer::Offhand => $this->offhand,
             InventoryContainer::CraftingInput => $this->crafting[$reference->slot] ?? null,
             InventoryContainer::CreatedOutput => null,
+            InventoryContainer::OpenedContainer => null,
         };
     }
 
@@ -1065,6 +1688,7 @@ final class PlayerInventory
             InventoryContainer::Offhand => $this->offhandLastRequestId,
             InventoryContainer::CraftingInput => $this->craftingLastRequestIds[$reference->slot] ?? null,
             InventoryContainer::CreatedOutput => null,
+            InventoryContainer::OpenedContainer => null,
         };
     }
 
@@ -1104,6 +1728,7 @@ final class PlayerInventory
             InventoryContainer::Offhand => $this->offhandLastRequestId = $requestId,
             InventoryContainer::CraftingInput => $this->craftingLastRequestIds[$reference->slot] = $requestId,
             InventoryContainer::CreatedOutput => null,
+            InventoryContainer::OpenedContainer => null,
         };
     }
 
@@ -1216,6 +1841,9 @@ final class PlayerInventory
         foreach ($this->crafting as $stack) {
             $used[$stack->stackNetworkId] = true;
         }
+        foreach ($this->enderChest as $stack) {
+            $used[$stack->stackNetworkId] = true;
+        }
 
         return $used;
     }
@@ -1223,7 +1851,8 @@ final class PlayerInventory
     /** @param array<int, true> $usedIds */
     private static function allocateStackNetworkId(int &$nextId, array $usedIds): ?int
     {
-        for ($attempt = 0; $attempt < self::SLOT_COUNT + self::ARMOR_SLOT_COUNT + 3; ++$attempt) {
+        for ($attempt = 0; $attempt < self::SLOT_COUNT + self::ARMOR_SLOT_COUNT
+            + self::ENDER_CHEST_SLOT_COUNT + 12; ++$attempt) {
             if ($nextId < 1 || $nextId > 0x7fffffff) {
                 $nextId = 1;
             }
@@ -1254,6 +1883,13 @@ final class PlayerInventory
     {
         if ($slot < 0 || $slot >= self::ARMOR_SLOT_COUNT) {
             throw new InvalidArgumentException('Inventory slot is outside the armor inventory.');
+        }
+    }
+
+    private static function validateEnderChestSlot(int $slot): void
+    {
+        if ($slot < 0 || $slot >= self::ENDER_CHEST_SLOT_COUNT) {
+            throw new InvalidArgumentException('Inventory slot is outside the Ender Chest inventory.');
         }
     }
 

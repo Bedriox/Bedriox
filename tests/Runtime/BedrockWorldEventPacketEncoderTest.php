@@ -446,11 +446,11 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
             [
                 new ItemStackResponseContainer(
                     new FullContainerName(FullContainerName::COMBINED_HOTBAR_AND_INVENTORY),
-                    [new ItemStackResponseSlot(0, 0, 32, 2)],
+                    [new ItemStackResponseSlot(0, 0, 32, 2, filteredCustomName: '')],
                 ),
                 new ItemStackResponseContainer(
                     new FullContainerName(FullContainerName::CURSOR),
-                    [new ItemStackResponseSlot(0, 0, 32, 3)],
+                    [new ItemStackResponseSlot(0, 0, 32, 3, filteredCustomName: '')],
                 ),
             ],
         )]))->encode(), $packets[0]->packet->encode());

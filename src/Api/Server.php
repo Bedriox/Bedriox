@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Api;
 
+use Bedriox\Api\Inventory\ContainerManager;
 use Bedriox\Api\Inventory\ItemStack;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\Player\Player;
@@ -22,6 +23,9 @@ interface Server
     public function player(string $uuid): ?Player;
 
     public function block(BlockPosition $position): Block;
+
+    /** Domain service for real and plugin-owned inventories. */
+    public function containers(): ContainerManager;
 
     public function sendMessage(Player $player, string $message): void;
 

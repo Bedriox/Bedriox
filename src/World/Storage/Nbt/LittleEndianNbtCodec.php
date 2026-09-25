@@ -21,18 +21,32 @@ final class LittleEndianNbtCodec
     {
         $this->offset = 0;
         $this->entries = 0;
-        if ($this->readUnsignedByte($payload) !== LittleEndianNbtTag::COMPOUND) {
-            throw new CorruptWorldDataException('level.dat NBT root must be a compound tag.');
-        }
-        if ($this->readString($payload) !== '') {
-            throw new CorruptWorldDataException('level.dat NBT root must be unnamed.');
-        }
-        $root = $this->readCompound($payload, 1);
+        $root = $this->readRootCompound($payload);
         if ($this->offset !== strlen($payload)) {
             throw new CorruptWorldDataException('level.dat NBT payload contains trailing bytes.');
         }
 
         return $root;
+    }
+
+    /** @return list<array<string, LittleEndianNbtTag>> */
+    public function decodeRootCompounds(string $payload, int $maximumRoots): array
+    {
+        if ($maximumRoots < 1 || $maximumRoots > self::MAX_COLLECTION_ENTRIES) {
+            throw new InvalidArgumentException('NBT root count limit is outside the supported range.');
+        }
+        $this->offset = 0;
+        $this->entries = 0;
+        $roots = [];
+        $length = strlen($payload);
+        while ($this->offset < $length) {
+            if (count($roots) >= $maximumRoots) {
+                throw new CorruptWorldDataException('NBT payload contains too many root compounds.');
+            }
+            $roots[] = $this->readRootCompound($payload);
+        }
+
+        return $roots;
     }
 
     /** @param array<string, LittleEndianNbtTag> $root */
@@ -45,6 +59,34 @@ final class LittleEndianNbtCodec
         }
 
         return $payload;
+    }
+
+    /** @param list<array<string, LittleEndianNbtTag>> $roots */
+    public function encodeRootCompounds(array $roots, int $maximumRoots): string
+    {
+        if ($maximumRoots < 1 || $maximumRoots > self::MAX_COLLECTION_ENTRIES || count($roots) > $maximumRoots) {
+            throw new InvalidArgumentException('NBT root count exceeds its supported limit.');
+        }
+        $this->entries = 0;
+        $payload = '';
+        foreach ($roots as $root) {
+            $payload .= chr(LittleEndianNbtTag::COMPOUND) . "\0\0" . $this->writeCompound($root, 1);
+        }
+
+        return $payload;
+    }
+
+    /** @return array<string, LittleEndianNbtTag> */
+    private function readRootCompound(string $payload): array
+    {
+        if ($this->readUnsignedByte($payload) !== LittleEndianNbtTag::COMPOUND) {
+            throw new CorruptWorldDataException('NBT root must be a compound tag.');
+        }
+        if ($this->readString($payload) !== '') {
+            throw new CorruptWorldDataException('NBT root must be unnamed.');
+        }
+
+        return $this->readCompound($payload, 1);
     }
 
     /** @return array<string, LittleEndianNbtTag> */

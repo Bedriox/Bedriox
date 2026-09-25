@@ -12,6 +12,7 @@ final class LevelDbChunkKey
     public const string DATA_3D = "\x2b";
     public const string VERSION = "\x2c";
     public const string SUBCHUNK = "\x2f";
+    public const string BLOCK_ENTITIES = "\x31";
     public const string FINALIZATION = "\x36";
 
     private function __construct() {}
@@ -34,6 +35,11 @@ final class LevelDbChunkKey
     public static function finalization(int $chunkX, int $chunkZ): string
     {
         return self::prefix($chunkX, $chunkZ) . self::FINALIZATION;
+    }
+
+    public static function blockEntities(int $chunkX, int $chunkZ): string
+    {
+        return self::prefix($chunkX, $chunkZ) . self::BLOCK_ENTITIES;
     }
 
     public static function subChunk(int $chunkX, int $chunkZ, int $sectionY): string

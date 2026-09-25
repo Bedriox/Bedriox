@@ -10,8 +10,16 @@ use Bedriox\Api\Event\Block\BlockBreakEvent;
 use Bedriox\Api\Event\Block\BlockBrokenEvent;
 use Bedriox\Api\Event\Block\BlockPlacedEvent;
 use Bedriox\Api\Event\Block\BlockPlaceEvent;
+use Bedriox\Api\Event\Block\ChestPairedEvent;
+use Bedriox\Api\Event\Block\ChestPairEvent;
 use Bedriox\Api\Event\Inventory\InventoryChangedEvent;
 use Bedriox\Api\Event\Inventory\InventoryChangeEvent;
+use Bedriox\Api\Event\Inventory\InventoryCloseEvent;
+use Bedriox\Api\Event\Inventory\InventoryCloseReason;
+use Bedriox\Api\Event\Inventory\InventoryOpenedEvent;
+use Bedriox\Api\Event\Inventory\InventoryOpenEvent;
+use Bedriox\Api\Event\Inventory\InventoryTransactionCommittedEvent;
+use Bedriox\Api\Event\Inventory\InventoryTransactionEvent;
 use Bedriox\Api\Event\Player\PlayerAttackedEvent;
 use Bedriox\Api\Event\Player\PlayerAttackEvent;
 use Bedriox\Api\Event\Player\PlayerChatBroadcastEvent;
@@ -53,8 +61,11 @@ use Bedriox\Api\Event\Player\PlayerRespawnEvent;
 use Bedriox\Api\Event\Player\PlayerTeleportedEvent;
 use Bedriox\Api\Event\Player\PlayerTeleportEvent;
 use Bedriox\Api\Inventory\ConsumptionResult;
+use Bedriox\Api\Inventory\Container;
+use Bedriox\Api\Inventory\ContainerView;
 use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Inventory\Inventory as ApiInventory;
+use Bedriox\Api\Inventory\InventoryTransaction;
 use Bedriox\Api\Inventory\ItemDamageCause;
 use Bedriox\Api\Inventory\ItemStack as ApiItemStack;
 use Bedriox\Api\Inventory\ItemUseCancellationReason as ApiItemUseCancellationReason;
@@ -493,6 +504,27 @@ final readonly class PluginGameplayEventBridge
         $this->events->dispatch(new BlockPlacedEvent($this->playerView($player), self::block($position, $identifier)));
     }
 
+    public function allowChestPair(Player $player, BlockPosition $left, BlockPosition $right, string $identifier): bool
+    {
+        $event = new ChestPairEvent(
+            self::block($left, $identifier),
+            self::block($right, $identifier),
+            $this->playerView($player),
+        );
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function chestPaired(Player $player, BlockPosition $left, BlockPosition $right, string $identifier): void
+    {
+        $this->events->dispatch(new ChestPairedEvent(
+            self::block($left, $identifier),
+            self::block($right, $identifier),
+            $this->playerView($player),
+        ));
+    }
+
     public function allowInventoryChange(Player $player, PlayerInventory $before, PlayerInventory $after): bool
     {
         $event = new InventoryChangeEvent($this->playerView($player, $before), self::inventory($before), self::inventory($after));
@@ -508,6 +540,41 @@ final readonly class PluginGameplayEventBridge
             self::inventory($before),
             self::inventory($player->inventory),
         ));
+    }
+
+    public function allowContainerOpen(Player $player, ContainerView $container, ?Container $handle = null): bool
+    {
+        $event = new InventoryOpenEvent($this->playerView($player), $container, $handle);
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function containerOpened(Player $player, ContainerView $container, ?Container $handle = null): void
+    {
+        $this->events->dispatch(new InventoryOpenedEvent($this->playerView($player), $container, $handle));
+    }
+
+    public function containerClosed(
+        Player $player,
+        ContainerView $container,
+        InventoryCloseReason $reason,
+        ?Container $handle = null,
+    ): void {
+        $this->events->dispatch(new InventoryCloseEvent($this->playerView($player), $container, $reason, $handle));
+    }
+
+    public function allowContainerTransaction(Player $player, InventoryTransaction $transaction): bool
+    {
+        $event = new InventoryTransactionEvent($this->playerView($player), $transaction);
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function containerTransactionCommitted(Player $player, InventoryTransaction $transaction): void
+    {
+        $this->events->dispatch(new InventoryTransactionCommittedEvent($this->playerView($player), $transaction));
     }
 
     public function pickupItem(Player $player, InventoryStack $stack): ?int

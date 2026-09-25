@@ -48,6 +48,16 @@ final class ItemCatalogTest extends TestCase
         self::assertSame('minecraft:cobbled_deepslate', $catalog->type('minecraft:cobbled_deepslate')->placedBlockState?->identifier());
         self::assertSame(16, $catalog->type('minecraft:snowball')->maximumStackSize);
         self::assertSame(64, $catalog->type('minecraft:diamond')->maximumStackSize);
+        self::assertSame(1, $catalog->type('minecraft:shulker_box')->maximumStackSize);
+        self::assertSame(1, $catalog->type('minecraft:red_shulker_box')->maximumStackSize);
+        self::assertSame(
+            'minecraft:undyed_shulker_box',
+            $catalog->type('minecraft:shulker_box')->placedBlockState?->identifier(),
+        );
+        self::assertSame(
+            'minecraft:red_shulker_box',
+            $catalog->type('minecraft:red_shulker_box')->placedBlockState?->identifier(),
+        );
         self::assertCount(count($catalog->all()), $catalog->commandIdentifiers());
         self::assertContains('diamond', $catalog->commandIdentifiers());
         self::assertNotContains('minecraft:diamond', $catalog->commandIdentifiers());

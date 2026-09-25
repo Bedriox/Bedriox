@@ -13,6 +13,7 @@ final readonly class InventorySlotReference
         public ?int $responseContainerId = null,
         public ?int $expectedCount = null,
         public ?int $responseSlot = null,
+        public ?int $responseContainerDynamicId = null,
     ) {}
 
     public function key(): string
@@ -24,6 +25,7 @@ final readonly class InventorySlotReference
             InventoryContainer::Offhand => 'offhand:',
             InventoryContainer::CraftingInput => 'crafting_input:',
             InventoryContainer::CreatedOutput => 'created_output:',
+            InventoryContainer::OpenedContainer => 'opened_container:',
         } . $this->slot;
     }
 
@@ -36,8 +38,10 @@ final readonly class InventorySlotReference
             InventoryContainer::Offhand => 'offhand:',
             InventoryContainer::CraftingInput => 'crafting_input:',
             InventoryContainer::CreatedOutput => 'created_output:',
+            InventoryContainer::OpenedContainer => 'opened_container:',
         }
-        . ($this->responseContainerId ?? -1) . ':' . $this->responseSlotId();
+        . ($this->responseContainerId ?? -1) . ':' . ($this->responseContainerDynamicId ?? -1)
+        . ':' . $this->responseSlotId();
     }
 
     public function responseSlotId(): int

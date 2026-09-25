@@ -14,4 +14,6 @@ enum InventoryContainer
     case CraftingInput;
     /** Ephemeral request-local slot populated by an authoritative craft or creative selection. */
     case CreatedOutput;
+    /** The simulation-authorized dynamic storage window currently open for this player. */
+    case OpenedContainer;
 }

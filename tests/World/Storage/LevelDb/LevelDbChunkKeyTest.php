@@ -17,6 +17,7 @@ final class LevelDbChunkKeyTest extends TestCase
         self::assertSame($prefix . "\x2c", LevelDbChunkKey::version(-1, -2));
         self::assertSame($prefix . "\x2b", LevelDbChunkKey::data3d(-1, -2));
         self::assertSame($prefix . "\x2f\xfc", LevelDbChunkKey::subChunk(-1, -2, -4));
+        self::assertSame($prefix . "\x31", LevelDbChunkKey::blockEntities(-1, -2));
         self::assertSame($prefix . "\x36", LevelDbChunkKey::finalization(-1, -2));
     }
 

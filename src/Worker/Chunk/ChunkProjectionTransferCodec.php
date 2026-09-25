@@ -13,12 +13,13 @@ use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\PackedPaletteWords;
+use Bedriox\Server\World\Storage\LevelDb\PersistentBlockEntityCodec;
 
 /** Canonical packed snapshot used only for worker-side Bedrock chunk projection. */
 final class ChunkProjectionTransferCodec
 {
     public const int MAXIMUM_ENCODED_BYTES = 2_097_152;
-    private const string MAGIC = "BXPP\x00\x01";
+    private const string MAGIC = "BXPP\x00\x02";
     private const int CHECKSUM_BYTES = 32;
     private const int MAXIMUM_STATE_BYTES = 65_535;
 
@@ -63,6 +64,13 @@ final class ChunkProjectionTransferCodec
             $previousPaletteBody = $paletteBody;
             $previousBits = $bits;
             $previousWords = $words;
+            self::guardBody($body);
+        }
+
+        $blockEntities = (new PersistentBlockEntityCodec())->encodeNetwork($chunk->blockEntityCollection());
+        $body .= pack('n', count($blockEntities));
+        foreach ($blockEntities as $networkNbt) {
+            $body .= pack('N', strlen($networkNbt)) . $networkNbt;
             self::guardBody($body);
         }
 
@@ -167,6 +175,28 @@ final class ChunkProjectionTransferCodec
                 );
                 $biomeStorages[] = $previousBiome;
             }
+
+            $blockEntityCount = $reader->unsignedShort();
+            if ($blockEntityCount > \Bedriox\Server\World\BlockEntity\BlockEntityCollection::MAXIMUM_ENTITIES) {
+                throw new ChunkTransferException('Chunk projection contains too many block entities.');
+            }
+            $blockEntities = [];
+            $totalBlockEntityBytes = 0;
+            for ($index = 0; $index < $blockEntityCount; ++$index) {
+                $length = $reader->signedInt();
+                if ($length < 3 || $length > PersistentBlockEntityCodec::MAXIMUM_NETWORK_BYTES) {
+                    throw new ChunkTransferException('Chunk projection block-entity length is outside its bound.');
+                }
+                $totalBlockEntityBytes += $length;
+                if ($totalBlockEntityBytes > PersistentBlockEntityCodec::MAXIMUM_NETWORK_BYTES) {
+                    throw new ChunkTransferException('Chunk projection block-entity data exceeds its byte limit.');
+                }
+                $networkNbt = $reader->bytes($length);
+                if ($networkNbt[0] !== "\x0a") {
+                    throw new ChunkTransferException('Chunk projection block entity is not a network-NBT compound.');
+                }
+                $blockEntities[] = $networkNbt;
+            }
             $reader->finish();
 
             return new ChunkColumnData(
@@ -177,6 +207,7 @@ final class ChunkProjectionTransferCodec
                 Chunk::MAX_SECTION_Y,
                 $sections,
                 $biomeStorages,
+                $blockEntities,
             );
         } catch (ChunkTransferException $error) {
             throw $error;

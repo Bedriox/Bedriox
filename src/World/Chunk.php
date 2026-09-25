@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Bedriox\Server\World;
 
 use Bedriox\Server\World\Block\InternalBlockStateId;
+use Bedriox\Server\World\BlockEntity\BlockEntity;
+use Bedriox\Server\World\BlockEntity\BlockEntityCollection;
 use InvalidArgumentException;
 
 /** Immutable overworld chunk; missing sections contain the chunk's air state. */
@@ -14,7 +16,11 @@ final readonly class Chunk
     public const DIRTY_BLOCKS = 1 << 0;
     public const DIRTY_BIOMES = 1 << 1;
     public const DIRTY_FINALIZATION = 1 << 2;
-    public const DIRTY_ALL = self::DIRTY_BLOCKS | self::DIRTY_BIOMES | self::DIRTY_FINALIZATION;
+    public const DIRTY_BLOCK_ENTITIES = 1 << 3;
+    public const DIRTY_ALL = self::DIRTY_BLOCKS
+        | self::DIRTY_BIOMES
+        | self::DIRTY_FINALIZATION
+        | self::DIRTY_BLOCK_ENTITIES;
 
     public const MIN_Y = -64;
     public const MAX_Y = 319;
@@ -32,6 +38,8 @@ final readonly class Chunk
     /** @var array<int, BiomeStorage> */
     private array $biomeStorages;
 
+    private BlockEntityCollection $blockEntities;
+
     /**
      * @param list<mixed>       $sections
      * @param array<int, mixed> $biomeStorages
@@ -46,6 +54,7 @@ final readonly class Chunk
         public int $dirtyFlags = self::DIRTY_NONE,
         public ChunkFinalizationState $finalizationState = ChunkFinalizationState::Done,
         array $biomeStorages = [],
+        ?BlockEntityCollection $blockEntities = null,
     ) {
         if ($revision < 0 || $persistedRevision < 0 || $persistedRevision > $revision) {
             throw new InvalidArgumentException('Chunk revisions must be non-negative and persisted revision cannot lead revision.');
@@ -80,6 +89,11 @@ final readonly class Chunk
         }
         ksort($indexedBiomes, SORT_NUMERIC);
         $this->biomeStorages = $indexedBiomes;
+        if ($blockEntities !== null && ($blockEntities->position->x !== $position->x
+            || $blockEntities->position->z !== $position->z)) {
+            throw new InvalidArgumentException('Block-entity collection belongs to a different chunk.');
+        }
+        $this->blockEntities = $blockEntities ?? new BlockEntityCollection($position);
     }
 
     public function blockStateAt(int $localX, int $y, int $localZ): InternalBlockStateId
@@ -190,6 +204,7 @@ final readonly class Chunk
             $this->dirtyFlags | self::DIRTY_BLOCKS,
             $this->finalizationState,
             $this->biomeStorages,
+            $this->blockEntities,
         );
     }
 
@@ -215,6 +230,7 @@ final readonly class Chunk
             $this->dirtyFlags | self::DIRTY_BIOMES,
             $this->finalizationState,
             $biomeStorages,
+            $this->blockEntities,
         );
     }
 
@@ -234,6 +250,65 @@ final readonly class Chunk
             $this->dirtyFlags | self::DIRTY_FINALIZATION,
             $state,
             $this->biomeStorages,
+            $this->blockEntities,
+        );
+    }
+
+    public function blockEntityAt(BlockPosition $position): ?BlockEntity
+    {
+        return $this->blockEntities->at($position);
+    }
+
+    /** @return list<BlockEntity> */
+    public function blockEntities(): array
+    {
+        return $this->blockEntities->all();
+    }
+
+    public function blockEntityCollection(): BlockEntityCollection
+    {
+        return $this->blockEntities;
+    }
+
+    public function withBlockEntity(BlockEntity $blockEntity): self
+    {
+        $replacement = $this->blockEntities->with($blockEntity);
+        if ($replacement === $this->blockEntities) {
+            return $this;
+        }
+
+        return new self(
+            $this->position,
+            $this->air,
+            array_values($this->sections),
+            $this->biome,
+            self::nextRevision($this->revision),
+            $this->persistedRevision,
+            $this->dirtyFlags | self::DIRTY_BLOCK_ENTITIES,
+            $this->finalizationState,
+            $this->biomeStorages,
+            $replacement,
+        );
+    }
+
+    public function withoutBlockEntity(BlockPosition $position): self
+    {
+        $replacement = $this->blockEntities->without($position);
+        if ($replacement === $this->blockEntities) {
+            return $this;
+        }
+
+        return new self(
+            $this->position,
+            $this->air,
+            array_values($this->sections),
+            $this->biome,
+            self::nextRevision($this->revision),
+            $this->persistedRevision,
+            $this->dirtyFlags | self::DIRTY_BLOCK_ENTITIES,
+            $this->finalizationState,
+            $this->biomeStorages,
+            $replacement,
         );
     }
 
@@ -257,7 +332,17 @@ final readonly class Chunk
             $savedRevision === $this->revision ? self::DIRTY_NONE : $this->dirtyFlags,
             $this->finalizationState,
             $this->biomeStorages,
+            $this->blockEntities,
         );
+    }
+
+    private static function nextRevision(int $revision): int
+    {
+        if ($revision === PHP_INT_MAX) {
+            throw new \OverflowException('Chunk revision space is exhausted.');
+        }
+
+        return $revision + 1;
     }
 
     private static function validateCoordinates(int $localX, int $y, int $localZ): void
