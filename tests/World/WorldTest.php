@@ -19,6 +19,7 @@ use Bedriox\Server\World\Provider\WorldData;
 use Bedriox\Server\World\SpawnPosition;
 use Bedriox\Server\World\World;
 use Bedriox\Server\World\WorldMetadata;
+use Bedriox\Server\World\WorldTimeRules;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 
@@ -94,6 +95,31 @@ final class WorldTest extends TestCase
                 self::addToAssertionCount(1);
             }
         }
+    }
+
+    public function testWorldOwnsBoundedTickingPausableTime(): void
+    {
+        $world = $this->world();
+
+        self::assertSame(0, $world->time());
+        $world->setTime(13_000);
+        self::assertSame(13_000, $world->timeOfDay());
+        self::assertSame(0, $world->day());
+        $world->advanceTime();
+        self::assertSame(13_001, $world->time());
+
+        $world->stopTime();
+        self::assertFalse($world->isTimeRunning());
+        $world->advanceTime();
+        self::assertSame(13_001, $world->time());
+
+        $world->startTime();
+        $world->setTime(WorldTimeRules::MAXIMUM);
+        $world->advanceTime();
+        self::assertSame(11_648, $world->time());
+
+        $this->expectException(InvalidArgumentException::class);
+        $world->setTime(-1);
     }
 
     public function testSpawnYMustBeInsideTheWorld(): void
@@ -235,6 +261,7 @@ final class WorldTest extends TestCase
         );
         $world->chunk(new ChunkPosition(0, 0));
         self::assertSame($persistedSpawn, $world->spawn());
+        $world->setTime(13_000);
 
         $world->close();
         $world->close();
@@ -244,7 +271,7 @@ final class WorldTest extends TestCase
         self::assertCount(1, $provider->chunks);
         self::assertSame(0, $world->dirtyChunkCount());
         self::assertSame('flat', $provider->data->generatorName);
-        self::assertSame(9001, $provider->data->time);
+        self::assertSame(13_000, $provider->data->time);
     }
 
     public function testCloseReleasesProviderAfterDurabilityFailureAndRemainsIdempotent(): void

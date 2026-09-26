@@ -21,7 +21,7 @@ Bedriox gives server owners a performance-focused foundation for creating Minecr
 
 ## What Bedriox offers today
 
-- **Playable multiplayer foundations** — synchronized players, movement, chat, survival and creative inventories, personal and crafting-table recipes, ordinary food and nutrition, armor and offhand equipment, game modes, tool-aware block interaction, dropped-item pickup, player-versus-player combat, health, death, respawning, and persistent streamed worlds.
+- **Playable multiplayer foundations** — synchronized players, movement, chat, survival and creative inventories, personal and crafting-table recipes, ordinary food and nutrition, armor and offhand equipment, game modes, tool-aware block interaction, dropped-item pickup, player-versus-player combat, health, death, respawning, persistent streamed worlds, and server-owned mobs with spawn eggs, summoning, persistent equipment, bounded behavior, and customizable death loot.
 - **Worlds to explore and shape** — seeded continents, mountain ranges, valleys, rivers, climate-driven forests and deserts, oceans, caves, ore veins, snowy highlands, and the classic flat-world option.
 - **Responsive exploration** — bounded generation and streaming keep nearby terrain moving smoothly as players travel.
 - **Persistent terrain** — Mojang-compatible LevelDB storage preserves generated chunks and authoritative block changes across clean restarts.
@@ -31,7 +31,7 @@ Bedriox gives server owners a performance-focused foundation for creating Minecr
 
 ## Where Bedriox is headed
 
-Bedriox is being designed for vanilla-style survival, custom game modes, minigames, hubs, and modded experiences. The experimental plugin API already provides lifecycle hooks, typed gameplay events, player/world snapshots, messages, teleports, block changes, bounded inventory changes, and commands shared by the console and players. UUID-based operators and permission nodes control player access. Economies, richer mechanics, mobs, and NPCs remain planned expansions.
+Bedriox is being designed for vanilla-style survival, custom game modes, minigames, hubs, and modded experiences. The experimental plugin API already provides lifecycle hooks, typed gameplay events, player/world/entity views, custom mob definitions, messages, teleports, block changes, bounded inventory changes, and commands shared by the console and players. UUID-based operators and permission nodes control player access. Economies, deeper species-specific behavior, and richer NPC mechanics remain planned expansions.
 
 Bedriox is under active development. These expansion features are roadmap direction, not finished APIs, and behavior may change before the first stable release.
 

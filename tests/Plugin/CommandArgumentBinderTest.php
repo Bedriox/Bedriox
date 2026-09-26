@@ -15,8 +15,10 @@ use Bedriox\Api\Player\Player;
 use Bedriox\Api\Player\PlayerConnection;
 use Bedriox\Api\World\Position;
 use Bedriox\Protocol\Packet\Packet;
+use Bedriox\Server\Entity\Vanilla\ZombieEntity;
 use Bedriox\Server\Plugin\Command\CommandArgumentBinder;
 use Bedriox\Server\Plugin\Command\CommandBindingException;
+use Bedriox\Server\Simulation\Position as InternalPosition;
 use PHPUnit\Framework\TestCase;
 
 final class CommandArgumentBinderTest extends TestCase
@@ -80,6 +82,62 @@ final class CommandArgumentBinderTest extends TestCase
         self::assertSame([$alex], $binder->bind($arguments, new BinderPlayerCommandSender($alex), ['@s'])->players('targets'));
     }
 
+    public function testEntitySelectorsResolveAllRootsAndBoundedFilters(): void
+    {
+        $alex = self::player('Alex', true, new Position(0.0, 64.0, 0.0));
+        $steve = self::player('Steve', true, new Position(8.0, 64.0, 0.0));
+        $zombie = new ZombieEntity(
+            '00000000-0000-4000-8000-000000000003',
+            200,
+            'world',
+            new InternalPosition(2.0, 64.0, 0.0),
+        );
+        $binder = new CommandArgumentBinder(
+            static fn(): array => [$steve, $alex],
+            static fn(): array => [$zombie],
+            static fn(int $upperBound): int => 0,
+            static fn(): Position => new Position(0.5, 64.0, 0.5),
+        );
+        $many = CommandArguments::create()->addArgument(CommandParameter::entities('targets'));
+        $single = CommandArguments::create()->addArgument(CommandParameter::entity('target'));
+        $sender = new BinderPlayerCommandSender($alex);
+
+        self::assertSame([$alex, $steve], $binder->bind($many, $sender, ['@a'])->entities('targets'));
+        self::assertSame([$alex], $binder->bind($many, $sender, ['@s'])->entities('targets'));
+        self::assertSame($alex, $binder->bind($single, $sender, ['@p'])->entity('target'));
+        self::assertSame($zombie, $binder->bind(
+            $single,
+            $sender,
+            ['@e[type=zombie,distance=..5,limit=1,sort=nearest]'],
+        )->entity('target'));
+        self::assertSame($steve, $binder->bind($single, $sender, ['@r'])->entity('target'));
+        self::assertSame($zombie, $binder->bind($single, $sender, [$zombie->getUniqueId()])->entity('target'));
+        self::assertSame($zombie, $binder->bind(
+            $single,
+            new BinderCommandSender(),
+            ['@n[type=zombie,distance=..4]'],
+        )->entity('target'));
+    }
+
+    public function testEntitySelectorRejectsMultipleResultsAndUnboundedLimits(): void
+    {
+        $alex = self::player('Alex', true);
+        $steve = self::player('Steve', true);
+        $binder = new CommandArgumentBinder(static fn(): array => [$alex, $steve]);
+        $single = CommandArguments::create()->addArgument(CommandParameter::entity('target'));
+
+        try {
+            $binder->bind($single, new BinderPlayerCommandSender($alex), ['@a']);
+            self::fail('A single entity parameter accepted multiple targets.');
+        } catch (CommandBindingException $failure) {
+            self::assertSame('The target selector matched more than one entity.', $failure->getMessage());
+        }
+
+        $this->expectException(CommandBindingException::class);
+        $this->expectExceptionMessage('Selector limit exceeds 128 results.');
+        $binder->bind($single, new BinderPlayerCommandSender($alex), ['@e[limit=129]']);
+    }
+
     public function testInvalidTypedValueReportsTheParameterFailure(): void
     {
         $arguments = CommandArguments::create()
@@ -103,12 +161,12 @@ final class CommandArgumentBinderTest extends TestCase
         self::assertSame(['enabled' => true, 'label' => 'hello world'], $values->json('data'));
     }
 
-    private static function player(string $name, bool $connected): Player
+    private static function player(string $name, bool $connected, ?Position $position = null): Player
     {
         return new Player(
             $name,
             $name === 'Alex' ? '00000000-0000-0000-0000-000000000001' : '00000000-0000-0000-0000-000000000002',
-            new Position(0.0, 64.0, 0.0),
+            $position ?? new Position(0.0, 64.0, 0.0),
             0.0,
             0.0,
             false,

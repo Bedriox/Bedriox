@@ -15,6 +15,7 @@ use Bedriox\Api\Command\CommandSender;
 use Bedriox\Api\Command\CommandSenderType;
 use Bedriox\Api\Command\CommandSoftEnum;
 use Bedriox\Api\Command\CommandSubscription;
+use Bedriox\Api\Entity\Entity;
 use Bedriox\Api\Event\Command\CommandDispatchedEvent;
 use Bedriox\Api\Event\Command\CommandPreDispatchEvent;
 use Bedriox\Server\Plugin\Event\EventDispatcher;
@@ -65,6 +66,9 @@ final class CommandRegistry
         private readonly int $maximumSoftEnums = 256,
         private readonly int $maximumSoftEnumsPerPlugin = 32,
         ?Closure $onlinePlayers = null,
+        ?Closure $entities = null,
+        ?Closure $selectorRandomIndex = null,
+        ?Closure $selectorOrigin = null,
     ) {
         if ($maximumCommands < 1 || $maximumCommands > 4096
             || $maximumCommandsPerPlugin < 1 || $maximumCommandsPerPlugin > $maximumCommands
@@ -73,7 +77,12 @@ final class CommandRegistry
             || $maximumSoftEnumsPerPlugin < 1 || $maximumSoftEnumsPerPlugin > $maximumSoftEnums) {
             throw new \InvalidArgumentException('Invalid command registry limits.');
         }
-        $this->binder = new CommandArgumentBinder($onlinePlayers ?? static fn(): array => []);
+        $this->binder = new CommandArgumentBinder(
+            $onlinePlayers ?? static fn(): array => [],
+            $entities ?? static fn(): array => [],
+            $selectorRandomIndex,
+            $selectorOrigin,
+        );
     }
 
     public function register(string $plugin, Command $command): CommandSubscription

@@ -105,7 +105,9 @@ final readonly class BedrockCommandPacketProjector
             CommandParameterType::FLOAT => CommandArgumentType::Float,
             CommandParameterType::BOOLEAN => new CommandEnum('bedriox:boolean', ['true', 'false']),
             CommandParameterType::ONLINE_PLAYER => $onlinePlayers,
-            CommandParameterType::PLAYERS => CommandArgumentType::Target,
+            CommandParameterType::PLAYERS,
+            CommandParameterType::ENTITY,
+            CommandParameterType::ENTITIES => CommandArgumentType::Target,
             CommandParameterType::CHOICE, CommandParameterType::ENUM => new CommandEnum(
                 self::enumName($command, $parameter),
                 $parameter->choices(),

@@ -56,4 +56,15 @@ final readonly class BlockCollisionShape
     {
         return $this->boxes === [];
     }
+
+    /** Returns the highest local collision surface, or null for a non-colliding block. */
+    public function highestY(): ?float
+    {
+        $highest = null;
+        foreach ($this->boxes as $box) {
+            $highest = $highest === null ? $box->maxY : max($highest, $box->maxY);
+        }
+
+        return $highest;
+    }
 }

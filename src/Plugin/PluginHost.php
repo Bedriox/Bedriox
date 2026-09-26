@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Plugin;
 
+use Bedriox\Api\Entity\Entity;
 use Bedriox\Api\Plugin\PluginContext;
 use Bedriox\Api\Plugin\SourcePluginDefinition;
 use Bedriox\Server\Observability\CrashContextPublisher;
@@ -26,6 +27,7 @@ final class PluginHost
     private readonly EventDispatcher $events;
     private readonly CommandRegistry $commands;
     private readonly MainThreadPluginScheduler $scheduler;
+    private readonly PluginEntityRegistrar $entities;
     /** @var list<PluginPackage> */
     private array $packages = [];
     /** @var array<string, array{provider: string, definitions: list<SourcePluginDefinition>}> */
@@ -45,6 +47,8 @@ final class PluginHost
         ?CrashContextPublisher $crashContext = null,
         ?PluginAsyncTaskExecutor $asyncTaskExecutor = null,
         ?Closure $onlinePlayers = null,
+        ?Closure $commandEntities = null,
+        ?Closure $commandSelectorOrigin = null,
     ) {
         $this->ownership = new PluginOwnershipRegistry();
         $this->actions = new PluginActionBuffer();
@@ -65,6 +69,8 @@ final class PluginHost
             $this->ownership,
             $this->events,
             onlinePlayers: $onlinePlayers,
+            entities: $commandEntities,
+            selectorOrigin: $commandSelectorOrigin,
         );
         $this->scheduler = new MainThreadPluginScheduler(
             $this->manager,
@@ -72,6 +78,12 @@ final class PluginHost
             $this->actions,
             $this->ownership,
             $asyncTaskExecutor,
+        );
+        $this->entities = new PluginEntityRegistrar(
+            $this->manager,
+            $this->execution,
+            $this->actions,
+            $this->ownership,
         );
     }
 
@@ -211,6 +223,12 @@ final class PluginHost
     public function scheduler(): MainThreadPluginScheduler
     {
         return $this->scheduler;
+    }
+
+    /** @internal Used to construct owner-scoped public entity registrars. */
+    public function entities(): PluginEntityRegistrar
+    {
+        return $this->entities;
     }
 
     /** @internal Used by the simulation-backed public API composition. */

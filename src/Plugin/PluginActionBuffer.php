@@ -9,8 +9,10 @@ use Throwable;
 
 final class PluginActionBuffer
 {
-    /** @var list<array{actions: list<callable(): void>, allow: bool}> */
+    /** @var list<array{id: int, actions: list<callable(): void>, allow: bool}> */
     private array $transactions = [];
+
+    private int $nextTransactionId = 1;
 
     public function isCapturing(): bool
     {
@@ -19,7 +21,22 @@ final class PluginActionBuffer
 
     public function begin(bool $allowActions = true): void
     {
-        $this->transactions[] = ['actions' => [], 'allow' => $allowActions];
+        if ($this->nextTransactionId === PHP_INT_MAX) {
+            throw new LogicException('Plugin action transaction identifier capacity is exhausted.');
+        }
+        $this->transactions[] = [
+            'id' => $this->nextTransactionId++,
+            'actions' => [],
+            'allow' => $allowActions,
+        ];
+    }
+
+    /** @internal Stable identifier for the currently captured plugin callback. */
+    public function currentTransactionId(): ?int
+    {
+        $index = array_key_last($this->transactions);
+
+        return $index === null ? null : $this->transactions[$index]['id'];
     }
 
     public function stage(callable $action): void

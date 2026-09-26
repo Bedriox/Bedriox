@@ -120,6 +120,36 @@ final class PlayerCombatTest extends TestCase
         self::assertNull($world->pluginPlayer('identity-one')?->inventory->stackAt(0));
     }
 
+    public function testSameTickHotbarSelectionMakesEntityAttackWearTheSelectedAuthoritativeTool(): void
+    {
+        $factory = new SimulationCommandFactory();
+        $items = ItemCatalog::vanilla(BedrockDataSet::bundled()->itemNetworkRegistry());
+        $world = new WorldSimulation(itemCatalog: $items);
+        $world->enqueue($factory->join('one', 'identity-one', 'One', 1));
+        $world->enqueue($factory->join('two', 'identity-two', 'Two', 2));
+        $world->tick();
+        self::assertTrue($world->enqueueGiveItem('identity-one', 'minecraft:apple', 1));
+        $world->tick();
+        self::assertTrue($world->enqueueGiveItem('identity-one', 'minecraft:wooden_sword', 1, 10));
+        $world->tick();
+        $world->enqueue($factory->move('two', 1, 0.0, 64.0, 2.0, 180.0, 0.0, MovementMode::WALKING));
+        $world->tick();
+        $world->enqueue($factory->move('two', 2, 0.0, 64.0, 2.0, 180.0, 0.0, MovementMode::STOPPED));
+        $world->tick();
+
+        self::assertTrue($world->enqueue($factory->selectHotbarSlot('one', 1)));
+        self::assertTrue($world->enqueue($factory->attack('one', 2, 1)));
+        $events = $world->tick()->events;
+
+        self::assertInstanceOf(HeldItemChanged::class, $events[0]);
+        self::assertInstanceOf(PlayerDamaged::class, $events[1]);
+        $inventory = $world->pluginPlayer('identity-one')?->inventory;
+        self::assertNotNull($inventory);
+        self::assertSame(1, $inventory->selectedHotbarSlot);
+        self::assertSame(0, $inventory->stackAt(0)?->damage);
+        self::assertSame(11, $inventory->stackAt(1)?->damage);
+    }
+
     public function testKnockbackComposesAcceptedMotionAndPreservesTheExactClientTick(): void
     {
         [$world, $factory] = self::twoPlayers();

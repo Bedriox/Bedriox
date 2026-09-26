@@ -6,6 +6,11 @@ namespace Bedriox\Server\Persistence\World\Internal;
 
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Data\PersistentBlockStateRegistry;
+use Bedriox\Server\Entity\Persistence\CorruptEntityPersistenceException;
+use Bedriox\Server\Entity\Persistence\EntityOwnershipTransferCodec;
+use Bedriox\Server\Entity\Persistence\EntityPersistenceCodec;
+use Bedriox\Server\Entity\Persistence\EntityPersistenceConflictException;
+use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
 use Bedriox\Server\Persistence\World\WorldDataIpcCodec;
 use Bedriox\Server\Persistence\World\WorldStorageOperation;
 use Bedriox\Server\Persistence\World\WorldStorageStartupCodec;
@@ -83,7 +88,7 @@ final class WorldStorageProcessProgram
                 self::write($connection, $codec->encode(new WorkerFrame(
                     WorkerFrameKind::FAILURE,
                     $epoch,
-                    metadata: ['code' => self::failureCode($error)],
+                    metadata: self::failureMetadata($error),
                 )));
             }
             try {
@@ -133,6 +138,8 @@ final class WorldStorageProcessProgram
     ): void {
         $chunks = new ChunkTransferCodec();
         $worldData = new WorldDataIpcCodec();
+        $entities = EntityPersistenceCodec::vanilla();
+        $entityTransfers = new EntityOwnershipTransferCodec($entities);
         while (($frame = self::readFrame($connection, $codec)) !== null) {
             if (!hash_equals($epoch, $frame->epoch)) {
                 throw new \RuntimeException('World storage epoch changed.');
@@ -150,9 +157,22 @@ final class WorldStorageProcessProgram
             }
             try {
                 [$metadata, $payload] = match ($operation) {
-                    WorldStorageOperation::LOAD_CHUNK => self::loadChunk($provider, $frame->payload, $chunks, $states),
+                    WorldStorageOperation::LOAD_CHUNK => self::loadChunk(
+                        $provider,
+                        $frame->payload,
+                        $chunks,
+                        $entities,
+                        $states,
+                    ),
                     WorldStorageOperation::SAVE_CHUNK => self::saveChunk($provider, $frame->payload, $chunks, $states),
                     WorldStorageOperation::SAVE_WORLD_DATA => self::saveWorldData($provider, $frame->payload, $worldData),
+                    WorldStorageOperation::LOAD_ENTITY_CHUNK => self::loadEntityChunk($provider, $frame->payload, $entities),
+                    WorldStorageOperation::SAVE_ENTITY_CHUNK => self::saveEntityChunk($provider, $frame->payload, $entities),
+                    WorldStorageOperation::TRANSFER_ENTITY_OWNERSHIP => self::transferEntityOwnership(
+                        $provider,
+                        $frame->payload,
+                        $entityTransfers,
+                    ),
                 };
                 self::write($connection, $codec->encode(new WorkerFrame(
                     WorkerFrameKind::RESULT,
@@ -170,7 +190,7 @@ final class WorldStorageProcessProgram
                     $frame->taskId,
                     $operation->value,
                     self::SCHEMA_VERSION,
-                    metadata: ['code' => self::failureCode($error)],
+                    metadata: self::failureMetadata($error),
                 )));
             }
         }
@@ -181,6 +201,7 @@ final class WorldStorageProcessProgram
         WritableWorldProvider $provider,
         string $payload,
         ChunkTransferCodec $codec,
+        EntityPersistenceCodec $entities,
         BlockStateRegistry $states,
     ): array {
         $position = self::decodePosition($payload);
@@ -189,7 +210,29 @@ final class WorldStorageProcessProgram
             return [['missing' => true, 'upgraded' => false], ''];
         }
 
-        return [['missing' => false, 'upgraded' => $loaded->upgraded], $codec->encode($loaded->chunk, $states)];
+        $entityState = 'missing';
+        $entityPayload = null;
+        if ($provider instanceof EntityPersistenceStore) {
+            try {
+                $snapshot = $provider->loadEntityChunk($position);
+                if ($snapshot !== null) {
+                    $entityState = 'loaded';
+                    $entityPayload = $entities->encode($snapshot);
+                }
+            } catch (CorruptEntityPersistenceException) {
+                $entityState = 'corrupt';
+            }
+        }
+        $framed = (new \Bedriox\Server\Persistence\World\WorldChunkLoadPayloadCodec())->encode(
+            $codec->encode($loaded->chunk, $states),
+            $entityPayload,
+        );
+
+        return [[
+            'missing' => false,
+            'upgraded' => $loaded->upgraded,
+            'entity_state' => $entityState,
+        ], $framed];
     }
 
     /** @return array{array<string, bool|int|string|null>, string} */
@@ -216,6 +259,57 @@ final class WorldStorageProcessProgram
         return [[], ''];
     }
 
+    /** @return array{array<string, bool|int|string|null>, string} */
+    private static function loadEntityChunk(
+        WritableWorldProvider $provider,
+        string $payload,
+        EntityPersistenceCodec $codec,
+    ): array {
+        if (!$provider instanceof EntityPersistenceStore) {
+            throw new \RuntimeException('World storage provider does not support entity persistence.');
+        }
+        $position = self::decodePosition($payload);
+        $snapshot = $provider->loadEntityChunk($position);
+        if ($snapshot === null) {
+            return [['missing' => true], ''];
+        }
+
+        return [['missing' => false], $codec->encode($snapshot)];
+    }
+
+    /** @return array{array<string, bool|int|string|null>, string} */
+    private static function saveEntityChunk(
+        WritableWorldProvider $provider,
+        string $payload,
+        EntityPersistenceCodec $codec,
+    ): array {
+        if (!$provider instanceof EntityPersistenceStore) {
+            throw new \RuntimeException('World storage provider does not support entity persistence.');
+        }
+        $snapshot = $codec->decode($payload);
+        $provider->saveEntityChunk($snapshot);
+
+        return [['revision' => $snapshot->chunkRevision], ''];
+    }
+
+    /** @return array{array<string, bool|int|string|null>, string} */
+    private static function transferEntityOwnership(
+        WritableWorldProvider $provider,
+        string $payload,
+        EntityOwnershipTransferCodec $codec,
+    ): array {
+        if (!$provider instanceof EntityPersistenceStore) {
+            throw new \RuntimeException('World storage provider does not support entity persistence.');
+        }
+        $transfer = $codec->decode($payload);
+        $provider->transferEntityOwnership($transfer);
+
+        return [[
+            'source_revision' => $transfer->sourceAfter->chunkRevision,
+            'destination_revision' => $transfer->destinationAfter->chunkRevision,
+        ], ''];
+    }
+
     private static function decodePosition(string $payload): ChunkPosition
     {
         if (strlen($payload) > 128) {
@@ -234,10 +328,24 @@ final class WorldStorageProcessProgram
         return match (true) {
             $error instanceof CorruptChunkException => 'corrupt_chunk',
             $error instanceof CorruptWorldDataException => 'corrupt_world_data',
+            $error instanceof CorruptEntityPersistenceException => 'corrupt_entity_persistence',
+            $error instanceof EntityPersistenceConflictException => 'entity_persistence_conflict',
             $error instanceof UnsupportedWorldFormatException => 'unsupported_world_format',
             $error instanceof WorldProviderClosedException => 'provider_closed',
             default => 'storage_failure',
         };
+    }
+
+    /** @return array<string, bool|int|string|null> */
+    private static function failureMetadata(Throwable $error): array
+    {
+        $metadata = ['code' => self::failureCode($error)];
+        if ($error instanceof CorruptEntityPersistenceException) {
+            $metadata['chunk_x'] = $error->chunk->x;
+            $metadata['chunk_z'] = $error->chunk->z;
+        }
+
+        return $metadata;
     }
 
     /** @param resource $stream */

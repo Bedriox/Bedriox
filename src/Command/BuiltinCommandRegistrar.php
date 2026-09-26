@@ -6,6 +6,7 @@ namespace Bedriox\Server\Command;
 
 use Bedriox\Api\Command\CommandSoftEnum;
 use Bedriox\Api\Player\Player;
+use Bedriox\Api\World\Position;
 use Bedriox\Server\Command\Default\BuiltinCommand;
 use Bedriox\Server\Command\Default\DeopCommand;
 use Bedriox\Server\Command\Default\GamemodeCommand;
@@ -13,13 +14,16 @@ use Bedriox\Server\Command\Default\GarbageCollectionStatus;
 use Bedriox\Server\Command\Default\GarbageCollectorCommand;
 use Bedriox\Server\Command\Default\GiveCommand;
 use Bedriox\Server\Command\Default\HelpCommand;
+use Bedriox\Server\Command\Default\KillCommand;
 use Bedriox\Server\Command\Default\ListCommand;
 use Bedriox\Server\Command\Default\OnlinePlayerResolver;
 use Bedriox\Server\Command\Default\OpCommand;
 use Bedriox\Server\Command\Default\PermissionCommand;
 use Bedriox\Server\Command\Default\StatusCommand;
 use Bedriox\Server\Command\Default\StopCommand;
+use Bedriox\Server\Command\Default\SummonCommand;
 use Bedriox\Server\Command\Default\TeleportCommand;
+use Bedriox\Server\Command\Default\TimeCommand;
 use Bedriox\Server\Command\Default\VersionCommand;
 use Bedriox\Server\Observability\Memory\GarbageCollectionReport;
 use Bedriox\Server\Observability\PerformanceSnapshot;
@@ -43,6 +47,13 @@ final readonly class BuiltinCommandRegistrar
      * @param Closure(): GarbageCollectionStatus|null $garbageCollectionStatus
      * @param Closure(): GarbageCollectionReport|null $collectGarbage
      * @param Closure(): ChunkUnloadResult|null $unloadChunks
+     * @param Closure(): list<string>|null $entityIdentifiers
+     * @param Closure(string, Position, ?Player): bool|null $summonEntity
+     * @param Closure(): (int|null) $currentWorldTime
+     * @param Closure(int): (int|null) $setWorldTime
+     * @param Closure(int): (int|null) $addWorldTime
+     * @param Closure(bool): (int|null) $setWorldTimeRunning
+     * @param Closure(Player|\Bedriox\Api\Entity\Entity): bool|null $killTarget
      */
     public function __construct(
         private CommandRegistry $commands,
@@ -59,6 +70,13 @@ final readonly class BuiltinCommandRegistrar
         private ?Closure $garbageCollectionStatus = null,
         private ?Closure $collectGarbage = null,
         private ?Closure $unloadChunks = null,
+        private ?Closure $entityIdentifiers = null,
+        private ?Closure $summonEntity = null,
+        private ?Closure $currentWorldTime = null,
+        private ?Closure $setWorldTime = null,
+        private ?Closure $addWorldTime = null,
+        private ?Closure $setWorldTimeRunning = null,
+        private ?Closure $killTarget = null,
     ) {}
 
     public function register(): CommandSoftEnum
@@ -68,7 +86,13 @@ final readonly class BuiltinCommandRegistrar
             ($this->itemIdentifiers)(),
         );
         $players = new OnlinePlayerResolver($this->players);
-        foreach ($this->commands($players, $itemIdentifiers) as $command) {
+        $entityIdentifiers = $this->entityIdentifiers !== null && $this->summonEntity !== null
+            ? $this->commands->registerServerSoftEnum(
+                'bedriox:entity_identifiers',
+                self::summonCommandIdentifiers(($this->entityIdentifiers)()),
+            )
+            : null;
+        foreach ($this->commands($players, $itemIdentifiers, $entityIdentifiers) as $command) {
             $this->commands->registerServer($command);
         }
 
@@ -76,8 +100,11 @@ final readonly class BuiltinCommandRegistrar
     }
 
     /** @return list<BuiltinCommand> */
-    private function commands(OnlinePlayerResolver $players, CommandSoftEnum $itemIdentifiers): array
-    {
+    private function commands(
+        OnlinePlayerResolver $players,
+        CommandSoftEnum $itemIdentifiers,
+        ?CommandSoftEnum $entityIdentifiers,
+    ): array {
         $commands = [
             new VersionCommand(),
             new HelpCommand($this->commands),
@@ -90,6 +117,21 @@ final readonly class BuiltinCommandRegistrar
             new GiveCommand($itemIdentifiers, $this->giveItem, $this->itemExists),
             new TeleportCommand($this->teleport),
         ];
+        if ($this->killTarget !== null) {
+            $commands[] = new KillCommand($this->killTarget);
+        }
+        if ($entityIdentifiers !== null && $this->summonEntity !== null) {
+            $commands[] = new SummonCommand($entityIdentifiers, $this->summonEntity);
+        }
+        if ($this->currentWorldTime !== null && $this->setWorldTime !== null
+            && $this->addWorldTime !== null && $this->setWorldTimeRunning !== null) {
+            $commands[] = new TimeCommand(
+                $this->currentWorldTime,
+                $this->setWorldTime,
+                $this->addWorldTime,
+                $this->setWorldTimeRunning,
+            );
+        }
         if ($this->status !== null) {
             $commands[] = new StatusCommand($this->status);
         }
@@ -102,5 +144,37 @@ final readonly class BuiltinCommandRegistrar
         }
 
         return $commands;
+    }
+
+    /**
+     * @param array<array-key, mixed> $identifiers
+     * @return list<string>
+     */
+    private static function summonCommandIdentifiers(array $identifiers): array
+    {
+        if (!array_is_list($identifiers) || count($identifiers) > 512) {
+            throw new \InvalidArgumentException('Summon entity identifiers must be a bounded list.');
+        }
+        $normalized = [];
+        foreach ($identifiers as $identifier) {
+            if (!is_string($identifier)) {
+                throw new \InvalidArgumentException('Summon entity identifiers must be strings.');
+            }
+            $identifier = strtolower(str_contains($identifier, ':') ? $identifier : 'minecraft:' . $identifier);
+            if (preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $identifier) !== 1 || strlen($identifier) > 128) {
+                throw new \InvalidArgumentException('Summon entity identifier is invalid.');
+            }
+            if (isset($normalized[$identifier])) {
+                throw new \InvalidArgumentException('Summon entity identifiers must be unique.');
+            }
+            $normalized[$identifier] = str_starts_with($identifier, 'minecraft:')
+                ? substr($identifier, strlen('minecraft:'))
+                : $identifier;
+        }
+        $values = array_values($normalized);
+        usort($values, static fn(string $left, string $right): int =>
+            [(int) str_contains($left, ':'), $left] <=> [(int) str_contains($right, ':'), $right]);
+
+        return $values;
     }
 }

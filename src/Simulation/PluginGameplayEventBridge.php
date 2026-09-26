@@ -6,12 +6,29 @@ namespace Bedriox\Server\Simulation;
 
 use Bedriox\Api\Crafting\CraftingGrid as ApiCraftingGrid;
 use Bedriox\Api\Crafting\CraftingRecipe as ApiCraftingRecipe;
+use Bedriox\Api\Entity\Entity as ApiEntity;
+use Bedriox\Api\Entity\EntityCombustionCause;
+use Bedriox\Api\Entity\EntityDamageCause;
+use Bedriox\Api\Entity\EntityInteractionType;
+use Bedriox\Api\Entity\LivingEntity as ApiLivingEntity;
+use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Event\Block\BlockBreakEvent;
 use Bedriox\Api\Event\Block\BlockBrokenEvent;
 use Bedriox\Api\Event\Block\BlockPlacedEvent;
 use Bedriox\Api\Event\Block\BlockPlaceEvent;
 use Bedriox\Api\Event\Block\ChestPairedEvent;
 use Bedriox\Api\Event\Block\ChestPairEvent;
+use Bedriox\Api\Event\Entity\EntityCombustEvent;
+use Bedriox\Api\Event\Entity\EntityDamageByEntityEvent;
+use Bedriox\Api\Event\Entity\EntityDamageEvent;
+use Bedriox\Api\Event\Entity\EntityDeathEvent;
+use Bedriox\Api\Event\Entity\EntityDespawnedEvent;
+use Bedriox\Api\Event\Entity\EntityDespawnEvent;
+use Bedriox\Api\Event\Entity\EntityEquipmentChangedEvent;
+use Bedriox\Api\Event\Entity\EntityEquipmentChangeEvent;
+use Bedriox\Api\Event\Entity\EntityInteractEvent;
+use Bedriox\Api\Event\Entity\EntitySpawnedEvent;
+use Bedriox\Api\Event\Entity\EntitySpawnEvent;
 use Bedriox\Api\Event\Inventory\InventoryChangedEvent;
 use Bedriox\Api\Event\Inventory\InventoryChangeEvent;
 use Bedriox\Api\Event\Inventory\InventoryCloseEvent;
@@ -133,6 +150,119 @@ final readonly class PluginGameplayEventBridge
     public function quit(Player $player): void
     {
         $this->events->dispatch(new PlayerQuitEvent($this->playerView($player)));
+    }
+
+    public function allowEntitySpawn(ApiEntity $entity, SpawnCause $cause): bool
+    {
+        $event = new EntitySpawnEvent($entity, $cause);
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function entitySpawned(ApiEntity $entity, SpawnCause $cause): void
+    {
+        $this->events->dispatch(new EntitySpawnedEvent($entity, $cause));
+    }
+
+    public function entityDamage(
+        ApiLivingEntity $entity,
+        EntityDamageCause $cause,
+        float $damage,
+        ApiEntity|ApiPlayer|null $damager = null,
+    ): ?EntityDamageEvent {
+        $event = $damager === null
+            ? new EntityDamageEvent($entity, $cause, $damage)
+            : new EntityDamageByEntityEvent($damager, $entity, $cause, $damage);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event;
+    }
+
+    public function combust(
+        ApiLivingEntity $entity,
+        EntityCombustionCause $cause,
+        int $durationTicks,
+    ): ?EntityCombustEvent {
+        $event = new EntityCombustEvent($entity, $cause, $durationTicks);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() || $event->durationTicks() === 0 ? null : $event;
+    }
+
+    /**
+     * @param list<\Bedriox\Api\Inventory\ItemStack> $drops
+     * @return list<\Bedriox\Api\Inventory\ItemStack>
+     */
+    public function entityDied(ApiLivingEntity $entity, ?EntityDamageEvent $lastDamage, array $drops = []): array
+    {
+        $event = new EntityDeathEvent($entity, $lastDamage, $drops);
+        $this->events->dispatch($event);
+
+        return $event->getDrops();
+    }
+
+    public function entityEquipmentChange(
+        ApiLivingEntity $entity,
+        EquipmentSlot $slot,
+        ?ApiItemStack $previous,
+        float $previousDropChance,
+        ?ApiItemStack $item,
+        float $dropChance,
+    ): ?EntityEquipmentChangeEvent {
+        $event = new EntityEquipmentChangeEvent(
+            $entity,
+            $slot,
+            $previous,
+            $item,
+            $previousDropChance,
+            $dropChance,
+        );
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event;
+    }
+
+    public function entityEquipmentChanged(
+        ApiLivingEntity $entity,
+        EquipmentSlot $slot,
+        ?ApiItemStack $previous,
+        float $previousDropChance,
+        ?ApiItemStack $item,
+        float $dropChance,
+    ): void {
+        $this->events->dispatch(new EntityEquipmentChangedEvent(
+            $entity,
+            $slot,
+            $previous,
+            $item,
+            $previousDropChance,
+            $dropChance,
+        ));
+    }
+
+    public function allowEntityInteract(
+        Player $player,
+        ApiEntity $entity,
+        EntityInteractionType $interaction,
+    ): bool {
+        $event = new EntityInteractEvent($this->playerView($player), $entity, $interaction);
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function allowEntityDespawn(ApiEntity $entity, string $reason): bool
+    {
+        $event = new EntityDespawnEvent($entity, $reason);
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function entityDespawned(ApiEntity $entity, string $reason): void
+    {
+        $this->events->dispatch(new EntityDespawnedEvent($entity, $reason));
     }
 
     /** @return null|array{string, ?string, ?string} */

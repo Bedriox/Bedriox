@@ -52,4 +52,16 @@ enum ToolTier
             self::Netherite => 9.0,
         };
     }
+
+    /** Vanilla melee damage dealt by this tier's sword before enchantments. */
+    public function baseAttackDamage(): float
+    {
+        return match ($this) {
+            self::Wood, self::Gold => 5.0,
+            self::Stone, self::Copper => 6.0,
+            self::Iron => 7.0,
+            self::Diamond => 8.0,
+            self::Netherite => 9.0,
+        };
+    }
 }

@@ -12,6 +12,8 @@ enum CommandParameterType: string
     case BOOLEAN = 'boolean';
     case ONLINE_PLAYER = 'online_player';
     case PLAYERS = 'players';
+    case ENTITY = 'entity';
+    case ENTITIES = 'entities';
     case CHOICE = 'choice';
     case ENUM = 'enum';
     case SOFT_ENUM = 'soft_enum';

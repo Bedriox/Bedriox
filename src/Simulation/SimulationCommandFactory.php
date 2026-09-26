@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Simulation;
 
+use Bedriox\Api\Entity\EntityDamageCause;
+use Bedriox\Api\Entity\EntityInteractionType;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Server\Player\InventoryContainer;
 use Bedriox\Server\Player\InventoryResponseMode;
@@ -20,10 +22,12 @@ use Bedriox\Server\Simulation\Command\ChangeGameMode;
 use Bedriox\Server\Simulation\Command\CloseContainer;
 use Bedriox\Server\Simulation\Command\CloseCraftingGrid;
 use Bedriox\Server\Simulation\Command\CraftingRequest;
+use Bedriox\Server\Simulation\Command\DamageEntity;
 use Bedriox\Server\Simulation\Command\DamagePlayer;
 use Bedriox\Server\Simulation\Command\DisconnectPlayer;
 use Bedriox\Server\Simulation\Command\DropItem;
 use Bedriox\Server\Simulation\Command\GiveItem;
+use Bedriox\Server\Simulation\Command\InteractEntity;
 use Bedriox\Server\Simulation\Command\JoinPlayer;
 use Bedriox\Server\Simulation\Command\MovePlayer;
 use Bedriox\Server\Simulation\Command\PerformEmote;
@@ -242,6 +246,22 @@ final readonly class SimulationCommandFactory
         return new DamagePlayer($session, $amount, $cause);
     }
 
+    public function damageEntity(
+        string $source,
+        int $runtimeId,
+        string $uniqueId,
+        float $amount,
+        EntityDamageCause $cause = EntityDamageCause::PLUGIN,
+    ): DamageEntity {
+        $this->assertOpaqueId($source, 128, 'entity damage source');
+        if ($runtimeId < 1 || preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D', $uniqueId) !== 1
+            || !is_finite($amount) || $amount <= 0.0 || $amount > 1_000_000.0) {
+            throw new CommandValidationException('Entity damage request is invalid or outside its supported bounds.');
+        }
+
+        return new DamageEntity($source, $runtimeId, $uniqueId, $amount, $cause);
+    }
+
     public function attack(string $session, int $targetRuntimeActorId, int $hotbarSlot): AttackPlayer
     {
         $this->assertOpaqueId($session, 128, 'session');
@@ -250,6 +270,20 @@ final readonly class SimulationCommandFactory
         }
 
         return new AttackPlayer($session, $targetRuntimeActorId, $hotbarSlot);
+    }
+
+    public function interactEntity(
+        string $session,
+        int $targetRuntimeActorId,
+        int $hotbarSlot,
+        EntityInteractionType $interaction,
+    ): InteractEntity {
+        $this->assertOpaqueId($session, 128, 'session');
+        if ($targetRuntimeActorId < 1 || $hotbarSlot < 0 || $hotbarSlot > 8) {
+            throw new CommandValidationException('Entity interaction intent is invalid.');
+        }
+
+        return new InteractEntity($session, $targetRuntimeActorId, $hotbarSlot, $interaction);
     }
 
     public function changeGameMode(string $session, GameMode $gameMode): ChangeGameMode

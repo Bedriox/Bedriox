@@ -41,6 +41,8 @@ final class ServerConfigTest extends TestCase
         self::assertSame(85, $defaults->memoryHighThreshold);
         self::assertSame(92, $defaults->memoryCriticalThreshold);
         self::assertTrue($defaults->pvp);
+        self::assertTrue($defaults->spawnAnimals);
+        self::assertTrue($defaults->spawnMonsters);
 
         $config = ServerConfig::fromArguments([
             '--bind=127.0.0.1',
@@ -81,6 +83,8 @@ final class ServerConfigTest extends TestCase
             '--crash-report-player-identifiers=false',
             '--console-enabled=false',
             '--pvp=false',
+            '--spawn-animals=false',
+            '--spawn-monsters=false',
         ]);
         self::assertSame('Flat development world', $streaming->motd);
         self::assertSame('flatland', $streaming->levelName);
@@ -102,6 +106,8 @@ final class ServerConfigTest extends TestCase
         self::assertFalse($streaming->crashReportIncludePlayerIdentifiers);
         self::assertFalse($streaming->consoleEnabled);
         self::assertFalse($streaming->pvp);
+        self::assertFalse($streaming->spawnAnimals);
+        self::assertFalse($streaming->spawnMonsters);
     }
 
     /** @return iterable<string, array{list<string>}> */

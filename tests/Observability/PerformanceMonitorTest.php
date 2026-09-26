@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Observability;
 
+use Bedriox\Server\Entity\EntityRuntimeMetrics;
 use Bedriox\Server\Observability\PerformanceMonitor;
 use Bedriox\Server\Observability\PerformanceSubsystem;
 use PHPUnit\Framework\TestCase;
@@ -41,12 +42,17 @@ final class PerformanceMonitorTest extends TestCase
 
     public function testEmptyWarmupSnapshotIsSafe(): void
     {
-        $snapshot = (new PerformanceMonitor(startedAtNanoseconds: 5_000))->snapshot(nowNanoseconds: 5_000);
+        $entityRuntime = new EntityRuntimeMetrics(4, 2, 1, 2, 1, 0, 1, 1, 50_000, true);
+        $snapshot = (new PerformanceMonitor(startedAtNanoseconds: 5_000))->snapshot(
+            nowNanoseconds: 5_000,
+            entityRuntime: $entityRuntime,
+        );
 
         self::assertSame(0.0, $snapshot->currentTps);
         self::assertSame(0.0, $snapshot->averageTps);
         self::assertSame(0.0, $snapshot->currentMspt);
         self::assertSame(0.0, $snapshot->p99Mspt);
+        self::assertSame($entityRuntime, $snapshot->entityRuntime);
     }
 
     public function testNestedSubsystemSpansRecordExclusiveTimeAndUnclassifiedRemainder(): void

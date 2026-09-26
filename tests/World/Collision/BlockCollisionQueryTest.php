@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace Bedriox\Server\Tests\World\Collision;
 
 use Bedriox\Data\BedrockDataSet;
+use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\DefaultBlockPalette;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
+use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\ChunkRepository;
 use Bedriox\Server\World\Collision\AxisAlignedBox;
 use Bedriox\Server\World\Collision\BlockCollisionQuery;
@@ -18,6 +20,27 @@ use PHPUnit\Framework\TestCase;
 
 final class BlockCollisionQueryTest extends TestCase
 {
+    public function testLoadedLineOfSightFailsClosedWithoutGeneratingTheDestinationChunk(): void
+    {
+        $palette = FixedFlatBlockPalette::fromRegistry(new BlockStateRegistry(
+            BedrockDataSet::bundled()->blockStateRegistry()->states(),
+        ));
+        $chunks = new ChunkRepository(4);
+        $world = new World(
+            new WorldMetadata('loaded-line-of-sight', 0),
+            new FlatWorldGenerator($palette),
+            $chunks,
+        );
+        $world->chunk(new ChunkPosition(0, 0));
+        $query = new BlockCollisionQuery($world, $palette->air);
+
+        self::assertFalse($query->hasLoadedLineOfSight(
+            new Position(15.0, 65.0, 0.5),
+            new Position(17.0, 65.0, 0.5),
+        ));
+        self::assertSame(1, $chunks->count());
+    }
+
     public function testQueryTracksCanonicalWorldMutation(): void
     {
         $palette = FixedFlatBlockPalette::fromRegistry(new BlockStateRegistry(

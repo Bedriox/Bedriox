@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Observability;
 
+use Bedriox\Server\Entity\Ai\AiSchedulerMetrics;
+use Bedriox\Server\Entity\EntityRuntimeMetrics;
 use Bedriox\Server\Observability\Memory\GarbageCollectionReport;
 use Bedriox\Server\Observability\Memory\MemoryManagementDecision;
 use Bedriox\Server\Persistence\PersistenceQueueSnapshot;
@@ -227,6 +229,8 @@ final class PerformanceMonitor
         ?ChunkUnloadResult $chunkUnload = null,
         int $totalChunksUnloaded = 0,
         int $preparedBytesTrimmed = 0,
+        ?AiSchedulerMetrics $entityAi = null,
+        ?EntityRuntimeMetrics $entityRuntime = null,
     ): PerformanceSnapshot {
         if ($onlinePlayers < 0 || $maximumPlayers < 0 || $onlinePlayers > $maximumPlayers
             || $loadedChunks < 0 || $dirtyChunks < 0 || $generatingChunks < 0
@@ -286,6 +290,8 @@ final class PerformanceMonitor
             $chunkUnload,
             $totalChunksUnloaded,
             $preparedBytesTrimmed,
+            $entityAi,
+            $entityRuntime,
         );
     }
 

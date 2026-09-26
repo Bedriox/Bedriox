@@ -114,11 +114,15 @@ The qualified protocol family remains alpha software. Unknown commands fail with
 
 ## Commands and permissions
 
-The console and Bedrock slash-command input share one bounded dispatcher. Built-in commands are `version`, `help`, `list`, `stop`, `op`, `deop`, `permission`, `gamemode`, `give`, `gc`, and `tp` (alias `teleport`). The console always has administrative authority. Players receive only the commands currently available to their UUID when joining.
+The console and Bedrock slash-command input share one bounded dispatcher. Built-in commands include `version`, `help`, `list`, `stop`, `op`, `deop`, `permission`, `gamemode`, `give`, `gc`, `kill` (alias `suicide`), `summon`, `time`, and `tp` (alias `teleport`). The console always has administrative authority. Players receive only the commands currently available to their UUID when joining.
 
 `gamemode <mode> [player]` accepts the canonical names and numeric aliases for survival, creative, adventure, and spectator. `give <player> <item> [amount]` resolves canonical `minecraft:*` identifiers through the active gameplay catalog. Both commands enqueue normal authoritative simulation work; they do not mutate network sessions directly.
 
 `tp <player>`, `tp <x> <y> <z> [yaw pitch]`, and their explicit-target forms enqueue the same authoritative teleport used by plugins. Coordinates accept `~` relative values. `bedriox.command.teleport` permits self teleportation and `bedriox.command.teleport.other` permits selecting another subject. Destination collision is deliberately not treated as command policy; the operator or plugin choosing the coordinate owns that decision.
+
+`time set <day|noon|sunset|night|midnight|sunrise|ticks>` changes the current world's bounded daylight-cycle position. `time add <ticks>` advances it, `time query` reports total time, day, and time-of-day, and `time stop` or `time start` controls progression for the running server. Time belongs to the world, advances once per simulation tick, is saved in `level.dat`, and is synchronized immediately after a command, periodically during play, and from the current value when a player joins. Stopping the cycle is a runtime control and intentionally resumes after a server restart. The command requires `bedriox.command.time`.
+
+`kill` targets the executing player, while `kill <targets>` accepts an exact player name, an entity UUID, or the bounded `@a`, `@e`, `@n`, `@p`, `@r`, and `@s` selectors. Selectors support `name`, `type`, `distance`, `limit`, and `sort` filters, with at most 128 results. Self-targeting requires `bedriox.command.kill.self`; every selection containing another entity requires `bedriox.command.kill.other`. Accepted targets enter the normal authoritative damage and death lifecycle, so plugins can observe or cancel the damage instead of the command deleting actors directly.
 
 The retail player inventory uses a server-synchronized dynamic window. Moving, splitting, placing, dropping, and picking up admitted items are authoritative: invalid or stale client predictions are corrected to the server-held slots without changing unrelated inventory state.
 

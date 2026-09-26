@@ -7,6 +7,10 @@ namespace Bedriox\Server\World\Provider;
 use Bedriox\Data\LittleEndianBlockStateNbtCodec;
 use Bedriox\Data\PersistentBlockStateRegistry;
 use Bedriox\Protocol\ProtocolVersion;
+use Bedriox\Server\Entity\Persistence\EntityChunkSnapshot;
+use Bedriox\Server\Entity\Persistence\EntityOwnershipTransfer;
+use Bedriox\Server\Entity\Persistence\EntityPersistenceCodec;
+use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\BlockEntity\BlockEntityCollection;
 use Bedriox\Server\World\Chunk;
@@ -25,6 +29,7 @@ use Bedriox\Server\World\Storage\LevelDatStore;
 use Bedriox\Server\World\Storage\LevelDb\Data3dCodec;
 use Bedriox\Server\World\Storage\LevelDb\LevelDbChunkKey;
 use Bedriox\Server\World\Storage\LevelDb\LevelDbDatabase;
+use Bedriox\Server\World\Storage\LevelDb\LevelDbEntityPersistenceStore;
 use Bedriox\Server\World\Storage\LevelDb\LevelDbIoException;
 use Bedriox\Server\World\Storage\LevelDb\LevelDbStorageException;
 use Bedriox\Server\World\Storage\LevelDb\NativeLevelDbDatabase;
@@ -40,7 +45,7 @@ use InvalidArgumentException;
 use Throwable;
 
 /** Mojang-compatible overworld provider backed by the qualified Bedriox LevelDB runtime. */
-final class LevelDbWorldProvider implements WritableWorldProvider
+final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersistenceStore
 {
     private const int CURRENT_CHUNK_VERSION = 42;
     private const int CURRENT_NETWORK_VERSION = 2193;
@@ -63,6 +68,11 @@ final class LevelDbWorldProvider implements WritableWorldProvider
         $this->subChunks = new PersistentSubChunkCodec($stateCodec);
         $this->blockEntities = new PersistentBlockEntityCodec();
         $this->mapper = new PersistentChunkMapper($blockStates, $persistentBlockStates);
+        $this->entities = new LevelDbEntityPersistenceStore(
+            $database,
+            EntityPersistenceCodec::vanilla(),
+            $this->data->metadata->name,
+        );
     }
 
     private readonly PersistentSubChunkCodec $subChunks;
@@ -70,6 +80,8 @@ final class LevelDbWorldProvider implements WritableWorldProvider
     private readonly PersistentBlockEntityCodec $blockEntities;
 
     private readonly PersistentChunkMapper $mapper;
+
+    private readonly LevelDbEntityPersistenceStore $entities;
 
     public static function open(
         string $worldPath,
@@ -280,6 +292,25 @@ final class LevelDbWorldProvider implements WritableWorldProvider
         } catch (LevelDbIoException|LevelDbStorageException|InvalidArgumentException $error) {
             throw new WorldStorageException('Unable to atomically save the chunk.', previous: $error);
         }
+    }
+
+    public function loadEntityChunk(ChunkPosition $position): ?EntityChunkSnapshot
+    {
+        $this->assertOpen();
+
+        return $this->entities->loadEntityChunk($position);
+    }
+
+    public function saveEntityChunk(EntityChunkSnapshot $snapshot): void
+    {
+        $this->assertOpen();
+        $this->entities->saveEntityChunk($snapshot);
+    }
+
+    public function transferEntityOwnership(EntityOwnershipTransfer $transfer): void
+    {
+        $this->assertOpen();
+        $this->entities->transferEntityOwnership($transfer);
     }
 
     public function close(): void

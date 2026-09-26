@@ -45,6 +45,8 @@ use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\Provider\WorldData;
 use Bedriox\Server\World\SpawnPosition;
+use Bedriox\Server\World\WorldTimeRules;
+use Closure;
 
 /** Builds the complete bounded current-Bedrock fixed-flat initialization sequence. */
 final readonly class BedrockPlayInitializationFactory implements PlayInitializationFactory
@@ -67,6 +69,9 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
 
     private CraftingCatalog $craftingCatalog;
 
+    /** @var null|Closure(): int */
+    private ?Closure $worldTimeProvider;
+
     /** @var list<BlockPropertyData> */
     private array $blockProperties;
 
@@ -83,6 +88,7 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
         private string $defaultGamemode = 'survival',
         ?ItemCatalog $itemCatalog = null,
         ?CraftingCatalog $craftingCatalog = null,
+        ?callable $worldTimeProvider = null,
     ) {
         if ($this->difficulty < 0 || $this->difficulty > 3) {
             throw new \InvalidArgumentException('Difficulty must be a Bedrock value between 0 and 3.');
@@ -96,6 +102,15 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
         if (GameMode::tryFrom($this->defaultGamemode) === null) {
             throw new \InvalidArgumentException('Play initialization received an unsupported default gamemode.');
         }
+        WorldTimeRules::validate($this->worldTime);
+        $this->worldTimeProvider = $worldTimeProvider === null ? null : static function () use ($worldTimeProvider): int {
+            $time = $worldTimeProvider();
+            if (!is_int($time)) {
+                throw new \UnexpectedValueException('World time provider must return an integer.');
+            }
+
+            return $time;
+        };
         $this->biomeDefinitions = $data->biomeDefinitions();
         $networkBlockStates = $data->blockStateRegistry();
         $this->internalBlockStates = new BlockStateRegistry($networkBlockStates->states());
@@ -132,6 +147,7 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
         string $defaultGamemode = 'survival',
         ?ItemCatalog $itemCatalog = null,
         ?CraftingCatalog $craftingCatalog = null,
+        ?callable $worldTimeProvider = null,
     ): self {
         return new self(
             $data,
@@ -146,6 +162,7 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
             $defaultGamemode,
             $itemCatalog,
             $craftingCatalog,
+            $worldTimeProvider,
         );
     }
 
@@ -225,7 +242,9 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
                 worldY: $this->spawn->y,
                 worldZ: $this->spawn->z,
             ),
-            new SetTimePacket($this->worldTime),
+            new SetTimePacket(WorldTimeRules::validate(
+                $this->worldTimeProvider === null ? $this->worldTime : ($this->worldTimeProvider)(),
+            )),
             new SetDifficultyPacket($this->difficulty),
             new SetCommandsEnabledPacket(false),
             $gameModePackets->abilities($gameMode, $runtimeEntityId->toSignedBits()),

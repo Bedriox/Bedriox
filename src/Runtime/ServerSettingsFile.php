@@ -94,6 +94,9 @@ players.autosave-interval-ticks=6000
 players.save-per-tick=8
 movement.rewind-history-size=40
 
+# Entity simulation
+entities.ai.enabled=true
+
 # Plugins and diagnostics
 plugins.maximum=64
 logging.level=INFO

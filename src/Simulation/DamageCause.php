@@ -8,5 +8,6 @@ enum DamageCause: string
 {
     case Attack = 'attack';
     case Fall = 'fall';
+    case Kill = 'kill';
     case Plugin = 'plugin';
 }

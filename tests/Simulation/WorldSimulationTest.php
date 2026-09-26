@@ -7,6 +7,7 @@ namespace Bedriox\Server\Tests\Simulation;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Packet\MultiCraftingRecipe;
+use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\Item\ItemEntityRegistry;
 use Bedriox\Server\Gameplay\Block\BlockCatalog;
 use Bedriox\Server\Gameplay\Crafting\ComplexCraftingRecipeEvaluator;
@@ -37,6 +38,7 @@ use Bedriox\Server\Simulation\Event\BlockPunch;
 use Bedriox\Server\Simulation\Event\ChatBroadcast;
 use Bedriox\Server\Simulation\Event\CommandRejected;
 use Bedriox\Server\Simulation\Event\CraftingTableOpened;
+use Bedriox\Server\Simulation\Event\EntityActorSpawned;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
 use Bedriox\Server\Simulation\Event\ItemEntityMoved;
@@ -67,6 +69,64 @@ use PHPUnit\Framework\TestCase;
 
 final class WorldSimulationTest extends TestCase
 {
+    public function testSpawnEggCreatesADataAdmittedEntityAndConsumesOneItem(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $registry = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $blocks = new World(
+            new WorldMetadata('entity-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(16),
+        );
+        $items = ItemCatalog::vanilla(
+            $data->itemNetworkRegistry(),
+            creative: $data->creativeInventoryRegistry(),
+            blockItems: $data->blockItemMappingRegistry(),
+        );
+        $world = new WorldSimulation(
+            blockWorld: $blocks,
+            blockPalette: $palette,
+            itemCatalog: $items,
+            entityTypes: $data->entityTypeRegistry(),
+            entityDefinitions: EntityDefinitionRegistry::fromData($data->entityTypeRegistry()),
+        );
+        $factory = new SimulationCommandFactory();
+        $bootstrap = new PlayerBootstrap(
+            new PlayerIdentity('identity-one', 'One'),
+            'entity-test',
+            new Position(0.0, 64.0, 0.0),
+            0.0,
+            0.0,
+            new PlayerInventoryState([
+                new PlayerInventoryEntry(0, new PlayerInventoryStackState('minecraft:cow_spawn_egg', 2)),
+            ], 0),
+            1,
+            1,
+        );
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One', bootstrap: $bootstrap)));
+        $world->tick();
+
+        self::assertTrue($world->enqueue($factory->placeBlock(
+            'one',
+            1,
+            new BlockPosition(1, 63, 0),
+            1,
+            0,
+            0,
+            0.5,
+            1.0,
+            0.5,
+        )));
+        $events = $world->tick()->events;
+        $spawned = array_values(array_filter($events, static fn($event): bool => $event instanceof EntityActorSpawned));
+
+        self::assertCount(1, $spawned);
+        self::assertSame('minecraft:cow', $spawned[0]->entity->getType()->identifier());
+        self::assertSame(1, $world->entityRuntime()->registry()->count());
+        self::assertSame(1, $world->pluginPlayer('identity-one')?->inventory->stackAt(0)?->count);
+    }
+
     public function testGiveSynchronizesOnlyChangedInventorySlots(): void
     {
         $data = BedrockDataSet::bundled();

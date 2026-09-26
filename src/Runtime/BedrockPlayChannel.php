@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
+use Bedriox\Api\Entity\EntityInteractionType;
 use Bedriox\Protocol\Batch\BatchLimits;
 use Bedriox\Protocol\Batch\BedrockBatch;
 use Bedriox\Protocol\Batch\BedrockBatchCodec;
@@ -368,61 +369,87 @@ final class BedrockPlayChannel
 
     public function queuePacket(Packet $packet): bool
     {
+        return $this->queuePackets([$packet]);
+    }
+
+    /**
+     * Encodes related packets into one ordered Bedrock batch.
+     *
+     * @param list<Packet> $packets
+     */
+    public function queuePackets(array $packets): bool
+    {
+        $packetCount = count($packets);
+        if ($packetCount < 1 || $packetCount > $this->limits->maximumPacketsPerPayload) {
+            return false;
+        }
         if ($this->closed || $this->totalQueuedPackets() >= $this->limits->maximumOutgoingPayloadsPerSession) {
             return false;
         }
         try {
-            $frame = new PacketFrame(
-                new PacketHeader(BedrockPacketCodec::packetId($packet)),
-                BedrockPacketCodec::encode($packet, $this->protocolVersion),
+            $frames = array_map(
+                fn(Packet $packet): PacketFrame => new PacketFrame(
+                    new PacketHeader(BedrockPacketCodec::packetId($packet)),
+                    BedrockPacketCodec::encode($packet, $this->protocolVersion),
+                ),
+                $packets,
             );
             if ($this->outboundCompression !== null) {
-                $clearBatch = PacketBatchCodec::encode([$frame], $this->batchLimits);
+                $clearBatch = PacketBatchCodec::encode($frames, $this->batchLimits);
                 if (!$this->deferredCompressionBatches->isEmpty()) {
                     if (!$this->canRetainDeferredCompression($clearBatch)) {
                         return false;
                     }
                     $this->deferredCompressionBatches->enqueue($clearBatch);
                     $this->deferredCompressionBytes += strlen($clearBatch);
-                    $this->recordQueuedPacket($packet);
+                    foreach ($packets as $packet) {
+                        $this->recordQueuedPacket($packet);
+                    }
 
                     return true;
                 }
                 $submission = $this->outboundCompression->enqueue($clearBatch);
                 if (!$submission->isAccepted()) {
-                    $this->diagnose('deferred ' . $packet::class . ' due to compression backpressure');
+                    $this->diagnose("deferred ordered batch of {$packetCount} packets due to compression backpressure");
                     if (!$this->canRetainDeferredCompression($clearBatch)) {
                         return false;
                     }
                     $this->deferredCompressionBatches->enqueue($clearBatch);
                     $this->deferredCompressionBytes += strlen($clearBatch);
-                    $this->recordQueuedPacket($packet);
+                    foreach ($packets as $packet) {
+                        $this->recordQueuedPacket($packet);
+                    }
 
                     return true;
                 }
                 if (!$this->releaseCompressedBatches()) {
                     return false;
                 }
-                $this->diagnose('queued ' . $packet::class . ' as packet ' . BedrockPacketCodec::packetId($packet)
+                $this->diagnose("queued ordered batch of {$packetCount} packets"
                     . ($submission->synchronousFallback ? ' with synchronous compression' : ' for worker compression'));
-                $this->recordQueuedPacket($packet);
+                foreach ($packets as $packet) {
+                    $this->recordQueuedPacket($packet);
+                }
 
                 return true;
             }
-            $batch = new BedrockBatch([$frame], CompressionMode::NegotiatedZlib, self::COMPRESSION_THRESHOLD);
+            $batch = new BedrockBatch($frames, CompressionMode::NegotiatedZlib, self::COMPRESSION_THRESHOLD);
             $envelope = $this->encryptor->encryptEnvelope(BedrockBatchCodec::encode($batch, $this->batchLimits));
-            $this->diagnose('queued ' . $packet::class . ' as packet ' . BedrockPacketCodec::packetId($packet)
+            $this->diagnose("queued ordered batch of {$packetCount} packets"
                 . ' (' . strlen($envelope) . ' encrypted bytes)');
         } catch (Throwable $error) {
-            $this->diagnose('failed encoding ' . $packet::class . ': ' . $error::class);
-            return $this->fail('encode_failed', BedrockPacketCodec::packetId($packet), $error);
+            $packetId = isset($packet) ? BedrockPacketCodec::packetId($packet) : null;
+            $this->diagnose('failed encoding ordered packet batch: ' . $error::class);
+            return $this->fail('encode_failed', $packetId, $error);
         }
         if (strlen($envelope) > $this->limits->maximumOutgoingBytesPerSession - $this->outgoingBytes) {
-            return $this->fail('output_limit', BedrockPacketCodec::packetId($packet));
+            return $this->fail('output_limit');
         }
         $this->outgoing->enqueue(new OutgoingPlayPayload($envelope));
         $this->outgoingBytes += strlen($envelope);
-        $this->recordQueuedPacket($packet);
+        foreach ($packets as $packet) {
+            $this->recordQueuedPacket($packet);
+        }
 
         return true;
     }
@@ -878,21 +905,34 @@ final class BedrockPlayChannel
                 return $this->handleLegacyInventoryTransaction($packet);
             }
             if ($transaction instanceof ItemUseOnEntityInventoryTransaction) {
-                if ($transaction->action !== ItemUseOnEntityActionType::Attack) {
-                    return true;
-                }
                 if ($transaction->runtimeEntityId->high !== 0 || $transaction->runtimeEntityId->low < 1) {
                     return true;
                 }
-                if ($this->commands->count() >= $this->limits->maximumCommandsPerPayload) {
+                if ($transaction->hotbarSlot < 0 || $transaction->hotbarSlot > 8) {
+                    return true;
+                }
+                if ($this->commands->count() + 2 > $this->limits->maximumCommandsPerPayload) {
                     return false;
                 }
                 try {
-                    $this->commands->enqueue($this->commandFactory->attack(
+                    $this->commands->enqueue($this->commandFactory->selectHotbarSlot(
                         $this->sessionId,
-                        $transaction->runtimeEntityId->low,
                         $transaction->hotbarSlot,
                     ));
+                    $this->commands->enqueue($transaction->action === ItemUseOnEntityActionType::Attack
+                        ? $this->commandFactory->attack(
+                            $this->sessionId,
+                            $transaction->runtimeEntityId->low,
+                            $transaction->hotbarSlot,
+                        )
+                        : $this->commandFactory->interactEntity(
+                            $this->sessionId,
+                            $transaction->runtimeEntityId->low,
+                            $transaction->hotbarSlot,
+                            $transaction->action === ItemUseOnEntityActionType::ItemInteract
+                                ? EntityInteractionType::ITEM_INTERACT
+                                : EntityInteractionType::INTERACT,
+                        ));
                 } catch (\Bedriox\Server\Simulation\CommandValidationException) {
                     return true;
                 }

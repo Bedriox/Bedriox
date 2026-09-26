@@ -56,6 +56,16 @@ final class CommandParameter
         return new self($name, CommandParameterType::PLAYERS);
     }
 
+    public static function entity(string $name): self
+    {
+        return new self($name, CommandParameterType::ENTITY);
+    }
+
+    public static function entities(string $name): self
+    {
+        return new self($name, CommandParameterType::ENTITIES);
+    }
+
     /** @param list<string> $choices */
     public static function choice(string $name, array $choices): self
     {

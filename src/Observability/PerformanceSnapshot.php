@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Observability;
 
+use Bedriox\Server\Entity\Ai\AiSchedulerMetrics;
+use Bedriox\Server\Entity\EntityRuntimeMetrics;
 use Bedriox\Server\Observability\Memory\GarbageCollectionReport;
 use Bedriox\Server\Observability\Memory\MemoryManagementDecision;
 use Bedriox\Server\Persistence\PersistenceQueueSnapshot;
@@ -63,5 +65,7 @@ final readonly class PerformanceSnapshot
         public ?ChunkUnloadResult $chunkUnload = null,
         public int $totalChunksUnloaded = 0,
         public int $preparedBytesTrimmed = 0,
+        public ?AiSchedulerMetrics $entityAi = null,
+        public ?EntityRuntimeMetrics $entityRuntime = null,
     ) {}
 }

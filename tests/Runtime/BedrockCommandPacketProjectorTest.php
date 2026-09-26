@@ -62,6 +62,8 @@ final class BedrockCommandPacketProjectorTest extends TestCase
                     ->addArgument(CommandParameter::boolean('enabled'))
                     ->addArgument(CommandParameter::choice('mode', ['safe', 'fast']))
                     ->addArgument(CommandParameter::players('targets'))
+                    ->addArgument(CommandParameter::entity('entity'))
+                    ->addArgument(CommandParameter::entities('entities'))
                     ->addArgument(CommandParameter::position('position'))
                     ->addArgument(CommandParameter::blockPosition('block'))
                     ->addArgument(CommandParameter::message('message')->optional()))
@@ -106,10 +108,12 @@ final class BedrockCommandPacketProjectorTest extends TestCase
         self::assertEnum($basic[4], 'bedriox:boolean', ['true', 'false'], false);
         self::assertEnum($basic[5], 'bedriox:command:shape:mode', ['safe', 'fast'], false);
         self::assertSame(CommandArgumentType::Target, $basic[6]->type);
-        self::assertSame(CommandArgumentType::Position, $basic[7]->type);
-        self::assertSame(CommandArgumentType::BlockPosition, $basic[8]->type);
-        self::assertSame(CommandArgumentType::Message, $basic[9]->type);
-        self::assertTrue($basic[9]->optional);
+        self::assertSame(CommandArgumentType::Target, $basic[7]->type);
+        self::assertSame(CommandArgumentType::Target, $basic[8]->type);
+        self::assertSame(CommandArgumentType::Position, $basic[9]->type);
+        self::assertSame(CommandArgumentType::BlockPosition, $basic[10]->type);
+        self::assertSame(CommandArgumentType::Message, $basic[11]->type);
+        self::assertTrue($basic[11]->optional);
 
         $raw = $commands['shape']->overloads[1]->parameters;
         self::assertEnum($raw[0], 'bedriox:command:shape:literal:raw', ['raw'], false);

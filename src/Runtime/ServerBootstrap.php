@@ -17,6 +17,7 @@ use Bedriox\Server\Authentication\Discovery\CurlHttpsJsonTransport;
 use Bedriox\Server\Authentication\Discovery\MinecraftDiscoveryJwkProvider;
 use Bedriox\Server\Authentication\FullTokenAuthenticator;
 use Bedriox\Server\Authentication\SystemAuthenticationClock;
+use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Gameplay\Block\BlockCatalog;
 use Bedriox\Server\Gameplay\Crafting\CraftingCatalog;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
@@ -38,6 +39,8 @@ use Bedriox\Server\Player\Persistence\FilePlayerDataStore;
 use Bedriox\Server\Player\Persistence\PlayerDataStore;
 use Bedriox\Server\Player\Persistence\PlayerPersistenceManager;
 use Bedriox\Server\Plugin\Command\CommandRegistry;
+use Bedriox\Server\Plugin\PluginActionBuffer;
+use Bedriox\Server\Plugin\PluginEntityLifecycleBridge;
 use Bedriox\Server\Simulation\FixedRateWorldLoop;
 use Bedriox\Server\Simulation\PluginGameplayEventBridge;
 use Bedriox\Server\Simulation\Position;
@@ -92,6 +95,9 @@ final class ServerBootstrap
         ?PerformanceMonitor $performance = null,
         ?Closure $simulationTickBoundary = null,
         ?ManagedWorkerDispatcher $workers = null,
+        ?EntityDefinitionRegistry $entityDefinitions = null,
+        ?PluginEntityLifecycleBridge $pluginEntityLifecycle = null,
+        ?PluginActionBuffer $pluginActions = null,
     ): BootstrappedServer {
         $diagnostics ??= RuntimeDiagnostics::disabled();
         $authenticationClock = new SystemAuthenticationClock();
@@ -133,6 +139,7 @@ final class ServerBootstrap
             maximumQueuedLifecycleBytes: max(65_536, $config->maximumPlayers * 144),
         );
         $data = BedrockDataSet::bundled();
+        $entityDefinitions ??= EntityDefinitionRegistry::fromData($data->entityTypeRegistry());
         $networkStates = $data->blockStateRegistry();
         $internalStates = new BlockStateRegistry($networkStates->states());
         $blockCatalog = BlockCatalog::vanilla($internalStates, $data->blockItemMappingRegistry());
@@ -199,6 +206,7 @@ final class ServerBootstrap
                 $config->defaultGamemode,
                 $itemCatalog,
                 $craftingCatalog,
+                $flatWorld->time(...),
             );
             $spawn = $flatWorld->spawn();
             $playerStore = $this->playerDataStore
@@ -227,7 +235,18 @@ final class ServerBootstrap
                 $blockCollisions,
                 craftingCatalog: $craftingCatalog,
                 blockProperties: $data->blockPropertyRegistry(),
+                entityAiEnabled: $config->entityAiEnabled,
+                spawnAnimals: $config->spawnAnimals,
+                spawnMonsters: $config->spawnMonsters,
+                entityTypes: $data->entityTypeRegistry(),
+                entityDefinitions: $entityDefinitions,
+                pluginEntityLifecycle: $pluginEntityLifecycle,
+                pluginActions: $pluginActions,
             );
+            $entityPersistenceStore = $flatWorld->entityPersistenceStore();
+            if ($entityPersistenceStore !== null) {
+                $world->enableEntityPersistence($entityPersistenceStore, $entityDefinitions);
+            }
             $chunkSerializer = new BedrockChunkPacketSerializer(
                 $blockTranslator,
             );

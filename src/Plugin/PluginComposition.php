@@ -13,4 +13,5 @@ final class PluginComposition
     public ?PluginHost $host = null;
     public ?PluginItemBehaviorRegistrar $itemBehaviors = null;
     public ?PluginRecipeRegistrar $recipes = null;
+    public ?PluginEntityLifecycleBridge $entityLifecycle = null;
 }

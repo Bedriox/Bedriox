@@ -28,6 +28,8 @@ final readonly class ServerConfig
         'gamemode' => 'survival',
         'difficulty' => 'normal',
         'pvp' => 'true',
+        'spawn-animals' => 'true',
+        'spawn-monsters' => 'true',
         'view-distance' => '4',
         'network.authentication' => 'FULL',
         'level.spawn-x' => '',
@@ -52,6 +54,7 @@ final readonly class ServerConfig
         'players.autosave-interval-ticks' => '6000',
         'players.save-per-tick' => '8',
         'movement.rewind-history-size' => '40',
+        'entities.ai.enabled' => 'true',
         'plugins.maximum' => '64',
         'logging.level' => 'INFO',
         'logging.console' => 'true',
@@ -79,6 +82,8 @@ final readonly class ServerConfig
         'gamemode' => true,
         'difficulty' => true,
         'pvp' => true,
+        'spawn-animals' => true,
+        'spawn-monsters' => true,
         'view-distance' => true,
     ];
 
@@ -102,6 +107,7 @@ final readonly class ServerConfig
         'players.autosave-interval-ticks' => true,
         'players.save-per-tick' => true,
         'movement.rewind-history-size' => true,
+        'entities.ai.enabled' => true,
         'plugins.maximum' => true,
         'logging.level' => true,
         'logging.console' => true,
@@ -127,6 +133,8 @@ final readonly class ServerConfig
         'default-gamemode' => 'gamemode',
         'difficulty' => 'difficulty',
         'pvp' => 'pvp',
+        'spawn-animals' => 'spawn-animals',
+        'spawn-monsters' => 'spawn-monsters',
         'level-autosave-interval-ticks' => 'level.autosave-interval-ticks',
         'view-distance' => 'view-distance',
         'spawn-radius' => 'chunk-sending.spawn-radius',
@@ -170,6 +178,8 @@ final readonly class ServerConfig
         public string $defaultGamemode = 'survival',
         public string $difficulty = 'normal',
         public bool $pvp = true,
+        public bool $spawnAnimals = true,
+        public bool $spawnMonsters = true,
         public int $levelAutosaveIntervalTicks = 6_000,
         public int $viewDistance = 4,
         public int $spawnRadius = 4,
@@ -205,6 +215,7 @@ final readonly class ServerConfig
         public int $memorySoftThreshold = 70,
         public int $memoryHighThreshold = 85,
         public int $memoryCriticalThreshold = 92,
+        public bool $entityAiEnabled = true,
     ) {
         if (filter_var($this->bindAddress, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
             throw new InvalidArgumentException('Bind address must be a literal IPv4 address.');
@@ -371,6 +382,8 @@ final readonly class ServerConfig
             defaultGamemode: $values['gamemode'],
             difficulty: $values['difficulty'],
             pvp: self::boolean($values['pvp'], 'pvp'),
+            spawnAnimals: self::boolean($values['spawn-animals'], 'spawn-animals'),
+            spawnMonsters: self::boolean($values['spawn-monsters'], 'spawn-monsters'),
             levelAutosaveIntervalTicks: self::integer($values['level.autosave-interval-ticks'], 'level.autosave-interval-ticks', 20, 72_000),
             viewDistance: $viewDistance,
             spawnRadius: self::integer($values['chunk-sending.spawn-radius'], 'chunk-sending.spawn-radius', 1, 32),
@@ -441,6 +454,7 @@ final readonly class ServerConfig
                 3,
                 100,
             ),
+            entityAiEnabled: self::boolean($values['entities.ai.enabled'], 'entities.ai.enabled'),
         );
     }
 

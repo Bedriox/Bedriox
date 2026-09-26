@@ -5,7 +5,14 @@ declare(strict_types=1);
 namespace Bedriox\Server\Runtime;
 
 use Bedriox\Api\Command\CommandResult;
+use Bedriox\Api\Entity\CustomEntityType;
+use Bedriox\Api\Entity\Entity as ApiEntity;
+use Bedriox\Api\Entity\SpawnCause;
+use Bedriox\Api\Entity\VanillaEntityIdentifier;
+use Bedriox\Api\Entity\VanillaEntityType;
 use Bedriox\Api\Player\GameMode;
+use Bedriox\Api\Player\Player as ApiPlayer;
+use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Protocol\Batch\BatchLimits;
 use Bedriox\Protocol\Batch\BedrockBatch;
 use Bedriox\Protocol\Batch\BedrockBatchCodec;
@@ -19,6 +26,7 @@ use Bedriox\Protocol\Packet\DisconnectReason;
 use Bedriox\Protocol\Packet\Packet;
 use Bedriox\Protocol\Packet\PacketFrame;
 use Bedriox\Protocol\Packet\PacketHeader;
+use Bedriox\Protocol\Packet\SetTimePacket;
 use Bedriox\Protocol\Packet\SystemTextPacket;
 use Bedriox\Protocol\Packet\UpdateAdventureSettingsPacket;
 use Bedriox\Protocol\Value\UnsignedLong;
@@ -27,7 +35,11 @@ use Bedriox\RakNet\Protocol\Reliability;
 use Bedriox\RakNet\ReceivedPayload;
 use Bedriox\RakNet\SessionInfo;
 use Bedriox\RakNet\SessionOpenedEvent;
+use Bedriox\Server\Entity\AbstractLivingEntity;
+use Bedriox\Server\Entity\Ai\AiSchedulerMetrics;
+use Bedriox\Server\Entity\EntityRuntimeMetrics;
 use Bedriox\Server\Entity\Item\DroppedItemEntity;
+use Bedriox\Server\Entity\Spawn\EntitySpawnRequest;
 use Bedriox\Server\Gameplay\Crafting\CraftingCatalog;
 use Bedriox\Server\Observability\CrashContextPublisher;
 use Bedriox\Server\Observability\CrashPlayer;
@@ -52,6 +64,12 @@ use Bedriox\Server\Simulation\Event\BlockPunch;
 use Bedriox\Server\Simulation\Event\ChatBroadcast;
 use Bedriox\Server\Simulation\Event\CommandRejected;
 use Bedriox\Server\Simulation\Event\EmotePerformed;
+use Bedriox\Server\Simulation\Event\EntityActorDamaged;
+use Bedriox\Server\Simulation\Event\EntityActorDied;
+use Bedriox\Server\Simulation\Event\EntityActorMoved;
+use Bedriox\Server\Simulation\Event\EntityActorRemoved;
+use Bedriox\Server\Simulation\Event\EntityActorSpawned;
+use Bedriox\Server\Simulation\Event\EntityInteracted;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
 use Bedriox\Server\Simulation\Event\ItemEntityDespawned;
@@ -84,6 +102,7 @@ use Bedriox\Server\Worker\Chunk\PreparedChunkCache;
 use Bedriox\Server\Worker\Chunk\PreparedChunkCacheSnapshot;
 use Bedriox\Server\World\ChunkUnloadResult;
 use Bedriox\Server\World\World;
+use Bedriox\Server\World\WorldTimeRules;
 use Closure;
 use InvalidArgumentException;
 use RuntimeException;
@@ -109,6 +128,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
     private ?Throwable $failure = null;
     private ?string $involvedSessionId = null;
     private bool $autosaveActive = false;
+    private bool $entityAutosaveActive = false;
     private bool $playerAutosaveActive = false;
     private ?MemoryManagementDecision $lastMemoryDecision = null;
     private ?GarbageCollectionReport $lastGarbageCollection = null;
@@ -126,6 +146,15 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
 
     /** @var array<int, array<string, true>> */
     private array $itemActorViewers = [];
+
+    /** @var array<int, AbstractLivingEntity> */
+    private array $entityActors = [];
+
+    /** @var array<int, bool> */
+    private array $entityActorNoAi = [];
+
+    /** @var array<int, array<string, true>> */
+    private array $entityActorViewers = [];
 
     public function __construct(
         private readonly ConnectedTransport $transport,
@@ -182,6 +211,19 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         return array_map($this->playerConnections->attach(...), $this->world->pluginPlayers());
     }
 
+    /** @return list<\Bedriox\Api\Entity\Entity> */
+    public function entities(): array
+    {
+        return $this->world->entityRuntime()->registry()->all();
+    }
+
+    public function killTarget(ApiPlayer|ApiEntity $target): bool
+    {
+        return $target instanceof ApiPlayer
+            ? $this->world->enqueueKillPlayer($target->uuid)
+            : $this->world->enqueueKillEntity($target->getRuntimeId(), $target->getUniqueId());
+    }
+
     public function changePlayerGameMode(string $uuid, GameMode $gameMode): bool
     {
         return $this->world->enqueueGameMode($uuid, $gameMode);
@@ -204,6 +246,82 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
             $yaw,
             $pitch,
         );
+    }
+
+    public function currentWorldTime(): ?int
+    {
+        return $this->persistentWorld?->time();
+    }
+
+    public function setWorldTime(int $time): ?int
+    {
+        if ($this->persistentWorld === null) {
+            return null;
+        }
+        $this->persistentWorld->setTime($time);
+        $this->synchronizeWorldTime();
+
+        return $this->persistentWorld->time();
+    }
+
+    public function addWorldTime(int $amount): ?int
+    {
+        if ($this->persistentWorld === null) {
+            return null;
+        }
+        $this->persistentWorld->addTime($amount);
+        $this->synchronizeWorldTime();
+
+        return $this->persistentWorld->time();
+    }
+
+    public function setWorldTimeRunning(bool $running): ?int
+    {
+        if ($this->persistentWorld === null) {
+            return null;
+        }
+        if ($running) {
+            $this->persistentWorld->startTime();
+        } else {
+            $this->persistentWorld->stopTime();
+        }
+        $this->synchronizeWorldTime();
+
+        return $this->persistentWorld->time();
+    }
+
+    public function summonEntity(string $identifier, ApiPosition $position, ?ApiPlayer $source = null): bool
+    {
+        $type = VanillaEntityType::tryFrom($identifier)
+            ?? (str_starts_with($identifier, 'minecraft:')
+                ? new VanillaEntityIdentifier($identifier)
+                : new CustomEntityType($identifier));
+        $outcome = $this->world->spawnEntity(new EntitySpawnRequest(
+            $type,
+            SpawnCause::COMMAND,
+            $this->persistentWorld?->metadata->name ?? 'world',
+            new \Bedriox\Server\Simulation\Position($position->x, $position->y, $position->z),
+            $source === null ? 0.0 : $source->yaw,
+            0.0,
+        ));
+
+        return $outcome->succeeded();
+    }
+
+    public function spawnPluginEntity(
+        CustomEntityType $type,
+        ApiPosition $position,
+        float $yaw = 0.0,
+        float $pitch = 0.0,
+    ): bool {
+        return $this->world->spawnEntity(new EntitySpawnRequest(
+            $type,
+            SpawnCause::PLUGIN,
+            $this->persistentWorld?->metadata->name ?? 'world',
+            new \Bedriox\Server\Simulation\Position($position->x, $position->y, $position->z),
+            $yaw,
+            $pitch,
+        ))->succeeded();
     }
 
     /** Refreshes one connected player's command authority after a persisted permission change. */
@@ -385,6 +503,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
             $outboundTiming = $this->performance?->startSubsystem(PerformanceSubsystem::NETWORK_OUTBOUND);
             foreach ($ticks as $tick) {
                 ++$completedTicks;
+                /** @var array<string, list<Packet>> $pendingEntityMovementPackets */
+                $pendingEntityMovementPackets = [];
                 $pluginTiming = $this->performance?->startSubsystem(PerformanceSubsystem::PLUGINS);
                 ($this->simulationTickBoundary)?->__invoke($tick->number);
                 $pluginTiming?->end();
@@ -405,8 +525,22 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                             return false;
                         }
                     }
+                    foreach ($this->reconcileItemsForViewer($session->id) as $visibilityEvent) {
+                        if (!$this->dispatchWorldEvent($visibilityEvent, $directedCount)) {
+                            return false;
+                        }
+                    }
+                    foreach ($this->reconcileEntityActorsForViewer($session->id) as $visibilityEvent) {
+                        if (!$this->dispatchWorldEvent($visibilityEvent, $directedCount)) {
+                            return false;
+                        }
+                    }
                 }
                 foreach ($tick->events as $event) {
+                    if (!$event instanceof EntityActorMoved
+                        && !$this->flushEntityMovementPackets($pendingEntityMovementPackets)) {
+                        return false;
+                    }
                     if (!$this->reconcileAdmission($event)) {
                         continue;
                     }
@@ -450,6 +584,27 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                         || $event instanceof ItemEntityPickedUp || $event instanceof ItemEntityDespawned) {
                         foreach ($this->reconcileItemEvent($event) as $itemEvent) {
                             if (!$this->dispatchWorldEvent($itemEvent, $directedCount)) {
+                                return false;
+                            }
+                        }
+                        continue;
+                    }
+                    if ($event instanceof EntityActorSpawned || $event instanceof EntityActorMoved
+                        || $event instanceof EntityActorDamaged || $event instanceof EntityActorDied
+                        || $event instanceof EntityActorRemoved) {
+                        foreach ($this->reconcileEntityActorEvent($event) as $entityEvent) {
+                            if ($entityEvent instanceof EntityActorMoved) {
+                                if (!$this->collectEntityMovementPackets(
+                                    $entityEvent,
+                                    $pendingEntityMovementPackets,
+                                    $directedCount,
+                                )) {
+                                    return false;
+                                }
+                                continue;
+                            }
+                            if (!$this->flushEntityMovementPackets($pendingEntityMovementPackets)
+                                || !$this->dispatchWorldEvent($entityEvent, $directedCount)) {
                                 return false;
                             }
                         }
@@ -509,6 +664,11 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                         if ($chunkVisibilityChanged) {
                             foreach ($this->reconcileItemsForViewer($event->player->sessionId) as $itemVisibilityEvent) {
                                 if (!$this->dispatchWorldEvent($itemVisibilityEvent, $directedCount)) {
+                                    return false;
+                                }
+                            }
+                            foreach ($this->reconcileEntityActorsForViewer($event->player->sessionId) as $entityVisibilityEvent) {
+                                if (!$this->dispatchWorldEvent($entityVisibilityEvent, $directedCount)) {
                                     return false;
                                 }
                             }
@@ -730,9 +890,29 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                         return false;
                     }
                 }
+                if (!$this->flushEntityMovementPackets($pendingEntityMovementPackets)) {
+                    return false;
+                }
+                if ($this->persistentWorld !== null
+                    && $tick->number % WorldTimeRules::SYNCHRONIZATION_INTERVAL_TICKS === 0) {
+                    $this->synchronizeWorldTime();
+                }
                 $persistenceTiming = $this->performance?->startSubsystem(PerformanceSubsystem::PERSISTENCE);
                 if ($this->persistentWorld !== null && $tick->number % $this->autosaveIntervalTicks === 0) {
+                    $this->persistentWorld->saveWorldData();
                     $this->autosaveActive = true;
+                    $this->entityAutosaveActive = $this->world->beginEntityAutosave() > 0;
+                }
+                if ($this->persistentWorld !== null && $this->entityAutosaveActive) {
+                    $result = $this->world->autosaveEntities($this->autosaveChunkBudget);
+                    $remaining = $this->world->pendingEntityAutosaveChunkCount();
+                    $this->entityAutosaveActive = $remaining > 0;
+                    $this->diagnostics->record('world.entities_autosaved', [
+                        'saved_chunks' => $result->savedChunks,
+                        'failed_chunks' => $result->failedChunksCount(),
+                        'remaining_generation_chunks' => $remaining,
+                        'dirty_chunks' => $this->world->dirtyEntityChunkCount(),
+                    ]);
                 }
                 if ($this->persistentWorld !== null && $this->autosaveActive) {
                     $saved = $this->persistentWorld->autosave($this->autosaveChunkBudget);
@@ -788,7 +968,17 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
 
     public function entityCount(): int
     {
-        return count($this->world->snapshot()->players) + count($this->itemActors);
+        return count($this->world->snapshot()->players) + count($this->itemActors) + count($this->entityActors);
+    }
+
+    public function entityAiMetrics(): ?AiSchedulerMetrics
+    {
+        return $this->world->entityAiMetrics();
+    }
+
+    public function entityRuntimeMetrics(): ?EntityRuntimeMetrics
+    {
+        return $this->world->entityRuntimeMetrics();
     }
 
     public function chunkStreamingSnapshot(): ChunkStreamingSnapshot
@@ -918,6 +1108,23 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         }
     }
 
+    private function synchronizeWorldTime(): void
+    {
+        if ($this->persistentWorld === null) {
+            return;
+        }
+        $packet = new SetTimePacket($this->persistentWorld->time());
+        foreach (array_keys($this->sessions) as $key) {
+            $session = $this->sessions[$key];
+            if (!$session->joined || $session->play === null) {
+                continue;
+            }
+            if (!$session->play->queuePacket($packet)) {
+                $this->disconnect($key);
+            }
+        }
+    }
+
     private static function saturatingAdd(int $left, int $right): int
     {
         return $right > PHP_INT_MAX - $left ? PHP_INT_MAX : $left + $right;
@@ -962,6 +1169,14 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
             }
         }
         if ($this->persistentWorld !== null) {
+            try {
+                $result = $this->world->flushEntityPersistence();
+                if ($result->failedChunksCount() > 0) {
+                    throw new RuntimeException('One or more entity chunks could not be saved during shutdown.');
+                }
+            } catch (Throwable $exception) {
+                $this->recordShutdownFailure('runtime.entity_save_failed', $exception);
+            }
             try {
                 $this->persistentWorld->close();
             } catch (Throwable $exception) {
@@ -1438,6 +1653,14 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
             $this->playerConnections->disconnect($identity, $session->id);
         }
         unset($this->sessions[$key], $this->sessionEndpoints[$session->id]);
+        foreach ($this->itemActorViewers as $runtimeId => $viewers) {
+            unset($viewers[$session->id]);
+            $this->itemActorViewers[$runtimeId] = $viewers;
+        }
+        foreach ($this->entityActorViewers as $runtimeId => $viewers) {
+            unset($viewers[$session->id]);
+            $this->entityActorViewers[$runtimeId] = $viewers;
+        }
         if ($session->joined || $session->phase === SessionPhase::ADMISSION_PENDING) {
             if (!$this->world->enqueue($this->commands->disconnect($session->id)) && $this->closed) {
                 $this->recordShutdownFailure(
@@ -1557,7 +1780,10 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         $ownerSessionId = $this->eventOwnerSessionId($event);
         $this->diagnostics->record($diagnostic, ['event_type' => $event::class] + $fields);
         if ($event instanceof ItemEntitySpawned || $event instanceof ItemEntityMoved
-            || $event instanceof ItemEntityPickedUp || $event instanceof ItemEntityDespawned) {
+            || $event instanceof ItemEntityPickedUp || $event instanceof ItemEntityDespawned
+            || $event instanceof EntityActorSpawned || $event instanceof EntityActorMoved
+            || $event instanceof EntityActorDamaged || $event instanceof EntityActorDied
+            || $event instanceof EntityActorRemoved) {
             return true;
         }
         if ($ownerSessionId === null) {
@@ -1589,6 +1815,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
             $event instanceof PlayerJoined, $event instanceof PlayerMoved, $event instanceof PlayerDamaged,
             $event instanceof PlayerDied, $event instanceof PlayerRespawned, $event instanceof RespawnAcknowledged,
             $event instanceof PlayerGameModeChanged => $event->player->sessionId,
+            $event instanceof EntityInteracted => $event->ownerSessionId,
             default => null,
         };
     }
@@ -1725,6 +1952,106 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
         return $events;
     }
 
+    /**
+     * @return list<EntityActorSpawned|EntityActorMoved|EntityActorDamaged|EntityActorDied|EntityActorRemoved>
+     */
+    private function reconcileEntityActorEvent(
+        EntityActorSpawned|EntityActorMoved|EntityActorDamaged|EntityActorDied|EntityActorRemoved $event,
+    ): array {
+        $entity = $event->entity;
+        $runtimeId = $entity->getRuntimeId();
+        if ($event instanceof EntityActorRemoved) {
+            $viewers = array_keys($this->entityActorViewers[$runtimeId] ?? []);
+            unset(
+                $this->entityActors[$runtimeId],
+                $this->entityActorNoAi[$runtimeId],
+                $this->entityActorViewers[$runtimeId],
+            );
+
+            return $viewers === [] ? [] : [new EntityActorRemoved($entity, $viewers)];
+        }
+
+        if (!$entity instanceof AbstractLivingEntity) {
+            return [];
+        }
+        $this->entityActors[$runtimeId] = $entity;
+        if ($event instanceof EntityActorSpawned) {
+            $this->entityActorNoAi[$runtimeId] = $event->noAi;
+        }
+        $previous = $this->entityActorViewers[$runtimeId] ?? [];
+        foreach (array_keys($previous) as $recipient) {
+            if (!$this->entityActorViewerCanSee($recipient, $entity)) {
+                unset($previous[$recipient]);
+            }
+        }
+        $eligible = $previous;
+        foreach (array_values(array_unique($event->recipientSessionIds)) as $recipient) {
+            if ($this->entityActorViewerCanSee($recipient, $entity)) {
+                $eligible[$recipient] = true;
+            } else {
+                unset($eligible[$recipient]);
+            }
+        }
+        $old = $this->entityActorViewers[$runtimeId] ?? [];
+        $this->entityActorViewers[$runtimeId] = $eligible;
+        $appeared = array_keys(array_diff_key($eligible, $old));
+        $disappeared = array_keys(array_diff_key($old, $eligible));
+        $events = [];
+        if ($disappeared !== []) {
+            $events[] = new EntityActorRemoved($entity, $disappeared);
+        }
+        if ($appeared !== []) {
+            $events[] = new EntityActorSpawned(
+                $entity,
+                $appeared,
+                $this->entityActorNoAi[$runtimeId] ?? false,
+            );
+        }
+        $continuing = array_keys(array_intersect_key($eligible, $old));
+        if ($continuing === []) {
+            return $events;
+        }
+        if ($event instanceof EntityActorMoved) {
+            $events[] = new EntityActorMoved($entity, $event->tick, $continuing, $event->motionChanged);
+        } elseif ($event instanceof EntityActorDamaged) {
+            $events[] = new EntityActorDamaged($entity, $event->tick, $continuing);
+        } elseif ($event instanceof EntityActorDied) {
+            $events[] = new EntityActorDied($entity, $continuing);
+        }
+
+        return $events;
+    }
+
+    /** @return list<EntityActorSpawned|EntityActorRemoved> */
+    private function reconcileEntityActorsForViewer(string $sessionId): array
+    {
+        $events = [];
+        foreach ($this->entityActors as $entity) {
+            foreach ($this->reconcileEntityActorEvent(new EntityActorSpawned(
+                $entity,
+                [$sessionId],
+                $this->entityActorNoAi[$entity->getRuntimeId()] ?? false,
+            )) as $event) {
+                if ($event instanceof EntityActorSpawned || $event instanceof EntityActorRemoved) {
+                    $events[] = $event;
+                }
+            }
+        }
+
+        return $events;
+    }
+
+    private function entityActorViewerCanSee(string $sessionId, AbstractLivingEntity $entity): bool
+    {
+        $viewer = $this->sessionById($sessionId);
+
+        return $viewer?->phase === SessionPhase::SPAWNED
+            && ($viewer->play?->hasSentChunkAt(
+                $entity->internalPosition()->x,
+                $entity->internalPosition()->z,
+            ) ?? false);
+    }
+
     private function filterBlockRecipients(
         BlockBreakStarted|BlockPunch|BlockBreakStopped|BlockChanged|BlockPlaced $event,
     ): BlockBreakStarted|BlockPunch|BlockBreakStopped|BlockChanged|BlockPlaced {
@@ -1803,6 +2130,70 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource
                 }
             }
         }
+
+        return true;
+    }
+
+    /**
+     * @param array<string, list<Packet>> $packetsBySession
+     */
+    private function collectEntityMovementPackets(
+        EntityActorMoved $event,
+        array &$packetsBySession,
+        int &$directedCount,
+    ): bool {
+        try {
+            $directedPackets = $this->eventEncoder->encode($event, $this->sessionEndpointsById());
+        } catch (Throwable $exception) {
+            return $this->containEventFailure(
+                $event,
+                'runtime.event_encoding_failed',
+                ['exception' => $exception::class],
+            );
+        }
+        if (count($directedPackets) > $this->limits->maximumDirectedPacketsPerPoll - $directedCount) {
+            return $this->containEventFailure($event, 'runtime.directed_packet_limit_exceeded', [
+                'packet_count' => count($directedPackets),
+                'remaining_budget' => $this->limits->maximumDirectedPacketsPerPoll - $directedCount,
+            ]);
+        }
+        $directedCount += count($directedPackets);
+        foreach ($directedPackets as $directed) {
+            $packetsBySession[$directed->sessionId][] = $directed->packet;
+        }
+
+        return true;
+    }
+
+    /** @param array<string, list<Packet>> $packetsBySession */
+    private function flushEntityMovementPackets(array &$packetsBySession): bool
+    {
+        if ($packetsBySession === []) {
+            return true;
+        }
+        $packetCount = 0;
+        $batchCount = 0;
+        $recipientCount = count($packetsBySession);
+        foreach ($packetsBySession as $sessionId => $packets) {
+            $packetCount += count($packets);
+            $session = $this->sessionById($sessionId);
+            if ($session?->play === null) {
+                continue;
+            }
+            foreach (array_chunk($packets, max(1, $this->limits->maximumPacketsPerPayload)) as $batch) {
+                ++$batchCount;
+                if (!$session->play->queuePackets($batch)) {
+                    $this->disconnect(self::endpointKey($session->transport));
+                    break;
+                }
+            }
+        }
+        $packetsBySession = [];
+        $this->diagnostics->record('world.entity_actor_projection.protocol_trace', [
+            'packets' => $packetCount,
+            'batches' => $batchCount,
+            'recipients' => $recipientCount,
+        ]);
 
         return true;
     }

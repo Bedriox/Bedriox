@@ -4,6 +4,11 @@
 declare(strict_types=1);
 
 use Bedriox\Data\PersistentBlockStateRegistry;
+use Bedriox\Server\Entity\Persistence\CorruptEntityPersistenceException;
+use Bedriox\Server\Entity\Persistence\EntityChunkSnapshot;
+use Bedriox\Server\Entity\Persistence\EntityOwnershipTransfer;
+use Bedriox\Server\Entity\Persistence\EntityPersistenceConflictException;
+use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
 use Bedriox\Server\Persistence\World\Internal\WorldStorageProcessProgram;
 use Bedriox\Server\Persistence\World\WorldStorageStartup;
 use Bedriox\Server\Tests\World\InMemoryWorldProvider;
@@ -40,11 +45,15 @@ exit(WorldStorageProcessProgram::run(
         $delayLoads = str_contains($startup->path, 'timeout');
         $delaySaves = str_contains($startup->path, 'slow-save');
 
-        return new readonly class ($inner, $delayLoads, $delaySaves) implements WritableWorldProvider {
+        return new class ($inner, $delayLoads, $delaySaves, str_contains($startup->path, 'entity-corrupt')) implements WritableWorldProvider, EntityPersistenceStore {
+            /** @var array<string, EntityChunkSnapshot> */
+            private array $entitySnapshots = [];
+
             public function __construct(
                 private InMemoryWorldProvider $inner,
                 private bool $delayLoads,
                 private bool $delaySaves,
+                private bool $corruptEntities,
             ) {}
 
             public function worldData(): WorldData
@@ -72,6 +81,35 @@ exit(WorldStorageProcessProgram::run(
                     usleep(500_000);
                 }
                 $this->inner->saveChunk($chunkData);
+            }
+
+            public function loadEntityChunk(ChunkPosition $position): ?EntityChunkSnapshot
+            {
+                if ($this->corruptEntities && $position->x === 0 && $position->z === 0) {
+                    throw new CorruptEntityPersistenceException($position);
+                }
+
+                return $this->entitySnapshots[$position->key()] ?? null;
+            }
+
+            public function saveEntityChunk(EntityChunkSnapshot $snapshot): void
+            {
+                $current = $this->entitySnapshots[$snapshot->chunk->key()] ?? null;
+                if ($current instanceof EntityChunkSnapshot && $snapshot->chunkRevision <= $current->chunkRevision) {
+                    throw new EntityPersistenceConflictException('Injected stale entity snapshot.');
+                }
+                $this->entitySnapshots[$snapshot->chunk->key()] = $snapshot;
+            }
+
+            public function transferEntityOwnership(EntityOwnershipTransfer $transfer): void
+            {
+                $source = $this->entitySnapshots[$transfer->sourceAfter->chunk->key()] ?? null;
+                if (!$source instanceof EntityChunkSnapshot
+                    || !$source->containsExactRevision($transfer->uuid, $transfer->expectedEntityRevision)) {
+                    throw new EntityPersistenceConflictException('Injected stale entity transfer.');
+                }
+                $this->entitySnapshots[$transfer->sourceAfter->chunk->key()] = $transfer->sourceAfter;
+                $this->entitySnapshots[$transfer->destinationAfter->chunk->key()] = $transfer->destinationAfter;
             }
 
             public function close(): void

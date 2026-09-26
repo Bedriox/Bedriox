@@ -208,6 +208,42 @@ final readonly class StatusCommand implements BuiltinCommand
                 $status->chunkStreaming->deliveryQueued,
             ));
         }
+        if ($status->entityAi !== null) {
+            self::send($sender, TextFormat::AQUA, sprintf(
+                'Entity AI: %d/%d ticked, %d active, %d reduced, %d sleeping',
+                $status->entityAi->ticked,
+                $status->entityAi->considered,
+                $status->entityAi->active,
+                $status->entityAi->reduced,
+                $status->entityAi->sleeping,
+            ));
+            self::send($sender, TextFormat::GRAY, sprintf(
+                'AI work: %d sensors, %d goals evaluated, %d goals ticked, %.2f ms%s',
+                $status->entityAi->sensorsRun,
+                $status->entityAi->goalsEvaluated,
+                $status->entityAi->goalsTicked,
+                $status->entityAi->elapsedNanoseconds / 1_000_000,
+                $status->entityAi->budgetExhausted ? ', budget exhausted' : '',
+            ));
+        }
+        if ($status->entityRuntime !== null) {
+            self::send($sender, TextFormat::AQUA, sprintf(
+                'Entity physics: %d/%d ticked, %d cadence skipped, %d budget deferred',
+                $status->entityRuntime->physicsTicked,
+                $status->entityRuntime->physicsEligible,
+                $status->entityRuntime->cadenceSkipped,
+                $status->entityRuntime->budgetDeferred,
+            ));
+            self::send($sender, TextFormat::GRAY, sprintf(
+                'Entity motion: %d moved, %d velocity changes, %.2f ms%s',
+                $status->entityRuntime->moved,
+                $status->entityRuntime->motionChanged,
+                $status->entityRuntime->elapsedNanoseconds / 1_000_000,
+                $status->entityRuntime->budgetExhausted
+                    ? sprintf(', budget exhausted (%d safety-critical)', $status->entityRuntime->continuousBeyondBudget)
+                    : '',
+            ));
+        }
         if ($status->preparedChunkCache !== null) {
             self::send($sender, TextFormat::AQUA, sprintf(
                 'Prepared chunks: %d entries (%s), %d pending (%s)',

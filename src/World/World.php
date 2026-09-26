@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World;
 
+use Bedriox\Server\Entity\Persistence\EntityPersistenceManager;
+use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
 use Bedriox\Server\Persistence\PersistenceQueueSnapshot;
 use Bedriox\Server\Persistence\PersistenceQueueStatusProvider;
 use Bedriox\Server\Persistence\PersistenceSubmission;
@@ -27,7 +29,9 @@ final class World
 
     private readonly ?SpawnPosition $spawnOverride;
 
-    private readonly int $time;
+    private int $time;
+
+    private bool $timeRunning = true;
 
     private readonly int $difficulty;
 
@@ -44,6 +48,8 @@ final class World
     private readonly ChunkUnloadManager $chunkUnloads;
 
     private bool $spawnChunkRetained = false;
+
+    private ?EntityPersistenceManager $entityPersistence = null;
 
     public function __construct(
         public readonly WorldMetadata $metadata,
@@ -68,7 +74,7 @@ final class World
             throw new InvalidArgumentException('Provider world data does not match the configured world.');
         }
         $this->spawnOverride = $spawnOverride ?? ($worldData === null ? null : $worldData->spawn);
-        $this->time = $worldData === null ? 0 : $worldData->time;
+        $this->time = WorldTimeRules::validate($worldData === null ? 0 : $worldData->time);
         $this->difficulty = $worldData === null ? 2 : $worldData->difficulty;
     }
 
@@ -81,9 +87,27 @@ final class World
         $this->asyncChunks = $generator;
     }
 
+    /** Attaches the entity owner lifecycle before the first terrain chunk is activated. */
+    public function attachEntityPersistence(EntityPersistenceManager $persistence): void
+    {
+        if ($this->closed || $this->chunks->count() !== 0 || $this->entityPersistence !== null) {
+            throw new LogicException('Entity persistence must be attached exactly once before chunks are loaded.');
+        }
+        $this->entityPersistence = $persistence;
+        $this->chunks->setBeforeEvictionObserver(static function (ChunkPosition $chunk) use ($persistence): void {
+            $persistence->unloadChunk($chunk);
+        });
+    }
+
+    public function entityPersistenceStore(): ?EntityPersistenceStore
+    {
+        return $this->provider instanceof EntityPersistenceStore ? $this->provider : null;
+    }
+
     public function chunk(ChunkPosition $position): Chunk
     {
         $chunk = $this->chunks->get($position, $this->loadChunk(...), $this->evictionSaver());
+        $this->entityPersistence?->activateChunk($position);
         if (!$this->chunks->isRetained($position)) {
             $this->chunkUnloads->queue($position);
         }
@@ -91,9 +115,22 @@ final class World
         return $chunk;
     }
 
+    /** Read-only admission check used by entity spawning and other non-blocking systems. */
+    public function hasLoadedChunk(ChunkPosition $position): bool
+    {
+        return $this->chunks->contains($position);
+    }
+
+    /** Returns the currently loaded immutable snapshot without loading, generating, or changing LRU state. */
+    public function loadedChunk(ChunkPosition $position): ?Chunk
+    {
+        return $this->chunks->loaded($position);
+    }
+
     public function retainChunk(ChunkPosition $position): Chunk
     {
         $chunk = $this->chunks->retain($position, $this->loadChunk(...), $this->evictionSaver());
+        $this->entityPersistence?->activateChunk($position);
         $this->chunkUnloads->cancel($position);
 
         return $chunk;
@@ -110,6 +147,7 @@ final class World
         $this->pollAsynchronousProvider();
         if ($this->chunks->contains($position)) {
             $this->chunks->retain($position, $this->loadChunk(...), $this->evictionSaver());
+            $this->entityPersistence?->activateChunk($position);
             $this->chunkUnloads->cancel($position);
 
             return true;
@@ -131,6 +169,7 @@ final class World
                     ? self::markDirty($completion->loaded->chunk)
                     : $completion->loaded->chunk;
                 $this->chunks->retain($position, static fn(ChunkPosition $_position): Chunk => $chunk, $this->evictionSaver());
+                $this->entityPersistence?->activateChunk($position);
 
                 return true;
             }
@@ -142,6 +181,7 @@ final class World
             if ($loaded !== null) {
                 $chunk = $loaded->upgraded ? self::markDirty($loaded->chunk) : $loaded->chunk;
                 $this->chunks->retain($position, static fn(ChunkPosition $_position): Chunk => $chunk, $this->evictionSaver());
+                $this->entityPersistence?->activateChunk($position);
 
                 return true;
             }
@@ -161,6 +201,7 @@ final class World
                 }
             }
             $this->chunks->retain($position, static fn(ChunkPosition $_position): Chunk => $chunk, $this->evictionSaver());
+            $this->entityPersistence?->activateChunk($position);
 
             return true;
         }
@@ -181,6 +222,7 @@ final class World
                 }
             }
             $this->chunks->get($position, static fn(ChunkPosition $_position): Chunk => $chunk, $this->evictionSaver());
+            $this->entityPersistence?->activateChunk($position);
             if (!$this->chunks->isRetained($position)) {
                 $this->chunkUnloads->queue($position);
             }
@@ -341,6 +383,58 @@ final class World
         return $this->generator->name();
     }
 
+    public function difficulty(): int
+    {
+        return $this->difficulty;
+    }
+
+    public function time(): int
+    {
+        return $this->time;
+    }
+
+    public function timeOfDay(): int
+    {
+        return WorldTimeRules::timeOfDay($this->time);
+    }
+
+    public function day(): int
+    {
+        return WorldTimeRules::day($this->time);
+    }
+
+    public function setTime(int $time): void
+    {
+        $this->time = WorldTimeRules::validate($time);
+    }
+
+    public function addTime(int $amount): void
+    {
+        $this->time = WorldTimeRules::add($this->time, $amount);
+    }
+
+    public function advanceTime(): void
+    {
+        if ($this->timeRunning) {
+            $this->time = WorldTimeRules::add($this->time, 1);
+        }
+    }
+
+    public function isTimeRunning(): bool
+    {
+        return $this->timeRunning;
+    }
+
+    public function startTime(): void
+    {
+        $this->timeRunning = true;
+    }
+
+    public function stopTime(): void
+    {
+        $this->timeRunning = false;
+    }
+
     /** Saves a bounded number of dirty chunks, oldest-dirty first. */
     public function autosave(int $maximumChunks): int
     {
@@ -457,6 +551,21 @@ final class World
         $saved = $this->provider instanceof AsynchronousWorldProvider
             ? $this->flushAsynchronousChunks($this->provider)
             : $this->chunks->flush($this->saveChunk(...));
+        $this->saveWorldData();
+
+        return $saved;
+    }
+
+    /** Persists the current format-independent world metadata without flushing terrain. */
+    public function saveWorldData(): void
+    {
+        if (!$this->provider instanceof WritableWorldProvider) {
+            if ($this->provider === null) {
+                return;
+            }
+
+            throw new LogicException('This world does not have a writable provider.');
+        }
         $this->provider->saveWorldData(new WorldData(
             $this->metadata,
             $this->generator->name(),
@@ -465,8 +574,6 @@ final class World
             $this->difficulty,
             $this->generator instanceof VersionedWorldGenerator ? $this->generator->version() : 1,
         ));
-
-        return $saved;
     }
 
     public function close(): void

@@ -139,6 +139,30 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
         self::assertSame(3, $packets[9]->difficulty);
     }
 
+    public function testNewPlayersReceiveTheCurrentWorldTimeInsteadOfTheStartupSnapshot(): void
+    {
+        $time = 1_000;
+        $factory = BedrockPlayInitializationFactory::forWorld(
+            BedrockDataSet::bundled(),
+            new RuntimeLimits(),
+            new WorldData(
+                new WorldMetadata('Dynamic Time', 1),
+                'flat',
+                new SpawnPosition(0, 64, 0),
+                $time,
+            ),
+            worldTimeProvider: static function () use (&$time): int {
+                return $time;
+            },
+        );
+
+        $time = 13_000;
+        $packets = $factory->create($this->login(), UnsignedLong::fromInt(7));
+
+        self::assertInstanceOf(SetTimePacket::class, $packets[8]);
+        self::assertSame(13_000, $packets[8]->time);
+    }
+
     public function testExactOrderGoldenRegistryAndDefersTerrainToRuntimeStreamer(): void
     {
         $login = $this->login();

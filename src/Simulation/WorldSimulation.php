@@ -9,6 +9,11 @@ use Bedriox\Api\Crafting\CraftingRecipe as ApiCraftingRecipe;
 use Bedriox\Api\Crafting\RecipeIngredient as ApiRecipeIngredient;
 use Bedriox\Api\Crafting\ShapedRecipe as ApiShapedRecipe;
 use Bedriox\Api\Crafting\ShapelessRecipe as ApiShapelessRecipe;
+use Bedriox\Api\Entity\EntityCategory;
+use Bedriox\Api\Entity\EntityCombustionCause;
+use Bedriox\Api\Entity\EntityDamageCause as ApiEntityDamageCause;
+use Bedriox\Api\Entity\SpawnCause;
+use Bedriox\Api\Event\Entity\EntityDamageByEntityEvent;
 use Bedriox\Api\Event\Inventory\InventoryCloseReason as ApiInventoryCloseReason;
 use Bedriox\Api\Inventory\ConsumptionResult as ApiConsumptionResult;
 use Bedriox\Api\Inventory\Container as ApiContainer;
@@ -31,9 +36,38 @@ use Bedriox\Api\Player\Nutrition as ApiNutrition;
 use Bedriox\Api\TranslatableMessage;
 use Bedriox\Data\BlockPropertyRegistry;
 use Bedriox\Data\CanonicalBlockState;
+use Bedriox\Data\EntityTypeRegistry;
+use Bedriox\Server\Entity\AbstractEntity;
+use Bedriox\Server\Entity\AbstractLivingEntity;
+use Bedriox\Server\Entity\AbstractMobEntity;
+use Bedriox\Server\Entity\Ai\AiMeleeIntent;
+use Bedriox\Server\Entity\Ai\AiPlayerSnapshot;
+use Bedriox\Server\Entity\Ai\AiSchedulerMetrics;
+use Bedriox\Server\Entity\Ai\IndexedAiWorldView;
+use Bedriox\Server\Entity\EntityDefinition;
+use Bedriox\Server\Entity\EntityDefinitionRegistry;
+use Bedriox\Server\Entity\EntityMotion;
+use Bedriox\Server\Entity\EntityPhysicsResolver;
+use Bedriox\Server\Entity\EntityRegistry;
+use Bedriox\Server\Entity\EntityWorldRuntime;
+use Bedriox\Server\Entity\Equipment\EntityEquipmentTransition;
 use Bedriox\Server\Entity\Item\DroppedItemCollisionResolver;
 use Bedriox\Server\Entity\Item\ItemEntityMotion;
 use Bedriox\Server\Entity\Item\ItemEntityRegistry;
+use Bedriox\Server\Entity\Loot\EntityLootResolver;
+use Bedriox\Server\Entity\Loot\EquippedLootItem;
+use Bedriox\Server\Entity\Loot\GameplayLootItemRegistry;
+use Bedriox\Server\Entity\Loot\LootContext;
+use Bedriox\Server\Entity\Persistence\EntityPersistenceFlushResult;
+use Bedriox\Server\Entity\Persistence\EntityPersistenceManager;
+use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
+use Bedriox\Server\Entity\PluginMobEntity;
+use Bedriox\Server\Entity\Spawn\EntitySpawnOutcome;
+use Bedriox\Server\Entity\Spawn\EntitySpawnRequest;
+use Bedriox\Server\Entity\Spawn\EntitySpawnService;
+use Bedriox\Server\Entity\Spawn\Natural\NaturalSpawnPlayer;
+use Bedriox\Server\Entity\Spawn\Natural\WorldNaturalSpawnRuntime;
+use Bedriox\Server\Entity\WorldEntityEnvironment;
 use Bedriox\Server\Gameplay\Block\BlockBreakContext;
 use Bedriox\Server\Gameplay\Block\BlockBreakRules;
 use Bedriox\Server\Gameplay\Block\BlockCatalog;
@@ -76,6 +110,8 @@ use Bedriox\Server\Player\PlayerIdentity;
 use Bedriox\Server\Player\PlayerInventory;
 use Bedriox\Server\Player\PlayerRegistry;
 use Bedriox\Server\Player\SupportedInventoryItem;
+use Bedriox\Server\Plugin\PluginActionBuffer;
+use Bedriox\Server\Plugin\PluginEntityLifecycleBridge;
 use Bedriox\Server\Simulation\Command\AcknowledgeRespawn;
 use Bedriox\Server\Simulation\Command\ApplyInventoryStackRequest;
 use Bedriox\Server\Simulation\Command\AttackPlayer;
@@ -83,10 +119,12 @@ use Bedriox\Server\Simulation\Command\BreakBlock;
 use Bedriox\Server\Simulation\Command\ChangeGameMode;
 use Bedriox\Server\Simulation\Command\CloseContainer;
 use Bedriox\Server\Simulation\Command\CloseCraftingGrid;
+use Bedriox\Server\Simulation\Command\DamageEntity;
 use Bedriox\Server\Simulation\Command\DamagePlayer;
 use Bedriox\Server\Simulation\Command\DisconnectPlayer;
 use Bedriox\Server\Simulation\Command\DropItem;
 use Bedriox\Server\Simulation\Command\GiveItem;
+use Bedriox\Server\Simulation\Command\InteractEntity;
 use Bedriox\Server\Simulation\Command\JoinPlayer;
 use Bedriox\Server\Simulation\Command\MovePlayer;
 use Bedriox\Server\Simulation\Command\PerformEmote;
@@ -120,6 +158,16 @@ use Bedriox\Server\Simulation\Event\ContainerOpened;
 use Bedriox\Server\Simulation\Event\ContainerViewerProjection;
 use Bedriox\Server\Simulation\Event\CraftingTableOpened;
 use Bedriox\Server\Simulation\Event\EmotePerformed;
+use Bedriox\Server\Simulation\Event\EntityActorAttackStarted;
+use Bedriox\Server\Simulation\Event\EntityActorDamaged;
+use Bedriox\Server\Simulation\Event\EntityActorDied;
+use Bedriox\Server\Simulation\Event\EntityActorEquipmentChanged;
+use Bedriox\Server\Simulation\Event\EntityActorHealthChanged;
+use Bedriox\Server\Simulation\Event\EntityActorMetadataChanged;
+use Bedriox\Server\Simulation\Event\EntityActorMoved;
+use Bedriox\Server\Simulation\Event\EntityActorRemoved;
+use Bedriox\Server\Simulation\Event\EntityActorSpawned;
+use Bedriox\Server\Simulation\Event\EntityInteracted;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InstantItemUsed;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
@@ -165,6 +213,9 @@ use SplQueue;
 
 final class WorldSimulation
 {
+    private const int DAYLIGHT_FIRE_DURATION_TICKS = 160;
+    private const float FIRE_TICK_DAMAGE = 1.0;
+
     private const int MAXIMUM_ITEM_ENTITIES_SPAWNED_PER_COMMAND = 256;
     private const int MAXIMUM_ITEM_MOVEMENT_EVENTS_PER_TICK = 256;
     private const int MAXIMUM_ITEM_DESPAWN_EVENTS_PER_TICK = 256;
@@ -204,11 +255,45 @@ final class WorldSimulation
     private int $tick = 0;
     private int $nextRuntimeActorId = 1;
     private readonly SimulationCommandFactory $validator;
+    private readonly ?BlockCollisionQuery $blockCollisions;
     private readonly ?PlayerCollisionResolver $collisionResolver;
     private readonly ?DroppedItemCollisionResolver $itemCollisionResolver;
     private readonly ?BlockPlacementStateResolver $blockPlacementStates;
     private readonly DropRandom $dropRandom;
     private readonly ItemEntityRegistry $itemEntities;
+
+    private readonly ?EntityLootResolver $entityLoot;
+
+    private readonly EntityWorldRuntime $entityRuntime;
+
+    private readonly ?WorldEntityEnvironment $entityEnvironment;
+
+    private ?EntityPersistenceManager $entityPersistence = null;
+
+    /** @var array<int, AbstractLivingEntity> */
+    private array $announcedEntities = [];
+
+    /** @var array<int, int> Runtime actor ID to last projected presentation revision. */
+    private array $publishedEntityPresentationRevisions = [];
+
+    /** @var array<int, float> Runtime actor ID to last projected health. */
+    private array $publishedEntityHealth = [];
+
+    private readonly IndexedAiWorldView $entityAiWorld;
+
+    /** @var list<AiPlayerSnapshot> One immutable player projection rebuilt once per simulation tick. */
+    private array $entityAiPlayers = [];
+
+    private readonly ?WorldNaturalSpawnRuntime $naturalSpawns;
+
+    /** @var array<int, int> Runtime actor ID to removal tick after its death animation. */
+    private array $entityDeathRemovalTicks = [];
+
+    /** @var array<int, int> Runtime actor ID to last immune tick. */
+    private array $entityInvulnerableUntilTicks = [];
+
+    /** @var array<int, \Bedriox\Api\Event\Entity\EntityDamageEvent> */
+    private array $entityLastDamageEvents = [];
     private int $itemMovementCursor = 0;
 
     /** @var array<int, ItemEntityMotion> Last motion published for each live item actor. */
@@ -273,6 +358,14 @@ final class WorldSimulation
         ?ItemBehaviorRegistry $itemBehaviors = null,
         private readonly ?CraftingCatalog $craftingCatalog = null,
         private readonly ?BlockPropertyRegistry $blockProperties = null,
+        ?EntityWorldRuntime $entityRuntime = null,
+        private readonly bool $entityAiEnabled = true,
+        private readonly bool $spawnAnimals = true,
+        private readonly bool $spawnMonsters = true,
+        private readonly ?EntityTypeRegistry $entityTypes = null,
+        ?EntityDefinitionRegistry $entityDefinitions = null,
+        private readonly ?PluginEntityLifecycleBridge $pluginEntityLifecycle = null,
+        private readonly ?PluginActionBuffer $pluginActions = null,
     ) {
         $this->commands = new SplQueue();
         $this->lifecycleCommands = new SplQueue();
@@ -281,27 +374,120 @@ final class WorldSimulation
         $this->players = new PlayerRegistry($this->limits->maximumPlayers);
         $this->dropRandom = $dropRandom ?? new SystemDropRandom();
         $this->itemEntities = $itemEntities ?? new ItemEntityRegistry(firstEntityId: 1_000_000_000);
+        $this->entityLoot = $itemCatalog === null
+            ? null
+            : EntityLootResolver::vanilla(new GameplayLootItemRegistry($itemCatalog));
         $this->itemBehaviors = $itemBehaviors ?? ItemBehaviorRegistry::vanilla();
         $this->worldContainers = $blockWorld === null ? null : new WorldContainerStore($blockWorld);
         $this->shulkerItems = new ShulkerBoxItemNbtCodec();
         $this->complexCraftingRecipes = $itemCatalog !== null && $blockStateRegistry !== null
             ? new ComplexCraftingRecipeEvaluator($itemCatalog, $blockStateRegistry)
             : null;
-        $this->collisionResolver = $blockWorld !== null && $blockPalette !== null
-            ? new PlayerCollisionResolver(new BlockCollisionQuery(
+        $collisionQuery = $blockWorld !== null && $blockPalette !== null
+            ? new BlockCollisionQuery(
                 $blockWorld,
                 $blockPalette->air,
                 array_values(array_filter([$waterState, $lavaState])),
                 $blockCollisionRegistry,
-            ))
+            )
             : null;
-        $this->itemCollisionResolver = $blockWorld !== null && $blockPalette !== null
-            ? new DroppedItemCollisionResolver(new BlockCollisionQuery(
+        $this->blockCollisions = $collisionQuery;
+        $this->collisionResolver = $collisionQuery === null ? null : new PlayerCollisionResolver($collisionQuery);
+        $this->itemCollisionResolver = $collisionQuery === null ? null : new DroppedItemCollisionResolver($collisionQuery);
+        $definitions = $entityDefinitions ?? EntityDefinitionRegistry::baseline();
+        $this->entityEnvironment = $blockWorld !== null && $blockPalette !== null
+            && $blockStateRegistry !== null && $blockCollisionRegistry !== null
+            ? new WorldEntityEnvironment(
                 $blockWorld,
-                $blockPalette->air,
-                array_values(array_filter([$waterState, $lavaState])),
+                $blockStateRegistry,
                 $blockCollisionRegistry,
-            ))
+                $blockPalette->air,
+                $waterState,
+            )
+            : null;
+        if ($entityRuntime === null) {
+            $entityRegistry = new EntityRegistry(firstRuntimeId: 2_000_000_000);
+            $spawnService = new EntitySpawnService(
+                $entityRegistry,
+                $definitions,
+                static fn(string $_world, int $chunkX, int $chunkZ): bool => $blockWorld === null
+                    || $blockWorld->hasLoadedChunk(new ChunkPosition($chunkX, $chunkZ)),
+                static function (EntityDefinition $definition, Position $position) use ($collisionQuery): bool {
+                    if ($collisionQuery === null) {
+                        return true;
+                    }
+                    $halfWidth = $definition->width / 2.0;
+
+                    return !$collisionQuery->hasCollision(new AxisAlignedBox(
+                        $position->x - $halfWidth,
+                        $position->y,
+                        $position->z - $halfWidth,
+                        $position->x + $halfWidth,
+                        $position->y + $definition->height,
+                        $position->z + $halfWidth,
+                    ));
+                },
+                $this->pluginEvents === null
+                    ? null
+                    : fn(\Bedriox\Api\Event\Entity\EntitySpawnEvent $event): bool =>
+                        $this->pluginEvents->allowEntitySpawn($event->entity, $event->cause),
+                $this->pluginEvents === null
+                    ? null
+                    : function (\Bedriox\Api\Event\Entity\EntitySpawnedEvent $event): void {
+                        $this->pluginEvents->entitySpawned($event->entity, $event->cause);
+                    },
+                static function (\Bedriox\Server\Entity\AbstractEntity $entity, SpawnCause $cause) use (
+                    $pluginEntityLifecycle,
+                ): bool {
+                    return !$entity instanceof PluginMobEntity
+                        || ($pluginEntityLifecycle !== null && $pluginEntityLifecycle->spawned($entity, $cause));
+                },
+                function (\Bedriox\Server\Entity\AbstractEntity $entity): void {
+                    $this->prepareLivingEntity($entity, true);
+                },
+            );
+            $entityRuntime = new EntityWorldRuntime(
+                $entityRegistry,
+                $spawnService,
+                $collisionQuery === null ? null : new EntityPhysicsResolver($collisionQuery),
+                scheduledAiTick: static function (AbstractMobEntity $entity, int $currentTick) use (
+                    $pluginEntityLifecycle,
+                ): void {
+                    if ($entity instanceof PluginMobEntity) {
+                        $pluginEntityLifecycle?->aiTick($entity, $currentTick);
+                    }
+                },
+            );
+        }
+        $this->entityRuntime = $entityRuntime;
+        $this->entityAiWorld = new IndexedAiWorldView(
+            $this->entityRuntime->registry(),
+            fn(): array => $this->entityAiPlayers,
+            $collisionQuery === null
+                ? null
+                : fn(AbstractMobEntity $entity, AiPlayerSnapshot $player): bool =>
+                    $this->hostileEntityHasLineOfSight($entity, $player->position),
+        );
+        $this->naturalSpawns = $blockWorld !== null
+            && $blockPalette !== null
+            && $blockStateRegistry !== null
+            && $blockCollisionRegistry !== null
+            && $collisionQuery !== null
+            ? WorldNaturalSpawnRuntime::baseline(
+                $blockWorld,
+                $this->entityRuntime,
+                $definitions,
+                $blockStateRegistry,
+                $blockCollisionRegistry,
+                $collisionQuery,
+                $blockPalette->air,
+                $waterState,
+                $lavaState,
+                spawnAnimals: $this->spawnAnimals,
+                spawnMonsters: $this->spawnMonsters,
+                beforeDespawn: fn(AbstractLivingEntity $entity): bool =>
+                    $this->pluginEvents?->allowEntityDespawn($entity, 'natural_distance') ?? true,
+            )
             : null;
         $this->blockPlacementStates = $blockStateRegistry === null
             ? null
@@ -444,6 +630,7 @@ final class WorldSimulation
     public function tick(): SimulationTick
     {
         ++$this->tick;
+        $this->blockWorld?->advanceTime();
         [$processed, $events] = $this->processLifecycleCommands($this->limits->maximumCommandsPerTick);
 
         $remaining = $this->limits->maximumCommandsPerTick - $processed;
@@ -486,6 +673,8 @@ final class WorldSimulation
         array_push($events, ...$this->advanceNutrition());
         array_push($events, ...$this->advanceBlockBreakParticles());
         array_push($events, ...$this->advanceItemEntities());
+        array_push($events, ...$this->advanceNaturalEntities());
+        array_push($events, ...$this->advanceGeneralEntities());
         array_push($events, ...$this->drainDeferredEvents());
 
         return new SimulationTick($this->tick, $processed, $events);
@@ -525,6 +714,794 @@ final class WorldSimulation
     public function snapshot(): WorldSnapshot
     {
         return new WorldSnapshot($this->tick, $this->players->snapshots());
+    }
+
+    public function spawnEntity(EntitySpawnRequest $request): EntitySpawnOutcome
+    {
+        $outcome = $this->entityRuntime->spawn($request);
+        if ($outcome->entity instanceof AbstractLivingEntity) {
+            $this->naturalSpawns?->restoreDespawnOwnership($outcome->entity);
+            if ($this->entityPersistence !== null && $outcome->entity->isPersistent()) {
+                $this->entityPersistence->registerSpawned($outcome->entity);
+            }
+            $this->announcedEntities[$outcome->entity->getRuntimeId()] = $outcome->entity;
+            $outcome->entity->drainEquipmentChanges();
+            $this->publishedEntityHealth[$outcome->entity->getRuntimeId()] = $outcome->entity->getHealth();
+            $this->publishedEntityPresentationRevisions[$outcome->entity->getRuntimeId()] =
+                $outcome->entity->presentationRevision();
+            $this->deferredEvents[] = new EntityActorSpawned(
+                $outcome->entity,
+                $this->players->recipients(),
+                !$this->entityAiEnabled,
+            );
+        }
+
+        return $outcome;
+    }
+
+    public function enableEntityPersistence(
+        EntityPersistenceStore $store,
+        EntityDefinitionRegistry $definitions,
+    ): void {
+        if ($this->entityPersistence !== null || $this->blockWorld === null || $this->tick !== 0) {
+            throw new \LogicException('Entity persistence must be enabled once before simulation begins.');
+        }
+        $this->entityPersistence = new EntityPersistenceManager(
+            $this->blockWorld->metadata->name,
+            $this->entityRuntime->registry(),
+            $definitions,
+            $store,
+            afterActivation: function (
+                \Bedriox\Server\Entity\Persistence\EntityPersistenceRecord $record,
+                \Bedriox\Server\Entity\AbstractEntity $entity,
+            ): bool {
+                $this->prepareLivingEntity($entity, false);
+                if (!$entity instanceof PluginMobEntity) {
+                    if ($entity instanceof AbstractLivingEntity) {
+                        $this->naturalSpawns?->restoreDespawnOwnership($entity);
+                    }
+
+                    $this->pluginEvents?->entitySpawned($entity, SpawnCause::CHUNK_LOAD);
+
+                    return true;
+                }
+                if ($this->pluginEntityLifecycle === null) {
+                    return false;
+                }
+                if ($record->customSchemaVersion > 0 && !$this->pluginEntityLifecycle->restoreState(
+                    $entity,
+                    new \Bedriox\Api\Entity\CustomEntityState($record->customSchemaVersion, $record->customData),
+                )) {
+                    return false;
+                }
+
+                $activated = $this->pluginEntityLifecycle->spawned($entity, SpawnCause::CHUNK_LOAD);
+                if ($activated) {
+                    $this->naturalSpawns?->restoreDespawnOwnership($entity);
+                    $this->pluginEvents?->entitySpawned($entity, SpawnCause::CHUNK_LOAD);
+                }
+
+                return $activated;
+            },
+            customStateEncoder: function (\Bedriox\Server\Entity\AbstractEntity $entity): ?\Bedriox\Api\Entity\CustomEntityState {
+                if (!$entity instanceof PluginMobEntity) {
+                    return null;
+                }
+                $state = $this->pluginEntityLifecycle?->encodeState($entity);
+                if ($state === null) {
+                    throw new \RuntimeException('Plugin entity state is unavailable.');
+                }
+
+                return $state;
+            },
+            afterDeactivation: function (\Bedriox\Server\Entity\AbstractEntity $entity): void {
+                if ($entity instanceof PluginMobEntity) {
+                    $this->pluginEntityLifecycle?->despawned($entity);
+                }
+                $this->pluginEvents?->entityDespawned($entity, 'chunk_unload');
+            },
+        );
+        $this->blockWorld->attachEntityPersistence($this->entityPersistence);
+    }
+
+    public function autosaveEntities(int $maximumChunks): EntityPersistenceFlushResult
+    {
+        return $this->entityPersistence?->persistAutosaveGeneration($maximumChunks)
+            ?? new EntityPersistenceFlushResult(0, 0, []);
+    }
+
+    public function beginEntityAutosave(): int
+    {
+        return $this->entityPersistence?->beginAutosaveGeneration() ?? 0;
+    }
+
+    public function pendingEntityAutosaveChunkCount(): int
+    {
+        return $this->entityPersistence?->pendingAutosaveChunkCount() ?? 0;
+    }
+
+    public function dirtyEntityChunkCount(): int
+    {
+        return $this->entityPersistence?->dirtyChunkCount() ?? 0;
+    }
+
+    public function flushEntityPersistence(): EntityPersistenceFlushResult
+    {
+        return $this->entityPersistence?->flushShutdown()
+            ?? new EntityPersistenceFlushResult(0, 0, []);
+    }
+
+    public function entityRuntime(): EntityWorldRuntime
+    {
+        return $this->entityRuntime;
+    }
+
+    private function prepareLivingEntity(AbstractEntity $entity, bool $initialSpawn): void
+    {
+        if (!$entity instanceof AbstractLivingEntity) {
+            return;
+        }
+        if ($this->itemCatalog !== null) {
+            $entity->configureEquipmentCatalog($this->itemCatalog);
+            if ($initialSpawn) {
+                $this->prepareNaturalEntityEquipment($entity);
+            }
+        }
+        if ($this->pluginEvents !== null) {
+            $entity->equipmentState()->configureTransitionHooks(
+                function (
+                    ApiEquipmentSlot $slot,
+                    ?ApiItemStack $previous,
+                    float $previousDropChance,
+                    ?ApiItemStack $item,
+                    float $dropChance,
+                ) use ($entity): ?EntityEquipmentTransition {
+                    $event = $this->pluginEvents->entityEquipmentChange(
+                        $entity,
+                        $slot,
+                        $previous,
+                        $previousDropChance,
+                        $item,
+                        $dropChance,
+                    );
+
+                    return $event === null
+                        ? null
+                        : new EntityEquipmentTransition($event->item(), $event->dropChance());
+                },
+                function (
+                    ApiEquipmentSlot $slot,
+                    ?ApiItemStack $previous,
+                    float $previousDropChance,
+                    ?ApiItemStack $item,
+                    float $dropChance,
+                ) use ($entity): void {
+                    $this->pluginEvents->entityEquipmentChanged(
+                        $entity,
+                        $slot,
+                        $previous,
+                        $previousDropChance,
+                        $item,
+                        $dropChance,
+                    );
+                },
+            );
+        }
+        $entity->configureControllerDamageHandler(function (
+            float $amount,
+            ApiEntityDamageCause $cause,
+            ?\Bedriox\Api\Entity\Entity $source,
+        ) use ($entity): void {
+            if (!$entity->isAlive()) {
+                return;
+            }
+            $baseDamage = $cause === ApiEntityDamageCause::ATTACK
+                ? $this->entityArmorReducedDamage($entity, $amount)
+                : $amount;
+            $event = $this->pluginEvents?->entityDamage($entity, $cause, $baseDamage, $source);
+            if ($this->pluginEvents !== null && $event === null) {
+                return;
+            }
+            $damage = $event?->damage() ?? $baseDamage;
+            if ($damage <= 0.0) {
+                return;
+            }
+            $result = $this->entityRuntime->damage($entity->getRuntimeId(), $damage);
+            if ($result === null || $result->appliedDamage <= 0.0) {
+                return;
+            }
+            if ($event !== null) {
+                $this->entityLastDamageEvents[$entity->getRuntimeId()] = $event;
+            }
+            if (!$result->died && $cause === ApiEntityDamageCause::ATTACK) {
+                $this->damageEntityArmor($entity, $amount);
+            }
+            $this->publishedEntityHealth[$entity->getRuntimeId()] = $entity->getHealth();
+            $this->deferredEvents[] = new EntityActorDamaged(
+                $entity,
+                $this->tick,
+                $this->players->recipients(),
+            );
+        });
+        $entity->configureControllerCombustHandler(function (
+            int $durationTicks,
+            EntityCombustionCause $cause,
+        ) use ($entity): void {
+            $event = $this->pluginEvents?->combust($entity, $cause, $durationTicks);
+            if ($this->pluginEvents !== null && $event === null) {
+                return;
+            }
+            $entity->setOnFire($event?->durationTicks() ?? $durationTicks);
+        });
+        $entity->configureControllerTransformHandler(function (
+            string $worldName,
+            Position $position,
+            float $yaw,
+            float $pitch,
+        ) use ($entity): void {
+            $activeWorld = $this->blockWorld?->metadata->name ?? $entity->getWorldName();
+            if ($worldName !== $activeWorld
+                || $this->entityRuntime->registry()->getByRuntimeId($entity->getRuntimeId()) !== $entity) {
+                throw new InvalidArgumentException('Entity controller target world is unavailable.');
+            }
+            $this->entityRuntime->registry()->move(
+                $entity->getRuntimeId(),
+                $worldName,
+                $position,
+                $yaw,
+                $pitch,
+            );
+            $this->deferredEvents[] = new EntityActorMoved(
+                $entity,
+                $this->tick,
+                $this->players->recipients(),
+                true,
+            );
+        });
+        if ($entity instanceof AbstractMobEntity) {
+            $entity->attachController($this->pluginActions);
+        }
+    }
+
+    private function prepareNaturalEntityEquipment(AbstractLivingEntity $entity): void
+    {
+        if ($entity->spawnOrigin() !== SpawnCause::NATURAL
+            || $entity->getType()->identifier() !== 'minecraft:zombie'
+            || $entity->equipmentState()->getContents() !== []) {
+            return;
+        }
+        $difficulty = $this->blockWorld?->difficulty() ?? 2;
+        $armorChance = match ($difficulty) {
+            1 => 5,
+            2 => 10,
+            3 => 15,
+            default => 0,
+        };
+        if ($armorChance > 0 && $this->dropRandom->integer(1, 100) <= $armorChance) {
+            $tierRoll = $this->dropRandom->integer(1, 100);
+            $tier = match (true) {
+                $tierRoll <= 50 => 'leather',
+                $tierRoll <= 75 => 'golden',
+                $tierRoll <= 90 => 'chainmail',
+                $tierRoll <= 99 => 'iron',
+                default => 'diamond',
+            };
+            $pieces = [
+                [ApiEquipmentSlot::HEAD, $tier . '_helmet'],
+                [ApiEquipmentSlot::CHEST, $tier . '_chestplate'],
+                [ApiEquipmentSlot::LEGS, $tier . '_leggings'],
+                [ApiEquipmentSlot::FEET, $tier . '_boots'],
+            ];
+            $equipped = false;
+            foreach ($pieces as [$slot, $suffix]) {
+                if ($equipped && $this->dropRandom->integer(1, 100) > 65) {
+                    continue;
+                }
+                $identifier = 'minecraft:' . $suffix;
+                if (!$this->itemCatalog?->has($identifier)) {
+                    continue;
+                }
+                $entity->equipmentState()->restoreItem(
+                    $slot,
+                    new ApiItemStack($identifier, 1),
+                    0.085,
+                );
+                $equipped = true;
+            }
+        }
+        if ($difficulty > 0 && $this->dropRandom->integer(1, 100) <= 3) {
+            $identifier = $this->dropRandom->integer(0, 1) === 0
+                ? 'minecraft:iron_sword'
+                : 'minecraft:iron_shovel';
+            if ($this->itemCatalog?->has($identifier)) {
+                $entity->equipmentState()->restoreItem(
+                    ApiEquipmentSlot::MAIN_HAND,
+                    new ApiItemStack($identifier, 1),
+                    0.085,
+                );
+            }
+        }
+    }
+
+    public function entityAiMetrics(): ?AiSchedulerMetrics
+    {
+        return $this->entityRuntime->lastAiMetrics();
+    }
+
+    public function entityRuntimeMetrics(): ?\Bedriox\Server\Entity\EntityRuntimeMetrics
+    {
+        return $this->entityRuntime->lastRuntimeMetrics();
+    }
+
+    /** @return list<WorldEvent> */
+    private function advanceNaturalEntities(): array
+    {
+        if ($this->naturalSpawns === null) {
+            return [];
+        }
+        $natural = $this->naturalSpawns->tick(
+            $this->tick,
+            array_map(
+                static fn(Player $player): NaturalSpawnPlayer => new NaturalSpawnPlayer(
+                    $player->worldName,
+                    $player->movement->position,
+                ),
+                array_values(array_filter(
+                    $this->players->players(),
+                    static fn(Player $player): bool => $player->vitals->isAlive(),
+                )),
+            ),
+        );
+        $recipients = $this->players->recipients();
+        $events = [];
+        foreach ($natural->spawned() as $entity) {
+            if ($this->entityPersistence !== null && $entity->isPersistent()) {
+                $this->entityPersistence->registerSpawned($entity);
+            }
+            $this->announcedEntities[$entity->getRuntimeId()] = $entity;
+            $entity->drainEquipmentChanges();
+            $this->publishedEntityHealth[$entity->getRuntimeId()] = $entity->getHealth();
+            $this->publishedEntityPresentationRevisions[$entity->getRuntimeId()] = $entity->presentationRevision();
+            $events[] = new EntityActorSpawned($entity, $recipients, !$this->entityAiEnabled);
+        }
+        foreach ($natural->removed() as $entity) {
+            unset($this->announcedEntities[$entity->getRuntimeId()]);
+            unset($this->publishedEntityHealth[$entity->getRuntimeId()]);
+            unset($this->publishedEntityPresentationRevisions[$entity->getRuntimeId()]);
+            $this->entityPersistence?->forgetEntity($entity->getUniqueId());
+            $events[] = new EntityActorRemoved($entity, $recipients);
+        }
+
+        return $events;
+    }
+
+    /** @return list<WorldEvent> */
+    private function advanceGeneralEntities(): array
+    {
+        $events = [];
+        $this->entityAiPlayers = array_map(
+            fn(Player $player): AiPlayerSnapshot => new AiPlayerSnapshot(
+                $player->identity->uuid,
+                $this->blockWorld?->metadata->name ?? 'world',
+                $player->movement->position,
+                $player->vitals->isAlive() && $player->gameMode()->takesDamage(),
+            ),
+            array_values(array_filter(
+                $this->players->players(),
+                static fn(Player $player): bool => $player->vitals->isAlive(),
+            )),
+        );
+        foreach ($this->entityRuntime->registry()->all() as $entity) {
+            if (!$entity->controllerDespawnRequested()) {
+                continue;
+            }
+            if (!($this->pluginEvents?->allowEntityDespawn($entity, 'plugin') ?? true)) {
+                $entity->clearControllerDespawnRequest();
+                continue;
+            }
+            if ($entity instanceof PluginMobEntity) {
+                $this->pluginEntityLifecycle?->despawned($entity);
+            }
+            $this->entityPersistence?->forgetEntity($entity->getUniqueId());
+            $this->entityRuntime->remove($entity->getRuntimeId());
+            $this->pluginEvents?->entityDespawned($entity, 'plugin');
+        }
+        foreach ($this->entityRuntime->registry()->all() as $entity) {
+            if (!$entity instanceof PluginMobEntity) {
+                continue;
+            }
+            if ($this->pluginEntityLifecycle === null
+                || !$this->pluginEntityLifecycle->tick($entity, $this->tick)) {
+                $this->entityPersistence?->deactivateEntity($entity->getUniqueId());
+                $this->entityRuntime->remove($entity->getRuntimeId());
+                continue;
+            }
+            if ($entity->pluginDespawnRequested()) {
+                $this->pluginEntityLifecycle->despawned($entity);
+                $this->entityPersistence?->forgetEntity($entity->getUniqueId());
+                $this->entityRuntime->remove($entity->getRuntimeId());
+                $this->pluginEvents?->entityDespawned($entity, 'plugin');
+            }
+        }
+        array_push($events, ...$this->advanceEntityFire());
+        $tick = $this->entityRuntime->tick(
+            $this->tick,
+            $this->entityAiWorld,
+            $this->entityAiEnabled,
+        );
+        foreach ($this->entityRuntime->registry()->all() as $entity) {
+            if (!$entity instanceof PluginMobEntity || ($this->pluginEntityLifecycle?->isAvailable($entity) ?? false)) {
+                continue;
+            }
+            $this->entityPersistence?->deactivateEntity($entity->getUniqueId());
+            $this->entityRuntime->remove($entity->getRuntimeId());
+        }
+        $recipients = $this->players->recipients();
+        foreach ($this->entityRuntime->registry()->all() as $entity) {
+            if (!$entity instanceof AbstractLivingEntity || isset($this->announcedEntities[$entity->getRuntimeId()])) {
+                continue;
+            }
+            $this->announcedEntities[$entity->getRuntimeId()] = $entity;
+            $entity->drainEquipmentChanges();
+            $this->publishedEntityHealth[$entity->getRuntimeId()] = $entity->getHealth();
+            $this->publishedEntityPresentationRevisions[$entity->getRuntimeId()] = $entity->presentationRevision();
+            $events[] = new EntityActorSpawned($entity, $recipients, !$this->entityAiEnabled);
+        }
+        foreach ($this->announcedEntities as $runtimeId => $entity) {
+            if ($this->entityRuntime->registry()->getByRuntimeId($runtimeId) !== null) {
+                continue;
+            }
+            unset($this->announcedEntities[$runtimeId]);
+            unset($this->publishedEntityHealth[$runtimeId]);
+            unset($this->publishedEntityPresentationRevisions[$runtimeId]);
+            $events[] = new EntityActorRemoved($entity, $recipients);
+        }
+        foreach ($this->announcedEntities as $entity) {
+            $equipmentChanges = $entity->drainEquipmentChanges();
+            if ($equipmentChanges !== []) {
+                $events[] = new EntityActorEquipmentChanged(
+                    $entity,
+                    $this->tick,
+                    $equipmentChanges,
+                    $recipients,
+                );
+            }
+        }
+        foreach ($this->announcedEntities as $runtimeId => $entity) {
+            $health = $entity->getHealth();
+            $previous = $this->publishedEntityHealth[$runtimeId] ?? $health;
+            if ($health === $previous) {
+                continue;
+            }
+            $this->publishedEntityHealth[$runtimeId] = $health;
+            $events[] = $health < $previous
+                ? new EntityActorDamaged($entity, $this->tick, $recipients)
+                : new EntityActorHealthChanged($entity, $this->tick, $recipients);
+        }
+        foreach ($tick->moved as $entity) {
+            if ($this->entityRuntime->registry()->getByRuntimeId($entity->getRuntimeId()) !== $entity) {
+                continue;
+            }
+            $events[] = new EntityActorMoved(
+                $entity,
+                $this->tick,
+                $recipients,
+                $tick->motionChangedFor($entity->getRuntimeId()),
+            );
+        }
+        foreach ($this->announcedEntities as $runtimeId => $entity) {
+            $revision = $entity->presentationRevision();
+            if (($this->publishedEntityPresentationRevisions[$runtimeId] ?? -1) === $revision) {
+                continue;
+            }
+            $this->publishedEntityPresentationRevisions[$runtimeId] = $revision;
+            $events[] = new EntityActorMetadataChanged(
+                $entity,
+                $this->tick,
+                $recipients,
+                !$this->entityAiEnabled || ($entity instanceof AbstractMobEntity && !$entity->isAiEnabled()),
+            );
+        }
+        foreach ($this->entityRuntime->registry()->all() as $entity) {
+            if (!$entity instanceof AbstractMobEntity) {
+                continue;
+            }
+            $intent = $entity->aiRuntime()->takeMeleeIntent($this->tick);
+            if ($intent !== null) {
+                array_push($events, ...$this->applyEntityMeleeIntent($entity, $intent));
+            }
+        }
+        foreach ($tick->died as $entity) {
+            $lastDamage = $this->entityLastDamageEvents[$entity->getRuntimeId()] ?? null;
+            $drops = $this->prepareEntityDeathDrops($entity, $lastDamage);
+            if ($this->pluginEvents !== null) {
+                $drops = $this->pluginEvents->entityDied($entity, $lastDamage, $drops);
+            }
+            $events[] = new EntityActorDied($entity, $recipients);
+            array_push(
+                $events,
+                ...$this->spawnEntityDeathDrops($entity, $drops, $recipients),
+            );
+            $this->entityDeathRemovalTicks[$entity->getRuntimeId()] = $this->tick + 20;
+        }
+        foreach ($this->entityDeathRemovalTicks as $runtimeId => $removeAtTick) {
+            if ($this->tick < $removeAtTick) {
+                continue;
+            }
+            unset($this->entityDeathRemovalTicks[$runtimeId]);
+            $entity = $this->entityRuntime->remove($runtimeId);
+            if ($entity !== null) {
+                if ($entity instanceof PluginMobEntity) {
+                    $this->pluginEntityLifecycle?->despawned($entity);
+                }
+                unset($this->entityInvulnerableUntilTicks[$runtimeId], $this->entityLastDamageEvents[$runtimeId]);
+                unset($this->announcedEntities[$runtimeId]);
+                unset($this->publishedEntityHealth[$runtimeId]);
+                unset($this->publishedEntityPresentationRevisions[$runtimeId]);
+                $this->entityPersistence?->forgetEntity($entity->getUniqueId());
+                $events[] = new EntityActorRemoved($entity, $recipients);
+            }
+        }
+
+        $this->entityPersistence?->synchronize(256);
+
+        return $events;
+    }
+
+    /** @return list<ApiItemStack> */
+    private function prepareEntityDeathDrops(
+        AbstractLivingEntity $entity,
+        ?\Bedriox\Api\Event\Entity\EntityDamageEvent $lastDamage,
+    ): array {
+        if ($this->entityLoot === null) {
+            return [];
+        }
+        $killer = $lastDamage instanceof EntityDamageByEntityEvent ? $lastDamage->damager : null;
+        $equipment = [];
+        foreach (ApiEquipmentSlot::cases() as $slot) {
+            $item = $entity->equipmentState()->getItem($slot);
+            if ($item !== null) {
+                $equipment[] = new EquippedLootItem(
+                    $slot,
+                    $item,
+                    $entity->equipmentState()->getDropChance($slot),
+                );
+            }
+        }
+
+        return $this->entityLoot->prepare(new LootContext(
+            $entity->getType(),
+            $lastDamage,
+            $killer,
+            $entity->isOnFire(),
+            $equipment,
+            $entity->spawnOrigin(),
+            $this->blockWorld?->difficulty() ?? 2,
+        ))->drops();
+    }
+
+    /**
+     * @param list<ApiItemStack> $drops
+     * @param list<string> $recipients
+     * @return list<ItemEntitySpawned>
+     */
+    private function spawnEntityDeathDrops(
+        AbstractLivingEntity $entity,
+        array $drops,
+        array $recipients,
+    ): array {
+        $events = [];
+        $position = $entity->internalPosition();
+        foreach ($drops as $drop) {
+            if (!$this->itemEntities->canSpawn()) {
+                continue;
+            }
+            try {
+                $stack = $this->inventoryStackFromApi($drop);
+                $spreadX = $this->dropRandom->integer(-10, 10) / 100.0;
+                $spreadZ = $this->dropRandom->integer(-10, 10) / 100.0;
+                $item = $this->itemEntities->spawn(
+                    $stack,
+                    new Position($position->x, $position->y + 0.5, $position->z),
+                    new ItemEntityMotion($spreadX, 0.15, $spreadZ),
+                    10,
+                );
+                $events[] = new ItemEntitySpawned($item, $recipients);
+            } catch (InvalidArgumentException|OverflowException) {
+                // Invalid plugin-modified drops are isolated from the world tick.
+            }
+        }
+
+        return $events;
+    }
+
+    /** @return list<WorldEvent> */
+    private function advanceEntityFire(): array
+    {
+        if ($this->entityEnvironment === null) {
+            return [];
+        }
+        $events = [];
+        $recipients = $this->players->recipients();
+        foreach ($this->entityRuntime->registry()->all() as $entity) {
+            if (!$entity instanceof AbstractLivingEntity || !$entity->isAlive()) {
+                continue;
+            }
+            $wasOnFire = $entity->isOnFire();
+            if ($wasOnFire && $this->entityEnvironment->isTouchingWater($entity)) {
+                $entity->extinguish();
+            }
+            if ($entity->isOnFire() && $entity->advanceFireTick()) {
+                $damageEvent = $this->pluginEvents?->entityDamage(
+                    $entity,
+                    ApiEntityDamageCause::FIRE_TICK,
+                    self::FIRE_TICK_DAMAGE,
+                );
+                if ($this->pluginEvents === null || $damageEvent !== null) {
+                    $damage = $damageEvent?->damage() ?? self::FIRE_TICK_DAMAGE;
+                    $result = $damage > 0.0
+                        ? $this->entityRuntime->damage($entity->getRuntimeId(), $damage)
+                        : null;
+                    if ($result !== null && $result->appliedDamage > 0.0) {
+                        if ($damageEvent !== null) {
+                            $this->entityLastDamageEvents[$entity->getRuntimeId()] = $damageEvent;
+                        }
+                        $this->publishedEntityHealth[$entity->getRuntimeId()] = $entity->getHealth();
+                        $events[] = new EntityActorDamaged($entity, $this->tick, $recipients);
+                    }
+                }
+            }
+            if ($entity->isAlive() && !$entity->isOnFire()
+                && $this->entityEnvironment->shouldCheckDaylight($entity, $this->tick)
+                && $this->entityEnvironment->hasBurningDaylightExposure($entity)
+                && !$this->consumeEntityDaylightHelmet($entity)) {
+                $combust = $this->pluginEvents?->combust(
+                    $entity,
+                    EntityCombustionCause::SUNLIGHT,
+                    self::DAYLIGHT_FIRE_DURATION_TICKS,
+                );
+                if ($this->pluginEvents === null || $combust !== null) {
+                    $entity->setOnFire($combust?->durationTicks() ?? self::DAYLIGHT_FIRE_DURATION_TICKS);
+                }
+            }
+            if ($wasOnFire !== $entity->isOnFire()) {
+                $this->publishedEntityPresentationRevisions[$entity->getRuntimeId()] =
+                    $entity->presentationRevision();
+                $events[] = new EntityActorMetadataChanged(
+                    $entity,
+                    $this->tick,
+                    $recipients,
+                    !$this->entityAiEnabled,
+                );
+            }
+        }
+
+        return $events;
+    }
+
+    private function consumeEntityDaylightHelmet(AbstractLivingEntity $entity): bool
+    {
+        $helmet = $entity->equipmentState()->getItem(ApiEquipmentSlot::HEAD);
+        if ($helmet === null || $this->itemCatalog === null || !$this->itemCatalog->has($helmet->identifier)) {
+            return false;
+        }
+        $type = $this->itemCatalog->type($helmet->identifier);
+        if ($type->armor === null || $type->armor->slot !== ArmorSlot::Head) {
+            return false;
+        }
+        $damage = $helmet->damage + 1;
+        $replacement = $damage >= $type->armor->maximumDurability
+            ? null
+            : new ApiItemStack(
+                $helmet->identifier,
+                $helmet->count,
+                $damage,
+                $helmet->nbt,
+                $helmet->auxValue,
+            );
+        $entity->equipmentState()->setItem(ApiEquipmentSlot::HEAD, $replacement);
+
+        return true;
+    }
+
+    /** @return list<WorldEvent> */
+    private function applyEntityMeleeIntent(AbstractMobEntity $attacker, AiMeleeIntent $intent): array
+    {
+        $target = $this->players->playerByIdentity($intent->targetPlayerId);
+        if ($target === null || !$target->vitals->isAlive() || !$target->gameMode()->takesDamage()
+            || $this->tick <= $target->vitals->invulnerableUntilTick) {
+            return [];
+        }
+        $from = $attacker->internalPosition();
+        $to = $target->movement->position;
+        if (hypot(hypot($to->x - $from->x, $to->z - $from->z), $to->y - $from->y) > $intent->maximumReach
+            || !$this->hostileEntityHasLineOfSight($attacker, $to)) {
+            return [];
+        }
+        $baseDamage = $this->entityMeleeDamage($attacker, $intent->damage);
+        $reducedDamage = $this->armorReducedDamage($target, $baseDamage, DamageCause::Attack);
+        $damage = $this->pluginEvents?->damage($target, DamageCause::Attack, $reducedDamage)
+            ?? ($this->pluginEvents === null ? $reducedDamage : null);
+        if ($damage === null || $damage <= 0.0) {
+            return [];
+        }
+        $applied = min($damage, $target->vitals->health);
+        $target->vitals->health -= $applied;
+        $target->vitals->invulnerableUntilTick = $this->tick + CombatRules::DAMAGE_IMMUNITY_TICKS;
+        $equipmentChanged = $target->vitals->isAlive()
+            && $this->damageArmor($target, $baseDamage, DamageCause::Attack);
+        $length = hypot($to->x - $from->x, $to->z - $from->z);
+        if ($length > 0.000_001) {
+            $directionX = ($to->x - $from->x) / $length;
+            $directionZ = ($to->z - $from->z) / $length;
+        } else {
+            $yaw = deg2rad($attacker->getYaw());
+            $directionX = -sin($yaw);
+            $directionZ = cos($yaw);
+        }
+        $movement = $target->movement;
+        [$motionX, $motionY, $motionZ] = self::composeKnockback(
+            $movement->velocityX,
+            $movement->verticalVelocity,
+            $movement->velocityZ,
+            $directionX,
+            $directionZ,
+            CombatRules::KNOCKBACK_FORCE * (1.0 - $target->inventory->knockbackResistance()),
+            $movement->verticalState === VerticalState::GROUNDED,
+        );
+        $movement->velocityX = $motionX;
+        $movement->verticalVelocity = $motionY;
+        $movement->velocityZ = $motionZ;
+        if ($motionY > 0.0) {
+            $movement->verticalState = VerticalState::AIRBORNE;
+        }
+        $movement->jumpAuthorizedUntilTick = $this->tick + CombatRules::DAMAGE_IMMUNITY_TICKS;
+        $target->markDirty();
+        $this->pluginEvents?->damaged($target, DamageCause::Attack, $applied);
+
+        $recipients = $this->players->recipients();
+        $events = [
+            new PlayerDamaged(
+                $target->snapshot(),
+                $applied,
+                DamageCause::Attack,
+                $recipients,
+                $equipmentChanged,
+            ),
+            new PlayerKnockedBack(
+                $target->sessionId,
+                $target->snapshot(),
+                $motionX,
+                $motionY,
+                $motionZ,
+                $movement->clientTick,
+                $recipients,
+            ),
+            new EntityActorAttackStarted($attacker, $recipients),
+        ];
+        if (!$target->vitals->isAlive()) {
+            $target->movement->fallDistance = 0.0;
+            $events[] = $this->deathEvent($target, DamageCause::Attack, $damage);
+        }
+
+        return $events;
+    }
+
+    private function hostileEntityHasLineOfSight(AbstractMobEntity $attacker, Position $targetFeet): bool
+    {
+        if ($attacker->getCategory() !== EntityCategory::MONSTER || $this->blockCollisions === null) {
+            return true;
+        }
+        $position = $attacker->internalPosition();
+
+        return $this->blockCollisions->hasLoadedLineOfSight(
+            new Position(
+                $position->x,
+                $position->y + ($attacker->definition()->height * 0.85),
+                $position->z,
+            ),
+            new Position($targetFeet->x, $targetFeet->y + 1.62, $targetFeet->z),
+        );
     }
 
     public function queuedCommands(): int
@@ -875,6 +1852,25 @@ final class WorldSimulation
             ));
     }
 
+    public function enqueueKillPlayer(string $identity): bool
+    {
+        $player = $this->players->playerByIdentity($identity);
+
+        return $player !== null
+            && $this->enqueue($this->validator->damage($player->sessionId, 1_000_000.0, DamageCause::Kill));
+    }
+
+    public function enqueueKillEntity(int $runtimeId, string $uniqueId): bool
+    {
+        return $this->enqueue($this->validator->damageEntity(
+            'command:kill',
+            $runtimeId,
+            $uniqueId,
+            1_000_000.0,
+            ApiEntityDamageCause::KILL,
+        ));
+    }
+
     private function apply(WorldCommand $command): ?WorldEvent
     {
         $player = $this->players->player($command->sessionId());
@@ -895,6 +1891,7 @@ final class WorldSimulation
             $command instanceof ApplyInventoryStackRequest => $this->inventoryStackRequest($command),
             $command instanceof DropItem => $this->dropItem($command),
             $command instanceof AttackPlayer => $this->attack($command),
+            $command instanceof InteractEntity => $this->interactEntity($command),
             $command instanceof ChangeGameMode => $this->changeGameMode($command),
             $command instanceof GiveItem => $this->giveItem($command),
             $command instanceof SyncInventory => $this->syncInventory($command),
@@ -907,6 +1904,7 @@ final class WorldSimulation
             $command instanceof TeleportPlayer => $this->pluginTeleport($command),
             $command instanceof SetPluginBlock => $this->pluginBlock($command),
             $command instanceof SetPluginInventorySlot => $this->pluginInventorySlot($command),
+            $command instanceof DamageEntity => $this->damageEntity($command),
             $command instanceof DamagePlayer => $this->damage($command),
             $command instanceof RespawnPlayer => $this->respawn($command),
             $command instanceof AcknowledgeRespawn => $this->acknowledgeRespawn($command),
@@ -1492,6 +2490,15 @@ final class WorldSimulation
         foreach ($this->itemEntities->all() as $entity) {
             $this->deferredEvents[] = new ItemEntitySpawned($entity, [$player->sessionId]);
         }
+        foreach ($this->announcedEntities as $entity) {
+            if ($entity->isAlive()) {
+                $this->deferredEvents[] = new EntityActorSpawned(
+                    $entity,
+                    [$player->sessionId],
+                    !$this->entityAiEnabled || ($entity instanceof AbstractMobEntity && !$entity->isAiEnabled()),
+                );
+            }
+        }
         if ($runtimeActorId >= $this->nextRuntimeActorId && $runtimeActorId < PHP_INT_MAX) {
             $this->nextRuntimeActorId = $runtimeActorId + 1;
         }
@@ -1713,14 +2720,15 @@ final class WorldSimulation
         if (!$player->vitals->isAlive()) {
             return new CommandRejected($command->session, 'player_dead');
         }
-        if (!$player->gameMode()->takesDamage()) {
+        $isKill = $command->cause === DamageCause::Kill;
+        if (!$isKill && !$player->gameMode()->takesDamage()) {
             return new CommandRejected($command->session, 'gamemode_invulnerable');
         }
-        if ($this->tick <= $player->vitals->invulnerableUntilTick) {
+        if (!$isKill && $this->tick <= $player->vitals->invulnerableUntilTick) {
             return new CommandRejected($command->session, 'damage_cooldown');
         }
         $baseDamage = $command->amount;
-        $reducedDamage = $this->armorReducedDamage($player, $baseDamage, $command->cause);
+        $reducedDamage = $isKill ? $baseDamage : $this->armorReducedDamage($player, $baseDamage, $command->cause);
         $damage = $this->pluginEvents === null
             ? $reducedDamage
             : $this->pluginEvents->damage($player, $command->cause, $reducedDamage);
@@ -1732,8 +2740,10 @@ final class WorldSimulation
         }
         $applied = min($damage, $player->vitals->health);
         $player->vitals->health -= $applied;
-        $player->vitals->invulnerableUntilTick = $this->tick + CombatRules::DAMAGE_IMMUNITY_TICKS;
-        $equipmentChanged = $player->vitals->isAlive()
+        if (!$isKill) {
+            $player->vitals->invulnerableUntilTick = $this->tick + CombatRules::DAMAGE_IMMUNITY_TICKS;
+        }
+        $equipmentChanged = !$isKill && $player->vitals->isAlive()
             && $this->damageArmor($player, $baseDamage, $command->cause);
         $player->markDirty();
         $this->pluginEvents?->damaged($player, $command->cause, $applied);
@@ -1751,6 +2761,34 @@ final class WorldSimulation
         );
     }
 
+    private function damageEntity(DamageEntity $command): WorldEvent
+    {
+        $target = $this->entityRuntime->registry()->getByRuntimeId($command->runtimeId);
+        if (!$target instanceof AbstractLivingEntity
+            || !hash_equals($target->getUniqueId(), $command->uniqueId)
+            || !$target->isAlive()) {
+            return new CommandRejected($command->source, 'target_unavailable');
+        }
+        $damageEvent = $this->pluginEvents?->entityDamage($target, $command->cause, $command->amount);
+        if ($this->pluginEvents !== null && $damageEvent === null) {
+            return new CommandRejected($command->source, 'plugin_cancelled');
+        }
+        $damage = $damageEvent?->damage() ?? $command->amount;
+        if ($damage <= 0.0) {
+            return new CommandRejected($command->source, 'plugin_cancelled');
+        }
+        $result = $this->entityRuntime->damage($target->getRuntimeId(), $damage);
+        if ($result === null || $result->appliedDamage <= 0.0) {
+            return new CommandRejected($command->source, 'target_unavailable');
+        }
+        if ($damageEvent !== null) {
+            $this->entityLastDamageEvents[$target->getRuntimeId()] = $damageEvent;
+        }
+        $this->publishedEntityHealth[$target->getRuntimeId()] = $target->getHealth();
+
+        return new EntityActorDamaged($target, $this->tick, $this->players->recipients());
+    }
+
     private function attack(AttackPlayer $command): WorldEvent
     {
         $attacker = $this->players->player($command->session);
@@ -1758,10 +2796,12 @@ final class WorldSimulation
             return new CommandRejected($command->session, 'not_joined');
         }
         $target = $this->players->playerByActorId($command->targetRuntimeActorId);
+        if ($target === null) {
+            return $this->attackEntity($attacker, $command);
+        }
         $reason = match (true) {
             !$this->pvp => 'pvp_disabled',
             $attacker->gameMode() === GameMode::SPECTATOR => 'attacker_gamemode',
-            $target === null => 'target_unavailable',
             $target->sessionId === $attacker->sessionId => 'self_attack',
             !$target->vitals->isAlive() => 'target_dead',
             !$target->gameMode()->takesDamage() => 'target_gamemode',
@@ -1774,7 +2814,7 @@ final class WorldSimulation
             return new CommandRejected($command->session, $reason);
         }
 
-        $baseDamage = CombatRules::EMPTY_HAND_DAMAGE;
+        $baseDamage = $this->meleeDamage($attacker);
         $reducedDamage = $this->armorReducedDamage($target, $baseDamage, DamageCause::Attack);
         $damage = $this->pluginEvents?->attack($attacker, $target, $reducedDamage)
             ?? ($this->pluginEvents === null ? $reducedDamage : null);
@@ -1870,6 +2910,124 @@ final class WorldSimulation
         );
     }
 
+    private function attackEntity(Player $attacker, AttackPlayer $command): WorldEvent
+    {
+        $target = $this->entityRuntime->registry()->getByRuntimeId($command->targetRuntimeActorId);
+        if (!$target instanceof AbstractLivingEntity) {
+            return new CommandRejected($command->session, 'target_unavailable');
+        }
+        $reason = match (true) {
+            $attacker->gameMode() === GameMode::SPECTATOR => 'attacker_gamemode',
+            !$target->isAlive() => 'target_dead',
+            $command->hotbarSlot !== $attacker->inventory->selectedHotbarSlot() => 'selected_slot',
+            !$this->generalEntityIsReachable($attacker, $target) => 'reach',
+            $this->tick <= ($this->entityInvulnerableUntilTicks[$target->getRuntimeId()] ?? -1) => 'damage_cooldown',
+            default => null,
+        };
+        if ($reason !== null) {
+            return new CommandRejected($command->session, $reason);
+        }
+
+        $baseDamage = $this->meleeDamage($attacker);
+        $reducedDamage = $this->entityArmorReducedDamage($target, $baseDamage);
+        $damageEvent = $this->pluginEvents?->entityDamage(
+            $target,
+            ApiEntityDamageCause::ATTACK,
+            $reducedDamage,
+            $this->pluginEvents->playerView($attacker),
+        );
+        if ($this->pluginEvents !== null && $damageEvent === null) {
+            return new CommandRejected($command->session, 'plugin_cancelled');
+        }
+        $damage = $damageEvent?->damage() ?? $reducedDamage;
+        if ($damage <= 0.0) {
+            return new CommandRejected($command->session, 'plugin_cancelled');
+        }
+        $result = $this->entityRuntime->damage($target->getRuntimeId(), $damage);
+        if ($result === null || $result->appliedDamage <= 0.0) {
+            return new CommandRejected($command->session, 'target_unavailable');
+        }
+        if ($damageEvent !== null) {
+            $this->entityLastDamageEvents[$target->getRuntimeId()] = $damageEvent;
+        }
+        $this->entityInvulnerableUntilTicks[$target->getRuntimeId()] =
+            $this->tick + CombatRules::DAMAGE_IMMUNITY_TICKS;
+        if (!$result->died) {
+            $this->damageEntityArmor($target, $baseDamage);
+        }
+
+        $from = $attacker->movement->position;
+        $to = $target->internalPosition();
+        $length = hypot($to->x - $from->x, $to->z - $from->z);
+        $directionX = $length > 0.000_001 ? ($to->x - $from->x) / $length : 0.0;
+        $directionZ = $length > 0.000_001 ? ($to->z - $from->z) / $length : 0.0;
+        $motion = $target->getMotion();
+        [$motionX, $motionY, $motionZ] = self::composeKnockback(
+            $motion->x,
+            $motion->y,
+            $motion->z,
+            $directionX,
+            $directionZ,
+            CombatRules::KNOCKBACK_FORCE,
+            $target->isOnGround(),
+        );
+        $target->setMotion(new EntityMotion($motionX, $motionY, $motionZ));
+        if ($target instanceof AbstractMobEntity) {
+            $target->suppressAiMovementUntil($this->tick + CombatRules::DAMAGE_IMMUNITY_TICKS);
+        }
+        $this->damageHeldTool($attacker, $this->heldItemType($attacker), attack: true);
+        $swing = $this->armSwingEvent($attacker, ArmSwingSource::Attack);
+        if ($swing !== null) {
+            $this->deferredEvents[] = $swing;
+        }
+        $this->publishedEntityHealth[$target->getRuntimeId()] = $target->getHealth();
+
+        return new EntityActorDamaged($target, $this->tick, $this->players->recipients());
+    }
+
+    private function interactEntity(InteractEntity $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        if ($player === null) {
+            return new CommandRejected($command->session, 'not_joined');
+        }
+        $target = $this->entityRuntime->registry()->getByRuntimeId($command->targetRuntimeActorId);
+        if (!$target instanceof AbstractLivingEntity) {
+            return new CommandRejected($command->session, 'target_unavailable');
+        }
+        $reason = match (true) {
+            $player->gameMode() === GameMode::SPECTATOR => 'player_gamemode',
+            !$target->isAlive() => 'target_unavailable',
+            $command->hotbarSlot !== $player->inventory->selectedHotbarSlot() => 'selected_slot',
+            !$this->generalEntityIsReachable($player, $target) => 'reach',
+            default => null,
+        };
+        if ($reason !== null) {
+            return new CommandRejected($command->session, $reason);
+        }
+        if ($this->pluginEvents !== null
+            && !$this->pluginEvents->allowEntityInteract($player, $target, $command->interaction)) {
+            return new CommandRejected($command->session, 'plugin_cancelled');
+        }
+
+        return new EntityInteracted(
+            $command->session,
+            $target->getRuntimeId(),
+            $command->interaction,
+        );
+    }
+
+    private function generalEntityIsReachable(Player $attacker, AbstractLivingEntity $target): bool
+    {
+        $from = $attacker->movement->position;
+        $to = $target->internalPosition();
+
+        return hypot(
+            hypot($to->x - $from->x, $to->z - $from->z),
+            ($to->y + ($target->definition()->height / 2.0)) - ($from->y + 1.62),
+        ) <= CombatRules::MAXIMUM_ENTITY_REACH;
+    }
+
     private function entityIsReachable(Player $attacker, Player $target): bool
     {
         $from = $attacker->movement->position;
@@ -1933,6 +3091,7 @@ final class WorldSimulation
                 $damage > 2.0 ? 'death.fell.accident.generic' : 'death.attack.fall',
                 [$player->identity->displayName],
             ),
+            DamageCause::Kill,
             DamageCause::Plugin => new TranslatableMessage('death.attack.generic', [$player->identity->displayName]),
         };
         $presentation = $this->pluginEvents?->death($player, $cause, $damage, $killer, $message, $message)
@@ -2332,6 +3491,12 @@ final class WorldSimulation
                     $command->targetRuntimeActorId,
                     $command->hotbarSlot,
                 ),
+                $command instanceof InteractEntity => $this->validator->interactEntity(
+                    $command->session,
+                    $command->targetRuntimeActorId,
+                    $command->hotbarSlot,
+                    $command->interaction,
+                ),
                 $command instanceof ChangeGameMode => $this->validator->changeGameMode(
                     $command->session,
                     $command->gameMode,
@@ -2378,6 +3543,13 @@ final class WorldSimulation
                     $command->session,
                     $command->slot,
                     $command->stack,
+                ),
+                $command instanceof DamageEntity => $this->validator->damageEntity(
+                    $command->source,
+                    $command->runtimeId,
+                    $command->uniqueId,
+                    $command->amount,
+                    $command->cause,
                 ),
                 $command instanceof DamagePlayer => $this->validator->damage(
                     $command->session,
@@ -3663,6 +4835,22 @@ final class WorldSimulation
         return $this->itemCatalog->type($held->identifier);
     }
 
+    private function meleeDamage(Player $player): float
+    {
+        return $this->heldItemType($player)?->tool?->attackDamage()
+            ?? CombatRules::EMPTY_HAND_DAMAGE;
+    }
+
+    private function entityMeleeDamage(AbstractLivingEntity $entity, float $fallback): float
+    {
+        $held = $entity->equipmentState()->getItem(ApiEquipmentSlot::MAIN_HAND);
+        if ($held === null || $this->itemCatalog === null || !$this->itemCatalog->has($held->identifier)) {
+            return $fallback;
+        }
+
+        return max($fallback, $this->itemCatalog->type($held->identifier)->tool?->attackDamage() ?? $fallback);
+    }
+
     private function armorReducedDamage(Player $player, float $damage, DamageCause $cause): float
     {
         if ($cause === DamageCause::Fall) {
@@ -3670,6 +4858,67 @@ final class WorldSimulation
         }
 
         return max(0.0, $damage * (1.0 - ($player->inventory->defensePoints() * 0.04)));
+    }
+
+    private function entityArmorReducedDamage(AbstractLivingEntity $entity, float $damage): float
+    {
+        if ($this->itemCatalog === null) {
+            return $damage;
+        }
+        $defense = 0;
+        foreach ([
+            ApiEquipmentSlot::HEAD,
+            ApiEquipmentSlot::CHEST,
+            ApiEquipmentSlot::LEGS,
+            ApiEquipmentSlot::FEET,
+        ] as $slot) {
+            $item = $entity->equipmentState()->getItem($slot);
+            if ($item === null || !$this->itemCatalog->has($item->identifier)) {
+                continue;
+            }
+            $armor = $this->itemCatalog->type($item->identifier)->armor;
+            if ($armor !== null) {
+                $defense += $armor->defensePoints;
+            }
+        }
+
+        return max(0.0, $damage * (1.0 - (min(20, $defense) * 0.04)));
+    }
+
+    private function damageEntityArmor(AbstractLivingEntity $entity, float $baseDamage): void
+    {
+        if ($this->itemCatalog === null) {
+            return;
+        }
+        $wear = max((int) floor($baseDamage / 4.0), 1);
+        foreach ([
+            ApiEquipmentSlot::HEAD,
+            ApiEquipmentSlot::CHEST,
+            ApiEquipmentSlot::LEGS,
+            ApiEquipmentSlot::FEET,
+        ] as $slot) {
+            $item = $entity->equipmentState()->getItem($slot);
+            if ($item === null || !$this->itemCatalog->has($item->identifier)) {
+                continue;
+            }
+            $armor = $this->itemCatalog->type($item->identifier)->armor;
+            if ($armor === null) {
+                continue;
+            }
+            $damage = $item->damage + $wear;
+            $entity->equipmentState()->setItem(
+                $slot,
+                $damage >= $armor->maximumDurability
+                    ? null
+                    : new ApiItemStack(
+                        $item->identifier,
+                        $item->count,
+                        $damage,
+                        $item->nbt,
+                        $item->auxValue,
+                    ),
+            );
+        }
     }
 
     private function damageArmor(Player $player, float $baseDamage, DamageCause $cause): bool
@@ -4583,6 +5832,18 @@ final class WorldSimulation
         $heldType = $held !== null && $this->itemCatalog?->has($held->identifier) === true
             ? $this->itemCatalog->type($held->identifier)
             : null;
+        if ($held !== null && $this->entityTypes !== null
+            && isset($this->entityTypes->spawnEggMappings()[$held->identifier])) {
+            return $this->useSpawnEgg(
+                $player,
+                $command,
+                $placedPosition,
+                $clickedState,
+                $placedState,
+                $held,
+                $activeBreak['position'] ?? null,
+            );
+        }
         $placementStateValid = true;
         $storageEntityValid = true;
         $storageEntity = null;
@@ -4697,6 +5958,85 @@ final class WorldSimulation
             $remaining,
             $this->players->recipients(),
             $activeBreak['position'] ?? null,
+        );
+    }
+
+    private function useSpawnEgg(
+        Player $player,
+        PlaceBlock $command,
+        BlockPosition $spawnBlock,
+        InternalBlockStateId $clickedState,
+        InternalBlockStateId $placedState,
+        InventoryStack $held,
+        ?BlockPosition $stoppedBreakingPosition,
+    ): WorldEvent {
+        $failure = match (true) {
+            !$player->gameMode()->canBuild() => 'gamemode',
+            $command->sequence <= $player->placementSequence => 'stale_sequence',
+            $command->hotbarSlot !== $player->inventory->selectedHotbarSlot() => 'selected_slot',
+            $clickedState->value === $this->blockPalette?->air->value => 'clicked_air',
+            !$this->blockIsReachable($player->snapshot(), $command->clickedPosition) => 'reach',
+            default => null,
+        };
+        if ($command->sequence > $player->placementSequence) {
+            $player->placementSequence = $command->sequence;
+        }
+        $definition = $this->entityTypes?->spawnEggMappings()[$held->identifier] ?? null;
+        $type = $definition === null
+            ? null
+            : new \Bedriox\Api\Entity\VanillaEntityIdentifier($definition->identifier());
+        if ($failure === null && $type === null) {
+            $failure = 'unsupported_entity';
+        }
+        if ($failure === null) {
+            $outcome = $this->spawnEntity(new EntitySpawnRequest(
+                $type,
+                SpawnCause::SPAWN_EGG,
+                $this->blockWorld?->metadata->name ?? 'world',
+                new Position($spawnBlock->x + 0.5, $spawnBlock->y, $spawnBlock->z + 0.5),
+                $player->movement->yaw,
+            ));
+            $failure = $outcome->failure;
+        }
+        if ($failure !== null) {
+            return new BlockPlacementCorrected(
+                $player->sessionId,
+                $command->clickedPosition,
+                $clickedState,
+                $spawnBlock,
+                $placedState,
+                $player->inventory->selectedHotbarSlot(),
+                $held,
+                $stoppedBreakingPosition,
+                $failure,
+            );
+        }
+
+        $remaining = $player->gameMode()->consumesItems()
+            ? $player->inventory->decrementSelectedOne()
+            : $held;
+        if ($player->gameMode()->consumesItems()) {
+            $player->markDirty();
+        }
+        $this->deferredEvents[] = new HeldItemChanged(
+            $player->sessionId,
+            $player->runtimeActorId,
+            $player->inventory->selectedHotbarSlot(),
+            $remaining,
+            $this->players->recipients($player->sessionId),
+            ownerSlotCorrection: false,
+        );
+
+        return new BlockPlacementCorrected(
+            $player->sessionId,
+            $command->clickedPosition,
+            $clickedState,
+            $spawnBlock,
+            $placedState,
+            $player->inventory->selectedHotbarSlot(),
+            $remaining,
+            $stoppedBreakingPosition,
+            'spawn_egg_used',
         );
     }
 

@@ -6,6 +6,7 @@ namespace Bedriox\Server\World\Provider;
 
 use Bedriox\Server\World\SpawnPosition;
 use Bedriox\Server\World\WorldMetadata;
+use Bedriox\Server\World\WorldTimeRules;
 use InvalidArgumentException;
 
 /** Immutable provider boundary value containing format-independent world metadata. */
@@ -29,6 +30,7 @@ final readonly class WorldData
         if ($this->difficulty < 0 || $this->difficulty > 3) {
             throw new InvalidArgumentException('Difficulty must be a Bedrock value between 0 and 3.');
         }
+        WorldTimeRules::validate($this->time);
         if ($this->generatorVersion < 1 || $this->generatorVersion > 2_147_483_647) {
             throw new InvalidArgumentException('Generator version must be a positive bounded integer.');
         }

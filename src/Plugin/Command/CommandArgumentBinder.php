@@ -12,6 +12,7 @@ use Bedriox\Api\Command\CommandParameterType;
 use Bedriox\Api\Command\CommandSender;
 use Bedriox\Api\Command\CommandValues;
 use Bedriox\Api\Command\PlayerCommandSender;
+use Bedriox\Api\Entity\Entity;
 use Bedriox\Api\Player\Player;
 use Bedriox\Api\World\BlockPosition;
 use Bedriox\Api\World\Position;
@@ -21,8 +22,27 @@ use JsonException;
 /** Binds bounded command tokens to the public typed command value model. */
 final readonly class CommandArgumentBinder
 {
-    /** @param Closure(): list<Player> $onlinePlayers */
-    public function __construct(private Closure $onlinePlayers) {}
+    private TargetSelectorResolver $selectors;
+
+    /**
+     * @param Closure(): list<Player> $onlinePlayers
+     * @param null|Closure(): list<Entity> $entities
+     * @param null|Closure(int): int $randomIndex
+     * @param null|Closure(): ?Position $selectorOrigin
+     */
+    public function __construct(
+        private Closure $onlinePlayers,
+        ?Closure $entities = null,
+        ?Closure $randomIndex = null,
+        ?Closure $selectorOrigin = null,
+    ) {
+        $this->selectors = new TargetSelectorResolver(
+            $onlinePlayers,
+            $entities ?? static fn(): array => [],
+            $randomIndex ?? static fn(int $upperBound): int => random_int(0, $upperBound - 1),
+            $selectorOrigin ?? static fn(): ?Position => null,
+        );
+    }
 
     /** @param list<string> $tokens */
     public function bind(CommandArguments $arguments, CommandSender $sender, array $tokens): CommandValues
@@ -93,6 +113,8 @@ final readonly class CommandArgumentBinder
             CommandParameterType::BOOLEAN => [$this->boolean($parameter, $token), 1, 70],
             CommandParameterType::ONLINE_PLAYER => [$this->onlinePlayer($token), 1, 60],
             CommandParameterType::PLAYERS => [$this->players($sender, $token), 1, 50],
+            CommandParameterType::ENTITY => [$this->entity($sender, $token), 1, 55],
+            CommandParameterType::ENTITIES => [$this->entities($sender, $token), 1, 50],
             CommandParameterType::CHOICE => [$this->choice($parameter, $token), 1, 80],
             CommandParameterType::ENUM => [$this->enum($parameter, $token), 1, 80],
             CommandParameterType::SOFT_ENUM => [$this->softEnum($parameter, $token), 1, 75],
@@ -171,44 +193,18 @@ final readonly class CommandArgumentBinder
     /** @return list<Player> */
     private function players(CommandSender $sender, string $token): array
     {
-        $players = $this->connectedPlayers();
-        if (strcasecmp($token, '@a') === 0) {
-            if ($players === []) {
-                throw new CommandBindingException('No players are connected.');
-            }
+        return $this->selectors->players($sender, $token, false);
+    }
 
-            return $players;
-        }
-        if (strcasecmp($token, '@s') === 0) {
-            if (!$sender instanceof PlayerCommandSender || !$sender->player()->isConnected()) {
-                throw new CommandBindingException('The @s selector requires a connected player sender.');
-            }
+    private function entity(CommandSender $sender, string $token): Player|Entity
+    {
+        return $this->selectors->entities($sender, $token, true)[0];
+    }
 
-            return [$sender->player()];
-        }
-        if (strcasecmp($token, '@p') === 0) {
-            if (!$sender instanceof PlayerCommandSender || $players === []) {
-                throw new CommandBindingException('The @p selector requires a connected player sender and target.');
-            }
-            $origin = $sender->player()->position;
-            usort($players, static function (Player $left, Player $right) use ($origin): int {
-                $leftDistance = ($left->position->x - $origin->x) ** 2
-                    + ($left->position->y - $origin->y) ** 2
-                    + ($left->position->z - $origin->z) ** 2;
-                $rightDistance = ($right->position->x - $origin->x) ** 2
-                    + ($right->position->y - $origin->y) ** 2
-                    + ($right->position->z - $origin->z) ** 2;
-
-                return $leftDistance <=> $rightDistance ?: strcasecmp($left->name, $right->name);
-            });
-
-            return [$players[0]];
-        }
-        if (str_starts_with($token, '@')) {
-            throw new CommandBindingException("Unsupported player selector '{$token}'.");
-        }
-
-        return [$this->onlinePlayer($token)];
+    /** @return list<Player|Entity> */
+    private function entities(CommandSender $sender, string $token): array
+    {
+        return $this->selectors->entities($sender, $token, false);
     }
 
     /** @return list<Player> */

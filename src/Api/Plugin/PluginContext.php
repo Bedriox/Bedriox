@@ -7,6 +7,8 @@ namespace Bedriox\Api\Plugin;
 use Bedriox\Api\Command\CommandRegistrar;
 use Bedriox\Api\Crafting\RecipeRegistrar;
 use Bedriox\Api\Crafting\UnavailableRecipeRegistrar;
+use Bedriox\Api\Entity\EntityRegistrar;
+use Bedriox\Api\Entity\UnavailableEntityRegistrar;
 use Bedriox\Api\Event\EventRegistrar;
 use Bedriox\Api\Inventory\ItemRegistrar;
 use Bedriox\Api\Inventory\UnavailableItemRegistrar;
@@ -27,6 +29,7 @@ final class PluginContext
         private readonly ItemRegistrar $items = new UnavailableItemRegistrar(),
         private readonly PluginScheduler $scheduler = new UnavailablePluginScheduler(),
         private readonly RecipeRegistrar $recipes = new UnavailableRecipeRegistrar(),
+        private readonly EntityRegistrar $entities = new UnavailableEntityRegistrar(),
     ) {}
 
     public function name(): string
@@ -79,6 +82,11 @@ final class PluginContext
         return $this->recipes;
     }
 
+    public function entities(): EntityRegistrar
+    {
+        return $this->entities;
+    }
+
     /** @internal Used by the server composition root to attach an owner-scoped scheduler. */
     public function withScheduler(PluginScheduler $scheduler): self
     {
@@ -93,7 +101,7 @@ final class PluginContext
             $this->items,
             $scheduler,
             $this->recipes,
+            $this->entities,
         );
     }
-
 }

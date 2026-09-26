@@ -10,6 +10,8 @@ use Bedriox\Api\TranslatableMessage;
 use Bedriox\Protocol\Packet\AbilityLayer;
 use Bedriox\Protocol\Packet\ActorEventPacket;
 use Bedriox\Protocol\Packet\ActorEventType;
+use Bedriox\Protocol\Packet\ActorProperties;
+use Bedriox\Protocol\Packet\AddActorPacket;
 use Bedriox\Protocol\Packet\AddItemActorPacket;
 use Bedriox\Protocol\Packet\AddPlayerPacket;
 use Bedriox\Protocol\Packet\AnimatePacket;
@@ -87,6 +89,15 @@ use Bedriox\Server\Simulation\Event\ContainerContentsChanged;
 use Bedriox\Server\Simulation\Event\ContainerOpened;
 use Bedriox\Server\Simulation\Event\CraftingTableOpened;
 use Bedriox\Server\Simulation\Event\EmotePerformed;
+use Bedriox\Server\Simulation\Event\EntityActorAttackStarted;
+use Bedriox\Server\Simulation\Event\EntityActorDamaged;
+use Bedriox\Server\Simulation\Event\EntityActorDied;
+use Bedriox\Server\Simulation\Event\EntityActorEquipmentChanged;
+use Bedriox\Server\Simulation\Event\EntityActorHealthChanged;
+use Bedriox\Server\Simulation\Event\EntityActorMetadataChanged;
+use Bedriox\Server\Simulation\Event\EntityActorMoved;
+use Bedriox\Server\Simulation\Event\EntityActorRemoved;
+use Bedriox\Server\Simulation\Event\EntityActorSpawned;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
 use Bedriox\Server\Simulation\Event\ItemConsumed;
@@ -121,12 +132,16 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
 {
     private readonly PersistentBlockEntityCodec $blockEntities;
 
+    private readonly BedrockLivingActorProjector $livingActors;
+
     public function __construct(
         private readonly ?BedrockChunkPacketSerializer $chunks = null,
         private readonly ?BedrockInventoryPacketProjector $inventory = null,
         ?PersistentBlockEntityCodec $blockEntities = null,
+        ?BedrockLivingActorProjector $livingActors = null,
     ) {
         $this->blockEntities = $blockEntities ?? new PersistentBlockEntityCodec();
+        $this->livingActors = $livingActors ?? new BedrockLivingActorProjector();
     }
 
     public function encode(WorldEvent $event, array $sessions): array
@@ -197,6 +212,24 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
                 ),
                 $event->recipientSessionIds,
             ),
+            $event instanceof EntityActorSpawned => $this->entityActorSpawned($event),
+            $event instanceof EntityActorEquipmentChanged => $this->entityActorEquipmentChanged($event),
+            $event instanceof EntityActorHealthChanged => $this->entityActorHealthChanged($event),
+            $event instanceof EntityActorMetadataChanged => $this->entityActorMetadataChanged($event),
+            $event instanceof EntityActorMoved => $this->entityActorMoved($event),
+            $event instanceof EntityActorAttackStarted => array_map(
+                static fn(string $recipient): DirectedPacket => new DirectedPacket(
+                    $recipient,
+                    new ActorEventPacket(
+                        UnsignedLong::fromInt($event->entity->getRuntimeId()),
+                        ActorEventType::AttackStart,
+                    ),
+                ),
+                $event->recipientSessionIds,
+            ),
+            $event instanceof EntityActorDamaged => $this->entityActorDamaged($event),
+            $event instanceof EntityActorDied => $this->entityActorDied($event),
+            $event instanceof EntityActorRemoved => $this->entityActorRemoved($event),
             $event instanceof PlayerGameModeChanged => $this->gameModeChanged($event),
             $event instanceof PlayerDamaged => $this->damaged($event),
             $event instanceof PlayerHealed => [new DirectedPacket(
@@ -974,6 +1007,24 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
     }
 
     /** @return list<DirectedPacket> */
+    private function entityActorEquipmentChanged(EntityActorEquipmentChanged $event): array
+    {
+        $equipment = $this->livingActors->equipmentPackets(
+            $event->entity,
+            $this->inventory,
+            $event->changedSlots,
+        );
+        $packets = [];
+        foreach ($event->recipientSessionIds as $recipient) {
+            foreach ($equipment as $equipmentPacket) {
+                $packets[] = new DirectedPacket($recipient, $equipmentPacket);
+            }
+        }
+
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
     private function blockChanged(BlockChanged $event): array
     {
         if ($this->chunks === null) {
@@ -1171,6 +1222,155 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
         }
 
         return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function entityActorSpawned(EntityActorSpawned $event): array
+    {
+        $entity = $event->entity;
+        $position = $entity->internalPosition();
+        $motion = $entity->getMotion();
+        $runtimeId = $entity->getRuntimeId();
+        $packet = new AddActorPacket(
+            $runtimeId,
+            UnsignedLong::fromInt($runtimeId),
+            $entity->definition()->networkIdentifier,
+            $position->x,
+            $position->y,
+            $position->z,
+            $motion->x,
+            $motion->y,
+            $motion->z,
+            $entity->getPitch(),
+            $entity->getYaw(),
+            $entity->getYaw(),
+            $entity->getYaw(),
+            $this->livingActors->spawnAttributes($entity),
+            $this->livingActors->metadata($entity, $event->noAi),
+            new ActorProperties(),
+            [],
+        );
+
+        $equipment = $this->livingActors->equipmentPackets($entity, $this->inventory);
+        $packets = [];
+        foreach ($event->recipientSessionIds as $recipient) {
+            $packets[] = new DirectedPacket($recipient, $packet);
+            foreach ($equipment as $equipmentPacket) {
+                $packets[] = new DirectedPacket($recipient, $equipmentPacket);
+            }
+        }
+
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function entityActorMoved(EntityActorMoved $event): array
+    {
+        $entity = $event->entity;
+        $position = $entity->internalPosition();
+        $motion = $entity->getMotion();
+        $runtimeId = UnsignedLong::fromInt($entity->getRuntimeId());
+        $movement = new MoveActorAbsolutePacket(
+            $runtimeId,
+            $position->x,
+            $position->y,
+            $position->z,
+            $entity->getPitch(),
+            $entity->getYaw(),
+            $entity->getYaw(),
+            $entity->isOnGround() ? [MoveActorAbsoluteFlag::OnGround] : [],
+        );
+        $motionPacket = $event->motionChanged ? new SetActorMotionPacket(
+            $runtimeId,
+            $motion->x,
+            $motion->y,
+            $motion->z,
+            UnsignedLong::fromInt(max(0, $event->tick)),
+        ) : null;
+
+        $packets = [];
+        foreach ($event->recipientSessionIds as $recipient) {
+            $packets[] = new DirectedPacket($recipient, $movement);
+            if ($motionPacket !== null) {
+                $packets[] = new DirectedPacket($recipient, $motionPacket);
+            }
+        }
+
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function entityActorDamaged(EntityActorDamaged $event): array
+    {
+        $runtimeId = UnsignedLong::fromInt($event->entity->getRuntimeId());
+        $health = new UpdateAttributesPacket(
+            $runtimeId,
+            [$this->livingActors->healthAttribute($event->entity)],
+            UnsignedLong::fromInt(max(0, $event->tick)),
+        );
+        $hurt = new ActorEventPacket($runtimeId, ActorEventType::Hurt);
+        $packets = [];
+        foreach ($event->recipientSessionIds as $recipient) {
+            $packets[] = new DirectedPacket($recipient, $health);
+            $packets[] = new DirectedPacket($recipient, $hurt);
+        }
+
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function entityActorHealthChanged(EntityActorHealthChanged $event): array
+    {
+        $packet = new UpdateAttributesPacket(
+            UnsignedLong::fromInt($event->entity->getRuntimeId()),
+            [$this->livingActors->healthAttribute($event->entity)],
+            UnsignedLong::fromInt(max(0, $event->tick)),
+        );
+
+        return array_map(
+            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
+            $event->recipientSessionIds,
+        );
+    }
+
+    /** @return list<DirectedPacket> */
+    private function entityActorMetadataChanged(EntityActorMetadataChanged $event): array
+    {
+        $packet = new SetActorDataPacket(
+            UnsignedLong::fromInt($event->entity->getRuntimeId()),
+            UnsignedLong::fromInt(max(0, $event->tick)),
+            $this->livingActors->metadata($event->entity, $event->noAi),
+        );
+
+        return array_map(
+            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
+            $event->recipientSessionIds,
+        );
+    }
+
+    /** @return list<DirectedPacket> */
+    private function entityActorDied(EntityActorDied $event): array
+    {
+        $packet = new ActorEventPacket(
+            UnsignedLong::fromInt($event->entity->getRuntimeId()),
+            ActorEventType::Death,
+        );
+
+        return array_map(
+            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
+            $event->recipientSessionIds,
+        );
+    }
+
+    /** @return list<DirectedPacket> */
+    private function entityActorRemoved(EntityActorRemoved $event): array
+    {
+        $packet = new RemoveActorPacket($event->entity->getRuntimeId());
+
+        return array_map(
+            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
+            $event->recipientSessionIds,
+        );
     }
 
     /** @return list<DirectedPacket> */

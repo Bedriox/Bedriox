@@ -50,4 +50,21 @@ final readonly class ToolDefinition
     {
         return $this->tier?->harvestLevel() ?? 0;
     }
+
+    /** Authoritative melee damage for the unenchanted tool. */
+    public function attackDamage(): float
+    {
+        if ($this->tier === null) {
+            return 1.0;
+        }
+
+        return max(1.0, $this->tier->baseAttackDamage() - match ($this->type) {
+            ToolType::Sword => 0.0,
+            ToolType::Axe => 1.0,
+            ToolType::Pickaxe => 2.0,
+            ToolType::Shovel => 3.0,
+            ToolType::Hoe => 4.0,
+            ToolType::Shears => $this->tier->baseAttackDamage() - 1.0,
+        });
+    }
 }

@@ -7,6 +7,7 @@ namespace Bedriox\Server;
 use Bedriox\Api\Plugin\PluginContext;
 use Bedriox\Server\Command\BuiltinCommandRegistrar;
 use Bedriox\Server\Command\Default\GarbageCollectionStatus;
+use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Observability\BackgroundLogWriter;
 use Bedriox\Server\Observability\CrashContextProvider;
 use Bedriox\Server\Observability\CrashContextPublisher;
@@ -27,10 +28,13 @@ use Bedriox\Server\Plugin\Command\ServerConsoleCommandSender;
 use Bedriox\Server\Plugin\Command\StreamConsoleInput;
 use Bedriox\Server\Plugin\Command\WindowsConsoleInput;
 use Bedriox\Server\Plugin\Event\OwnedEventRegistrar;
+use Bedriox\Server\Plugin\OwnedEntityRegistrar;
 use Bedriox\Server\Plugin\OwnedItemRegistrar;
 use Bedriox\Server\Plugin\OwnedRecipeRegistrar;
 use Bedriox\Server\Plugin\OwnedSourcePluginRegistrar;
 use Bedriox\Server\Plugin\PluginComposition;
+use Bedriox\Server\Plugin\PluginEntityDefinitionBridge;
+use Bedriox\Server\Plugin\PluginEntityLifecycleBridge;
 use Bedriox\Server\Plugin\PluginHost;
 use Bedriox\Server\Plugin\PluginItemBehaviorRegistrar;
 use Bedriox\Server\Plugin\PluginManifest;
@@ -165,6 +169,7 @@ final class Bedriox
                 creative: $data->creativeInventoryRegistry(),
                 blockItems: $data->blockItemMappingRegistry(),
             );
+            $entityDefinitions = EntityDefinitionRegistry::fromData($data->entityTypeRegistry());
             $itemCommandEnum = null;
             $pluginHost = new PluginHost(
                 $workingDirectory . DIRECTORY_SEPARATOR . 'plugins',
@@ -208,6 +213,22 @@ final class Bedriox
                             $composition->itemBehaviors->register(...),
                         ),
                         recipes: new OwnedRecipeRegistrar($manifest->name, $composition->recipes),
+                        entities: new OwnedEntityRegistrar(
+                            $manifest->name,
+                            $composition->host->entities(),
+                            $composition->host->actions(),
+                            static fn(
+                                \Bedriox\Api\Entity\CustomEntityType $type,
+                                \Bedriox\Api\World\Position $position,
+                                float $yaw,
+                                float $pitch,
+                            ): bool => $composition->server->runtime->spawnPluginEntity(
+                                $type,
+                                $position,
+                                $yaw,
+                                $pitch,
+                            ),
+                        ),
                     );
                 },
                 maximumPlugins: $config->maximumPlugins,
@@ -216,8 +237,21 @@ final class Bedriox
                     : null,
                 asyncTaskExecutor: $pluginAsync,
                 onlinePlayers: static fn(): array => $composition->server?->runtime->onlinePlayers() ?? [],
+                commandEntities: static fn(): array => $composition->server?->runtime->entities() ?? [],
+                commandSelectorOrigin: static function () use ($composition): ?\Bedriox\Api\World\Position {
+                    $world = $composition->server?->world;
+                    if ($world === null) {
+                        return null;
+                    }
+                    $spawn = $world->spawn();
+
+                    return new \Bedriox\Api\World\Position($spawn->x + 0.5, $spawn->y, $spawn->z + 0.5);
+                },
             );
             $composition->host = $pluginHost;
+            $definitionBridge = new PluginEntityDefinitionBridge($entityDefinitions, $pluginHost->entities());
+            $pluginHost->entities()->bindDefinitionBridge($definitionBridge);
+            $composition->entityLifecycle = new PluginEntityLifecycleBridge($pluginHost->entities());
             $playerStore = ProcessPlayerDataStore::start(
                 self::VERSION,
                 $workingDirectory . DIRECTORY_SEPARATOR . 'player_data',
@@ -272,6 +306,8 @@ final class Bedriox
                         chunkUnload: $runtime?->lastChunkUnloadResult(),
                         totalChunksUnloaded: $runtime?->totalChunksUnloaded() ?? 0,
                         preparedBytesTrimmed: $runtime?->totalPreparedBytesTrimmed() ?? 0,
+                        entityAi: $runtime?->entityAiMetrics(),
+                        entityRuntime: $runtime?->entityRuntimeMetrics(),
                     );
                 },
                 static fn(
@@ -318,6 +354,25 @@ final class Bedriox
                     return $composition->server?->runtime->runChunkUnloadMaintenance()
                         ?? throw new \LogicException('Chunk unload runtime is unavailable.');
                 },
+                entityIdentifiers: static fn(): array => array_values(array_map(
+                    static fn(\Bedriox\Data\EntityTypeDefinition $definition): string => $definition->identifier(),
+                    array_filter(
+                        $data->entityTypeRegistry()->definitions(),
+                        static fn(\Bedriox\Data\EntityTypeDefinition $definition): bool => $definition->summonable(),
+                    ),
+                )),
+                summonEntity: static fn(
+                    string $identifier,
+                    \Bedriox\Api\World\Position $position,
+                    ?\Bedriox\Api\Player\Player $source,
+                ): bool => $composition->server?->runtime->summonEntity($identifier, $position, $source) ?? false,
+                currentWorldTime: static fn(): ?int => $composition->server?->runtime->currentWorldTime(),
+                setWorldTime: static fn(int $time): ?int => $composition->server?->runtime->setWorldTime($time),
+                addWorldTime: static fn(int $amount): ?int => $composition->server?->runtime->addWorldTime($amount),
+                setWorldTimeRunning: static fn(bool $running): ?int =>
+                    $composition->server?->runtime->setWorldTimeRunning($running),
+                killTarget: static fn(\Bedriox\Api\Player\Player|\Bedriox\Api\Entity\Entity $target): bool =>
+                    $composition->server?->runtime->killTarget($target) ?? false,
             ))->register();
             $server = (new ServerBootstrap(
                 new PersistentWorldFactory(
@@ -338,6 +393,9 @@ final class Bedriox
                 $performance,
                 $pluginHost->tickScheduler(...),
                 $coreWorkers,
+                entityDefinitions: $entityDefinitions,
+                pluginEntityLifecycle: $composition->entityLifecycle,
+                pluginActions: $pluginHost->actions(),
             );
             $composition->server = $server;
             $composition->itemBehaviors = new PluginItemBehaviorRegistrar(

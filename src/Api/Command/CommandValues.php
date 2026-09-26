@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Bedriox\Api\Command;
 
 use BackedEnum;
+use Bedriox\Api\Entity\Entity;
 use Bedriox\Api\Player\Player;
 use Bedriox\Api\World\BlockPosition;
 use Bedriox\Api\World\Position;
@@ -100,6 +101,32 @@ final readonly class CommandValues
         foreach ($value as $player) {
             if (!$player instanceof Player) {
                 throw $this->wrongType($name, 'list<Player>');
+            }
+        }
+
+        return $value;
+    }
+
+    public function entity(string $name): Player|Entity
+    {
+        $value = $this->required($name);
+        if (!$value instanceof Player && !$value instanceof Entity) {
+            throw $this->wrongType($name, Player::class . '|' . Entity::class);
+        }
+
+        return $value;
+    }
+
+    /** @return list<Player|Entity> */
+    public function entities(string $name): array
+    {
+        $value = $this->required($name);
+        if (!is_array($value) || !array_is_list($value)) {
+            throw $this->wrongType($name, 'list<' . Player::class . '|' . Entity::class . '>');
+        }
+        foreach ($value as $entity) {
+            if (!$entity instanceof Player && !$entity instanceof Entity) {
+                throw $this->wrongType($name, 'list<' . Player::class . '|' . Entity::class . '>');
             }
         }
 

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Runtime;
 
+use Bedriox\Api\Entity\EntityInteractionType;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Batch\BatchLimits;
 use Bedriox\Protocol\Batch\BedrockBatch;
@@ -118,6 +119,7 @@ use Bedriox\Server\Simulation\Command\BreakBlock;
 use Bedriox\Server\Simulation\Command\CloseContainer;
 use Bedriox\Server\Simulation\Command\CloseCraftingGrid;
 use Bedriox\Server\Simulation\Command\DropItem;
+use Bedriox\Server\Simulation\Command\InteractEntity;
 use Bedriox\Server\Simulation\Command\MovePlayer;
 use Bedriox\Server\Simulation\Command\PerformEmote;
 use Bedriox\Server\Simulation\Command\PlaceBlock;
@@ -1182,7 +1184,7 @@ final class BedrockPlayChannelTest extends TestCase
         $packet = new InventoryTransactionPacket(0, [], [], new ItemUseOnEntityInventoryTransaction(
             UnsignedLong::fromInt(22),
             ItemUseOnEntityActionType::Attack,
-            0,
+            4,
             InventoryItemStack::empty(),
             new InventoryVector3(9_999.0, 9_999.0, 9_999.0),
             new InventoryVector3(9_999.0, 9_999.0, 9_999.0),
@@ -1195,10 +1197,52 @@ final class BedrockPlayChannelTest extends TestCase
         )));
 
         $commands = $channel->drainCommands();
-        self::assertCount(1, $commands);
-        self::assertInstanceOf(AttackPlayer::class, $commands[0]);
-        self::assertSame(22, $commands[0]->targetRuntimeActorId);
-        self::assertSame(0, $commands[0]->hotbarSlot);
+        self::assertCount(2, $commands);
+        self::assertInstanceOf(SelectHotbarSlot::class, $commands[0]);
+        self::assertSame(4, $commands[0]->hotbarSlot);
+        self::assertInstanceOf(AttackPlayer::class, $commands[1]);
+        self::assertSame(22, $commands[1]->targetRuntimeActorId);
+        self::assertSame(4, $commands[1]->hotbarSlot);
+        self::assertFalse($channel->isClosed());
+    }
+
+    public function testEncryptedEntityInteractionBecomesTypedGameplayIntent(): void
+    {
+        [$channel, $client, , $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        foreach ([
+            ItemUseOnEntityActionType::Interact,
+            ItemUseOnEntityActionType::ItemInteract,
+        ] as $action) {
+            $packet = new InventoryTransactionPacket(0, [], [], new ItemUseOnEntityInventoryTransaction(
+                UnsignedLong::fromInt(22),
+                $action,
+                3,
+                InventoryItemStack::empty(),
+                new InventoryVector3(0.0, 64.0, 0.0),
+                new InventoryVector3(0.0, 64.0, 0.0),
+            ));
+            self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+                $client->encryptEnvelope($this->encode([$packet])),
+                Reliability::ReliableOrdered,
+                0,
+            )));
+        }
+
+        $commands = $channel->drainCommands();
+        self::assertCount(4, $commands);
+        self::assertInstanceOf(SelectHotbarSlot::class, $commands[0]);
+        self::assertSame(3, $commands[0]->hotbarSlot);
+        self::assertInstanceOf(InteractEntity::class, $commands[1]);
+        self::assertSame(EntityInteractionType::INTERACT, $commands[1]->interaction);
+        self::assertInstanceOf(SelectHotbarSlot::class, $commands[2]);
+        self::assertSame(3, $commands[2]->hotbarSlot);
+        self::assertInstanceOf(InteractEntity::class, $commands[3]);
+        self::assertSame(EntityInteractionType::ITEM_INTERACT, $commands[3]->interaction);
         self::assertFalse($channel->isClosed());
     }
 
@@ -1236,6 +1280,40 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertEqualsWithDelta($motion->motionZ, $decoded[0]->motionZ, 0.000_001);
         self::assertEquals($motion->tick, $decoded[0]->tick);
         self::assertEquals($death, $decoded[1]);
+        self::assertFalse($channel->isClosed());
+    }
+
+    public function testRelatedPacketsShareOneOrderedEncryptedBatch(): void
+    {
+        [$channel, $client, $server, $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $channel->drainOutgoing();
+
+        self::assertTrue($channel->queuePackets([
+            new SystemTextPacket('first'),
+            new SystemTextPacket('second'),
+        ]));
+
+        $outgoing = $channel->drainOutgoing();
+        self::assertCount(1, $outgoing);
+        $batch = BedrockBatchCodec::decode(
+            $server->decryptEnvelope($outgoing[0]->payload),
+            CompressionMode::NegotiatedZlib,
+            new BatchLimits(),
+            256,
+        );
+        self::assertCount(2, $batch->packets);
+        $messages = [];
+        foreach ($batch->packets as $frame) {
+            $packet = BedrockPacketCodec::decode($frame->header->packetId, $frame->payload);
+            self::assertInstanceOf(SystemTextPacket::class, $packet);
+            $messages[] = $packet->message;
+        }
+        self::assertSame(['first', 'second'], $messages);
         self::assertFalse($channel->isClosed());
     }
 

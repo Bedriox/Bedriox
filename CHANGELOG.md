@@ -1,5 +1,11 @@
 # Changelog
 
+- Preserve authoritative zombie knockback against same-tick chase steering, let grounded mobs jump clear one-block rises without crossing two-block walls, and lower natural hostile density to a 24-entity regional cap with bounded two-at-a-time spawning and excess retirement.
+- Gate natural hostile spawning by darkness, ignite exposed daylight-sensitive mobs with visible authoritative fire damage, persist bounded fire state, and scale category caps across deduplicated player spawn regions with local-density and soft-despawn control.
+- Batch each client's visible non-player movement projection, omit unchanged motion packets, and aggregate repetitive actor trace output so mob movement does not create one compression job and log record per packet.
+- Drain entity autosaves as finite generations, checkpoint age without per-tick dirty churn, bound atomic chunk-ownership transfers, and reduce distant grounded-mob physics while preserving continuous motion.
+- Keep non-player physics and hostile line-of-sight checks on already loaded terrain, fail closed at missing chunk boundaries, apply entity-use hotbar selection before interaction, and project hostile melee knockback and attack state only for damageable visible targets.
+- Project authoritative non-player living actors through complete spawn, movement, health and hurt, death, and removal packet sequences for the event-supplied chunk-visible recipients.
 - Preserve authoritative armor and offhand snapshots through runtime recipient filtering so successful equipment transactions cannot be projected as empty equipment.
 - Accept the current eating actor advisory without trusting it for item use, preventing ordinary and golden food consumption from disconnecting the player.
 - Synchronize only the main-inventory slots changed by item consumption and `give` instead of refreshing every slot.
@@ -22,6 +28,7 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Fixed
 
+- Keep natural spawning bounded and fair through the full 1,024-player server limit, account candidate preparation against its elapsed budget, and preserve natural-distance despawn ownership across entity save, unload, and restart without affecting command, spawn-egg, or plugin entities.
 - Encode peer arm swings without an optional source label and report allowlisted RakNet send-overflow categories with bounded payload, reliability, ordering-channel, and session-phase context.
 - Admit every data-mapped creative block to authoritative break handling so crafting tables and other placed blocks no longer revert when mined.
 - Keep the world spawn retained and wait for every chunk touched by the player collision footprint before committing a respawn, preventing persistence backlogs from turning respawn into a blocking storage read and whole-server disconnect.
@@ -32,6 +39,12 @@ All notable changes will be documented here. The project follows Semantic Versio
 - Reject attempts to merge one-slot tools in catalog-free inventories without throwing or changing either slot.
 
 ### Added
+
+- Add a public entity-controller hierarchy for transactional transforms, presentation state, health, fire, equipment, AI, movement, targeting, and despawn intent, with cancellable equipment transitions and committed post-events.
+- Add durable living-entity armor and hand equipment, difficulty-aware natural zombie gear, authoritative armor wear and melee effects, complete spawn and live projection, and bounded once-evaluated zombie, cow, and equipment death drops customizable through `EntityDeathEvent`.
+- Add bounded player/entity target selectors, public entity command parameters, typed entity damage causes, and an authoritative `kill` command with separate self and other permissions.
+- Add per-world bounded daylight-cycle time with persisted progression, current-time login synchronization, periodic client correction, authoritative natural-spawn lighting, typed presets, and the operator `time` command.
+- Add transaction-isolated custom-mob lifecycle callbacks, catalog-validated vanilla appearances, generation-stable live behavior and state codecs, bounded movement control intents, scheduler-cadenced custom AI, and symmetric persistence load/unload events.
 
 - Add durable chest, trapped-chest, barrel, shulker-box, and player-owned Ender Chest inventories with authoritative dynamic-window transactions, current affected-slot responses, multiplayer synchronization, live block-actor state, first/last-viewer animation, shulker item preservation, typed lifecycle events, and plugin-owned virtual containers.
 

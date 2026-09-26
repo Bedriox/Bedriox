@@ -6,7 +6,10 @@ namespace Bedriox\Server\Worker;
 
 use Bedriox\Server\Plugin\Scheduler\Worker\PluginAsyncTaskHandler;
 use Bedriox\Server\Worker\Chunk\ChunkPreparationRequestCodec;
+use Bedriox\Server\Worker\Navigation\NavigationPathCodec;
+use Bedriox\Server\Worker\Navigation\NavigationSearchRequestCodec;
 use Bedriox\Server\Worker\Network\BatchCompressionTask;
+use Bedriox\Server\Worker\Task\FindNavigationPathTask;
 use Bedriox\Server\Worker\Task\GenerateChunkTask;
 use Bedriox\Server\Worker\Task\PrepareChunkTask;
 use Bedriox\Server\Worker\Task\SelfTestTask;
@@ -18,6 +21,7 @@ final class CoreWorkerTaskCatalog
     public const COMPRESS_BATCH = 3;
     public const PLUGIN_ASYNC_TASK = 4;
     public const PREPARE_CHUNK = 5;
+    public const FIND_NAVIGATION_PATH = 6;
 
     public static function create(): WorkerTaskRegistry
     {
@@ -73,6 +77,18 @@ final class CoreWorkerTaskCatalog
             ChunkPreparationRequestCodec::MAXIMUM_ENCODED_BYTES,
             1_048_577,
             30_000,
+            cancellable: true,
+            retryWhenNotStarted: true,
+        ));
+        $registry->register(new WorkerTaskDefinition(
+            self::FIND_NAVIGATION_PATH,
+            1,
+            'entity-navigation',
+            WorkerLane::WORLD,
+            FindNavigationPathTask::class,
+            NavigationSearchRequestCodec::MAXIMUM_ENCODED_BYTES,
+            NavigationPathCodec::MAXIMUM_ENCODED_BYTES,
+            2_000,
             cancellable: true,
             retryWhenNotStarted: true,
         ));

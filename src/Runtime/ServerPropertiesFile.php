@@ -31,6 +31,8 @@ level-seed=0
 gamemode=survival
 difficulty=normal
 pvp=true
+spawn-animals=true
+spawn-monsters=true
 view-distance=4
 PROPERTIES
             . PHP_EOL;

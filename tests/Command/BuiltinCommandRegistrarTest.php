@@ -15,6 +15,7 @@ use Bedriox\Protocol\Packet\Packet;
 use Bedriox\Server\Command\BuiltinCommandRegistrar;
 use Bedriox\Server\Command\Default\GarbageCollectionStatus;
 use Bedriox\Server\Command\Default\OnlinePlayerResolver;
+use Bedriox\Server\Entity\EntityRuntimeMetrics;
 use Bedriox\Server\Observability\BackgroundLogWriterSnapshot;
 use Bedriox\Server\Observability\LogQueueSnapshot;
 use Bedriox\Server\Observability\Memory\GarbageCollectionReport;
@@ -102,6 +103,34 @@ final class BuiltinCommandRegistrarTest extends TestCase
         self::assertSame('Visit https://bedriox.com', $sender->messages[1]);
         self::assertTrue(($registry->dispatch($sender, 'commands'))->isSuccess());
         self::assertContains('Available commands (10):', $sender->messages);
+    }
+
+    public function testKillCommandIsRegisteredWithItsParentPermissionWhenRuntimeIsAvailable(): void
+    {
+        [$registry, $permissions] = $this->registry();
+        (new BuiltinCommandRegistrar(
+            $registry,
+            $permissions,
+            static fn(): array => [],
+            static function (): void {},
+            static fn(): array => [],
+            killTarget: static fn(
+                \Bedriox\Api\Player\Player|\Bedriox\Api\Entity\Entity $target,
+            ): bool => true,
+        ))->register();
+
+        $definitions = $registry->availableDefinitions(
+            CommandSenderType::CONSOLE,
+            static fn(string $permission): bool => true,
+        );
+        $kill = array_values(array_filter(
+            $definitions,
+            static fn($definition): bool => $definition->name === 'kill',
+        ));
+
+        self::assertCount(1, $kill);
+        self::assertSame(['suicide'], $kill[0]->aliases);
+        self::assertSame('bedriox.command.kill', $kill[0]->permission);
     }
 
     public function testPlayerListOperatorAndPermissionCommandsPreserveBehavior(): void
@@ -288,6 +317,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
                 worldPersistence: new PersistenceQueueSnapshot(2, 1, 3, 4_096, 4, 5, 6),
                 playerPersistence: new PersistenceQueueSnapshot(1, 0, 2, 2_048, 3, 4, 5),
                 preparedChunkCache: new PreparedChunkCacheSnapshot(12, 24_576, 3, 6_144, 80, 20, 2, 4, 1),
+                entityRuntime: new EntityRuntimeMetrics(40, 12, 10, 28, 2, 1, 8, 3, 1_250_000, true),
             ),
         ))->register();
 
@@ -328,6 +358,8 @@ final class BuiltinCommandRegistrarTest extends TestCase
         self::assertContains('Sessions: unavailable', $advanced->messages);
         self::assertContains('World: 1.50 ms', $advanced->messages);
         self::assertContains('Background logging: unavailable', $advanced->messages);
+        self::assertContains('Entity physics: 10/12 ticked, 28 cadence skipped, 2 budget deferred', $advanced->messages);
+        self::assertContains('Entity motion: 8 moved, 3 velocity changes, 1.25 ms, budget exhausted (1 safety-critical)', $advanced->messages);
         self::assertSame('--------- End Status ---------', $advanced->messages[count($advanced->messages) - 1]);
 
         $alias = new BuiltinCommandSender();

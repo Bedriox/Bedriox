@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World;
 
+use Closure;
 use InvalidArgumentException;
 use OverflowException;
 use UnexpectedValueException;
@@ -33,11 +34,20 @@ final class ChunkRepository
 
     private int $evictions = 0;
 
+    /** @var null|Closure(ChunkPosition): void */
+    private ?Closure $beforeEviction = null;
+
     public function __construct(private readonly int $capacity)
     {
         if ($capacity < 1 || $capacity > 100_000) {
             throw new InvalidArgumentException('Chunk cache capacity must be between 1 and 100000.');
         }
+    }
+
+    /** @param null|callable(ChunkPosition): void $observer */
+    public function setBeforeEvictionObserver(?callable $observer): void
+    {
+        $this->beforeEviction = $observer === null ? null : Closure::fromCallable($observer);
     }
 
     /**
@@ -65,6 +75,7 @@ final class ChunkRepository
         }
         if ($evictionCandidate !== null) {
             $this->saveForEviction($evictionCandidate, $saver);
+            ($this->beforeEviction)?->__invoke($this->chunks[$evictionCandidate]->position);
             $this->remove($evictionCandidate);
         }
         $this->chunks[$key] = $chunk;
@@ -131,6 +142,7 @@ final class ChunkRepository
             return false;
         }
 
+        ($this->beforeEviction)?->__invoke($chunk->position);
         $this->remove($key);
 
         return true;
