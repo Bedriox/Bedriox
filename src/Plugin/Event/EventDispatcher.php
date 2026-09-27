@@ -145,6 +145,18 @@ final class EventDispatcher
         return count($this->listeners);
     }
 
+    /** @param class-string<Event> $eventClass */
+    public function hasListenersFor(string $eventClass): bool
+    {
+        foreach ($this->listeners as $listener) {
+            if (is_a($eventClass, $listener->eventClass, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function invoke(RegisteredListener $listener, Event $event): void
     {
         $snapshot = $event->captureState();

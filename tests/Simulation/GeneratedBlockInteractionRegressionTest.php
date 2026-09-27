@@ -22,6 +22,7 @@ use Bedriox\Server\Simulation\WorldSimulation;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\BlockPosition;
+use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\ChunkRepository;
 use Bedriox\Server\World\Collision\BlockCollisionRegistry;
 use Bedriox\Server\World\FlatWorldGenerator;
@@ -251,6 +252,7 @@ final class GeneratedBlockInteractionRegressionTest extends TestCase
             new ChunkRepository(4),
         );
         $blocks->setBlockState(1, 64, 0, $generation->state('minecraft:short_grass'));
+        self::retainOriginCollisionTerrain($blocks);
         $simulation = new WorldSimulation(
             blockWorld: $blocks,
             blockPalette: $flat,
@@ -274,5 +276,14 @@ final class GeneratedBlockInteractionRegressionTest extends TestCase
         $event = $simulation->tick()->events[0];
         self::assertInstanceOf(PlayerMoved::class, $event);
         self::assertSame(1.0, $event->player->position->x);
+    }
+
+    private static function retainOriginCollisionTerrain(World $world): void
+    {
+        foreach ([-1, 0] as $chunkX) {
+            foreach ([-1, 0] as $chunkZ) {
+                $world->retainChunk(new ChunkPosition($chunkX, $chunkZ));
+            }
+        }
     }
 }

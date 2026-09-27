@@ -16,6 +16,9 @@ use RuntimeException;
 /** Nonblocking parent endpoint for the dedicated ordered routine-log process. */
 final class BackgroundLogWriter
 {
+    private const int MAXIMUM_IN_FLIGHT = 128;
+    private const int MAXIMUM_OUTGOING_BYTES = 524_288;
+
     /** @var resource|null */
     private $process = null;
     /** @var resource|null */
@@ -26,8 +29,8 @@ final class BackgroundLogWriter
     private readonly WorkerFrameCodec $codec;
     private readonly WorkerFrameDecoder $decoder;
     private string $outgoing = '';
-    private ?QueuedLogLine $inFlight = null;
-    private int $inFlightTaskId = 0;
+    /** @var array<int, QueuedLogLine> ordered by submission */
+    private array $inFlight = [];
     private int $nextTaskId = 1;
     private int $acknowledged = 0;
     private int $serviceFailures = 0;
@@ -82,12 +85,12 @@ final class BackgroundLogWriter
         if (!$this->available || !is_resource($process)) {
             return;
         }
-        $this->scheduleHead();
+        $this->scheduleWindow();
         $this->flushOutgoing();
         $bytes = is_resource($this->output) ? @fread($this->output, 262_144) : false;
         if (is_string($bytes) && $bytes !== '') {
             try {
-                foreach ($this->decoder->push($bytes, 16) as $frame) {
+                foreach ($this->decoder->push($bytes, self::MAXIMUM_IN_FLIGHT) as $frame) {
                     $this->accept($frame);
                 }
             } catch (\Throwable) {
@@ -115,7 +118,7 @@ final class BackgroundLogWriter
         $deadline = hrtime(true) + $timeoutMilliseconds * 1_000_000;
         do {
             $this->poll();
-            if ($this->queue->head() === null && $this->inFlight === null && $this->outgoing === '') {
+            if ($this->queue->head() === null && $this->inFlight === [] && $this->outgoing === '') {
                 return true;
             }
             if (!$this->available) {
@@ -156,7 +159,7 @@ final class BackgroundLogWriter
     {
         return new BackgroundLogWriterSnapshot(
             $this->available,
-            $this->inFlight !== null,
+            $this->inFlight !== [],
             $this->queue->snapshot(),
             $this->acknowledged,
             $this->serviceFailures,
@@ -245,36 +248,37 @@ final class BackgroundLogWriter
         $this->available = true;
     }
 
-    private function scheduleHead(): void
+    private function scheduleWindow(): void
     {
-        if ($this->inFlight !== null || $this->outgoing !== '') {
-            return;
+        while (count($this->inFlight) < self::MAXIMUM_IN_FLIGHT
+            && strlen($this->outgoing) < self::MAXIMUM_OUTGOING_BYTES) {
+            $line = $this->queue->at(count($this->inFlight));
+            if (!$line instanceof QueuedLogLine) {
+                return;
+            }
+            $taskId = $this->nextTaskId++;
+            if ($this->nextTaskId > 0xffffffff) {
+                $this->nextTaskId = 1;
+            }
+            $this->inFlight[$taskId] = $line;
+            $this->outgoing .= $this->codec->encode(new WorkerFrame(
+                WorkerFrameKind::SUBMIT,
+                $this->epoch,
+                $taskId,
+                LogWriterProcessProgram::TASK_TYPE,
+                LogWriterProcessProgram::SCHEMA_VERSION,
+                metadata: ['sequence' => $line->sequence],
+                payload: $line->line,
+            ));
         }
-        $line = $this->queue->head();
-        if (!$line instanceof QueuedLogLine) {
-            return;
-        }
-        $taskId = $this->nextTaskId++;
-        if ($this->nextTaskId > 0xffffffff) {
-            $this->nextTaskId = 1;
-        }
-        $this->inFlight = $line;
-        $this->inFlightTaskId = $taskId;
-        $this->outgoing = $this->codec->encode(new WorkerFrame(
-            WorkerFrameKind::SUBMIT,
-            $this->epoch,
-            $taskId,
-            LogWriterProcessProgram::TASK_TYPE,
-            LogWriterProcessProgram::SCHEMA_VERSION,
-            metadata: ['sequence' => $line->sequence],
-            payload: $line->line,
-        ));
     }
 
     private function accept(WorkerFrame $frame): void
     {
-        if ($this->inFlight === null || !hash_equals($this->epoch, $frame->epoch)
-            || $frame->taskId !== $this->inFlightTaskId
+        $taskId = array_key_first($this->inFlight);
+        $line = $taskId === null ? null : $this->inFlight[$taskId];
+        if (!$line instanceof QueuedLogLine || !hash_equals($this->epoch, $frame->epoch)
+            || $frame->taskId !== $taskId
             || $frame->taskTypeId !== LogWriterProcessProgram::TASK_TYPE
             || $frame->schemaVersion !== LogWriterProcessProgram::SCHEMA_VERSION) {
             $this->failService();
@@ -282,9 +286,8 @@ final class BackgroundLogWriter
             return;
         }
         if ($frame->kind === WorkerFrameKind::RESULT) {
-            $this->queue->acknowledge($this->inFlight->sequence);
-            $this->inFlight = null;
-            $this->inFlightTaskId = 0;
+            $this->queue->acknowledge($line->sequence);
+            unset($this->inFlight[$taskId]);
             ++$this->acknowledged;
 
             return;
@@ -312,8 +315,7 @@ final class BackgroundLogWriter
         ++$this->serviceFailures;
         $this->available = false;
         $this->outgoing = '';
-        $this->inFlight = null;
-        $this->inFlightTaskId = 0;
+        $this->inFlight = [];
         $this->closeProcess();
     }
 

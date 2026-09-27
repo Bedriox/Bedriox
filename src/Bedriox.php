@@ -466,7 +466,7 @@ final class Bedriox
                     },
                     performance: $performance,
                     backgroundPoll: static function () use ($coreWorkers, $backgroundLog): void {
-                        $coreWorkers->pollWithinBudget(8, 5_000_000);
+                        $coreWorkers->pollWithinBudget(256, 5_000_000);
                         $backgroundLog?->poll();
                     },
                 ))->run(static function () use (&$stop): bool {

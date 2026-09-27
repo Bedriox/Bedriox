@@ -76,6 +76,63 @@ final class LevelDbEntityPersistenceStoreTest extends TestCase
         ));
     }
 
+    public function testOwnershipMovementPreservesNewerUnrelatedDurableRecords(): void
+    {
+        $database = new MemoryLevelDbDatabase();
+        $store = new LevelDbEntityPersistenceStore($database, EntityPersistenceCodec::vanilla(), 'world');
+        $source = new ChunkPosition(0, 0);
+        $destination = new ChunkPosition(1, 0);
+        $destinationOther = '123e4567-e89b-42d3-a456-426614174002';
+        $sourceOther = self::record(self::OTHER_UUID, $source, 20);
+        $destinationRecord = self::record($destinationOther, $destination, 30);
+        $store->saveEntityChunk(new EntityChunkSnapshot('world', $source, 40, [
+            self::record(self::UUID, $source, 8),
+            $sourceOther,
+        ]));
+        $store->saveEntityChunk(new EntityChunkSnapshot('world', $destination, 70, [$destinationRecord]));
+
+        $result = $store->transferEntityOwnership(new EntityOwnershipTransfer(
+            self::UUID,
+            8,
+            new EntityChunkSnapshot('world', $source, 2, [self::record(self::OTHER_UUID, $source, 3)]),
+            new EntityChunkSnapshot('world', $destination, 2, [self::record(self::UUID, $destination, 9)]),
+        ));
+
+        self::assertSame(41, $result->sourceAfter->chunkRevision);
+        self::assertSame(71, $result->destinationAfter->chunkRevision);
+        self::assertSame(20, $result->sourceAfter->revisions()[self::OTHER_UUID] ?? null);
+        self::assertSame(30, $result->destinationAfter->revisions()[$destinationOther] ?? null);
+        self::assertSame(9, $result->destinationAfter->revisions()[self::UUID] ?? null);
+        self::assertEquals($sourceOther, self::findRecord($result->sourceAfter, self::OTHER_UUID));
+        self::assertEquals($destinationRecord, self::findRecord($result->destinationAfter, $destinationOther));
+    }
+
+    public function testOwnershipMovementRejectsATrueTargetRevisionConflictWithoutWriting(): void
+    {
+        $database = new MemoryLevelDbDatabase();
+        $store = new LevelDbEntityPersistenceStore($database, EntityPersistenceCodec::vanilla(), 'world');
+        $source = new ChunkPosition(0, 0);
+        $destination = new ChunkPosition(1, 0);
+        $store->saveEntityChunk(new EntityChunkSnapshot('world', $source, 4, [
+            self::record(self::UUID, $source, 9),
+        ]));
+        $writesBefore = $database->writeBatches;
+
+        try {
+            $store->transferEntityOwnership(new EntityOwnershipTransfer(
+                self::UUID,
+                8,
+                new EntityChunkSnapshot('world', $source, 5, []),
+                new EntityChunkSnapshot('world', $destination, 1, [self::record(self::UUID, $destination, 10)]),
+            ));
+            self::fail('A true target compare-and-swap conflict was accepted.');
+        } catch (EntityPersistenceConflictException) {
+            self::assertSame($writesBefore, $database->writeBatches);
+            self::assertSame(9, $store->loadEntityChunk($source)?->revisions()[self::UUID] ?? null);
+            self::assertNull($store->loadEntityChunk($destination));
+        }
+    }
+
     public function testUnknownCustomRecordRemainsDormantAcrossLoadAndResave(): void
     {
         $database = new MemoryLevelDbDatabase();
@@ -157,6 +214,17 @@ final class LevelDbEntityPersistenceStoreTest extends TestCase
             $customData,
             $revision,
         );
+    }
+
+    private static function findRecord(EntityChunkSnapshot $snapshot, string $uuid): ?object
+    {
+        foreach ($snapshot->records() as $record) {
+            if ($record->uuid() === $uuid) {
+                return $record;
+            }
+        }
+
+        return null;
     }
 }
 

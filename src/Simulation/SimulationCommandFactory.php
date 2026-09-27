@@ -91,6 +91,7 @@ final readonly class SimulationCommandFactory
         ?bool $sprinting = null,
         ?ClientInputTick $clientTick = null,
         bool $flying = false,
+        bool $verticalCollision = false,
     ): MovePlayer {
         $this->assertOpaqueId($session, 128, 'session');
         if ($sequence < 0) {
@@ -130,6 +131,7 @@ final readonly class SimulationCommandFactory
             $sprinting,
             $clientTick ?? ClientInputTick::fromInt($sequence),
             $flying,
+            $verticalCollision,
         );
     }
 

@@ -62,9 +62,24 @@ final class NaturalSpawningTest extends TestCase
 
         self::assertLessThanOrEqual(NaturalSpawnCandidatePlanner::MAXIMUM_CANDIDATES, count($first));
         self::assertLessThanOrEqual(NaturalSpawnCandidatePlanner::MAXIMUM_CANDIDATES, count($second));
-        self::assertArrayHasKey((new ChunkPosition(0, 0))->key(), $firstKeys);
-        self::assertArrayNotHasKey((new ChunkPosition(72 * 32, 0))->key(), $firstKeys);
-        self::assertArrayHasKey((new ChunkPosition(72 * 32, 0))->key(), $secondKeys);
+        self::assertTrue(self::containsChunkNearPlayer($firstKeys, 0));
+        self::assertFalse(self::containsChunkNearPlayer($firstKeys, NaturalSpawnCandidatePlanner::MAXIMUM_CANDIDATES));
+        self::assertTrue(self::containsChunkNearPlayer($secondKeys, NaturalSpawnCandidatePlanner::MAXIMUM_CANDIDATES));
+    }
+
+    /** @param array<string, true> $keys */
+    private static function containsChunkNearPlayer(array $keys, int $playerIndex): bool
+    {
+        $centerX = $playerIndex * 32;
+        for ($x = $centerX - 7; $x <= $centerX + 7; ++$x) {
+            for ($z = -7; $z <= 7; ++$z) {
+                if (isset($keys[(new ChunkPosition($x, $z))->key()])) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     public function testNaturalRequestsUseExistingTransactionShapeAndDeterministicTransforms(): void

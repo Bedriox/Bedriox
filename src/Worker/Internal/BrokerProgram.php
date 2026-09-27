@@ -11,6 +11,7 @@ use Bedriox\Server\Worker\Protocol\WorkerFrameDecoder;
 use Bedriox\Server\Worker\Protocol\WorkerFrameKind;
 use Bedriox\Server\Worker\WorkerIdentity;
 use Bedriox\Server\Worker\WorkerLane;
+use Bedriox\Server\Worker\WorkerLaneCapacity;
 
 final class BrokerProgram
 {
@@ -31,6 +32,7 @@ final class BrokerProgram
     private int $laneCursor = 0;
     private int $restarts = 0;
     private bool $stopping = false;
+    private readonly WorkerLaneCapacity $laneCapacity;
     /** @var resource|null */
     private $parentStream = null;
 
@@ -47,6 +49,7 @@ final class BrokerProgram
         foreach (WorkerLane::cases() as $lane) {
             $this->queues[$lane->value] = [];
         }
+        $this->laneCapacity = new WorkerLaneCapacity($configuredWorkers);
     }
 
     public static function run(
@@ -71,6 +74,7 @@ final class BrokerProgram
         if (!is_resource($this->parentStream)) {
             return 63;
         }
+        IpcSocketTuning::apply($this->parentStream);
         stream_set_blocking($this->parentStream, true);
         $hello = $this->awaitParentHello();
         if ($hello === null) {
@@ -99,6 +103,7 @@ final class BrokerProgram
             $this->pollWorkers();
             $this->expireAndRecoverWorkers();
             $this->dispatch();
+            $this->flushWorkerInputs();
             $now = hrtime(true);
             if ($now - $lastHeartbeat >= 1_000_000_000) {
                 $this->queueParent(new WorkerFrame(
@@ -191,6 +196,7 @@ final class BrokerProgram
 
             return null;
         }
+        IpcSocketTuning::apply($connection);
         stream_set_timeout($connection, 5);
         $receivedToken = $this->readExactly($connection, strlen($token));
         if (!is_string($receivedToken) || !hash_equals($token, $receivedToken)) {
@@ -305,26 +311,54 @@ final class BrokerProgram
             if ($worker->task !== null || ($frame = $this->nextTask()) === null) {
                 continue;
             }
-            $bytes = $this->codec->encode($frame);
-            $written = fwrite($worker->input, $bytes);
-            if (!is_int($written) || $written !== strlen($bytes)) {
-                $this->queueFailure($frame, 'dispatch-failed');
+            $worker->task = $frame;
+            $worker->startedAtNanoseconds = 0;
+            $worker->discardResult = false;
+            $worker->outgoing = $this->codec->encode($frame);
+        }
+    }
+
+    /** Advances non-blocking task writes without corrupting frames on partial socket writes. */
+    private function flushWorkerInputs(): void
+    {
+        foreach ($this->workers as $id => $worker) {
+            if ($worker->task === null || $worker->outgoing === '') {
                 continue;
             }
-            fflush($worker->input);
-            $worker->task = $frame;
-            $worker->startedAtNanoseconds = hrtime(true);
-            $worker->discardResult = false;
+            $written = @fwrite($worker->input, $worker->outgoing, min(262_144, strlen($worker->outgoing)));
+            if ($written === false) {
+                if (!$worker->discardResult) {
+                    $this->queueFailure($worker->task, 'dispatch-failed');
+                }
+                $this->terminateWorker($worker, 'dispatch-failed');
+                $this->replaceWorker($id);
+                continue;
+            }
+            if ($written < 1) {
+                continue;
+            }
+            $worker->outgoing = (string) substr($worker->outgoing, $written);
+            if ($worker->outgoing === '') {
+                @fflush($worker->input);
+                $worker->startedAtNanoseconds = hrtime(true);
+            }
         }
     }
 
     private function nextTask(): ?WorkerFrame
     {
         $now = hrtime(true);
+        $runningByLane = [];
+        foreach (WorkerLane::cases() as $lane) {
+            $runningByLane[$lane->value] = $this->runningCount($lane);
+        }
         $oldestLane = null;
         $oldestAt = PHP_INT_MAX;
         foreach ($this->queues as $lane => $queue) {
-            if ($queue !== [] && $queue[0][1] < $oldestAt) {
+            $workerLane = WorkerLane::from($lane);
+            if ($queue !== []
+                && $this->laneCapacity->canDispatch($workerLane, $runningByLane[$lane])
+                && $queue[0][1] < $oldestAt) {
                 $oldestAt = $queue[0][1];
                 $oldestLane = $lane;
             }
@@ -337,12 +371,25 @@ final class BrokerProgram
         $attempts = count(self::LANE_CYCLE);
         while ($attempts-- > 0) {
             $lane = self::LANE_CYCLE[$this->laneCursor++ % count(self::LANE_CYCLE)];
-            if ($this->queues[$lane] !== []) {
+            if ($this->queues[$lane] !== []
+                && $this->laneCapacity->canDispatch(WorkerLane::from($lane), $runningByLane[$lane])) {
                 return array_shift($this->queues[$lane])[0];
             }
         }
 
         return null;
+    }
+
+    private function runningCount(WorkerLane $lane): int
+    {
+        $running = 0;
+        foreach ($this->workers as $worker) {
+            if (($worker->task?->metadata['lane'] ?? null) === $lane->value) {
+                ++$running;
+            }
+        }
+
+        return $running;
     }
 
     private function pollWorkers(): void
@@ -378,8 +425,7 @@ final class BrokerProgram
     {
         $now = hrtime(true);
         foreach ($this->workers as $id => $worker) {
-            $status = proc_get_status($worker->process);
-            if (!$status['running']) {
+            if (feof($worker->output) || feof($worker->input)) {
                 if ($worker->task !== null && !$worker->discardResult) {
                     $this->queueFailure($worker->task, 'worker-lost');
                 }
@@ -390,7 +436,12 @@ final class BrokerProgram
                 continue;
             }
             $definition = CoreWorkerTaskCatalog::create()->get($worker->task->taskTypeId);
-            if ($definition !== null && $now - $worker->startedAtNanoseconds > $definition->timeoutMilliseconds * 1_000_000) {
+            $deadlineExpired = $worker->task->deadlineNanoseconds > 0
+                && $worker->task->deadlineNanoseconds <= $now;
+            $executionExpired = $definition !== null
+                && $worker->startedAtNanoseconds > 0
+                && $now - $worker->startedAtNanoseconds > $definition->timeoutMilliseconds * 1_000_000;
+            if ($deadlineExpired || $executionExpired) {
                 if (!$worker->discardResult) {
                     $this->queueFailure($worker->task, 'timeout');
                 }
@@ -438,6 +489,8 @@ final class BrokerProgram
             @proc_terminate($worker->process);
         }
         $worker->task = null;
+        $worker->outgoing = '';
+        $worker->startedAtNanoseconds = 0;
     }
 
     private function queueFailure(WorkerFrame $frame, string $code): void
@@ -475,9 +528,15 @@ final class BrokerProgram
         if ($this->parentOutput === '') {
             return;
         }
-        $written = is_resource($this->parentStream) ? fwrite($this->parent(), $this->parentOutput) : false;
-        if (is_int($written) && $written > 0) {
-            $this->parentOutput = substr($this->parentOutput, $written);
+        $remainingBudget = 1_048_576;
+        while ($this->parentOutput !== '' && $remainingBudget > 0 && is_resource($this->parentStream)) {
+            $attemptBytes = min($remainingBudget, strlen($this->parentOutput), 262_144);
+            $written = @fwrite($this->parent(), $this->parentOutput, $attemptBytes);
+            if (!is_int($written) || $written < 1) {
+                break;
+            }
+            $this->parentOutput = (string) substr($this->parentOutput, $written);
+            $remainingBudget -= $written;
         }
     }
 

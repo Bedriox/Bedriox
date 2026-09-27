@@ -10,16 +10,16 @@ final readonly class RuntimeLimits
 {
     public function __construct(
         public int $maximumSessions = 1_024,
-        public int $maximumDatagramsPerPoll = 64,
+        public int $maximumDatagramsPerPoll = 512,
         public int $maximumSessionEventsPerPoll = 2_048,
         public int $maximumPayloadsPerPoll = 4_096,
-        public int $maximumOutgoingPayloadsPerSession = 128,
-        public int $maximumOutgoingBytesPerSession = 2_097_152,
-        public int $maximumPacketsPerPayload = 64,
+        public int $maximumOutgoingPayloadsPerSession = 512,
+        public int $maximumOutgoingBytesPerSession = 8_388_608,
+        public int $maximumPacketsPerPayload = 256,
         public int $maximumCommandsPerPayload = 64,
         public int $maximumChunkRadius = 1,
         public int $preloadedChunkRadius = 1,
-        public int $maximumDirectedPacketsPerPoll = 8_192,
+        public int $maximumDirectedPacketsPerPoll = 65_535,
         public int $maximumStreamingPacketsPerPoll = 8,
         public int $maximumSubChunkOffsetsPerRequest = 64,
         public int $maximumTrackedSubChunkRequests = 256,
@@ -31,7 +31,7 @@ final readonly class RuntimeLimits
             }
         }
         if ($this->maximumSessions > 65_535
-            || $this->maximumDatagramsPerPoll > 1_024
+            || $this->maximumDatagramsPerPoll > 4_096
             || $this->maximumSessionEventsPerPoll > 65_535
             || $this->maximumPayloadsPerPoll > 65_535
             || $this->maximumPacketsPerPayload > 4_096

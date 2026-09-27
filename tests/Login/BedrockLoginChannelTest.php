@@ -42,6 +42,7 @@ use Bedriox\Server\Login\LoginLimits;
 use Bedriox\Server\Login\LoginSession;
 use Bedriox\Server\Login\LoginState;
 use Bedriox\Server\Login\MonotonicClock;
+use Bedriox\Server\Transport\NetworkCompressionPolicy;
 use PHPUnit\Framework\TestCase;
 
 final class BedrockLoginChannelTest extends TestCase
@@ -98,7 +99,7 @@ final class BedrockLoginChannelTest extends TestCase
         $combined = BedrockBatchCodec::encode(new BedrockBatch([
             $this->frame(new ClientCacheStatusPacket(false)),
             $this->frame(new ResourcePackClientResponsePacket(ResourcePackResponseStatus::HaveAllPacks, [])),
-        ], CompressionMode::NegotiatedZlib, 256), new BatchLimits());
+        ], CompressionMode::NegotiatedZlib, NetworkCompressionPolicy::THRESHOLD_BYTES), new BatchLimits());
 
         self::assertTrue($channel->accept($this->event($encryptor->encryptEnvelope($combined))));
         self::assertSame(LoginState::WAIT_PACK_STACK_RESPONSE, $channel->state());
@@ -131,7 +132,7 @@ final class BedrockLoginChannelTest extends TestCase
     public function testExpiredChannelRejectsBeforeMalformedFraming(): void
     {
         [$channel, , $clock] = $this->channel();
-        $clock->advanceSeconds(5);
+        $clock->advanceSeconds(15);
         self::assertFalse($channel->accept($this->event("\x00")));
         self::assertSame(LoginFailureCode::TIMEOUT, $channel->failure());
     }
@@ -241,7 +242,11 @@ final class BedrockLoginChannelTest extends TestCase
 
     private function encode(Packet $packet, CompressionMode $mode): string
     {
-        return BedrockBatchCodec::encode(new BedrockBatch([$this->frame($packet)], $mode, 256), new BatchLimits());
+        return BedrockBatchCodec::encode(new BedrockBatch(
+            [$this->frame($packet)],
+            $mode,
+            NetworkCompressionPolicy::THRESHOLD_BYTES,
+        ), new BatchLimits());
     }
 
     private function frame(Packet $packet): PacketFrame
@@ -251,7 +256,12 @@ final class BedrockLoginChannelTest extends TestCase
 
     private function decode(string $envelope, CompressionMode $mode): Packet
     {
-        $frame = BedrockBatchCodec::decode($envelope, $mode, new BatchLimits(), 256)->packets[0];
+        $frame = BedrockBatchCodec::decode(
+            $envelope,
+            $mode,
+            new BatchLimits(),
+            NetworkCompressionPolicy::THRESHOLD_BYTES,
+        )->packets[0];
         return BedrockPacketCodec::decode($frame->header->packetId, $frame->payload);
     }
 

@@ -7,6 +7,7 @@ use Bedriox\Data\PersistentBlockStateRegistry;
 use Bedriox\Server\Entity\Persistence\CorruptEntityPersistenceException;
 use Bedriox\Server\Entity\Persistence\EntityChunkSnapshot;
 use Bedriox\Server\Entity\Persistence\EntityOwnershipTransfer;
+use Bedriox\Server\Entity\Persistence\EntityOwnershipTransferResult;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceConflictException;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
 use Bedriox\Server\Persistence\World\Internal\WorldStorageProcessProgram;
@@ -101,7 +102,7 @@ exit(WorldStorageProcessProgram::run(
                 $this->entitySnapshots[$snapshot->chunk->key()] = $snapshot;
             }
 
-            public function transferEntityOwnership(EntityOwnershipTransfer $transfer): void
+            public function transferEntityOwnership(EntityOwnershipTransfer $transfer): EntityOwnershipTransferResult
             {
                 $source = $this->entitySnapshots[$transfer->sourceAfter->chunk->key()] ?? null;
                 if (!$source instanceof EntityChunkSnapshot
@@ -110,6 +111,8 @@ exit(WorldStorageProcessProgram::run(
                 }
                 $this->entitySnapshots[$transfer->sourceAfter->chunk->key()] = $transfer->sourceAfter;
                 $this->entitySnapshots[$transfer->destinationAfter->chunk->key()] = $transfer->destinationAfter;
+
+                return new EntityOwnershipTransferResult($transfer->sourceAfter, $transfer->destinationAfter);
             }
 
             public function close(): void

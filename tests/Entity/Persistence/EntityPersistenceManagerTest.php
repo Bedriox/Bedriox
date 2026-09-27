@@ -11,15 +11,23 @@ use Bedriox\Server\Entity\AbstractEntity;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\EntityMotion;
 use Bedriox\Server\Entity\EntityRegistry;
+use Bedriox\Server\Entity\Persistence\AsynchronousEntityPersistenceStore;
 use Bedriox\Server\Entity\Persistence\CorruptEntityPersistenceException;
 use Bedriox\Server\Entity\Persistence\DormantEntityRecord;
+use Bedriox\Server\Entity\Persistence\EntityChunkSaveCompletion;
 use Bedriox\Server\Entity\Persistence\EntityChunkSnapshot;
 use Bedriox\Server\Entity\Persistence\EntityOwnershipTransfer;
+use Bedriox\Server\Entity\Persistence\EntityOwnershipTransferCompletion;
+use Bedriox\Server\Entity\Persistence\EntityOwnershipTransferResult;
+use Bedriox\Server\Entity\Persistence\EntityPersistenceConflictException;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceManager;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceRecord;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
 use Bedriox\Server\Entity\Vanilla\CowEntity;
 use Bedriox\Server\Entity\Vanilla\ZombieEntity;
+use Bedriox\Server\Persistence\PersistenceEnqueueResult;
+use Bedriox\Server\Persistence\PersistenceSubmission;
+use Bedriox\Server\Persistence\PersistenceWriteRequest;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\ChunkPosition;
 use PHPUnit\Framework\TestCase;
@@ -130,6 +138,40 @@ final class EntityPersistenceManagerTest extends TestCase
         self::assertSame([], $transfer->sourceAfter->records());
         self::assertSame(18, $transfer->destinationAfter->revisions()[self::COW_UUID] ?? null);
         self::assertSame(0, $manager->dirtyChunkCount());
+    }
+
+    public function testUnloadingAChunkTransfersMultipleEntitiesThatAlreadyCrossedItsBoundary(): void
+    {
+        $source = new ChunkPosition(0, 0);
+        $destination = new ChunkPosition(1, 0);
+        $secondUuid = '223e4567-e89b-42d3-a456-426614174000';
+        $store = new TestEntityPersistenceStore();
+        $store->snapshots[$source->key()] = new EntityChunkSnapshot('world', $source, 4, [
+            self::record(self::COW_UUID, $source, new Position(14.5, 64.0, 1.5), revision: 17),
+            self::record($secondUuid, $source, new Position(15.5, 64.0, 2.5), revision: 9),
+        ]);
+        $registry = new EntityRegistry();
+        $manager = new EntityPersistenceManager(
+            'world',
+            $registry,
+            EntityDefinitionRegistry::baseline(),
+            $store,
+        );
+        self::assertSame(2, $manager->activateChunk($source)->activatedEntities);
+        $first = $registry->getByUniqueId(self::COW_UUID);
+        $second = $registry->getByUniqueId($secondUuid);
+        self::assertInstanceOf(CowEntity::class, $first);
+        self::assertInstanceOf(CowEntity::class, $second);
+        $registry->move($first->getRuntimeId(), 'world', new Position(16.5, 64.0, 1.5), 0.0, 0.0);
+        $registry->move($second->getRuntimeId(), 'world', new Position(17.5, 64.0, 2.5), 0.0, 0.0);
+
+        self::assertSame(0, $manager->unloadChunk($source));
+        self::assertCount(2, $store->transfers);
+        self::assertSame([], $store->snapshots[$source->key()]->records());
+        self::assertCount(2, $store->snapshots[$destination->key()]->records());
+        self::assertSame(2, $manager->activeEntityCount());
+        self::assertSame(2, $manager->unloadChunk($destination));
+        self::assertSame(0, $manager->activeEntityCount());
     }
 
     public function testNewEntitiesUseBoundedAutosaveBatchesAndShutdownFlushesTheRemainder(): void
@@ -283,6 +325,209 @@ final class EntityPersistenceManagerTest extends TestCase
         self::assertSame(1, $secondPass->transferredEntities);
         self::assertSame(0, $secondPass->deferredOwnershipTransfers);
         self::assertCount(2, $store->transfers);
+    }
+
+    public function testAsynchronousTransferKeepsUncommittedUnrelatedRuntimeChangesDirty(): void
+    {
+        $source = new ChunkPosition(0, 0);
+        $firstDestination = new ChunkPosition(1, 0);
+        $secondDestination = new ChunkPosition(2, 0);
+        $secondUuid = '223e4567-e89b-42d3-a456-426614174000';
+        $store = new TestAsynchronousEntityPersistenceStore();
+        $store->snapshots[$source->key()] = new EntityChunkSnapshot('world', $source, 4, [
+            self::record(self::COW_UUID, $source, new Position(15.5, 64.0, 1.5), revision: 17),
+            self::record($secondUuid, $source, new Position(2.5, 64.0, 2.5), revision: 5),
+        ]);
+        $registry = new EntityRegistry();
+        $manager = new EntityPersistenceManager(
+            'world',
+            $registry,
+            EntityDefinitionRegistry::baseline(),
+            $store,
+        );
+        $manager->activateChunk($source);
+        $first = $registry->getByUniqueId(self::COW_UUID);
+        $second = $registry->getByUniqueId($secondUuid);
+        self::assertInstanceOf(CowEntity::class, $first);
+        self::assertInstanceOf(CowEntity::class, $second);
+
+        $registry->move($second->getRuntimeId(), 'world', new Position(3.5, 64.0, 2.5), 0.0, 0.0);
+        $registry->move(
+            $first->getRuntimeId(),
+            'world',
+            new Position($firstDestination->x * 16 + 0.5, 64.0, 1.5),
+            0.0,
+            0.0,
+        );
+        self::assertSame(1, $manager->synchronize()->transferredEntities);
+        self::assertCount(1, $store->queuedTransfers);
+
+        self::assertSame(0, $manager->synchronize()->failedEntities);
+        self::assertSame(5, $store->snapshots[$source->key()]->revisions()[$secondUuid] ?? null);
+
+        $registry->move(
+            $second->getRuntimeId(),
+            'world',
+            new Position($secondDestination->x * 16 + 0.5, 64.0, 2.5),
+            0.0,
+            0.0,
+        );
+        self::assertSame(1, $manager->synchronize()->transferredEntities);
+        self::assertCount(1, $store->queuedTransfers);
+        self::assertSame(
+            5,
+            $store->queuedTransfers[0]->expectedEntityRevision,
+            'The unrelated local change must remain pending on top of its unchanged durable baseline.',
+        );
+    }
+
+    public function testAsynchronousTransferAdoptsANewerUnrelatedDurableBaseline(): void
+    {
+        $source = new ChunkPosition(0, 0);
+        $firstDestination = new ChunkPosition(1, 0);
+        $secondDestination = new ChunkPosition(2, 0);
+        $secondUuid = '223e4567-e89b-42d3-a456-426614174000';
+        $store = new TestAsynchronousEntityPersistenceStore();
+        $store->snapshots[$source->key()] = new EntityChunkSnapshot('world', $source, 4, [
+            self::record(self::COW_UUID, $source, new Position(15.5, 64.0, 1.5), revision: 17),
+            self::record($secondUuid, $source, new Position(2.5, 64.0, 2.5), revision: 5),
+        ]);
+        $registry = new EntityRegistry();
+        $manager = new EntityPersistenceManager(
+            'world',
+            $registry,
+            EntityDefinitionRegistry::baseline(),
+            $store,
+        );
+        $manager->activateChunk($source);
+        $first = $registry->getByUniqueId(self::COW_UUID);
+        $second = $registry->getByUniqueId($secondUuid);
+        self::assertInstanceOf(CowEntity::class, $first);
+        self::assertInstanceOf(CowEntity::class, $second);
+
+        $store->snapshots[$source->key()] = new EntityChunkSnapshot('world', $source, 40, [
+            self::record(self::COW_UUID, $source, new Position(15.5, 64.0, 1.5), revision: 17),
+            self::record($secondUuid, $source, new Position(2.5, 64.0, 2.5), revision: 20),
+        ]);
+        $registry->move(
+            $first->getRuntimeId(),
+            'world',
+            new Position($firstDestination->x * 16 + 0.5, 64.0, 1.5),
+            0.0,
+            0.0,
+        );
+        self::assertSame(1, $manager->synchronize()->transferredEntities);
+        self::assertSame(0, $manager->synchronize()->failedEntities);
+        self::assertSame(20, $store->snapshots[$source->key()]->revisions()[$secondUuid] ?? null);
+
+        $registry->move(
+            $second->getRuntimeId(),
+            'world',
+            new Position($secondDestination->x * 16 + 0.5, 64.0, 2.5),
+            0.0,
+            0.0,
+        );
+        self::assertSame(1, $manager->synchronize()->transferredEntities);
+        self::assertCount(1, $store->queuedTransfers);
+        self::assertSame(
+            20,
+            $store->queuedTransfers[0]->expectedEntityRevision,
+            'The next move must compare-and-swap against the exact unrelated durable record returned by storage.',
+        );
+    }
+
+    public function testAsynchronousAutosaveRebasesRuntimeChangesAndDefersOwnershipTransfer(): void
+    {
+        $source = new ChunkPosition(0, 0);
+        $destination = new ChunkPosition(1, 0);
+        $store = new TestAsynchronousEntityPersistenceStore();
+        $store->snapshots[$source->key()] = new EntityChunkSnapshot('world', $source, 4, [
+            self::record(self::COW_UUID, $source, new Position(1.5, 64.0, 1.5), revision: 17),
+        ]);
+        $registry = new EntityRegistry();
+        $manager = new EntityPersistenceManager(
+            'world',
+            $registry,
+            EntityDefinitionRegistry::baseline(),
+            $store,
+        );
+        $manager->activateChunk($source);
+        $cow = $registry->getByUniqueId(self::COW_UUID);
+        self::assertInstanceOf(CowEntity::class, $cow);
+        $registry->move($cow->getRuntimeId(), 'world', new Position(2.5, 64.0, 1.5), 0.0, 0.0);
+        $manager->synchronize();
+
+        self::assertSame(1, $manager->beginAutosaveGeneration());
+        $submitted = $manager->persistAutosaveGeneration(1);
+        self::assertSame(1, $submitted->attemptedChunks);
+        self::assertSame(0, $submitted->savedChunks);
+        self::assertSame(1, $manager->pendingAutosaveChunkCount());
+        self::assertCount(1, $store->queuedSaves);
+
+        $registry->move(
+            $cow->getRuntimeId(),
+            'world',
+            new Position($destination->x * 16 + 0.5, 64.0, 1.5),
+            0.0,
+            0.0,
+        );
+        $blocked = $manager->synchronize();
+        self::assertSame(0, $blocked->transferredEntities);
+        self::assertSame(1, $blocked->deferredOwnershipTransfers);
+        self::assertSame(0, $store->queuedTransferCount());
+
+        $completed = $manager->persistAutosaveGeneration(1);
+        self::assertSame(1, $completed->savedChunks);
+        self::assertSame(0, $manager->pendingAutosaveChunkCount());
+        self::assertSame(18, $store->snapshots[$source->key()]->revisions()[self::COW_UUID] ?? null);
+
+        $transferred = $manager->synchronize();
+        self::assertSame(1, $transferred->transferredEntities);
+        self::assertCount(1, $store->queuedTransfers);
+        $queuedTransfer = $store->queuedTransfers[0] ?? null;
+        self::assertInstanceOf(EntityOwnershipTransfer::class, $queuedTransfer);
+        self::assertSame(18, $queuedTransfer->expectedEntityRevision);
+    }
+
+    public function testAutosaveDefersAChunkUntilUnsettledOwnershipIsTransferred(): void
+    {
+        $source = new ChunkPosition(0, 0);
+        $destination = new ChunkPosition(1, 0);
+        $store = new TestEntityPersistenceStore();
+        $store->snapshots[$source->key()] = new EntityChunkSnapshot('world', $source, 4, [
+            self::record(self::COW_UUID, $source, new Position(1.5, 64.0, 1.5), revision: 17),
+        ]);
+        $registry = new EntityRegistry();
+        $manager = new EntityPersistenceManager(
+            'world',
+            $registry,
+            EntityDefinitionRegistry::baseline(),
+            $store,
+        );
+        $manager->activateChunk($source);
+        $cow = $registry->getByUniqueId(self::COW_UUID);
+        self::assertInstanceOf(CowEntity::class, $cow);
+        $registry->move($cow->getRuntimeId(), 'world', new Position(2.5, 64.0, 1.5), 0.0, 0.0);
+        $manager->synchronize();
+        $registry->move(
+            $cow->getRuntimeId(),
+            'world',
+            new Position($destination->x * 16 + 0.5, 64.0, 1.5),
+            0.0,
+            0.0,
+        );
+        self::assertSame(1, $manager->synchronize(1, 0)->deferredOwnershipTransfers);
+
+        self::assertSame(1, $manager->beginAutosaveGeneration());
+        $deferred = $manager->persistAutosaveGeneration(1);
+        self::assertSame(0, $deferred->attemptedChunks);
+        self::assertSame(0, $deferred->failedChunksCount());
+        self::assertSame(1, $manager->pendingAutosaveChunkCount());
+        self::assertSame(4, $store->snapshots[$source->key()]->chunkRevision);
+
+        self::assertSame(1, $manager->synchronize(1, 1)->transferredEntities);
+        self::assertSame(0, $manager->persistAutosaveGeneration(1)->failedChunksCount());
+        self::assertSame(0, $manager->pendingAutosaveChunkCount());
     }
 
     public function testCorruptChunkIsIsolatedAndDoesNotPreventAnotherChunkFromLoading(): void
@@ -530,10 +775,170 @@ final class TestEntityPersistenceStore implements EntityPersistenceStore
         $this->snapshots[$snapshot->chunk->key()] = $snapshot;
     }
 
-    public function transferEntityOwnership(EntityOwnershipTransfer $transfer): void
+    public function transferEntityOwnership(EntityOwnershipTransfer $transfer): EntityOwnershipTransferResult
     {
         $this->transfers[] = $transfer;
         $this->snapshots[$transfer->sourceAfter->chunk->key()] = $transfer->sourceAfter;
         $this->snapshots[$transfer->destinationAfter->chunk->key()] = $transfer->destinationAfter;
+
+        return new EntityOwnershipTransferResult($transfer->sourceAfter, $transfer->destinationAfter);
+    }
+}
+
+final class TestAsynchronousEntityPersistenceStore implements AsynchronousEntityPersistenceStore
+{
+    /** @var array<string, EntityChunkSnapshot> */
+    public array $snapshots = [];
+
+    /** @var list<EntityOwnershipTransfer> */
+    public array $queuedTransfers = [];
+
+    /** @var list<EntityChunkSnapshot> */
+    public array $queuedSaves = [];
+
+    private int $nextSaveId = 1;
+
+    public function loadEntityChunk(ChunkPosition $position): ?EntityChunkSnapshot
+    {
+        return $this->snapshots[$position->key()] ?? null;
+    }
+
+    public function saveEntityChunk(EntityChunkSnapshot $snapshot): void
+    {
+        $this->snapshots[$snapshot->chunk->key()] = $snapshot;
+    }
+
+    public function transferEntityOwnership(EntityOwnershipTransfer $transfer): EntityOwnershipTransferResult
+    {
+        $source = $this->snapshots[$transfer->sourceAfter->chunk->key()] ?? null;
+        $destination = $this->snapshots[$transfer->destinationAfter->chunk->key()] ?? null;
+        if (!$source instanceof EntityChunkSnapshot
+            || !$source->containsExactRevision($transfer->uuid, $transfer->expectedEntityRevision)) {
+            throw new EntityPersistenceConflictException('Injected asynchronous ownership conflict.');
+        }
+        $sourceRecords = self::records($source);
+        $destinationRecords = $destination instanceof EntityChunkSnapshot ? self::records($destination) : [];
+        $destinationRevision = $destination instanceof EntityChunkSnapshot ? $destination->chunkRevision : 0;
+        $requestedDestination = self::records($transfer->destinationAfter);
+        $moved = $requestedDestination[$transfer->uuid] ?? null;
+        if (!$moved instanceof EntityPersistenceRecord || isset($destinationRecords[$transfer->uuid])) {
+            throw new EntityPersistenceConflictException('Injected asynchronous ownership conflict.');
+        }
+        unset($sourceRecords[$transfer->uuid]);
+        $destinationRecords[$transfer->uuid] = $moved;
+        ksort($sourceRecords, SORT_STRING);
+        ksort($destinationRecords, SORT_STRING);
+        $sourceAfter = new EntityChunkSnapshot(
+            $source->worldName,
+            $source->chunk,
+            $source->chunkRevision + 1,
+            array_values($sourceRecords),
+        );
+        $destinationAfter = new EntityChunkSnapshot(
+            $transfer->destinationAfter->worldName,
+            $transfer->destinationAfter->chunk,
+            $destinationRevision + 1,
+            array_values($destinationRecords),
+        );
+        $this->snapshots[$sourceAfter->chunk->key()] = $sourceAfter;
+        $this->snapshots[$destinationAfter->chunk->key()] = $destinationAfter;
+
+        return new EntityOwnershipTransferResult($sourceAfter, $destinationAfter);
+    }
+
+    public function enqueueEntityChunkSave(EntityChunkSnapshot $snapshot): PersistenceEnqueueResult
+    {
+        $request = new PersistenceWriteRequest(
+            $this->nextSaveId,
+            $this->nextSaveId,
+            'entity:' . $snapshot->chunk->key(),
+            $snapshot->chunkRevision,
+            '',
+        );
+        ++$this->nextSaveId;
+        $this->queuedSaves[] = $snapshot;
+
+        return new PersistenceEnqueueResult(PersistenceSubmission::ACCEPTED, $request);
+    }
+
+    public function pollEntityChunkSaves(int $maximumCompletions = 256): array
+    {
+        return $this->completeSaves($maximumCompletions);
+    }
+
+    public function drainEntityChunkSaves(int $timeoutMilliseconds): array
+    {
+        return $this->completeSaves(count($this->queuedSaves));
+    }
+
+    public function enqueueEntityOwnershipTransfer(EntityOwnershipTransfer $transfer): bool
+    {
+        $this->queuedTransfers[] = $transfer;
+
+        return true;
+    }
+
+    public function queuedTransferCount(): int
+    {
+        return count($this->queuedTransfers);
+    }
+
+    public function pollEntityOwnershipTransfers(int $maximumCompletions = 256): array
+    {
+        return $this->complete($maximumCompletions);
+    }
+
+    public function drainEntityOwnershipTransfers(int $timeoutMilliseconds): array
+    {
+        return $this->complete(count($this->queuedTransfers));
+    }
+
+    /** @return list<EntityOwnershipTransferCompletion> */
+    private function complete(int $maximumCompletions): array
+    {
+        $queued = array_splice($this->queuedTransfers, 0, $maximumCompletions);
+        $completed = [];
+        foreach ($queued as $transfer) {
+            try {
+                $result = $this->transferEntityOwnership($transfer);
+                $completed[] = new EntityOwnershipTransferCompletion($transfer, true, result: $result);
+            } catch (EntityPersistenceConflictException) {
+                $completed[] = new EntityOwnershipTransferCompletion(
+                    $transfer,
+                    false,
+                    'entity_persistence_conflict',
+                );
+            }
+        }
+
+        return $completed;
+    }
+
+    /** @return array<string, \Bedriox\Server\Entity\Persistence\PersistentEntityRecord> */
+    private static function records(EntityChunkSnapshot $snapshot): array
+    {
+        $records = [];
+        foreach ($snapshot->records() as $record) {
+            $records[$record->uuid()] = $record;
+        }
+
+        return $records;
+    }
+
+    /** @return list<EntityChunkSaveCompletion> */
+    private function completeSaves(int $maximumCompletions): array
+    {
+        $queued = array_splice($this->queuedSaves, 0, $maximumCompletions);
+        $completed = [];
+        foreach ($queued as $snapshot) {
+            $this->saveEntityChunk($snapshot);
+            $completed[] = new EntityChunkSaveCompletion(
+                $snapshot->chunk,
+                $snapshot->chunkRevision,
+                true,
+            );
+        }
+
+        return $completed;
     }
 }

@@ -68,10 +68,7 @@ final readonly class IndexedAiWorldView implements TargetAwareAiWorldView
             if ($player->worldName !== $entity->getWorldName()) {
                 continue;
             }
-            if ($entity->getCategory() === EntityCategory::MONSTER
-                && (!$player->damageable
-                    || ($this->hostileLineOfSight !== null
-                        && !($this->hostileLineOfSight)($entity, $player)))) {
+            if ($entity->getCategory() === EntityCategory::MONSTER && !$player->damageable) {
                 continue;
             }
             $distance = $player->distanceSquaredTo($origin);
@@ -79,6 +76,11 @@ final readonly class IndexedAiWorldView implements TargetAwareAiWorldView
                 || ($nearestDistance !== null && ($distance > $nearestDistance
                     || ($distance === $nearestDistance && $nearest !== null
                         && strcmp($player->playerId, $nearest->playerId) >= 0)))) {
+                continue;
+            }
+            if ($entity->getCategory() === EntityCategory::MONSTER
+                && $this->hostileLineOfSight !== null
+                && !($this->hostileLineOfSight)($entity, $player)) {
                 continue;
             }
             $nearest = $player;

@@ -20,6 +20,7 @@ use Bedriox\Server\Plugin\PluginExecutionFrame;
 use Bedriox\Server\Plugin\PluginOwnershipRegistry;
 use Bedriox\Server\Plugin\PluginRuntimeControl;
 use Bedriox\Server\Runtime\RuntimeDriver;
+use Bedriox\Server\Runtime\RuntimeIdleAdvisor;
 use Closure;
 use PHPUnit\Framework\TestCase;
 use Throwable;
@@ -53,6 +54,7 @@ final class ConsoleCommandDriverTest extends TestCase
 
         self::assertTrue($driver->poll());
         self::assertSame(2, $calls);
+        self::assertFalse($driver->shouldIdleAfterPoll());
         self::assertTrue($driver->poll());
         self::assertSame(3, $calls);
         $driver->close();
@@ -95,7 +97,7 @@ final class ArrayConsoleInput implements ConsoleInput
     }
 }
 
-final class CountingDriver implements RuntimeDriver
+final class CountingDriver implements RuntimeDriver, RuntimeIdleAdvisor
 {
     public int $closes = 0;
 
@@ -107,6 +109,11 @@ final class CountingDriver implements RuntimeDriver
     public function close(): void
     {
         ++$this->closes;
+    }
+
+    public function shouldIdleAfterPoll(): bool
+    {
+        return false;
     }
 }
 

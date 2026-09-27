@@ -30,6 +30,7 @@ final class ComputeWorkerProgram
             }
             $stream = $connection;
         }
+        IpcSocketTuning::apply($stream);
         stream_set_blocking($stream, true);
         $identity = WorkerIdentity::current($applicationVersion, $registry);
         $codec = new WorkerFrameCodec();

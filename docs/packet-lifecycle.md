@@ -44,14 +44,15 @@ The current client may also send an eating `ActorEvent` while an authoritative t
 ```text
 authoritative event or session bootstrap work
   -> BedrockWorldEventPacketEncoder or play-channel encoder
-  -> Protocol typed packet encode and bounded batch
-  -> session encryption/compression
+  -> reusable Protocol packet/frame projection and bounded batch
+  -> shared clear-envelope compression when compatible
+  -> per-session encryption and delivery ordering
   -> ConnectedTransport payload
   -> RakNet reliable delivery
   -> UDP datagram
 ```
 
-World block IDs translate to network IDs only at serialization. Simulation positions translate to Bedrock eye-position coordinates only in the protocol adapter. Peer events are projected per recipient and cannot expose private login data.
+World block IDs translate to network IDs only at serialization. Simulation positions translate to Bedrock eye-position coordinates only in the protocol adapter. Peer events are projected per recipient and cannot expose private login data. Identical chat, combat, posture, and non-player movement fan-out reuses one immutable packet or frame projection across eligible recipients. Clear compressed envelopes may be cached only across sessions with the same protocol and compression contract; encryption state, ordering counters, and transport state are always applied per session.
 
 Player-list publication occurs at authoritative join. Actor add, including the
 complete initialized metadata baseline, is emitted only after the recipient has

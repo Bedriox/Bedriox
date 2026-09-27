@@ -45,6 +45,7 @@ final class ChunkTransferCodecTest extends TestCase
         $decoded = $codec->decode($encoded, $targetStates);
 
         self::assertSame($encoded, $codec->encode($chunk, $sourceStates));
+        self::assertLessThan(12_000, strlen($encoded), 'Repeated uniform biome sections must stay compact.');
         self::assertStringNotContainsString('O:', $encoded);
         self::assertSame([-12, 34, 9, 7, Chunk::DIRTY_BLOCKS], [
             $decoded->position->x,
@@ -55,6 +56,8 @@ final class ChunkTransferCodecTest extends TestCase
         ]);
         self::assertSame(ChunkFinalizationState::NeedsPopulation, $decoded->finalizationState);
         self::assertSame('minecraft:forest', $decoded->biome()->identifier);
+        self::assertSame('minecraft:forest', $decoded->biomeAt(0, Chunk::MIN_Y, 0)->identifier);
+        self::assertSame('minecraft:forest', $decoded->biomeAt(15, Chunk::MAX_Y, 15)->identifier);
         self::assertSame('minecraft:stone', $targetStates->state($decoded->blockStateAt(1, Chunk::MIN_Y, 1))->identifier());
         self::assertNotSame(
             $chunk->blockStateAt(1, Chunk::MIN_Y, 1)->value,

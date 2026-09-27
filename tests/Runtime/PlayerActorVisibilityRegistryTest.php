@@ -16,6 +16,14 @@ use PHPUnit\Framework\TestCase;
 
 final class PlayerActorVisibilityRegistryTest extends TestCase
 {
+    public function testUpsertOnlyInvalidatesProjectionAcrossChunkOrVisibilityBoundaries(): void
+    {
+        $registry = new PlayerActorVisibilityRegistry(1);
+        self::assertTrue($registry->upsert($this->player('actor', 1, 1.0, 1.0)));
+        self::assertFalse($registry->upsert($this->player('actor', 1, 15.9, 15.9)));
+        self::assertTrue($registry->upsert($this->player('actor', 1, 16.0, 15.9)));
+    }
+
     public function testSourceAndViewerChangesProduceExactlyOneDirectedTransition(): void
     {
         $registry = new PlayerActorVisibilityRegistry(2);
@@ -26,6 +34,10 @@ final class PlayerActorVisibilityRegistryTest extends TestCase
         self::assertCount(1, $shown);
         self::assertInstanceOf(PlayerBecameVisible::class, $shown[0]);
         self::assertSame(['viewer'], $registry->viewersOf('actor'));
+        self::assertSame(
+            ['viewer'],
+            $registry->visibleRecipients('actor', ['missing', 'viewer']),
+        );
         self::assertSame([], $registry->reconcileViewer('viewer', static fn(): bool => true));
 
         $hidden = $registry->reconcileViewer('viewer', static fn(): bool => false);
@@ -47,6 +59,25 @@ final class PlayerActorVisibilityRegistryTest extends TestCase
         self::assertCount(1, $shown);
         self::assertInstanceOf(PlayerBecameVisible::class, $shown[0]);
         self::assertSame(48.0, $shown[0]->player->position->x);
+    }
+
+    public function testChunkSelectionReturnsOnlyActorsAffectedByViewerVisibilityChanges(): void
+    {
+        $registry = new PlayerActorVisibilityRegistry(4);
+        $registry->upsert($this->player('origin-b', 2, 15.9, 15.9));
+        $registry->upsert($this->player('east', 3, 16.0, 0.0));
+        $registry->upsert($this->player('origin-a', 1, 0.0, 0.0));
+        $registry->upsert($this->player('west', 4, -0.1, 0.0));
+
+        self::assertSame(
+            ['origin-a', 'origin-b'],
+            $registry->sessionIdsInChunks(['0:0' => true]),
+        );
+        self::assertSame(
+            ['east', 'west'],
+            $registry->sessionIdsInChunks(['1:0' => true, '-1:0' => true]),
+        );
+        self::assertSame([], $registry->sessionIdsInChunks([]));
     }
 
     public function testDisconnectCleansBothDirectionsAndReconnectStartsHidden(): void
@@ -75,13 +106,13 @@ final class PlayerActorVisibilityRegistryTest extends TestCase
         $registry->upsert($this->player('two', 2, 0.0));
     }
 
-    private function player(string $sessionId, int $actorId, float $x): PlayerSnapshot
+    private function player(string $sessionId, int $actorId, float $x, float $z = 0.0): PlayerSnapshot
     {
         return new PlayerSnapshot(
             $sessionId,
             sprintf('00000000-0000-0000-0000-%012d', $actorId),
             $sessionId,
-            new Position($x, 64.0, 0.0),
+            new Position($x, 64.0, $z),
             0.0,
             0.0,
             MovementMode::STOPPED,

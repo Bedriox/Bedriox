@@ -14,6 +14,10 @@ final readonly class PlayerCollisionResult
         public bool $collidedY,
         public bool $collidedZ,
         public bool $stepped,
+        public bool $grounded,
+        public bool $fastPath = false,
+        public int $obstacleCount = 0,
+        public bool $terrainLoaded = true,
     ) {}
 
     public function collided(): bool

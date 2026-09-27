@@ -38,6 +38,7 @@ final readonly class BedrockPlayChannelFactory implements PlayChannelFactory
         private ?CompressionWorkerDispatcher $compressionWorkers = null,
         private int $compressionTaskTypeId = 0,
         private ?PreparedChunkCache $preparedChunks = null,
+        private ?PreparedPlayBatchCache $preparedPlayBatches = null,
     ) {}
 
     public function create(LoginChannelReady $ready, string $sessionId, UnsignedLong $runtimeEntityId, ?PlayerBootstrap $bootstrap = null): BedrockPlayChannel
@@ -101,6 +102,7 @@ final readonly class BedrockPlayChannelFactory implements PlayChannelFactory
             $this->compressionWorkers,
             $this->compressionTaskTypeId,
             $this->preparedChunks,
+            $this->preparedPlayBatches,
         );
     }
 }

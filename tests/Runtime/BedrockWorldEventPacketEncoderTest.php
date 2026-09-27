@@ -12,6 +12,7 @@ use Bedriox\Protocol\Packet\ActorEventPacket;
 use Bedriox\Protocol\Packet\ActorFlag;
 use Bedriox\Protocol\Packet\AddPlayerPacket;
 use Bedriox\Protocol\Packet\AnimatePacket;
+use Bedriox\Protocol\Packet\BedrockPacketCodec;
 use Bedriox\Protocol\Packet\ChatPacket;
 use Bedriox\Protocol\Packet\ContainerOpenPacket;
 use Bedriox\Protocol\Packet\ContainerType;
@@ -81,6 +82,7 @@ use Bedriox\Server\Simulation\Event\PlayerBecameVisible;
 use Bedriox\Server\Simulation\Event\PlayerDisconnected;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
 use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
+use Bedriox\Server\Simulation\Event\PlayerMotionChanged;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
 use Bedriox\Server\Simulation\ItemUseCancellationReason;
 use Bedriox\Server\Simulation\MovementMode;
@@ -204,6 +206,16 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
             ['minecraft:player.hunger', 'minecraft:player.saturation', 'minecraft:player.exhaustion'],
             array_map(static fn($attribute): string => $attribute->name, $nutrition[0]->packet->attributes),
         );
+
+        $exhaustionOnly = $encoder->encode(new NutritionChanged(
+            $player,
+            $player->food,
+            $player->saturation,
+            0.0,
+            NutritionChangeReason::EXHAUSTION,
+            ['owner'],
+        ), []);
+        self::assertSame([], $exhaustionOnly);
     }
 
     public function testAuthoritativeKnockbackProjectsMotionToEachVisibleRecipient(): void
@@ -246,8 +258,49 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         self::assertSame(0.4, $packets[0]->packet->motionZ);
         self::assertSame(0x80000000, $packets[0]->packet->tick->high);
         self::assertSame(42, $packets[0]->packet->tick->low);
-        self::assertEquals($packets[0]->packet, $packets[1]->packet);
+        self::assertSame($packets[0]->packet, $packets[1]->packet);
         self::assertSame('1600000000cdcccc3ecdcccc3eaa808080808080808001', bin2hex($packets[0]->packet->encode()));
+    }
+
+    public function testAuthoritativeMotionChangeSharesMotionAndPostureAcrossRecipients(): void
+    {
+        $player = new PlayerSnapshot(
+            'target',
+            'identity-target',
+            'Target',
+            new Position(0.0, 64.0, 2.0),
+            0.0,
+            0.0,
+            MovementMode::CROUCHING,
+            1,
+            VerticalState::GROUNDED,
+            0.0,
+            22,
+            0.0,
+            true,
+            false,
+        );
+
+        $packets = (new BedrockWorldEventPacketEncoder())->encode(new PlayerMotionChanged(
+            'target',
+            $player,
+            0.1,
+            0.2,
+            0.3,
+            new ClientInputTick(0, 42),
+            true,
+            ['target', 'viewer'],
+        ), []);
+
+        self::assertCount(4, $packets);
+        self::assertSame(['target', 'target', 'viewer', 'viewer'], array_map(
+            static fn(DirectedPacket $packet): string => $packet->sessionId,
+            $packets,
+        ));
+        self::assertInstanceOf(SetActorMotionPacket::class, $packets[0]->packet);
+        self::assertInstanceOf(SetActorDataPacket::class, $packets[1]->packet);
+        self::assertSame($packets[0]->packet, $packets[2]->packet);
+        self::assertSame($packets[1]->packet, $packets[3]->packet);
     }
 
     public function testAuthoritativeBlockEventsProjectOrderedCrackAndUpdatePackets(): void
@@ -799,6 +852,7 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
             self::assertSame('AuthoritativeName', $directed->packet->sourceName);
             self::assertSame('', $directed->packet->xuid);
         }
+        self::assertSame($packets[0]->packet, $packets[1]->packet);
     }
 
     public function testChatWirePayloadUsesOnlyAuthoritativeAttribution(): void
@@ -871,6 +925,52 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         self::assertSame(BuildPlatform::Unknown, $packets[1]->packet->entries[0]->buildPlatform);
     }
 
+    public function testJoinSplitsAFullHundredPlayerSkinSnapshotIntoBoundedPackets(): void
+    {
+        $joined = $this->authenticatedSession(
+            'joined',
+            7,
+            '00000000-0000-0000-0000-000000000007',
+            'Joined',
+            'joined-xuid',
+        );
+        $sessions = ['joined' => $joined];
+        $peers = [];
+        for ($index = 1; $index <= 100; ++$index) {
+            $sessionId = 'peer-' . $index;
+            $identity = sprintf('00000000-0000-0000-0001-%012d', $index);
+            $sessions[$sessionId] = $this->authenticatedSession(
+                $sessionId,
+                100 + $index,
+                $identity,
+                'Peer' . $index,
+                (string) (10_000 + $index),
+                64,
+                64,
+            );
+            $peers[] = $this->player($sessionId, 100 + $index, $identity, 'Peer' . $index);
+        }
+
+        $packets = (new BedrockWorldEventPacketEncoder())->encode(
+            new PlayerJoined(
+                $this->player('joined', 7, '00000000-0000-0000-0000-000000000007', 'Joined'),
+                $peers,
+                ['joined'],
+            ),
+            $sessions,
+        );
+
+        self::assertGreaterThan(1, count($packets));
+        $entryCount = 0;
+        foreach ($packets as $directed) {
+            self::assertSame('joined', $directed->sessionId);
+            self::assertInstanceOf(PlayerListAddPacket::class, $directed->packet);
+            $entryCount += count($directed->packet->entries);
+            self::assertLessThanOrEqual(1_000_000, strlen(BedrockPacketCodec::encode($directed->packet)));
+        }
+        self::assertSame(100, $entryCount);
+    }
+
     public function testActorVisibilityTransitionsDoNotDuplicatePlayerListMembership(): void
     {
         [$encoder, $palette] = $this->inventoryEncoder();
@@ -920,6 +1020,12 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         self::assertSame(InventoryContainerId::OFFHAND, $shown[4]->packet->windowId);
         self::assertSame(1, $shown[4]->packet->item->count);
         self::assertNull($shown[4]->packet->item->stackNetworkId);
+
+        self::assertSame(
+            [],
+            $encoder->encode(new PlayerBecameVisible($player, 'viewer'), []),
+            'A transport-close race must make a stale visibility transition a no-op.',
+        );
 
         $hidden = $encoder->encode(new PlayerBecameHidden('joined', 7, 'viewer'), []);
         self::assertCount(1, $hidden);
@@ -995,6 +1101,32 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         self::assertSame(45.0, $packets[0]->packet->headYaw);
         self::assertEqualsWithDelta(65.621, $packets[0]->packet->y, 0.000_001);
         self::assertFalse($packets[0]->packet->hasFlag(MoveActorAbsoluteFlag::OnGround));
+    }
+
+    public function testMovementPacketsAreProjectedOnceForSharedRecipientDelivery(): void
+    {
+        $player = new PlayerSnapshot(
+            'session',
+            '00000000-0000-0000-0000-000000000001',
+            'Player',
+            new Position(1.0, 64.0, 2.0),
+            90.0,
+            10.0,
+            MovementMode::WALKING,
+            5,
+            VerticalState::GROUNDED,
+            0.0,
+            17,
+            45.0,
+        );
+        $encoder = new BedrockWorldEventPacketEncoder();
+
+        $packets = $encoder->playerMovementPackets(new PlayerMoved($player, ['one', 'two']));
+
+        self::assertCount(1, $packets);
+        self::assertInstanceOf(MoveActorAbsolutePacket::class, $packets[0]);
+        self::assertTrue($packets[0]->runtimeEntityId->equals(UnsignedLong::fromInt(17)));
+        self::assertTrue($packets[0]->hasFlag(MoveActorAbsoluteFlag::OnGround));
     }
 
     public function testPostureChangeFollowsEachPeerMovementWithCompleteActorFlags(): void
@@ -1280,13 +1412,15 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         string $identity,
         string $displayName,
         string $xuid,
+        int $skinWidth = 64,
+        int $skinHeight = 32,
     ): RuntimeSession {
         $key = str_repeat("\x42", 32);
         $keys = (new OpenSslEphemeralKeyFactory(dirname(__DIR__) . '/Fixtures/openssl.cnf'))->generate();
         $clientData = new VerifiedClientData(
-            64,
-            32,
-            str_repeat("\0", 64 * 32 * 4),
+            $skinWidth,
+            $skinHeight,
+            str_repeat("\0", $skinWidth * $skinHeight * 4),
             0,
             0,
             '',

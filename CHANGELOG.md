@@ -1,5 +1,9 @@
 # Changelog
 
+- Sustain the qualified 100-player workload above 18 TPS by moving RakNet service ownership to a supervised local transport process, bounding main-loop admission and streaming work, and preserving per-session ordering and encryption boundaries.
+- Reuse immutable chat, combat, posture, player-movement, and non-player movement projections across compatible recipients so fan-out does not repeat packet encoding and compression for every player.
+- Move routine world metadata and entity persistence off the authoritative loop, commit entity ownership changes as atomic one-entity deltas, and defer conflicting routine eviction without losing unrelated durable actors.
+- Allow the complete local quality gate up to twenty minutes so the expanded deterministic test suite can finish under Composer instead of being terminated by its five-minute default.
 - Preserve authoritative zombie knockback against same-tick chase steering, let grounded mobs jump clear one-block rises without crossing two-block walls, and lower natural hostile density to a 24-entity regional cap with bounded two-at-a-time spawning and excess retirement.
 - Gate natural hostile spawning by darkness, ignite exposed daylight-sensitive mobs with visible authoritative fire damage, persist bounded fire state, and scale category caps across deduplicated player spawn regions with local-density and soft-despawn control.
 - Batch each client's visible non-player movement projection, omit unchanged motion packets, and aggregate repetitive actor trace output so mob movement does not create one compression job and log record per packet.

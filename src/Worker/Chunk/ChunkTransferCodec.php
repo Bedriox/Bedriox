@@ -19,7 +19,7 @@ use Bedriox\Server\World\SubChunkBlockStorage;
 final class ChunkTransferCodec
 {
     public const int MAXIMUM_ENCODED_BYTES = 16_777_216;
-    private const string MAGIC = "BXCT\x00\x01";
+    private const string MAGIC = "BXCT\x00\x02";
     private const int CHECKSUM_BYTES = 32;
     private const int MAXIMUM_STATE_BYTES = 65_535;
 
@@ -49,13 +49,25 @@ final class ChunkTransferCodec
         }
         $biomes = $chunk->biomeStorages();
         $body .= self::encodeByte(count($biomes));
+        $previousPaletteBody = null;
+        $previousIndices = null;
         foreach ($biomes as $sectionY => $storage) {
-            $palette = $storage->palette();
-            $body .= pack('cn', $sectionY, count($palette));
-            foreach ($palette as $biome) {
-                $body .= self::encodeString($biome->identifier);
+            $paletteBody = '';
+            foreach ($storage->palette() as $biome) {
+                $paletteBody .= self::encodeString($biome->identifier);
             }
-            $body .= $storage->paletteIndices();
+            $indices = $storage->paletteIndices();
+            if ($previousPaletteBody !== null
+                && $paletteBody === $previousPaletteBody
+                && $indices === $previousIndices) {
+                $body .= pack('cC', $sectionY, 0);
+            } else {
+                $body .= pack('cCn', $sectionY, 1, count($storage->palette()))
+                    . $paletteBody
+                    . $indices;
+            }
+            $previousPaletteBody = $paletteBody;
+            $previousIndices = $indices;
             self::guardBody($body);
         }
         $blockEntities = (new PersistentBlockEntityCodec())->encode($chunk->blockEntityCollection());
@@ -122,8 +134,20 @@ final class ChunkTransferCodec
                 throw new ChunkTransferException('Chunk transfer must contain every biome section.');
             }
             $biomeStorages = [];
+            $previousBiomeStorage = null;
             for ($index = 0; $index < $biomeCount; ++$index) {
                 $sectionY = $reader->signedByte();
+                $kind = $reader->byte();
+                if ($sectionY !== Chunk::MIN_SECTION_Y + $index || ($kind !== 0 && $kind !== 1)) {
+                    throw new ChunkTransferException('Chunk transfer biome section ordering is invalid.');
+                }
+                if ($kind === 0) {
+                    if (!$previousBiomeStorage instanceof BiomeStorage) {
+                        throw new ChunkTransferException('Chunk transfer begins with a repeated biome storage.');
+                    }
+                    $biomeStorages[$sectionY] = $previousBiomeStorage;
+                    continue;
+                }
                 $paletteCount = $reader->unsignedShort();
                 if ($paletteCount < 1 || $paletteCount > 256 || isset($biomeStorages[$sectionY])) {
                     throw new ChunkTransferException('Chunk transfer biome palette or section is invalid.');
@@ -132,10 +156,11 @@ final class ChunkTransferCodec
                 for ($paletteIndex = 0; $paletteIndex < $paletteCount; ++$paletteIndex) {
                     $palette[] = new Biome($reader->boundedString(128));
                 }
-                $biomeStorages[$sectionY] = BiomeStorage::fromPaletteIndices(
+                $previousBiomeStorage = BiomeStorage::fromPaletteIndices(
                     $palette,
                     $reader->bytes(BiomeStorage::BIOME_COUNT),
                 );
+                $biomeStorages[$sectionY] = $previousBiomeStorage;
             }
             $blockEntityLength = $reader->signedInt();
             if ($blockEntityLength < 0 || $blockEntityLength > PersistentBlockEntityCodec::MAXIMUM_BYTES) {

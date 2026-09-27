@@ -136,6 +136,7 @@ use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\MovementMode;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
 use Bedriox\Server\Simulation\WorldSimulation;
+use Bedriox\Server\Transport\NetworkCompressionPolicy;
 use Bedriox\Server\Worker\Chunk\PreparedChunkCache;
 use Bedriox\Server\Worker\Network\CompressionWorkerDispatcher;
 use Bedriox\Server\Worker\Task\PrepareChunkTask;
@@ -192,7 +193,7 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertIsString($literal);
         $payload = BedrockBatchCodec::encode(new BedrockBatch([
             new PacketFrame(new PacketHeader(PacketIds::COMMAND_REQUEST), $literal),
-        ], CompressionMode::NegotiatedZlib, 256), new BatchLimits());
+        ], CompressionMode::NegotiatedZlib, NetworkCompressionPolicy::THRESHOLD_BYTES), new BatchLimits());
         self::assertTrue($channel->accept(new ConnectedPayloadEvent(
             $client->encryptEnvelope($payload),
             Reliability::ReliableOrdered,
@@ -291,6 +292,7 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertSame(1.0, $commands[0]->deltaX);
         self::assertSame(0.0, $commands[0]->deltaY);
         self::assertTrue($commands[0]->jumpRequested);
+        self::assertTrue($commands[0]->verticalCollision);
         self::assertInstanceOf(SendChat::class, $commands[1]);
         self::assertSame('hello', $commands[1]->message);
         self::assertSame('session', $commands[1]->session);
@@ -1131,6 +1133,29 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertEqualsWithDelta(64.42, $commands[0]->position->y, 0.000_01);
     }
 
+    public function testAdjacentMovementInputsCoalesceToLatestStateWithoutLosingJumpIntent(): void
+    {
+        [$channel, $client, , $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([
+                new SetLocalPlayerAsInitializedPacket($entityId),
+                $this->heldJumpInput(UnsignedLong::fromInt(61)),
+                $this->movementPacket(UnsignedLong::fromInt(62), x: 3.5, y: 65.0, z: -2.0),
+            ])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(MovePlayer::class, $commands[0]);
+        self::assertSame(2, $commands[0]->sequence);
+        self::assertTrue($commands[0]->jumpRequested);
+        self::assertEqualsWithDelta(3.5, $commands[0]->position->x, 0.000_01);
+        self::assertEqualsWithDelta(65.0, $commands[0]->position->y, 0.000_01);
+        self::assertEqualsWithDelta(-2.0, $commands[0]->position->z, 0.000_01);
+    }
+
     public function testAbilityAndSettingsRequestsCannotEnableFlightOrDisconnectTheSession(): void
     {
         [$channel, $client, $server, $entityId] = $this->channel();
@@ -1304,7 +1329,7 @@ final class BedrockPlayChannelTest extends TestCase
             $server->decryptEnvelope($outgoing[0]->payload),
             CompressionMode::NegotiatedZlib,
             new BatchLimits(),
-            256,
+            NetworkCompressionPolicy::THRESHOLD_BYTES,
         );
         self::assertCount(2, $batch->packets);
         $messages = [];
@@ -1652,7 +1677,7 @@ final class BedrockPlayChannelTest extends TestCase
             $clientDecryptor->decryptEnvelope($outgoingPayload->payload),
             CompressionMode::NegotiatedZlib,
             new BatchLimits(),
-            256,
+            NetworkCompressionPolicy::THRESHOLD_BYTES,
         );
         self::assertCount(1, $batch->packets);
         self::assertSame(PacketIds::SUB_CHUNK, $batch->packets[0]->header->packetId);
@@ -1834,7 +1859,10 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertArrayHasKey('-4:-4', $coordinates);
         self::assertArrayHasKey('4:4', $coordinates);
         self::assertTrue($channel->hasSentChunkAt(0.0, 0.0));
-        self::assertTrue($channel->takeChunkVisibilityChanged());
+        $visibilityChanges = $channel->takeChunkVisibilityChanges();
+        self::assertCount(81, $visibilityChanges);
+        self::assertContains('-4:-4', $visibilityChanges);
+        self::assertContains('4:4', $visibilityChanges);
         self::assertFalse($channel->takeChunkVisibilityChanged());
 
         for ($idleTick = 0; $idleTick < 3; ++$idleTick) {
@@ -2048,7 +2076,11 @@ final class BedrockPlayChannelTest extends TestCase
         );
         [$channel, $client] = $this->channel(
             [new ChunkRadiusUpdatedPacket(8)],
-            limits: new RuntimeLimits(maximumChunkRadius: 8, preloadedChunkRadius: 1),
+            limits: new RuntimeLimits(
+                maximumOutgoingPayloadsPerSession: 128,
+                maximumChunkRadius: 8,
+                preloadedChunkRadius: 1,
+            ),
             world: $world,
             serializer: new BedrockChunkPacketSerializer(
                 new BlockNetworkTranslator($internal, $network),
@@ -3207,6 +3239,67 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertSame(0, $workers->submissionCount);
     }
 
+    public function testPreparedTransientBatchDoesNotQueueBehindUnresolvedCompression(): void
+    {
+        $workers = new NonCompletingCompressionWorkerDispatcher();
+        [$channel] = $this->channel(compressionWorkers: $workers);
+        self::assertTrue($channel->queuePacket(new LevelChunkPacket(0, 0, 0, 0, str_repeat('x', 150_000))));
+        self::assertSame(1, $workers->submissionCount);
+
+        $packet = new SystemTextPacket('movement');
+        $frame = new PacketFrame(
+            new PacketHeader(BedrockPacketCodec::packetId($packet)),
+            BedrockPacketCodec::encode($packet),
+        );
+        self::assertFalse($channel->queuePreparedPacketFrames([$frame], $this->encodeFrames([$frame])));
+        self::assertSame(1, $channel->chunkStreamingSnapshot()->outgoingQueued);
+        self::assertFalse($channel->isClosed());
+    }
+
+    public function testPreparedTransientBatchBypassesIdleCompressionQueue(): void
+    {
+        $workers = new NonCompletingCompressionWorkerDispatcher();
+        [$channel, , $server] = $this->channel(compressionWorkers: $workers);
+        $packet = new SystemTextPacket('movement');
+        $frame = new PacketFrame(
+            new PacketHeader(BedrockPacketCodec::packetId($packet)),
+            BedrockPacketCodec::encode($packet),
+        );
+
+        self::assertTrue($channel->queuePreparedPacketFrames([$frame], $this->encodeFrames([$frame])));
+        self::assertSame(0, $workers->submissionCount);
+        $outgoing = $channel->drainOutgoing();
+        self::assertCount(1, $outgoing);
+        self::assertEquals($packet, $this->decode($server->decryptEnvelope($outgoing[0]->payload)));
+        self::assertFalse($channel->isClosed());
+    }
+
+    public function testMediumRealtimeBatchAvoidsWorkerOrderingBarrier(): void
+    {
+        $workers = new NonCompletingCompressionWorkerDispatcher();
+        [$channel] = $this->channel(compressionWorkers: $workers);
+
+        self::assertTrue($channel->queuePacket(
+            new LevelChunkPacket(0, 0, 0, 0, str_repeat('x', 32_000)),
+        ));
+        self::assertSame(0, $workers->submissionCount);
+        self::assertCount(1, $channel->drainOutgoing());
+        self::assertTrue($channel->prepareTransientProjection());
+        self::assertFalse($channel->isClosed());
+    }
+
+    public function testTransientProjectionReadinessRejectsUnresolvedOrderedWorkWithoutClosingChannel(): void
+    {
+        $workers = new NonCompletingCompressionWorkerDispatcher();
+        [$channel] = $this->channel(compressionWorkers: $workers);
+
+        self::assertTrue($channel->prepareTransientProjection());
+        self::assertTrue($channel->queuePacket(new LevelChunkPacket(0, 0, 0, 0, str_repeat('x', 150_000))));
+        self::assertFalse($channel->prepareTransientProjection());
+        self::assertSame(1, $workers->submissionCount);
+        self::assertFalse($channel->isClosed());
+    }
+
     public function testInitializedDeathConversationAcceptsBothRetailRespawnInputs(): void
     {
         [$channel, $client, $server, $entityId] = $this->channel();
@@ -3544,19 +3637,33 @@ final class BedrockPlayChannelTest extends TestCase
     /** @param list<PacketFrame> $frames */
     private function encodeFrames(array $frames): string
     {
-        return BedrockBatchCodec::encode(new BedrockBatch($frames, CompressionMode::NegotiatedZlib, 256), new BatchLimits());
+        return BedrockBatchCodec::encode(new BedrockBatch(
+            $frames,
+            CompressionMode::NegotiatedZlib,
+            NetworkCompressionPolicy::THRESHOLD_BYTES,
+        ), new BatchLimits());
     }
 
     private function decode(string $payload): Packet
     {
-        $batch = BedrockBatchCodec::decode($payload, CompressionMode::NegotiatedZlib, new BatchLimits(), 256);
+        $batch = BedrockBatchCodec::decode(
+            $payload,
+            CompressionMode::NegotiatedZlib,
+            new BatchLimits(),
+            NetworkCompressionPolicy::THRESHOLD_BYTES,
+        );
 
         return BedrockPacketCodec::decode($batch->packets[0]->header->packetId, $batch->packets[0]->payload);
     }
 
     private function decodeFrame(string $payload): PacketFrame
     {
-        $batch = BedrockBatchCodec::decode($payload, CompressionMode::NegotiatedZlib, new BatchLimits(), 256);
+        $batch = BedrockBatchCodec::decode(
+            $payload,
+            CompressionMode::NegotiatedZlib,
+            new BatchLimits(),
+            NetworkCompressionPolicy::THRESHOLD_BYTES,
+        );
         if (count($batch->packets) !== 1) {
             self::fail('Expected exactly one decoded packet frame.');
         }
@@ -3566,7 +3673,12 @@ final class BedrockPlayChannelTest extends TestCase
 
     private function packetId(string $payload): int
     {
-        $batch = BedrockBatchCodec::decode($payload, CompressionMode::NegotiatedZlib, new BatchLimits(), 256);
+        $batch = BedrockBatchCodec::decode(
+            $payload,
+            CompressionMode::NegotiatedZlib,
+            new BatchLimits(),
+            NetworkCompressionPolicy::THRESHOLD_BYTES,
+        );
 
         return $batch->packets[0]->header->packetId;
     }

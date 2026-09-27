@@ -15,14 +15,13 @@ use Bedriox\Protocol\Packet\PacketFrame;
 use Bedriox\Protocol\Packet\PacketHeader;
 use Bedriox\RakNet\Connected\ConnectedPayloadEvent;
 use Bedriox\RakNet\Protocol\Reliability;
+use Bedriox\Server\Transport\NetworkCompressionPolicy;
 use SplQueue;
 use Throwable;
 
 /** Owns the RakNet application-payload to current Bedrock login composition boundary. */
 final class BedrockLoginChannel
 {
-    private const int COMPRESSION_THRESHOLD = 256;
-
     /** @var SplQueue<OutgoingLoginPayload> */
     private SplQueue $outgoing;
     private int $outgoingBytes = 0;
@@ -57,7 +56,7 @@ final class BedrockLoginChannel
                 $envelope,
                 $this->compressionNegotiated ? CompressionMode::NegotiatedZlib : CompressionMode::Uncompressed,
                 $this->limits->batch,
-                self::COMPRESSION_THRESHOLD,
+                NetworkCompressionPolicy::THRESHOLD_BYTES,
             );
             if ($batch->packets === []) {
                 return $this->fail(LoginFailureCode::INPUT_LIMIT);
@@ -182,7 +181,7 @@ final class BedrockLoginChannel
         $packet = $effect->packet;
         $envelope = BedrockBatchCodec::encode(new BedrockBatch([
             new PacketFrame(new PacketHeader(BedrockPacketCodec::packetId($packet)), BedrockPacketCodec::encode($packet)),
-        ], $this->compressionNegotiated ? CompressionMode::NegotiatedZlib : CompressionMode::Uncompressed, self::COMPRESSION_THRESHOLD), $this->limits->batch);
+        ], $this->compressionNegotiated ? CompressionMode::NegotiatedZlib : CompressionMode::Uncompressed, NetworkCompressionPolicy::THRESHOLD_BYTES), $this->limits->batch);
         if ($effect->encrypted) {
             $encryptor = $this->encryptor;
             if ($encryptor === null) {

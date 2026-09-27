@@ -43,7 +43,50 @@ final readonly class BlockCollisionQuery implements LoadedCollisionBoxQuery
 
     public function hasCollision(AxisAlignedBox $area): bool
     {
-        return $this->boxesIntersecting($area) !== [];
+        $minY = max(Chunk::MIN_Y, (int) floor($area->minY));
+        $maxY = min(Chunk::MAX_Y, self::maximumCell($area->minY, $area->maxY));
+        if ($minY > $maxY) {
+            return false;
+        }
+        $minX = (int) floor($area->minX);
+        $maxX = self::maximumCell($area->minX, $area->maxX);
+        $minZ = (int) floor($area->minZ);
+        $maxZ = self::maximumCell($area->minZ, $area->maxZ);
+        /** @var array<string, Chunk> $chunks */
+        $chunks = [];
+        for ($z = $minZ; $z <= $maxZ; ++$z) {
+            for ($x = $minX; $x <= $maxX; ++$x) {
+                $chunkX = (int) floor($x / 16);
+                $chunkZ = (int) floor($z / 16);
+                $chunkKey = $chunkX . ':' . $chunkZ;
+                $chunk = $chunks[$chunkKey] ?? null;
+                if (!$chunk instanceof Chunk) {
+                    $position = new ChunkPosition($chunkX, $chunkZ);
+                    $chunk = $this->world->loadedChunk($position) ?? $this->world->chunk($position);
+                    $chunks[$chunkKey] = $chunk;
+                }
+                for ($y = $minY; $y <= $maxY; ++$y) {
+                    $state = $chunk->blockStateAt(self::localCoordinate($x), $y, self::localCoordinate($z));
+                    $shape = $this->shapes?->find($state);
+                    if ($shape?->isEmpty() === true || ($shape === null && isset($this->nonSolid[$state->value]))) {
+                        continue;
+                    }
+                    if ($shape !== null) {
+                        if ($shape->intersectsAt($area, $x, $y, $z)) {
+                            return true;
+                        }
+                        continue;
+                    }
+                    if ($area->maxX > $x && $area->minX < $x + 1.0
+                        && $area->maxY > $y && $area->minY < $y + 1.0
+                        && $area->maxZ > $z && $area->minZ < $z + 1.0) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 
     /** Returns false for occluded paths and whenever any traversed terrain chunk is not already loaded. */
@@ -115,6 +158,8 @@ final readonly class BlockCollisionQuery implements LoadedCollisionBoxQuery
     private function collectBoxes(AxisAlignedBox $area, bool $loadedOnly): ?array
     {
         $boxes = [];
+        /** @var array<string, Chunk> $chunks */
+        $chunks = [];
         $minY = max(Chunk::MIN_Y, (int) floor($area->minY));
         $maxY = min(Chunk::MAX_Y, self::maximumCell($area->minY, $area->maxY));
         if ($minY > $maxY) {
@@ -135,16 +180,23 @@ final readonly class BlockCollisionQuery implements LoadedCollisionBoxQuery
         }
         for ($z = $minZ; $z <= $maxZ; ++$z) {
             for ($x = $minX; $x <= $maxX; ++$x) {
-                $chunk = $loadedOnly
-                    ? $this->world->loadedChunk(new ChunkPosition((int) floor($x / 16), (int) floor($z / 16)))
-                    : null;
-                if ($loadedOnly && !$chunk instanceof Chunk) {
-                    return null;
+                $chunkX = (int) floor($x / 16);
+                $chunkZ = (int) floor($z / 16);
+                $chunkKey = $chunkX . ':' . $chunkZ;
+                $chunk = $chunks[$chunkKey] ?? null;
+                if (!$chunk instanceof Chunk) {
+                    $position = new ChunkPosition($chunkX, $chunkZ);
+                    $chunk = $this->world->loadedChunk($position);
+                    if (!$chunk instanceof Chunk) {
+                        if ($loadedOnly) {
+                            return null;
+                        }
+                        $chunk = $this->world->chunk($position);
+                    }
+                    $chunks[$chunkKey] = $chunk;
                 }
                 for ($y = $minY; $y <= $maxY; ++$y) {
-                    $state = $chunk instanceof Chunk
-                        ? $chunk->blockStateAt(self::localCoordinate($x), $y, self::localCoordinate($z))
-                        : $this->world->blockStateAt($x, $y, $z);
+                    $state = $chunk->blockStateAt(self::localCoordinate($x), $y, self::localCoordinate($z));
                     foreach ($this->collisionBoxes($state, $x, $y, $z) as $box) {
                         if ($box->intersects($area)) {
                             $boxes[] = $box;

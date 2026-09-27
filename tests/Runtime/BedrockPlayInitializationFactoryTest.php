@@ -49,6 +49,7 @@ use Bedriox\Server\Player\PlayerInventoryState;
 use Bedriox\Server\Plugin\OwnedItemRegistrar;
 use Bedriox\Server\Runtime\BedrockInventoryPacketProjector;
 use Bedriox\Server\Runtime\BedrockPlayInitializationFactory;
+use Bedriox\Server\Runtime\ReusablePlayPacket;
 use Bedriox\Server\Runtime\RuntimeLimits;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
@@ -91,7 +92,7 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
             [new RecipeOutput('minecraft:dirt')],
             recipeOwner: 'Example',
         ));
-        $packets = $factory->create($this->login(), UnsignedLong::fromInt(7));
+        $packets = self::packets($factory->create($this->login(), UnsignedLong::fromInt(7)));
 
         self::assertInstanceOf(CraftingDataPacket::class, $packets[22]);
         self::assertCount(4_143, $packets[22]->recipes);
@@ -112,13 +113,13 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
             3456,
             3,
         );
-        $packets = BedrockPlayInitializationFactory::forWorld(
+        $packets = self::packets(BedrockPlayInitializationFactory::forWorld(
             BedrockDataSet::bundled(),
             new RuntimeLimits(),
             $worldData,
             300,
-        )->create($login, UnsignedLong::fromInt(7));
-        $expected = (new BedrockPlayInitializationFactory(
+        )->create($login, UnsignedLong::fromInt(7)));
+        $expected = self::packets((new BedrockPlayInitializationFactory(
             BedrockDataSet::bundled(),
             new RuntimeLimits(),
             'Persisted World',
@@ -128,7 +129,7 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
             3456,
             'flat',
             300,
-        ))->create($login, UnsignedLong::fromInt(7));
+        ))->create($login, UnsignedLong::fromInt(7)));
 
         self::assertSame($expected[2]->encode(), $packets[2]->encode());
         self::assertInstanceOf(SetSpawnPositionPacket::class, $packets[7]);
@@ -157,7 +158,7 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
         );
 
         $time = 13_000;
-        $packets = $factory->create($this->login(), UnsignedLong::fromInt(7));
+        $packets = self::packets($factory->create($this->login(), UnsignedLong::fromInt(7)));
 
         self::assertInstanceOf(SetTimePacket::class, $packets[8]);
         self::assertSame(13_000, $packets[8]->time);
@@ -166,8 +167,8 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
     public function testExactOrderGoldenRegistryAndDefersTerrainToRuntimeStreamer(): void
     {
         $login = $this->login();
-        $packets = (new BedrockPlayInitializationFactory(BedrockDataSet::bundled()))
-            ->create($login, UnsignedLong::fromInt(7));
+        $packets = self::packets((new BedrockPlayInitializationFactory(BedrockDataSet::bundled()))
+            ->create($login, UnsignedLong::fromInt(7)));
 
         self::assertCount(24, $packets);
         self::assertInstanceOf(JigsawStructureDataPacket::class, $packets[0]);
@@ -251,8 +252,8 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
             health: 7.5,
         );
 
-        $packets = (new BedrockPlayInitializationFactory(BedrockDataSet::bundled()))
-            ->create($login, UnsignedLong::fromInt(7), $bootstrap);
+        $packets = self::packets((new BedrockPlayInitializationFactory(BedrockDataSet::bundled()))
+            ->create($login, UnsignedLong::fromInt(7), $bootstrap));
 
         $startGame = $packets[2];
         self::assertInstanceOf(StartGamePacket::class, $startGame);
@@ -302,8 +303,8 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
             true,
         );
 
-        $packets = (new BedrockPlayInitializationFactory($data, itemCatalog: $catalog))
-            ->create($this->login(), UnsignedLong::fromInt(7));
+        $packets = self::packets((new BedrockPlayInitializationFactory($data, itemCatalog: $catalog))
+            ->create($this->login(), UnsignedLong::fromInt(7)));
         $creative = $packets[16];
         self::assertInstanceOf(CreativeContentPacket::class, $creative);
         $grassRuntimeId = $data->itemNetworkRegistry()
@@ -335,6 +336,18 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
                 skinId: 'skin',
                 skinResourcePatchJson: '{"geometry":{"default":"geometry.humanoid.custom"}}',
             ),
+        );
+    }
+
+    /**
+     * @param list<\Bedriox\Protocol\Packet\Packet|ReusablePlayPacket> $entries
+     * @return list<\Bedriox\Protocol\Packet\Packet>
+     */
+    private static function packets(array $entries): array
+    {
+        return array_map(
+            static fn($entry) => $entry instanceof ReusablePlayPacket ? $entry->packet : $entry,
+            $entries,
         );
     }
 }

@@ -109,7 +109,7 @@ final class ProcessWorldProviderTest extends TestCase
             $provider->saveEntityChunk(new EntityChunkSnapshot('Process Test', $destination, 1, []));
             self::assertSame([$uuid => 3], $provider->loadEntityChunk($source)?->revisions());
 
-            $provider->transferEntityOwnership(new EntityOwnershipTransfer(
+            $result = $provider->transferEntityOwnership(new EntityOwnershipTransfer(
                 $uuid,
                 3,
                 new EntityChunkSnapshot('Process Test', $source, 2, []),
@@ -118,8 +118,14 @@ final class ProcessWorldProviderTest extends TestCase
                 ]),
             ));
 
-            self::assertSame([], $provider->loadEntityChunk($source)?->records());
-            self::assertSame([$uuid => 4], $provider->loadEntityChunk($destination)?->revisions());
+            self::assertSame(2, $result->sourceAfter->chunkRevision);
+            self::assertSame(2, $result->destinationAfter->chunkRevision);
+            $savedSource = $provider->loadEntityChunk($source);
+            $savedDestination = $provider->loadEntityChunk($destination);
+            self::assertInstanceOf(EntityChunkSnapshot::class, $savedSource);
+            self::assertInstanceOf(EntityChunkSnapshot::class, $savedDestination);
+            self::assertSame([], $savedSource->records());
+            self::assertSame([$uuid => 4], $savedDestination->revisions());
         } finally {
             $provider->close();
         }
@@ -149,6 +155,44 @@ final class ProcessWorldProviderTest extends TestCase
         }
     }
 
+    public function testEntityChunkSaveCompletesThroughTheNonblockingPersistenceQueue(): void
+    {
+        $provider = ProcessWorldProvider::start(
+            'test-version',
+            new WorldStorageStartup('create', 'fixture-async-entity-save', self::worldData(), 1234),
+            self::states(),
+            entryPoint: self::FIXTURE,
+        );
+        $position = new ChunkPosition(3, -2);
+        $uuid = '123e4567-e89b-42d3-a456-426614174002';
+        $snapshot = new EntityChunkSnapshot('Process Test', $position, 1, [
+            self::entityRecord($uuid, $position, 9),
+        ]);
+        try {
+            $started = hrtime(true);
+            self::assertSame(PersistenceSubmission::ACCEPTED, $provider->enqueueEntityChunkSave($snapshot)->status);
+            self::assertLessThan(50_000_000, hrtime(true) - $started);
+
+            $completions = [];
+            $deadline = hrtime(true) + 2_000_000_000;
+            do {
+                $completions = $provider->pollEntityChunkSaves();
+                if ($completions !== []) {
+                    break;
+                }
+                usleep(1_000);
+            } while (hrtime(true) < $deadline);
+
+            self::assertCount(1, $completions);
+            self::assertTrue($completions[0]->successful);
+            self::assertEquals($position, $completions[0]->chunk);
+            self::assertSame(1, $completions[0]->revision);
+            self::assertSame([$uuid => 9], $provider->loadEntityChunk($position)?->revisions());
+        } finally {
+            $provider->close();
+        }
+    }
+
     public function testEntityPersistenceDoesNotDrainQueuedTerrainLoads(): void
     {
         $provider = ProcessWorldProvider::start(
@@ -172,6 +216,52 @@ final class ProcessWorldProviderTest extends TestCase
             );
 
             self::assertSame([], $provider->pollChunkLoads());
+            $loads = [];
+            $deadline = hrtime(true) + 2_000_000_000;
+            do {
+                $loads = $provider->pollChunkLoads();
+                if ($loads !== []) {
+                    break;
+                }
+                usleep(1_000);
+            } while (hrtime(true) < $deadline);
+            self::assertCount(1, $loads);
+            self::assertEquals($queued, $loads[0]->position);
+        } finally {
+            $provider->close();
+        }
+    }
+
+    public function testWorldMetadataPersistenceDoesNotDrainQueuedTerrainLoads(): void
+    {
+        $provider = ProcessWorldProvider::start(
+            'test-version',
+            new WorldStorageStartup('create', 'fixture-timeout-metadata-barrier', self::worldData(), 1234),
+            self::states(),
+            2_000,
+            self::FIXTURE,
+        );
+        $queued = new ChunkPosition(40, 40);
+        try {
+            self::assertTrue($provider->requestChunkLoad($queued));
+            $updated = new WorldData(
+                $provider->worldData()->metadata,
+                'flat',
+                new SpawnPosition(8, 70, 9),
+                99,
+                3,
+            );
+
+            $started = hrtime(true);
+            $provider->saveWorldData($updated);
+            self::assertLessThan(
+                250_000_000,
+                hrtime(true) - $started,
+                'World metadata persistence drained terrain work which had not started.',
+            );
+            self::assertEquals($updated, $provider->worldData());
+            self::assertSame([], $provider->pollChunkLoads());
+
             $loads = [];
             $deadline = hrtime(true) + 2_000_000_000;
             do {

@@ -61,6 +61,7 @@ use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\Block\VanillaBlockStates;
 use Bedriox\Server\World\BlockOverrideStore;
 use Bedriox\Server\World\BlockPosition;
+use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\ChunkRepository;
 use Bedriox\Server\World\FlatWorldGenerator;
 use Bedriox\Server\World\World;
@@ -1429,6 +1430,7 @@ final class WorldSimulationTest extends TestCase
             new FlatWorldGenerator($palette),
             $repository,
         );
+        self::retainOriginCollisionTerrain($blocks);
         $factory = new SimulationCommandFactory();
         $world = new WorldSimulation(blockWorld: $blocks, blockPalette: $palette);
         $world->enqueue($factory->join('session', 'identity', 'Player'));
@@ -1463,6 +1465,7 @@ final class WorldSimulationTest extends TestCase
             new ChunkRepository(4),
         );
         $blocks->setBlockState(1, 64, 0, $palette->grassBlock);
+        self::retainOriginCollisionTerrain($blocks);
         $factory = new SimulationCommandFactory();
         $world = new WorldSimulation(blockWorld: $blocks, blockPalette: $palette);
         $world->enqueue($factory->join('session', 'identity', 'Player'));
@@ -1656,6 +1659,33 @@ final class WorldSimulationTest extends TestCase
         self::assertSame(NutritionChangeReason::EXHAUSTION, $events[1]->reason);
         self::assertSame(19.0, $events[1]->player->saturation);
         self::assertEqualsWithDelta(0.05, $events[1]->player->exhaustion, 0.000001);
+    }
+
+    public function testFractionalSprintExhaustionDoesNotCreateAClientProjectionEvent(): void
+    {
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation();
+        self::assertTrue($world->enqueue($factory->join('runner', 'identity-runner', 'Runner')));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->move(
+            'runner',
+            1,
+            1.0,
+            64.0,
+            0.0,
+            0.0,
+            0.0,
+            MovementMode::SPRINTING,
+            deltaX: 1.0,
+            sprinting: true,
+        )));
+
+        $events = $world->tick()->events;
+        self::assertCount(1, $events);
+        self::assertInstanceOf(PlayerMoved::class, $events[0]);
+        self::assertGreaterThan(0.0, $events[0]->player->exhaustion);
+        self::assertSame(20.0, $events[0]->player->food);
+        self::assertSame(20.0, $events[0]->player->saturation);
     }
 
     public function testMovementRetainsHeadYawAndReportsOnlyPostureTransitions(): void
@@ -2303,5 +2333,14 @@ final class WorldSimulationTest extends TestCase
         self::assertSame([], $world->snapshot()->players);
         self::assertSame(0, $world->queuedCommands());
         self::assertSame(0, $world->queuedBytes());
+    }
+
+    private static function retainOriginCollisionTerrain(World $world): void
+    {
+        foreach ([-1, 0] as $chunkX) {
+            foreach ([-1, 0] as $chunkZ) {
+                $world->retainChunk(new ChunkPosition($chunkX, $chunkZ));
+            }
+        }
     }
 }

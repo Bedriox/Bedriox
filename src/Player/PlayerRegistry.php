@@ -19,6 +19,12 @@ final class PlayerRegistry
     /** @var array<int, string> runtime actor ID => session ID */
     private array $sessionByActorId = [];
 
+    /** @var list<string>|null */
+    private ?array $orderedSessionIds = null;
+
+    /** @var array<string, list<string>> */
+    private array $recipientLists = [];
+
     public function __construct(private readonly int $capacity) {}
 
     public function count(): int
@@ -76,6 +82,8 @@ final class PlayerRegistry
         $this->bySession[self::sessionKey($player->sessionId)] = $player;
         $this->sessionByIdentity[self::identityKey($player->identity->uuid)] = $player->sessionId;
         $this->sessionByActorId[$player->runtimeActorId] = $player->sessionId;
+        $this->orderedSessionIds = null;
+        $this->recipientLists = [];
     }
 
     public function remove(string $sessionId): ?Player
@@ -90,6 +98,8 @@ final class PlayerRegistry
             $this->sessionByIdentity[self::identityKey($player->identity->uuid)],
             $this->sessionByActorId[$player->runtimeActorId],
         );
+        $this->orderedSessionIds = null;
+        $this->recipientLists = [];
 
         return $player;
     }
@@ -97,15 +107,30 @@ final class PlayerRegistry
     /** @return list<string> */
     public function recipients(?string $excludedSessionId = null): array
     {
+        $ordered = $this->orderedSessionIds;
+        if ($ordered === null) {
+            $ordered = array_map(
+                static fn(Player $player): string => $player->sessionId,
+                array_values($this->bySession),
+            );
+            sort($ordered, SORT_STRING);
+            $this->orderedSessionIds = $ordered;
+        }
+        if ($excludedSessionId === null) {
+            return $ordered;
+        }
+        $cacheKey = self::sessionKey($excludedSessionId);
+        if (isset($this->recipientLists[$cacheKey])) {
+            return $this->recipientLists[$cacheKey];
+        }
         $recipients = [];
-        foreach ($this->bySession as $player) {
-            if ($player->sessionId !== $excludedSessionId) {
-                $recipients[] = $player->sessionId;
+        foreach ($ordered as $sessionId) {
+            if ($sessionId !== $excludedSessionId) {
+                $recipients[] = $sessionId;
             }
         }
-        sort($recipients, SORT_STRING);
 
-        return $recipients;
+        return $this->recipientLists[$cacheKey] = $recipients;
     }
 
     /** @return list<PlayerSnapshot> */

@@ -7,6 +7,7 @@ namespace Bedriox\Server\Tests\World\Collision;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\Collision\AxisAlignedBox;
 use Bedriox\Server\World\Collision\CollisionBoxQuery;
+use Bedriox\Server\World\Collision\LoadedCollisionBoxQuery;
 use Bedriox\Server\World\Collision\PlayerCollisionResolver;
 use PHPUnit\Framework\TestCase;
 
@@ -54,6 +55,49 @@ final class PlayerCollisionResolverTest extends TestCase
         self::assertTrue($result->stepped);
         self::assertEqualsWithDelta(1.2, $result->position->x, 0.000001);
         self::assertEqualsWithDelta(64.5, $result->position->y, 0.000001);
+    }
+
+    public function testValidatedVerticalCollisionHintUsesGroundedFastPath(): void
+    {
+        $resolver = new PlayerCollisionResolver(self::query([AxisAlignedBox::unitAt(0, 63, 0)]));
+        $result = $resolver->resolve(
+            new Position(0.5, 64.0, 0.5),
+            new Position(0.7, 64.0, 0.5),
+            false,
+            true,
+        );
+
+        self::assertTrue($result->fastPath);
+        self::assertTrue($result->grounded);
+        self::assertSame(0, $result->obstacleCount);
+        self::assertEqualsWithDelta(0.7, $result->position->x, 0.000001);
+    }
+
+    public function testMovementNeverLoadsTerrainSynchronously(): void
+    {
+        $resolver = new PlayerCollisionResolver(new class implements LoadedCollisionBoxQuery {
+            public function boxesIntersecting(AxisAlignedBox $area): array
+            {
+                throw new \LogicException('The blocking collision path must not be used.');
+            }
+
+            public function hasCollision(AxisAlignedBox $area): bool
+            {
+                throw new \LogicException('The blocking collision path must not be used.');
+            }
+
+            public function boxesIntersectingLoaded(AxisAlignedBox $area): ?array
+            {
+                return null;
+            }
+        });
+        $from = new Position(15.9, 64.0, 0.5);
+        $result = $resolver->resolve($from, new Position(16.1, 64.0, 0.5), true, true);
+
+        self::assertFalse($result->terrainLoaded);
+        self::assertSame($from, $result->position);
+        self::assertTrue($result->grounded);
+        self::assertFalse($result->fastPath);
     }
 
     /** @param list<AxisAlignedBox> $boxes */

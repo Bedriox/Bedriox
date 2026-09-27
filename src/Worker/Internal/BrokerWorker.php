@@ -23,5 +23,6 @@ final class BrokerWorker
         public int $startedAtNanoseconds = 0,
         public bool $discardResult = false,
         public int $memoryBytes = 0,
+        public string $outgoing = '',
     ) {}
 }

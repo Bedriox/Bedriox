@@ -16,5 +16,5 @@ interface EntityPersistenceStore
     public function saveEntityChunk(EntityChunkSnapshot $snapshot): void;
 
     /** @throws CorruptEntityPersistenceException|EntityPersistenceConflictException */
-    public function transferEntityOwnership(EntityOwnershipTransfer $transfer): void;
+    public function transferEntityOwnership(EntityOwnershipTransfer $transfer): EntityOwnershipTransferResult;
 }

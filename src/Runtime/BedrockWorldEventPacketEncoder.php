@@ -7,6 +7,7 @@ namespace Bedriox\Server\Runtime;
 use Bedriox\Api\Inventory\ContainerLayout;
 use Bedriox\Api\Inventory\ContainerType as ApiContainerType;
 use Bedriox\Api\TranslatableMessage;
+use Bedriox\Protocol\Codec\UnsignedVarInt;
 use Bedriox\Protocol\Packet\AbilityLayer;
 use Bedriox\Protocol\Packet\ActorEventPacket;
 use Bedriox\Protocol\Packet\ActorEventType;
@@ -47,6 +48,7 @@ use Bedriox\Protocol\Packet\MoveActorAbsoluteFlag;
 use Bedriox\Protocol\Packet\MoveActorAbsolutePacket;
 use Bedriox\Protocol\Packet\MovePlayerMode;
 use Bedriox\Protocol\Packet\MovePlayerPacket;
+use Bedriox\Protocol\Packet\Packet;
 use Bedriox\Protocol\Packet\PlayerAbilities;
 use Bedriox\Protocol\Packet\PlayerActorMetadata;
 use Bedriox\Protocol\Packet\PlayerAttribute;
@@ -128,8 +130,11 @@ use Bedriox\Server\Simulation\VerticalState;
 use Bedriox\Server\World\Storage\LevelDb\PersistentBlockEntityCodec;
 
 /** Stateless current-Bedrock projection of authoritative simulation events. */
-final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
+final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder, EntityMovementPacketEncoder, PlayerMovementPacketEncoder, WorldEventPacketEncoder
 {
+    /** Leaves room for the packet header inside the protocol's 1 MiB packet-frame ceiling. */
+    private const int MAXIMUM_PLAYER_LIST_BODY_BYTES = 1_000_000;
+
     private readonly PersistentBlockEntityCodec $blockEntities;
 
     private readonly BedrockLivingActorProjector $livingActors;
@@ -164,13 +169,7 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
                     $event->postureChanged,
                 )),
             ],
-            $event instanceof ChatBroadcast => array_map(
-                static fn(string $recipient): DirectedPacket => new DirectedPacket(
-                    $recipient,
-                    new ChatPacket($event->senderDisplayName, $event->message),
-                ),
-                $event->recipientSessionIds,
-            ),
+            $event instanceof ChatBroadcast => $this->chatBroadcast($event),
             $event instanceof CraftingTableOpened => [new DirectedPacket(
                 $event->ownerSessionId,
                 new ContainerOpenPacket(
@@ -198,10 +197,7 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
             $event instanceof ItemUseStarted => $this->itemUseStarted($event),
             $event instanceof ItemUseCancelled => $this->itemUseCancelled($event),
             $event instanceof ItemConsumed => $this->itemConsumed($event),
-            $event instanceof NutritionChanged => [new DirectedPacket(
-                $event->player->sessionId,
-                $this->nutritionPacket($event->player),
-            )],
+            $event instanceof NutritionChanged => $this->nutritionChanged($event),
             $event instanceof ItemEntitySpawned => $this->itemEntitySpawned($event),
             $event instanceof ItemEntityMoved => $this->itemEntityMoved($event),
             $event instanceof ItemEntityPickedUp => $this->itemEntityPickedUp($event),
@@ -217,16 +213,7 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
             $event instanceof EntityActorHealthChanged => $this->entityActorHealthChanged($event),
             $event instanceof EntityActorMetadataChanged => $this->entityActorMetadataChanged($event),
             $event instanceof EntityActorMoved => $this->entityActorMoved($event),
-            $event instanceof EntityActorAttackStarted => array_map(
-                static fn(string $recipient): DirectedPacket => new DirectedPacket(
-                    $recipient,
-                    new ActorEventPacket(
-                        UnsignedLong::fromInt($event->entity->getRuntimeId()),
-                        ActorEventType::AttackStart,
-                    ),
-                ),
-                $event->recipientSessionIds,
-            ),
+            $event instanceof EntityActorAttackStarted => $this->entityActorAttackStarted($event),
             $event instanceof EntityActorDamaged => $this->entityActorDamaged($event),
             $event instanceof EntityActorDied => $this->entityActorDied($event),
             $event instanceof EntityActorRemoved => $this->entityActorRemoved($event),
@@ -236,19 +223,7 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
                 $event->player->sessionId,
                 $this->healthPacket($event->player),
             )],
-            $event instanceof PlayerKnockedBack => array_map(
-                static fn(string $recipient): DirectedPacket => new DirectedPacket(
-                    $recipient,
-                    new SetActorMotionPacket(
-                        UnsignedLong::fromInt($event->player->runtimeActorId),
-                        $event->motionX,
-                        $event->motionY,
-                        $event->motionZ,
-                        new UnsignedLong($event->clientTick->high, $event->clientTick->low),
-                    ),
-                ),
-                $event->recipientSessionIds,
-            ),
+            $event instanceof PlayerKnockedBack => $this->playerKnockedBack($event),
             $event instanceof PlayerMotionChanged => $this->motionChanged($event),
             $event instanceof PlayerDied => $this->died($event),
             $event instanceof PlayerRespawned => $this->respawned($event),
@@ -258,6 +233,53 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
             )],
             default => [],
         };
+    }
+
+    /** @return list<DirectedPacket> */
+    private function chatBroadcast(ChatBroadcast $event): array
+    {
+        $packet = $this->chatPacket($event);
+
+        return array_map(
+            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
+            $event->recipientSessionIds,
+        );
+    }
+
+    public function chatPacket(ChatBroadcast $event): Packet
+    {
+        return new ChatPacket($event->senderDisplayName, $event->message);
+    }
+
+    /** @return list<DirectedPacket> */
+    private function entityActorAttackStarted(EntityActorAttackStarted $event): array
+    {
+        $packet = new ActorEventPacket(
+            UnsignedLong::fromInt($event->entity->getRuntimeId()),
+            ActorEventType::AttackStart,
+        );
+
+        return array_map(
+            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
+            $event->recipientSessionIds,
+        );
+    }
+
+    /** @return list<DirectedPacket> */
+    private function playerKnockedBack(PlayerKnockedBack $event): array
+    {
+        $packet = new SetActorMotionPacket(
+            UnsignedLong::fromInt($event->player->runtimeActorId),
+            $event->motionX,
+            $event->motionY,
+            $event->motionZ,
+            new UnsignedLong($event->clientTick->high, $event->clientTick->low),
+        );
+
+        return array_map(
+            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
+            $event->recipientSessionIds,
+        );
     }
 
     /** @return list<DirectedPacket> */
@@ -542,19 +564,19 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
             $event->motionZ,
             new UnsignedLong($event->clientTick->high, $event->clientTick->low),
         );
+        $posture = $event->postureChanged
+            ? SetActorDataPacket::playerPosture(
+                UnsignedLong::fromInt($event->player->runtimeActorId),
+                new UnsignedLong($event->clientTick->high, $event->clientTick->low),
+                $event->player->sneaking,
+                $event->player->sprinting,
+            )
+            : null;
         $packets = [];
         foreach ($event->recipientSessionIds as $recipient) {
             $packets[] = new DirectedPacket($recipient, $motion);
-            if ($event->postureChanged) {
-                $packets[] = new DirectedPacket(
-                    $recipient,
-                    SetActorDataPacket::playerPosture(
-                        UnsignedLong::fromInt($event->player->runtimeActorId),
-                        new UnsignedLong($event->clientTick->high, $event->clientTick->low),
-                        $event->player->sneaking,
-                        $event->player->sprinting,
-                    ),
-                );
+            if ($posture !== null) {
+                $packets[] = new DirectedPacket($recipient, $posture);
             }
         }
 
@@ -682,6 +704,23 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
         );
     }
 
+    /** @return list<DirectedPacket> */
+    private function nutritionChanged(NutritionChanged $event): array
+    {
+        // Exhaustion is an internal accumulator. Projecting every fractional sprint update creates
+        // ordered network work without changing the visible hunger bar. The latest exhaustion value
+        // is included whenever food or saturation actually changes.
+        if ($event->player->food === $event->previousFood
+            && $event->player->saturation === $event->previousSaturation) {
+            return [];
+        }
+
+        return [new DirectedPacket(
+            $event->player->sessionId,
+            $this->nutritionPacket($event->player),
+        )];
+    }
+
     private function respawnPacket(PlayerSnapshot $player, RespawnState $state): RespawnPacket
     {
         return new RespawnPacket(
@@ -751,21 +790,84 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
             return [];
         }
         $packets = [];
+        $joinedEntry = new PlayerListAddPacket([$this->listEntry($event->player, $joined)]);
         foreach ($event->recipientSessionIds as $recipient) {
             // The joining client already received its own list entry in the bootstrap.
             if ($recipient === $event->player->sessionId) {
                 continue;
             }
-            $packets[] = new DirectedPacket($recipient, new PlayerListAddPacket([$this->listEntry($event->player, $joined)]));
+            $packets[] = new DirectedPacket($recipient, $joinedEntry);
         }
+        $existingEntries = [];
         foreach ($event->existingPeers as $peer) {
             $session = $sessions[$peer->sessionId] ?? null;
             if (!$session instanceof RuntimeSession || $session->play === null) {
                 continue;
             }
-            $packets[] = new DirectedPacket(
-                $event->player->sessionId,
-                new PlayerListAddPacket([$this->listEntry($peer, $session)]),
+            $existingEntries[] = $this->listEntry($peer, $session);
+        }
+        foreach ($this->boundedPlayerListPackets($existingEntries) as $packet) {
+            $packets[] = new DirectedPacket($event->player->sessionId, $packet);
+        }
+
+        return $packets;
+    }
+
+    /**
+     * Splits skin-heavy player-list snapshots before they reach the protocol packet-frame ceiling.
+     *
+     * @param list<PlayerListAddEntry> $entries
+     * @return list<PlayerListAddPacket>
+     */
+    private function boundedPlayerListPackets(array $entries): array
+    {
+        $packets = [];
+        $batch = [];
+        $entryBytes = 0;
+        foreach ($entries as $entry) {
+            $encodedEntryBytes = strlen((new PlayerListAddPacket([$entry]))->encode()) - 1;
+            $candidateCount = count($batch) + 1;
+            $candidateBytes = strlen(UnsignedVarInt::encode($candidateCount)) + $entryBytes + $encodedEntryBytes;
+            if ($batch !== [] && $candidateBytes > self::MAXIMUM_PLAYER_LIST_BODY_BYTES) {
+                $packets[] = new PlayerListAddPacket($batch);
+                $batch = [];
+                $entryBytes = 0;
+                $candidateCount = 1;
+                $candidateBytes = 1 + $encodedEntryBytes;
+            }
+            if ($candidateBytes > self::MAXIMUM_PLAYER_LIST_BODY_BYTES) {
+                throw new \UnexpectedValueException('A player-list entry exceeds the supported packet size.');
+            }
+            $batch[] = $entry;
+            $entryBytes += $encodedEntryBytes;
+        }
+        if ($batch !== []) {
+            $packets[] = new PlayerListAddPacket($batch);
+        }
+
+        return $packets;
+    }
+
+    /** @return non-empty-list<Packet> */
+    public function playerMovementPackets(PlayerMoved $event): array
+    {
+        $player = $event->player;
+        $packets = [new MoveActorAbsolutePacket(
+            UnsignedLong::fromInt($player->runtimeActorId),
+            $player->position->x,
+            PlayerPositionProjection::feetToWireY($player->position->y),
+            $player->position->z,
+            $player->pitch,
+            $player->yaw,
+            $player->headYaw,
+            $player->verticalState === VerticalState::GROUNDED ? [MoveActorAbsoluteFlag::OnGround] : [],
+        )];
+        if ($event->postureChanged) {
+            $packets[] = SetActorDataPacket::playerPosture(
+                UnsignedLong::fromInt($player->runtimeActorId),
+                UnsignedLong::fromInt(max(0, $player->movementSequence)),
+                $player->sneaking,
+                $player->sprinting,
             );
         }
 
@@ -775,31 +877,12 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
     /** @return list<DirectedPacket> */
     private function peerMovement(PlayerMoved $event): array
     {
-        $player = $event->player;
-        $packet = new MoveActorAbsolutePacket(
-            UnsignedLong::fromInt($player->runtimeActorId),
-            $player->position->x,
-            PlayerPositionProjection::feetToWireY($player->position->y),
-            $player->position->z,
-            $player->pitch,
-            $player->yaw,
-            $player->headYaw,
-            $player->verticalState === VerticalState::GROUNDED ? [MoveActorAbsoluteFlag::OnGround] : [],
-        );
+        $sharedPackets = $this->playerMovementPackets($event);
 
         $packets = [];
         foreach ($event->recipientSessionIds as $recipient) {
-            $packets[] = new DirectedPacket($recipient, $packet);
-            if ($event->postureChanged) {
-                $packets[] = new DirectedPacket(
-                    $recipient,
-                    SetActorDataPacket::playerPosture(
-                        UnsignedLong::fromInt($player->runtimeActorId),
-                        UnsignedLong::fromInt(max(0, $player->movementSequence)),
-                        $player->sneaking,
-                        $player->sprinting,
-                    ),
-                );
+            foreach ($sharedPackets as $packet) {
+                $packets[] = new DirectedPacket($recipient, $packet);
             }
         }
 
@@ -933,7 +1016,7 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
         $session = $sessions[$event->player->sessionId] ?? null;
         $login = $session?->play?->login();
         if ($login === null) {
-            throw new \LogicException('A visible player must own authenticated play state.');
+            return [];
         }
 
         return [
@@ -1263,14 +1346,14 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
         return $packets;
     }
 
-    /** @return list<DirectedPacket> */
-    private function entityActorMoved(EntityActorMoved $event): array
+    /** @return non-empty-list<Packet> */
+    public function entityMovementPackets(EntityActorMoved $event): array
     {
         $entity = $event->entity;
         $position = $entity->internalPosition();
         $motion = $entity->getMotion();
         $runtimeId = UnsignedLong::fromInt($entity->getRuntimeId());
-        $movement = new MoveActorAbsolutePacket(
+        $packets = [new MoveActorAbsolutePacket(
             $runtimeId,
             $position->x,
             $position->y,
@@ -1279,20 +1362,29 @@ final class BedrockWorldEventPacketEncoder implements WorldEventPacketEncoder
             $entity->getYaw(),
             $entity->getYaw(),
             $entity->isOnGround() ? [MoveActorAbsoluteFlag::OnGround] : [],
-        );
-        $motionPacket = $event->motionChanged ? new SetActorMotionPacket(
-            $runtimeId,
-            $motion->x,
-            $motion->y,
-            $motion->z,
-            UnsignedLong::fromInt(max(0, $event->tick)),
-        ) : null;
+        )];
+        if ($event->motionChanged) {
+            $packets[] = new SetActorMotionPacket(
+                $runtimeId,
+                $motion->x,
+                $motion->y,
+                $motion->z,
+                UnsignedLong::fromInt(max(0, $event->tick)),
+            );
+        }
+
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function entityActorMoved(EntityActorMoved $event): array
+    {
+        $sharedPackets = $this->entityMovementPackets($event);
 
         $packets = [];
         foreach ($event->recipientSessionIds as $recipient) {
-            $packets[] = new DirectedPacket($recipient, $movement);
-            if ($motionPacket !== null) {
-                $packets[] = new DirectedPacket($recipient, $motionPacket);
+            foreach ($sharedPackets as $packet) {
+                $packets[] = new DirectedPacket($recipient, $packet);
             }
         }
 

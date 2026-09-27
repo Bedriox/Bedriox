@@ -34,6 +34,7 @@ use Bedriox\Server\Login\LoginSession;
 use Bedriox\Server\Login\LoginState;
 use Bedriox\Server\Login\MonotonicClock;
 use Bedriox\Server\Login\SendPacketEffect;
+use Bedriox\Server\Transport\NetworkCompressionPolicy;
 use PHPUnit\Framework\TestCase;
 
 final class LoginSessionTest extends TestCase
@@ -47,6 +48,10 @@ final class LoginSessionTest extends TestCase
         $effects = $session->drainEffects();
         self::assertCount(1, $effects);
         self::assertInstanceOf(NetworkSettingsPacket::class, self::packetEffect($effects[0])->packet);
+        self::assertSame(
+            NetworkCompressionPolicy::THRESHOLD_BYTES,
+            self::packetEffect($effects[0])->packet->compressionThreshold,
+        );
         self::assertFalse(self::packetEffect($effects[0])->encrypted);
 
         $clock->advanceSeconds(1);
@@ -144,10 +149,22 @@ final class LoginSessionTest extends TestCase
         );
     }
 
+    public function testDevelopmentModeAlsoAdmitsFullRetailAuthentication(): void
+    {
+        [$session, , $auth] = $this->session(AuthenticationMode::SELF_SIGNED);
+        $this->send($session, new RequestNetworkSettingsPacket());
+        $session->drainEffects();
+
+        $this->send($session, $this->login(AuthenticationType::Full));
+
+        self::assertSame(1, $auth->calls);
+        self::assertSame(LoginState::WAIT_CLIENT_HANDSHAKE, $session->state());
+    }
+
     public function testStateDeadlineAndClockRegressionFailClosed(): void
     {
         [$session, $clock] = $this->session();
-        $clock->advanceSeconds(5);
+        $clock->advanceSeconds(15);
         $session->tick();
         self::assertSame(LoginFailureCode::TIMEOUT, $session->failure());
 
@@ -161,14 +178,14 @@ final class LoginSessionTest extends TestCase
     {
         [$waitLogin, $clock] = $this->session();
         $this->send($waitLogin, new RequestNetworkSettingsPacket());
-        $clock->advanceSeconds(10);
+        $clock->advanceSeconds(20);
         $waitLogin->tick();
         self::assertSame(LoginFailureCode::TIMEOUT, $waitLogin->failure());
 
         [$waitHandshake, $clock] = $this->session();
         $this->send($waitHandshake, new RequestNetworkSettingsPacket());
         $this->send($waitHandshake, $this->login(AuthenticationType::Full));
-        $clock->advanceSeconds(5);
+        $clock->advanceSeconds(15);
         $waitHandshake->tick();
         self::assertSame(LoginFailureCode::TIMEOUT, $waitHandshake->failure());
 
@@ -184,15 +201,13 @@ final class LoginSessionTest extends TestCase
         self::assertSame(LoginFailureCode::TIMEOUT, $waitStack->failure());
 
         [$absolute, $clock] = $this->session();
-        $clock->advanceSeconds(4);
+        $clock->advanceSeconds(14);
         $this->send($absolute, new RequestNetworkSettingsPacket());
-        $clock->advanceSeconds(9);
+        $clock->advanceSeconds(19);
         $this->send($absolute, $this->login(AuthenticationType::Full));
-        $clock->advanceSeconds(4);
+        $clock->advanceSeconds(14);
         $this->send($absolute, new ClientToServerHandshakePacket());
-        $clock->advanceSeconds(14);
-        $this->send($absolute, new ResourcePackClientResponsePacket(ResourcePackResponseStatus::HaveAllPacks, []));
-        $clock->advanceSeconds(14);
+        $clock->advanceSeconds(13);
         $absolute->tick();
         self::assertSame(LoginFailureCode::TIMEOUT, $absolute->failure());
     }
@@ -203,7 +218,7 @@ final class LoginSessionTest extends TestCase
         $keyFactory = new OpenSslEphemeralKeyFactory(dirname(__DIR__) . '/Fixtures/openssl.cnf');
         $client = $keyFactory->generate();
         $login = new AuthenticatedLogin('Player', 'identity', '1', $client->publicKey, self::clientData());
-        $authenticator = new AdvancingAuthenticator($login, $clock, 10);
+        $authenticator = new AdvancingAuthenticator($login, $clock, 20);
         $handshakes = new FixedHandshakeFactory(new HandshakeMaterial($keyFactory->generate(), str_repeat("\x5a", 16)));
         $session = new LoginSession($clock, $authenticator, $handshakes);
         $this->send($session, new RequestNetworkSettingsPacket());
@@ -217,7 +232,7 @@ final class LoginSessionTest extends TestCase
 
     public function testQueuedInputRechecksDeadlineBeforeEachPacket(): void
     {
-        $clock = new SequenceClock([1_000_000, 1_000_000, 5_001_000_000]);
+        $clock = new SequenceClock([1_000_000, 1_000_000, 15_001_000_000]);
         $keyFactory = new OpenSslEphemeralKeyFactory(dirname(__DIR__) . '/Fixtures/openssl.cnf');
         $keys = $keyFactory->generate();
         $session = new LoginSession(

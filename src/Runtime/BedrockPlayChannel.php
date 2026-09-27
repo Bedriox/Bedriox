@@ -106,9 +106,11 @@ use Bedriox\Server\Simulation\ArmSwingSource;
 use Bedriox\Server\Simulation\BlockBreakAction;
 use Bedriox\Server\Simulation\ClientInputTick;
 use Bedriox\Server\Simulation\Command\CraftingRequest;
+use Bedriox\Server\Simulation\Command\MovePlayer;
 use Bedriox\Server\Simulation\Command\WorldCommand;
 use Bedriox\Server\Simulation\MovementMode;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
+use Bedriox\Server\Transport\NetworkCompressionPolicy;
 use Bedriox\Server\Worker\Chunk\PreparedChunk;
 use Bedriox\Server\Worker\Chunk\PreparedChunkAvailability;
 use Bedriox\Server\Worker\Chunk\PreparedChunkCache;
@@ -124,7 +126,7 @@ use Throwable;
 /** Owns post-login protocol framing, live ciphers, and validated play input. */
 final class BedrockPlayChannel
 {
-    private const int COMPRESSION_THRESHOLD = 256;
+    private const int PROTOCOL_TRACE_SUMMARY_INTERVAL_NANOSECONDS = 30_000_000_000;
     private const int CHUNK_PREPARATION_NANOSECONDS_PER_TICK = 5_000_000;
     private const int CHUNK_PREPARATION_BYTES_PER_TICK = 4_194_304;
     private const int CHUNK_DELIVERY_NANOSECONDS_PER_TICK = 5_000_000;
@@ -140,7 +142,7 @@ final class BedrockPlayChannel
     /** @var SplQueue<CommandRequestPacket> */
     private SplQueue $playerCommands;
 
-    /** @var SplQueue<Packet> */
+    /** @var SplQueue<Packet|ReusablePlayPacket> */
     private SplQueue $pendingBootstrapPackets;
 
     /** @var SplQueue<Packet> */
@@ -159,7 +161,7 @@ final class BedrockPlayChannel
     private ?UpdateAbilitiesPacket $authoritativeAbilities = null;
     private bool $sneaking = false;
     private bool $sprinting = false;
-    /** @var list<Packet> */
+    /** @var list<Packet|ReusablePlayPacket> */
     private array $deferredInitializationPackets = [];
     private bool $bootstrapSent = false;
     private bool $spawnAcknowledged = false;
@@ -178,7 +180,9 @@ final class BedrockPlayChannel
     private ?int $pendingHotbarSlot = null;
     private bool $closed = false;
     private bool $spawnStatusQueued = false;
-    private bool $chunkVisibilityChanged = false;
+    private ?NetworkChunkPublisherUpdatePacket $pendingChunkPublisherUpdate = null;
+    /** @var array<string, true> Chunk keys whose sent visibility changed since the last projection pass. */
+    private array $chunkVisibilityChanges = [];
     private ?ChunkViewManager $chunkView = null;
     /** @var array<string, ChunkPosition> */
     private array $retainedChunks = [];
@@ -196,6 +200,19 @@ final class BedrockPlayChannel
     private readonly int $protocolVersion;
     private readonly ?OrderedOutboundCompressionQueue $outboundCompression;
 
+    /** @var array<int, array{packets: int, bytes: int}> */
+    private array $traceInboundPackets = [];
+    /** @var array<string, array{batches: int, packets: int, bytes: int}> */
+    private array $traceOutboundBatches = [];
+    private int $tracePreparedChunks = 0;
+    private int $tracePreparedChunkBytes = 0;
+    private int $traceInboundEnvelopes = 0;
+    private int $traceInboundDecryptNanoseconds = 0;
+    private int $traceInboundBatchNanoseconds = 0;
+    private int $traceInboundDecodeNanoseconds = 0;
+    private int $traceInboundHandleNanoseconds = 0;
+    private int $traceWindowStartedNanoseconds;
+
     /** @var SplQueue<string> */
     private SplQueue $deferredCompressionBatches;
     private int $deferredCompressionBytes = 0;
@@ -207,7 +224,7 @@ final class BedrockPlayChannel
     private array $servedSubChunkSections = [];
 
     /**
-     * @param list<Packet> $initializationPackets
+     * @param list<Packet|ReusablePlayPacket> $initializationPackets
      * @param array{air: int, bedrock: int, dirt: int, grass_block: int} $fixedFlatRuntimeIds
      */
     public function __construct(
@@ -234,6 +251,7 @@ final class BedrockPlayChannel
         ?CompressionWorkerDispatcher $compressionWorkers = null,
         int $compressionTaskTypeId = 0,
         private readonly ?PreparedChunkCache $preparedChunks = null,
+        private readonly ?PreparedPlayBatchCache $preparedPlayBatches = null,
     ) {
         $this->login = $ready->login;
         $this->encryptor = $ready->encryptor;
@@ -246,18 +264,19 @@ final class BedrockPlayChannel
         $this->pendingStreamingResponses = new SplQueue();
         $this->generatedChunks = new SplQueue();
         $this->deferredCompressionBatches = new SplQueue();
+        $this->traceWindowStartedNanoseconds = hrtime(true);
         $this->batchLimits = new BatchLimits(maximumPackets: $this->limits->maximumPacketsPerPayload);
         $this->outboundCompression = $compressionWorkers === null ? null : new OrderedOutboundCompressionQueue(
             $compressionWorkers,
             $compressionTaskTypeId,
             1,
             CompressionMode::NegotiatedZlib,
-            self::COMPRESSION_THRESHOLD,
+            NetworkCompressionPolicy::THRESHOLD_BYTES,
             $this->batchLimits,
             maximumOutstandingTasks: $this->limits->maximumOutgoingPayloadsPerSession,
             maximumOutstandingBytes: $this->limits->maximumOutgoingBytesPerSession,
             maximumResultBytes: $this->batchLimits->maximumInputBytes + 1,
-            minimumOffloadBytes: 4_096,
+            minimumOffloadBytes: NetworkCompressionPolicy::MINIMUM_WORKER_OFFLOAD_BYTES,
         );
         $this->diagnostics = $diagnostics ?? RuntimeDiagnostics::disabled();
         try {
@@ -278,7 +297,10 @@ final class BedrockPlayChannel
                 throw new \OverflowException('Initial play packet count exceeded its configured limit.');
             }
             $radiusPhase = false;
-            foreach ($initializationPackets as $packet) {
+            foreach ($initializationPackets as $initializationPacket) {
+                $packet = $initializationPacket instanceof ReusablePlayPacket
+                    ? $initializationPacket->packet
+                    : $initializationPacket;
                 if ($packet instanceof UpdateAbilitiesPacket) {
                     $this->authoritativeAbilities = $packet;
                 }
@@ -287,10 +309,10 @@ final class BedrockPlayChannel
                     continue;
                 }
                 if ($radiusPhase) {
-                    $this->deferredInitializationPackets[] = $packet;
+                    $this->deferredInitializationPackets[] = $initializationPacket;
                     continue;
                 }
-                if (!$this->queuePacket($packet)) {
+                if (!$this->queueInitializationPacket($initializationPacket)) {
                     throw new \OverflowException('Initial play output exceeded its configured limit.');
                 }
             }
@@ -315,19 +337,25 @@ final class BedrockPlayChannel
         }
         $packetId = null;
         try {
+            ++$this->traceInboundEnvelopes;
+            $stageStartedNanoseconds = hrtime(true);
             $envelope = $this->decryptor->decryptEnvelope($event->payload);
+            $stageCompletedNanoseconds = hrtime(true);
+            $this->traceInboundDecryptNanoseconds += $stageCompletedNanoseconds - $stageStartedNanoseconds;
             $batch = BedrockBatchCodec::decode(
                 $envelope,
                 CompressionMode::NegotiatedZlib,
                 $this->batchLimits,
-                self::COMPRESSION_THRESHOLD,
+                NetworkCompressionPolicy::THRESHOLD_BYTES,
             );
+            $nextStageNanoseconds = hrtime(true);
+            $this->traceInboundBatchNanoseconds += $nextStageNanoseconds - $stageCompletedNanoseconds;
             if (count($batch->packets) > $this->limits->maximumCommandsPerPayload) {
                 return $this->fail('command_limit');
             }
             foreach ($batch->packets as $frame) {
                 $packetId = $frame->header->packetId;
-                $this->diagnose("received packet {$packetId} (" . strlen($frame->payload) . ' payload bytes)');
+                $this->recordInboundTrace($packetId, strlen($frame->payload));
                 if ($frame->header->senderSubclientId !== 0 || $frame->header->targetSubclientId !== 0) {
                     $this->diagnose("rejected packet {$packetId}: non-zero subclient routing");
                     return $this->fail('subclient_routing', $packetId);
@@ -335,8 +363,13 @@ final class BedrockPlayChannel
                 if (!$this->initialized && $frame->header->packetId === PacketIds::PLAYER_AUTH_INPUT) {
                     continue;
                 }
+                $decodeStartedNanoseconds = hrtime(true);
                 $packet = BedrockPacketCodec::decode($packetId, $frame->payload, $this->protocolVersion);
-                if (!$this->handle($packet)) {
+                $handleStartedNanoseconds = hrtime(true);
+                $this->traceInboundDecodeNanoseconds += $handleStartedNanoseconds - $decodeStartedNanoseconds;
+                $handled = $this->handle($packet);
+                $this->traceInboundHandleNanoseconds += hrtime(true) - $handleStartedNanoseconds;
+                if (!$handled) {
                     $this->diagnose("rejected packet {$packetId} (" . $packet::class . '): invalid play state');
                     return $this->fail('invalid_play_state', $packetId);
                 }
@@ -386,67 +419,244 @@ final class BedrockPlayChannel
         if ($this->closed || $this->totalQueuedPackets() >= $this->limits->maximumOutgoingPayloadsPerSession) {
             return false;
         }
+        $packetId = null;
         try {
-            $frames = array_map(
-                fn(Packet $packet): PacketFrame => new PacketFrame(
-                    new PacketHeader(BedrockPacketCodec::packetId($packet)),
+            $frames = [];
+            foreach ($packets as $packet) {
+                $packetId = BedrockPacketCodec::packetId($packet);
+                $frames[] = new PacketFrame(
+                    new PacketHeader($packetId),
                     BedrockPacketCodec::encode($packet, $this->protocolVersion),
-                ),
-                $packets,
-            );
-            if ($this->outboundCompression !== null) {
-                $clearBatch = PacketBatchCodec::encode($frames, $this->batchLimits);
-                if (!$this->deferredCompressionBatches->isEmpty()) {
-                    if (!$this->canRetainDeferredCompression($clearBatch)) {
-                        return false;
-                    }
-                    $this->deferredCompressionBatches->enqueue($clearBatch);
-                    $this->deferredCompressionBytes += strlen($clearBatch);
-                    foreach ($packets as $packet) {
-                        $this->recordQueuedPacket($packet);
-                    }
-
-                    return true;
-                }
-                $submission = $this->outboundCompression->enqueue($clearBatch);
-                if (!$submission->isAccepted()) {
-                    $this->diagnose("deferred ordered batch of {$packetCount} packets due to compression backpressure");
-                    if (!$this->canRetainDeferredCompression($clearBatch)) {
-                        return false;
-                    }
-                    $this->deferredCompressionBatches->enqueue($clearBatch);
-                    $this->deferredCompressionBytes += strlen($clearBatch);
-                    foreach ($packets as $packet) {
-                        $this->recordQueuedPacket($packet);
-                    }
-
-                    return true;
-                }
-                if (!$this->releaseCompressedBatches()) {
-                    return false;
-                }
-                $this->diagnose("queued ordered batch of {$packetCount} packets"
-                    . ($submission->synchronousFallback ? ' with synchronous compression' : ' for worker compression'));
-                foreach ($packets as $packet) {
-                    $this->recordQueuedPacket($packet);
-                }
-
-                return true;
+                );
             }
-            $batch = new BedrockBatch($frames, CompressionMode::NegotiatedZlib, self::COMPRESSION_THRESHOLD);
-            $envelope = $this->encryptor->encryptEnvelope(BedrockBatchCodec::encode($batch, $this->batchLimits));
-            $this->diagnose("queued ordered batch of {$packetCount} packets"
-                . ' (' . strlen($envelope) . ' encrypted bytes)');
         } catch (Throwable $error) {
-            $packetId = isset($packet) ? BedrockPacketCodec::packetId($packet) : null;
             $this->diagnose('failed encoding ordered packet batch: ' . $error::class);
             return $this->fail('encode_failed', $packetId, $error);
+        }
+
+        return $this->queuePacketFrames($frames, $packets);
+    }
+
+    /**
+     * Queues immutable packet frames which were projected once for multiple recipients.
+     *
+     * @param list<PacketFrame> $frames
+     * @param list<Packet> $sourcePackets
+     */
+    public function queuePacketFrames(array $frames, array $sourcePackets = []): bool
+    {
+        $packetCount = count($frames);
+        if ($packetCount < 1 || $packetCount > $this->limits->maximumPacketsPerPayload
+            || ($sourcePackets !== [] && count($sourcePackets) !== $packetCount)) {
+            return false;
+        }
+        if ($this->closed || $this->totalQueuedPackets() >= $this->limits->maximumOutgoingPayloadsPerSession) {
+            return false;
+        }
+        try {
+            if ($this->outboundCompression !== null) {
+                $clearBatch = PacketBatchCodec::encode($frames, $this->batchLimits);
+                return $this->queueClearBatch($clearBatch, $sourcePackets, $packetCount);
+            }
+            $batch = new BedrockBatch($frames, CompressionMode::NegotiatedZlib, NetworkCompressionPolicy::THRESHOLD_BYTES);
+            $envelope = $this->encryptor->encryptEnvelope(BedrockBatchCodec::encode($batch, $this->batchLimits));
+            $this->recordOutboundTrace('direct', $packetCount, strlen($envelope));
+        } catch (Throwable $error) {
+            $this->diagnose('failed encoding ordered packet frame batch: ' . $error::class);
+            return $this->fail('encode_failed', exception: $error);
         }
         if (strlen($envelope) > $this->limits->maximumOutgoingBytesPerSession - $this->outgoingBytes) {
             return $this->fail('output_limit');
         }
         $this->outgoing->enqueue(new OutgoingPlayPayload($envelope));
         $this->outgoingBytes += strlen($envelope);
+        foreach ($sourcePackets as $packet) {
+            $this->recordQueuedPacket($packet);
+        }
+
+        return true;
+    }
+
+    /**
+     * Queues a clear Bedrock envelope projected once for a group of recipients.
+     *
+     * @param list<PacketFrame> $frames Used as a bounded fallback if the ordered queue is saturated.
+     */
+    public function queuePreparedPacketFrames(array $frames, string $clearEnvelope): bool
+    {
+        $packetCount = count($frames);
+        if ($packetCount < 1 || $packetCount > $this->limits->maximumPacketsPerPayload
+            || $clearEnvelope === '' || ord($clearEnvelope[0]) !== BedrockBatchCodec::GAME_PACKET_MARKER) {
+            return false;
+        }
+        if (!$this->prepareTransientProjection()) {
+            return false;
+        }
+
+        return $this->queuePreparedClearEnvelope($clearEnvelope, $packetCount, 'shared');
+    }
+
+    /**
+     * Queues a shared, pre-encoded authoritative batch while preserving ordered delivery.
+     *
+     * @param list<PacketFrame> $frames
+     * @param list<Packet> $sourcePackets
+     */
+    public function queuePreparedAuthoritativePacketFrames(
+        array $frames,
+        string $clearEnvelope,
+        array $sourcePackets = [],
+    ): bool {
+        $packetCount = count($frames);
+        if ($packetCount < 1 || $packetCount > $this->limits->maximumPacketsPerPayload
+            || ($sourcePackets !== [] && count($sourcePackets) !== $packetCount)
+            || $clearEnvelope === '' || ord($clearEnvelope[0]) !== BedrockBatchCodec::GAME_PACKET_MARKER) {
+            return false;
+        }
+        if ($this->closed || $this->totalQueuedPackets() >= $this->limits->maximumOutgoingPayloadsPerSession) {
+            return false;
+        }
+        if ($this->outboundCompression !== null
+            && (!$this->releaseCompressedBatches() || $this->hasOutboundOrderingBarrier())) {
+            $submission = $this->outboundCompression->enqueuePrepared($clearEnvelope);
+            if (!$submission->isAccepted()) {
+                return $this->queuePacketFrames($frames, $sourcePackets);
+            }
+            if (!$this->releaseCompressedBatches()) {
+                return false;
+            }
+            $this->recordOutboundTrace('shared-authoritative', $packetCount, strlen($clearEnvelope));
+            foreach ($sourcePackets as $packet) {
+                $this->recordQueuedPacket($packet);
+            }
+
+            return true;
+        }
+
+        return $this->queuePreparedClearEnvelope(
+            $clearEnvelope,
+            $packetCount,
+            'shared-authoritative',
+            $sourcePackets,
+        );
+    }
+
+    /**
+     * Encrypts and queues an already-compressed envelope when no older compression work blocks it.
+     *
+     * @param list<Packet> $sourcePackets
+     */
+    private function queuePreparedClearEnvelope(
+        string $clearEnvelope,
+        int $packetCount,
+        string $traceMode,
+        array $sourcePackets = [],
+    ): bool {
+        try {
+            $envelope = $this->encryptor->encryptEnvelope($clearEnvelope);
+        } catch (Throwable $error) {
+            return $this->fail('encode_failed', exception: $error);
+        }
+        if (strlen($envelope) > $this->limits->maximumOutgoingBytesPerSession - $this->outgoingBytes) {
+            return $this->fail('output_limit');
+        }
+        $this->outgoing->enqueue(new OutgoingPlayPayload($envelope));
+        $this->outgoingBytes += strlen($envelope);
+        $this->recordOutboundTrace($traceMode, $packetCount, strlen($envelope));
+        foreach ($sourcePackets as $packet) {
+            $this->recordQueuedPacket($packet);
+        }
+
+        return true;
+    }
+
+    /**
+     * Releases completed ordered work and reports whether transient state may be projected now.
+     *
+     * Callers may suppress replaceable state such as peer movement while this returns false. This
+     * avoids encoding an update which cannot be placed ahead of an older ordered batch.
+     */
+    public function prepareTransientProjection(): bool
+    {
+        if ($this->closed || !$this->releaseCompressedBatches() || $this->hasOutboundOrderingBarrier()) {
+            return false;
+        }
+
+        return $this->totalQueuedPackets() < $this->limits->maximumOutgoingPayloadsPerSession
+            && $this->outgoingBytes < $this->limits->maximumOutgoingBytesPerSession;
+    }
+
+    private function queueInitializationPacket(Packet|ReusablePlayPacket $initializationPacket): bool
+    {
+        $packet = $initializationPacket instanceof ReusablePlayPacket
+            ? $initializationPacket->packet
+            : $initializationPacket;
+        if (!$initializationPacket instanceof ReusablePlayPacket
+            || $this->preparedPlayBatches === null
+            || $this->outboundCompression === null) {
+            return $this->queuePacket($packet);
+        }
+        if ($this->closed || $this->totalQueuedPackets() >= $this->limits->maximumOutgoingPayloadsPerSession) {
+            return false;
+        }
+        try {
+            $clearBatch = $this->preparedPlayBatches->getOrEncode(
+                $initializationPacket->key,
+                fn(): string => PacketBatchCodec::encode([
+                    new PacketFrame(
+                        new PacketHeader(BedrockPacketCodec::packetId($packet)),
+                        BedrockPacketCodec::encode($packet, $this->protocolVersion),
+                    ),
+                ], $this->batchLimits),
+            );
+        } catch (Throwable $error) {
+            return $this->fail('encode_failed', BedrockPacketCodec::packetId($packet), $error);
+        }
+
+        return $this->queueClearBatch($clearBatch, [$packet]);
+    }
+
+    /** @param list<Packet> $packets */
+    private function queueClearBatch(string $clearBatch, array $packets, ?int $packetCount = null): bool
+    {
+        $packetCount ??= count($packets);
+        if (!$this->deferredCompressionBatches->isEmpty()) {
+            if (!$this->canRetainDeferredCompression($clearBatch)) {
+                return false;
+            }
+            $this->deferredCompressionBatches->enqueue($clearBatch);
+            $this->deferredCompressionBytes += strlen($clearBatch);
+            foreach ($packets as $packet) {
+                $this->recordQueuedPacket($packet);
+            }
+
+            return true;
+        }
+        $submission = $this->outboundCompression?->enqueue($clearBatch);
+        if ($submission === null) {
+            return false;
+        }
+        if (!$submission->isAccepted()) {
+            $this->diagnose("deferred ordered batch of {$packetCount} packets due to compression backpressure");
+            if (!$this->canRetainDeferredCompression($clearBatch)) {
+                return false;
+            }
+            $this->deferredCompressionBatches->enqueue($clearBatch);
+            $this->deferredCompressionBytes += strlen($clearBatch);
+            foreach ($packets as $packet) {
+                $this->recordQueuedPacket($packet);
+            }
+
+            return true;
+        }
+        if (!$this->releaseCompressedBatches()) {
+            return false;
+        }
+        $this->recordOutboundTrace(
+            $submission->synchronousFallback ? 'synchronous' : 'worker',
+            $packetCount,
+            strlen($clearBatch),
+        );
         foreach ($packets as $packet) {
             $this->recordQueuedPacket($packet);
         }
@@ -485,8 +695,15 @@ final class BedrockPlayChannel
         if ($this->closed) {
             return false;
         }
+        $this->flushProtocolTraceSummary();
         if (!$this->releaseCompressedBatches()) {
             return false;
+        }
+        if (!$this->flushPendingChunkPublisherUpdate()) {
+            return false;
+        }
+        if ($this->pendingChunkPublisherUpdate !== null) {
+            return true;
         }
         $compressionBudget = $this->limits->maximumStreamingPacketsPerPoll;
         while ($compressionBudget-- > 0 && !$this->deferredCompressionBatches->isEmpty()) {
@@ -516,10 +733,15 @@ final class BedrockPlayChannel
             if ($queue->isEmpty()) {
                 break;
             }
-            $packet = $queue->dequeue();
-            if (!$this->queuePacket($packet)) {
-                return false;
+            $packet = $queue->bottom();
+            if (!$this->queueInitializationPacket($packet)) {
+                if ($this->closed) {
+                    return false;
+                }
+
+                break;
             }
+            $queue->dequeue();
         }
         $this->updateSpawnAcknowledged();
 
@@ -527,16 +749,27 @@ final class BedrockPlayChannel
     }
 
     /** Performs exactly one configured world-tick budget of chunk generation and delivery. */
-    public function worldTick(): bool
+    public function worldTick(?ChunkStreamingBudget $streamingBudget = null): bool
     {
         if ($this->closed) {
             return false;
+        }
+        if ($this->pendingChunkPublisherUpdate !== null) {
+            return true;
         }
         if (!$this->pendingBootstrapPackets->isEmpty() || !$this->pendingStreamingResponses->isEmpty()) {
             return true;
         }
 
-        return $this->generateChunks() && $this->prepareGeneratedChunks() && $this->sendGeneratedChunks();
+        $streamingBudget ??= new ChunkStreamingBudget(
+            $this->chunksGeneratePerTick,
+            $this->chunksSendPerTick,
+            $this->chunksSendPerTick,
+        );
+
+        return $this->generateChunks($streamingBudget)
+            && $this->prepareGeneratedChunks($streamingBudget)
+            && $this->sendGeneratedChunks($streamingBudget);
     }
 
     /**
@@ -584,6 +817,12 @@ final class BedrockPlayChannel
         return $acknowledged;
     }
 
+    /** Returns whether this session still needs terrain before the client may acknowledge spawn. */
+    public function requiresSpawnTerrain(): bool
+    {
+        return !$this->spawnStatusQueued;
+    }
+
     public function login(): AuthenticatedLogin
     {
         return $this->login;
@@ -626,10 +865,19 @@ final class BedrockPlayChannel
     /** Consumes the bounded chunk-delivery change latch used by peer actor visibility. */
     public function takeChunkVisibilityChanged(): bool
     {
-        $changed = $this->chunkVisibilityChanged;
-        $this->chunkVisibilityChanged = false;
+        $changed = $this->chunkVisibilityChanges !== [];
+        $this->chunkVisibilityChanges = [];
 
         return $changed;
+    }
+
+    /** @return list<string> canonical chunk keys whose visibility changed */
+    public function takeChunkVisibilityChanges(): array
+    {
+        $changes = array_keys($this->chunkVisibilityChanges);
+        $this->chunkVisibilityChanges = [];
+
+        return $changes;
     }
 
     /** Applies an authoritative simulation position to the per-player chunk view. */
@@ -649,10 +897,8 @@ final class BedrockPlayChannel
             return true;
         }
         foreach ($released as $coordinate) {
+            $this->chunkVisibilityChanges[$coordinate['x'] . ':' . $coordinate['z']] = true;
             $this->releaseChunk($coordinate['x'], $coordinate['z']);
-        }
-        if ($released !== []) {
-            $this->chunkVisibilityChanged = true;
         }
         $this->resetGeneratedChunkDeliveryQueue();
         foreach ($this->pendingChunkRequests as $key => $position) {
@@ -664,12 +910,30 @@ final class BedrockPlayChannel
             return false;
         }
 
-        return $this->queuePacket(new NetworkChunkPublisherUpdatePacket(
+        $this->pendingChunkPublisherUpdate = new NetworkChunkPublisherUpdatePacket(
             (int) floor($x),
             (int) floor($y),
             (int) floor($z),
             $view->radius() * 16,
-        ));
+        );
+
+        return $this->flushPendingChunkPublisherUpdate();
+    }
+
+    /** Keeps only the newest chunk center while bounded output catches up. */
+    private function flushPendingChunkPublisherUpdate(): bool
+    {
+        $packet = $this->pendingChunkPublisherUpdate;
+        if ($packet === null) {
+            return true;
+        }
+        if ($this->queuePacket($packet)) {
+            $this->pendingChunkPublisherUpdate = null;
+
+            return true;
+        }
+
+        return !$this->closed;
     }
 
     public function close(string $reason = 'server_close', ?int $packetId = null, ?Throwable $exception = null): void
@@ -708,6 +972,7 @@ final class BedrockPlayChannel
         $this->pendingStorageCloseId = null;
         $this->pendingStorageCloseType = null;
         $this->pendingHotbarSlot = null;
+        $this->pendingChunkPublisherUpdate = null;
         $this->bootstrapSent = false;
         $this->spawnAcknowledged = false;
         $this->admissionReleased = false;
@@ -1244,7 +1509,7 @@ final class BedrockPlayChannel
                 };
                 $yaw = self::normalizeYaw($packet->yaw);
                 $pitch = fmod($packet->pitch, 360.0);
-                $this->commands->enqueue($this->commandFactory->move(
+                $this->enqueueMovementCommand($this->commandFactory->move(
                     $this->sessionId,
                     $this->movementSequence,
                     $packet->wireX,
@@ -1262,6 +1527,7 @@ final class BedrockPlayChannel
                     $this->sprinting,
                     new ClientInputTick($packet->tick->high, $packet->tick->low),
                     $this->lastRequestedFlyingState === true,
+                    $packet->hasInput(PlayerAuthInputFlag::VerticalCollision),
                 ));
                 if ($packet->hasInput(PlayerAuthInputFlag::MissedSwing)) {
                     $this->commands->enqueue($this->commandFactory->swingArm(
@@ -1316,6 +1582,37 @@ final class BedrockPlayChannel
         $normalized = fmod($yaw, 360.0);
 
         return $normalized < 0.0 ? $normalized + 360.0 : $normalized;
+    }
+
+    private function enqueueMovementCommand(MovePlayer $command): void
+    {
+        $index = $this->commands->count() - 1;
+        $previous = $index >= 0 ? $this->commands->offsetGet($index) : null;
+        if (!$previous instanceof MovePlayer) {
+            $this->commands->enqueue($command);
+            return;
+        }
+        if ($previous->jumpRequested && !$command->jumpRequested) {
+            $command = new MovePlayer(
+                $command->session,
+                $command->sequence,
+                $command->position,
+                $command->yaw,
+                $command->pitch,
+                $command->mode,
+                $command->deltaX,
+                $command->deltaY,
+                $command->deltaZ,
+                true,
+                $command->headYaw,
+                $command->sneaking,
+                $command->sprinting,
+                $command->clientTick,
+                $command->flying,
+                $command->verticalCollision,
+            );
+        }
+        $this->commands->offsetSet($index, $command);
     }
 
     private function handleLegacyInventoryTransaction(InventoryTransactionPacket $packet): bool
@@ -2128,11 +2425,86 @@ final class BedrockPlayChannel
         $this->diagnostics->record('play.protocol_trace', ['detail' => $message]);
     }
 
-    /** @param SplQueue<Packet> $queue */
-    private function queuePending(SplQueue $queue, Packet $packet): bool
+    private function recordInboundTrace(int $packetId, int $bytes): void
+    {
+        $entry = $this->traceInboundPackets[$packetId] ?? ['packets' => 0, 'bytes' => 0];
+        ++$entry['packets'];
+        $entry['bytes'] += $bytes;
+        $this->traceInboundPackets[$packetId] = $entry;
+    }
+
+    private function recordOutboundTrace(string $mode, int $packets, int $bytes): void
+    {
+        $entry = $this->traceOutboundBatches[$mode] ?? ['batches' => 0, 'packets' => 0, 'bytes' => 0];
+        ++$entry['batches'];
+        $entry['packets'] += $packets;
+        $entry['bytes'] += $bytes;
+        $this->traceOutboundBatches[$mode] = $entry;
+    }
+
+    private function flushProtocolTraceSummary(bool $force = false): void
+    {
+        $now = hrtime(true);
+        if (!$force
+            && $now - $this->traceWindowStartedNanoseconds < self::PROTOCOL_TRACE_SUMMARY_INTERVAL_NANOSECONDS) {
+            return;
+        }
+        foreach ($this->traceInboundPackets as $packetId => $entry) {
+            $this->diagnostics->record('play.input_summary.protocol_trace', [
+                'session_id' => $this->sessionId,
+                'packet_id' => $packetId,
+                'packets' => $entry['packets'],
+                'bytes' => $entry['bytes'],
+            ]);
+        }
+        foreach ($this->traceOutboundBatches as $mode => $entry) {
+            $this->diagnostics->record('play.output_summary.protocol_trace', [
+                'session_id' => $this->sessionId,
+                'mode' => $mode,
+                'batches' => $entry['batches'],
+                'packets' => $entry['packets'],
+                'bytes' => $entry['bytes'],
+            ]);
+        }
+        if ($this->tracePreparedChunks > 0) {
+            $this->diagnostics->record('play.chunk_summary.protocol_trace', [
+                'session_id' => $this->sessionId,
+                'chunks' => $this->tracePreparedChunks,
+                'bytes' => $this->tracePreparedChunkBytes,
+            ]);
+        }
+        if ($this->traceInboundEnvelopes > 0) {
+            $this->diagnostics->record('play.input_cost_summary.protocol_trace', [
+                'session_id' => $this->sessionId,
+                'envelopes' => $this->traceInboundEnvelopes,
+                'decrypt_us' => intdiv($this->traceInboundDecryptNanoseconds, 1_000),
+                'batch_us' => intdiv($this->traceInboundBatchNanoseconds, 1_000),
+                'decode_us' => intdiv($this->traceInboundDecodeNanoseconds, 1_000),
+                'handle_us' => intdiv($this->traceInboundHandleNanoseconds, 1_000),
+            ]);
+        }
+        $this->traceInboundPackets = [];
+        $this->traceOutboundBatches = [];
+        $this->tracePreparedChunks = 0;
+        $this->tracePreparedChunkBytes = 0;
+        $this->traceInboundEnvelopes = 0;
+        $this->traceInboundDecryptNanoseconds = 0;
+        $this->traceInboundBatchNanoseconds = 0;
+        $this->traceInboundDecodeNanoseconds = 0;
+        $this->traceInboundHandleNanoseconds = 0;
+        $this->traceWindowStartedNanoseconds = $now;
+    }
+
+    /**
+     * @template T of Packet|ReusablePlayPacket
+     * @param SplQueue<T> $queue
+     * @param T $packet
+     */
+    private function queuePending(SplQueue $queue, Packet|ReusablePlayPacket $packet): bool
     {
         if ($this->closed || $this->totalQueuedPackets() >= $this->limits->maximumOutgoingPayloadsPerSession) {
-            return $this->fail('output_limit', BedrockPacketCodec::packetId($packet));
+            $source = $packet instanceof ReusablePlayPacket ? $packet->packet : $packet;
+            return $this->fail('output_limit', BedrockPacketCodec::packetId($source));
         }
         $queue->enqueue($packet);
 
@@ -2187,14 +2559,14 @@ final class BedrockPlayChannel
         }
     }
 
-    private function generateChunks(): bool
+    private function generateChunks(ChunkStreamingBudget $streamingBudget): bool
     {
         if ($this->chunkView === null || $this->flatWorld === null || $this->chunkSerializer === null) {
             return true;
         }
         $view = $this->chunkView;
         $world = $this->flatWorld;
-        $admitted = 0;
+        $attempted = 0;
         foreach ($view->pending(max(1, $view->pendingCount())) as $coordinate) {
             if ($this->generatedChunks->count() >= $this->limits->maximumOutgoingPayloadsPerSession) {
                 break;
@@ -2209,16 +2581,16 @@ final class BedrockPlayChannel
                 $this->generatedChunks->enqueue($position);
                 continue;
             }
-            if ($admitted >= $this->chunksGeneratePerTick) {
-                break;
-            }
             if (!isset($this->pendingChunkRequests[$key])
                 && count($this->pendingChunkRequests) >= $this->chunkGenerationQueueSize) {
                 break;
             }
-            ++$admitted;
+            if ($attempted >= $this->chunksGeneratePerTick || !$streamingBudget->claimGeneration()) {
+                break;
+            }
+            ++$attempted;
             try {
-                if (!$world->requestRetainChunk($position)) {
+                if (!$world->requestRetainChunk($position, false)) {
                     $this->pendingChunkRequests[$key] = $position;
                     continue;
                 }
@@ -2236,8 +2608,7 @@ final class BedrockPlayChannel
             return true;
         }
         foreach ($view->pendingPrefetch(max(1, $view->prefetchPendingCount())) as $coordinate) {
-            if ($admitted >= $this->chunksGeneratePerTick
-                || $this->generatedChunks->count() >= $this->limits->maximumOutgoingPayloadsPerSession) {
+            if ($this->generatedChunks->count() >= $this->limits->maximumOutgoingPayloadsPerSession) {
                 break;
             }
             $position = new ChunkPosition($coordinate['x'], $coordinate['z']);
@@ -2249,9 +2620,12 @@ final class BedrockPlayChannel
                 && count($this->pendingChunkRequests) >= $this->chunkGenerationQueueSize) {
                 break;
             }
-            ++$admitted;
+            if ($attempted >= $this->chunksGeneratePerTick || !$streamingBudget->claimGeneration()) {
+                break;
+            }
+            ++$attempted;
             try {
-                if (!$world->requestRetainChunk($position)) {
+                if (!$world->requestRetainChunk($position, false)) {
                     $this->pendingChunkRequests[$key] = $position;
                     continue;
                 }
@@ -2266,7 +2640,7 @@ final class BedrockPlayChannel
         return true;
     }
 
-    private function sendGeneratedChunks(): bool
+    private function sendGeneratedChunks(ChunkStreamingBudget $streamingBudget): bool
     {
         if ($this->chunkView === null || $this->flatWorld === null || $this->chunkSerializer === null) {
             return true;
@@ -2278,7 +2652,9 @@ final class BedrockPlayChannel
         $sent = 0;
         $sentBytes = 0;
         $startedAt = hrtime(true);
-        while ($sent < $this->chunksSendPerTick && !$this->generatedChunks->isEmpty()) {
+        while ($sent < $this->chunksSendPerTick
+            && $streamingBudget->hasDeliveryCapacity()
+            && !$this->generatedChunks->isEmpty()) {
             /** @var ChunkPosition $position */
             $position = $this->generatedChunks->bottom();
             $key = $position->key();
@@ -2310,6 +2686,29 @@ final class BedrockPlayChannel
                         || !$this->preparedChunks->isCurrent($prepared, $chunk, $this->protocolVersion)) {
                         break;
                     }
+                } elseif ($lookup->availability === PreparedChunkAvailability::SYNCHRONOUS_FALLBACK) {
+                    if ($this->hasOutboundOrderingBarrier()) {
+                        break;
+                    }
+                    try {
+                        $packet = $this->chunkSerializer->serialize($chunk);
+                        $frame = new PacketFrame(
+                            new PacketHeader(BedrockPacketCodec::packetId($packet)),
+                            BedrockPacketCodec::encode($packet, $this->protocolVersion),
+                        );
+                        $clearEnvelope = BedrockBatchCodec::encode(new BedrockBatch(
+                            [$frame],
+                            CompressionMode::NegotiatedZlib,
+                            NetworkCompressionPolicy::THRESHOLD_BYTES,
+                        ), $this->batchLimits);
+                        $prepared = $this->preparedChunks->retainSynchronous(
+                            $chunk,
+                            $this->protocolVersion,
+                            $clearEnvelope,
+                        );
+                    } catch (Throwable $exception) {
+                        return $this->fail('chunk_preparation_failed', exception: $exception);
+                    }
                 }
             }
 
@@ -2320,9 +2719,13 @@ final class BedrockPlayChannel
                     break;
                 }
                 if (!$this->queuePreparedChunk($prepared)) {
-                    $this->releaseChunk($position->x, $position->z);
+                    if ($this->closed) {
+                        $this->releaseChunk($position->x, $position->z);
 
-                    return false;
+                        return false;
+                    }
+
+                    break;
                 }
                 $sentBytes += $prepared->bytes();
             } else {
@@ -2336,15 +2739,22 @@ final class BedrockPlayChannel
                     return $this->fail('chunk_serialization_failed', exception: $exception);
                 }
                 if (!$this->queuePacket($packet)) {
-                    $this->releaseChunk($position->x, $position->z);
+                    if ($this->closed) {
+                        $this->releaseChunk($position->x, $position->z);
 
-                    return false;
+                        return false;
+                    }
+
+                    break;
                 }
+            }
+            if (!$streamingBudget->claimDelivery()) {
+                break;
             }
             $this->generatedChunks->dequeue();
             unset($this->queuedChunkKeys[$key]);
             $view->markSent($position->x, $position->z);
-            $this->chunkVisibilityChanged = true;
+            $this->chunkVisibilityChanges[$position->key()] = true;
             ++$sent;
             $spawnChunkX = (int) floor($this->spawnX / 16.0);
             $spawnChunkZ = (int) floor($this->spawnZ / 16.0);
@@ -2358,7 +2768,7 @@ final class BedrockPlayChannel
         $requiredChunks = (2 * $requiredRadius + 1) ** 2;
         if (!$this->spawnStatusQueued && count($this->sentSpawnChunks) >= $requiredChunks) {
             if (!$this->queuePacket(new PlayStatusPacket(PlayStatus::PlayerSpawn))) {
-                return false;
+                return !$this->closed;
             }
             $this->spawnStatusQueued = true;
             $this->bootstrapSent = true;
@@ -2368,7 +2778,7 @@ final class BedrockPlayChannel
     }
 
     /** Admits detached preparation work without changing the nearest-first delivery queue. */
-    private function prepareGeneratedChunks(): bool
+    private function prepareGeneratedChunks(ChunkStreamingBudget $streamingBudget): bool
     {
         if ($this->preparedChunks === null || $this->flatWorld === null || $this->generatedChunks->isEmpty()) {
             return true;
@@ -2383,6 +2793,9 @@ final class BedrockPlayChannel
             $position = $pending->dequeue();
             if ($this->chunkView?->contains($position->x, $position->z) !== true) {
                 continue;
+            }
+            if (!$streamingBudget->claimPreparation()) {
+                break;
             }
             try {
                 $chunk = $this->flatWorld->chunk($position);
@@ -2422,8 +2835,8 @@ final class BedrockPlayChannel
         }
         $this->outgoing->enqueue(new OutgoingPlayPayload($envelope));
         $this->outgoingBytes += strlen($envelope);
-        $this->diagnose('queued prepared chunk ' . $prepared->position->key()
-            . ' revision ' . $prepared->revision . ' (' . strlen($envelope) . ' encrypted bytes)');
+        ++$this->tracePreparedChunks;
+        $this->tracePreparedChunkBytes += strlen($envelope);
 
         return true;
     }

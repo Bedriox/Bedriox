@@ -108,6 +108,18 @@ final class PreparedChunkCacheTest extends TestCase
             $cache->lookupOrRequest($chunk, ProtocolVersion::CURRENT)->availability,
         );
         self::assertSame(3, $cache->snapshot()->failures);
+
+        $prepared = $cache->retainSynchronous(
+            $chunk,
+            ProtocolVersion::CURRENT,
+            (new PrepareChunkTask())->execute($workers->payloads[3]),
+        );
+        self::assertTrue($cache->isCurrent($prepared, $chunk, ProtocolVersion::CURRENT));
+        self::assertSame(
+            PreparedChunkAvailability::READY,
+            $cache->lookupOrRequest($chunk, ProtocolVersion::CURRENT)->availability,
+        );
+        self::assertSame(3, $workers->submissions);
     }
 
     public function testPressureTrimReleasesCompletedEntriesAndCanCancelPendingWork(): void

@@ -12,7 +12,7 @@ final readonly class RuntimeDiagnostics
 {
     private const int MAXIMUM_EVENT_BYTES = 64;
     private const int MAXIMUM_FIELD_BYTES = 128;
-    private const int MAXIMUM_FIELDS = 12;
+    private const int MAXIMUM_FIELDS = 24;
 
     /** @param Closure(string): void $writer */
     public function __construct(

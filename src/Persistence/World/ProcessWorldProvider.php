@@ -4,17 +4,24 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Persistence\World;
 
+use Bedriox\Server\Entity\Persistence\AsynchronousEntityPersistenceStore;
 use Bedriox\Server\Entity\Persistence\CorruptEntityPersistenceException;
+use Bedriox\Server\Entity\Persistence\EntityChunkSaveCompletion;
 use Bedriox\Server\Entity\Persistence\EntityChunkSnapshot;
 use Bedriox\Server\Entity\Persistence\EntityOwnershipTransfer;
 use Bedriox\Server\Entity\Persistence\EntityOwnershipTransferCodec;
+use Bedriox\Server\Entity\Persistence\EntityOwnershipTransferCompletion;
+use Bedriox\Server\Entity\Persistence\EntityOwnershipTransferResult;
+use Bedriox\Server\Entity\Persistence\EntityOwnershipTransferResultCodec;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceCodec;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceConflictException;
+use Bedriox\Server\Entity\Persistence\EntityPersistenceLimits;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
 use Bedriox\Server\Persistence\OrderedPersistenceQueue;
 use Bedriox\Server\Persistence\PersistenceEnqueueResult;
 use Bedriox\Server\Persistence\PersistenceQueueSnapshot;
 use Bedriox\Server\Persistence\PersistenceQueueStatusProvider;
+use Bedriox\Server\Persistence\PersistenceSubmission;
 use Bedriox\Server\Persistence\PersistenceWriteCompletion;
 use Bedriox\Server\Persistence\PersistenceWriteRequest;
 use Bedriox\Server\Persistence\World\Internal\WorldStorageProcessProgram;
@@ -26,6 +33,7 @@ use Bedriox\Server\Worker\Protocol\WorkerFrameDecoder;
 use Bedriox\Server\Worker\Protocol\WorkerFrameKind;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\ChunkPosition;
+use Bedriox\Server\World\Provider\AsynchronousWorldDataProvider;
 use Bedriox\Server\World\Provider\AsynchronousWorldProvider;
 use Bedriox\Server\World\Provider\ChunkSaveData;
 use Bedriox\Server\World\Provider\Exception\CorruptChunkException;
@@ -39,9 +47,10 @@ use Bedriox\Server\World\Provider\WorldData;
 use RuntimeException;
 use Throwable;
 
-final class ProcessWorldProvider implements AsynchronousWorldProvider, EntityPersistenceStore, PersistenceQueueStatusProvider
+final class ProcessWorldProvider implements AsynchronousWorldProvider, AsynchronousWorldDataProvider, AsynchronousEntityPersistenceStore, PersistenceQueueStatusProvider
 {
     private const int MAXIMUM_PRELOADED_ENTITY_CHUNKS = 2_048;
+    private const int MAXIMUM_QUEUED_ENTITY_TRANSFERS = 256;
 
     /** @var resource|null */
     private $process = null;
@@ -53,11 +62,16 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, EntityPer
     private readonly WorldDataIpcCodec $worldDataCodec;
     private readonly EntityPersistenceCodec $entityPersistenceCodec;
     private readonly EntityOwnershipTransferCodec $entityOwnershipTransfers;
+    private readonly EntityOwnershipTransferResultCodec $entityOwnershipTransferResults;
     private readonly WorldChunkLoadPayloadCodec $chunkLoadPayloads;
     private readonly OrderedPersistenceQueue $writeQueue;
+    private readonly OrderedPersistenceQueue $entityWriteQueue;
+    private readonly OrderedPersistenceQueue $worldDataWriteQueue;
     private readonly WorkerFrameDecoder $asyncDecoder;
     private int $nextTaskId = 1;
     private ?PersistenceWriteRequest $asyncWrite = null;
+    private bool $asyncWriteIsEntity = false;
+    private bool $asyncWriteIsWorldData = false;
     private int $asyncTaskId = 0;
     private string $asyncOutgoing = '';
     /** @var array<string, ChunkPosition> */
@@ -65,15 +79,25 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, EntityPer
     /** @var array<string, true> */
     private array $loadKeys = [];
     private ?ChunkPosition $asyncLoad = null;
+    /** @var array<string, EntityOwnershipTransfer> */
+    private array $queuedEntityTransfers = [];
+    private ?EntityOwnershipTransfer $asyncEntityTransfer = null;
+    /** @var list<EntityOwnershipTransferCompletion> */
+    private array $entityTransferCompletions = [];
     /** @var array<string, array{state: 'loaded'|'missing'|'corrupt', snapshot: ?EntityChunkSnapshot}> */
     private array $preloadedEntityChunks = [];
     /** @var list<ChunkLoadCompletion> */
     private array $loadCompletions = [];
     /** @var list<PersistenceWriteCompletion> */
     private array $deferredCompletions = [];
+    /** @var list<PersistenceWriteCompletion> */
+    private array $deferredWorldDataCompletions = [];
+    /** @var array<int, string> persistence request ID => bounded storage failure detail */
+    private array $entityWriteFailureDetails = [];
     private bool $closed = false;
     private bool $ownerConfirmedClosed = false;
     private WorldData $data;
+    private int $worldDataRevision = 0;
 
     private function __construct(
         private readonly string $applicationVersion,
@@ -92,8 +116,16 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, EntityPer
         $this->worldDataCodec = new WorldDataIpcCodec();
         $this->entityPersistenceCodec = EntityPersistenceCodec::vanilla();
         $this->entityOwnershipTransfers = new EntityOwnershipTransferCodec($this->entityPersistenceCodec);
+        $this->entityOwnershipTransferResults = new EntityOwnershipTransferResultCodec($this->entityPersistenceCodec);
         $this->chunkLoadPayloads = new WorldChunkLoadPayloadCodec();
         $this->writeQueue = new OrderedPersistenceQueue(1_024, 67_108_864, ChunkTransferCodec::MAXIMUM_ENCODED_BYTES, 1_024);
+        $this->entityWriteQueue = new OrderedPersistenceQueue(
+            1_024,
+            16_777_216,
+            EntityPersistenceLimits::MAX_DOCUMENT_BYTES,
+            1_024,
+        );
+        $this->worldDataWriteQueue = new OrderedPersistenceQueue(2, 2_097_152, 1_048_576, 16);
         $this->asyncDecoder = new WorkerFrameDecoder($this->frames, 33_619_968);
     }
 
@@ -125,7 +157,19 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, EntityPer
 
     public function persistenceQueueSnapshot(): PersistenceQueueSnapshot
     {
-        return $this->writeQueue->snapshot();
+        $terrain = $this->writeQueue->snapshot();
+        $entities = $this->entityWriteQueue->snapshot();
+        $worldData = $this->worldDataWriteQueue->snapshot();
+
+        return new PersistenceQueueSnapshot(
+            $terrain->queued + $entities->queued + $worldData->queued,
+            $terrain->inFlight + $entities->inFlight + $worldData->inFlight,
+            $terrain->completions + $entities->completions + $worldData->completions,
+            $terrain->requestBytes + $entities->requestBytes + $worldData->requestBytes,
+            $terrain->coalesced + $entities->coalesced + $worldData->coalesced,
+            $terrain->saturated + $entities->saturated + $worldData->saturated,
+            $terrain->failed + $entities->failed + $worldData->failed,
+        );
     }
 
     public function loadChunk(ChunkPosition $position): ?LoadedChunkData
@@ -154,8 +198,55 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, EntityPer
 
     public function saveWorldData(WorldData $worldData): void
     {
-        $this->request(WorldStorageOperation::SAVE_WORLD_DATA, $this->worldDataCodec->encode($worldData));
-        $this->data = $worldData;
+        $submission = $this->enqueueWorldDataSave($worldData);
+        if ($submission->status === PersistenceSubmission::SATURATED
+            || $submission->status === PersistenceSubmission::STALE) {
+            throw $this->failOwner('World metadata persistence queue rejected the current state.');
+        }
+        foreach ($this->drainWorldDataSaves($this->requestTimeoutMilliseconds) as $completion) {
+            if (!$completion->successful) {
+                throw $this->failOwner('World metadata persistence failed: ' . $completion->failureCode);
+            }
+        }
+    }
+
+    public function enqueueWorldDataSave(WorldData $worldData): PersistenceEnqueueResult
+    {
+        $this->assertOpen();
+        if ($this->worldDataRevision >= PHP_INT_MAX) {
+            throw $this->failOwner('World metadata persistence revision is exhausted.');
+        }
+        $result = $this->worldDataWriteQueue->enqueue(
+            'world:data',
+            $this->worldDataRevision + 1,
+            $this->worldDataCodec->encode($worldData),
+        );
+        if ($result->status !== PersistenceSubmission::SATURATED
+            && $result->status !== PersistenceSubmission::STALE) {
+            ++$this->worldDataRevision;
+            $this->data = $worldData;
+        }
+
+        return $result;
+    }
+
+    public function pollWorldDataSaves(int $maximumCompletions = 16): array
+    {
+        $this->assertOpen();
+        if ($maximumCompletions < 1 || $maximumCompletions > 256) {
+            throw new \InvalidArgumentException('World metadata persistence completion limit is invalid.');
+        }
+        $this->advancePersistence();
+        $completions = array_splice($this->deferredWorldDataCompletions, 0, $maximumCompletions);
+        while (count($completions) < $maximumCompletions) {
+            $completion = $this->worldDataWriteQueue->takeCompletion();
+            if (!$completion instanceof PersistenceWriteCompletion) {
+                break;
+            }
+            $completions[] = $completion;
+        }
+
+        return $completions;
     }
 
     public function saveChunk(ChunkSaveData $chunkData): void
@@ -218,22 +309,127 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, EntityPer
         unset($this->preloadedEntityChunks[$snapshot->chunk->key()]);
     }
 
-    public function transferEntityOwnership(EntityOwnershipTransfer $transfer): void
+    public function enqueueEntityChunkSave(EntityChunkSnapshot $snapshot): PersistenceEnqueueResult
+    {
+        $this->assertOpen();
+
+        return $this->entityWriteQueue->enqueue(
+            'entity:' . $snapshot->chunk->key(),
+            $snapshot->chunkRevision,
+            $this->entityPersistenceCodec->encode($snapshot),
+        );
+    }
+
+    public function pollEntityChunkSaves(int $maximumCompletions = 256): array
+    {
+        $this->assertOpen();
+        if ($maximumCompletions < 1 || $maximumCompletions > 256) {
+            throw new \InvalidArgumentException('Entity persistence completion limit is invalid.');
+        }
+        $this->advancePersistence();
+        $completions = [];
+        while (count($completions) < $maximumCompletions) {
+            $completion = $this->entityWriteQueue->takeCompletion();
+            if (!$completion instanceof PersistenceWriteCompletion) {
+                break;
+            }
+            $chunk = self::entityChunkPositionFor($completion);
+            $detail = $this->entityWriteFailureDetails[$completion->requestId] ?? null;
+            unset($this->entityWriteFailureDetails[$completion->requestId]);
+            $completions[] = new EntityChunkSaveCompletion(
+                $chunk,
+                $completion->revision,
+                $completion->successful,
+                $completion->failureCode,
+                $detail,
+            );
+        }
+
+        return $completions;
+    }
+
+    public function drainEntityChunkSaves(int $timeoutMilliseconds): array
+    {
+        if ($timeoutMilliseconds < 1 || $timeoutMilliseconds > 300_000) {
+            throw new \InvalidArgumentException('Entity persistence drain timeout is invalid.');
+        }
+        $all = [];
+        $deadline = hrtime(true) + $timeoutMilliseconds * 1_000_000;
+        do {
+            $all = [...$all, ...$this->pollEntityChunkSaves()];
+            $snapshot = $this->entityWriteQueue->snapshot();
+            if ($snapshot->queued === 0 && $snapshot->inFlight === 0
+                && (!$this->asyncWriteIsEntity || $this->asyncWrite === null)) {
+                return $all;
+            }
+            usleep(1_000);
+        } while (hrtime(true) < $deadline);
+
+        throw $this->failOwner('Timed out draining queued entity persistence.');
+    }
+
+    public function transferEntityOwnership(EntityOwnershipTransfer $transfer): EntityOwnershipTransferResult
     {
         $result = $this->request(
             WorldStorageOperation::TRANSFER_ENTITY_OWNERSHIP,
             $this->entityOwnershipTransfers->encode($transfer),
             false,
         );
-        if (($result->metadata['source_revision'] ?? null) !== $transfer->sourceAfter->chunkRevision
-            || ($result->metadata['destination_revision'] ?? null) !== $transfer->destinationAfter->chunkRevision
-            || $result->payload !== '') {
-            throw $this->failOwner('Entity ownership transfer acknowledgement has the wrong revision.');
-        }
+        $committed = $this->decodeEntityOwnershipTransferResult($result, $transfer);
         unset(
             $this->preloadedEntityChunks[$transfer->sourceAfter->chunk->key()],
             $this->preloadedEntityChunks[$transfer->destinationAfter->chunk->key()],
         );
+
+        return $committed;
+    }
+
+    public function enqueueEntityOwnershipTransfer(EntityOwnershipTransfer $transfer): bool
+    {
+        $this->assertOpen();
+        $uuid = $transfer->uuid;
+        $activeTransfer = $this->asyncEntityTransfer;
+        if (($activeTransfer !== null && $activeTransfer->uuid === $uuid)
+            || isset($this->queuedEntityTransfers[$uuid])) {
+            return false;
+        }
+        if (count($this->queuedEntityTransfers) >= self::MAXIMUM_QUEUED_ENTITY_TRANSFERS) {
+            return false;
+        }
+        $this->queuedEntityTransfers[$uuid] = $transfer;
+
+        return true;
+    }
+
+    /** @return list<EntityOwnershipTransferCompletion> */
+    public function pollEntityOwnershipTransfers(int $maximumCompletions = 256): array
+    {
+        $this->assertOpen();
+        if ($maximumCompletions < 1 || $maximumCompletions > 256) {
+            throw new \InvalidArgumentException('Entity ownership transfer completion limit is invalid.');
+        }
+        $this->advancePersistence();
+
+        return array_splice($this->entityTransferCompletions, 0, $maximumCompletions);
+    }
+
+    /** @return list<EntityOwnershipTransferCompletion> */
+    public function drainEntityOwnershipTransfers(int $timeoutMilliseconds): array
+    {
+        if ($timeoutMilliseconds < 1 || $timeoutMilliseconds > 300_000) {
+            throw new \InvalidArgumentException('Entity ownership transfer drain timeout is invalid.');
+        }
+        $all = [];
+        $deadline = hrtime(true) + $timeoutMilliseconds * 1_000_000;
+        do {
+            $all = [...$all, ...$this->pollEntityOwnershipTransfers()];
+            if ($this->queuedEntityTransfers === [] && $this->asyncEntityTransfer === null) {
+                return $all;
+            }
+            usleep(1_000);
+        } while (hrtime(true) < $deadline);
+
+        throw $this->failOwner('Timed out draining entity ownership transfers.');
     }
 
     /** Queues an immutable canonical snapshot without waiting for disk I/O. */
@@ -256,6 +452,24 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, EntityPer
         $position = new ChunkPosition((int) $matches[1], (int) $matches[2]);
         if ('chunk:' . $position->key() !== $completion->key) {
             throw new \InvalidArgumentException('Persistence completion chunk coordinate is not canonical.');
+        }
+
+        return $position;
+    }
+
+    public static function entityChunkPositionFor(PersistenceWriteCompletion $completion): ChunkPosition
+    {
+        return self::entityChunkPositionForKey($completion->key);
+    }
+
+    private static function entityChunkPositionForKey(string $key): ChunkPosition
+    {
+        if (preg_match('/^entity:(-?(?:0|[1-9][0-9]*)):(-?(?:0|[1-9][0-9]*))$/D', $key, $matches) !== 1) {
+            throw new \InvalidArgumentException('Persistence completion does not contain an entity chunk coordinate key.');
+        }
+        $position = new ChunkPosition((int) $matches[1], (int) $matches[2]);
+        if ('entity:' . $position->key() !== $key) {
+            throw new \InvalidArgumentException('Persistence completion entity chunk coordinate is not canonical.');
         }
 
         return $position;
@@ -333,9 +547,15 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, EntityPer
         $deadline = hrtime(true) + $timeoutMilliseconds * 1_000_000;
         do {
             $all = [...$all, ...$this->pollChunkSaves()];
+            $this->retainWorldDataCompletions();
             $snapshot = $this->writeQueue->snapshot();
+            $entitySnapshot = $this->entityWriteQueue->snapshot();
+            $worldDataSnapshot = $this->worldDataWriteQueue->snapshot();
             if ($snapshot->queued === 0 && $snapshot->inFlight === 0
+                && $entitySnapshot->queued === 0 && $entitySnapshot->inFlight === 0
+                && $worldDataSnapshot->queued === 0 && $worldDataSnapshot->inFlight === 0
                 && $this->asyncWrite === null && $this->asyncLoad === null
+                && $this->asyncEntityTransfer === null && $this->queuedEntityTransfers === []
                 && $this->asyncOutgoing === '' && $this->queuedLoads === []) {
                 return $all;
             }
@@ -343,6 +563,34 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, EntityPer
         } while (hrtime(true) < $deadline);
 
         throw $this->failOwner('Timed out draining queued chunk persistence.');
+    }
+
+    /** @return list<PersistenceWriteCompletion> */
+    private function drainWorldDataSaves(int $timeoutMilliseconds): array
+    {
+        if ($timeoutMilliseconds < 1 || $timeoutMilliseconds > 300_000) {
+            throw new \InvalidArgumentException('World metadata persistence drain timeout is invalid.');
+        }
+        $all = [];
+        $deadline = hrtime(true) + $timeoutMilliseconds * 1_000_000;
+        do {
+            $all = [...$all, ...$this->pollWorldDataSaves()];
+            $snapshot = $this->worldDataWriteQueue->snapshot();
+            if ($snapshot->queued === 0 && $snapshot->inFlight === 0
+                && (!$this->asyncWriteIsWorldData || $this->asyncWrite === null)) {
+                return $all;
+            }
+            usleep(1_000);
+        } while (hrtime(true) < $deadline);
+
+        throw $this->failOwner('Timed out draining queued world metadata persistence.');
+    }
+
+    private function retainWorldDataCompletions(): void
+    {
+        while (($completion = $this->worldDataWriteQueue->takeCompletion()) instanceof PersistenceWriteCompletion) {
+            $this->deferredWorldDataCompletions[] = $completion;
+        }
     }
 
     public function close(): void
@@ -492,8 +740,14 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, EntityPer
     ): WorkerFrame {
         $this->assertOpen();
         $pending = $this->writeQueue->snapshot();
+        $pendingEntities = $this->entityWriteQueue->snapshot();
+        $pendingWorldData = $this->worldDataWriteQueue->snapshot();
         if ($pending->queued > 0 || $pending->inFlight > 0 || $this->asyncWrite !== null
-            || $this->asyncLoad !== null || $this->asyncOutgoing !== '' || $this->queuedLoads !== []) {
+            || $pendingEntities->queued > 0 || $pendingEntities->inFlight > 0
+            || $pendingWorldData->queued > 0 || $pendingWorldData->inFlight > 0
+            || $this->asyncLoad !== null || $this->asyncEntityTransfer !== null
+            || $this->asyncOutgoing !== '' || $this->queuedLoads !== []
+            || $this->queuedEntityTransfers !== []) {
             if ($drainQueuedPersistence) {
                 $drained = $this->drainChunkSaves($this->requestTimeoutMilliseconds);
                 $this->deferredCompletions = [
@@ -552,9 +806,11 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, EntityPer
             throw new \InvalidArgumentException('World persistence barrier timeout is invalid.');
         }
         $deadline = hrtime(true) + $timeoutMilliseconds * 1_000_000;
-        while ($this->asyncWrite !== null || $this->asyncLoad !== null || $this->asyncOutgoing !== '') {
+        while ($this->asyncWrite !== null || $this->asyncLoad !== null
+            || $this->asyncEntityTransfer !== null || $this->asyncOutgoing !== '') {
             $this->advancePersistence();
-            if ($this->asyncWrite === null && $this->asyncLoad === null && $this->asyncOutgoing === '') {
+            if ($this->asyncWrite === null && $this->asyncLoad === null
+                && $this->asyncEntityTransfer === null && $this->asyncOutgoing === '') {
                 return;
             }
             if (hrtime(true) >= $deadline) {
@@ -569,34 +825,75 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, EntityPer
         if (!is_resource($this->connection)) {
             throw new WorldProviderClosedException('World provider is closed.');
         }
-        if ($this->asyncWrite === null && $this->asyncLoad === null) {
-            $loadKey = array_key_first($this->queuedLoads);
-            if (is_string($loadKey)) {
-                $position = $this->queuedLoads[$loadKey];
-                unset($this->queuedLoads[$loadKey]);
-                $this->asyncLoad = $position;
+        if ($this->asyncWrite === null && $this->asyncLoad === null && $this->asyncEntityTransfer === null) {
+            $request = $this->worldDataWriteQueue->dispatch();
+            if ($request instanceof PersistenceWriteRequest) {
+                $this->asyncWrite = $request;
+                $this->asyncWriteIsWorldData = true;
+                $this->asyncWriteIsEntity = false;
                 $this->asyncTaskId = $this->allocateTaskId();
                 $this->asyncOutgoing = $this->frames->encode(new WorkerFrame(
                     WorkerFrameKind::SUBMIT,
                     $this->epoch,
                     $this->asyncTaskId,
-                    WorldStorageOperation::LOAD_CHUNK->value,
+                    WorldStorageOperation::SAVE_WORLD_DATA->value,
                     WorldStorageProcessProgram::SCHEMA_VERSION,
-                    payload: json_encode(['x' => $position->x, 'z' => $position->z], JSON_THROW_ON_ERROR),
+                    payload: $request->payload,
                 ));
             } else {
-                $request = $this->writeQueue->dispatch();
-                if ($request instanceof PersistenceWriteRequest) {
-                    $this->asyncWrite = $request;
+                $transferUuid = array_key_first($this->queuedEntityTransfers);
+                if (is_string($transferUuid)) {
+                    $transfer = $this->queuedEntityTransfers[$transferUuid];
+                    unset($this->queuedEntityTransfers[$transferUuid]);
+                    $this->asyncEntityTransfer = $transfer;
                     $this->asyncTaskId = $this->allocateTaskId();
                     $this->asyncOutgoing = $this->frames->encode(new WorkerFrame(
                         WorkerFrameKind::SUBMIT,
                         $this->epoch,
                         $this->asyncTaskId,
-                        WorldStorageOperation::SAVE_CHUNK->value,
+                        WorldStorageOperation::TRANSFER_ENTITY_OWNERSHIP->value,
                         WorldStorageProcessProgram::SCHEMA_VERSION,
-                        payload: $request->payload,
+                        payload: $this->entityOwnershipTransfers->encode($transfer),
                     ));
+                } else {
+                    $loadKey = array_key_first($this->queuedLoads);
+                }
+                if ($this->asyncEntityTransfer === null && is_string($loadKey ?? null)) {
+                    $position = $this->queuedLoads[$loadKey];
+                    unset($this->queuedLoads[$loadKey]);
+                    $this->asyncLoad = $position;
+                    $this->asyncTaskId = $this->allocateTaskId();
+                    $this->asyncOutgoing = $this->frames->encode(new WorkerFrame(
+                        WorkerFrameKind::SUBMIT,
+                        $this->epoch,
+                        $this->asyncTaskId,
+                        WorldStorageOperation::LOAD_CHUNK->value,
+                        WorldStorageProcessProgram::SCHEMA_VERSION,
+                        payload: json_encode(['x' => $position->x, 'z' => $position->z], JSON_THROW_ON_ERROR),
+                    ));
+                } elseif ($this->asyncEntityTransfer === null) {
+                    $request = $this->entityWriteQueue->dispatch();
+                    $this->asyncWriteIsEntity = $request instanceof PersistenceWriteRequest;
+                    $this->asyncWriteIsWorldData = false;
+                    if (!$request instanceof PersistenceWriteRequest) {
+                        $request = $this->writeQueue->dispatch();
+                        $this->asyncWriteIsEntity = false;
+                    }
+                    if ($request instanceof PersistenceWriteRequest) {
+                        $this->asyncWrite = $request;
+                        $this->asyncTaskId = $this->allocateTaskId();
+                        $operation = $this->asyncWriteIsEntity
+                            ? WorldStorageOperation::SAVE_ENTITY_CHUNK
+                            : WorldStorageOperation::SAVE_CHUNK;
+                        $this->asyncOutgoing = $this->frames->encode(new WorkerFrame(
+                            WorkerFrameKind::SUBMIT,
+                            $this->epoch,
+                            $this->asyncTaskId,
+                            $operation->value,
+                            WorldStorageProcessProgram::SCHEMA_VERSION,
+                            payload: $request->payload,
+                        ));
+                    }
                 }
             }
         }
@@ -619,6 +916,44 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, EntityPer
             throw $this->failOwner('World storage asynchronous response framing failed.', $error);
         }
         foreach ($frames as $frame) {
+            if ($this->asyncEntityTransfer instanceof EntityOwnershipTransfer) {
+                $transfer = $this->asyncEntityTransfer;
+                if (!hash_equals($this->epoch, $frame->epoch)
+                    || $frame->taskId !== $this->asyncTaskId
+                    || $frame->taskTypeId !== WorldStorageOperation::TRANSFER_ENTITY_OWNERSHIP->value
+                    || $frame->schemaVersion !== WorldStorageProcessProgram::SCHEMA_VERSION) {
+                    throw $this->failOwner('World storage entity-transfer response did not match its request.');
+                }
+                $committed = $frame->kind === WorkerFrameKind::RESULT
+                    ? $this->decodeEntityOwnershipTransferResult($frame, $transfer)
+                    : null;
+                $successful = $committed instanceof EntityOwnershipTransferResult;
+                $failureCode = $successful
+                    ? null
+                    : (is_string($frame->metadata['code'] ?? null) ? $frame->metadata['code'] : 'storage_failure');
+                $this->entityTransferCompletions[] = new EntityOwnershipTransferCompletion(
+                    $transfer,
+                    $successful,
+                    $failureCode,
+                    $successful || !is_string($frame->metadata['detail'] ?? null)
+                        ? null
+                        : $frame->metadata['detail'],
+                    $committed,
+                );
+                if ($successful) {
+                    unset(
+                        $this->preloadedEntityChunks[$transfer->sourceAfter->chunk->key()],
+                        $this->preloadedEntityChunks[$transfer->destinationAfter->chunk->key()],
+                    );
+                }
+                $this->asyncEntityTransfer = null;
+                $this->asyncTaskId = 0;
+                if (count($frames) > 1) {
+                    throw $this->failOwner('World storage returned more than one asynchronous completion.');
+                }
+
+                continue;
+            }
             if ($this->asyncLoad instanceof ChunkPosition) {
                 $this->acceptAsyncLoad($frame, $this->asyncLoad);
                 $this->asyncLoad = null;
@@ -630,32 +965,78 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, EntityPer
                 continue;
             }
             $request = $this->asyncWrite;
+            $operation = $this->asyncWriteIsWorldData
+                ? WorldStorageOperation::SAVE_WORLD_DATA
+                : ($this->asyncWriteIsEntity
+                    ? WorldStorageOperation::SAVE_ENTITY_CHUNK
+                    : WorldStorageOperation::SAVE_CHUNK);
             if (!$request instanceof PersistenceWriteRequest
                 || !hash_equals($this->epoch, $frame->epoch)
                 || $frame->taskId !== $this->asyncTaskId
-                || $frame->taskTypeId !== WorldStorageOperation::SAVE_CHUNK->value
+                || $frame->taskTypeId !== $operation->value
                 || $frame->schemaVersion !== WorldStorageProcessProgram::SCHEMA_VERSION) {
                 throw $this->failOwner('World storage asynchronous response did not match its request.');
             }
             $successful = $frame->kind === WorkerFrameKind::RESULT
-                && ($frame->metadata['revision'] ?? null) === $request->revision
+                && ($this->asyncWriteIsWorldData
+                    || ($frame->metadata['revision'] ?? null) === $request->revision)
                 && $frame->payload === '';
             $failureCode = $successful
                 ? null
                 : (is_string($frame->metadata['code'] ?? null) ? $frame->metadata['code'] : 'storage_failure');
-            $this->writeQueue->complete(
+            $queue = $this->asyncWriteIsWorldData
+                ? $this->worldDataWriteQueue
+                : ($this->asyncWriteIsEntity ? $this->entityWriteQueue : $this->writeQueue);
+            if ($this->asyncWriteIsEntity && !$successful && is_string($frame->metadata['detail'] ?? null)) {
+                $this->entityWriteFailureDetails[$request->id] = $frame->metadata['detail'];
+            }
+            $queue->complete(
                 $request->id,
                 $request->key,
                 $request->revision,
                 $successful,
                 $failureCode,
             );
+            if ($this->asyncWriteIsEntity && $successful) {
+                unset($this->preloadedEntityChunks[self::entityChunkPositionForKey($request->key)->key()]);
+            }
             $this->asyncWrite = null;
+            $this->asyncWriteIsEntity = false;
+            $this->asyncWriteIsWorldData = false;
             $this->asyncTaskId = 0;
             if (count($frames) > 1) {
                 throw $this->failOwner('World storage returned more than one asynchronous completion.');
             }
         }
+    }
+
+    private function decodeEntityOwnershipTransferResult(
+        WorkerFrame $frame,
+        EntityOwnershipTransfer $transfer,
+    ): EntityOwnershipTransferResult {
+        try {
+            $result = $this->entityOwnershipTransferResults->decode($frame->payload);
+        } catch (Throwable $error) {
+            throw $this->failOwner('World storage entity-transfer result is invalid.', $error);
+        }
+        $source = $result->sourceAfter;
+        $destination = $result->destinationAfter;
+        $movedRevision = $destination->revisions()[$transfer->uuid] ?? null;
+        if ($source->worldName !== $transfer->sourceAfter->worldName
+            || $destination->worldName !== $transfer->destinationAfter->worldName
+            || $source->chunk->x !== $transfer->sourceAfter->chunk->x
+            || $source->chunk->z !== $transfer->sourceAfter->chunk->z
+            || $destination->chunk->x !== $transfer->destinationAfter->chunk->x
+            || $destination->chunk->z !== $transfer->destinationAfter->chunk->z
+            || isset($source->revisions()[$transfer->uuid])
+            || !is_int($movedRevision)
+            || $movedRevision <= $transfer->expectedEntityRevision
+            || ($frame->metadata['source_revision'] ?? null) !== $source->chunkRevision
+            || ($frame->metadata['destination_revision'] ?? null) !== $destination->chunkRevision) {
+            throw $this->failOwner('Entity ownership transfer acknowledgement has inconsistent committed state.');
+        }
+
+        return $result;
     }
 
     private function acceptAsyncLoad(WorkerFrame $frame, ChunkPosition $position): void
@@ -830,7 +1211,9 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, EntityPer
                 'World storage owner reported corrupt entity persistence.',
             ),
             'entity_persistence_conflict' => new EntityPersistenceConflictException(
-                'World storage owner reported a stale entity persistence operation.',
+                is_string($metadata['detail'] ?? null) && $metadata['detail'] !== ''
+                    ? 'World storage owner rejected stale entity persistence: ' . $metadata['detail']
+                    : 'World storage owner reported a stale entity persistence operation.',
             ),
             'unsupported_world_format' => new UnsupportedWorldFormatException('World storage owner reported an unsupported format.'),
             'provider_closed' => new WorldProviderClosedException('World storage owner is closed.'),

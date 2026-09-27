@@ -41,6 +41,7 @@ use Bedriox\Protocol\Packet\ItemStackResponsePacket;
 use Bedriox\Protocol\Packet\LoginAuthentication;
 use Bedriox\Protocol\Packet\LoginPacket;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
+use Bedriox\Protocol\Packet\MoveActorAbsolutePacket;
 use Bedriox\Protocol\Packet\Packet;
 use Bedriox\Protocol\Packet\PacketFrame;
 use Bedriox\Protocol\Packet\PacketHeader;
@@ -54,6 +55,7 @@ use Bedriox\Protocol\Packet\RequestNetworkSettingsPacket;
 use Bedriox\Protocol\Packet\ResourcePackClientResponsePacket;
 use Bedriox\Protocol\Packet\ResourcePackResponseStatus;
 use Bedriox\Protocol\Packet\ServerToClientHandshakePacket;
+use Bedriox\Protocol\Packet\SetActorMotionPacket;
 use Bedriox\Protocol\Packet\SetLocalPlayerAsInitializedPacket;
 use Bedriox\Protocol\Packet\ShapelessCraftingRecipe;
 use Bedriox\Protocol\Packet\SoftEnumUpdateType;
@@ -76,6 +78,8 @@ use Bedriox\RakNet\SessionClosedEvent;
 use Bedriox\RakNet\SessionCloseReason;
 use Bedriox\RakNet\SessionInfo;
 use Bedriox\RakNet\SessionOpenedEvent;
+use Bedriox\Server\Entity\EntityMotion;
+use Bedriox\Server\Entity\Vanilla\ZombieEntity;
 use Bedriox\Server\Gameplay\Crafting\CraftingCatalog;
 use Bedriox\Server\Gameplay\Crafting\RecipeIngredient;
 use Bedriox\Server\Gameplay\Crafting\RecipeOutput;
@@ -106,7 +110,9 @@ use Bedriox\Server\Plugin\PluginRuntimeControl;
 use Bedriox\Server\Runtime\BedrockInventoryPacketProjector;
 use Bedriox\Server\Runtime\BedrockPlayChannelFactory;
 use Bedriox\Server\Runtime\BedrockWorldEventPacketEncoder;
+use Bedriox\Server\Runtime\ChatBroadcastPacketEncoder;
 use Bedriox\Server\Runtime\DirectedPacket;
+use Bedriox\Server\Runtime\EntityMovementPacketEncoder;
 use Bedriox\Server\Runtime\LoginChannelFactory;
 use Bedriox\Server\Runtime\PlayerConnectionDirectory;
 use Bedriox\Server\Runtime\PlayInitializationFactory;
@@ -117,6 +123,7 @@ use Bedriox\Server\Runtime\ServerRuntime;
 use Bedriox\Server\Runtime\WorldEventPacketEncoder;
 use Bedriox\Server\Simulation\ClientInputTick;
 use Bedriox\Server\Simulation\Event\ChatBroadcast;
+use Bedriox\Server\Simulation\Event\EntityActorMoved;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
@@ -133,6 +140,7 @@ use Bedriox\Server\Simulation\VerticalState;
 use Bedriox\Server\Simulation\WorldSimulation;
 use Bedriox\Server\Tests\World\InMemoryWorldProvider;
 use Bedriox\Server\Transport\ConnectedTransport;
+use Bedriox\Server\Transport\NetworkCompressionPolicy;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
@@ -148,6 +156,72 @@ use Throwable;
 
 final class ServerRuntimeTest extends TestCase
 {
+    public function testEntityMovementProjectionBuildsOneSharedFrameSequenceForEveryRecipient(): void
+    {
+        $transport = new FakeConnectedTransport();
+        $clock = new RuntimeTestClock();
+        $world = new WorldSimulation();
+        $loginFactory = new RuntimeLoginFactory(uniqueIdentities: true, uniqueDisplayNames: true);
+        $encoder = new RecordingEntityMovementEncoder();
+        $runtime = new ServerRuntime(
+            $transport,
+            $loginFactory,
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $world,
+            new FixedRateWorldLoop($world, $clock),
+            $encoder,
+        );
+        $first = new SessionInfo('127.0.0.1', 20_001, 41, 1_400, 11);
+        $second = new SessionInfo('127.0.0.1', 20_002, 42, 1_400, 11);
+
+        try {
+            $this->advanceToInitializing($runtime, $transport, $first, $loginFactory);
+            $this->advanceToInitializing($runtime, $transport, $second, $loginFactory);
+            $entity = new ZombieEntity(
+                '00000000-0000-4000-8000-000000000301',
+                301,
+                'world',
+                new Position(1.0, 64.0, 2.0),
+            );
+            $entity->setMotion(new EntityMotion(0.1, 0.0, -0.2));
+            $firstId = '41@127.0.0.1:20001';
+            $secondId = '42@127.0.0.1:20002';
+            $event = new EntityActorMoved($entity, 17, [$firstId, $secondId], true);
+            $packetsBySession = self::emptyPacketFrameMap();
+            $frameCache = new \SplObjectStorage();
+            $recipientAvailability = [];
+            $directedCount = 0;
+            $collect = new \ReflectionMethod(ServerRuntime::class, 'collectMovementPackets');
+            $arguments = [
+                $event,
+                &$packetsBySession,
+                $frameCache,
+                &$recipientAvailability,
+                &$directedCount,
+            ];
+
+            self::assertTrue($collect->invokeArgs($runtime, $arguments));
+            self::assertSame(1, $encoder->movementCalls);
+            self::assertSame(0, $encoder->encodeCalls);
+            self::assertSame(4, $directedCount);
+            self::assertSame([$firstId, $secondId], array_keys($packetsBySession));
+            self::assertCount(2, $packetsBySession[$firstId]);
+            self::assertCount(2, $packetsBySession[$secondId]);
+            self::assertSame($packetsBySession[$firstId][0], $packetsBySession[$secondId][0]);
+            self::assertSame($packetsBySession[$firstId][1], $packetsBySession[$secondId][1]);
+            self::assertSame(
+                BedrockPacketCodec::encode($encoder->packets[0]),
+                $packetsBySession[$firstId][0]->payload,
+            );
+            self::assertSame(
+                BedrockPacketCodec::encode($encoder->packets[1]),
+                $packetsBySession[$firstId][1]->payload,
+            );
+        } finally {
+            $runtime->close();
+        }
+    }
+
     public function testJoinedPlayerReceivesOneCleanCatalogForLateRegisterReplaceAndRemoval(): void
     {
         $catalog = self::craftingCatalog();
@@ -614,7 +688,7 @@ final class ServerRuntimeTest extends TestCase
                 $joinedPackets,
                 static fn(Packet $packet): bool => $packet instanceof UpdateSoftEnumPacket,
             ));
-            self::assertNotEmpty($joinedUpdates);
+            self::assertCount(1, $joinedUpdates);
             $joinedUpdate = array_pop($joinedUpdates);
             self::assertInstanceOf(UpdateSoftEnumPacket::class, $joinedUpdate);
             self::assertSame(SoftEnumUpdateType::Replace, $joinedUpdate->type);
@@ -817,7 +891,68 @@ final class ServerRuntimeTest extends TestCase
         self::assertTrue($runtime->poll());
         self::assertCount(1, $world->snapshot()->players);
         self::assertSame(1, $runtime->sessionCount());
-        self::assertSame([PlayerJoined::class, ChatBroadcast::class, PlayerMoved::class], $events->classes);
+        self::assertContains(PlayerJoined::class, $events->classes);
+        self::assertContains(ChatBroadcast::class, $events->classes);
+        $players = $world->snapshot()->players;
+        $player = array_shift($players);
+        self::assertInstanceOf(PlayerSnapshot::class, $player);
+        self::assertSame(1, $player->movementSequence);
+        $position = $player->position;
+        self::assertInstanceOf(Position::class, $position);
+        self::assertSame(0.0, $position->x);
+        self::assertSame(64.0, $position->y);
+        self::assertSame(0.0, $position->z);
+    }
+
+    public function testChatBroadcastsFromOneTickShareOneEncryptedBatch(): void
+    {
+        $transport = new FakeConnectedTransport();
+        $clock = new RuntimeTestClock();
+        $world = new WorldSimulation();
+        $loginFactory = new RuntimeLoginFactory();
+        $encoder = new RecordingChatBroadcastEncoder();
+        $runtime = new ServerRuntime(
+            $transport,
+            $loginFactory,
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $world,
+            new FixedRateWorldLoop($world, $clock),
+            $encoder,
+        );
+        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $client = $this->advanceToInitializing($runtime, $transport, $info, $loginFactory);
+        $decryptor = $loginFactory->clientDecryptor();
+        $this->decodeEncryptedPackets($transport->sent, $decryptor);
+        $transport->sent = [];
+        $this->receiveEncrypted(
+            $transport,
+            $info,
+            $client,
+            new SetLocalPlayerAsInitializedPacket(UnsignedLong::fromInt(1)),
+        );
+        self::assertTrue($runtime->poll());
+        $clock->advance(50_000_000);
+        self::assertTrue($runtime->poll());
+        self::assertCount(1, $world->snapshot()->players);
+        $this->decodeEncryptedPackets($transport->sent, $decryptor);
+        $transport->sent = [];
+
+        $this->receiveEncrypted($transport, $info, $client, new ChatPacket('spoofed', 'first'));
+        $this->receiveEncrypted($transport, $info, $client, new ChatPacket('spoofed', 'second'));
+        self::assertTrue($runtime->poll());
+        $clock->advance(50_000_000);
+        self::assertTrue($runtime->poll());
+        self::assertSame(1, $runtime->sessionCount());
+        self::assertSame([], $transport->removed);
+
+        self::assertCount(1, self::sentTo($transport->sent, $info));
+        $packets = $this->decodeEncryptedPackets($transport->sent, $decryptor);
+        self::assertCount(2, $packets);
+        self::assertContainsOnlyInstancesOf(ChatPacket::class, $packets);
+        self::assertSame(['first', 'second'], array_map(
+            static fn(ChatPacket $packet): string => $packet->message,
+            $packets,
+        ));
     }
 
     public function testInvalidAuthenticatedGameplayNameClosesOnlyThatPeerAtInitializationAck(): void
@@ -1799,7 +1934,7 @@ final class ServerRuntimeTest extends TestCase
                 $decryptor->decryptEnvelope($payload[2]),
                 CompressionMode::NegotiatedZlib,
                 new BatchLimits(),
-                256,
+                NetworkCompressionPolicy::THRESHOLD_BYTES,
             );
             foreach ($batch->packets as $frame) {
                 if ($frame->header->packetId === PacketIds::UPDATE_ABILITIES) {
@@ -1874,6 +2009,12 @@ final class ServerRuntimeTest extends TestCase
         return $clientEncryptor;
     }
 
+    /** @return array<string, list<PacketFrame>> */
+    private static function emptyPacketFrameMap(): array
+    {
+        return [];
+    }
+
     private function receiveEncrypted(FakeConnectedTransport $transport, SessionInfo $info, BedrockEncryptor $encryptor, Packet $packet): void
     {
         $this->receive($transport, $info, $encryptor->encryptEnvelope($this->encode([$packet], CompressionMode::NegotiatedZlib)));
@@ -1921,12 +2062,21 @@ final class ServerRuntimeTest extends TestCase
             $packets,
         );
 
-        return BedrockBatchCodec::encode(new BedrockBatch($frames, $mode, 256), new BatchLimits());
+        return BedrockBatchCodec::encode(new BedrockBatch(
+            $frames,
+            $mode,
+            NetworkCompressionPolicy::THRESHOLD_BYTES,
+        ), new BatchLimits());
     }
 
     private function decode(string $payload, CompressionMode $mode): Packet
     {
-        $batch = BedrockBatchCodec::decode($payload, $mode, new BatchLimits(), 256);
+        $batch = BedrockBatchCodec::decode(
+            $payload,
+            $mode,
+            new BatchLimits(),
+            NetworkCompressionPolicy::THRESHOLD_BYTES,
+        );
 
         return BedrockPacketCodec::decode($batch->packets[0]->header->packetId, $batch->packets[0]->payload);
     }
@@ -2219,5 +2369,57 @@ final class RecordingEventEncoder implements WorldEventPacketEncoder
         $this->directedPackets = [...$this->directedPackets, ...$packets];
 
         return $packets;
+    }
+}
+
+final class RecordingEntityMovementEncoder implements EntityMovementPacketEncoder, WorldEventPacketEncoder
+{
+    public int $movementCalls = 0;
+    public int $encodeCalls = 0;
+    /** @var non-empty-list<Packet> */ public array $packets;
+
+    public function encode(WorldEvent $event, array $sessions): array
+    {
+        ++$this->encodeCalls;
+
+        return [];
+    }
+
+    public function entityMovementPackets(EntityActorMoved $event): array
+    {
+        ++$this->movementCalls;
+        $this->packets = [
+            new MoveActorAbsolutePacket(
+                UnsignedLong::fromInt($event->entity->getRuntimeId()),
+                $event->entity->getPosition()->x,
+                $event->entity->getPosition()->y,
+                $event->entity->getPosition()->z,
+                $event->entity->getPitch(),
+                $event->entity->getYaw(),
+                $event->entity->getYaw(),
+            ),
+            new SetActorMotionPacket(
+                UnsignedLong::fromInt($event->entity->getRuntimeId()),
+                $event->entity->getMotion()->x,
+                $event->entity->getMotion()->y,
+                $event->entity->getMotion()->z,
+                UnsignedLong::fromInt($event->tick),
+            ),
+        ];
+
+        return $this->packets;
+    }
+}
+
+final class RecordingChatBroadcastEncoder implements ChatBroadcastPacketEncoder, WorldEventPacketEncoder
+{
+    public function encode(WorldEvent $event, array $sessions): array
+    {
+        return [];
+    }
+
+    public function chatPacket(ChatBroadcast $event): Packet
+    {
+        return new ChatPacket($event->senderDisplayName, $event->message);
     }
 }

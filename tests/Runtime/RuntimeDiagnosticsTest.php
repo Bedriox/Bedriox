@@ -60,4 +60,24 @@ final class RuntimeDiagnosticsTest extends TestCase
         self::assertCount(1, $lines);
         self::assertStringContainsString('play.session_closed', $lines[0]);
     }
+
+    public function testPerformanceSnapshotsFitWithinTheBoundedFieldBudget(): void
+    {
+        $lines = [];
+        $diagnostics = new RuntimeDiagnostics(static function (string $line) use (&$lines): void {
+            $lines[] = $line;
+        });
+
+        $diagnostics->record('runtime.performance_summary.protocol_trace', array_fill_keys(
+            array_map(static fn(int $index): string => 'metric_' . $index, range(1, 17)),
+            1,
+        ));
+        $diagnostics->record('runtime.too_many_fields', array_fill_keys(
+            array_map(static fn(int $index): string => 'metric_' . $index, range(1, 25)),
+            1,
+        ));
+
+        self::assertCount(1, $lines);
+        self::assertStringContainsString('runtime.performance_summary.protocol_trace', $lines[0]);
+    }
 }

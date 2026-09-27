@@ -19,6 +19,7 @@ use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\Persistence\EntityChunkSnapshot;
 use Bedriox\Server\Entity\Persistence\EntityOwnershipTransfer;
+use Bedriox\Server\Entity\Persistence\EntityOwnershipTransferResult;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
 use Bedriox\Server\Entity\PluginMobEntity;
 use Bedriox\Server\Entity\Spawn\EntitySpawnRequest;
@@ -298,9 +299,11 @@ final class PluginEntityPersistenceStore implements EntityPersistenceStore
         $this->snapshots[$snapshot->chunk->key()] = $snapshot;
     }
 
-    public function transferEntityOwnership(EntityOwnershipTransfer $transfer): void
+    public function transferEntityOwnership(EntityOwnershipTransfer $transfer): EntityOwnershipTransferResult
     {
         $this->snapshots[$transfer->sourceAfter->chunk->key()] = $transfer->sourceAfter;
         $this->snapshots[$transfer->destinationAfter->chunk->key()] = $transfer->destinationAfter;
+
+        return new EntityOwnershipTransferResult($transfer->sourceAfter, $transfer->destinationAfter);
     }
 }

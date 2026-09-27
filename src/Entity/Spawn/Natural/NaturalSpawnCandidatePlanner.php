@@ -10,7 +10,7 @@ use InvalidArgumentException;
 final class NaturalSpawnCandidatePlanner
 {
     public const int MAXIMUM_PLAYERS = 1_024;
-    public const int MAXIMUM_CANDIDATES = 16_384;
+    public const int MAXIMUM_CANDIDATES = 512;
 
     private int $playerCursor = 0;
 
@@ -42,7 +42,7 @@ final class NaturalSpawnCandidatePlanner
 
         $diameter = ($radius * 2) + 1;
         $regionArea = $diameter * $diameter;
-        $sampleCount = min($playerCount, intdiv(self::MAXIMUM_CANDIDATES, $regionArea));
+        $sampleCount = min($playerCount, self::MAXIMUM_CANDIDATES);
         $start = $this->playerCursor % $playerCount;
         $deduplicated = [];
         for ($sampleOffset = 0; $sampleOffset < $sampleCount; ++$sampleOffset) {
@@ -50,13 +50,18 @@ final class NaturalSpawnCandidatePlanner
             $player = $eligible[$playerIndex];
             $centerX = (int) floor($player->position->x / 16.0);
             $centerZ = (int) floor($player->position->z / 16.0);
+            $samplesForPlayer = min(
+                $regionArea,
+                intdiv(self::MAXIMUM_CANDIDATES, $sampleCount)
+                    + ($sampleOffset < self::MAXIMUM_CANDIDATES % $sampleCount ? 1 : 0),
+            );
             $rotation = self::positiveModulo(
                 self::positiveModulo($worldSeed, $regionArea)
                     + self::positiveModulo($tick, $regionArea)
                     + self::positiveModulo($playerIndex, $regionArea),
                 $regionArea,
             );
-            for ($regionOffset = 0; $regionOffset < $regionArea; ++$regionOffset) {
+            for ($regionOffset = 0; $regionOffset < $samplesForPlayer; ++$regionOffset) {
                 $rotated = ($rotation + $regionOffset) % $regionArea;
                 $x = $centerX - $radius + intdiv($rotated, $diameter);
                 $z = $centerZ - $radius + ($rotated % $diameter);

@@ -8,6 +8,7 @@ use Bedriox\Data\BedrockDataSet;
 use Bedriox\Data\PersistentBlockStateRegistry;
 use Bedriox\Server\Entity\Persistence\CorruptEntityPersistenceException;
 use Bedriox\Server\Entity\Persistence\EntityOwnershipTransferCodec;
+use Bedriox\Server\Entity\Persistence\EntityOwnershipTransferResultCodec;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceCodec;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceConflictException;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
@@ -140,6 +141,7 @@ final class WorldStorageProcessProgram
         $worldData = new WorldDataIpcCodec();
         $entities = EntityPersistenceCodec::vanilla();
         $entityTransfers = new EntityOwnershipTransferCodec($entities);
+        $entityTransferResults = new EntityOwnershipTransferResultCodec($entities);
         while (($frame = self::readFrame($connection, $codec)) !== null) {
             if (!hash_equals($epoch, $frame->epoch)) {
                 throw new \RuntimeException('World storage epoch changed.');
@@ -172,6 +174,7 @@ final class WorldStorageProcessProgram
                         $provider,
                         $frame->payload,
                         $entityTransfers,
+                        $entityTransferResults,
                     ),
                 };
                 self::write($connection, $codec->encode(new WorkerFrame(
@@ -297,17 +300,18 @@ final class WorldStorageProcessProgram
         WritableWorldProvider $provider,
         string $payload,
         EntityOwnershipTransferCodec $codec,
+        EntityOwnershipTransferResultCodec $results,
     ): array {
         if (!$provider instanceof EntityPersistenceStore) {
             throw new \RuntimeException('World storage provider does not support entity persistence.');
         }
         $transfer = $codec->decode($payload);
-        $provider->transferEntityOwnership($transfer);
+        $result = $provider->transferEntityOwnership($transfer);
 
         return [[
-            'source_revision' => $transfer->sourceAfter->chunkRevision,
-            'destination_revision' => $transfer->destinationAfter->chunkRevision,
-        ], ''];
+            'source_revision' => $result->sourceAfter->chunkRevision,
+            'destination_revision' => $result->destinationAfter->chunkRevision,
+        ], $results->encode($result)];
     }
 
     private static function decodePosition(string $payload): ChunkPosition
@@ -339,7 +343,10 @@ final class WorldStorageProcessProgram
     /** @return array<string, bool|int|string|null> */
     private static function failureMetadata(Throwable $error): array
     {
-        $metadata = ['code' => self::failureCode($error)];
+        $metadata = [
+            'code' => self::failureCode($error),
+            'detail' => substr($error->getMessage(), 0, 512),
+        ];
         if ($error instanceof CorruptEntityPersistenceException) {
             $metadata['chunk_x'] = $error->chunk->x;
             $metadata['chunk_z'] = $error->chunk->z;

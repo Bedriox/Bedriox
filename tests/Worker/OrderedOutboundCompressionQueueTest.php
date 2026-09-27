@@ -11,6 +11,7 @@ use Bedriox\Server\Worker\ManagedWorkerPool;
 use Bedriox\Server\Worker\Network\BatchCompressionRequest;
 use Bedriox\Server\Worker\Network\BatchCompressionRequestCodec;
 use Bedriox\Server\Worker\Network\BatchCompressionTask;
+use Bedriox\Server\Worker\Network\CachingCompressionWorkerDispatcher;
 use Bedriox\Server\Worker\Network\CompressionWorkerDispatcher;
 use Bedriox\Server\Worker\Network\ManagedCompressionWorkerDispatcher;
 use Bedriox\Server\Worker\Network\OrderedOutboundCompressionQueue;
@@ -187,6 +188,99 @@ final class OrderedOutboundCompressionQueueTest extends TestCase
         self::assertSame(0, $workers->submissionCount);
         self::assertCount(1, $ready);
         self::assertSame(self::synchronous('small'), $ready[0]->payload);
+    }
+
+    public function testNegotiatedSubThresholdBatchBypassesCompressionRequestMachinery(): void
+    {
+        $workers = new FakeCompressionWorkerDispatcher();
+        $limits = new BatchLimits(1_024, 2_048, 128, 32, 1_024);
+        $queue = new OrderedOutboundCompressionQueue(
+            $workers,
+            2,
+            1,
+            CompressionMode::NegotiatedZlib,
+            64,
+            $limits,
+            maximumResultBytes: 1_025,
+            minimumOffloadBytes: 1,
+        );
+
+        $submission = $queue->enqueue('small');
+        $ready = $queue->takeReady();
+
+        self::assertTrue($submission->synchronousFallback);
+        self::assertSame(0, $workers->submissionCount);
+        self::assertCount(1, $ready);
+        self::assertSame("\xfe\xffsmall", $ready[0]->payload);
+        self::assertSame(0, $queue->outstandingCount());
+        self::assertSame(0, $queue->outstandingBytes());
+    }
+
+    public function testPreparedEnvelopeRetainsOrderingBehindPendingWorkerOutput(): void
+    {
+        $workers = new FakeCompressionWorkerDispatcher();
+        $queue = self::queue($workers);
+        self::assertSame(1, $queue->enqueue('first')->sequence);
+        $prepared = self::synchronous('prepared');
+
+        $submission = $queue->enqueuePrepared($prepared);
+
+        self::assertSame(2, $submission->sequence);
+        self::assertSame([], $queue->takeReady());
+        $workers->completeSuccessfully(1);
+        $ready = $queue->takeReady();
+        self::assertSame([1, 2], array_column($ready, 'sequence'));
+        self::assertSame([self::synchronous('first'), $prepared], array_column($ready, 'payload'));
+        self::assertSame(0, $queue->outstandingBytes());
+    }
+
+    public function testSharedDispatcherCoalescesAndCachesIdenticalCompression(): void
+    {
+        $physical = new FakeCompressionWorkerDispatcher();
+        $shared = new CachingCompressionWorkerDispatcher(
+            $physical,
+            maximumEntries: 4,
+            maximumBytes: 4_096,
+            minimumCacheableInputBytes: 1,
+        );
+        $first = new OrderedOutboundCompressionQueue(
+            $shared,
+            2,
+            1,
+            CompressionMode::NegotiatedZlib,
+            1,
+            new BatchLimits(1_024, 2_048, 128, 32, 1_024),
+            maximumResultBytes: 1_025,
+        );
+        $second = new OrderedOutboundCompressionQueue(
+            $shared,
+            2,
+            1,
+            CompressionMode::NegotiatedZlib,
+            1,
+            new BatchLimits(1_024, 2_048, 128, 32, 1_024),
+            maximumResultBytes: 1_025,
+        );
+
+        $first->enqueue('shared-batch');
+        $second->enqueue('shared-batch');
+        self::assertSame(1, $physical->submissionCount);
+        $physical->completeSuccessfully(1);
+        self::assertSame(self::synchronous('shared-batch'), $first->takeReady()[0]->payload);
+        self::assertSame(self::synchronous('shared-batch'), $second->takeReady()[0]->payload);
+
+        $cached = new OrderedOutboundCompressionQueue(
+            $shared,
+            2,
+            1,
+            CompressionMode::NegotiatedZlib,
+            1,
+            new BatchLimits(1_024, 2_048, 128, 32, 1_024),
+            maximumResultBytes: 1_025,
+        );
+        $cached->enqueue('shared-batch');
+        self::assertSame(1, $physical->submissionCount);
+        self::assertSame(self::synchronous('shared-batch'), $cached->takeReady()[0]->payload);
     }
 
     public function testRepeatedWorkerRejectionProducesBoundedTerminalFailure(): void

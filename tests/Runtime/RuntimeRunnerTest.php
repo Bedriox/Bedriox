@@ -7,6 +7,7 @@ namespace Bedriox\Server\Tests\Runtime;
 use Bedriox\Server\Runtime\RuntimeDiagnostics;
 use Bedriox\Server\Runtime\RuntimeDriver;
 use Bedriox\Server\Runtime\RuntimeFailureSource;
+use Bedriox\Server\Runtime\RuntimeIdleAdvisor;
 use Bedriox\Server\Runtime\RuntimeRunner;
 use Bedriox\Server\Runtime\RuntimeSleeper;
 use PHPUnit\Framework\TestCase;
@@ -45,6 +46,21 @@ final class RuntimeRunnerTest extends TestCase
         self::assertSame(0, $result);
         self::assertSame(3, $driver->polls);
         self::assertSame(3, $backgroundPolls);
+    }
+
+    public function testRuntimeDoesNotIdleWhileItsDriverReportsPendingWork(): void
+    {
+        $driver = new BusyRuntimeDriver();
+        $sleeper = new FakeRuntimeSleeper();
+        $iterations = 0;
+
+        $result = (new RuntimeRunner($driver, $sleeper))->run(static function () use (&$iterations): bool {
+            return $iterations++ === 3;
+        });
+
+        self::assertSame(0, $result);
+        self::assertSame(3, $driver->polls);
+        self::assertSame(0, $sleeper->calls);
     }
 
     public function testRuntimeFailureReturnsFailureAndStillCloses(): void
@@ -203,6 +219,25 @@ final class FakeRuntimeDriver implements RuntimeDriver
     public function close(): void
     {
         ++$this->closes;
+    }
+}
+
+final class BusyRuntimeDriver implements RuntimeDriver, RuntimeIdleAdvisor
+{
+    public int $polls = 0;
+
+    public function poll(): bool
+    {
+        ++$this->polls;
+
+        return true;
+    }
+
+    public function close(): void {}
+
+    public function shouldIdleAfterPoll(): bool
+    {
+        return false;
     }
 }
 

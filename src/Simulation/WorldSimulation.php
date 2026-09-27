@@ -213,6 +213,20 @@ use SplQueue;
 
 final class WorldSimulation
 {
+    /** @var array<string, int> */
+    private array $lastTickStageNanoseconds = [];
+
+    private int $movementCollisionNanoseconds = 0;
+    private int $movementSnapshotNanoseconds = 0;
+    private int $movementRecipientNanoseconds = 0;
+    private int $movementPluginNanoseconds = 0;
+    private int $movementFastCollisions = 0;
+    private int $movementCollisionObstacles = 0;
+    private int $movementGroundedInputs = 0;
+
+    private int $lastEntityRuntimeNanoseconds = 0;
+
+    private int $lastEntityPersistenceNanoseconds = 0;
     private const int DAYLIGHT_FIRE_DURATION_TICKS = 160;
     private const float FIRE_TICK_DAMAGE = 1.0;
 
@@ -304,6 +318,9 @@ final class WorldSimulation
 
     /** @var list<WorldEvent> */
     private array $deferredEvents = [];
+
+    /** @var array<string, true> session ID => pending autosave-cycle membership */
+    private array $playerAutosaveQueue = [];
 
     /** @var array<string, ItemUseSession> One transient action per connected session. */
     private array $activeItemUses = [];
@@ -568,32 +585,52 @@ final class WorldSimulation
         );
     }
 
+    /** Captures one deterministic autosave cycle without chasing continuously changing players. */
+    public function beginPlayerAutosave(): int
+    {
+        if ($this->playerPersistence === null
+            || $this->playerAutosaveQueue !== []
+            || $this->playerPersistence->pendingCount() > 0) {
+            return count($this->playerAutosaveQueue);
+        }
+        foreach ($this->players->players() as $player) {
+            if ($player->isDirty()) {
+                $this->playerAutosaveQueue[$player->sessionId] = true;
+            }
+        }
+
+        return count($this->playerAutosaveQueue);
+    }
+
     /**
-     * Saves a deterministic bounded set of dirty online players and queued failed snapshots.
+     * Advances a bounded autosave snapshot and drains its asynchronous acknowledgements.
      *
-     * @return array{saved: int, remaining: int}
+     * @return array{saved: int, submitted: int, remaining: int}
      */
     public function autosavePlayers(int $budget): array
     {
         if ($this->playerPersistence === null || $budget < 1) {
-            return ['saved' => 0, 'remaining' => 0];
+            return ['saved' => 0, 'submitted' => 0, 'remaining' => 0];
         }
         $saved = $this->playerPersistence->retryPending($budget);
-        foreach ($this->players->players() as $player) {
-            if ($saved >= $budget) {
+        $submitted = 0;
+        foreach (array_keys($this->playerAutosaveQueue) as $sessionId) {
+            if ($saved + $submitted >= $budget) {
                 break;
             }
-            if ($player->isDirty() && $this->playerPersistence->save($player)) {
-                ++$saved;
+            unset($this->playerAutosaveQueue[$sessionId]);
+            $player = $this->players->player($sessionId);
+            if ($player !== null && $player->isDirty()) {
+                $this->playerPersistence->save($player);
+                ++$submitted;
             }
         }
 
-        $remaining = $this->playerPersistence->pendingCount();
-        foreach ($this->players->players() as $player) {
-            $remaining += (int) $player->isDirty();
-        }
-
-        return ['saved' => $saved, 'remaining' => $remaining];
+        return [
+            'saved' => $saved,
+            'submitted' => $submitted,
+            'remaining' => count($this->playerAutosaveQueue) + $this->playerPersistence->pendingCount(),
+        ];
     }
 
     public function enqueue(WorldCommand $command): bool
@@ -629,9 +666,12 @@ final class WorldSimulation
 
     public function tick(): SimulationTick
     {
+        $stageStartedNanoseconds = hrtime(true);
         ++$this->tick;
         $this->blockWorld?->advanceTime();
         [$processed, $events] = $this->processLifecycleCommands($this->limits->maximumCommandsPerTick);
+        $stageCompletedNanoseconds = hrtime(true);
+        $stages = ['lifecycle' => $stageCompletedNanoseconds - $stageStartedNanoseconds];
 
         $remaining = $this->limits->maximumCommandsPerTick - $processed;
         $reservedMovements = min(count($this->movements), $remaining);
@@ -651,7 +691,17 @@ final class WorldSimulation
             }
             array_push($events, ...$this->drainDeferredEvents());
         }
+        $nextStageNanoseconds = hrtime(true);
+        $stages['commands'] = $nextStageNanoseconds - $stageCompletedNanoseconds;
+        $stageCompletedNanoseconds = $nextStageNanoseconds;
 
+        $this->movementCollisionNanoseconds = 0;
+        $this->movementSnapshotNanoseconds = 0;
+        $this->movementRecipientNanoseconds = 0;
+        $this->movementPluginNanoseconds = 0;
+        $this->movementFastCollisions = 0;
+        $this->movementCollisionObstacles = 0;
+        $this->movementGroundedInputs = 0;
         while (!$this->movementOrder->isEmpty() && $processed < $this->limits->maximumCommandsPerTick) {
             $key = $this->movementOrder->dequeue();
             $command = $this->movements[$key] ?? null;
@@ -667,17 +717,69 @@ final class WorldSimulation
             $this->reconcileActiveItemUse($this->players->player($command->session));
             array_push($events, ...$this->drainDeferredEvents());
         }
+        $nextStageNanoseconds = hrtime(true);
+        $stages['movement'] = $nextStageNanoseconds - $stageCompletedNanoseconds;
+        $stages['movement_collision'] = $this->movementCollisionNanoseconds;
+        $stages['movement_snapshot'] = $this->movementSnapshotNanoseconds;
+        $stages['movement_recipients'] = $this->movementRecipientNanoseconds;
+        $stages['movement_plugins'] = $this->movementPluginNanoseconds;
+        $stages['movement_fast'] = $this->movementFastCollisions;
+        $stages['movement_obstacles'] = $this->movementCollisionObstacles;
+        $stages['movement_grounded'] = $this->movementGroundedInputs;
+        $stageCompletedNanoseconds = $nextStageNanoseconds;
 
         array_push($events, ...$this->advancePendingRespawns());
         array_push($events, ...$this->advanceItemUseSessions());
         array_push($events, ...$this->advanceNutrition());
         array_push($events, ...$this->advanceBlockBreakParticles());
+        $nextStageNanoseconds = hrtime(true);
+        $stages['players'] = $nextStageNanoseconds - $stageCompletedNanoseconds;
+        $stageCompletedNanoseconds = $nextStageNanoseconds;
         array_push($events, ...$this->advanceItemEntities());
+        $nextStageNanoseconds = hrtime(true);
+        $stages['items'] = $nextStageNanoseconds - $stageCompletedNanoseconds;
+        $stageCompletedNanoseconds = $nextStageNanoseconds;
         array_push($events, ...$this->advanceNaturalEntities());
+        $nextStageNanoseconds = hrtime(true);
+        $stages['natural_entities'] = $nextStageNanoseconds - $stageCompletedNanoseconds;
+        $stageCompletedNanoseconds = $nextStageNanoseconds;
         array_push($events, ...$this->advanceGeneralEntities());
         array_push($events, ...$this->drainDeferredEvents());
+        $stages['general_entities'] = hrtime(true) - $stageCompletedNanoseconds;
+        $stages['entity_runtime'] = $this->lastEntityRuntimeNanoseconds;
+        $stages['entity_persistence'] = $this->lastEntityPersistenceNanoseconds;
+        $aiMetrics = $this->entityRuntime->lastAiMetrics();
+        $runtimeMetrics = $this->entityRuntime->lastRuntimeMetrics();
+        $stages['entity_ai'] = $aiMetrics->elapsedNanoseconds ?? 0;
+        $stages['entity_physics'] = $runtimeMetrics->elapsedNanoseconds ?? 0;
+        $stages['entity_ai_ticked'] = $aiMetrics->ticked ?? 0;
+        $stages['entity_physics_ticked'] = $runtimeMetrics->physicsTicked ?? 0;
+        $stages['entity_physics_continuous_beyond_budget'] = $runtimeMetrics->continuousBeyondBudget ?? 0;
+        $this->lastTickStageNanoseconds = $stages;
 
         return new SimulationTick($this->tick, $processed, $events);
+    }
+
+    /** @return array<string, int> */
+    public function lastTickStageMicroseconds(): array
+    {
+        $microseconds = [];
+        foreach ($this->lastTickStageNanoseconds as $stage => $nanoseconds) {
+            if (in_array($stage, [
+                'movement_fast',
+                'movement_obstacles',
+                'movement_grounded',
+                'entity_ai_ticked',
+                'entity_physics_ticked',
+                'entity_physics_continuous_beyond_budget',
+            ], true)) {
+                $microseconds[$stage . '_count'] = $nanoseconds;
+                continue;
+            }
+            $microseconds[$stage . '_us'] = intdiv($nanoseconds, 1_000);
+        }
+
+        return $microseconds;
     }
 
     /**
@@ -818,6 +920,12 @@ final class WorldSimulation
     public function pendingEntityAutosaveChunkCount(): int
     {
         return $this->entityPersistence?->pendingAutosaveChunkCount() ?? 0;
+    }
+
+    /** @return list<array{uuid: string, source: ChunkPosition, destination: ChunkPosition, code: string, detail: string}> */
+    public function drainEntityOwnershipTransferFailures(): array
+    {
+        return $this->entityPersistence?->drainOwnershipTransferFailures() ?? [];
     }
 
     public function dirtyEntityChunkCount(): int
@@ -1078,6 +1186,8 @@ final class WorldSimulation
     /** @return list<WorldEvent> */
     private function advanceGeneralEntities(): array
     {
+        $this->lastEntityRuntimeNanoseconds = 0;
+        $this->lastEntityPersistenceNanoseconds = 0;
         $events = [];
         $this->entityAiPlayers = array_map(
             fn(Player $player): AiPlayerSnapshot => new AiPlayerSnapshot(
@@ -1124,11 +1234,13 @@ final class WorldSimulation
             }
         }
         array_push($events, ...$this->advanceEntityFire());
+        $entityRuntimeStartedNanoseconds = hrtime(true);
         $tick = $this->entityRuntime->tick(
             $this->tick,
             $this->entityAiWorld,
             $this->entityAiEnabled,
         );
+        $this->lastEntityRuntimeNanoseconds = hrtime(true) - $entityRuntimeStartedNanoseconds;
         foreach ($this->entityRuntime->registry()->all() as $entity) {
             if (!$entity instanceof PluginMobEntity || ($this->pluginEntityLifecycle?->isAvailable($entity) ?? false)) {
                 continue;
@@ -1243,7 +1355,9 @@ final class WorldSimulation
             }
         }
 
+        $entityPersistenceStartedNanoseconds = hrtime(true);
         $this->entityPersistence?->synchronize(256);
+        $this->lastEntityPersistenceNanoseconds = hrtime(true) - $entityPersistenceStartedNanoseconds;
 
         return $events;
     }
@@ -2538,6 +2652,7 @@ final class WorldSimulation
         }
 
         $wasGrounded = $movement->verticalState === VerticalState::GROUNDED;
+        $this->movementGroundedInputs += (int) $wasGrounded;
         $flying = ($command->flying && $player->gameMode()->allowsFlight())
             || $player->gameMode() === GameMode::SPECTATOR;
         $collidedVertically = false;
@@ -2560,9 +2675,25 @@ final class WorldSimulation
                 && abs($command->position->y - $movement->position->y) <= $this->limits->flatGroundTolerance
                 ? new Position($command->position->x, $movement->position->y, $command->position->z)
                 : $command->position;
-            $resolved = $this->collisionResolver->resolve($movement->position, $requested, $wasGrounded);
+            $collisionStartedNanoseconds = hrtime(true);
+            $resolved = $this->collisionResolver->resolve(
+                $movement->position,
+                $requested,
+                $wasGrounded,
+                $command->verticalCollision,
+            );
+            $this->movementCollisionNanoseconds += hrtime(true) - $collisionStartedNanoseconds;
+            $this->movementFastCollisions += (int) $resolved->fastPath;
+            $this->movementCollisionObstacles += $resolved->obstacleCount;
+            if (!$resolved->terrainLoaded) {
+                return new MovementCorrected(
+                    $player->snapshot(),
+                    'terrain_unavailable',
+                    clientTick: $command->clientTick,
+                );
+            }
             $position = $resolved->position;
-            $grounded = $this->collisionResolver->isGrounded($position);
+            $grounded = $resolved->grounded;
             $stepped = $resolved->stepped;
             $collidedVertically = $resolved->collidedY;
             $terrainConstrained = $position->distanceTo($command->position) > $this->limits->flatGroundTolerance;
@@ -2592,7 +2723,10 @@ final class WorldSimulation
         $sneaking = $command->sneaking ?? ($command->mode === MovementMode::CROUCHING);
         $sprinting = $command->sprinting ?? ($command->mode === MovementMode::SPRINTING);
         $postureChanged = $movement->sneaking !== $sneaking || $movement->sprinting !== $sprinting;
-        if ($this->pluginEvents !== null && !$this->pluginEvents->allowMove($player, $position)) {
+        $pluginStartedNanoseconds = hrtime(true);
+        $movementAllowed = $this->pluginEvents === null || $this->pluginEvents->allowMove($player, $position);
+        $this->movementPluginNanoseconds += hrtime(true) - $pluginStartedNanoseconds;
+        if (!$movementAllowed) {
             return new MovementCorrected($player->snapshot(), 'plugin_cancelled', clientTick: $command->clientTick);
         }
         $velocityX = ($position->x - $previousPosition->x) / $elapsed;
@@ -2617,15 +2751,30 @@ final class WorldSimulation
             $position->x - $previousPosition->x,
             $position->z - $previousPosition->z,
         );
+        $visibleNutritionChange = null;
         if (!$flying && $sprinting && $player->gameMode()->consumesItems() && $horizontalDistance > 0.0) {
-            $this->applyMovementExhaustion(
+            $visibleNutritionChange = $this->applyMovementExhaustion(
                 $player,
                 self::SPRINTING_EXHAUSTION_PER_BLOCK * $horizontalDistance,
             );
         }
 
+        $snapshotStartedNanoseconds = hrtime(true);
         $snapshot = $player->snapshot();
+        $this->movementSnapshotNanoseconds += hrtime(true) - $snapshotStartedNanoseconds;
+        if ($visibleNutritionChange !== null) {
+            $this->deferredEvents[] = new NutritionChanged(
+                $snapshot,
+                $visibleNutritionChange->foodLevel,
+                $visibleNutritionChange->saturationLevel,
+                $visibleNutritionChange->exhaustionLevel,
+                NutritionChangeReason::EXHAUSTION,
+                [$player->sessionId],
+            );
+        }
+        $pluginStartedNanoseconds = hrtime(true);
         $this->pluginEvents?->moved($player);
+        $this->movementPluginNanoseconds += hrtime(true) - $pluginStartedNanoseconds;
         if ($flying || !$player->gameMode()->takesDamage()) {
             $movement->fallDistance = 0.0;
         } elseif ($verticalDistance < $movement->fallDistance) {
@@ -2661,11 +2810,27 @@ final class WorldSimulation
             }
         }
 
-        return new PlayerMoved($snapshot, $this->players->recipients($player->sessionId), $postureChanged);
+        $recipientStartedNanoseconds = hrtime(true);
+        $recipients = $this->players->recipients($player->sessionId);
+        $this->movementRecipientNanoseconds += hrtime(true) - $recipientStartedNanoseconds;
+
+        return new PlayerMoved($snapshot, $recipients, $postureChanged);
     }
 
-    private function applyMovementExhaustion(Player $player, float $amount): void
+    /** Returns the previous state only when a client-visible nutrition attribute changed. */
+    private function applyMovementExhaustion(Player $player, float $amount): ?ApiNutrition
     {
+        if ($this->pluginEvents === null || !$this->pluginEvents->hasNutritionListeners()) {
+            $previousFood = $player->vitals->food;
+            $previousSaturation = $player->vitals->saturation;
+            $previousExhaustion = $player->vitals->exhaustion;
+            $player->vitals->exhaust($amount);
+            $player->markDirty();
+
+            return $player->vitals->food !== $previousFood || $player->vitals->saturation !== $previousSaturation
+                ? new ApiNutrition((int) $previousFood, $previousSaturation, $previousExhaustion)
+                : null;
+        }
         $previousNutrition = PluginGameplayEventBridge::nutrition($player);
         $stagedVitals = clone $player->vitals;
         $stagedVitals->exhaust($amount);
@@ -2674,19 +2839,17 @@ final class WorldSimulation
             $stagedVitals->saturation,
             $stagedVitals->exhaustion,
         );
-        if ($this->pluginEvents !== null) {
-            $proposedNutrition = $this->pluginEvents->nutritionChange(
-                $player,
-                $previousNutrition,
-                $proposedNutrition,
-                ApiFoodLevelChangeCause::EXHAUSTION,
-            );
-            if ($proposedNutrition === null) {
-                return;
-            }
+        $proposedNutrition = $this->pluginEvents->nutritionChange(
+            $player,
+            $previousNutrition,
+            $proposedNutrition,
+            ApiFoodLevelChangeCause::EXHAUSTION,
+        );
+        if ($proposedNutrition === null) {
+            return null;
         }
         if ($proposedNutrition == $previousNutrition) {
-            return;
+            return null;
         }
         $player->vitals->setNutrition(
             $proposedNutrition->foodLevel,
@@ -2695,20 +2858,17 @@ final class WorldSimulation
         );
         $player->markDirty();
         $currentNutrition = PluginGameplayEventBridge::nutrition($player);
-        $this->pluginEvents?->nutritionChanged(
+        $this->pluginEvents->nutritionChanged(
             $player,
             $previousNutrition,
             $currentNutrition,
             ApiFoodLevelChangeCause::EXHAUSTION,
         );
-        $this->deferredEvents[] = new NutritionChanged(
-            $player->snapshot(),
-            $previousNutrition->foodLevel,
-            $previousNutrition->saturationLevel,
-            $previousNutrition->exhaustionLevel,
-            NutritionChangeReason::EXHAUSTION,
-            [$player->sessionId],
-        );
+
+        return $currentNutrition->foodLevel !== $previousNutrition->foodLevel
+            || $currentNutrition->saturationLevel !== $previousNutrition->saturationLevel
+            ? $previousNutrition
+            : null;
     }
 
     private function damage(DamagePlayer $command): WorldEvent

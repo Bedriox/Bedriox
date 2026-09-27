@@ -11,13 +11,21 @@ final readonly class EntityPersistenceFlushResult
     /** @var list<ChunkPosition> */
     private array $failedChunks;
 
-    /** @param array<int, ChunkPosition> $failedChunks */
+    /** @var list<array{chunk: ChunkPosition, operation: string, exception: string, detail: string}> */
+    private array $failureDetails;
+
+    /**
+     * @param array<int, ChunkPosition> $failedChunks
+     * @param array<int, array{chunk: ChunkPosition, operation: string, exception: string, detail: string}> $failureDetails
+     */
     public function __construct(
         public int $attemptedChunks,
         public int $savedChunks,
         array $failedChunks,
+        array $failureDetails = [],
     ) {
         $this->failedChunks = array_values($failedChunks);
+        $this->failureDetails = array_values($failureDetails);
     }
 
     /** @return list<ChunkPosition> */
@@ -29,5 +37,11 @@ final readonly class EntityPersistenceFlushResult
     public function failedChunksCount(): int
     {
         return count($this->failedChunks);
+    }
+
+    /** @return list<array{chunk: ChunkPosition, operation: string, exception: string, detail: string}> */
+    public function failureDetails(): array
+    {
+        return $this->failureDetails;
     }
 }

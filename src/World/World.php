@@ -4,15 +4,18 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World;
 
+use Bedriox\Server\Entity\Persistence\EntityPersistenceConflictException;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceManager;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
 use Bedriox\Server\Persistence\PersistenceQueueSnapshot;
 use Bedriox\Server\Persistence\PersistenceQueueStatusProvider;
 use Bedriox\Server\Persistence\PersistenceSubmission;
+use Bedriox\Server\Persistence\PersistenceWriteCompletion;
 use Bedriox\Server\Persistence\World\ChunkLoadCompletion;
 use Bedriox\Server\Worker\Chunk\AsyncChunkGenerator;
 use Bedriox\Server\World\Block\InternalBlockStateId;
 use Bedriox\Server\World\BlockEntity\BlockEntity;
+use Bedriox\Server\World\Provider\AsynchronousWorldDataProvider;
 use Bedriox\Server\World\Provider\AsynchronousWorldProvider;
 use Bedriox\Server\World\Provider\ChunkSaveData;
 use Bedriox\Server\World\Provider\WorldData;
@@ -41,6 +44,9 @@ final class World
 
     /** @var array<string, ChunkLoadCompletion> */
     private array $completedChunkLoads = [];
+
+    /** @var array<string, true> storage or generation requests not yet installed */
+    private array $pendingChunkRetains = [];
 
     /** @var array<string, int> Newest revision queued or in flight with the asynchronous provider. */
     private array $pendingChunkSaveRevisions = [];
@@ -142,10 +148,14 @@ final class World
      * Returns true only when the chunk is installed and retained. A false
      * result is retried by the existing bounded chunk-streaming loop.
      */
-    public function requestRetainChunk(ChunkPosition $position): bool
+    public function requestRetainChunk(ChunkPosition $position, bool $pollCompletions = true): bool
     {
-        $this->pollAsynchronousProvider();
+        $key = $position->key();
+        if ($pollCompletions) {
+            $this->pollAsynchronousCompletions();
+        }
         if ($this->chunks->contains($position)) {
+            unset($this->pendingChunkRetains[$key]);
             $this->chunks->retain($position, $this->loadChunk(...), $this->evictionSaver());
             $this->entityPersistence?->activateChunk($position);
             $this->chunkUnloads->cancel($position);
@@ -153,14 +163,15 @@ final class World
             return true;
         }
         if ($this->provider instanceof AsynchronousWorldProvider) {
-            $key = $position->key();
             $completion = $this->completedChunkLoads[$key] ?? null;
             if (!$completion instanceof ChunkLoadCompletion) {
                 $this->provider->requestChunkLoad($position);
+                $this->pendingChunkRetains[$key] = true;
 
                 return false;
             }
             unset($this->completedChunkLoads[$key]);
+            unset($this->pendingChunkRetains[$key]);
             if ($completion->failureCode !== null) {
                 throw new \RuntimeException('Asynchronous chunk storage load failed: ' . $completion->failureCode);
             }
@@ -206,9 +217,11 @@ final class World
             return true;
         }
         if ($this->asyncChunks->isPending($position)) {
+            $this->pendingChunkRetains[$key] = true;
             return false;
         }
-        $accepted = $this->asyncChunks->request($position, function (Chunk $chunk) use ($position): void {
+        $accepted = $this->asyncChunks->request($position, function (Chunk $chunk) use ($position, $key): void {
+            unset($this->pendingChunkRetains[$key]);
             if ($this->provider !== null) {
                 $chunk = self::markDirty($chunk);
             } else {
@@ -228,12 +241,19 @@ final class World
             }
         });
         if ($accepted) {
+            $this->pendingChunkRetains[$key] = true;
             return false;
         }
 
+        unset($this->pendingChunkRetains[$key]);
         $this->retainChunk($position);
 
         return true;
+    }
+
+    public function isChunkRetainPending(ChunkPosition $position): bool
+    {
+        return isset($this->pendingChunkRetains[$position->key()]);
     }
 
     /** Keeps the configured world spawn available without blocking on asynchronous storage or generation. */
@@ -449,7 +469,7 @@ final class World
             return $this->chunks->saveDirty($maximumChunks, $this->saveChunk(...));
         }
 
-        $this->pollAsynchronousProvider();
+        $this->pollAsynchronousCompletions();
         $submitted = 0;
         foreach ($this->chunks->dirtySnapshots($maximumChunks, $this->pendingChunkSaveRevisions) as $chunk) {
             $status = $this->submitAsynchronousChunkSave($chunk);
@@ -460,7 +480,7 @@ final class World
                 ++$submitted;
             }
         }
-        $this->pollAsynchronousProvider();
+        $this->pollAsynchronousCompletions();
 
         return $submitted;
     }
@@ -472,7 +492,7 @@ final class World
      */
     public function processChunkUnloads(int $maximumChunks = 96, int $timeBudgetMicroseconds = 2_000): ChunkUnloadResult
     {
-        $this->pollAsynchronousProvider();
+        $this->pollAsynchronousCompletions();
         $due = $this->chunkUnloads->due($maximumChunks, $timeBudgetMicroseconds);
         $examined = 0;
         $evicted = 0;
@@ -521,7 +541,16 @@ final class World
                     continue;
                 }
             }
-            if ($this->chunks->evictIfCleanAndUnretained($position)) {
+            try {
+                $evictedChunk = $this->chunks->evictIfCleanAndUnretained($position);
+            } catch (EntityPersistenceConflictException) {
+                // The entity owner remains installed because the eviction observer
+                // failed before repository removal. Retry after persistence catches up.
+                $this->chunkUnloads->defer($position);
+
+                continue;
+            }
+            if ($evictedChunk) {
                 $this->chunkUnloads->cancel($position);
                 unset($this->pendingChunkSaveRevisions[$position->key()]);
                 ++$evicted;
@@ -566,14 +595,48 @@ final class World
 
             throw new LogicException('This world does not have a writable provider.');
         }
-        $this->provider->saveWorldData(new WorldData(
+        $this->provider->saveWorldData($this->currentWorldData());
+    }
+
+    /** Queues routine metadata autosave without placing storage latency on the simulation thread. */
+    public function scheduleWorldDataSave(): PersistenceSubmission
+    {
+        if (!$this->provider instanceof WritableWorldProvider) {
+            if ($this->provider === null) {
+                return PersistenceSubmission::ACCEPTED;
+            }
+
+            throw new LogicException('This world does not have a writable provider.');
+        }
+        $data = $this->currentWorldData();
+        if ($this->provider instanceof AsynchronousWorldDataProvider) {
+            return $this->provider->enqueueWorldDataSave($data)->status;
+        }
+        $this->provider->saveWorldData($data);
+
+        return PersistenceSubmission::ACCEPTED;
+    }
+
+    /** @return list<PersistenceWriteCompletion> */
+    public function pollWorldDataSaves(int $maximumCompletions = 16): array
+    {
+        if (!$this->provider instanceof AsynchronousWorldDataProvider) {
+            return [];
+        }
+
+        return $this->provider->pollWorldDataSaves($maximumCompletions);
+    }
+
+    private function currentWorldData(): WorldData
+    {
+        return new WorldData(
             $this->metadata,
             $this->generator->name(),
             $this->spawn(),
             $this->time,
             $this->difficulty,
             $this->generator instanceof VersionedWorldGenerator ? $this->generator->version() : 1,
-        ));
+        );
     }
 
     public function close(): void
@@ -695,15 +758,19 @@ final class World
         $this->provider->saveChunk(new ChunkSaveData($chunk));
     }
 
-    private function pollAsynchronousProvider(): void
+    /** Collects a bounded batch of completed storage work for later non-blocking consumers. */
+    public function pollAsynchronousCompletions(int $maximumLoads = 32, int $maximumSaves = 32): void
     {
+        if ($maximumLoads < 1 || $maximumLoads > 256 || $maximumSaves < 1 || $maximumSaves > 256) {
+            throw new InvalidArgumentException('Asynchronous completion limits must be between 1 and 256.');
+        }
         if (!$this->provider instanceof AsynchronousWorldProvider) {
             return;
         }
-        foreach ($this->provider->pollChunkLoads() as $completion) {
+        foreach ($this->provider->pollChunkLoads($maximumLoads) as $completion) {
             $this->completedChunkLoads[$completion->position->key()] = $completion;
         }
-        foreach ($this->provider->pollChunkSaves() as $completion) {
+        foreach ($this->provider->pollChunkSaves($maximumSaves) as $completion) {
             $position = self::positionFromPersistenceKey($completion->key);
             $key = $position->key();
             if (($this->pendingChunkSaveRevisions[$key] ?? -1) <= $completion->revision) {

@@ -43,7 +43,8 @@ final class PerformanceMonitor
     private ?int $tickStartedAtNanoseconds = null;
     private int $timerImbalances = 0;
     private int $timerGeneration = 0;
-    private CompletedTickMetrics $completed;
+    private ?CompletedTickMetrics $completed = null;
+    private int $lastNetworkPruneSecond = -1;
 
     public function __construct(
         private readonly int $targetTicksPerSecond = 20,
@@ -149,7 +150,7 @@ final class PerformanceMonitor
         }
         $this->tickStartedAtNanoseconds = null;
         $this->activeSubsystemDurations = [];
-        $this->completed = $this->calculateCompletedMetrics($completedAt);
+        $this->completed = null;
     }
 
     /** Discards a runtime observation which did not complete a simulation tick. */
@@ -174,7 +175,7 @@ final class PerformanceMonitor
         $this->append($this->tickCompletions, $completedAt);
         $this->append($this->subsystemDurations, []);
         $this->append($this->unclassifiedDurations, $durationNanoseconds);
-        $this->completed = $this->calculateCompletedMetrics($completedAt);
+        $this->completed = null;
     }
 
     public function recordPoll(int $durationNanoseconds): void
@@ -241,7 +242,7 @@ final class PerformanceMonitor
             throw new InvalidArgumentException('Performance gauges cannot be negative.');
         }
         $uptimeNanoseconds = max(0, ($nowNanoseconds ?? self::now()) - $this->startedAtNanoseconds);
-        $metrics = $this->completed;
+        $metrics = $this->completed ??= $this->calculateCompletedMetrics($nowNanoseconds ?? self::now());
 
         return new PerformanceSnapshot(
             (int) floor($uptimeNanoseconds / 1_000_000_000),
@@ -337,10 +338,13 @@ final class PerformanceMonitor
         $field = $received ? 'received' : 'sent';
         $bucket[$field] = self::saturatingAdd($bucket[$field], $bytes);
         $this->networkBuckets[$second] = $bucket;
-        foreach (array_keys($this->networkBuckets) as $bucketSecond) {
-            if ($bucketSecond < $second - self::RATE_WINDOW_SECONDS) {
-                unset($this->networkBuckets[$bucketSecond]);
+        if ($second !== $this->lastNetworkPruneSecond) {
+            foreach (array_keys($this->networkBuckets) as $bucketSecond) {
+                if ($bucketSecond < $second - self::RATE_WINDOW_SECONDS) {
+                    unset($this->networkBuckets[$bucketSecond]);
+                }
             }
+            $this->lastNetworkPruneSecond = $second;
         }
     }
 

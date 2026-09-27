@@ -77,6 +77,15 @@ final class BoundedLogQueue
         return $this->lines[0] ?? null;
     }
 
+    public function at(int $offset): ?QueuedLogLine
+    {
+        if ($offset < 0) {
+            throw new InvalidArgumentException('Log queue offset cannot be negative.');
+        }
+
+        return $this->lines[$offset] ?? null;
+    }
+
     public function acknowledge(int $sequence): void
     {
         $head = $this->head();

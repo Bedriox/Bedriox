@@ -57,6 +57,19 @@ final readonly class BlockCollisionShape
         return $this->boxes === [];
     }
 
+    public function intersectsAt(AxisAlignedBox $area, int $x, int $y, int $z): bool
+    {
+        foreach ($this->boxes as $box) {
+            if ($area->maxX > $box->minX + $x && $area->minX < $box->maxX + $x
+                && $area->maxY > $box->minY + $y && $area->minY < $box->maxY + $y
+                && $area->maxZ > $box->minZ + $z && $area->minZ < $box->maxZ + $z) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /** Returns the highest local collision surface, or null for a non-colliding block. */
     public function highestY(): ?float
     {

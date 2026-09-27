@@ -20,6 +20,9 @@ final class PlayerActorVisibilityRegistry
     /** @var array<string, array<string, true>> viewer session => visible actor sessions */
     private array $visible = [];
 
+    /** @var array<string, array<string, true>> actor session => viewer sessions */
+    private array $viewers = [];
+
     public function __construct(private readonly int $maximumPlayers)
     {
         if ($maximumPlayers < 1 || $maximumPlayers > 65_535) {
@@ -27,13 +30,21 @@ final class PlayerActorVisibilityRegistry
         }
     }
 
-    public function upsert(PlayerSnapshot $player): void
+    /** Returns whether the actor's chunk or visible game-mode projection changed. */
+    public function upsert(PlayerSnapshot $player): bool
     {
-        if (!isset($this->players[$player->sessionId]) && count($this->players) >= $this->maximumPlayers) {
+        $previous = $this->players[$player->sessionId] ?? null;
+        if ($previous === null && count($this->players) >= $this->maximumPlayers) {
             throw new OverflowException('Actor visibility registry capacity was exceeded.');
         }
         $this->players[$player->sessionId] = $player;
         $this->visible[$player->sessionId] ??= [];
+        $this->viewers[$player->sessionId] ??= [];
+
+        return $previous === null
+            || self::chunkCoordinate($previous->position->x) !== self::chunkCoordinate($player->position->x)
+            || self::chunkCoordinate($previous->position->z) !== self::chunkCoordinate($player->position->z)
+            || $previous->gameMode->isVisible() !== $player->gameMode->isVisible();
     }
 
     /**
@@ -84,15 +95,80 @@ final class PlayerActorVisibilityRegistry
     /** @return list<string> */
     public function viewersOf(string $actorSessionId): array
     {
-        $viewers = [];
-        foreach ($this->visible as $viewer => $actors) {
-            if (isset($actors[$actorSessionId])) {
-                $viewers[] = $viewer;
-            }
-        }
+        $viewers = array_keys($this->viewers[$actorSessionId] ?? []);
         sort($viewers, SORT_STRING);
 
         return $viewers;
+    }
+
+    /** @return list<string> */
+    public function sessionIds(): array
+    {
+        $sessions = array_keys($this->players);
+        sort($sessions, SORT_STRING);
+
+        return $sessions;
+    }
+
+    /**
+     * @param array<string, true> $chunkKeys
+     * @return list<string>
+     */
+    public function sessionIdsInChunks(array $chunkKeys): array
+    {
+        if ($chunkKeys === []) {
+            return [];
+        }
+        $sessions = [];
+        foreach ($this->players as $sessionId => $player) {
+            $key = self::chunkCoordinate($player->position->x) . ':'
+                . self::chunkCoordinate($player->position->z);
+            if (isset($chunkKeys[$key])) {
+                $sessions[] = $sessionId;
+            }
+        }
+        sort($sessions, SORT_STRING);
+
+        return $sessions;
+    }
+
+    /** @param callable(string, PlayerSnapshot): bool $canViewerSee */
+    public function reconcilePairById(
+        string $viewerSessionId,
+        string $actorSessionId,
+        callable $canViewerSee,
+    ): ?WorldEvent {
+        $actor = $this->players[$actorSessionId] ?? null;
+        if ($actor === null || !isset($this->players[$viewerSessionId]) || $viewerSessionId === $actorSessionId) {
+            return null;
+        }
+        $events = [];
+        $this->reconcilePair($viewerSessionId, $actor, $canViewerSee($viewerSessionId, $actor), $events);
+
+        return $events[0] ?? null;
+    }
+
+    /**
+     * Filters an already ordered recipient list without materializing and sorting
+     * the actor's complete viewer list for every transient projection.
+     *
+     * @param list<string> $recipients
+     * @return list<string>
+     */
+    public function visibleRecipients(string $actorSessionId, array $recipients): array
+    {
+        $viewers = $this->viewers[$actorSessionId] ?? [];
+        if ($viewers === [] || $recipients === []) {
+            return [];
+        }
+        $visible = [];
+        foreach ($recipients as $recipient) {
+            if (isset($viewers[$recipient])) {
+                $visible[] = $recipient;
+            }
+        }
+
+        return $visible;
     }
 
     /**
@@ -111,7 +187,10 @@ final class PlayerActorVisibilityRegistry
             $events[] = new PlayerBecameHidden($sessionId, $player->runtimeActorId, $viewer);
             unset($this->visible[$viewer][$sessionId]);
         }
-        unset($this->players[$sessionId], $this->visible[$sessionId]);
+        foreach ($this->visible[$sessionId] as $actorSessionId => $_) {
+            unset($this->viewers[$actorSessionId][$sessionId]);
+        }
+        unset($this->players[$sessionId], $this->visible[$sessionId], $this->viewers[$sessionId]);
 
         return $events;
     }
@@ -125,11 +204,18 @@ final class PlayerActorVisibilityRegistry
         }
         if ($shouldBeVisible) {
             $this->visible[$viewer][$actor->sessionId] = true;
+            $this->viewers[$actor->sessionId][$viewer] = true;
             $events[] = new PlayerBecameVisible($actor, $viewer);
 
             return;
         }
         unset($this->visible[$viewer][$actor->sessionId]);
+        unset($this->viewers[$actor->sessionId][$viewer]);
         $events[] = new PlayerBecameHidden($actor->sessionId, $actor->runtimeActorId, $viewer);
+    }
+
+    private static function chunkCoordinate(float $position): int
+    {
+        return (int) floor($position / 16.0);
     }
 }

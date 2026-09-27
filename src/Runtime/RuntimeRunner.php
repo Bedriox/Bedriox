@@ -41,7 +41,9 @@ final readonly class RuntimeRunner
                     }
                     break;
                 }
-                $this->sleeper->idle();
+                if (!$this->runtime instanceof RuntimeIdleAdvisor || $this->runtime->shouldIdleAfterPoll()) {
+                    $this->sleeper->idle();
+                }
             }
         } catch (Throwable $exception) {
             ($this->diagnostics ?? RuntimeDiagnostics::disabled())->record('runtime.runner_failed', [

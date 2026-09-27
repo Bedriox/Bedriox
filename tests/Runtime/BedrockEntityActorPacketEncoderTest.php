@@ -70,6 +70,43 @@ final class BedrockEntityActorPacketEncoderTest extends TestCase
             self::assertTrue($entry->packet->runtimeEntityId->equals(UnsignedLong::fromInt(201)));
             self::assertSame(ActorEventType::AttackStart, $entry->packet->event);
         }
+        self::assertSame($packets[0]->packet, $packets[1]->packet);
+    }
+
+    public function testEntityMovementPacketsPreserveRecipientOrderAndShareProjectionObjects(): void
+    {
+        $zombie = new ZombieEntity(
+            '00000000-0000-4000-8000-000000000203',
+            203,
+            'world',
+            new Position(4.0, 65.0, -2.0),
+        );
+        $zombie->moveTo('world', new Position(5.0, 66.0, -1.0), 35.0, -12.0);
+        $zombie->setMotion(new EntityMotion(0.2, 0.1, -0.3));
+        $zombie->setOnGround(false);
+        $event = new EntityActorMoved($zombie, 81, ['viewer-a', 'viewer-b'], true);
+        $encoder = new BedrockWorldEventPacketEncoder();
+
+        $shared = $encoder->entityMovementPackets($event);
+        $directed = $encoder->encode($event, []);
+
+        self::assertCount(2, $shared);
+        self::assertInstanceOf(MoveActorAbsolutePacket::class, $shared[0]);
+        self::assertInstanceOf(SetActorMotionPacket::class, $shared[1]);
+        self::assertSame(
+            ['viewer-a', 'viewer-a', 'viewer-b', 'viewer-b'],
+            array_map(static fn($entry): string => $entry->sessionId, $directed),
+        );
+        self::assertSame($directed[0]->packet, $directed[2]->packet);
+        self::assertSame($directed[1]->packet, $directed[3]->packet);
+        foreach ($directed as $index => $entry) {
+            $expected = $shared[$index % 2];
+            self::assertSame($expected::class, $entry->packet::class);
+            self::assertSame(
+                BedrockPacketCodec::encode($expected),
+                BedrockPacketCodec::encode($entry->packet),
+            );
+        }
     }
 
     public function testCowSpawnUsesCompleteLivingBaselineForOnlyChunkVisibleRecipients(): void

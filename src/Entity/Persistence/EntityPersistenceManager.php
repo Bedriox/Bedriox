@@ -11,7 +11,9 @@ use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\EntityRegistry;
 use Bedriox\Server\Entity\EntityUuid;
 use Bedriox\Server\Entity\RegisteredEntityDefinition;
+use Bedriox\Server\Persistence\PersistenceSubmission;
 use Bedriox\Server\World\ChunkPosition;
+use Bedriox\Server\World\Provider\Exception\WorldStorageException;
 use Closure;
 use InvalidArgumentException;
 use LogicException;
@@ -40,6 +42,15 @@ final class EntityPersistenceManager
     /** @var array<string, string> UUID => chunk key */
     private array $owners = [];
 
+    /** @var array<string, PendingEntityOwnershipTransfer> UUID => in-flight transfer */
+    private array $pendingOwnershipTransfers = [];
+
+    /** @var array<string, int> Chunk key => number of in-flight transfers using the chunk */
+    private array $pendingOwnershipTransferChunks = [];
+
+    /** @var array<string, PendingEntityChunkSave> Chunk key => in-flight immutable autosave */
+    private array $pendingChunkSaves = [];
+
     /** @var array<string, true> */
     private array $corruptChunks = [];
 
@@ -49,6 +60,9 @@ final class EntityPersistenceManager
     private array $autosavePending = [];
 
     private int $autosaveGeneration = 0;
+
+    /** @var list<array{uuid: string, source: ChunkPosition, destination: ChunkPosition, code: string, detail: string}> */
+    private array $ownershipTransferFailures = [];
 
     /** @var Closure(EntityPersistenceRecord, RegisteredEntityDefinition, EntityRegistry): (?AbstractEntity) */
     private readonly Closure $activator;
@@ -268,6 +282,7 @@ final class EntityPersistenceManager
         $uuid = $entity->getUniqueId();
         $state->records[$uuid] = $record;
         $state->dirty = true;
+        ++$state->mutationRevision;
         $this->owners[$uuid] = $chunk->key();
         $this->runtimeStates[$uuid] = new ManagedEntityRuntimeState(
             $record,
@@ -294,6 +309,7 @@ final class EntityPersistenceManager
             throw new InvalidArgumentException('Entity persistence ownership-transfer limit is outside its supported range.');
         }
 
+        $this->collectOwnershipTransferCompletions();
         $uuids = array_keys($this->runtimeStates);
         sort($uuids, SORT_STRING);
         $count = count($uuids);
@@ -319,6 +335,7 @@ final class EntityPersistenceManager
                 $result = $this->synchronizeEntity($uuid);
                 $transferred += $result === 1 ? 1 : 0;
                 $removed += $result === 2 ? 1 : 0;
+                $deferredTransfers += $result === 3 ? 1 : 0;
             } catch (Throwable) {
                 $this->markOwnerDirty($uuid);
                 ++$failed;
@@ -347,7 +364,8 @@ final class EntityPersistenceManager
         $this->checkpointRuntimeAges();
         $keys = array_keys(array_filter(
             $this->chunks,
-            static fn(ManagedEntityChunkState $state): bool => $state->dirty,
+            fn(ManagedEntityChunkState $state): bool => $state->dirty
+                && !isset($this->pendingOwnershipTransferChunks[$state->chunk->key()]),
         ));
         sort($keys, SORT_STRING);
         $this->autosavePending = array_fill_keys($keys, true);
@@ -364,33 +382,67 @@ final class EntityPersistenceManager
         if ($maximumChunks < 1 || $maximumChunks > self::MAX_AUTOSAVE_CHUNKS) {
             throw new InvalidArgumentException('Entity persistence autosave batch is outside its supported range.');
         }
+        $completionResult = $this->collectEntityChunkSaveCompletions();
         $keys = array_slice(array_keys($this->autosavePending), 0, $maximumChunks);
+        $keys = array_values(array_filter(
+            $keys,
+            fn(string $key): bool => !isset($this->pendingOwnershipTransferChunks[$key])
+                && !isset($this->pendingChunkSaves[$key]),
+        ));
         if ($keys === []) {
-            return new EntityPersistenceFlushResult(0, 0, []);
+            return $completionResult;
         }
 
-        $saved = 0;
-        $failed = [];
+        $attempted = $completionResult->attemptedChunks;
+        $saved = $completionResult->savedChunks;
+        $failed = $completionResult->failedChunks();
+        $failureDetails = $completionResult->failureDetails();
         foreach ($keys as $key) {
             $state = $this->chunks[$key] ?? null;
             if ($state === null || !$state->dirty) {
                 unset($this->autosavePending[$key]);
                 continue;
             }
+            if ($this->chunkHasUnsettledOwnership($state)) {
+                unset($this->autosavePending[$key]);
+                $this->autosavePending[$key] = true;
+                continue;
+            }
             try {
                 $snapshot = $this->snapshot($state);
+                if ($this->store instanceof AsynchronousEntityPersistenceStore) {
+                    $submission = $this->store->enqueueEntityChunkSave($snapshot);
+                    if ($submission->status === PersistenceSubmission::SATURATED) {
+                        unset($this->autosavePending[$key]);
+                        $this->autosavePending[$key] = true;
+                        break;
+                    }
+                    if ($submission->status === PersistenceSubmission::STALE) {
+                        throw new LogicException('Entity autosave snapshot was stale without matching manager state.');
+                    }
+                    $this->pendingChunkSaves[$key] = new PendingEntityChunkSave(
+                        $snapshot,
+                        $state->mutationRevision,
+                        $this->captureSnapshotRuntimeBaselines($snapshot),
+                    );
+                    ++$attempted;
+                    continue;
+                }
                 $this->store->saveEntityChunk($snapshot);
                 $this->acknowledge($state, $snapshot);
                 unset($this->autosavePending[$key]);
+                ++$attempted;
                 ++$saved;
-            } catch (Throwable) {
+            } catch (Throwable $error) {
+                ++$attempted;
                 unset($this->autosavePending[$key]);
                 $this->autosavePending[$key] = true;
                 $failed[] = $state->chunk;
+                $failureDetails[] = self::failureDetail($state->chunk, 'autosave', $error);
             }
         }
 
-        return new EntityPersistenceFlushResult(count($keys), $saved, $failed);
+        return new EntityPersistenceFlushResult($attempted, $saved, $failed, $failureDetails);
     }
 
     public function pendingAutosaveChunkCount(): int
@@ -403,6 +455,15 @@ final class EntityPersistenceManager
         return $this->autosaveGeneration;
     }
 
+    /** @return list<array{uuid: string, source: ChunkPosition, destination: ChunkPosition, code: string, detail: string}> */
+    public function drainOwnershipTransferFailures(): array
+    {
+        $failures = $this->ownershipTransferFailures;
+        $this->ownershipTransferFailures = [];
+
+        return $failures;
+    }
+
     /** Saves at most $maximumChunks dirty chunks and retains failed work for a later retry. */
     public function persistDirty(int $maximumChunks): EntityPersistenceFlushResult
     {
@@ -411,7 +472,8 @@ final class EntityPersistenceManager
         }
         $keys = array_keys(array_filter(
             $this->chunks,
-            static fn(ManagedEntityChunkState $state): bool => $state->dirty,
+            fn(ManagedEntityChunkState $state): bool => $state->dirty
+                && !isset($this->pendingOwnershipTransferChunks[$state->chunk->key()]),
         ));
         sort($keys, SORT_STRING);
         $keys = array_slice($keys, 0, $maximumChunks);
@@ -421,11 +483,13 @@ final class EntityPersistenceManager
     /** Synchronizes every active record and attempts every dirty chunk exactly once. */
     public function flushShutdown(): EntityPersistenceFlushResult
     {
+        $pendingSaves = $this->drainEntityChunkSaves();
+        $this->drainOwnershipTransfers();
         $uuids = array_keys($this->runtimeStates);
         sort($uuids, SORT_STRING);
         foreach ($uuids as $uuid) {
             try {
-                $this->synchronizeEntity($uuid);
+                $this->synchronizeEntity($uuid, false);
             } catch (Throwable) {
                 $this->markOwnerDirty($uuid);
             }
@@ -438,17 +502,30 @@ final class EntityPersistenceManager
             static fn(ManagedEntityChunkState $state): bool => $state->dirty,
         ));
         if ($keys === []) {
-            return new EntityPersistenceFlushResult(0, 0, []);
+            return $pendingSaves;
         }
         sort($keys, SORT_STRING);
 
-        return $this->persistKeys($keys);
+        $remaining = $this->persistKeys($keys);
+
+        return new EntityPersistenceFlushResult(
+            $pendingSaves->attemptedChunks + $remaining->attemptedChunks,
+            $pendingSaves->savedChunks + $remaining->savedChunks,
+            [...$pendingSaves->failedChunks(), ...$remaining->failedChunks()],
+            [...$pendingSaves->failureDetails(), ...$remaining->failureDetails()],
+        );
     }
 
     /** Saves and releases one chunk. Returns the number of runtime entities removed. */
     public function unloadChunk(ChunkPosition $chunk): int
     {
         $key = $chunk->key();
+        if (isset($this->pendingChunkSaves[$key])) {
+            $this->drainEntityChunkSaves();
+        }
+        if (isset($this->pendingOwnershipTransferChunks[$key])) {
+            $this->drainOwnershipTransfers();
+        }
         if (isset($this->corruptChunks[$key])) {
             unset($this->corruptChunks[$key]);
 
@@ -460,7 +537,7 @@ final class EntityPersistenceManager
         }
         foreach (array_keys($state->records) as $uuid) {
             if (isset($this->runtimeStates[$uuid])) {
-                $this->synchronizeEntity($uuid);
+                $this->synchronizeEntity($uuid, false);
             }
         }
         if ($state->dirty) {
@@ -504,6 +581,7 @@ final class EntityPersistenceManager
         $state = $this->chunks[$key] ?? throw new LogicException('Entity persistence owner chunk is unavailable.');
         unset($state->records[$uuid], $this->runtimeStates[$uuid], $this->owners[$uuid]);
         $state->dirty = true;
+        ++$state->mutationRevision;
 
         return true;
     }
@@ -526,13 +604,14 @@ final class EntityPersistenceManager
         $entity = $this->registry->getByRuntimeId($runtime->runtimeId);
         if ($entity !== null && !$entity->isRemoved()) {
             try {
-                $this->synchronizeEntity($uuid);
+                $this->synchronizeEntity($uuid, false);
                 $runtime = $this->runtimeStates[$uuid];
                 $ownerKey = $this->owners[$uuid];
                 $owner = $this->chunks[$ownerKey] ?? null;
                 if ($owner !== null) {
                     $owner->records[$uuid] = $this->currentRecord($runtime, $entity, $owner->chunk);
                     $owner->dirty = true;
+                    ++$owner->mutationRevision;
                 }
             } catch (Throwable) {
                 // Preserve the last known-good record if plugin state can no longer be encoded.
@@ -578,8 +657,11 @@ final class EntityPersistenceManager
         return $count;
     }
 
-    private function synchronizeEntity(string $uuid): int
+    private function synchronizeEntity(string $uuid, bool $allowAsynchronousTransfer = true): int
     {
+        if (isset($this->pendingOwnershipTransfers[$uuid])) {
+            return 0;
+        }
         $runtime = $this->runtimeStates[$uuid] ?? null;
         if ($runtime === null) {
             return 0;
@@ -600,6 +682,7 @@ final class EntityPersistenceManager
         if ($source->chunk->x === $destinationChunk->x && $source->chunk->z === $destinationChunk->z) {
             if ($entity->revision() !== $runtime->runtimeRevisionBaseline) {
                 $source->dirty = true;
+                ++$source->mutationRevision;
             }
 
             return 0;
@@ -619,20 +702,71 @@ final class EntityPersistenceManager
         if ($runtime->durablyStored) {
             $sourceAfter = $this->snapshot($source, $uuid);
             $destinationAfter = $this->snapshot($destination, null, $moved);
-            $this->store->transferEntityOwnership(new EntityOwnershipTransfer(
+            $transfer = new EntityOwnershipTransfer(
                 $uuid,
                 $runtime->record->revision(),
                 $sourceAfter,
                 $destinationAfter,
-            ));
+            );
+            $runtimeBaselines = $this->captureRuntimeBaselines($transfer);
+            if ($allowAsynchronousTransfer && $this->store instanceof AsynchronousEntityPersistenceStore) {
+                $sourceKey = $source->chunk->key();
+                if (isset($this->pendingOwnershipTransferChunks[$sourceKey])
+                    || isset($this->pendingOwnershipTransferChunks[$destinationKey])
+                    || isset($this->pendingChunkSaves[$sourceKey])
+                    || isset($this->pendingChunkSaves[$destinationKey])
+                    || !$this->store->enqueueEntityOwnershipTransfer($transfer)) {
+                    return 3;
+                }
+                $this->pendingOwnershipTransfers[$uuid] = new PendingEntityOwnershipTransfer(
+                    $transfer,
+                    $sourceKey,
+                    $destinationKey,
+                    $source->mutationRevision,
+                    $destination->mutationRevision,
+                    $entity->revision(),
+                    $entity->ageTicks(),
+                    $runtimeBaselines,
+                );
+                $this->pendingOwnershipTransferChunks[$sourceKey] = 1;
+                $this->pendingOwnershipTransferChunks[$destinationKey] = 1;
+
+                return 1;
+            }
+            $committed = $this->store->transferEntityOwnership($transfer);
+            unset($source->records[$uuid]);
+            $source->dirty = $this->reconcileOwnershipTransferRecords(
+                $source,
+                $sourceAfter,
+                $committed->sourceAfter,
+                $runtimeBaselines,
+                $uuid,
+            );
+            $committedMoved = $this->recordByUuid($committed->destinationAfter, $uuid);
+            if (!$committedMoved instanceof EntityPersistenceRecord) {
+                throw new LogicException('Committed entity ownership transfer has no materialized destination record.');
+            }
+            $destination->records[$uuid] = $committedMoved;
+            $destination->dirty = $this->reconcileOwnershipTransferRecords(
+                $destination,
+                $destinationAfter,
+                $committed->destinationAfter,
+                $runtimeBaselines,
+                $uuid,
+            );
             $this->owners[$uuid] = $destinationKey;
-            $this->acknowledge($source, $sourceAfter);
-            $this->acknowledge($destination, $destinationAfter);
+            $runtime->record = $committedMoved;
+            $runtime->runtimeRevisionBaseline = $entity->revision();
+            $runtime->runtimeAgeBaseline = $entity->ageTicks();
+            $runtime->persistedAgeBaseline = $runtime->record->ageTicks;
+            $runtime->durablyStored = true;
         } else {
             unset($source->records[$uuid]);
             $destination->records[$uuid] = $moved;
             $source->dirty = true;
             $destination->dirty = true;
+            ++$source->mutationRevision;
+            ++$destination->mutationRevision;
             $this->owners[$uuid] = $destinationKey;
             $runtime->record = $moved;
             $runtime->runtimeRevisionBaseline = $entity->revision();
@@ -645,6 +779,9 @@ final class EntityPersistenceManager
 
     private function requiresOwnershipTransfer(string $uuid): bool
     {
+        if (isset($this->pendingOwnershipTransfers[$uuid])) {
+            return false;
+        }
         $runtime = $this->runtimeStates[$uuid] ?? null;
         if ($runtime === null) {
             return false;
@@ -658,6 +795,23 @@ final class EntityPersistenceManager
             && self::chunkAt($entity)->key() !== $sourceKey;
     }
 
+    private function chunkHasUnsettledOwnership(ManagedEntityChunkState $state): bool
+    {
+        $ownerKey = $state->chunk->key();
+        foreach (array_keys($state->records) as $uuid) {
+            $runtime = $this->runtimeStates[$uuid] ?? null;
+            if ($runtime === null) {
+                continue;
+            }
+            $entity = $this->registry->getByRuntimeId($runtime->runtimeId);
+            if ($entity !== null && !$entity->isRemoved() && self::chunkAt($entity)->key() !== $ownerKey) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function checkpointRuntimeAges(): void
     {
         foreach ($this->runtimeStates as $uuid => $runtime) {
@@ -669,11 +823,426 @@ final class EntityPersistenceManager
         }
     }
 
+    private function collectOwnershipTransferCompletions(int $maximumCompletions = 256): void
+    {
+        if (!$this->store instanceof AsynchronousEntityPersistenceStore) {
+            return;
+        }
+        $this->acceptOwnershipTransferCompletions(
+            $this->store->pollEntityOwnershipTransfers($maximumCompletions),
+        );
+    }
+
+    private function collectEntityChunkSaveCompletions(int $maximumCompletions = 256): EntityPersistenceFlushResult
+    {
+        if (!$this->store instanceof AsynchronousEntityPersistenceStore) {
+            return new EntityPersistenceFlushResult(0, 0, []);
+        }
+
+        return $this->acceptEntityChunkSaveCompletions(
+            $this->store->pollEntityChunkSaves($maximumCompletions),
+        );
+    }
+
+    private function drainEntityChunkSaves(): EntityPersistenceFlushResult
+    {
+        if (!$this->store instanceof AsynchronousEntityPersistenceStore || $this->pendingChunkSaves === []) {
+            return new EntityPersistenceFlushResult(0, 0, []);
+        }
+        $expectedCompletions = count($this->pendingChunkSaves);
+        $completions = $this->store->drainEntityChunkSaves(30_000);
+        $result = $this->acceptEntityChunkSaveCompletions($completions);
+        if (count($completions) !== $expectedCompletions) {
+            throw new LogicException('Entity chunk save drain did not resolve every pending snapshot.');
+        }
+
+        return $result;
+    }
+
+    /** @param list<EntityChunkSaveCompletion> $completions */
+    private function acceptEntityChunkSaveCompletions(array $completions): EntityPersistenceFlushResult
+    {
+        $saved = 0;
+        $failed = [];
+        $failureDetails = [];
+        foreach ($completions as $completion) {
+            $key = $completion->chunk->key();
+            $pending = $this->pendingChunkSaves[$key] ?? null;
+            if (!$pending instanceof PendingEntityChunkSave
+                || $pending->snapshot->chunkRevision !== $completion->revision) {
+                throw new LogicException('Entity chunk save completion did not match pending state.');
+            }
+            unset($this->pendingChunkSaves[$key]);
+            $state = $this->chunks[$key] ?? null;
+            if (!$completion->successful) {
+                if ($state !== null) {
+                    $state->dirty = true;
+                    unset($this->autosavePending[$key]);
+                    $this->autosavePending[$key] = true;
+                }
+                $failed[] = $completion->chunk;
+                $failureDetails[] = [
+                    'chunk' => $completion->chunk,
+                    'operation' => 'autosave',
+                    'exception' => $completion->failureCode === 'entity_persistence_conflict'
+                        ? EntityPersistenceConflictException::class
+                        : WorldStorageException::class,
+                    'detail' => $completion->failureDetail ?? $completion->failureCode ?? 'storage_failure',
+                ];
+                continue;
+            }
+            if ($state !== null) {
+                $changed = $state->mutationRevision !== $pending->mutationRevision;
+                $state->revision = $pending->snapshot->chunkRevision;
+                $this->rebaseTransferRecords($state, $pending->snapshot, $pending->runtimeBaselines);
+                $state->dirty = $changed;
+            }
+            unset($this->autosavePending[$key]);
+            ++$saved;
+        }
+
+        return new EntityPersistenceFlushResult(count($completions), $saved, $failed, $failureDetails);
+    }
+
+    private function drainOwnershipTransfers(): void
+    {
+        if (!$this->store instanceof AsynchronousEntityPersistenceStore
+            || $this->pendingOwnershipTransfers === []) {
+            return;
+        }
+        $this->acceptOwnershipTransferCompletions(
+            $this->store->drainEntityOwnershipTransfers(30_000),
+        );
+        if ($this->pendingOwnershipTransfers !== []) {
+            throw new LogicException('Entity ownership transfer drain did not resolve every pending transfer.');
+        }
+    }
+
+    /** @param list<EntityOwnershipTransferCompletion> $completions */
+    private function acceptOwnershipTransferCompletions(array $completions): void
+    {
+        foreach ($completions as $completion) {
+            $uuid = $completion->transfer->uuid;
+            $pending = $this->pendingOwnershipTransfers[$uuid] ?? null;
+            if (!$pending instanceof PendingEntityOwnershipTransfer
+                || $pending->transfer->sourceAfter->chunkRevision !== $completion->transfer->sourceAfter->chunkRevision
+                || $pending->transfer->destinationAfter->chunkRevision !== $completion->transfer->destinationAfter->chunkRevision) {
+                throw new LogicException('Entity ownership transfer completion did not match pending state.');
+            }
+            unset($this->pendingOwnershipTransfers[$uuid]);
+            $this->releaseOwnershipTransferChunk($pending->sourceKey);
+            $this->releaseOwnershipTransferChunk($pending->destinationKey);
+
+            $source = $this->chunks[$pending->sourceKey] ?? null;
+            $destination = $this->chunks[$pending->destinationKey] ?? null;
+            if (!$completion->successful || $source === null || $destination === null) {
+                if (!$completion->successful) {
+                    $this->ownershipTransferFailures[] = [
+                        'uuid' => $uuid,
+                        'source' => $completion->transfer->sourceAfter->chunk,
+                        'destination' => $completion->transfer->destinationAfter->chunk,
+                        'code' => $completion->failureCode ?? 'storage_failure',
+                        'detail' => $completion->failureDetail ?? '',
+                    ];
+                    if (count($this->ownershipTransferFailures) > 256) {
+                        array_shift($this->ownershipTransferFailures);
+                    }
+                }
+                if ($source !== null) {
+                    $source->dirty = true;
+                    ++$source->mutationRevision;
+                }
+                if ($destination !== null) {
+                    $destination->dirty = true;
+                    ++$destination->mutationRevision;
+                }
+                continue;
+            }
+
+            $committed = $completion->result;
+            if (!$committed instanceof EntityOwnershipTransferResult) {
+                throw new LogicException('Successful entity ownership transfer has no committed snapshots.');
+            }
+            $moved = $this->recordByUuid($committed->destinationAfter, $uuid);
+            if (!$moved instanceof EntityPersistenceRecord) {
+                throw new LogicException('Completed entity ownership transfer has no materialized destination record.');
+            }
+
+            $sourceChanged = $source->mutationRevision !== $pending->sourceMutationRevision;
+            $destinationChanged = $destination->mutationRevision !== $pending->destinationMutationRevision;
+            unset($source->records[$uuid]);
+            $source->dirty = $this->reconcileOwnershipTransferRecords(
+                $source,
+                $pending->transfer->sourceAfter,
+                $committed->sourceAfter,
+                $pending->runtimeBaselines,
+                $uuid,
+                $sourceChanged,
+            );
+            ++$source->mutationRevision;
+
+            $runtime = $this->runtimeStates[$uuid] ?? null;
+            if ($runtime === null) {
+                unset($destination->records[$uuid], $this->owners[$uuid]);
+                $destination->dirty = true;
+                ++$destination->mutationRevision;
+                $this->reconcileOwnershipTransferRecords(
+                    $destination,
+                    $pending->transfer->destinationAfter,
+                    $committed->destinationAfter,
+                    $pending->runtimeBaselines,
+                    $uuid,
+                    true,
+                );
+                continue;
+            }
+
+            $destination->records[$uuid] = $moved;
+            $destination->dirty = $this->reconcileOwnershipTransferRecords(
+                $destination,
+                $pending->transfer->destinationAfter,
+                $committed->destinationAfter,
+                $pending->runtimeBaselines,
+                $uuid,
+                $destinationChanged,
+            );
+            ++$destination->mutationRevision;
+            $this->owners[$uuid] = $pending->destinationKey;
+            $this->rebaseRuntimeRecord(
+                $runtime,
+                $moved,
+                $pending->runtimeRevisionBaseline,
+                $pending->runtimeAgeBaseline,
+            );
+
+            if (!$source->dirty) {
+                unset($this->autosavePending[$pending->sourceKey]);
+            }
+            if (!$destination->dirty) {
+                unset($this->autosavePending[$pending->destinationKey]);
+            }
+        }
+    }
+
+    private function releaseOwnershipTransferChunk(string $key): void
+    {
+        $remaining = ($this->pendingOwnershipTransferChunks[$key] ?? 0) - 1;
+        if ($remaining <= 0) {
+            unset($this->pendingOwnershipTransferChunks[$key]);
+        } else {
+            $this->pendingOwnershipTransferChunks[$key] = $remaining;
+        }
+    }
+
+    /**
+     * Captures the runtime revisions used to construct every record in an
+     * asynchronous transfer. The complete source and destination snapshots are
+     * durable on success, so every included runtime record must advance to the
+     * same persistence baseline as the storage owner.
+     *
+     * @return array<string, array{revision: int, age: int}>
+     */
+    private function captureRuntimeBaselines(EntityOwnershipTransfer $transfer): array
+    {
+        $baselines = [];
+        foreach ([$transfer->sourceAfter, $transfer->destinationAfter] as $snapshot) {
+            foreach ($snapshot->records() as $record) {
+                $runtime = $this->runtimeStates[$record->uuid()] ?? null;
+                if ($runtime === null) {
+                    continue;
+                }
+                $entity = $this->registry->getByRuntimeId($runtime->runtimeId);
+                if ($entity === null || $entity->isRemoved()
+                    || self::chunkAt($entity)->key() !== $snapshot->chunk->key()) {
+                    continue;
+                }
+                $baselines[$record->uuid()] = [
+                    'revision' => $entity->revision(),
+                    'age' => $entity->ageTicks(),
+                ];
+            }
+        }
+
+        return $baselines;
+    }
+
+    /** @return array<string, array{revision: int, age: int}> */
+    private function captureSnapshotRuntimeBaselines(EntityChunkSnapshot $snapshot): array
+    {
+        $baselines = [];
+        foreach ($snapshot->records() as $record) {
+            $runtime = $this->runtimeStates[$record->uuid()] ?? null;
+            if ($runtime === null) {
+                continue;
+            }
+            $entity = $this->registry->getByRuntimeId($runtime->runtimeId);
+            if ($entity === null || $entity->isRemoved()
+                || self::chunkAt($entity)->key() !== $snapshot->chunk->key()) {
+                continue;
+            }
+            $baselines[$record->uuid()] = [
+                'revision' => $entity->revision(),
+                'age' => $entity->ageTicks(),
+            ];
+        }
+
+        return $baselines;
+    }
+
+    /**
+     * Reconciles the unrelated records returned by an atomic one-entity ownership delta.
+     *
+     * The submitted snapshots may contain local changes which the ownership delta does
+     * not commit. Those changes stay dirty, while a newer durable baseline returned by
+     * the storage owner is adopted before the next snapshot is constructed.
+     *
+     * @param array<string, array{revision: int, age: int}> $runtimeBaselines
+     */
+    private function reconcileOwnershipTransferRecords(
+        ManagedEntityChunkState $state,
+        EntityChunkSnapshot $submitted,
+        EntityChunkSnapshot $committed,
+        array $runtimeBaselines,
+        string $excludedUuid,
+        bool $changedDuringWrite = false,
+    ): bool {
+        $dirty = $changedDuringWrite;
+        $submittedRecords = self::recordsByUuid($submitted);
+        $committedRecords = self::recordsByUuid($committed);
+        $ownerKey = $state->chunk->key();
+
+        foreach ($committedRecords as $uuid => $record) {
+            if ($uuid === $excludedUuid) {
+                continue;
+            }
+            $runtime = $this->runtimeStates[$uuid] ?? null;
+            $baseline = $runtimeBaselines[$uuid] ?? null;
+            $entity = $runtime === null ? null : $this->registry->getByRuntimeId($runtime->runtimeId);
+            if ($runtime === null || !is_array($baseline) || $entity === null || $entity->isRemoved()
+                || self::chunkAt($entity)->key() !== $ownerKey) {
+                $state->records[$uuid] = $record;
+                $this->owners[$uuid] = $ownerKey;
+                continue;
+            }
+            if (!$record instanceof EntityPersistenceRecord) {
+                throw new LogicException('An active entity resolved to a dormant committed persistence record.');
+            }
+
+            $submittedRecord = $submittedRecords[$uuid] ?? null;
+            $hadPendingChange = $submittedRecord instanceof PersistentEntityRecord
+                && $submittedRecord != $runtime->record;
+            if (!$hadPendingChange || $submittedRecord == $record) {
+                $this->rebaseRuntimeRecord(
+                    $runtime,
+                    $record,
+                    $baseline['revision'],
+                    $baseline['age'],
+                );
+            } else {
+                // Preserve the old runtime baseline so currentRecord() reapplies the
+                // local delta on top of the exact durable record returned by storage.
+                $runtime->record = $record;
+                $runtime->persistedAgeBaseline = $record->ageTicks;
+                $runtime->durablyStored = true;
+                $dirty = true;
+            }
+
+            if ($entity->revision() !== $runtime->runtimeRevisionBaseline
+                || $entity->ageTicks() !== $runtime->runtimeAgeBaseline) {
+                $state->records[$uuid] = $this->currentRecord($runtime, $entity, $state->chunk);
+                $dirty = true;
+            } else {
+                $state->records[$uuid] = $record;
+            }
+            $this->owners[$uuid] = $ownerKey;
+        }
+
+        foreach ($submittedRecords as $uuid => $_record) {
+            if ($uuid !== $excludedUuid && !isset($committedRecords[$uuid], $state->records[$uuid])) {
+                $dirty = true;
+            }
+        }
+        $state->revision = $committed->chunkRevision;
+
+        return $dirty;
+    }
+
+    /**
+     * Rebases records which still belong to this in-memory chunk onto the exact
+     * snapshot committed by the storage owner. Records added or removed while
+     * the transfer was in flight remain authoritative and keep the chunk dirty.
+     *
+     * @param array<string, array{revision: int, age: int}> $runtimeBaselines
+     */
+    private function rebaseTransferRecords(
+        ManagedEntityChunkState $state,
+        EntityChunkSnapshot $snapshot,
+        array $runtimeBaselines,
+        ?string $excludedUuid = null,
+    ): void {
+        foreach ($snapshot->records() as $record) {
+            $uuid = $record->uuid();
+            if ($uuid === $excludedUuid || !isset($state->records[$uuid])) {
+                continue;
+            }
+            $runtime = $this->runtimeStates[$uuid] ?? null;
+            $baseline = $runtimeBaselines[$uuid] ?? null;
+            if ($runtime !== null && is_array($baseline)) {
+                if (!$record instanceof EntityPersistenceRecord) {
+                    throw new LogicException('An active entity resolved to a dormant saved persistence record.');
+                }
+                $state->records[$uuid] = $record;
+                $this->rebaseRuntimeRecord(
+                    $runtime,
+                    $record,
+                    $baseline['revision'],
+                    $baseline['age'],
+                );
+            }
+        }
+    }
+
+    private function rebaseRuntimeRecord(
+        ManagedEntityRuntimeState $runtime,
+        EntityPersistenceRecord $record,
+        int $runtimeRevisionBaseline,
+        int $runtimeAgeBaseline,
+    ): void {
+        $runtime->record = $record;
+        $runtime->runtimeRevisionBaseline = $runtimeRevisionBaseline;
+        $runtime->runtimeAgeBaseline = $runtimeAgeBaseline;
+        $runtime->persistedAgeBaseline = $record->ageTicks;
+        $runtime->durablyStored = true;
+    }
+
+    private function recordByUuid(EntityChunkSnapshot $snapshot, string $uuid): ?PersistentEntityRecord
+    {
+        foreach ($snapshot->records() as $record) {
+            if ($record->uuid() === $uuid) {
+                return $record;
+            }
+        }
+
+        return null;
+    }
+
+    /** @return array<string, PersistentEntityRecord> */
+    private static function recordsByUuid(EntityChunkSnapshot $snapshot): array
+    {
+        $records = [];
+        foreach ($snapshot->records() as $record) {
+            $records[$record->uuid()] = $record;
+        }
+
+        return $records;
+    }
+
     private function markOwnerDirty(string $uuid): void
     {
         $key = $this->owners[$uuid] ?? null;
         if ($key !== null && isset($this->chunks[$key])) {
             $this->chunks[$key]->dirty = true;
+            ++$this->chunks[$key]->mutationRevision;
         }
     }
 
@@ -682,6 +1251,7 @@ final class EntityPersistenceManager
     {
         $saved = 0;
         $failed = [];
+        $failureDetails = [];
         foreach ($keys as $key) {
             $state = $this->chunks[$key];
             try {
@@ -689,12 +1259,24 @@ final class EntityPersistenceManager
                 $this->store->saveEntityChunk($snapshot);
                 $this->acknowledge($state, $snapshot);
                 ++$saved;
-            } catch (Throwable) {
+            } catch (Throwable $error) {
                 $failed[] = $state->chunk;
+                $failureDetails[] = self::failureDetail($state->chunk, 'flush', $error);
             }
         }
 
-        return new EntityPersistenceFlushResult(count($keys), $saved, $failed);
+        return new EntityPersistenceFlushResult(count($keys), $saved, $failed, $failureDetails);
+    }
+
+    /** @return array{chunk: ChunkPosition, operation: string, exception: string, detail: string} */
+    private static function failureDetail(ChunkPosition $chunk, string $operation, Throwable $error): array
+    {
+        return [
+            'chunk' => $chunk,
+            'operation' => $operation,
+            'exception' => $error::class,
+            'detail' => $error->getMessage(),
+        ];
     }
 
     private function snapshot(
@@ -713,7 +1295,8 @@ final class EntityPersistenceManager
             $runtime = $this->runtimeStates[$uuid] ?? null;
             if ($runtime !== null) {
                 $entity = $this->registry->getByRuntimeId($runtime->runtimeId);
-                if ($entity !== null && !$entity->isRemoved()) {
+                if ($entity !== null && !$entity->isRemoved()
+                    && self::chunkAt($entity)->key() === $state->chunk->key()) {
                     $record = $this->currentRecord($runtime, $entity, $state->chunk);
                 }
             }
@@ -745,7 +1328,7 @@ final class EntityPersistenceManager
             $runtime = $this->runtimeStates[$record->uuid()] ?? null;
             if ($runtime !== null && $record instanceof EntityPersistenceRecord) {
                 $entity = $this->registry->getByRuntimeId($runtime->runtimeId);
-                if ($entity !== null) {
+                if ($entity !== null && self::chunkAt($entity)->key() === $state->chunk->key()) {
                     $runtime->record = $record;
                     $runtime->runtimeRevisionBaseline = $entity->revision();
                     $runtime->runtimeAgeBaseline = $entity->ageTicks();

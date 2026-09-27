@@ -9,6 +9,7 @@ use Bedriox\Data\PersistentBlockStateRegistry;
 use Bedriox\Protocol\ProtocolVersion;
 use Bedriox\Server\Entity\Persistence\EntityChunkSnapshot;
 use Bedriox\Server\Entity\Persistence\EntityOwnershipTransfer;
+use Bedriox\Server\Entity\Persistence\EntityOwnershipTransferResult;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceCodec;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
 use Bedriox\Server\World\Block\BlockStateRegistry;
@@ -307,10 +308,11 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
         $this->entities->saveEntityChunk($snapshot);
     }
 
-    public function transferEntityOwnership(EntityOwnershipTransfer $transfer): void
+    public function transferEntityOwnership(EntityOwnershipTransfer $transfer): EntityOwnershipTransferResult
     {
         $this->assertOpen();
-        $this->entities->transferEntityOwnership($transfer);
+
+        return $this->entities->transferEntityOwnership($transfer);
     }
 
     public function close(): void

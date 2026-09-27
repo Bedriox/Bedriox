@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Worker;
 
+use Bedriox\Server\Worker\Internal\IpcSocketTuning;
 use Bedriox\Server\Worker\Internal\ProcessEnvironment;
 use Bedriox\Server\Worker\Protocol\WorkerFrame;
 use Bedriox\Server\Worker\Protocol\WorkerFrameCodec;
@@ -27,6 +28,7 @@ final class ManagedWorkerPool
     /** @var list<array{WorkerResult, int}> */
     private array $ready = [];
     private string $outgoing = '';
+    private int $outgoingOffset = 0;
     private string $diagnostic = '';
     private int $nextTaskId = 2;
     private int $pendingBytes = 0;
@@ -116,7 +118,7 @@ final class ManagedWorkerPool
         );
         $bytes = $this->codec->encode($frame);
         if ($this->pendingBytes + strlen($bytes) > $this->limits->maximumQueuedBytes
-            || strlen($this->outgoing) + strlen($bytes) > $this->limits->maximumBufferedIpcBytes) {
+            || $this->outgoingBytes() + strlen($bytes) > $this->limits->maximumBufferedIpcBytes) {
             return $this->reject(WorkerRejectionReason::BYTE_LIMIT);
         }
         $receipt = new WorkerReceipt($this->epoch, $taskId, $taskTypeId, $definition->owner, $deadlineNanoseconds);
@@ -158,7 +160,7 @@ final class ManagedWorkerPool
             $this->collectFrames('');
             $readBudget = $this->decoder->remainingCapacity();
             if ($this->remainingReadyResults() > 0 && $this->remainingReadyBytes() > 0 && $readBudget > 0) {
-                $bytes = is_resource($this->output) ? @fread($this->output, min(262_144, $readBudget)) : false;
+                $bytes = is_resource($this->output) ? @fread($this->output, min(1_048_576, $readBudget)) : false;
                 if (is_string($bytes) && $bytes !== '') {
                     $this->collectFrames($bytes);
                 }
@@ -168,12 +170,9 @@ final class ManagedWorkerPool
 
             return;
         }
-        $process = $this->process;
-        if (!is_resource($process)) {
-            return;
-        }
-        $status = @proc_get_status($process);
-        if (!$status['running']) {
+        if (!is_resource($this->process)
+            || !is_resource($this->output)
+            || feof($this->output)) {
             $this->loseBroker('exited');
         }
     }
@@ -287,6 +286,7 @@ final class ManagedWorkerPool
             @proc_close($process);
             throw new RuntimeException('Managed worker broker did not connect.');
         }
+        IpcSocketTuning::apply($connection);
         stream_set_timeout($connection, 5);
         $receivedToken = $this->readExactly($connection, strlen($token));
         if (!is_string($receivedToken) || !hash_equals($token, $receivedToken)) {
@@ -441,13 +441,40 @@ final class ManagedWorkerPool
 
     private function flushOutgoing(): void
     {
-        if ($this->outgoing === '' || !is_resource($this->input)) {
+        if ($this->outgoingBytes() === 0 || !is_resource($this->input)) {
             return;
         }
-        $written = @fwrite($this->input, $this->outgoing);
-        if (is_int($written) && $written > 0) {
-            $this->outgoing = substr($this->outgoing, $written);
+        $remainingBudget = 1_048_576;
+        while ($this->outgoingBytes() > 0 && $remainingBudget > 0) {
+            $attemptBytes = min($remainingBudget, $this->outgoingBytes(), 262_144);
+            $written = @fwrite(
+                $this->input,
+                substr($this->outgoing, $this->outgoingOffset, $attemptBytes),
+            );
+            if ($written === false) {
+                $this->loseBroker('write-failed');
+
+                return;
+            }
+            if ($written < 1) {
+                break;
+            }
+            $this->outgoingOffset += $written;
+            $remainingBudget -= $written;
         }
+        if ($this->outgoingBytes() === 0) {
+            $this->outgoing = '';
+            $this->outgoingOffset = 0;
+        } elseif ($this->outgoingOffset >= 8_388_608
+            && $this->outgoingOffset >= intdiv(strlen($this->outgoing), 2)) {
+            $this->outgoing = (string) substr($this->outgoing, $this->outgoingOffset);
+            $this->outgoingOffset = 0;
+        }
+    }
+
+    private function outgoingBytes(): int
+    {
+        return strlen($this->outgoing) - $this->outgoingOffset;
     }
 
     private function loseBroker(string $code): void
@@ -466,6 +493,7 @@ final class ManagedWorkerPool
         $this->pending = [];
         $this->pendingBytes = 0;
         $this->outgoing = '';
+        $this->outgoingOffset = 0;
         $this->closeProcess();
     }
 

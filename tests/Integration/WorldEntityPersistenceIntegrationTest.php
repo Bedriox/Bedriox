@@ -9,6 +9,8 @@ use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\EntityRegistry;
 use Bedriox\Server\Entity\Persistence\EntityChunkSnapshot;
 use Bedriox\Server\Entity\Persistence\EntityOwnershipTransfer;
+use Bedriox\Server\Entity\Persistence\EntityOwnershipTransferResult;
+use Bedriox\Server\Entity\Persistence\EntityPersistenceConflictException;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceManager;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
 use Bedriox\Server\Entity\Vanilla\CowEntity;
@@ -17,6 +19,7 @@ use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\ChunkRepository;
+use Bedriox\Server\World\ChunkUnloadManager;
 use Bedriox\Server\World\FlatWorldGenerator;
 use Bedriox\Server\World\World;
 use Bedriox\Server\World\WorldMetadata;
@@ -77,7 +80,43 @@ final class WorldEntityPersistenceIntegrationTest extends TestCase
         $secondWorld->close();
     }
 
-    private static function world(): World
+    public function testRecoverableOwnershipConflictDefersChunkEviction(): void
+    {
+        $store = new EntityIntegrationPersistenceStore();
+        $registry = new EntityRegistry();
+        $world = self::world(new ChunkUnloadManager(graceNanoseconds: 0));
+        $persistence = new EntityPersistenceManager(
+            'world',
+            $registry,
+            EntityDefinitionRegistry::baseline(),
+            $store,
+        );
+        $world->attachEntityPersistence($persistence);
+        $source = new ChunkPosition(0, 0);
+        $world->chunk($source);
+        $entity = $registry->spawn(static fn(string $uuid, int $runtimeId): CowEntity => new CowEntity(
+            $uuid,
+            $runtimeId,
+            'world',
+            new Position(1.5, 64.0, 1.5),
+        ));
+        $persistence->registerSpawned($entity);
+        self::assertSame(1, $persistence->persistDirty(1)->savedChunks);
+        $registry->move($entity->getRuntimeId(), 'world', new Position(17.5, 64.0, 1.5), 0.0, 0.0);
+
+        $store->failOwnershipTransfers = true;
+        $deferred = $world->processChunkUnloads(1, 10_000);
+        self::assertSame(0, $deferred->evicted);
+        self::assertSame(1, $deferred->remainingQueued);
+        self::assertTrue($world->hasLoadedChunk($source));
+
+        $store->failOwnershipTransfers = false;
+        self::assertSame(1, $world->processChunkUnloads(1, 10_000)->evicted);
+        self::assertFalse($world->hasLoadedChunk($source));
+        $world->close();
+    }
+
+    private static function world(?ChunkUnloadManager $chunkUnloads = null): World
     {
         $states = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
         $palette = FixedFlatBlockPalette::fromRegistry($states);
@@ -86,6 +125,7 @@ final class WorldEntityPersistenceIntegrationTest extends TestCase
             new WorldMetadata('world', 12345),
             new FlatWorldGenerator($palette),
             new ChunkRepository(8),
+            chunkUnloads: $chunkUnloads,
         );
     }
 }
@@ -97,6 +137,8 @@ final class EntityIntegrationPersistenceStore implements EntityPersistenceStore
 
     /** @var array<string, int> */
     public array $loadCalls = [];
+
+    public bool $failOwnershipTransfers = false;
 
     public function loadEntityChunk(ChunkPosition $position): ?EntityChunkSnapshot
     {
@@ -111,9 +153,14 @@ final class EntityIntegrationPersistenceStore implements EntityPersistenceStore
         $this->snapshots[$snapshot->chunk->key()] = $snapshot;
     }
 
-    public function transferEntityOwnership(EntityOwnershipTransfer $transfer): void
+    public function transferEntityOwnership(EntityOwnershipTransfer $transfer): EntityOwnershipTransferResult
     {
+        if ($this->failOwnershipTransfers) {
+            throw new EntityPersistenceConflictException('Injected recoverable ownership conflict.');
+        }
         $this->snapshots[$transfer->sourceAfter->chunk->key()] = $transfer->sourceAfter;
         $this->snapshots[$transfer->destinationAfter->chunk->key()] = $transfer->destinationAfter;
+
+        return new EntityOwnershipTransferResult($transfer->sourceAfter, $transfer->destinationAfter);
     }
 }

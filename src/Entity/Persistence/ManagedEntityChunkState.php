@@ -20,6 +20,7 @@ final class ManagedEntityChunkState
         public int $revision,
         array $records,
         public bool $dirty = false,
+        public int $mutationRevision = 0,
     ) {
         $this->records = $records;
     }

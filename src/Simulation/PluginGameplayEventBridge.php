@@ -276,6 +276,9 @@ final readonly class PluginGameplayEventBridge
 
     public function allowMove(Player $player, Position $target): bool
     {
+        if (!$this->events->hasListenersFor(PlayerMoveEvent::class)) {
+            return true;
+        }
         $event = new PlayerMoveEvent(
             $this->playerView($player),
             self::position($player->movement->position),
@@ -288,6 +291,9 @@ final readonly class PluginGameplayEventBridge
 
     public function moved(Player $player): void
     {
+        if (!$this->events->hasListenersFor(PlayerMovedEvent::class)) {
+            return;
+        }
         $this->events->dispatch(new PlayerMovedEvent($this->playerView($player)));
     }
 
@@ -437,6 +443,9 @@ final readonly class PluginGameplayEventBridge
         Nutrition $nutrition,
         FoodLevelChangeCause $cause,
     ): ?Nutrition {
+        if (!$this->events->hasListenersFor(PlayerFoodLevelChangeEvent::class)) {
+            return $nutrition;
+        }
         $event = new PlayerFoodLevelChangeEvent($this->playerView($player), $previous, $nutrition, $cause);
         $this->events->dispatch($event);
 
@@ -449,12 +458,21 @@ final readonly class PluginGameplayEventBridge
         Nutrition $nutrition,
         FoodLevelChangeCause $cause,
     ): void {
+        if (!$this->events->hasListenersFor(PlayerFoodLevelChangedEvent::class)) {
+            return;
+        }
         $this->events->dispatch(new PlayerFoodLevelChangedEvent(
             $this->playerView($player),
             $previous,
             $nutrition,
             $cause,
         ));
+    }
+
+    public function hasNutritionListeners(): bool
+    {
+        return $this->events->hasListenersFor(PlayerFoodLevelChangeEvent::class)
+            || $this->events->hasListenersFor(PlayerFoodLevelChangedEvent::class);
     }
 
     public function regainHealth(Player $player, ApiHealthRegainCause $cause, float $amount): ?float

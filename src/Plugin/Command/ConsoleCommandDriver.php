@@ -7,10 +7,11 @@ namespace Bedriox\Server\Plugin\Command;
 use Bedriox\Server\Observability\ServerLogger;
 use Bedriox\Server\Runtime\RuntimeDriver;
 use Bedriox\Server\Runtime\RuntimeFailureSource;
+use Bedriox\Server\Runtime\RuntimeIdleAdvisor;
 use SplQueue;
 use Throwable;
 
-final class ConsoleCommandDriver implements RuntimeDriver, RuntimeFailureSource
+final class ConsoleCommandDriver implements RuntimeDriver, RuntimeFailureSource, RuntimeIdleAdvisor
 {
     /** @var SplQueue<string> */
     private SplQueue $queue;
@@ -65,5 +66,10 @@ final class ConsoleCommandDriver implements RuntimeDriver, RuntimeFailureSource
     public function failure(): ?Throwable
     {
         return $this->runtime instanceof RuntimeFailureSource ? $this->runtime->failure() : null;
+    }
+
+    public function shouldIdleAfterPoll(): bool
+    {
+        return !$this->runtime instanceof RuntimeIdleAdvisor || $this->runtime->shouldIdleAfterPoll();
     }
 }

@@ -67,6 +67,7 @@ use Bedriox\Server\Simulation\WorldSimulation;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\BlockPosition;
+use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\ChunkRepository;
 use Bedriox\Server\World\FlatWorldGenerator;
 use Bedriox\Server\World\World;
@@ -242,7 +243,8 @@ final class PluginGameplayEventBridgeTest extends TestCase
         $dispatcher->register('Example', PlayerMoveEvent::class, static function (PlayerMoveEvent $event): void {
             $event->cancel();
         });
-        [$simulation, $factory] = self::simulation($bridge);
+        [$simulation, $factory, $world] = self::simulation($bridge);
+        self::retainOriginCollisionTerrain($world);
         $simulation->enqueue($factory->join('one', 'identity-one', 'One'));
         $simulation->tick();
 
@@ -698,6 +700,15 @@ final class PluginGameplayEventBridgeTest extends TestCase
             $world,
             $palette,
         ];
+    }
+
+    private static function retainOriginCollisionTerrain(World $world): void
+    {
+        foreach ([-1, 0] as $chunkX) {
+            foreach ([-1, 0] as $chunkZ) {
+                $world->retainChunk(new ChunkPosition($chunkX, $chunkZ));
+            }
+        }
     }
 }
 

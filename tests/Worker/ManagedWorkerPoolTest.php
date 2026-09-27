@@ -4,8 +4,12 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Worker;
 
+use Bedriox\Protocol\Batch\BatchLimits;
+use Bedriox\Protocol\Batch\CompressionMode;
 use Bedriox\Server\Worker\CoreWorkerTaskCatalog;
 use Bedriox\Server\Worker\ManagedWorkerPool;
+use Bedriox\Server\Worker\Network\BatchCompressionRequest;
+use Bedriox\Server\Worker\Network\BatchCompressionRequestCodec;
 use Bedriox\Server\Worker\WorkerLimits;
 use Bedriox\Server\Worker\WorkerRejectionReason;
 use Bedriox\Server\Worker\WorkerResultStatus;
@@ -163,6 +167,36 @@ final class ManagedWorkerPoolTest extends TestCase
             self::assertCount(1, $remaining);
             self::assertSame(0, $pool->snapshot()->pendingTasks);
             self::assertSame(0, $pool->snapshot()->readyBytes);
+        } finally {
+            $pool->shutdown();
+        }
+    }
+
+    public function testLargeQueuedTasksReachIdleWorkersWithoutTimingOut(): void
+    {
+        $pool = ManagedWorkerPool::start('large-queue-test', 4);
+        try {
+            $codec = new BatchCompressionRequestCodec();
+            for ($index = 0; $index < 12; ++$index) {
+                $payload = str_repeat(hash('sha256', (string) $index), 8_192);
+                $submission = $pool->submit(
+                    CoreWorkerTaskCatalog::COMPRESS_BATCH,
+                    $codec->encode(new BatchCompressionRequest(
+                        $payload,
+                        CompressionMode::NegotiatedZlib,
+                        256,
+                        new BatchLimits(maximumDecompressedBytes: 1_048_576),
+                    )),
+                );
+                self::assertTrue($submission->isAccepted());
+            }
+
+            $results = $this->awaitResults($pool, 12);
+            self::assertCount(12, $results);
+            foreach ($results as $result) {
+                self::assertSame(WorkerResultStatus::SUCCESS, $result->status, $result->failureCode ?? '');
+            }
+            self::assertSame(0, $pool->snapshot()->timedOut);
         } finally {
             $pool->shutdown();
         }

@@ -21,6 +21,7 @@ use Bedriox\Server\Simulation\WorldSimulation;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\BlockPosition;
+use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\ChunkRepository;
 use Bedriox\Server\World\FlatWorldGenerator;
 use Bedriox\Server\World\World;
@@ -207,6 +208,7 @@ final class MultiplayerLifecycleTest extends TestCase
     {
         [$blocks, $palette] = self::flatWorld('multiplayer-collision');
         $blocks->setBlockState(1, 64, 0, $palette->grassBlock);
+        self::retainOriginCollisionTerrain($blocks);
         $factory = new SimulationCommandFactory();
         $world = new WorldSimulation(blockWorld: $blocks, blockPalette: $palette);
         $world->enqueue($factory->join('alpha', 'identity-alpha', 'Alpha'));
@@ -273,5 +275,14 @@ final class MultiplayerLifecycleTest extends TestCase
             ),
             $palette,
         ];
+    }
+
+    private static function retainOriginCollisionTerrain(World $world): void
+    {
+        foreach ([-1, 0] as $chunkX) {
+            foreach ([-1, 0] as $chunkZ) {
+                $world->retainChunk(new ChunkPosition($chunkX, $chunkZ));
+            }
+        }
     }
 }

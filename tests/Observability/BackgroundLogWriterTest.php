@@ -65,6 +65,42 @@ final class BackgroundLogWriterTest extends TestCase
         }
     }
 
+    public function testOnePollWindowPipelinesManyOrderedLines(): void
+    {
+        $directory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'bedriox-log-pipeline-' . bin2hex(random_bytes(6));
+        $path = $directory . DIRECTORY_SEPARATOR . 'server.log';
+        $writer = null;
+        try {
+            $writer = BackgroundLogWriter::start(
+                'test-version',
+                $path,
+                65_536,
+                1,
+                new BoundedLogQueue(256, 65_536, 1_024, 8, 4_096),
+            );
+            for ($sequence = 1; $sequence <= 128; ++$sequence) {
+                self::assertSame(
+                    LogQueueSubmission::ACCEPTED,
+                    $writer->enqueue($sequence, LogLevel::DEBUG, 'line-' . $sequence),
+                );
+            }
+
+            self::assertTrue($writer->flush(5_000));
+            $snapshot = $writer->snapshot();
+            self::assertSame(128, $snapshot->acknowledged);
+            self::assertSame(0, $snapshot->queue->queued);
+            self::assertSame(0, $snapshot->queue->droppedRoutine);
+            $lines = file($path, FILE_IGNORE_NEW_LINES);
+            self::assertIsArray($lines);
+            self::assertSame('line-1', $lines[0]);
+            self::assertSame('line-128', $lines[127]);
+        } finally {
+            $writer?->shutdown(1_000);
+            @unlink($path);
+            @rmdir($directory);
+        }
+    }
+
     public function testFailedWriterRetainsUnacknowledgedLineForSynchronousFallback(): void
     {
         $directory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'bedriox-log-process-' . bin2hex(random_bytes(6));

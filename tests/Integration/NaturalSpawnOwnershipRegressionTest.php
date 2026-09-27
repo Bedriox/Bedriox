@@ -14,6 +14,7 @@ use Bedriox\Server\Entity\EntityRegistry;
 use Bedriox\Server\Entity\EntityWorldRuntime;
 use Bedriox\Server\Entity\Persistence\EntityChunkSnapshot;
 use Bedriox\Server\Entity\Persistence\EntityOwnershipTransfer;
+use Bedriox\Server\Entity\Persistence\EntityOwnershipTransferResult;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceCodec;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceManager;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
@@ -324,10 +325,12 @@ final class NaturalOwnershipPersistenceStore implements EntityPersistenceStore
         $this->chunks[$key] = $snapshot->chunk;
     }
 
-    public function transferEntityOwnership(EntityOwnershipTransfer $transfer): void
+    public function transferEntityOwnership(EntityOwnershipTransfer $transfer): EntityOwnershipTransferResult
     {
         $this->saveEntityChunk($transfer->sourceAfter);
         $this->saveEntityChunk($transfer->destinationAfter);
+
+        return new EntityOwnershipTransferResult($transfer->sourceAfter, $transfer->destinationAfter);
     }
 
     /** @return list<ChunkPosition> */

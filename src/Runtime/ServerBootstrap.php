@@ -10,7 +10,6 @@ use Bedriox\Protocol\Discovery\BedrockServerAdvertisement;
 use Bedriox\Protocol\Identity\ClientDataJwtVerifier;
 use Bedriox\Protocol\Security\EphemeralKeyFactory;
 use Bedriox\Protocol\Security\OpenSslEphemeralKeyFactory;
-use Bedriox\RakNet\DiscoveryServer;
 use Bedriox\RakNet\DiscoveryStatus;
 use Bedriox\RakNet\TransportConfig;
 use Bedriox\Server\Authentication\Discovery\CurlHttpsJsonTransport;
@@ -22,8 +21,10 @@ use Bedriox\Server\Gameplay\Block\BlockCatalog;
 use Bedriox\Server\Gameplay\Crafting\CraftingCatalog;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Login\AuthenticationMode;
+use Bedriox\Server\Login\DevelopmentLoginAuthenticator;
 use Bedriox\Server\Login\ExplicitSelfSignedLoginAuthenticator;
 use Bedriox\Server\Login\FullLoginAuthenticatorAdapter;
+use Bedriox\Server\Login\LazyFullLoginAuthenticator;
 use Bedriox\Server\Login\LoginAuthenticator;
 use Bedriox\Server\Login\SecureHandshakeMaterialFactory;
 use Bedriox\Server\Login\SystemMonotonicClock;
@@ -48,12 +49,13 @@ use Bedriox\Server\Simulation\SimulationLimits;
 use Bedriox\Server\Simulation\SimulationPluginApiBackend;
 use Bedriox\Server\Simulation\SystemSimulationClock;
 use Bedriox\Server\Simulation\WorldSimulation;
-use Bedriox\Server\Transport\DiscoveryServerTransport;
+use Bedriox\Server\Transport\ProcessDiscoveryServerTransport;
 use Bedriox\Server\Worker\Chunk\AsyncChunkGenerator;
 use Bedriox\Server\Worker\Chunk\ChunkProjectionIdentity;
 use Bedriox\Server\Worker\Chunk\PreparedChunkCache;
 use Bedriox\Server\Worker\CoreWorkerTaskCatalog;
 use Bedriox\Server\Worker\ManagedWorkerDispatcher;
+use Bedriox\Server\Worker\Network\CachingCompressionWorkerDispatcher;
 use Bedriox\Server\Worker\Network\ManagedCompressionWorkerDispatcher;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Block\BlockStateRegistry;
@@ -179,8 +181,14 @@ final class ServerBootstrap
             ));
         }
         $compressionWorkers = $workers !== null && $workersAvailable
-            ? new ManagedCompressionWorkerDispatcher($workers)
+            ? new CachingCompressionWorkerDispatcher(new ManagedCompressionWorkerDispatcher($workers))
             : null;
+        $preparedPlayBatches = $compressionWorkers === null ? null : new PreparedPlayBatchCache(
+            maximumBytes: min(
+                33_554_432,
+                max(8_388_608, intdiv($config->memoryLimitBytes === 0 ? 536_870_912 : $config->memoryLimitBytes, 16)),
+            ),
+        );
         $preparedChunks = $workers !== null && $workersAvailable
             ? new PreparedChunkCache(
                 $workers,
@@ -265,19 +273,29 @@ final class ServerBootstrap
                 $advertisement->encode(),
                 acceptingConnections: true,
             );
-            $discovery = DiscoveryServer::bind(
-                new TransportConfig(
-                    bindAddress: $config->bindAddress,
-                    port: $config->port,
-                    maximumSessions: $config->maximumPlayers,
-                    maximumPendingHandshakes: $config->maximumPlayers,
-                    maximumSessionEvents: max($config->maximumPlayers, 1_024),
-                ),
+            $transportConfig = new TransportConfig(
+                bindAddress: $config->bindAddress,
+                port: $config->port,
+                maximumSessions: $config->maximumPlayers,
+                maximumPendingHandshakes: $config->maximumPlayers,
+                handshakeTimeoutMilliseconds: 15_000,
+                connectedSessionMaintenanceIntervalMilliseconds: 50,
+                maximumReceivedPayloads: 65_535,
+                maximumReceivedPayloadBytes: 67_108_864,
+                maximumPendingOutboundDatagrams: 65_535,
+                maximumPendingOutboundBytes: 67_108_864,
+                maximumSessionEvents: max($config->maximumPlayers, 1_024),
+                socketReceiveBufferBytes: 67_108_864,
+                socketSendBufferBytes: 67_108_864,
+            );
+            $discovery = ProcessDiscoveryServerTransport::start(
+                $transportConfig,
                 $serverGuid,
                 $status,
+                $diagnostics,
             );
             $runtime = new ServerRuntime(
-                new DiscoveryServerTransport($discovery, $diagnostics),
+                $discovery,
                 new ConfiguredLoginChannelFactory(
                     new SystemMonotonicClock(),
                     $authenticator,
@@ -302,9 +320,10 @@ final class ServerBootstrap
                     compressionWorkers: $compressionWorkers,
                     compressionTaskTypeId: CoreWorkerTaskCatalog::COMPRESS_BATCH,
                     preparedChunks: $preparedChunks,
+                    preparedPlayBatches: $preparedPlayBatches,
                 ),
                 $world,
-                new FixedRateWorldLoop($world, new SystemSimulationClock()),
+                new FixedRateWorldLoop($world, new SystemSimulationClock(), maximumTicksPerPoll: 1),
                 new BedrockWorldEventPacketEncoder($chunkSerializer, $inventoryProjector),
                 $runtimeLimits,
                 diagnostics: $diagnostics,
@@ -327,6 +346,8 @@ final class ServerBootstrap
                 garbageCollector: $garbageCollector,
                 chunkUnloadPerTick: $config->chunkUnloadPerTick,
                 craftingCatalog: $craftingCatalog,
+                chunksGeneratePerTick: $config->chunksGeneratePerTick,
+                chunksSendPerTick: $config->chunksSendPerTick,
             );
         } catch (Throwable $exception) {
             $discovery?->close();
@@ -393,8 +414,19 @@ final class ServerBootstrap
     {
         $clientData = new ClientDataJwtVerifier();
         if ($mode === AuthenticationMode::SELF_SIGNED) {
-            return new ExplicitSelfSignedLoginAuthenticator($clock, $clientData);
+            return new DevelopmentLoginAuthenticator(
+                new LazyFullLoginAuthenticator(fn(): LoginAuthenticator => $this->fullAuthenticator($clock, $clientData)),
+                new ExplicitSelfSignedLoginAuthenticator($clock, $clientData),
+            );
         }
+
+        return $this->fullAuthenticator($clock, $clientData);
+    }
+
+    private function fullAuthenticator(
+        SystemAuthenticationClock $clock,
+        ClientDataJwtVerifier $clientData,
+    ): LoginAuthenticator {
         $provider = new MinecraftDiscoveryJwkProvider(new CurlHttpsJsonTransport(), $clock);
         $provider->refresh(true);
         $provider->keys();

@@ -175,6 +175,49 @@ final class PreparedChunkCache
             && hash_equals($prepared->cacheKey, $this->cacheKey($chunk, $protocolVersion));
     }
 
+    /** Retains a main-process fallback projection so every later viewer reuses it. */
+    public function retainSynchronous(Chunk $chunk, int $protocolVersion, string $clearEnvelope): PreparedChunk
+    {
+        if ($this->closed || !$this->isValidEnvelope($clearEnvelope)) {
+            throw new InvalidArgumentException('Synchronous chunk projection is invalid.');
+        }
+        $positionKey = $chunk->position->key();
+        $cacheKey = $this->cacheKey($chunk, $protocolVersion);
+        $this->makeCurrent($positionKey, $cacheKey);
+        $existing = $this->entries[$cacheKey]['chunk'] ?? null;
+        if ($existing instanceof PreparedChunk) {
+            $this->entries[$cacheKey]['lastAccess'] = ++$this->accessSequence;
+
+            return $existing;
+        }
+        $pending = $this->pending[$cacheKey] ?? null;
+        if ($pending !== null) {
+            $this->workers->cancel($pending['receipt']);
+            $this->pendingBytes -= $pending['bytes'];
+            unset($this->pending[$cacheKey]);
+        }
+
+        $prepared = new PreparedChunk(
+            $cacheKey,
+            $chunk->position,
+            $chunk->revision,
+            $protocolVersion,
+            $clearEnvelope,
+        );
+        if ($prepared->bytes() > $this->maximumBytes) {
+            throw new InvalidArgumentException('Synchronous chunk projection exceeds the cache byte limit.');
+        }
+        $this->evictFor($prepared->bytes());
+        $this->entries[$cacheKey] = [
+            'chunk' => $prepared,
+            'lastAccess' => ++$this->accessSequence,
+        ];
+        $this->entryBytes += $prepared->bytes();
+        unset($this->failedAttempts[$cacheKey]);
+
+        return $prepared;
+    }
+
     public function snapshot(): PreparedChunkCacheSnapshot
     {
         return new PreparedChunkCacheSnapshot(

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Worker\Network;
 
+use Bedriox\Protocol\Batch\BatchCompressionCodec;
 use Bedriox\Protocol\Batch\BatchLimits;
 use Bedriox\Protocol\Batch\BedrockBatchCodec;
 use Bedriox\Protocol\Batch\CompressionMode;
@@ -50,6 +51,9 @@ final class OrderedOutboundCompressionQueue
         if ($this->closed) {
             return OutboundCompressionSubmission::closed();
         }
+        if ($this->mode === CompressionMode::NegotiatedZlib && strlen($uncompressedBatch) < $this->threshold) {
+            return $this->enqueueSubThreshold($uncompressedBatch);
+        }
         $request = new BatchCompressionRequest($uncompressedBatch, $this->mode, $this->threshold, $this->limits);
         $encodedRequest = (new BatchCompressionRequestCodec())->encode($request);
         $requestBytes = strlen($encodedRequest);
@@ -69,6 +73,54 @@ final class OrderedOutboundCompressionQueue
             return OutboundCompressionSubmission::accepted($sequence, true);
         }
         $this->submit($entry);
+
+        return OutboundCompressionSubmission::accepted($sequence, false);
+    }
+
+    /** Completes negotiated batches which are required to remain uncompressed without a worker round trip. */
+    private function enqueueSubThreshold(string $uncompressedBatch): OutboundCompressionSubmission
+    {
+        $payload = chr(BedrockBatchCodec::GAME_PACKET_MARKER) . BatchCompressionCodec::encode(
+            $uncompressedBatch,
+            $this->mode,
+            $this->limits,
+            $this->threshold,
+        );
+        $payloadBytes = strlen($payload);
+        if (!$this->isValidWorkerPayload($payload)
+            || count($this->entries) >= $this->maximumOutstandingTasks
+            || $payloadBytes > $this->maximumOutstandingBytes - $this->outstandingBytes) {
+            return OutboundCompressionSubmission::saturated();
+        }
+
+        $sequence = $this->nextSequence++;
+        $entry = new PendingOutboundCompression($sequence, $this->sessionGeneration, '', null);
+        $entry->synchronousFallback = true;
+        $entry->result = $payload;
+        $this->entries[$sequence] = $entry;
+        $this->outstandingBytes += $payloadBytes;
+
+        return OutboundCompressionSubmission::accepted($sequence, true);
+    }
+
+    /** Queues an already-compressed clear Bedrock envelope without violating session order. */
+    public function enqueuePrepared(string $payload): OutboundCompressionSubmission
+    {
+        if ($this->closed) {
+            return OutboundCompressionSubmission::closed();
+        }
+        $payloadBytes = strlen($payload);
+        if (!$this->isValidWorkerPayload($payload)
+            || count($this->entries) >= $this->maximumOutstandingTasks
+            || $payloadBytes > $this->maximumOutstandingBytes - $this->outstandingBytes) {
+            return OutboundCompressionSubmission::saturated();
+        }
+
+        $sequence = $this->nextSequence++;
+        $entry = new PendingOutboundCompression($sequence, $this->sessionGeneration, '', null);
+        $entry->result = $payload;
+        $this->entries[$sequence] = $entry;
+        $this->outstandingBytes += $payloadBytes;
 
         return OutboundCompressionSubmission::accepted($sequence, false);
     }
@@ -142,9 +194,11 @@ final class OrderedOutboundCompressionQueue
             || $entry->sessionGeneration !== $generation || $entry->isComplete()) {
             return;
         }
+        if ($entry->receipt === null) {
+            $entry->receipt = $result->receipt;
+        }
         if ($result->status !== WorkerResultStatus::SUCCESS
             || $result->receipt->taskTypeId !== $this->taskTypeId
-            || $entry->receipt === null
             || $result->receipt->taskId !== $entry->receipt->taskId
             || !$this->isValidWorkerPayload($result->payload)) {
             $entry->receipt = null;

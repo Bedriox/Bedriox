@@ -227,13 +227,22 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
                 playerGameType: $gameModePackets->gameType($gameMode),
                 levelGameType: $gameModePackets->gameType(GameMode::from($this->defaultGamemode)),
             ),
-            ItemRegistryPacket::fromRequiredItems($this->data->requiredItems()),
+            new ReusablePlayPacket(
+                'initialization.item_registry',
+                ItemRegistryPacket::fromRequiredItems($this->data->requiredItems()),
+            ),
             // Everything after this marker is emitted as one radius-negotiated bootstrap.
             new ChunkRadiusUpdatedPacket($radius),
             // The MVP world exposes players only. Advertise exactly the actor types that may spawn;
             // legacy vanilla definitions are added alongside their implementations in later milestones.
-            BiomeDefinitionListPacket::fromDefinitions($this->biomeDefinitions),
-            new AvailableActorIdentifiersPacket($this->data->entityIdentifiersNetworkNbt()),
+            new ReusablePlayPacket(
+                'initialization.biome_definitions',
+                BiomeDefinitionListPacket::fromDefinitions($this->biomeDefinitions),
+            ),
+            new ReusablePlayPacket(
+                'initialization.actor_identifiers',
+                new AvailableActorIdentifiersPacket($this->data->entityIdentifiersNetworkNbt()),
+            ),
             new SetSpawnPositionPacket(
                 x: $this->spawn->x,
                 y: $this->spawn->y,
@@ -267,7 +276,10 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
                 $bootstrap === null ? 20.0 : $bootstrap->saturation,
                 $bootstrap === null ? 0.0 : $bootstrap->exhaustion,
             ),
-            $this->inventoryProjector->creativeContent(),
+            new ReusablePlayPacket(
+                'initialization.creative_content',
+                $this->inventoryProjector->creativeContent(),
+            ),
             new InventoryContentPacket(InventoryContainerId::INVENTORY, $mainInventory),
             new InventoryContentPacket(InventoryContainerId::ARMOR, $armorInventory),
             new InventoryContentPacket(InventoryContainerId::OFFHAND, [$offhandItem]),
@@ -278,8 +290,11 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
                 0,
                 $heldItem,
             ),
-            new TrimDataPacket(),
-            new CraftingDataPacket($this->craftingCatalog->protocolRecipes()),
+            new ReusablePlayPacket('initialization.trim_data', new TrimDataPacket()),
+            new ReusablePlayPacket(
+                'initialization.crafting_data.' . $this->craftingCatalog->revision(),
+                new CraftingDataPacket($this->craftingCatalog->protocolRecipes()),
+            ),
             SetActorDataPacket::baselinePlayer($runtimeEntityId, UnsignedLong::fromInt(0), $login->displayName),
         ];
 

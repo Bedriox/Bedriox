@@ -44,4 +44,31 @@ final class IndexedAiWorldViewTest extends TestCase
         self::assertNull($view->nearestPlayer($zombie, 8.0));
         self::assertSame(1, $lineOfSightQueries);
     }
+
+    public function testTargetSearchRejectsDistantPlayersBeforeLineOfSight(): void
+    {
+        $zombie = new ZombieEntity(
+            EntityUuid::random(),
+            1,
+            'world',
+            new Position(0.0, 64.0, 0.0),
+        );
+        $lineOfSightQueries = [];
+        $view = new IndexedAiWorldView(
+            new EntityRegistry(),
+            static fn(): array => [
+                new AiPlayerSnapshot('far', 'world', new Position(200.0, 64.0, 0.0)),
+                new AiPlayerSnapshot('near', 'world', new Position(2.0, 64.0, 0.0)),
+                new AiPlayerSnapshot('farther', 'world', new Position(3.0, 64.0, 0.0)),
+            ],
+            static function (AbstractMobEntity $_entity, AiPlayerSnapshot $player) use (&$lineOfSightQueries): bool {
+                $lineOfSightQueries[] = $player->playerId;
+
+                return true;
+            },
+        );
+
+        self::assertSame('near', $view->nearestPlayer($zombie, 32.0)?->playerId);
+        self::assertSame(['near'], $lineOfSightQueries);
+    }
 }

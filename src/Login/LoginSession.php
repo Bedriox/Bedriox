@@ -22,13 +22,14 @@ use Bedriox\Protocol\Packet\ServerToClientHandshakePacket;
 use Bedriox\Protocol\ProtocolVersion;
 use Bedriox\Protocol\Security\HandshakeJwt;
 use Bedriox\Protocol\Security\P384;
+use Bedriox\Server\Transport\NetworkCompressionPolicy;
 use SplQueue;
 use Throwable;
 
 /** Server-owned, transport-independent login state machine for the active compatible protocol family. */
 final class LoginSession
 {
-    private const ABSOLUTE_TIMEOUT_NS = 45_000_000_000;
+    private const ABSOLUTE_TIMEOUT_NS = 60_000_000_000;
 
     /** @var SplQueue<LoginInput> */
     private SplQueue $input;
@@ -58,7 +59,7 @@ final class LoginSession
         $this->effects = new SplQueue();
         $this->lastNow = $clock->nowNanoseconds();
         $this->absoluteDeadline = $this->checkedAdd($this->lastNow, self::ABSOLUTE_TIMEOUT_NS);
-        $this->stateDeadline = $this->checkedAdd($this->lastNow, 5_000_000_000);
+        $this->stateDeadline = $this->checkedAdd($this->lastNow, 15_000_000_000);
     }
 
     public function state(): LoginState
@@ -183,10 +184,16 @@ final class LoginSession
             $this->close(LoginFailureCode::UNSUPPORTED_PROTOCOL);
             return;
         }
-        if (!$this->emit(new SendPacketEffect(new NetworkSettingsPacket(256, CompressionAlgorithm::Zlib, false, 0, 0.0), false))) {
+        if (!$this->emit(new SendPacketEffect(new NetworkSettingsPacket(
+            NetworkCompressionPolicy::THRESHOLD_BYTES,
+            CompressionAlgorithm::Zlib,
+            false,
+            0,
+            0.0,
+        ), false))) {
             return;
         }
-        $this->transition(LoginState::WAIT_LOGIN, 10);
+        $this->transition(LoginState::WAIT_LOGIN, 20);
     }
 
     private function handleLogin(Packet $packet): void
@@ -200,8 +207,11 @@ final class LoginSession
             $this->close(LoginFailureCode::UNSUPPORTED_PROTOCOL);
             return;
         }
-        $expected = $this->authenticationMode === AuthenticationMode::FULL ? AuthenticationType::Full : AuthenticationType::SelfSigned;
-        if ($packet->authentication->type !== $expected) {
+        $authenticationType = $packet->authentication->type;
+        $typeAllowed = $this->authenticationMode === AuthenticationMode::FULL
+            ? $authenticationType === AuthenticationType::Full
+            : $authenticationType === AuthenticationType::Full || $authenticationType === AuthenticationType::SelfSigned;
+        if (!$typeAllowed) {
             $this->close(LoginFailureCode::AUTHENTICATION_MODE);
             return;
         }
@@ -253,7 +263,7 @@ final class LoginSession
         if (!$this->emit(new EnableEncryptionEffect($sessionKey))) {
             return;
         }
-        $this->transition(LoginState::WAIT_CLIENT_HANDSHAKE, 5);
+        $this->transition(LoginState::WAIT_CLIENT_HANDSHAKE, 15);
     }
 
     private function handleClientHandshake(Packet $packet): void
