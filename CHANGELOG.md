@@ -1,5 +1,6 @@
 # Changelog
 
+- Distinguish player, mob, and source-less lethal attacks when presenting death messages so a missing attacker can never be displayed as the victim.
 - Sustain the qualified 100-player workload above 18 TPS by moving RakNet service ownership to a supervised local transport process, bounding main-loop admission and streaming work, and preserving per-session ordering and encryption boundaries.
 - Reuse immutable chat, combat, posture, player-movement, and non-player movement projections across compatible recipients so fan-out does not repeat packet encoding and compression for every player.
 - Move routine world metadata and entity persistence off the authoritative loop, commit entity ownership changes as atomic one-entity deltas, and defer conflicting routine eviction without losing unrelated durable actors.

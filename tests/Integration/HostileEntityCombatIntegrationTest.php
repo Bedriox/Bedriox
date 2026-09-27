@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Tests\Integration;
 
 use Bedriox\Api\Player\GameMode;
+use Bedriox\Api\TranslatableMessage;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Entity\Ai\AiBehaviorDefinition;
 use Bedriox\Server\Entity\Ai\Goal\MeleeAttackIntentGoal;
@@ -19,6 +20,7 @@ use Bedriox\Server\Player\PlayerIdentity;
 use Bedriox\Server\Player\PlayerInventoryState;
 use Bedriox\Server\Simulation\Event\EntityActorAttackStarted;
 use Bedriox\Server\Simulation\Event\PlayerDamaged;
+use Bedriox\Server\Simulation\Event\PlayerDied;
 use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
@@ -80,6 +82,20 @@ final class HostileEntityCombatIntegrationTest extends TestCase
         self::assertSame(100, $attacks[0]->entity->getRuntimeId());
     }
 
+    public function testHostileMeleeDeathNamesTheMobWithoutAssigningAPlayerKiller(): void
+    {
+        [$simulation] = self::simulation();
+
+        $events = self::joinAndTick($simulation, GameMode::SURVIVAL, 3.0);
+        $deaths = self::events($events, PlayerDied::class);
+
+        self::assertCount(1, $deaths);
+        self::assertNull($deaths[0]->killer);
+        self::assertInstanceOf(TranslatableMessage::class, $deaths[0]->deathMessage);
+        self::assertSame('death.attack.mob', $deaths[0]->deathMessage->key);
+        self::assertSame(['Target', 'Zombie'], $deaths[0]->deathMessage->parameters);
+    }
+
     /** @return array{WorldSimulation, World, FixedFlatBlockPalette} */
     private static function simulation(): array
     {
@@ -119,8 +135,11 @@ final class HostileEntityCombatIntegrationTest extends TestCase
     }
 
     /** @return list<object> */
-    private static function joinAndTick(WorldSimulation $simulation, GameMode $gameMode): array
-    {
+    private static function joinAndTick(
+        WorldSimulation $simulation,
+        GameMode $gameMode,
+        float $health = 20.0,
+    ): array {
         $bootstrap = new PlayerBootstrap(
             new PlayerIdentity('target-identity', 'Target'),
             'world',
@@ -131,6 +150,7 @@ final class HostileEntityCombatIntegrationTest extends TestCase
             1,
             1,
             $gameMode->value,
+            health: $health,
         );
         $commands = new SimulationCommandFactory();
         self::assertTrue($simulation->enqueue($commands->join(

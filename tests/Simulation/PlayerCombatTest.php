@@ -346,6 +346,23 @@ final class PlayerCombatTest extends TestCase
         }
     }
 
+    public function testSourceLessAttackDeathUsesGenericMessageWithoutAKiller(): void
+    {
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation();
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        $world->tick();
+
+        self::assertTrue($world->enqueue($factory->damage('one', 20.0, DamageCause::Attack)));
+        $events = $world->tick()->events;
+
+        self::assertInstanceOf(PlayerDied::class, $events[1]);
+        self::assertNull($events[1]->killer);
+        self::assertInstanceOf(TranslatableMessage::class, $events[1]->deathMessage);
+        self::assertSame('death.attack.generic', $events[1]->deathMessage->key);
+        self::assertSame(['One'], $events[1]->deathMessage->parameters);
+    }
+
     public function testAttackCommandValidationRejectsWireDomainLeaks(): void
     {
         $factory = new SimulationCommandFactory();

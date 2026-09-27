@@ -1595,7 +1595,7 @@ final class WorldSimulation
         ];
         if (!$target->vitals->isAlive()) {
             $target->movement->fallDistance = 0.0;
-            $events[] = $this->deathEvent($target, DamageCause::Attack, $damage);
+            $events[] = $this->deathEvent($target, DamageCause::Attack, $damage, $attacker);
         }
 
         return $events;
@@ -3232,7 +3232,7 @@ final class WorldSimulation
         Player $player,
         DamageCause $cause,
         float $damage,
-        ?Player $killer = null,
+        Player|AbstractLivingEntity|null $attacker = null,
     ): PlayerDied {
         $closed = $this->closeContainer($player, ApiInventoryCloseReason::DEATH, true);
         if ($closed !== null) {
@@ -3242,17 +3242,29 @@ final class WorldSimulation
         $player->movement->velocityX = 0.0;
         $player->movement->verticalVelocity = 0.0;
         $player->movement->velocityZ = 0.0;
-        $message = match ($cause) {
-            DamageCause::Attack => new TranslatableMessage(
+        $killer = $attacker instanceof Player ? $attacker : null;
+        $message = match (true) {
+            $cause === DamageCause::Attack && $attacker instanceof Player => new TranslatableMessage(
                 'death.attack.player',
-                [$player->identity->displayName, $killer?->identity->displayName ?? $player->identity->displayName],
+                [$player->identity->displayName, $attacker->identity->displayName],
             ),
-            DamageCause::Fall => new TranslatableMessage(
+            $cause === DamageCause::Attack && $attacker instanceof AbstractLivingEntity => new TranslatableMessage(
+                'death.attack.mob',
+                [$player->identity->displayName, self::deathAttackerName($attacker)],
+            ),
+            $cause === DamageCause::Attack => new TranslatableMessage(
+                'death.attack.generic',
+                [$player->identity->displayName],
+            ),
+            $cause === DamageCause::Fall => new TranslatableMessage(
                 $damage > 2.0 ? 'death.fell.accident.generic' : 'death.attack.fall',
                 [$player->identity->displayName],
             ),
-            DamageCause::Kill,
-            DamageCause::Plugin => new TranslatableMessage('death.attack.generic', [$player->identity->displayName]),
+            $cause === DamageCause::Kill,
+            $cause === DamageCause::Plugin => new TranslatableMessage(
+                'death.attack.generic',
+                [$player->identity->displayName],
+            ),
         };
         $presentation = $this->pluginEvents?->death($player, $cause, $damage, $killer, $message, $message)
             ?? new DeathPresentation($message, $message);
@@ -3266,6 +3278,19 @@ final class WorldSimulation
             $this->players->recipients(),
             $this->players->recipients(),
         );
+    }
+
+    private static function deathAttackerName(AbstractLivingEntity $attacker): string
+    {
+        if ($attacker->nameTag() !== '') {
+            return $attacker->nameTag();
+        }
+        $identifier = $attacker->getType()->identifier();
+        $separator = strpos($identifier, ':');
+        $path = $separator === false ? $identifier : substr($identifier, $separator + 1);
+        $name = preg_replace('/[_.\/-]+/', ' ', $path);
+
+        return is_string($name) && $name !== '' ? ucwords($name) : $identifier;
     }
 
     /** @return array{float, float} */
