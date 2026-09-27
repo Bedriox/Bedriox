@@ -242,7 +242,7 @@ final class PluginEntityRegistrarTest extends TestCase
             new CustomMobTickContext(
                 $this->createStub(Mob::class),
                 20,
-                $this->createStub(\Bedriox\Api\Entity\CustomMobController::class),
+                $this->createStub(\Bedriox\Api\Entity\MobController::class),
             ),
         ));
         self::assertFalse($plugins->isEnabled('Example'));

@@ -11,7 +11,7 @@ use Bedriox\Server\Plugin\PluginActionBuffer;
 use Bedriox\Server\Simulation\Position;
 use PHPUnit\Framework\TestCase;
 
-final class BufferedCustomMobControllerTest extends TestCase
+final class BufferedMobControllerTest extends TestCase
 {
     public function testEquipmentMutationIsCommittedOnlyWithItsPluginTransaction(): void
     {

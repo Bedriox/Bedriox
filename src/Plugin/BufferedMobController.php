@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Plugin;
 
-use Bedriox\Api\Entity\CustomMobController;
 use Bedriox\Api\Entity\Entity;
 use Bedriox\Api\Entity\EntityCombustionCause;
 use Bedriox\Api\Entity\EntityDamageCause;
@@ -20,7 +19,7 @@ use InvalidArgumentException;
 use LogicException;
 
 /** @internal Collects a bounded set of authoritative intents in the active plugin transaction. */
-final class BufferedCustomMobController implements CustomMobController
+final class BufferedMobController implements MobController
 {
     private const int MAXIMUM_INTENTS = 16;
     private const float MAXIMUM_STEERING_SPEED = 10.0;

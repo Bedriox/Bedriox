@@ -40,7 +40,7 @@ final readonly class PluginEntityLifecycleBridge
         $context = new CustomMobTickContext(
             $entity,
             $currentTick,
-            new BufferedCustomMobController($this->registrar->actions(), $entity, $entity->equipmentState()),
+            new BufferedMobController($this->registrar->actions(), $entity, $entity->equipmentState()),
         );
         if (!$this->registrar->invokeTick($entity->pluginRegistration(), $entity->customBehavior(), $context)) {
             return false;
@@ -61,7 +61,7 @@ final readonly class PluginEntityLifecycleBridge
             new CustomMobTickContext(
                 $entity,
                 $currentTick,
-                new BufferedCustomMobController($this->registrar->actions(), $entity, $entity->equipmentState()),
+                new BufferedMobController($this->registrar->actions(), $entity, $entity->equipmentState()),
             ),
         );
     }

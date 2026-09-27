@@ -11,7 +11,7 @@ use Bedriox\Server\Entity\Ai\AiBehaviorDefinition;
 use Bedriox\Server\Entity\Ai\AiBehaviorRuntime;
 use Bedriox\Server\Entity\Ai\AiTickContext;
 use Bedriox\Server\Entity\Ai\AiTickResult;
-use Bedriox\Server\Plugin\BufferedCustomMobController;
+use Bedriox\Server\Plugin\BufferedMobController;
 use Bedriox\Server\Plugin\PluginActionBuffer;
 use InvalidArgumentException;
 
@@ -53,7 +53,7 @@ abstract class AbstractMobEntity extends AbstractLivingEntity implements ApiMob
             $health,
         );
         $this->ai = new AiBehaviorRuntime($behavior);
-        $this->controller = new BufferedCustomMobController(null, $this, $this->equipmentState());
+        $this->controller = new BufferedMobController(null, $this, $this->equipmentState());
     }
 
     final public function getController(): MobController
@@ -64,7 +64,7 @@ abstract class AbstractMobEntity extends AbstractLivingEntity implements ApiMob
     /** @internal Rebinds the controller to the active plugin transaction boundary. */
     final public function attachController(?PluginActionBuffer $actions): void
     {
-        $this->controller = new BufferedCustomMobController($actions, $this, $this->equipmentState());
+        $this->controller = new BufferedMobController($actions, $this, $this->equipmentState());
     }
 
     final public function getActivationState(): MobActivationState

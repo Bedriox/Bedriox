@@ -14,7 +14,7 @@ EntityController
     `-- MobController
 ```
 
-`EntityController` supports availability checks, teleportation, rotation, velocity, name tags, name-tag visibility, immobility, invisibility, glowing, scale, gravity, fire, extinguishing, and despawning. `LivingEntityController` adds damage, healing, direct bounded health changes, and equipment. `MobController` adds AI enablement, movement toward or away from a position, stopping, looking, targeting, and clearing the current target intent. `CustomMobController` remains a compatibility name for `MobController` in custom-mob callbacks.
+`EntityController` supports availability checks, teleportation, rotation, velocity, name tags, name-tag visibility, immobility, invisibility, glowing, scale, gravity, fire, extinguishing, and despawning. `LivingEntityController` adds damage, healing, direct bounded health changes, and equipment. `MobController` adds AI enablement, movement toward or away from a position, stopping, looking, targeting, and clearing the current target intent.
 
 Always retain the entity view rather than a controller indefinitely, and check `isAvailable()` before a delayed mutation. Once the entity leaves its world, the old controller cannot mutate it.
 

@@ -11,7 +11,7 @@ final readonly class CustomMobTickContext
     public function __construct(
         public Mob $mob,
         public int $currentTick,
-        public CustomMobController $controller,
+        public MobController $controller,
     ) {
         if ($currentTick < 0) {
             throw new InvalidArgumentException('Custom mob tick must not be negative.');
