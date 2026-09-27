@@ -135,12 +135,21 @@ foreach ($repositoryName in $repositoryNames) {
     }
 
     $legacyPattern = '(?i)(\bBSL\b|Business Source License|revenue threshold|\$25(?:,?000|k)\b)'
-    $textFiles = Get-ChildItem -LiteralPath $repository -Recurse -File | Where-Object {
-        $_.FullName -notmatch '[\\/](\.git|vendor|build|\.phpunit\.cache|\.phpstan\.cache)[\\/]' -and
-        ($_.Extension -in @('.md', '.txt', '.php', '.json', '.yml', '.yaml', '.neon', '.xml', '.lock') -or
-            $_.Name -in @('LICENSE', 'NOTICE'))
+    $repositoryFiles = & git -C $repository ls-files --cached --others --exclude-standard 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Add-VerificationFailure "$repositoryName file inventory could not be read."
+        $repositoryFiles = @()
     }
-    foreach ($textFile in $textFiles) {
+    foreach ($relativePath in @($repositoryFiles)) {
+        $textFilePath = Join-Path $repository $relativePath
+        if (-not (Test-Path -LiteralPath $textFilePath -PathType Leaf)) {
+            continue
+        }
+        $textFile = Get-Item -LiteralPath $textFilePath
+        if ($textFile.Extension -notin @('.md', '.txt', '.php', '.json', '.yml', '.yaml', '.neon', '.xml', '.lock') -and
+            $textFile.Name -notin @('LICENSE', 'NOTICE')) {
+            continue
+        }
         if (Select-String -LiteralPath $textFile.FullName -Pattern $legacyPattern -Quiet) {
             Add-VerificationFailure "$repositoryName contains legacy restricted-license wording in $($textFile.FullName)."
         }
