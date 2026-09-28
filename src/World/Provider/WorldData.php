@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World\Provider;
 
+use Bedriox\Server\World\Generator\GeneratorOptions;
 use Bedriox\Server\World\SpawnPosition;
 use Bedriox\Server\World\WorldMetadata;
 use Bedriox\Server\World\WorldTimeRules;
@@ -19,13 +20,14 @@ final readonly class WorldData
         public int $time = 0,
         public int $difficulty = 2,
         public int $generatorVersion = 1,
+        public string $generatorOptions = '{}',
     ) {
         if (
             $generatorName === ''
-            || strlen($generatorName) > 64
-            || preg_match('/^[A-Za-z0-9._-]+$/D', $generatorName) !== 1
+            || strlen($generatorName) > 128
+            || preg_match('/^[A-Za-z0-9._-]+(?::[A-Za-z0-9._\/-]+)?$/D', $generatorName) !== 1
         ) {
-            throw new InvalidArgumentException('Generator name must contain 1-64 bounded identifier characters.');
+            throw new InvalidArgumentException('Generator name must be a bounded canonical identifier.');
         }
         if ($this->difficulty < 0 || $this->difficulty > 3) {
             throw new InvalidArgumentException('Difficulty must be a Bedrock value between 0 and 3.');
@@ -34,5 +36,6 @@ final readonly class WorldData
         if ($this->generatorVersion < 1 || $this->generatorVersion > 2_147_483_647) {
             throw new InvalidArgumentException('Generator version must be a positive bounded integer.');
         }
+        GeneratorOptions::fromJson($this->generatorOptions);
     }
 }

@@ -29,6 +29,7 @@ use Bedriox\Api\Event\Entity\EntityEquipmentChangeEvent;
 use Bedriox\Api\Event\Entity\EntityInteractEvent;
 use Bedriox\Api\Event\Entity\EntitySpawnedEvent;
 use Bedriox\Api\Event\Entity\EntitySpawnEvent;
+use Bedriox\Api\Event\Event;
 use Bedriox\Api\Event\Inventory\InventoryChangedEvent;
 use Bedriox\Api\Event\Inventory\InventoryChangeEvent;
 use Bedriox\Api\Event\Inventory\InventoryCloseEvent;
@@ -87,11 +88,13 @@ use Bedriox\Api\Inventory\ItemDamageCause;
 use Bedriox\Api\Inventory\ItemStack as ApiItemStack;
 use Bedriox\Api\Inventory\ItemUseCancellationReason as ApiItemUseCancellationReason;
 use Bedriox\Api\Inventory\ItemUseKind;
+use Bedriox\Api\Inventory\PlayerInventoryActions;
 use Bedriox\Api\Player\FoodLevelChangeCause;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\Player\HealthRegainCause as ApiHealthRegainCause;
 use Bedriox\Api\Player\Nutrition;
 use Bedriox\Api\Player\Player as ApiPlayer;
+use Bedriox\Api\Player\PlayerActions;
 use Bedriox\Api\Player\PlayerConnection;
 use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\Block as ApiBlock;
@@ -108,16 +111,62 @@ use Closure;
 /** Projects authoritative simulation state into the capability-limited public event API. */
 final readonly class PluginGameplayEventBridge
 {
-    /** @param null|Closure(string): PlayerConnection $playerConnections */
+    /**
+     * @param null|Closure(string): PlayerConnection $playerConnections
+     * @param null|Closure(string): PlayerActions    $playerActions
+     * @param null|Closure(string): PlayerInventoryActions $playerInventoryActions
+     * @param null|Closure(string): (Closure(ApiItemStack): int) $maximumStackSize
+     * @param null|Closure(string): ?\Bedriox\Api\World\World $worldResolver
+     */
     public function __construct(
         private EventDispatcher $events,
         private ?Closure $playerConnections = null,
+        private ?Closure $worldResolver = null,
+        private ?Closure $playerActions = null,
+        private ?Closure $playerInventoryActions = null,
+        private ?Closure $maximumStackSize = null,
     ) {}
+
+    /** @internal Dispatches lifecycle events that are owned outside the simulation. */
+    public function dispatch(Event $event): Event
+    {
+        return $this->events->dispatch($event);
+    }
 
     /** @param Closure(string): PlayerConnection $playerConnections */
     public function withPlayerConnections(Closure $playerConnections): self
     {
-        return new self($this->events, $playerConnections);
+        return new self($this->events, $playerConnections, $this->worldResolver, $this->playerActions, $this->playerInventoryActions, $this->maximumStackSize);
+    }
+
+    /** @param Closure(string): ?\Bedriox\Api\World\World $worldResolver */
+    public function withWorldResolver(Closure $worldResolver): self
+    {
+        return new self($this->events, $this->playerConnections, $worldResolver, $this->playerActions, $this->playerInventoryActions, $this->maximumStackSize);
+    }
+
+    /** @param Closure(string): PlayerActions $playerActions */
+    public function withPlayerActions(Closure $playerActions): self
+    {
+        return new self($this->events, $this->playerConnections, $this->worldResolver, $playerActions, $this->playerInventoryActions, $this->maximumStackSize);
+    }
+
+    /**
+     * @param Closure(string): PlayerInventoryActions $playerInventoryActions
+     * @param Closure(string): (Closure(ApiItemStack): int) $maximumStackSize
+     */
+    public function withPlayerInventoryActions(
+        Closure $playerInventoryActions,
+        Closure $maximumStackSize,
+    ): self {
+        return new self(
+            $this->events,
+            $this->playerConnections,
+            $this->worldResolver,
+            $this->playerActions,
+            $playerInventoryActions,
+            $maximumStackSize,
+        );
     }
 
     public function allowJoin(string $name, string $uuid): bool
@@ -281,8 +330,8 @@ final readonly class PluginGameplayEventBridge
         }
         $event = new PlayerMoveEvent(
             $this->playerView($player),
-            self::position($player->movement->position),
-            self::position($target),
+            $this->positionFor($player, $player->movement->position),
+            $this->positionFor($player, $target),
         );
         $this->events->dispatch($event);
 
@@ -299,11 +348,11 @@ final readonly class PluginGameplayEventBridge
 
     public function teleport(Player $player, Position $destination, float $yaw, float $pitch): ?PlayerTeleportDecision
     {
-        $from = self::position($player->movement->position);
+        $from = $this->positionFor($player, $player->movement->position);
         $event = new PlayerTeleportEvent(
             $this->playerView($player),
             $from,
-            self::position($destination),
+            $this->positionFor($player, $destination, $yaw, $pitch),
             $yaw,
             $pitch,
         );
@@ -325,7 +374,7 @@ final readonly class PluginGameplayEventBridge
         $snapshot = $this->playerView($player);
         $this->events->dispatch(new PlayerTeleportedEvent(
             $snapshot,
-            self::position($from),
+            $this->positionFor($player, $from),
             $snapshot->position,
             $snapshot->yaw,
             $snapshot->pitch,
@@ -576,7 +625,7 @@ final readonly class PluginGameplayEventBridge
 
     public function respawn(Player $player, Position $position): Position
     {
-        $event = new PlayerRespawnEvent($this->playerView($player), self::position($position));
+        $event = new PlayerRespawnEvent($this->playerView($player), $this->positionFor($player, $position));
         $this->events->dispatch($event);
         $destination = $event->position();
 
@@ -826,10 +875,13 @@ final readonly class PluginGameplayEventBridge
     {
         $snapshot = $player->snapshot();
 
-        return new ApiPlayer(
+        $connection = $this->playerConnections === null
+            ? PlayerConnection::disconnected()
+            : ($this->playerConnections)($snapshot->identity);
+        $view = new ApiPlayer(
             $snapshot->displayName,
             $snapshot->identity,
-            self::position($snapshot->position),
+            $this->positionFor($player, $snapshot->position, $snapshot->yaw, $snapshot->pitch),
             $snapshot->yaw,
             $snapshot->pitch,
             $snapshot->sneaking,
@@ -839,11 +891,20 @@ final readonly class PluginGameplayEventBridge
             PlayerVitals::MAX_HEALTH,
             $player->vitals->isAlive(),
             $player->gameMode(),
-            $this->playerConnections === null
-                ? PlayerConnection::disconnected()
-                : ($this->playerConnections)($snapshot->identity),
+            $connection,
             self::nutrition($player),
+            armorInventory: self::armorInventory($inventory ?? $player->inventory),
+            offHandItem: self::item(($inventory ?? $player->inventory)->offhandStack()),
         );
+
+        return $this->playerActions === null || $this->playerInventoryActions === null || $this->maximumStackSize === null
+            ? $view
+            : $view->withRuntime(
+                $connection,
+                ($this->playerActions)($snapshot->identity),
+                ($this->playerInventoryActions)($snapshot->identity),
+                ($this->maximumStackSize)($snapshot->identity),
+            );
     }
 
     public static function detachedPlayerView(Player $player, ?PlayerInventory $inventory = null): ApiPlayer
@@ -865,7 +926,20 @@ final readonly class PluginGameplayEventBridge
             $player->gameMode(),
             PlayerConnection::disconnected(),
             self::nutrition($player),
+            armorInventory: self::armorInventory($inventory ?? $player->inventory),
+            offHandItem: self::item(($inventory ?? $player->inventory)->offhandStack()),
         );
+    }
+
+    /** @return array<string, ApiItemStack|null> */
+    private static function armorInventory(PlayerInventory $inventory): array
+    {
+        return [
+            EquipmentSlot::HEAD->value => self::item($inventory->armorStack(0)),
+            EquipmentSlot::CHEST->value => self::item($inventory->armorStack(1)),
+            EquipmentSlot::LEGS->value => self::item($inventory->armorStack(2)),
+            EquipmentSlot::FEET->value => self::item($inventory->armorStack(3)),
+        ];
     }
 
     private static function inventory(PlayerInventory $inventory): ApiInventory
@@ -917,6 +991,24 @@ final readonly class PluginGameplayEventBridge
     private static function position(Position $position): ApiPosition
     {
         return new ApiPosition($position->x, $position->y, $position->z);
+    }
+
+    private function positionFor(
+        Player $player,
+        Position $position,
+        ?float $yaw = null,
+        ?float $pitch = null,
+    ): ApiPosition {
+        $world = $this->worldResolver === null ? null : ($this->worldResolver)($player->worldName());
+
+        return new ApiPosition(
+            $position->x,
+            $position->y,
+            $position->z,
+            $yaw ?? $player->movement->yaw,
+            $pitch ?? $player->movement->pitch,
+            $world,
+        );
     }
 
     private static function block(BlockPosition $position, string $identifier): ApiBlock

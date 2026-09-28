@@ -156,7 +156,7 @@ final class EntityControllerRuntimeIntegrationTest extends TestCase
 
         self::assertEqualsWithDelta(13.56, $zombie->getHealth(), 0.000_001);
         self::assertSame(1, $zombie->equipmentState()->getItem(EquipmentSlot::HEAD)?->damage);
-        self::assertSame(1, $simulation->pluginPlayer('attacker-identity')?->inventory->stackAt(0)?->damage);
+        self::assertSame(1, $simulation->pluginPlayer('attacker-identity')?->getInventory()->getItem(0)?->damage);
     }
 
     private static function simulation(?DropRandom $random = null): WorldSimulation

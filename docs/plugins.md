@@ -1,6 +1,6 @@
 # Plugins
 
-Bedriox API `0.1` is an experimental, in-process PHP plugin API. Plugins are trusted PHP programs. Stable gameplay APIs avoid transport, registry, queue, and mutable simulation objects, while an explicit typed packet escape hatch is available for current-version protocol features. Plugins never receive raw sockets, encryption state, or transport ownership, and the runtime is not an operating-system sandbox.
+Bedriox API `0.3` is an experimental, in-process PHP plugin API. Plugins are trusted PHP programs. Stable gameplay APIs avoid transport, registry, queue, and mutable simulation objects, while an explicit typed packet escape hatch is available for current-version protocol features. Plugins never receive raw sockets, encryption state, or transport ownership, and the runtime is not an operating-system sandbox.
 
 ## Installation and packaging
 
@@ -35,7 +35,7 @@ Every PHAR contains `plugin.json` at its root and namespaced code under `src/`. 
   "schema": 1,
   "name": "ExamplePlugin",
   "version": "1.0.0",
-  "api": "^0.2",
+  "api": "^0.3",
   "main": "Bedriox\\ExamplePlugin\\Main",
   "namespace": "Bedriox\\ExamplePlugin",
   "authors": ["Bedriox Team"],
@@ -86,9 +86,9 @@ Natural regeneration enters `PlayerRegainHealthEvent` before health changes. A l
 
 ## Public server API
 
-`PluginContext::server()` supplies immutable player, game-mode, inventory, world, position, block, item, health, and alive-state views. It supports bounded requests to send a player message, teleport with optional yaw and pitch, damage, change game mode, give a catalog item, read or change a canonical block, and change a supported inventory slot. Teleport, damage, and game-mode changes enter the same cancellable authoritative event paths as built-in causes. Mutations requested by an event listener are staged until that listener returns successfully, then enter the authoritative simulation queue for validation and synchronization.
+`PluginContext::server()` is the global discovery surface: `getWorldManager()`, `getOnlinePlayers()`, `getPlayerByUuid()`, and exact case-insensitive `getPlayerByName()`. Authoritative behavior belongs to the object it affects. `Player` sends messages, teleports, takes damage, changes game mode, receives catalog items, and changes supported inventory slots. `World` reads and changes canonical blocks. These operations enter the same cancellable authoritative event paths as built-in causes. Mutations requested by an event listener are staged until that listener returns successfully, then enter the authoritative simulation queue for validation and synchronization. Stale player sessions and unloaded-world generations fail closed.
 
-`PluginContext::server()->containers()` supplies plugin-scoped world storage lookup and typed virtual inventories. Containers expose immutable snapshots plus bounded set, add, remove, clear, open, and close operations. Virtual sizes come from `ContainerLayout`, remain memory-only, and are released with their owning plugin. Container open, close, transaction, and chest-pair events use protocol-neutral values and preserve the same server-authoritative commit boundary. See [storage containers](containers.md) for the complete API and lifecycle contract.
+`PluginContext::containers()` supplies plugin-scoped, world-explicit storage lookup and typed virtual inventories. Containers expose immutable snapshots plus bounded set, add, remove, clear, open, and close operations. Virtual sizes come from `ContainerLayout`, remain memory-only, and are released with their owning plugin. Container open, close, transaction, and chest-pair events use protocol-neutral values and preserve the same server-authoritative commit boundary. See [storage containers](containers.md) for the complete API and lifecycle contract.
 
 Blocks and items use canonical identifiers such as `minecraft:grass_block`; process-local numeric IDs never enter the public API. The gameplay catalogs expose the admitted terrain blocks, their drops, and supported tools without exposing network runtime IDs. Inventory writes accept catalog items or an empty slot.
 
@@ -104,7 +104,7 @@ $nbt = ItemNbt::empty()
     ->withString('example:kind', 'reward')
     ->withTag('example:levels', Tag::list(TagType::INT, [Tag::int(1), Tag::int(2)]))
     ->withTag('example:display', Tag::compound(['enabled' => Tag::byte(1)]));
-$this->context()->server()->giveItem($player, new ItemStack('minecraft:diamond', 1, nbt: $nbt));
+$player->giveItem(new ItemStack('minecraft:diamond', 1, nbt: $nbt));
 ```
 
 `PluginContext::items()` registers or explicitly replaces bounded definitions for item identifiers present in the active Bedrock data set. A definition controls maximum stack size and creative visibility. Replacing an admitted vanilla definition preserves its block-placement and tool behavior. Registrations are live for authoritative inventory rules; players already online keep the creative list sent at login, while later joins receive the current list. New client-side item identifiers and textures require a resource-pack/custom-item milestone and are not invented by this API.
@@ -152,7 +152,7 @@ $items->registerBehavior(
 );
 ```
 
-The [ExamplePlugin repository](https://github.com/Bedriox/ExamplePlugin) contains a complete minimal project. API `0.1` is a preview contract and may make documented breaking changes before `1.0`.
+The [ExamplePlugin repository](https://github.com/Bedriox/ExamplePlugin) contains a complete minimal project. API `0.3` is a preview contract and may make documented breaking changes before `1.0`.
 
 ### Player display and packet API
 

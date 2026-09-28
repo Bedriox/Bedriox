@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Runtime;
 
+use Bedriox\Api\World\Position as ApiPosition;
+use Bedriox\Api\World\WorldCreationOptions;
+use Bedriox\Api\World\WorldDifficulty;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Data\PersistentBlockStateRegistry;
 use Bedriox\Server\Login\AuthenticationMode;
@@ -36,6 +39,22 @@ final class PersistentWorldFactoryTest extends TestCase
     protected function tearDown(): void
     {
         self::removeDirectory($this->workingDirectory);
+    }
+
+    public function testSharesOneCanonicalInternalStateRegistryAcrossWorlds(): void
+    {
+        $factory = new PersistentWorldFactory($this->workingDirectory, new RecordingWorldProviderFactory());
+        $data = BedrockDataSet::bundled();
+
+        self::assertSame($factory->internalStates($data), $factory->internalStates($data));
+    }
+
+    public function testSharesOneCanonicalPersistentStateRegistryAcrossWorlds(): void
+    {
+        $factory = new PersistentWorldFactory($this->workingDirectory, new RecordingWorldProviderFactory());
+        $data = BedrockDataSet::bundled();
+
+        self::assertSame($factory->persistentStates($data), $factory->persistentStates($data));
     }
 
     public function testCreatesMissingWorldUnderSafeWorldsDirectory(): void
@@ -159,6 +178,52 @@ final class PersistentWorldFactoryTest extends TestCase
             (new PersistentWorldFactory($this->workingDirectory, $providers))->open(
                 self::config(levelName: '..'),
                 BedrockDataSet::bundled(),
+            );
+        } finally {
+            self::assertNull($providers->openedPath);
+            self::assertNull($providers->createdPath);
+        }
+    }
+
+    public function testCreatesNamedWorldFromIndependentCreationOptions(): void
+    {
+        $providers = new RecordingWorldProviderFactory();
+        $opened = (new PersistentWorldFactory($this->workingDirectory, $providers))->createNamed(
+            self::config(levelName: 'world', levelSeed: 1),
+            BedrockDataSet::bundled(),
+            'mines',
+            new WorldCreationOptions(
+                generator: 'flat',
+                seed: 91,
+                generatorOptions: ['preset' => 'mining'],
+                displayName: 'Mining World',
+                difficulty: WorldDifficulty::HARD,
+                initialTime: 13_000,
+                spawn: new ApiPosition(8.0, 70.0, -4.0),
+            ),
+        );
+
+        self::assertNotNull($providers->createdPath);
+        self::assertStringEndsWith(DIRECTORY_SEPARATOR . 'worlds' . DIRECTORY_SEPARATOR . 'mines', $providers->createdPath);
+        self::assertSame('Mining World', $opened->data->metadata->name);
+        self::assertSame(91, $opened->data->metadata->seed);
+        self::assertSame('flat', $opened->data->generatorName);
+        self::assertSame(3, $opened->data->difficulty);
+        self::assertSame(13_000, $opened->data->time);
+        self::assertSame('{"preset":"mining"}', $opened->data->generatorOptions);
+        self::assertSame([8, 70, -4], [$opened->data->spawn->x, $opened->data->spawn->y, $opened->data->spawn->z]);
+    }
+
+    public function testNamedLoadDoesNotCreateAWorldWhenStorageIsMissing(): void
+    {
+        $providers = new RecordingWorldProviderFactory();
+
+        $this->expectException(\RuntimeException::class);
+        try {
+            (new PersistentWorldFactory($this->workingDirectory, $providers))->loadNamed(
+                self::config(),
+                BedrockDataSet::bundled(),
+                'missing',
             );
         } finally {
             self::assertNull($providers->openedPath);

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Bedriox\Api\Inventory;
 
 use Bedriox\Api\World\BlockPosition;
+use Bedriox\Api\World\World;
 use Closure;
 use InvalidArgumentException;
 
@@ -14,7 +15,7 @@ final readonly class ContainerManager
     private Closure $guard;
 
     /**
-     * @param Closure(BlockPosition): ?Container $at
+     * @param Closure(World, BlockPosition): ?Container $at
      * @param Closure(ContainerLayout, ?string): Container $create
      * @internal The server owns manager construction.
      */
@@ -26,11 +27,11 @@ final readonly class ContainerManager
         $this->guard = $guard ?? static function (): void {};
     }
 
-    public function at(BlockPosition $position): ?Container
+    public function at(World $world, BlockPosition $position): ?Container
     {
         ($this->guard)();
 
-        return ($this->at)($position);
+        return ($this->at)($world, $position);
     }
 
     public function create(

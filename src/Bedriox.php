@@ -29,6 +29,7 @@ use Bedriox\Server\Plugin\Command\StreamConsoleInput;
 use Bedriox\Server\Plugin\Command\WindowsConsoleInput;
 use Bedriox\Server\Plugin\Event\OwnedEventRegistrar;
 use Bedriox\Server\Plugin\OwnedEntityRegistrar;
+use Bedriox\Server\Plugin\OwnedGeneratorRegistrar;
 use Bedriox\Server\Plugin\OwnedItemRegistrar;
 use Bedriox\Server\Plugin\OwnedRecipeRegistrar;
 use Bedriox\Server\Plugin\OwnedSourcePluginRegistrar;
@@ -51,13 +52,14 @@ use Bedriox\Server\Simulation\PluginGameplayEventBridge;
 use Bedriox\Server\Worker\CoreWorkerTaskCatalog;
 use Bedriox\Server\Worker\ManagedWorkerDispatcher;
 use Bedriox\Server\Worker\ManagedWorkerPool;
+use Bedriox\Server\World\WorldGeneratorFactory;
 use Closure;
 use Throwable;
 
 final class Bedriox
 {
     public const NAME = 'Bedriox';
-    public const VERSION = '0.2.0-alpha.1';
+    public const VERSION = '0.3.0-alpha.1';
 
     public function __construct(
         private readonly CrashContextProvider $crashContextProvider = new MutableCrashContextProvider(),
@@ -164,6 +166,7 @@ final class Bedriox
             $stop = false;
             $permissionStore = new PermissionStore($workingDirectory . DIRECTORY_SEPARATOR . 'permissions.json');
             $data = \Bedriox\Data\BedrockDataSet::bundled();
+            $generatorRegistry = WorldGeneratorFactory::builtIns();
             $itemCatalog = \Bedriox\Server\Gameplay\Item\ItemCatalog::vanilla(
                 $data->itemNetworkRegistry(),
                 creative: $data->creativeInventoryRegistry(),
@@ -182,7 +185,7 @@ final class Bedriox
                     OwnedCommandRegistrar $commands,
                     OwnedSourcePluginRegistrar $sourcePlugins,
                     ServerPluginLogger $pluginLogger,
-                ) use ($composition, $itemCatalog, &$itemCommandEnum): PluginContext {
+                ) use ($composition, $itemCatalog, $generatorRegistry, &$itemCommandEnum): PluginContext {
                     if ($composition->server === null || $composition->host === null) {
                         throw new \LogicException('Plugin API composition is not ready.');
                     }
@@ -202,8 +205,6 @@ final class Bedriox
                         $composition->server->pluginApi->serverFor(
                             $manifest->name,
                             $composition->host->manager(),
-                            $composition->host->actions(),
-                            $composition->host->ownership(),
                         ),
                         $dataFolder,
                         new OwnedItemRegistrar(
@@ -228,6 +229,17 @@ final class Bedriox
                                 $yaw,
                                 $pitch,
                             ),
+                        ),
+                        generators: new OwnedGeneratorRegistrar(
+                            $manifest->name,
+                            $generatorRegistry,
+                            $composition->host->ownership(),
+                        ),
+                        containers: $composition->server->pluginApi->containerManagerFor(
+                            $manifest->name,
+                            $composition->host->manager(),
+                            $composition->host->actions(),
+                            $composition->host->ownership(),
                         ),
                     );
                 },
@@ -281,22 +293,22 @@ final class Bedriox
                     return $performance->snapshot(
                         onlinePlayers: $runtime?->sessionCount() ?? 0,
                         maximumPlayers: $config->maximumPlayers,
-                        loadedChunks: $world?->loadedChunkCount() ?? 0,
-                        dirtyChunks: $world?->dirtyChunkCount() ?? 0,
-                        generatingChunks: $world?->generatingChunkCount() ?? 0,
+                        loadedChunks: $runtime?->loadedChunkCount() ?? 0,
+                        dirtyChunks: $runtime?->dirtyChunkCount() ?? 0,
+                        generatingChunks: $runtime?->generatingChunkCount() ?? 0,
                         scheduledPluginTasks: $scheduler->scheduledCount(),
                         deferredPluginTasks: $scheduler->deferredLastTick(),
                         coreWorkers: $coreWorkers->snapshot(),
                         pluginWorkers: $pluginWorkerPool?->snapshot(),
                         logWriter: $backgroundLog?->snapshot(),
                         configuredMemoryLimitBytes: $config->memoryLimitBytes,
-                        worldCount: $world === null ? 0 : 1,
+                        worldCount: $runtime?->worldCount() ?? 0,
                         entityCount: $runtime?->entityCount() ?? 0,
                         pendingAsyncPluginTasks: $scheduler->pendingAsyncCount(),
                         maximumAsyncCompletionsPerTick: $scheduler->maximumAsyncCompletionsPerTick(),
-                        chunkCache: $world?->chunkRepositorySnapshot(),
+                        chunkCache: $runtime?->chunkRepositorySnapshot(),
                         chunkStreaming: $runtime?->chunkStreamingSnapshot(),
-                        worldPersistence: $world?->persistenceQueueSnapshot(),
+                        worldPersistence: $runtime?->worldPersistenceQueueSnapshot(),
                         playerPersistence: $playerStore->persistenceQueueSnapshot(),
                         preparedChunkCache: $runtime?->preparedChunkCacheSnapshot(),
                         memoryManagement: $runtime?->lastMemoryManagementDecision(),
@@ -378,6 +390,7 @@ final class Bedriox
                 new PersistentWorldFactory(
                     $workingDirectory,
                     new ProcessWorldProviderFactory(self::VERSION),
+                    $generatorRegistry,
                 ),
                 playerDataDirectory: $workingDirectory . DIRECTORY_SEPARATOR . 'player_data',
                 playerDataStore: $playerStore,

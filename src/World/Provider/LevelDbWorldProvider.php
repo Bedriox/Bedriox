@@ -238,6 +238,7 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
         $root['generatorName'] = LittleEndianNbtTag::string($worldData->generatorName);
         $root['Generator'] = LittleEndianNbtTag::int(self::legacyGeneratorId($worldData->generatorName));
         $root['BedrioxGeneratorVersion'] = LittleEndianNbtTag::int($worldData->generatorVersion);
+        $root['generatorOptions'] = LittleEndianNbtTag::string($worldData->generatorOptions);
         $root['SpawnX'] = LittleEndianNbtTag::int($worldData->spawn->x);
         $root['SpawnY'] = LittleEndianNbtTag::int($worldData->spawn->y);
         $root['SpawnZ'] = LittleEndianNbtTag::int($worldData->spawn->z);
@@ -369,6 +370,7 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
                 $metadata->time(),
                 $metadata->difficulty(),
                 $metadata->generatorVersion(),
+                $metadata->generatorOptions() === '' ? '{}' : $metadata->generatorOptions(),
             );
         } catch (UnsupportedWorldDataException $error) {
             throw new UnsupportedWorldFormatException($error->getMessage(), previous: $error);
@@ -391,7 +393,7 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
             'generatorName' => LittleEndianNbtTag::string($data->generatorName),
             'Generator' => LittleEndianNbtTag::int(self::legacyGeneratorId($data->generatorName)),
             'BedrioxGeneratorVersion' => LittleEndianNbtTag::int($data->generatorVersion),
-            'generatorOptions' => LittleEndianNbtTag::string(''),
+            'generatorOptions' => LittleEndianNbtTag::string($data->generatorOptions),
             'GameType' => LittleEndianNbtTag::int(0),
             'LastPlayed' => LittleEndianNbtTag::long($createdAt),
             'DayCycleStopTime' => LittleEndianNbtTag::int(-1),
@@ -441,7 +443,7 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
         return match ($generatorName) {
             'default' => 1,
             'flat' => 2,
-            default => throw new InvalidArgumentException("World generator \"$generatorName\" is not supported."),
+            default => 1,
         };
     }
 }

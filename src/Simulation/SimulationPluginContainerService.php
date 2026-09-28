@@ -11,11 +11,13 @@ use Bedriox\Api\Inventory\ContainerView;
 use Bedriox\Api\Inventory\ItemStack;
 use Bedriox\Api\Player\Player;
 use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
+use Bedriox\Api\World\World as ApiWorld;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Plugin\PluginActionBuffer;
 use Bedriox\Server\Plugin\PluginException;
 use Bedriox\Server\Plugin\PluginOwnershipRegistry;
 use Bedriox\Server\Plugin\PluginRuntimeControl;
+use Bedriox\Server\Runtime\WorldRuntimeManager;
 use Bedriox\Server\World\BlockPosition;
 use Closure;
 
@@ -29,34 +31,40 @@ final readonly class SimulationPluginContainerService
         private PluginOwnershipRegistry $ownership,
         private WorldSimulation $simulation,
         private ?ItemCatalog $itemCatalog = null,
+        private ?WorldRuntimeManager $worldRuntimes = null,
     ) {}
 
     public function manager(): ContainerManager
     {
         return new ContainerManager(
-            fn(ApiBlockPosition $position): ?Container => $this->worldContainer($position),
+            fn(ApiWorld $world, ApiBlockPosition $position): ?Container => $this->worldContainer($world, $position),
             fn(ContainerLayout $layout, ?string $title): Container => $this->create($layout, $title),
             $this->assertEnabled(...),
         );
     }
 
-    private function worldContainer(ApiBlockPosition $position): ?Container
+    private function worldContainer(ApiWorld $world, ApiBlockPosition $position): ?Container
     {
         $this->assertEnabled();
+        $simulation = $this->simulation;
+        if ($this->worldRuntimes !== null) {
+            $runtime = $this->worldRuntimes->assertCurrent($world);
+            $simulation = $runtime->simulation;
+        }
         $internal = new BlockPosition($position->x, $position->y, $position->z);
-        if ($this->simulation->pluginWorldContainerView($internal) === null) {
+        if ($simulation->pluginWorldContainerView($internal) === null) {
             return null;
         }
 
         return $this->handle(
-            fn() => $this->simulation->pluginWorldContainerView($internal),
-            fn(array $contents, string $revision): bool => $this->simulation->pluginReplaceWorldContainer(
+            fn() => $simulation->pluginWorldContainerView($internal),
+            fn(array $contents, string $revision): bool => $simulation->pluginReplaceWorldContainer(
                 $internal,
                 $contents,
                 $revision,
             ),
-            fn(string $player): bool => $this->simulation->pluginOpenWorldContainer($player, $internal),
-            fn(string $player): bool => $this->simulation->pluginCloseWorldContainer($player, $internal),
+            fn(string $player): bool => $simulation->pluginOpenWorldContainer($player, $internal),
+            fn(string $player): bool => $simulation->pluginCloseWorldContainer($player, $internal),
         );
     }
 

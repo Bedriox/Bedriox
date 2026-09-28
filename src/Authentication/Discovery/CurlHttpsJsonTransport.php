@@ -33,7 +33,7 @@ final class CurlHttpsJsonTransport implements HttpsJsonTransport
             CURLOPT_PROXY => '',
             CURLOPT_NOPROXY => '*',
             CURLOPT_HTTPHEADER => ['Accept: application/json'],
-            CURLOPT_USERAGENT => 'Bedriox/0.1 discovery',
+            CURLOPT_USERAGENT => 'Bedriox/0.3 discovery',
             CURLOPT_WRITEFUNCTION => static function (CurlHandle $unused, string $chunk) use (&$body, &$overflow, $maximumResponseBytes): int {
                 if (strlen($chunk) > $maximumResponseBytes - strlen($body)) {
                     $overflow = true;

@@ -30,18 +30,34 @@ final class FixedRateWorldLoop
     /** @return list<SimulationTick> */
     public function poll(): array
     {
+        $ticks = [];
+        $this->pollCadence(function () use (&$ticks): void {
+            $ticks[] = $this->world->tick();
+        });
+
+        return $ticks;
+    }
+
+    /**
+     * Advances this loop's bounded fixed-rate cadence without prescribing what one tick updates.
+     *
+     * @param callable(): void $tick
+     */
+    public function pollCadence(callable $tick): int
+    {
         $now = $this->clock->nowNanoseconds();
         if ($now < $this->lastObservedNanoseconds) {
             throw new RuntimeException('Monotonic simulation clock moved backwards.');
         }
         $this->lastObservedNanoseconds = $now;
-        $ticks = [];
-        while ($now >= $this->nextTickNanoseconds && count($ticks) < $this->maximumTicksPerPoll) {
-            $ticks[] = $this->world->tick();
+        $completed = 0;
+        while ($now >= $this->nextTickNanoseconds && $completed < $this->maximumTicksPerPoll) {
+            $tick();
             $this->nextTickNanoseconds += $this->intervalNanoseconds;
+            ++$completed;
         }
 
-        return $ticks;
+        return $completed;
     }
 
     public function nanosecondsUntilNextTick(): int

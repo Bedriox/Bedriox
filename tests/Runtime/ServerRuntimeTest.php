@@ -10,12 +10,15 @@ use Bedriox\Api\Command\CommandContext;
 use Bedriox\Api\Command\CommandParameter;
 use Bedriox\Api\Command\CommandResult;
 use Bedriox\Api\Command\CommandSoftEnum;
+use Bedriox\Api\World\World as PublicWorld;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Batch\BatchLimits;
 use Bedriox\Protocol\Batch\BedrockBatch;
 use Bedriox\Protocol\Batch\BedrockBatchCodec;
 use Bedriox\Protocol\Batch\CompressionMode;
 use Bedriox\Protocol\Codec\ByteBufferReader;
+use Bedriox\Protocol\Codec\SignedVarInt;
+use Bedriox\Protocol\Codec\UnsignedVarInt;
 use Bedriox\Protocol\Encryption\BedrockDecryptor;
 use Bedriox\Protocol\Encryption\BedrockEncryptor;
 use Bedriox\Protocol\Identity\VerifiedClientData;
@@ -38,10 +41,14 @@ use Bedriox\Protocol\Packet\ItemStackRequest;
 use Bedriox\Protocol\Packet\ItemStackRequestPacket;
 use Bedriox\Protocol\Packet\ItemStackRequestSlot;
 use Bedriox\Protocol\Packet\ItemStackResponsePacket;
+use Bedriox\Protocol\Packet\LevelChunkPacket;
 use Bedriox\Protocol\Packet\LoginAuthentication;
 use Bedriox\Protocol\Packet\LoginPacket;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
 use Bedriox\Protocol\Packet\MoveActorAbsolutePacket;
+use Bedriox\Protocol\Packet\MovePlayerMode;
+use Bedriox\Protocol\Packet\MovePlayerPacket;
+use Bedriox\Protocol\Packet\NetworkChunkPublisherUpdatePacket;
 use Bedriox\Protocol\Packet\Packet;
 use Bedriox\Protocol\Packet\PacketFrame;
 use Bedriox\Protocol\Packet\PacketHeader;
@@ -56,7 +63,9 @@ use Bedriox\Protocol\Packet\ResourcePackClientResponsePacket;
 use Bedriox\Protocol\Packet\ResourcePackResponseStatus;
 use Bedriox\Protocol\Packet\ServerToClientHandshakePacket;
 use Bedriox\Protocol\Packet\SetActorMotionPacket;
+use Bedriox\Protocol\Packet\SetDifficultyPacket;
 use Bedriox\Protocol\Packet\SetLocalPlayerAsInitializedPacket;
+use Bedriox\Protocol\Packet\SetTimePacket;
 use Bedriox\Protocol\Packet\ShapelessCraftingRecipe;
 use Bedriox\Protocol\Packet\SoftEnumUpdateType;
 use Bedriox\Protocol\Packet\SubChunkRequestPacket;
@@ -107,6 +116,8 @@ use Bedriox\Server\Plugin\PluginExecutionContext;
 use Bedriox\Server\Plugin\PluginExecutionFrame;
 use Bedriox\Server\Plugin\PluginOwnershipRegistry;
 use Bedriox\Server\Plugin\PluginRuntimeControl;
+use Bedriox\Server\Plugin\Scheduler\MainThreadPluginScheduler;
+use Bedriox\Server\Runtime\BedrockChunkPacketSerializer;
 use Bedriox\Server\Runtime\BedrockInventoryPacketProjector;
 use Bedriox\Server\Runtime\BedrockPlayChannelFactory;
 use Bedriox\Server\Runtime\BedrockWorldEventPacketEncoder;
@@ -114,6 +125,8 @@ use Bedriox\Server\Runtime\ChatBroadcastPacketEncoder;
 use Bedriox\Server\Runtime\DirectedPacket;
 use Bedriox\Server\Runtime\EntityMovementPacketEncoder;
 use Bedriox\Server\Runtime\LoginChannelFactory;
+use Bedriox\Server\Runtime\ManagedWorldRuntime;
+use Bedriox\Server\Runtime\OpenedWorld;
 use Bedriox\Server\Runtime\PlayerConnectionDirectory;
 use Bedriox\Server\Runtime\PlayInitializationFactory;
 use Bedriox\Server\Runtime\RuntimeDiagnostics;
@@ -121,6 +134,7 @@ use Bedriox\Server\Runtime\RuntimeLimits;
 use Bedriox\Server\Runtime\RuntimeSession;
 use Bedriox\Server\Runtime\ServerRuntime;
 use Bedriox\Server\Runtime\WorldEventPacketEncoder;
+use Bedriox\Server\Runtime\WorldRuntimeManager;
 use Bedriox\Server\Simulation\ClientInputTick;
 use Bedriox\Server\Simulation\Event\ChatBroadcast;
 use Bedriox\Server\Simulation\Event\EntityActorMoved;
@@ -144,6 +158,7 @@ use Bedriox\Server\Transport\NetworkCompressionPolicy;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
+use Bedriox\Server\World\Block\InternalBlockStateId;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\ChunkRepository;
 use Bedriox\Server\World\FlatWorldGenerator;
@@ -156,6 +171,281 @@ use Throwable;
 
 final class ServerRuntimeTest extends TestCase
 {
+    public function testSameDimensionWorldTransferTeleportsOwnerBeforePublishingOnlyDestinationChunks(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $network = $data->blockStateRegistry();
+        $internal = new BlockStateRegistry($network->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($internal);
+        $sourceWorld = new World(
+            new WorldMetadata('world', 1),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(32),
+        );
+        $destinationWorld = new World(
+            new WorldMetadata('arena', 2),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(32),
+        );
+        $destinationWorld->setTime(12_345);
+        $clock = new RuntimeTestClock();
+        $sourceSimulation = new WorldSimulation(blockWorld: $sourceWorld, blockPalette: $palette);
+        $destinationSimulation = new WorldSimulation(blockWorld: $destinationWorld, blockPalette: $palette);
+        $sourceRuntime = new ManagedWorldRuntime(
+            new PublicWorld('world', 1),
+            new OpenedWorld($sourceWorld, new WorldData($sourceWorld->metadata, 'flat', new SpawnPosition(0, 64, 0))),
+            $sourceSimulation,
+            new FixedRateWorldLoop($sourceSimulation, $clock, maximumTicksPerPoll: 1),
+        );
+        $worlds = new WorldRuntimeManager('world', $sourceRuntime);
+        $destinationRuntime = $worlds->load('arena', static fn(PublicWorld $handle): ManagedWorldRuntime => new ManagedWorldRuntime(
+            $handle,
+            new OpenedWorld(
+                $destinationWorld,
+                new WorldData(
+                    $destinationWorld->metadata,
+                    'flat',
+                    new SpawnPosition(160, 70, -80),
+                    time: 12_345,
+                    difficulty: 2,
+                ),
+            ),
+            $destinationSimulation,
+            new FixedRateWorldLoop($destinationSimulation, $clock, maximumTicksPerPoll: 1),
+        ));
+        $serializer = new BedrockChunkPacketSerializer(new BlockNetworkTranslator($internal, $network));
+        $transport = new FakeConnectedTransport();
+        $loginFactory = new RuntimeLoginFactory();
+        $runtime = new ServerRuntime(
+            $transport,
+            $loginFactory,
+            new BedrockPlayChannelFactory(
+                new EmptyInitializationFactory(),
+                world: $sourceWorld,
+                chunkSerializer: $serializer,
+                viewDistance: 1,
+                spawnRadius: 1,
+                chunksGeneratePerTick: 4,
+                chunksSendPerTick: 4,
+            ),
+            $sourceSimulation,
+            $sourceRuntime->loop,
+            new RecordingEventEncoder(),
+            persistentWorld: $sourceWorld,
+            chunksGeneratePerTick: 4,
+            chunksSendPerTick: 4,
+            worldRuntimes: $worlds,
+        );
+        $session = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+
+        try {
+            $client = $this->advanceToInitializing($runtime, $transport, $session, $loginFactory);
+            $decryptor = $loginFactory->clientDecryptor();
+            $this->decodeEncryptedPackets($transport->sent, $decryptor);
+            $transport->sent = [];
+
+            $this->receiveEncrypted($transport, $session, $client, new RequestChunkRadiusPacket(1, 1));
+            $this->receiveEncrypted(
+                $transport,
+                $session,
+                $client,
+                new SetLocalPlayerAsInitializedPacket(UnsignedLong::fromInt(1)),
+            );
+            self::assertTrue($runtime->poll());
+            $clock->advance(50_000_000);
+            self::assertTrue($runtime->poll());
+            $this->decodeEncryptedPackets($transport->sent, $decryptor);
+            $transport->sent = [];
+
+            self::assertTrue($runtime->teleportPlayer(
+                '00000000-0000-0000-0000-000000000001',
+                new \Bedriox\Api\World\Position(160.5, 70.0, -79.5, 135.0, -30.0, $destinationRuntime->handle),
+            ));
+            $packets = [];
+            for ($poll = 0; $poll < 4; ++$poll) {
+                self::assertTrue($runtime->poll());
+                array_push($packets, ...$this->decodeEncryptedPackets($transport->sent, $decryptor));
+                $transport->sent = [];
+                if (array_any($packets, static fn(Packet $packet): bool => $packet instanceof LevelChunkPacket)) {
+                    break;
+                }
+                $clock->advance(50_000_000);
+            }
+            $transferPackets = array_values(array_filter(
+                $packets,
+                static fn(Packet $packet): bool => $packet instanceof SetTimePacket
+                    || $packet instanceof SetDifficultyPacket
+                    || $packet instanceof MovePlayerPacket
+                    || $packet instanceof NetworkChunkPublisherUpdatePacket
+                    || $packet instanceof LevelChunkPacket,
+            ));
+
+            self::assertNotEmpty($transferPackets);
+            $moveIndex = self::packetIndex($transferPackets, MovePlayerPacket::class);
+            $timeIndex = $moveIndex - 2;
+            $difficultyIndex = $moveIndex - 1;
+            $publisherIndex = self::packetIndex($transferPackets, NetworkChunkPublisherUpdatePacket::class);
+            self::assertLessThan($moveIndex, $timeIndex);
+            self::assertLessThan($moveIndex, $difficultyIndex);
+            self::assertLessThan($publisherIndex, $moveIndex);
+
+            $time = $transferPackets[$timeIndex];
+            self::assertInstanceOf(SetTimePacket::class, $time);
+            self::assertGreaterThanOrEqual(12_345, $time->time);
+            $difficulty = $transferPackets[$difficultyIndex];
+            self::assertInstanceOf(SetDifficultyPacket::class, $difficulty);
+            self::assertSame(2, $difficulty->difficulty);
+
+            $move = $transferPackets[$moveIndex];
+            self::assertInstanceOf(MovePlayerPacket::class, $move);
+            self::assertSame(MovePlayerMode::TELEPORT, $move->mode);
+            self::assertSame(160.5, $move->x);
+            self::assertEqualsWithDelta(PlayerPositionProjection::feetToWireY(70.0), $move->y, 0.000_01);
+            self::assertSame(-79.5, $move->z);
+            $publisher = $transferPackets[$publisherIndex];
+            self::assertInstanceOf(NetworkChunkPublisherUpdatePacket::class, $publisher);
+            self::assertSame([160, 70, -80], [
+                $publisher->x,
+                $publisher->y,
+                $publisher->z,
+            ]);
+
+            $chunks = array_values(array_filter(
+                $transferPackets,
+                static fn(Packet $packet): bool => $packet instanceof LevelChunkPacket,
+            ));
+            self::assertNotEmpty($chunks);
+            self::assertGreaterThan($publisherIndex, self::packetIndex($transferPackets, LevelChunkPacket::class));
+            foreach ($chunks as $packet) {
+                self::assertInstanceOf(LevelChunkPacket::class, $packet);
+                self::assertGreaterThanOrEqual(9, $packet->chunkX, 'A source-world chunk crossed the transfer boundary.');
+                self::assertLessThanOrEqual(11, $packet->chunkX, 'A source-world chunk crossed the transfer boundary.');
+                self::assertGreaterThanOrEqual(-6, $packet->chunkZ, 'A source-world chunk crossed the transfer boundary.');
+                self::assertLessThanOrEqual(-4, $packet->chunkZ, 'A source-world chunk crossed the transfer boundary.');
+            }
+            self::assertSame(
+                'arena',
+                $destinationSimulation->authoritativePlayer('00000000-0000-0000-0000-000000000001')?->worldName(),
+            );
+            self::assertSame([], $sourceSimulation->snapshot()->players);
+            self::assertSame([], array_values(array_filter(
+                $packets,
+                static fn(Packet $packet): bool => str_contains($packet::class, 'Dimension'),
+            )), 'Same-dimension transfer must not emit a loading-screen dimension packet.');
+        } finally {
+            $runtime->close();
+        }
+    }
+
+    public function testGlobalSchedulerTicksRemainIndependentFromWorldLocalTicks(): void
+    {
+        $transport = new FakeConnectedTransport();
+        $clock = new RuntimeTestClock();
+        $defaultSimulation = new WorldSimulation();
+        for ($tick = 0; $tick < 40; ++$tick) {
+            $defaultSimulation->tick();
+        }
+        $defaultRuntime = self::managedWorldRuntime(
+            new PublicWorld('world', 1),
+            $defaultSimulation,
+            $clock,
+        );
+        $worlds = new WorldRuntimeManager('world', $defaultRuntime);
+        $boundaryTicks = [];
+        $monitor = new PerformanceMonitor();
+        $scheduler = new MainThreadPluginScheduler(
+            new AuthorityPluginControl(),
+            new PluginExecutionContext(),
+            new PluginActionBuffer(),
+            new PluginOwnershipRegistry(),
+        );
+        $runtime = new ServerRuntime(
+            $transport,
+            new RuntimeLoginFactory(),
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $defaultSimulation,
+            $defaultRuntime->loop,
+            new RecordingEventEncoder(),
+            simulationTickBoundary: static function (int $tick) use (&$boundaryTicks, $scheduler): void {
+                $scheduler->tick($tick);
+                $boundaryTicks[] = $tick;
+            },
+            performance: $monitor,
+            worldRuntimes: $worlds,
+        );
+
+        try {
+            $clock->advance(5_000_000_000);
+            self::assertTrue($runtime->poll());
+            self::assertSame([1], $boundaryTicks);
+            self::assertSame(41, $defaultSimulation->snapshot()->tick);
+            self::assertSame(1, $monitor->snapshot()->tickSamples);
+
+            $worlds->load('mines', static fn(PublicWorld $handle): ManagedWorldRuntime =>
+                self::managedWorldRuntime($handle, new WorldSimulation(), $clock));
+            $clock->advance(50_000_000);
+
+            self::assertTrue($runtime->poll());
+            self::assertSame([1, 2], $boundaryTicks);
+            self::assertSame(42, $defaultSimulation->snapshot()->tick);
+            self::assertSame(1, $worlds->get('mines')?->simulation->snapshot()->tick);
+            self::assertSame(2, $monitor->snapshot()->tickSamples);
+        } finally {
+            $runtime->close();
+        }
+    }
+
+    public function testMultiWorldAutosaveUsesPerWorldStateAndOneGlobalChunkBudget(): void
+    {
+        $clock = new RuntimeTestClock();
+        [$defaultRuntime, $defaultProvider] = self::persistentManagedWorldRuntime(
+            new PublicWorld('world', 1),
+            $clock,
+        );
+        $defaultRuntime->opened->world->chunk(new ChunkPosition(1, 0));
+        $defaultRuntime->opened->world->chunk(new ChunkPosition(2, 0));
+
+        [$minesRuntime, $minesProvider] = self::persistentManagedWorldRuntime(
+            new PublicWorld('mines', 1),
+            $clock,
+        );
+        $worlds = new WorldRuntimeManager('world', $defaultRuntime);
+        $worlds->load('mines', static fn(): ManagedWorldRuntime => $minesRuntime);
+        $runtime = new ServerRuntime(
+            new FakeConnectedTransport(),
+            new RuntimeLoginFactory(),
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $defaultRuntime->simulation,
+            $defaultRuntime->loop,
+            new RecordingEventEncoder(),
+            persistentWorld: $defaultRuntime->opened->world,
+            autosaveIntervalTicks: 5,
+            autosaveChunkBudget: 1,
+            worldRuntimes: $worlds,
+        );
+        $defaultBaseline = count($defaultProvider->savedRevisions);
+        $minesBaseline = count($minesProvider->savedRevisions);
+
+        try {
+            for ($tick = 0; $tick < 5; ++$tick) {
+                $clock->advance(50_000_000);
+                self::assertTrue($runtime->poll());
+            }
+            self::assertSame(
+                1,
+                count($defaultProvider->savedRevisions) - $defaultBaseline
+                    + count($minesProvider->savedRevisions) - $minesBaseline,
+            );
+
+            $clock->advance(50_000_000);
+            self::assertTrue($runtime->poll());
+            self::assertSame(2, count($defaultProvider->savedRevisions) - $defaultBaseline);
+            self::assertSame(0, count($minesProvider->savedRevisions) - $minesBaseline);
+        } finally {
+            $runtime->close();
+        }
+    }
+
     public function testEntityMovementProjectionBuildsOneSharedFrameSequenceForEveryRecipient(): void
     {
         $transport = new FakeConnectedTransport();
@@ -1949,6 +2239,20 @@ final class ServerRuntimeTest extends TestCase
                     $packets[] = UpdateSoftEnumPacket::decode($frame->payload);
                 } elseif ($frame->header->packetId === PacketIds::CRAFTING_DATA) {
                     $packets[] = CraftingDataPacket::decode($frame->payload);
+                } elseif ($frame->header->packetId === PacketIds::SET_TIME) {
+                    $decoded = SignedVarInt::decode($frame->payload);
+                    self::assertSame(strlen($frame->payload), $decoded['bytes']);
+                    $packets[] = new SetTimePacket($decoded['value']);
+                } elseif ($frame->header->packetId === PacketIds::SET_DIFFICULTY) {
+                    $decoded = UnsignedVarInt::decode($frame->payload);
+                    self::assertSame(strlen($frame->payload), $decoded['bytes']);
+                    $packets[] = new SetDifficultyPacket($decoded['value']);
+                } elseif (in_array($frame->header->packetId, [
+                    PacketIds::MOVE_PLAYER,
+                    PacketIds::NETWORK_CHUNK_PUBLISHER_UPDATE,
+                    PacketIds::LEVEL_CHUNK,
+                ], true)) {
+                    $packets[] = BedrockPacketCodec::decode($frame->header->packetId, $frame->payload);
                 } elseif ($frame->header->packetId === PacketIds::TEXT || $frame->header->packetId === PacketIds::DISCONNECT) {
                     $packets[] = BedrockPacketCodec::decode($frame->header->packetId, $frame->payload);
                 }
@@ -2013,6 +2317,78 @@ final class ServerRuntimeTest extends TestCase
     private static function emptyPacketFrameMap(): array
     {
         return [];
+    }
+
+    /**
+     * @param list<Packet>       $packets
+     * @param class-string<Packet> $class
+     */
+    private static function packetIndex(array $packets, string $class): int
+    {
+        foreach ($packets as $index => $packet) {
+            if ($packet instanceof $class) {
+                return $index;
+            }
+        }
+
+        self::fail("Expected transfer packet $class was not sent.");
+    }
+
+    private static function managedWorldRuntime(
+        PublicWorld $handle,
+        WorldSimulation $simulation,
+        RuntimeTestClock $clock,
+    ): ManagedWorldRuntime {
+        $metadata = new WorldMetadata($handle->id(), 0);
+        $generator = new FlatWorldGenerator(new FixedFlatBlockPalette(
+            new InternalBlockStateId(0),
+            new InternalBlockStateId(1),
+            new InternalBlockStateId(2),
+            new InternalBlockStateId(3),
+        ));
+        $world = new World($metadata, $generator, new ChunkRepository(16));
+
+        return new ManagedWorldRuntime(
+            $handle,
+            new OpenedWorld($world, new WorldData($metadata, 'flat', new SpawnPosition(0, 64, 0))),
+            $simulation,
+            new FixedRateWorldLoop($simulation, $clock, maximumTicksPerPoll: 1),
+        );
+    }
+
+    /** @return array{ManagedWorldRuntime, InMemoryWorldProvider} */
+    private static function persistentManagedWorldRuntime(
+        PublicWorld $handle,
+        RuntimeTestClock $clock,
+    ): array {
+        $metadata = new WorldMetadata($handle->id(), 0);
+        $palette = new FixedFlatBlockPalette(
+            new InternalBlockStateId(0),
+            new InternalBlockStateId(1),
+            new InternalBlockStateId(2),
+            new InternalBlockStateId(3),
+        );
+        $provider = new InMemoryWorldProvider(new WorldData(
+            $metadata,
+            'flat',
+            new SpawnPosition(0, 64, 0),
+        ));
+        $world = new World(
+            $metadata,
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(16),
+            provider: $provider,
+        );
+        $world->chunk(new ChunkPosition(0, 0));
+        $world->flush();
+        $simulation = new WorldSimulation(blockWorld: $world, blockPalette: $palette);
+
+        return [new ManagedWorldRuntime(
+            $handle,
+            new OpenedWorld($world, $provider->data),
+            $simulation,
+            new FixedRateWorldLoop($simulation, $clock, maximumTicksPerPoll: 1),
+        ), $provider];
     }
 
     private function receiveEncrypted(FakeConnectedTransport $transport, SessionInfo $info, BedrockEncryptor $encryptor, Packet $packet): void

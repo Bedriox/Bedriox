@@ -17,6 +17,8 @@ use Bedriox\Api\Event\Player\PlayerChatEvent;
 use Bedriox\Api\Event\Player\PlayerDamagedEvent;
 use Bedriox\Api\Event\Player\PlayerDamageEvent;
 use Bedriox\Api\Event\Player\PlayerDeathEvent;
+use Bedriox\Api\Event\Player\PlayerEquipmentChangedEvent;
+use Bedriox\Api\Event\Player\PlayerEquipmentChangeEvent;
 use Bedriox\Api\Event\Player\PlayerFoodLevelChangedEvent;
 use Bedriox\Api\Event\Player\PlayerFoodLevelChangeEvent;
 use Bedriox\Api\Event\Player\PlayerJoinEvent;
@@ -31,6 +33,7 @@ use Bedriox\Api\Event\Player\PlayerRespawnedEvent;
 use Bedriox\Api\Event\Player\PlayerRespawnEvent;
 use Bedriox\Api\Event\Player\PlayerTeleportedEvent;
 use Bedriox\Api\Event\Player\PlayerTeleportEvent;
+use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Inventory\Inventory as ApiInventory;
 use Bedriox\Api\Player\FoodLevelChangeCause;
 use Bedriox\Api\Player\HealthRegainCause;
@@ -39,6 +42,7 @@ use Bedriox\Api\Player\PlayerInteractionType;
 use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Data\BedrockDataSet;
+use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Plugin\Event\EventDispatcher;
 use Bedriox\Server\Plugin\PluginActionBuffer;
@@ -379,6 +383,85 @@ final class PluginGameplayEventBridgeTest extends TestCase
         self::assertSame(3, $events[3]->mainInventory[1]?->count);
     }
 
+    public function testPluginInventoryBulkMutationsAreAtomicAndEventAware(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $postEvents = 0;
+        $dispatcher->register('Example', InventoryChangedEvent::class, static function () use (&$postEvents): void {
+            ++$postEvents;
+        });
+        [$simulation, $factory, , $palette] = self::simulation($bridge);
+        $simulation->enqueue($factory->join('one', 'identity-one', 'One'));
+        $simulation->tick();
+
+        $contents = array_fill(0, 36, null);
+        $contents[3] = new InventoryStack('minecraft:grass_block', 8, 1, $palette->grassBlock);
+        self::assertTrue($simulation->enqueuePluginInventoryContents('identity-one', $contents));
+        $set = $simulation->tick()->events[0];
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $set);
+        self::assertSame([0, 3], array_map(static fn($slot): int => $slot->slot, $set->affectedSlots));
+        self::assertSame(8, $set->mainInventory[3]?->count);
+
+        self::assertTrue($simulation->enqueuePluginInventoryRemoval(
+            'identity-one',
+            new InventoryStack('minecraft:grass_block', 3, 1, $palette->grassBlock),
+        ));
+        $remove = $simulation->tick()->events[0];
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $remove);
+        self::assertSame(5, $remove->mainInventory[3]?->count);
+        self::assertSame(2, $postEvents);
+
+        self::assertTrue($simulation->enqueueGiveItem('identity-one', 'minecraft:apple', 2));
+        $given = $simulation->tick()->events[0];
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $given);
+        self::assertSame(2, array_sum(array_map(
+            static fn(?InventoryStack $stack): int => $stack?->identifier === 'minecraft:apple' ? $stack->count : 0,
+            $given->mainInventory,
+        )));
+        self::assertSame(3, $postEvents);
+
+        $dispatcher->register('Example', InventoryChangeEvent::class, static function (InventoryChangeEvent $event): void {
+            $event->cancel();
+        }, EventPriority::HIGHEST);
+        self::assertTrue($simulation->enqueuePluginInventoryContents('identity-one', array_fill(0, 36, null)));
+        $rejected = $simulation->tick()->events[0];
+        self::assertInstanceOf(CommandRejected::class, $rejected);
+        self::assertTrue($simulation->enqueue($factory->syncInventory('one')));
+        $synced = $simulation->tick()->events[0];
+        if (!$synced instanceof InventoryStackRequestProcessed) {
+            self::fail('Expected the authoritative inventory synchronization event.');
+        }
+        self::assertSame(5, $synced->mainInventory[3]?->count);
+    }
+
+    public function testPluginArmorContentsCommitAtomicallyAfterEquipmentEvents(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $postSlots = [];
+        $dispatcher->register('Example', PlayerEquipmentChangeEvent::class, static function (PlayerEquipmentChangeEvent $event): void {
+            if ($event->slot === EquipmentSlot::CHEST) {
+                $event->cancel();
+            }
+        });
+        $dispatcher->register('Example', PlayerEquipmentChangedEvent::class, static function (PlayerEquipmentChangedEvent $event) use (&$postSlots): void {
+            $postSlots[] = $event->slot;
+        });
+        [$simulation, $factory] = self::simulation($bridge);
+        $simulation->enqueue($factory->join('one', 'identity-one', 'One'));
+        $simulation->tick();
+        $items = ItemCatalog::vanilla(BedrockDataSet::bundled()->itemNetworkRegistry());
+        $armor = [
+            self::inventoryStack($items, 'minecraft:iron_helmet'),
+            self::inventoryStack($items, 'minecraft:iron_chestplate'),
+            null,
+            null,
+        ];
+
+        self::assertTrue($simulation->enqueuePluginArmorContents('identity-one', $armor));
+        self::assertInstanceOf(CommandRejected::class, $simulation->tick()->events[0]);
+        self::assertSame([], $postSlots);
+    }
+
     public function testDamageCanBeChangedBeforeCommitAndPublishesHealthPostEvents(): void
     {
         [$dispatcher, $bridge] = self::bridge();
@@ -655,6 +738,34 @@ final class PluginGameplayEventBridgeTest extends TestCase
         self::assertSame('plugin_cancelled', $event->reason);
     }
 
+    public function testPlayerProjectionCarriesResolvedWorldAndOrientation(): void
+    {
+        [, $bridge] = self::bridge();
+        $handle = new \Bedriox\Api\World\World('world', 3);
+        $bridge = $bridge->withWorldResolver(
+            static fn(string $worldId): ?\Bedriox\Api\World\World => $worldId === 'world' ? $handle : null,
+        );
+        $player = new \Bedriox\Server\Player\Player(
+            'session',
+            1,
+            new \Bedriox\Server\Player\PlayerIdentity('identity-one', 'One'),
+            new Position(5.0, 70.0, -2.0),
+            4,
+            0,
+            64.0,
+            worldName: 'world',
+        );
+        $player->movement->yaw = 120.0;
+        $player->movement->pitch = -25.0;
+
+        $view = $bridge->playerView($player);
+
+        self::assertTrue($view->position->isResolved());
+        self::assertSame($handle, $view->position->world);
+        self::assertSame(120.0, $view->position->yaw);
+        self::assertSame(-25.0, $view->position->pitch);
+    }
+
     /** @return array{EventDispatcher, PluginGameplayEventBridge} */
     private static function bridge(): array
     {
@@ -694,12 +805,32 @@ final class PluginGameplayEventBridgeTest extends TestCase
             new ChunkRepository(8),
         );
 
+        $data = BedrockDataSet::bundled();
+        $items = ItemCatalog::vanilla(
+            $data->itemNetworkRegistry(),
+            creative: $data->creativeInventoryRegistry(),
+            blockItems: $data->blockItemMappingRegistry(),
+        );
+
         return [
-            new WorldSimulation(blockWorld: $world, blockPalette: $palette, pluginEvents: $bridge),
+            new WorldSimulation(
+                blockWorld: $world,
+                blockPalette: $palette,
+                itemCatalog: $items,
+                blockStateRegistry: $registry,
+                pluginEvents: $bridge,
+            ),
             new SimulationCommandFactory(),
             $world,
             $palette,
         ];
+    }
+
+    private static function inventoryStack(ItemCatalog $catalog, string $identifier): InventoryStack
+    {
+        self::assertTrue($catalog->has($identifier));
+
+        return new InventoryStack($identifier, 1, 1);
     }
 
     private static function retainOriginCollisionTerrain(World $world): void

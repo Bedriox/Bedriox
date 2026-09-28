@@ -12,7 +12,10 @@ use Bedriox\Server\Worker\Network\BatchCompressionTask;
 use Bedriox\Server\Worker\Task\FindNavigationPathTask;
 use Bedriox\Server\Worker\Task\GenerateChunkTask;
 use Bedriox\Server\Worker\Task\PrepareChunkTask;
+use Bedriox\Server\Worker\Task\PrepareWorldTask;
 use Bedriox\Server\Worker\Task\SelfTestTask;
+use Bedriox\Server\Worker\Task\SpawnWorldStorageOwnerTask;
+use Bedriox\Server\Worker\World\WorldPreparationCodec;
 
 final class CoreWorkerTaskCatalog
 {
@@ -22,6 +25,8 @@ final class CoreWorkerTaskCatalog
     public const PLUGIN_ASYNC_TASK = 4;
     public const PREPARE_CHUNK = 5;
     public const FIND_NAVIGATION_PATH = 6;
+    public const SPAWN_WORLD_STORAGE_OWNER = 7;
+    public const PREPARE_WORLD = 8;
 
     public static function create(): WorkerTaskRegistry
     {
@@ -89,6 +94,29 @@ final class CoreWorkerTaskCatalog
             NavigationSearchRequestCodec::MAXIMUM_ENCODED_BYTES,
             NavigationPathCodec::MAXIMUM_ENCODED_BYTES,
             2_000,
+            cancellable: true,
+            retryWhenNotStarted: true,
+        ));
+        $registry->register(new WorkerTaskDefinition(
+            self::SPAWN_WORLD_STORAGE_OWNER,
+            1,
+            'world-storage-launch',
+            WorkerLane::CONTROL,
+            SpawnWorldStorageOwnerTask::class,
+            1_024,
+            0,
+            10_000,
+            cancellable: false,
+        ));
+        $registry->register(new WorkerTaskDefinition(
+            self::PREPARE_WORLD,
+            1,
+            'world-preparation',
+            WorkerLane::WORLD,
+            PrepareWorldTask::class,
+            WorldPreparationCodec::MAXIMUM_REQUEST_BYTES,
+            WorldPreparationCodec::MAXIMUM_RESULT_BYTES,
+            300_000,
             cancellable: true,
             retryWhenNotStarted: true,
         ));

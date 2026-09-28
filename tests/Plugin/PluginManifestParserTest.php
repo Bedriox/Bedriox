@@ -80,7 +80,7 @@ final class PluginManifestParserTest extends TestCase
 
     private static function validJson(): string
     {
-        return '{"schema":1,"name":"ExamplePlugin","version":"1.2.3","api":"^0.1","main":"Bedriox\\\\ExamplePlugin\\\\Main","namespace":"Bedriox\\\\ExamplePlugin","authors":["Bedriox Team"],"dependencies":["CorePlugin"],"softDependencies":[],"load":"WORLD_READY"}';
+        return '{"schema":1,"name":"ExamplePlugin","version":"1.2.3","api":"^0.3","main":"Bedriox\\\\ExamplePlugin\\\\Main","namespace":"Bedriox\\\\ExamplePlugin","authors":["Bedriox Team"],"dependencies":["CorePlugin"],"softDependencies":[],"load":"WORLD_READY"}';
     }
 
     /**
@@ -89,6 +89,6 @@ final class PluginManifestParserTest extends TestCase
      */
     private function manifest(string $name, array $dependencies = [], array $softDependencies = []): PluginManifest
     {
-        return new PluginManifest(1, $name, '1.0.0', '^0.1', "Tests\\{$name}", 'Tests', [], $dependencies, $softDependencies, 'WORLD_READY');
+        return new PluginManifest(1, $name, '1.0.0', '^0.3', "Tests\\{$name}", 'Tests', [], $dependencies, $softDependencies, 'WORLD_READY');
     }
 }

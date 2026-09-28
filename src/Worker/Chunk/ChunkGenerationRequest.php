@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace Bedriox\Server\Worker\Chunk;
 
 use Bedriox\Server\World\ChunkPosition;
-use Bedriox\Server\World\WorldGeneratorType;
+use Bedriox\Server\World\Generator\GeneratorIdentifier;
+use Bedriox\Server\World\Generator\GeneratorOptions;
+use Bedriox\Server\World\Generator\WorkerGeneratorSource;
 
 final readonly class ChunkGenerationRequest
 {
@@ -15,9 +17,12 @@ final readonly class ChunkGenerationRequest
         public int $seed,
         public string $dimension,
         public ChunkPosition $position,
+        public GeneratorOptions $options = new GeneratorOptions(),
+        public ?WorkerGeneratorSource $workerSource = null,
     ) {
-        if (WorldGeneratorType::tryFrom($generator) === null || $generatorVersion < 1 || $generatorVersion > 65_535
-            || $dimension !== 'minecraft:overworld') {
+        new GeneratorIdentifier($generator);
+        if ($generatorVersion < 1 || $generatorVersion > 65_535
+            || preg_match('/^[a-z0-9][a-z0-9_.-]{0,31}:[a-z0-9][a-z0-9_.-]{0,63}$/D', $dimension) !== 1) {
             throw new \InvalidArgumentException('Chunk generation request has unsupported generator metadata.');
         }
     }

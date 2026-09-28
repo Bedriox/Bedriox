@@ -11,6 +11,9 @@ use Bedriox\Server\Worker\WorkerResultStatus;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkPosition;
+use Bedriox\Server\World\Generator\GeneratorOptions;
+use Bedriox\Server\World\Generator\WorkerGeneratorSource;
+use Bedriox\Server\World\WorldGeneratorFactory;
 use Closure;
 use Throwable;
 
@@ -30,9 +33,17 @@ final class AsyncChunkGenerator
         private readonly int $seed,
         private readonly BlockStateRegistry $states,
         private readonly int $maximumPending = 1024,
+        private readonly GeneratorOptions $options = new GeneratorOptions(),
+        private readonly string $dimension = 'minecraft:overworld',
+        private readonly ?WorkerGeneratorSource $workerSource = null,
+        private readonly bool $allowSynchronousFallback = true,
     ) {
         if ($maximumPending < 1 || $maximumPending > 65_536) {
             throw new \InvalidArgumentException('Async chunk request limit is invalid.');
+        }
+        WorldGeneratorFactory::canonicalIdentifier($generator);
+        if (preg_match('/^[a-z0-9][a-z0-9_.-]{0,31}:[a-z0-9][a-z0-9_.-]{0,63}$/D', $dimension) !== 1) {
+            throw new \InvalidArgumentException('Async chunk dimension must be a bounded namespaced identifier.');
         }
     }
 
@@ -49,7 +60,9 @@ final class AsyncChunkGenerator
             return true;
         }
         if (isset($this->failed[$key])) {
-            unset($this->failed[$key]);
+            if ($this->allowSynchronousFallback) {
+                unset($this->failed[$key]);
+            }
 
             return false;
         }
@@ -57,11 +70,13 @@ final class AsyncChunkGenerator
             return false;
         }
         $payload = (new ChunkGenerationRequestCodec())->encode(new ChunkGenerationRequest(
-            $this->generator,
+            WorldGeneratorFactory::canonicalIdentifier($this->generator),
             $this->generatorVersion,
             $this->seed,
-            'minecraft:overworld',
+            $this->dimension,
             $position,
+            $this->options,
+            $this->workerSource,
         ));
         $submission = $this->workers->submit(
             $this->taskTypeId,
@@ -99,6 +114,11 @@ final class AsyncChunkGenerator
     public function pendingCount(): int
     {
         return count($this->pending);
+    }
+
+    public function allowsSynchronousFallback(): bool
+    {
+        return $this->allowSynchronousFallback;
     }
 
     public function cancelAll(): void

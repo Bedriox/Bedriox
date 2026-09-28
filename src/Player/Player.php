@@ -23,7 +23,7 @@ final class Player
     public readonly PlayerMovement $movement;
     public readonly PlayerInventory $inventory;
     public readonly PlayerVitals $vitals;
-    public readonly string $worldName;
+    private string $worldName;
     public readonly int $firstPlayedAt;
     /** Persisted canonical value; mutate only through setGameMode(). */
     public string $gamemode;
@@ -95,6 +95,29 @@ final class Player
     public function gameMode(): GameMode
     {
         return GameMode::from($this->gamemode);
+    }
+
+    public function worldName(): string
+    {
+        return $this->worldName;
+    }
+
+    /** Changes the authoritative world identity and returns the previous identity. */
+    public function changeWorld(string $worldName): string
+    {
+        if ($worldName === '' || strlen($worldName) > 64
+            || preg_match('/^[a-z0-9][a-z0-9._-]{0,63}$/D', $worldName) !== 1
+            || $worldName === '.' || $worldName === '..') {
+            throw new InvalidArgumentException('Player world name must be a canonical world identifier.');
+        }
+
+        $previous = $this->worldName;
+        if ($previous !== $worldName) {
+            $this->worldName = $worldName;
+            $this->markDirty();
+        }
+
+        return $previous;
     }
 
     public function setGameMode(GameMode $gameMode): GameMode

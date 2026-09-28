@@ -44,8 +44,8 @@ final readonly class LevelDatMetadata
     {
         $tag = $this->root['generatorName'] ?? null;
         if ($tag instanceof LittleEndianNbtTag && $tag->type === LittleEndianNbtTag::STRING && is_string($tag->value)) {
-            if ($tag->value === '' || strlen($tag->value) > 64
-                || preg_match('/^[A-Za-z0-9._-]+$/D', $tag->value) !== 1) {
+            if ($tag->value === '' || strlen($tag->value) > 128
+                || preg_match('/^[A-Za-z0-9._-]+(?::[A-Za-z0-9._\/-]+)?$/D', $tag->value) !== 1) {
                 throw new CorruptWorldDataException("Invalid 'generatorName' tag in level.dat.");
             }
             $legacy = $this->root['Generator'] ?? null;

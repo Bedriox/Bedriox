@@ -34,6 +34,9 @@ exit(WorldStorageProcessProgram::run(
         BlockStateRegistry $_states,
         PersistentBlockStateRegistry $_persistentStates,
     ): WritableWorldProvider {
+        if (str_contains($startup->path, 'slow-start')) {
+            usleep(1_500_000);
+        }
         $data = $startup->createData ?? new WorldData(
             new WorldMetadata('fixture', 1),
             'flat',

@@ -10,11 +10,14 @@ use Bedriox\Api\Crafting\UnavailableRecipeRegistrar;
 use Bedriox\Api\Entity\EntityRegistrar;
 use Bedriox\Api\Entity\UnavailableEntityRegistrar;
 use Bedriox\Api\Event\EventRegistrar;
+use Bedriox\Api\Inventory\ContainerManager;
 use Bedriox\Api\Inventory\ItemRegistrar;
 use Bedriox\Api\Inventory\UnavailableItemRegistrar;
 use Bedriox\Api\Scheduler\PluginScheduler;
 use Bedriox\Api\Scheduler\UnavailablePluginScheduler;
 use Bedriox\Api\Server;
+use Bedriox\Api\World\Generator\GeneratorRegistrar;
+use Bedriox\Api\World\Generator\UnavailableGeneratorRegistrar;
 
 final class PluginContext
 {
@@ -30,6 +33,8 @@ final class PluginContext
         private readonly PluginScheduler $scheduler = new UnavailablePluginScheduler(),
         private readonly RecipeRegistrar $recipes = new UnavailableRecipeRegistrar(),
         private readonly EntityRegistrar $entities = new UnavailableEntityRegistrar(),
+        private readonly GeneratorRegistrar $generators = new UnavailableGeneratorRegistrar(),
+        private readonly ?ContainerManager $containers = null,
     ) {}
 
     public function name(): string
@@ -87,6 +92,17 @@ final class PluginContext
         return $this->entities;
     }
 
+    public function generators(): GeneratorRegistrar
+    {
+        return $this->generators;
+    }
+
+    public function containers(): ContainerManager
+    {
+        return $this->containers
+            ?? throw new \LogicException('The container capability is unavailable.');
+    }
+
     /** @internal Used by the server composition root to attach an owner-scoped scheduler. */
     public function withScheduler(PluginScheduler $scheduler): self
     {
@@ -102,6 +118,28 @@ final class PluginContext
             $scheduler,
             $this->recipes,
             $this->entities,
+            $this->generators,
+            $this->containers,
+        );
+    }
+
+    /** @internal Used by the server composition root to attach an owner-scoped generator registrar. */
+    public function withGenerators(GeneratorRegistrar $generators): self
+    {
+        return new self(
+            $this->name,
+            $this->logger,
+            $this->events,
+            $this->commands,
+            $this->sourcePlugins,
+            $this->server,
+            $this->dataFolder,
+            $this->items,
+            $this->scheduler,
+            $this->recipes,
+            $this->entities,
+            $generators,
+            $this->containers,
         );
     }
 }

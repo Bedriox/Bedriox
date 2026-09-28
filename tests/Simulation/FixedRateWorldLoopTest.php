@@ -46,6 +46,25 @@ final class FixedRateWorldLoopTest extends TestCase
         self::assertSame([5], self::tickNumbers($loop->poll()));
     }
 
+    public function testCadenceCanDriveOneSharedServerTickBoundary(): void
+    {
+        $clock = new TestSimulationClock();
+        $world = new WorldSimulation();
+        $loop = new FixedRateWorldLoop($world, $clock, maximumTicksPerPoll: 2);
+        $boundaries = 0;
+        $clock->nanoseconds += 150_000_000;
+
+        self::assertSame(2, $loop->pollCadence(static function () use (&$boundaries): void {
+            ++$boundaries;
+        }));
+        self::assertSame(2, $boundaries);
+        self::assertSame(0, $world->snapshot()->tick);
+        self::assertSame(1, $loop->pollCadence(static function () use (&$boundaries): void {
+            ++$boundaries;
+        }));
+        self::assertSame(3, $boundaries);
+    }
+
     public function testRateDefaultsToTheWorldConfiguration(): void
     {
         $clock = new TestSimulationClock();

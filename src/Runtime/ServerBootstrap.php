@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
+use Bedriox\Api\World\World as ApiWorld;
+use Bedriox\Api\World\WorldCreationOptions;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Discovery\AdvertisedGameMode;
 use Bedriox\Protocol\Discovery\BedrockServerAdvertisement;
@@ -65,6 +67,8 @@ use Bedriox\Server\World\ChunkRepository;
 use Bedriox\Server\World\ChunkUnloadManager;
 use Bedriox\Server\World\Collision\BlockCollisionRegistry;
 use Bedriox\Server\World\Generation\GenerationBlockPalette;
+use Bedriox\Server\World\Generator\GeneratorExecution;
+use Bedriox\Server\World\Generator\GeneratorOptions;
 use Bedriox\Server\World\Provider\WorldData;
 use Bedriox\Server\World\SpawnPosition;
 use Bedriox\Server\World\World;
@@ -133,7 +137,14 @@ final class ServerBootstrap
             maximumStreamingPacketsPerPoll: $config->chunksSendPerTick,
         );
         $playerConnections = new PlayerConnectionDirectory();
-        $pluginEvents = $pluginEvents?->withPlayerConnections($playerConnections->connection(...));
+        $pluginEvents = $pluginEvents?->withPlayerConnections($playerConnections->connection(...))
+            ->withPlayerActions($playerConnections->actions(...))
+            ->withPlayerInventoryActions(
+                $playerConnections->inventoryActions(...),
+                $playerConnections->maximumStackSize(...),
+            );
+        $worldHandleResolver = new WorldHandleResolver();
+        $pluginEvents = $pluginEvents?->withWorldResolver($worldHandleResolver->resolve(...));
         $simulationLimits = new SimulationLimits(
             ticksPerSecond: $config->ticksPerSecond,
             maximumPlayers: $config->maximumPlayers,
@@ -141,9 +152,15 @@ final class ServerBootstrap
             maximumQueuedLifecycleBytes: max(65_536, $config->maximumPlayers * 144),
         );
         $data = BedrockDataSet::bundled();
-        $entityDefinitions ??= EntityDefinitionRegistry::fromData($data->entityTypeRegistry());
+        // Admitted data accessors validate and materialize their immutable registries. Keep the
+        // resulting instances for every world instead of rebuilding them during a live tick.
+        $entityTypes = $data->entityTypeRegistry();
+        $blockProperties = $data->blockPropertyRegistry();
+        $entityDefinitions ??= EntityDefinitionRegistry::fromData($entityTypes);
         $networkStates = $data->blockStateRegistry();
-        $internalStates = new BlockStateRegistry($networkStates->states());
+        $internalStates = $this->worldFactory instanceof PersistentWorldFactory
+            ? $this->worldFactory->internalStates($data)
+            : new BlockStateRegistry($networkStates->states());
         $blockCatalog = BlockCatalog::vanilla($internalStates, $data->blockItemMappingRegistry());
         $itemCatalog ??= ItemCatalog::vanilla(
             $data->itemNetworkRegistry(),
@@ -165,12 +182,26 @@ final class ServerBootstrap
             $internalStates,
             GenerationBlockPalette::fromRegistry($internalStates),
         );
+        $chunkProjectionRegistryHash = ChunkProjectionIdentity::registryHash($data, $networkStates);
         $openedWorld = $this->worldFactory?->open($config, $data)
             ?? $this->ephemeralWorld($config, $internalStates);
         $flatWorld = $openedWorld->world;
+        $runtimeWorldActions = new RuntimeWorldActions($blockCatalog, $internalStates, $pluginActions);
+        $worldActions = $runtimeWorldActions->actions();
+        $defaultWorldHandle = new ApiWorld(WorldRuntimeManager::canonicalId($config->levelName), 1, $worldActions);
+        $generatorRegistry = $this->worldFactory instanceof PersistentWorldFactory
+            ? $this->worldFactory->generators()
+            : WorldGeneratorFactory::builtIns();
         $workerCount = $workers?->snapshot()->workerCount ?? 0;
         $workersAvailable = $workerCount > 0;
-        if ($workers !== null && $workersAvailable) {
+        $defaultGeneratorDefinition = $generatorRegistry->require(
+            WorldGeneratorFactory::canonicalIdentifier($openedWorld->data->generatorName),
+        );
+        if ($defaultGeneratorDefinition->workerSource !== null && !$workersAvailable) {
+            throw new \RuntimeException('Plugin world generators require an available generation worker.');
+        }
+        if ($workers !== null && $workersAvailable
+            && $defaultGeneratorDefinition->execution === GeneratorExecution::WORKER) {
             $flatWorld->enableAsyncGeneration(new AsyncChunkGenerator(
                 $workers,
                 CoreWorkerTaskCatalog::GENERATE_CHUNK,
@@ -178,6 +209,9 @@ final class ServerBootstrap
                 $openedWorld->data->generatorVersion,
                 $openedWorld->data->metadata->seed,
                 $internalStates,
+                options: GeneratorOptions::fromJson($openedWorld->data->generatorOptions),
+                workerSource: $defaultGeneratorDefinition->workerSource,
+                allowSynchronousFallback: $defaultGeneratorDefinition->workerSource === null,
             ));
         }
         $compressionWorkers = $workers !== null && $workersAvailable
@@ -201,7 +235,7 @@ final class ServerBootstrap
                     max(8_388_608, intdiv($config->memoryLimitBytes === 0 ? 536_870_912 : $config->memoryLimitBytes, 8)),
                 ),
                 maximumPending: min($config->chunkGenerationQueueSize, $workerCount * 2),
-                registryHash: ChunkProjectionIdentity::registryHash($data, $networkStates),
+                registryHash: $chunkProjectionRegistryHash,
             )
             : null;
         $discovery = null;
@@ -221,7 +255,7 @@ final class ServerBootstrap
                 ?? ($this->playerDataDirectory === null ? null : new FilePlayerDataStore($this->playerDataDirectory));
             $playerPersistence = $playerStore === null ? null : new PlayerPersistenceManager(
                 $playerStore,
-                $flatWorld->metadata->name,
+                $defaultWorldHandle->id(),
                 new Position($spawn->x, $spawn->y, $spawn->z),
                 $flatPalette,
                 defaultGamemode: $config->defaultGamemode,
@@ -242,19 +276,208 @@ final class ServerBootstrap
                 $internalStates,
                 $blockCollisions,
                 craftingCatalog: $craftingCatalog,
-                blockProperties: $data->blockPropertyRegistry(),
+                blockProperties: $blockProperties,
                 entityAiEnabled: $config->entityAiEnabled,
                 spawnAnimals: $config->spawnAnimals,
                 spawnMonsters: $config->spawnMonsters,
-                entityTypes: $data->entityTypeRegistry(),
+                entityTypes: $entityTypes,
                 entityDefinitions: $entityDefinitions,
                 pluginEntityLifecycle: $pluginEntityLifecycle,
                 pluginActions: $pluginActions,
+                worldId: $defaultWorldHandle->id(),
             );
             $entityPersistenceStore = $flatWorld->entityPersistenceStore();
             if ($entityPersistenceStore !== null) {
                 $world->enableEntityPersistence($entityPersistenceStore, $entityDefinitions);
             }
+            $worldLoop = new FixedRateWorldLoop($world, new SystemSimulationClock(), maximumTicksPerPoll: 1);
+            $defaultManagedWorld = new ManagedWorldRuntime(
+                $defaultWorldHandle,
+                $openedWorld,
+                $world,
+                $worldLoop,
+                $preparedChunks,
+            );
+            $worldRuntimes = new WorldRuntimeManager(
+                $defaultWorldHandle->id(),
+                $defaultManagedWorld,
+                actions: $worldActions,
+            );
+            $runtimeWorldActions->attach($worldRuntimes);
+            $worldHandleResolver->attach($worldRuntimes);
+            $worldOperations = new WorldOperationQueue();
+
+            $composeManagedWorld = function (ApiWorld $handle, OpenedWorld $opened) use (
+                $workers,
+                $workersAvailable,
+                $config,
+                $internalStates,
+                $simulationLimits,
+                $flatPalette,
+                $pluginEvents,
+                $defaultPalette,
+                $playerPersistence,
+                $itemCatalog,
+                $blockCatalog,
+                $blockCollisions,
+                $craftingCatalog,
+                $entityDefinitions,
+                $pluginEntityLifecycle,
+                $pluginActions,
+                $world,
+                $generatorRegistry,
+                $diagnostics,
+                $blockProperties,
+                $entityTypes,
+                $chunkProjectionRegistryHash,
+            ): ManagedWorldRuntime {
+                $startedAt = hrtime(true);
+                $internalWorld = $opened->world;
+                $generatorDefinition = $generatorRegistry->require(
+                    WorldGeneratorFactory::canonicalIdentifier($opened->data->generatorName),
+                );
+                $generatorLookupAt = hrtime(true);
+                if ($generatorDefinition->workerSource !== null && (!$workersAvailable || $workers === null)) {
+                    throw new \RuntimeException('Plugin world generators require an available generation worker.');
+                }
+                if ($workers !== null && $workersAvailable
+                    && $generatorDefinition->execution === GeneratorExecution::WORKER) {
+                    $internalWorld->enableAsyncGeneration(new AsyncChunkGenerator(
+                        $workers,
+                        CoreWorkerTaskCatalog::GENERATE_CHUNK,
+                        $opened->data->generatorName,
+                        $opened->data->generatorVersion,
+                        $opened->data->metadata->seed,
+                        $internalStates,
+                        options: GeneratorOptions::fromJson($opened->data->generatorOptions),
+                        workerSource: $generatorDefinition->workerSource,
+                        allowSynchronousFallback: $generatorDefinition->workerSource === null,
+                    ));
+                }
+                $generatorWiringAt = hrtime(true);
+                $worldPreparedChunks = $workers !== null && $workersAvailable
+                    ? new PreparedChunkCache(
+                        $workers,
+                        CoreWorkerTaskCatalog::PREPARE_CHUNK,
+                        $internalStates,
+                        bin2hex(random_bytes(16)),
+                        maximumEntries: min(4_096, $config->chunkCacheLimit),
+                        maximumBytes: min(
+                            67_108_864,
+                            max(8_388_608, intdiv(
+                                $config->memoryLimitBytes === 0 ? 536_870_912 : $config->memoryLimitBytes,
+                                8,
+                            )),
+                        ),
+                        maximumPending: min($config->chunkGenerationQueueSize, $workers->snapshot()->workerCount * 2),
+                        registryHash: $chunkProjectionRegistryHash,
+                    )
+                    : null;
+                $chunkCacheAt = hrtime(true);
+                $spawn = $internalWorld->spawn();
+                $simulation = new WorldSimulation(
+                    $simulationLimits,
+                    new Position($spawn->x, $spawn->y, $spawn->z),
+                    $internalWorld,
+                    $flatPalette,
+                    $pluginEvents,
+                    $defaultPalette->water,
+                    $defaultPalette->lava,
+                    $playerPersistence,
+                    $config->pvp,
+                    $itemCatalog,
+                    $blockCatalog,
+                    $internalStates,
+                    $blockCollisions,
+                    itemBehaviors: $world->itemBehaviorRegistry(),
+                    craftingCatalog: $craftingCatalog,
+                    blockProperties: $blockProperties,
+                    entityAiEnabled: $config->entityAiEnabled,
+                    spawnAnimals: $config->spawnAnimals,
+                    spawnMonsters: $config->spawnMonsters,
+                    entityTypes: $entityTypes,
+                    entityDefinitions: $entityDefinitions,
+                    pluginEntityLifecycle: $pluginEntityLifecycle,
+                    pluginActions: $pluginActions,
+                    worldId: $handle->id(),
+                );
+                $simulationAt = hrtime(true);
+                $entityStore = $internalWorld->entityPersistenceStore();
+                if ($entityStore !== null) {
+                    $simulation->enableEntityPersistence($entityStore, $entityDefinitions);
+                }
+                $entityPersistenceAt = hrtime(true);
+
+                $runtime = new ManagedWorldRuntime(
+                    $handle,
+                    $opened,
+                    $simulation,
+                    new FixedRateWorldLoop($simulation, new SystemSimulationClock(), maximumTicksPerPoll: 1),
+                    $worldPreparedChunks,
+                );
+                $completedAt = hrtime(true);
+                $diagnostics->record('runtime.world_composition.protocol_trace', [
+                    'world' => $handle->id(),
+                    'generator_lookup_us' => intdiv($generatorLookupAt - $startedAt, 1_000),
+                    'generator_wiring_us' => intdiv($generatorWiringAt - $generatorLookupAt, 1_000),
+                    'prepared_cache_us' => intdiv($chunkCacheAt - $generatorWiringAt, 1_000),
+                    'simulation_us' => intdiv($simulationAt - $chunkCacheAt, 1_000),
+                    'entity_persistence_us' => intdiv($entityPersistenceAt - $simulationAt, 1_000),
+                    'finalize_us' => intdiv($completedAt - $entityPersistenceAt, 1_000),
+                    'total_us' => intdiv($completedAt - $startedAt, 1_000),
+                ]);
+
+                return $runtime;
+            };
+
+            $persistentWorldFactory = $this->worldFactory instanceof PersistentWorldFactory
+                ? $this->worldFactory
+                : null;
+            if ($persistentWorldFactory !== null && $workers !== null && $workersAvailable) {
+                $persistentWorldFactory->useProcessLauncher(
+                    $workers,
+                    CoreWorkerTaskCatalog::SPAWN_WORLD_STORAGE_OWNER,
+                );
+                $persistentWorldFactory->useWorldPreparationWorker(
+                    $workers,
+                    CoreWorkerTaskCatalog::PREPARE_WORLD,
+                );
+            }
+            $publicWorldManager = new RuntimeWorldManager(
+                $worldRuntimes,
+                $worldOperations,
+                static function (ApiWorld $handle, WorldCreationOptions $options) use (
+                    $persistentWorldFactory,
+                    $config,
+                    $data,
+                    $composeManagedWorld,
+                ): PendingManagedWorldRuntime {
+                    if ($persistentWorldFactory === null) {
+                        throw new \RuntimeException('Named world creation requires persistent world storage.');
+                    }
+
+                    return new PendingManagedWorldRuntime(
+                        $persistentWorldFactory->beginCreateNamed($config, $data, $handle->id(), $options),
+                        static fn(OpenedWorld $opened): ManagedWorldRuntime => $composeManagedWorld($handle, $opened),
+                    );
+                },
+                static function (ApiWorld $handle) use (
+                    $persistentWorldFactory,
+                    $config,
+                    $data,
+                    $composeManagedWorld,
+                ): PendingManagedWorldRuntime {
+                    if ($persistentWorldFactory === null) {
+                        throw new \RuntimeException('Named world loading requires persistent world storage.');
+                    }
+
+                    return new PendingManagedWorldRuntime(
+                        $persistentWorldFactory->beginLoadNamed($config, $data, $handle->id()),
+                        static fn(OpenedWorld $opened): ManagedWorldRuntime => $composeManagedWorld($handle, $opened),
+                    );
+                },
+                $pluginEvents === null ? null : $pluginEvents->dispatch(...),
+            );
             $chunkSerializer = new BedrockChunkPacketSerializer(
                 $blockTranslator,
             );
@@ -323,7 +546,7 @@ final class ServerBootstrap
                     preparedPlayBatches: $preparedPlayBatches,
                 ),
                 $world,
-                new FixedRateWorldLoop($world, new SystemSimulationClock(), maximumTicksPerPoll: 1),
+                $worldLoop,
                 new BedrockWorldEventPacketEncoder($chunkSerializer, $inventoryProjector),
                 $runtimeLimits,
                 diagnostics: $diagnostics,
@@ -348,6 +571,11 @@ final class ServerBootstrap
                 craftingCatalog: $craftingCatalog,
                 chunksGeneratePerTick: $config->chunksGeneratePerTick,
                 chunksSendPerTick: $config->chunksSendPerTick,
+                worldRuntimes: $worldRuntimes,
+                worldOperations: $worldOperations,
+                itemCatalog: $itemCatalog,
+                blockStateRegistry: $internalStates,
+                pluginActions: $pluginActions,
             );
         } catch (Throwable $exception) {
             $discovery?->close();
@@ -366,14 +594,14 @@ final class ServerBootstrap
             $config->authenticationMode === AuthenticationMode::SELF_SIGNED ? self::SELF_SIGNED_WARNING : null,
             new SimulationPluginApiBackend(
                 $world,
-                $flatWorld,
-                $flatPalette,
                 $itemCatalog,
-                $blockCatalog,
                 $internalStates,
+                $worldRuntimes,
+                $publicWorldManager,
             ),
             $flatWorld,
             $craftingCatalog,
+            $publicWorldManager,
         );
     }
 

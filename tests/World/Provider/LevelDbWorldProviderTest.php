@@ -205,6 +205,7 @@ final class LevelDbWorldProviderTest extends TestCase
                 new SpawnPosition(10, 70, -3),
                 123,
                 3,
+                generatorOptions: '{"preset":"mining"}',
             );
             $provider->saveWorldData($replacement);
             $saved = (new LevelDatStore())->load($levelDatPath);
@@ -216,6 +217,7 @@ final class LevelDbWorldProviderTest extends TestCase
             self::assertSame(3, $saved->difficulty());
             self::assertSame(2, $saved->root['Generator']->value);
             self::assertSame(1, $saved->root['BedrioxGeneratorVersion']->value);
+            self::assertSame('{"preset":"mining"}', $saved->generatorOptions());
             self::assertSame('preserve-me', $saved->root['BedrioxOpaqueTest']->value);
 
             $provider->close();

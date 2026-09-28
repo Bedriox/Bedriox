@@ -4,18 +4,31 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\Player;
 
+use Bedriox\Api\Inventory\ArmorInventory;
 use Bedriox\Api\Inventory\Container;
 use Bedriox\Api\Inventory\Inventory;
+use Bedriox\Api\Inventory\ItemStack;
+use Bedriox\Api\Inventory\OffHandInventory;
+use Bedriox\Api\Inventory\PlayerInventory;
+use Bedriox\Api\Inventory\PlayerInventoryActions;
 use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\Position;
 use Bedriox\Protocol\Packet\SetTitlePacket;
 use Bedriox\Protocol\Packet\TextPacket;
 use Bedriox\Protocol\Packet\ToastRequestPacket;
 use Bedriox\Protocol\Packet\TranslatedTextPacket;
+use Closure;
+use InvalidArgumentException;
 
 /** An immutable snapshot of a connected player. */
 final readonly class Player
 {
+    private Inventory $inventorySnapshot;
+
+    /** @var array<string, ItemStack|null> */
+    private array $armorInventorySnapshot;
+
+    /** @param array<mixed> $armorInventory */
     public function __construct(
         public string $name,
         public string $uuid,
@@ -24,14 +37,26 @@ final readonly class Player
         public float $pitch,
         public bool $sneaking,
         public bool $sprinting,
-        public Inventory $inventory,
+        Inventory $inventory,
         public float $health = 20.0,
         public float $maxHealth = 20.0,
         public bool $alive = true,
         public GameMode $gameMode = GameMode::SURVIVAL,
         private ?PlayerConnection $playerConnection = null,
         public Nutrition $nutrition = new Nutrition(20, 20.0, 0.0),
-    ) {}
+        private ?PlayerActions $playerActions = null,
+        array $armorInventory = [],
+        private ?ItemStack $offHandItem = null,
+        private ?PlayerInventoryActions $inventoryActions = null,
+        private ?Closure $maximumStackSize = null,
+    ) {
+        $this->inventorySnapshot = $inventory;
+        $armor = new ArmorInventory(
+            $armorInventory,
+            PlayerInventoryActions::unavailable(),
+        );
+        $this->armorInventorySnapshot = $armor->getContents();
+    }
 
     public function connection(): PlayerConnection
     {
@@ -43,9 +68,83 @@ final readonly class Player
         return $this->connection()->isConnected();
     }
 
-    public function getGamemode(): GameMode
+    public function getGameMode(): GameMode
     {
         return $this->gameMode;
+    }
+
+    public function teleport(Position $position): void
+    {
+        $position->validate();
+        ($this->playerActions ?? PlayerActions::unavailable())->teleport($position);
+    }
+
+    public function setGameMode(GameMode $gameMode): void
+    {
+        ($this->playerActions ?? PlayerActions::unavailable())->setGameMode($gameMode);
+    }
+
+    public function getInventory(): PlayerInventory
+    {
+        return new PlayerInventory(
+            $this->inventorySnapshot,
+            $this->inventoryActions ?? PlayerInventoryActions::unavailable(),
+            $this->maximumStackSize,
+        );
+    }
+
+    public function getArmorInventory(): ArmorInventory
+    {
+        return new ArmorInventory(
+            $this->armorInventorySnapshot,
+            $this->inventoryActions ?? PlayerInventoryActions::unavailable(),
+        );
+    }
+
+    public function getOffHandInventory(): OffHandInventory
+    {
+        return new OffHandInventory(
+            $this->offHandItem,
+            $this->inventoryActions ?? PlayerInventoryActions::unavailable(),
+        );
+    }
+
+    public function damage(float $amount): void
+    {
+        if (!is_finite($amount) || $amount <= 0.0 || $amount > 1_000_000.0) {
+            throw new InvalidArgumentException('Damage must be finite, positive, and bounded.');
+        }
+        ($this->playerActions ?? PlayerActions::unavailable())->damage($amount);
+    }
+
+    /** @internal Rebinds a snapshot without exposing the authoritative action implementation. */
+    public function withRuntime(
+        PlayerConnection $connection,
+        PlayerActions $actions,
+        PlayerInventoryActions $inventoryActions,
+        Closure $maximumStackSize,
+    ): self {
+        return new self(
+            $this->name,
+            $this->uuid,
+            $this->position,
+            $this->yaw,
+            $this->pitch,
+            $this->sneaking,
+            $this->sprinting,
+            $this->inventorySnapshot,
+            $this->health,
+            $this->maxHealth,
+            $this->alive,
+            $this->gameMode,
+            $connection,
+            $this->nutrition,
+            $actions,
+            $this->armorInventorySnapshot,
+            $this->offHandItem,
+            $inventoryActions,
+            $maximumStackSize,
+        );
     }
 
     /** Requests a cancellable, visible kick. Returns false if the player is offline or a plugin cancels it. */

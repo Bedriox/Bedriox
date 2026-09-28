@@ -108,7 +108,7 @@ final class ManagedPluginAsyncTaskExecutorTest extends TestCase
             'schema' => 1,
             'name' => 'AsyncFixture',
             'version' => '1.0.0',
-            'api' => '^0.2',
+            'api' => '^0.3',
             'main' => 'Fixture\\AsyncWorker\\Main',
             'namespace' => 'Fixture\\AsyncWorker',
             'authors' => ['Bedriox Team'],

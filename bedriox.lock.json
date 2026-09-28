@@ -1,7 +1,7 @@
 {
     "schema": 2,
     "status": "alpha",
-    "server": "0.2.0-alpha.1",
+    "server": "0.3.0-alpha.1",
     "php": "^8.4",
     "bedrock": {
         "clientVersions": [

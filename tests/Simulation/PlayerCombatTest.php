@@ -117,7 +117,7 @@ final class PlayerCombatTest extends TestCase
         $held = array_values(array_filter($events, static fn(object $event): bool => $event instanceof HeldItemChanged));
         self::assertCount(1, $held);
         self::assertNull($held[0]->stack);
-        self::assertNull($world->pluginPlayer('identity-one')?->inventory->stackAt(0));
+        self::assertNull($world->pluginPlayer('identity-one')?->getInventory()->getItem(0));
     }
 
     public function testSameTickHotbarSelectionMakesEntityAttackWearTheSelectedAuthoritativeTool(): void
@@ -143,11 +143,11 @@ final class PlayerCombatTest extends TestCase
 
         self::assertInstanceOf(HeldItemChanged::class, $events[0]);
         self::assertInstanceOf(PlayerDamaged::class, $events[1]);
-        $inventory = $world->pluginPlayer('identity-one')?->inventory;
+        $inventory = $world->pluginPlayer('identity-one')?->getInventory();
         self::assertNotNull($inventory);
-        self::assertSame(1, $inventory->selectedHotbarSlot);
-        self::assertSame(0, $inventory->stackAt(0)?->damage);
-        self::assertSame(11, $inventory->stackAt(1)?->damage);
+        self::assertSame(1, $inventory->getSelectedHotbarSlot());
+        self::assertSame(0, $inventory->getItem(0)?->damage);
+        self::assertSame(11, $inventory->getItem(1)?->damage);
     }
 
     public function testKnockbackComposesAcceptedMotionAndPreservesTheExactClientTick(): void

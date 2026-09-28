@@ -410,6 +410,68 @@ final class PlayerInventory
         $this->stacks[$slot] = $stack->withCountAndNetworkId($stack->count, $networkId);
     }
 
+    /** @param array<int, InventoryStack|null> $contents */
+    public function replaceMainContents(array $contents): void
+    {
+        if (count($contents) !== self::SLOT_COUNT || !array_is_list($contents)) {
+            throw new InvalidArgumentException('Main inventory contents must contain exactly 36 slots.');
+        }
+        $replacement = clone $this;
+        foreach ($contents as $slot => $stack) {
+            if (!self::sameContent($replacement->stacks[$slot] ?? null, $stack)) {
+                $replacement->replaceSlot($slot, $stack);
+                unset($replacement->lastRequestIds[$slot]);
+            }
+        }
+        $this->stacks = $replacement->stacks;
+        $this->lastRequestIds = $replacement->lastRequestIds;
+        $this->nextStackNetworkId = $replacement->nextStackNetworkId;
+    }
+
+    /** @param array<int, InventoryStack|null> $contents */
+    public function replaceArmorContents(array $contents): void
+    {
+        if (count($contents) !== self::ARMOR_SLOT_COUNT || !array_is_list($contents)) {
+            throw new InvalidArgumentException('Armor inventory contents must contain exactly four slots.');
+        }
+        $replacement = clone $this;
+        foreach ($contents as $slot => $stack) {
+            if (!self::sameContent($replacement->armor[$slot] ?? null, $stack)) {
+                $replacement->replaceArmorSlot($slot, $stack);
+                unset($replacement->armorLastRequestIds[$slot]);
+            }
+        }
+        $this->armor = $replacement->armor;
+        $this->armorLastRequestIds = $replacement->armorLastRequestIds;
+        $this->nextStackNetworkId = $replacement->nextStackNetworkId;
+    }
+
+    /** Removes an exact quantity of matching canonical item content atomically. */
+    public function removeMatching(InventoryStack $requested): bool
+    {
+        $available = 0;
+        foreach ($this->stacks as $stack) {
+            if (self::canStack($requested, $stack)) {
+                $available += $stack->count;
+            }
+        }
+        if ($available < $requested->count) {
+            return false;
+        }
+        $remaining = $requested->count;
+        foreach ($this->stacks as $slot => $stack) {
+            if ($remaining === 0 || !self::canStack($requested, $stack)) {
+                continue;
+            }
+            $removed = min($remaining, $stack->count);
+            $nextCount = $stack->count - $removed;
+            $this->replaceSlot($slot, $nextCount === 0 ? null : $stack->withCountAndNetworkId($nextCount, $stack->stackNetworkId));
+            $remaining -= $removed;
+        }
+
+        return true;
+    }
+
     public function replaceArmorSlot(ArmorSlot|int $slot, ?InventoryStack $stack): void
     {
         $slotId = $slot instanceof ArmorSlot ? $slot->value : $slot;

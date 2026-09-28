@@ -72,6 +72,7 @@ final class WorldNaturalSpawnRuntime
         bool $spawnAnimals = true,
         bool $spawnMonsters = true,
         ?Closure $beforeDespawn = null,
+        ?string $worldName = null,
     ): self {
         $environment = new WorldNaturalSpawnEnvironment(
             $world,
@@ -135,7 +136,7 @@ final class WorldNaturalSpawnRuntime
             ], [
                 EntityCategory::MONSTER->value => 32.0,
             ]),
-            $world->metadata->name,
+            $worldName ?? $world->metadata->name,
             $world->metadata->seed,
             beforeDespawn: $beforeDespawn,
         );

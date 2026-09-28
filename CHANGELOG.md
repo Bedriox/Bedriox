@@ -33,6 +33,8 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Fixed
 
+- Stage same-dimension world transfers behind destination terrain preparation and an ordered source-output fence, then synchronize destination metadata, teleport the owner, publish the new center, and stream only destination chunks without invoking a dimension loading screen.
+- Keep the global plugin scheduler on a server-owned monotonic tick timeline when additional worlds are loaded, preventing independent world tick counters from crashing the runtime.
 - Keep natural spawning bounded and fair through the full 1,024-player server limit, account candidate preparation against its elapsed budget, and preserve natural-distance despawn ownership across entity save, unload, and restart without affecting command, spawn-egg, or plugin entities.
 - Encode peer arm swings without an optional source label and report allowlisted RakNet send-overflow categories with bounded payload, reliability, ordering-channel, and session-phase context.
 - Admit every data-mapped creative block to authoritative break handling so crafting tables and other placed blocks no longer revert when mined.
@@ -45,6 +47,9 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Added
 
+- Introduce plugin API 0.3 with global discovery on `Server`, session-bound authoritative actions on `Player`, generation-bound block access on `World`, and world-explicit plugin container lookup.
+- Add canonical multi-world lifecycle management with named LevelDB worlds, generation-stable public handles, world-aware positions, persisted cross-world player teleportation, per-world simulation and chunk ownership, typed lifecycle events, and owner-scoped plugin terrain generators.
+- Add built-in default, flat, and void generator registration with deterministic persisted options, worker-backed built-in generation, and a bounded main-thread execution path for plugin-defined generators.
 - Add a public entity-controller hierarchy for transactional transforms, presentation state, health, fire, equipment, AI, movement, targeting, and despawn intent, with cancellable equipment transitions and committed post-events.
 - Add durable living-entity armor and hand equipment, difficulty-aware natural zombie gear, authoritative armor wear and melee effects, complete spawn and live projection, and bounded once-evaluated zombie, cow, and equipment death drops customizable through `EntityDeathEvent`.
 - Add bounded player/entity target selectors, public entity command parameters, typed entity damage causes, and an authoritative `kill` command with separate self and other permissions.

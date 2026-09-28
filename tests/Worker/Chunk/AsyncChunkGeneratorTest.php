@@ -20,6 +20,8 @@ use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\ChunkRepository;
 use Bedriox\Server\World\FlatWorldGenerator;
+use Bedriox\Server\World\Generator\BuiltInGeneratorDefinitions;
+use Bedriox\Server\World\Generator\GeneratorOptions;
 use Bedriox\Server\World\World;
 use Bedriox\Server\World\WorldMetadata;
 use Closure;
@@ -33,7 +35,15 @@ final class AsyncChunkGeneratorTest extends TestCase
         $blocks = FixedFlatBlockPalette::fromRegistry($states);
         $generator = new FlatWorldGenerator($blocks);
         $dispatcher = new FakeChunkWorkerDispatcher();
-        $async = new AsyncChunkGenerator($dispatcher, 2, 'flat', 1, 99, $states);
+        $async = new AsyncChunkGenerator(
+            $dispatcher,
+            2,
+            'flat',
+            1,
+            99,
+            $states,
+            options: new GeneratorOptions(['preset' => 'classic']),
+        );
         $world = new World(new WorldMetadata('world', 99), $generator, new ChunkRepository(16), asyncChunks: $async);
         $position = new ChunkPosition(3, -4);
 
@@ -42,12 +52,40 @@ final class AsyncChunkGeneratorTest extends TestCase
         self::assertSame(1, $dispatcher->submissions);
         $request = (new ChunkGenerationRequestCodec())->decode($dispatcher->payload);
         self::assertSame($position->key(), $request->position->key());
+        self::assertSame(BuiltInGeneratorDefinitions::FLAT, $request->generator);
+        self::assertSame(['preset' => 'classic'], $request->options->values());
 
         $dispatcher->complete((new ChunkTransferCodec())->encode($generator->generate($position), $states));
 
         self::assertTrue($world->requestRetainChunk($position));
         self::assertSame($position->key(), $world->chunk($position)->position->key());
         $world->releaseChunk($position);
+    }
+
+    public function testStrictWorkerGenerationNeverFallsBackToMainThreadAfterFailure(): void
+    {
+        $states = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $blocks = FixedFlatBlockPalette::fromRegistry($states);
+        $generator = new FlatWorldGenerator($blocks);
+        $dispatcher = new FakeChunkWorkerDispatcher();
+        $async = new AsyncChunkGenerator(
+            $dispatcher,
+            2,
+            'flat',
+            1,
+            99,
+            $states,
+            allowSynchronousFallback: false,
+        );
+        $world = new World(new WorldMetadata('world', 99), $generator, new ChunkRepository(16), asyncChunks: $async);
+        $position = new ChunkPosition(3, -4);
+
+        self::assertFalse($world->requestRetainChunk($position));
+        $dispatcher->fail();
+
+        self::assertFalse($world->requestRetainChunk($position));
+        self::assertFalse($world->hasLoadedChunk($position));
+        self::assertSame(1, $dispatcher->submissions);
     }
 }
 
@@ -71,6 +109,11 @@ final class FakeChunkWorkerDispatcher implements WorkerDispatcher
     public function complete(string $payload): void
     {
         ($this->completion)(new WorkerResult($this->receipt, WorkerResultStatus::SUCCESS, $payload));
+    }
+
+    public function fail(): void
+    {
+        ($this->completion)(new WorkerResult($this->receipt, WorkerResultStatus::FAILED, failureCode: 'test-failure'));
     }
 
     public function cancel(WorkerReceipt $receipt): bool

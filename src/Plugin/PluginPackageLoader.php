@@ -17,7 +17,7 @@ use Throwable;
 /** Discovers validated PHAR plugins without executing plugin code. */
 final class PluginPackageLoader
 {
-    public const string API_VERSION = '0.2.0';
+    public const string API_VERSION = '0.3.0';
     private const int MAXIMUM_ARCHIVE_BYTES = 16_777_216;
     private const int MAXIMUM_ENTRIES = 2_048;
     private const int MAXIMUM_ENTRY_BYTES = 8_388_608;
@@ -181,8 +181,7 @@ final class PluginPackageLoader
     private function supportsApi(string $constraint): bool
     {
         return in_array($constraint, [
-            '0.1', '0.1.0', '^0.1', '^0.1.0', '~0.1', '~0.1.0',
-            '0.2', '0.2.0', '^0.2', '^0.2.0', '~0.2', '~0.2.0',
+            '0.3', '0.3.0', '^0.3', '^0.3.0', '~0.3', '~0.3.0',
         ], true);
     }
 

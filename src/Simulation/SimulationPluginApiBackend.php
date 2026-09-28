@@ -4,36 +4,25 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Simulation;
 
-use Bedriox\Api\Inventory\ItemStack as ApiItemStack;
 use Bedriox\Api\Server;
-use Bedriox\Api\World\Block;
-use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
-use Bedriox\Api\World\Position as ApiPosition;
-use Bedriox\Api\World\World as ApiWorld;
-use Bedriox\Server\Gameplay\Block\BlockCatalog;
+use Bedriox\Api\World\WorldManager as ApiWorldManager;
 use Bedriox\Server\Gameplay\Item\ItemBehaviorRegistry;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
-use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Plugin\PluginActionBuffer;
 use Bedriox\Server\Plugin\PluginOwnershipRegistry;
 use Bedriox\Server\Plugin\PluginRuntimeControl;
+use Bedriox\Server\Runtime\WorldRuntimeManager;
 use Bedriox\Server\World\Block\BlockStateRegistry;
-use Bedriox\Server\World\Block\FixedFlatBlockPalette;
-use Bedriox\Server\World\BlockPosition;
-use Bedriox\Server\World\World;
-use InvalidArgumentException;
-use OverflowException;
 
 /** @internal Owns the only public-API projection into the authoritative simulation. */
 final readonly class SimulationPluginApiBackend
 {
     public function __construct(
         private WorldSimulation $simulation,
-        private World $world,
-        private FixedFlatBlockPalette $palette,
         private ?ItemCatalog $itemCatalog = null,
-        private ?BlockCatalog $blockCatalog = null,
         private ?BlockStateRegistry $blockStateRegistry = null,
+        private ?WorldRuntimeManager $worldRuntimes = null,
+        private ?ApiWorldManager $worldManager = null,
     ) {}
 
     /** @internal Plugin item definitions enter the simulation through this bounded registry. */
@@ -52,131 +41,66 @@ final readonly class SimulationPluginApiBackend
     public function serverFor(
         string $plugin,
         PluginRuntimeControl $plugins,
+    ): Server {
+        return new SimulationPluginServer(
+            $plugin,
+            $plugins,
+            $this->pluginPlayers(...),
+            $this->pluginPlayer(...),
+            worldManager: $this->worldManager,
+        );
+    }
+
+    public function containerManagerFor(
+        string $plugin,
+        PluginRuntimeControl $plugins,
         PluginActionBuffer $actions,
         PluginOwnershipRegistry $ownership,
-    ): Server {
-        $containers = new SimulationPluginContainerService(
+    ): \Bedriox\Api\Inventory\ContainerManager {
+        return (new SimulationPluginContainerService(
             $plugin,
             $plugins,
             $actions,
             $ownership,
             $this->simulation,
             $this->itemCatalog,
-        );
-
-        return new SimulationPluginServer(
-            $plugin,
-            $plugins,
-            $actions,
-            $this->worldView(...),
-            $this->simulation->pluginPlayers(...),
-            $this->simulation->pluginPlayer(...),
-            $this->blockView(...),
-            function (string $identity, string $message): void {
-                $this->requireQueued($this->simulation->enqueuePluginMessage($identity, $message));
-            },
-            function (string $identity, ApiPosition $position, ?float $yaw, ?float $pitch): void {
-                $this->requireQueued($this->simulation->enqueueTeleport(
-                    $identity,
-                    new Position($position->x, $position->y, $position->z),
-                    $yaw,
-                    $pitch,
-                ));
-            },
-            function (ApiBlockPosition $position, string $identifier) use ($plugin): void {
-                $this->requireQueued($this->simulation->enqueuePluginBlock(
-                    $plugin,
-                    new BlockPosition($position->x, $position->y, $position->z),
-                    $identifier,
-                ));
-            },
-            function (string $identity, int $slot, ?ApiItemStack $stack): void {
-                $internal = $stack === null ? null : $this->inventoryStack($stack);
-                $this->requireQueued($this->simulation->enqueuePluginInventorySlot($identity, $slot, $internal));
-            },
-            function (string $identity, float $amount): void {
-                $this->requireQueued($this->simulation->enqueuePluginDamage($identity, $amount));
-            },
-            function (string $identity, \Bedriox\Api\Player\GameMode $gameMode): void {
-                $this->requireQueued($this->simulation->enqueueGameMode($identity, $gameMode));
-            },
-            function (string $identity, ApiItemStack $stack): void {
-                $this->requireQueued($this->simulation->enqueueGiveItem(
-                    $identity,
-                    $stack->identifier,
-                    $stack->count,
-                    $stack->damage,
-                    $stack->nbt,
-                    $stack->auxValue,
-                ));
-            },
-            containerManager: $containers->manager(),
-        );
+            $this->worldRuntimes,
+        ))->manager();
     }
 
-    private function worldView(): ApiWorld
+    /** @return list<\Bedriox\Api\Player\Player> */
+    private function pluginPlayers(): array
     {
-        $spawn = $this->world->spawn();
-
-        return new ApiWorld(
-            $this->world->metadata->name,
-            new ApiPosition($spawn->x, $spawn->y, $spawn->z),
-        );
-    }
-
-    private function blockView(ApiBlockPosition $position): Block
-    {
-        $state = $this->world->blockStateAt($position->x, $position->y, $position->z);
-        $identifier = $this->blockCatalog !== null && $this->blockStateRegistry !== null
-            ? $this->blockCatalog->typeForInternalId($state, $this->blockStateRegistry)->identifier()
-            : match ($state->value) {
-                $this->palette->air->value => 'minecraft:air',
-                $this->palette->bedrock->value => 'minecraft:bedrock',
-                $this->palette->dirt->value => 'minecraft:dirt',
-                $this->palette->grassBlock->value => 'minecraft:grass_block',
-                default => throw new InvalidArgumentException('Block state is not exposed by the current plugin API.'),
-            };
-
-        return new Block($position, $identifier);
-    }
-
-    private function inventoryStack(ApiItemStack $stack): InventoryStack
-    {
-        if ($this->itemCatalog !== null) {
-            $type = $this->itemCatalog->type($stack->identifier);
-            $placed = $type->placedBlockState === null || $this->blockStateRegistry === null
-                ? null
-                : $this->blockStateRegistry->internalId($type->placedBlockState);
-
-            return new InventoryStack(
-                $stack->identifier,
-                $stack->count,
-                1,
-                $placed,
-                $stack->damage,
-                $stack->nbt,
-                $stack->auxValue,
-            );
-        }
-        if ($stack->identifier !== 'minecraft:grass_block') {
-            throw new InvalidArgumentException('The inventory stack is outside the current gameplay catalog.');
+        $players = [];
+        foreach ($this->simulations() as $simulation) {
+            array_push($players, ...$simulation->pluginPlayers());
         }
 
-        return new InventoryStack(
-            $stack->identifier,
-            $stack->count,
-            1,
-            $this->palette->grassBlock,
-            $stack->damage,
-            $stack->nbt,
-            $stack->auxValue,
-        );
+        return $players;
     }
 
-    private function requireQueued(bool $queued): void
+    private function pluginPlayer(string $identity): ?\Bedriox\Api\Player\Player
     {
-        if (!$queued) {
-            throw new OverflowException('The authoritative plugin action queue rejected the request.');
+        foreach ($this->simulations() as $simulation) {
+            $player = $simulation->pluginPlayer($identity);
+            if ($player !== null) {
+                return $player;
+            }
         }
+
+        return null;
+    }
+
+    /** @return list<WorldSimulation> */
+    private function simulations(): array
+    {
+        if ($this->worldRuntimes === null) {
+            return [$this->simulation];
+        }
+
+        return array_map(
+            static fn(\Bedriox\Server\Runtime\ManagedWorldRuntime $runtime): WorldSimulation => $runtime->simulation,
+            $this->worldRuntimes->loaded(),
+        );
     }
 }

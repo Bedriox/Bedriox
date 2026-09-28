@@ -102,7 +102,7 @@ final class PluginManagerTest extends TestCase
             1,
             $name,
             '1.0.0',
-            '^0.1',
+            '^0.3',
             $main,
             __NAMESPACE__,
             [],

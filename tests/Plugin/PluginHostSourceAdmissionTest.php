@@ -59,7 +59,7 @@ use Bedriox\Api\Plugin\SourcePluginDefinition;
 final class Main extends Plugin{
     public function onLoad(): void{
         $this->context()->sourcePlugins()->register([new SourcePluginDefinition(
-            1, 'SourceFixture', '1.0.0', '^0.1',
+            1, 'SourceFixture', '1.0.0', '^0.3',
             'Fixture\\DevelopmentProvider\\Source\\Main',
             'Fixture\\DevelopmentProvider\\Source', [], [], [], 'WORLD_READY',
             static fn(PluginContext $context): Plugin => new \Fixture\DevelopmentProvider\Source\Main($context),
@@ -127,7 +127,7 @@ PHP;
             'schema' => 1,
             'name' => 'DevelopmentProvider',
             'version' => '1.0.0',
-            'api' => '^0.1',
+            'api' => '^0.3',
             'main' => 'Fixture\\DevelopmentProvider\\Main',
             'namespace' => 'Fixture\\DevelopmentProvider',
             'authors' => ['Bedriox Team'],

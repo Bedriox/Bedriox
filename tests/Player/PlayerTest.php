@@ -74,6 +74,30 @@ final class PlayerTest extends TestCase
         self::assertFalse($player->acknowledgeSaved(1));
     }
 
+    public function testChangingWorldUsesTheAuthoritativeMutationBoundary(): void
+    {
+        $player = new Player(
+            'session',
+            17,
+            new PlayerIdentity('identity', 'Player'),
+            new Position(0.0, 64.0, 0.0),
+            4,
+            10,
+            64.0,
+            worldName: 'world',
+        );
+
+        self::assertSame('world', $player->worldName());
+        self::assertSame('world', $player->changeWorld('mines'));
+        self::assertSame('mines', $player->worldName());
+        self::assertSame(1, $player->stateRevision());
+        self::assertSame('mines', $player->changeWorld('mines'));
+        self::assertSame(1, $player->stateRevision());
+
+        $this->expectException(\InvalidArgumentException::class);
+        $player->changeWorld('../outside');
+    }
+
     public function testBootstrapCarriesExactReturningPlayerState(): void
     {
         $bootstrap = new PlayerBootstrap(

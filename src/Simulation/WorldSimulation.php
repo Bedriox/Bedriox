@@ -130,11 +130,15 @@ use Bedriox\Server\Simulation\Command\MovePlayer;
 use Bedriox\Server\Simulation\Command\PerformEmote;
 use Bedriox\Server\Simulation\Command\PlaceBlock;
 use Bedriox\Server\Simulation\Command\ReleaseItem;
+use Bedriox\Server\Simulation\Command\RemovePluginInventoryStack;
 use Bedriox\Server\Simulation\Command\RespawnPlayer;
 use Bedriox\Server\Simulation\Command\SelectHotbarSlot;
 use Bedriox\Server\Simulation\Command\SendChat;
 use Bedriox\Server\Simulation\Command\SendPluginMessage;
+use Bedriox\Server\Simulation\Command\SetPluginArmorContents;
 use Bedriox\Server\Simulation\Command\SetPluginBlock;
+use Bedriox\Server\Simulation\Command\SetPluginEquipmentSlot;
+use Bedriox\Server\Simulation\Command\SetPluginInventoryContents;
 use Bedriox\Server\Simulation\Command\SetPluginInventorySlot;
 use Bedriox\Server\Simulation\Command\SwingArm;
 use Bedriox\Server\Simulation\Command\SyncInventory;
@@ -180,6 +184,7 @@ use Bedriox\Server\Simulation\Event\ItemUseCancelled;
 use Bedriox\Server\Simulation\Event\ItemUseStarted;
 use Bedriox\Server\Simulation\Event\MovementCorrected;
 use Bedriox\Server\Simulation\Event\NutritionChanged;
+use Bedriox\Server\Simulation\Event\PlayerBecameHidden;
 use Bedriox\Server\Simulation\Event\PlayerDamaged;
 use Bedriox\Server\Simulation\Event\PlayerDied;
 use Bedriox\Server\Simulation\Event\PlayerDisconnected;
@@ -350,6 +355,8 @@ final class WorldSimulation
 
     private readonly ?ComplexCraftingRecipeEvaluator $complexCraftingRecipes;
 
+    private readonly string $worldId;
+
     /** @var array<string, array{position: BlockPosition, state: int, sequence: int, face: int, lastParticleTick: int, lastSwingTick: int}> */
     private array $breakingBlocks = [];
 
@@ -383,7 +390,12 @@ final class WorldSimulation
         ?EntityDefinitionRegistry $entityDefinitions = null,
         private readonly ?PluginEntityLifecycleBridge $pluginEntityLifecycle = null,
         private readonly ?PluginActionBuffer $pluginActions = null,
+        ?string $worldId = null,
     ) {
+        $this->worldId = $worldId ?? $blockWorld?->metadata->name ?? 'world';
+        if ($this->worldId === '' || strlen($this->worldId) > 64) {
+            throw new InvalidArgumentException('Simulation world identity must be non-empty and bounded.');
+        }
         $this->commands = new SplQueue();
         $this->lifecycleCommands = new SplQueue();
         $this->movementOrder = new SplQueue();
@@ -504,6 +516,7 @@ final class WorldSimulation
                 spawnMonsters: $this->spawnMonsters,
                 beforeDespawn: fn(AbstractLivingEntity $entity): bool =>
                     $this->pluginEvents?->allowEntityDespawn($entity, 'natural_distance') ?? true,
+                worldName: $this->worldId,
             )
             : null;
         $this->blockPlacementStates = $blockStateRegistry === null
@@ -818,6 +831,138 @@ final class WorldSimulation
         return new WorldSnapshot($this->tick, $this->players->snapshots());
     }
 
+    /** Returns whether this world can synchronously accept the exact player aggregate. */
+    public function canAcceptTransferredPlayer(Player $player): bool
+    {
+        return !$this->players->hasSession($player->sessionId)
+            && !$this->players->hasIdentity($player->identity->uuid)
+            && !$this->players->hasActorId($player->runtimeActorId)
+            && !$this->players->isFull();
+    }
+
+    /**
+     * Removes a player from this world without invoking login, join, quit, or persistence lifecycle hooks.
+     *
+     * The returned aggregate remains authoritative and must be attached to the destination immediately on
+     * the same main-thread turn. Events are ordered cleanup first and source-world visibility removal last.
+     */
+    public function detachPlayerForTransfer(string $sessionId): ?PlayerTransferDeparture
+    {
+        $key = self::sessionKey($sessionId);
+        $player = $this->players->player($sessionId);
+        if ($player === null || isset($this->pendingDisconnects[$key])) {
+            return null;
+        }
+        $previousPeers = array_values(array_filter(
+            $this->players->snapshots(),
+            static fn(PlayerSnapshot $snapshot): bool => $snapshot->sessionId !== $sessionId,
+        ));
+
+        $this->removeQueuedCommandsForSession($sessionId);
+        $this->removePendingMovement($key);
+        unset(
+            $this->breakingBlocks[$key],
+            $this->pendingRespawns[$key],
+            $this->itemCooldowns[$key],
+            $this->lastItemUseCompletionTicks[$key],
+            $this->playerAutosaveQueue[$sessionId],
+        );
+        $deferredOffset = count($this->deferredEvents);
+        $this->deferItemUseCancellation($player, ItemUseCancellationReason::TELEPORT);
+        $closed = $this->closeContainer($player, ApiInventoryCloseReason::TELEPORT, true);
+        if ($closed !== null) {
+            $this->deferredEvents[] = $closed;
+        }
+        $this->evacuateCraftingGrid($player, $this->players->recipients($player->sessionId));
+
+        $events = array_splice($this->deferredEvents, $deferredOffset);
+        $removed = $this->players->remove($sessionId);
+        if ($removed !== $player) {
+            throw new \LogicException('Player transfer lost authoritative registry ownership.');
+        }
+        foreach ($previousPeers as $peer) {
+            $events[] = new PlayerBecameHidden($peer->sessionId, $peer->runtimeActorId, $player->sessionId);
+        }
+        foreach ($this->itemEntities->all() as $entity) {
+            $events[] = new ItemEntityDespawned($entity->runtimeEntityId, [$player->sessionId]);
+        }
+        foreach ($this->announcedEntities as $entity) {
+            if ($entity->isAlive()) {
+                $events[] = new EntityActorRemoved($entity, [$player->sessionId]);
+            }
+        }
+        $events[] = new PlayerDisconnected(
+            $player->sessionId,
+            $player->identity->uuid,
+            $player->runtimeActorId,
+            $this->players->recipients(),
+        );
+
+        return new PlayerTransferDeparture($player, $previousPeers, $events);
+    }
+
+    /**
+     * Attaches an already detached aggregate without invoking login or join plugin lifecycle hooks.
+     *
+     * @throws \LogicException if destination capacity or identity ownership changed after preflight
+     */
+    public function attachTransferredPlayer(
+        Player $player,
+        string $worldId,
+        Position $position,
+        float $yaw,
+        float $pitch,
+    ): PlayerTransferArrival {
+        if (!$this->canAcceptTransferredPlayer($player)) {
+            throw new \LogicException('Destination world cannot accept the transferred player.');
+        }
+        if (!is_finite($position->x) || !is_finite($position->y) || !is_finite($position->z)
+            || !is_finite($yaw) || !is_finite($pitch)) {
+            throw new InvalidArgumentException('Transferred player pose must contain finite values.');
+        }
+
+        $peers = $this->players->snapshots();
+        $verticalState = $this->collisionResolver?->isGrounded($position) === true
+            ? VerticalState::GROUNDED
+            : VerticalState::AIRBORNE;
+        $player->changeWorld($worldId);
+        $movement = $player->movement;
+        $movement->position = $position;
+        $movement->yaw = $yaw;
+        $movement->headYaw = $yaw;
+        $movement->pitch = $pitch;
+        $movement->mode = MovementMode::STOPPED;
+        $movement->sneaking = false;
+        $movement->sprinting = false;
+        $movement->velocityX = 0.0;
+        $movement->verticalVelocity = 0.0;
+        $movement->velocityZ = 0.0;
+        $movement->distanceThisTick = 0.0;
+        $movement->jumpAuthorizedUntilTick = -1;
+        $movement->fallDistance = 0.0;
+        $movement->lastTick = $this->tick;
+        $movement->budgetTick = $this->tick;
+        $movement->verticalState = $verticalState;
+        $player->markDirty();
+        $this->players->add($player);
+
+        $events = [new PlayerJoined($player->snapshot(), $peers, $this->players->recipients())];
+        foreach ($this->itemEntities->all() as $entity) {
+            $events[] = new ItemEntitySpawned($entity, [$player->sessionId]);
+        }
+        foreach ($this->announcedEntities as $entity) {
+            if ($entity->isAlive()) {
+                $events[] = new EntityActorSpawned(
+                    $entity,
+                    [$player->sessionId],
+                    !$this->entityAiEnabled || ($entity instanceof AbstractMobEntity && !$entity->isAiEnabled()),
+                );
+            }
+        }
+
+        return new PlayerTransferArrival($player, $events);
+    }
+
     public function spawnEntity(EntitySpawnRequest $request): EntitySpawnOutcome
     {
         $outcome = $this->entityRuntime->spawn($request);
@@ -849,7 +994,7 @@ final class WorldSimulation
             throw new \LogicException('Entity persistence must be enabled once before simulation begins.');
         }
         $this->entityPersistence = new EntityPersistenceManager(
-            $this->blockWorld->metadata->name,
+            $this->worldId,
             $this->entityRuntime->registry(),
             $definitions,
             $store,
@@ -1047,7 +1192,7 @@ final class WorldSimulation
             float $yaw,
             float $pitch,
         ) use ($entity): void {
-            $activeWorld = $this->blockWorld?->metadata->name ?? $entity->getWorldName();
+            $activeWorld = $this->worldId;
             if ($worldName !== $activeWorld
                 || $this->entityRuntime->registry()->getByRuntimeId($entity->getRuntimeId()) !== $entity) {
                 throw new InvalidArgumentException('Entity controller target world is unavailable.');
@@ -1151,7 +1296,7 @@ final class WorldSimulation
             $this->tick,
             array_map(
                 static fn(Player $player): NaturalSpawnPlayer => new NaturalSpawnPlayer(
-                    $player->worldName,
+                    $player->worldName(),
                     $player->movement->position,
                 ),
                 array_values(array_filter(
@@ -1192,7 +1337,7 @@ final class WorldSimulation
         $this->entityAiPlayers = array_map(
             fn(Player $player): AiPlayerSnapshot => new AiPlayerSnapshot(
                 $player->identity->uuid,
-                $this->blockWorld?->metadata->name ?? 'world',
+                $this->worldId,
                 $player->movement->position,
                 $player->vitals->isAlive() && $player->gameMode()->takesDamage(),
             ),
@@ -1678,6 +1823,30 @@ final class WorldSimulation
             ?? PluginGameplayEventBridge::detachedPlayerView($player));
     }
 
+    /** Returns the world-owned aggregate for main-thread orchestration only. */
+    public function authoritativePlayer(string $identity): ?Player
+    {
+        return $this->players->playerByIdentity($identity);
+    }
+
+    /** Applies the cancellable teleport event without mutating this world's authoritative state. */
+    public function authorizeTransferTeleport(
+        Player $player,
+        Position $destination,
+        float $yaw,
+        float $pitch,
+    ): ?PlayerTeleportDecision {
+        return $this->pluginEvents === null
+            ? new PlayerTeleportDecision($destination, $yaw, $pitch)
+            : $this->pluginEvents->teleport($player, $destination, $yaw, $pitch);
+    }
+
+    /** Publishes the post-teleport event after destination ownership has committed. */
+    public function publishTransferredTeleport(Player $player, Position $from): void
+    {
+        $this->pluginEvents?->teleported($player, $from);
+    }
+
     public function pluginWorldContainerView(BlockPosition $position): ?ApiContainerView
     {
         $resolved = $this->resolveWorldContainer($position);
@@ -1937,6 +2106,50 @@ final class WorldSimulation
             && $this->enqueue($this->validator->pluginInventorySlot($player->sessionId, $slot, $stack));
     }
 
+    /** @param array<int, InventoryStack|null> $contents */
+    public function enqueuePluginInventoryContents(string $identity, array $contents): bool
+    {
+        $player = $this->players->playerByIdentity($identity);
+
+        return $player !== null
+            && $this->enqueue($this->validator->pluginInventoryContents($player->sessionId, $contents));
+    }
+
+    /** @param array<int, InventoryStack|null> $contents */
+    public function enqueuePluginArmorContents(string $identity, array $contents): bool
+    {
+        $player = $this->players->playerByIdentity($identity);
+
+        return $player !== null
+            && $this->enqueue($this->validator->pluginArmorContents($player->sessionId, $contents));
+    }
+
+    public function enqueuePluginInventoryRemoval(string $identity, InventoryStack $stack): bool
+    {
+        $player = $this->players->playerByIdentity($identity);
+
+        return $player !== null
+            && $this->enqueue($this->validator->removePluginInventoryStack($player->sessionId, $stack));
+    }
+
+    public function enqueuePluginEquipmentSlot(
+        string $identity,
+        ApiEquipmentSlot $slot,
+        ?InventoryStack $stack,
+    ): bool {
+        $player = $this->players->playerByIdentity($identity);
+
+        return $player !== null
+            && $this->enqueue($this->validator->pluginEquipmentSlot($player->sessionId, $slot, $stack));
+    }
+
+    public function enqueuePluginSelectedHotbarSlot(string $identity, int $slot): bool
+    {
+        $player = $this->players->playerByIdentity($identity);
+
+        return $player !== null && $this->enqueue($this->validator->selectHotbarSlot($player->sessionId, $slot));
+    }
+
     public function enqueueGameMode(string $identity, GameMode $gameMode): bool
     {
         $player = $this->players->playerByIdentity($identity);
@@ -2018,6 +2231,10 @@ final class WorldSimulation
             $command instanceof TeleportPlayer => $this->pluginTeleport($command),
             $command instanceof SetPluginBlock => $this->pluginBlock($command),
             $command instanceof SetPluginInventorySlot => $this->pluginInventorySlot($command),
+            $command instanceof SetPluginInventoryContents => $this->pluginInventoryContents($command),
+            $command instanceof SetPluginArmorContents => $this->pluginArmorContents($command),
+            $command instanceof RemovePluginInventoryStack => $this->removePluginInventoryStack($command),
+            $command instanceof SetPluginEquipmentSlot => $this->pluginEquipmentSlot($command),
             $command instanceof DamageEntity => $this->damageEntity($command),
             $command instanceof DamagePlayer => $this->damage($command),
             $command instanceof RespawnPlayer => $this->respawn($command),
@@ -2078,6 +2295,7 @@ final class WorldSimulation
             return new CommandRejected($command->session, 'unsupported_item');
         }
         $inventoryBefore = clone $player->inventory;
+        $proposed = clone $player->inventory;
         $type = $this->itemCatalog->type($command->identifier);
         $placed = $type->placedBlockState === null || $this->blockStateRegistry === null
             ? null
@@ -2091,16 +2309,17 @@ final class WorldSimulation
             $command->nbt,
             $command->auxValue,
         );
-        $overflow = max(0, $command->amount - $player->inventory->addableQuantity($prototype));
+        $overflow = max(0, $command->amount - $proposed->addableQuantity($prototype));
         $requiredEntities = (int) ceil($overflow / $type->maximumStackSize);
         if ($requiredEntities > self::MAXIMUM_ITEM_ENTITIES_SPAWNED_PER_COMMAND
             || $requiredEntities > $this->itemEntities->remainingCapacity()) {
             return new CommandRejected($command->session, 'item_entity_capacity');
         }
         $remaining = $command->amount;
+        $overflowStacks = [];
         while ($remaining > 0) {
             $count = min($remaining, $type->maximumStackSize);
-            $overflow = $player->inventory->add(new InventoryStack(
+            $overflow = $proposed->add(new InventoryStack(
                 $command->identifier,
                 $count,
                 1,
@@ -2111,20 +2330,28 @@ final class WorldSimulation
             ));
             $remaining -= $count;
             if ($overflow !== null) {
-                $entity = $this->itemEntities->spawn(
-                    $overflow,
-                    new Position(
-                        $player->movement->position->x,
-                        $player->movement->position->y + 1.0,
-                        $player->movement->position->z,
-                    ),
-                    new ItemEntityMotion(0.0, 0.1, 0.0),
-                    10,
-                );
-                $this->deferredEvents[] = new ItemEntitySpawned($entity, $this->players->recipients());
+                $overflowStacks[] = $overflow;
             }
         }
+        if ($this->pluginEvents !== null && !$this->pluginEvents->allowInventoryChange($player, $inventoryBefore, $proposed)) {
+            return new CommandRejected($command->session, 'plugin_cancelled');
+        }
+        $player->inventory->replaceMainContents($proposed->slots());
+        foreach ($overflowStacks as $overflowStack) {
+            $entity = $this->itemEntities->spawn(
+                $overflowStack,
+                new Position(
+                    $player->movement->position->x,
+                    $player->movement->position->y + 1.0,
+                    $player->movement->position->z,
+                ),
+                new ItemEntityMotion(0.0, 0.1, 0.0),
+                10,
+            );
+            $this->deferredEvents[] = new ItemEntitySpawned($entity, $this->players->recipients());
+        }
         $player->markDirty();
+        $this->pluginEvents?->inventoryChanged($player, $inventoryBefore);
         $affected = self::changedMainInventorySlots($inventoryBefore, $player->inventory);
 
         return new InventoryStackRequestProcessed(
@@ -3729,6 +3956,23 @@ final class WorldSimulation
                     $command->slot,
                     $command->stack,
                 ),
+                $command instanceof SetPluginInventoryContents => $this->validator->pluginInventoryContents(
+                    $command->session,
+                    $command->contents,
+                ),
+                $command instanceof SetPluginArmorContents => $this->validator->pluginArmorContents(
+                    $command->session,
+                    $command->contents,
+                ),
+                $command instanceof RemovePluginInventoryStack => $this->validator->removePluginInventoryStack(
+                    $command->session,
+                    $command->stack,
+                ),
+                $command instanceof SetPluginEquipmentSlot => $this->validator->pluginEquipmentSlot(
+                    $command->session,
+                    $command->slot,
+                    $command->stack,
+                ),
                 $command instanceof DamageEntity => $this->validator->damageEntity(
                     $command->source,
                     $command->runtimeId,
@@ -3760,17 +4004,7 @@ final class WorldSimulation
         if (isset($this->pendingDisconnects[$key])) {
             return true;
         }
-        $queuedCommands = $this->commands->count();
-        while ($queuedCommands-- > 0) {
-            $queued = $this->commands->dequeue();
-            if ($queued->sessionId() === $command->session) {
-                $queuedBytes = $queued->estimatedBytes();
-                $this->queuedCommandBytes -= $queuedBytes;
-                $this->queuedBytes -= $queuedBytes;
-            } else {
-                $this->commands->enqueue($queued);
-            }
-        }
+        $this->removeQueuedCommandsForSession($command->session);
         $this->removePendingMovement($key);
         if (!$this->players->hasSession($command->session)) {
             return true;
@@ -3788,6 +4022,21 @@ final class WorldSimulation
         $this->queuedBytes += $bytes;
 
         return true;
+    }
+
+    private function removeQueuedCommandsForSession(string $sessionId): void
+    {
+        $queuedCommands = $this->commands->count();
+        while ($queuedCommands-- > 0) {
+            $queued = $this->commands->dequeue();
+            if ($queued->sessionId() === $sessionId) {
+                $queuedBytes = $queued->estimatedBytes();
+                $this->queuedCommandBytes -= $queuedBytes;
+                $this->queuedBytes -= $queuedBytes;
+            } else {
+                $this->commands->enqueue($queued);
+            }
+        }
     }
 
     private function enqueueMovement(MovePlayer $command): bool
@@ -6177,7 +6426,7 @@ final class WorldSimulation
             $outcome = $this->spawnEntity(new EntitySpawnRequest(
                 $type,
                 SpawnCause::SPAWN_EGG,
-                $this->blockWorld?->metadata->name ?? 'world',
+                $this->worldId,
                 new Position($spawnBlock->x + 0.5, $spawnBlock->y, $spawnBlock->z + 0.5),
                 $player->movement->yaw,
             ));
@@ -6894,22 +7143,142 @@ final class WorldSimulation
         if ($player === null) {
             return new CommandRejected($command->session, 'not_joined');
         }
-        $selectedBefore = $player->inventory->selectedStack();
+        if (!$this->pluginInventoryStackIsAdmitted($command->stack)) {
+            return new CommandRejected($command->session, 'unsupported_item');
+        }
+        $before = clone $player->inventory;
+        $proposed = clone $player->inventory;
+        try {
+            $proposed->replaceSlot($command->slot, $command->stack);
+        } catch (InvalidArgumentException|OverflowException) {
+            return new CommandRejected($command->session, 'invalid_item');
+        }
+        if ($this->pluginEvents !== null && !$this->pluginEvents->allowInventoryChange($player, $before, $proposed)) {
+            return new CommandRejected($command->session, 'plugin_cancelled');
+        }
         $player->inventory->replaceSlot($command->slot, $command->stack);
         $player->markDirty();
-        $selectedAfter = $player->inventory->selectedStack();
-        $selectedChanged = $command->slot === $player->inventory->selectedHotbarSlot();
+        $this->pluginEvents?->inventoryChanged($player, $before);
+
+        return $this->pluginInventoryProjection($player, $before);
+    }
+
+    private function pluginInventoryContents(SetPluginInventoryContents $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        if ($player === null) {
+            return new CommandRejected($command->session, 'not_joined');
+        }
+        foreach ($command->contents as $stack) {
+            if (!$this->pluginInventoryStackIsAdmitted($stack)) {
+                return new CommandRejected($command->session, 'unsupported_item');
+            }
+        }
+        $before = clone $player->inventory;
+        $proposed = clone $player->inventory;
+        try {
+            $proposed->replaceMainContents($command->contents);
+        } catch (InvalidArgumentException|OverflowException) {
+            return new CommandRejected($command->session, 'invalid_item');
+        }
+        if ($this->pluginEvents !== null && !$this->pluginEvents->allowInventoryChange($player, $before, $proposed)) {
+            return new CommandRejected($command->session, 'plugin_cancelled');
+        }
+        $player->inventory->replaceMainContents($command->contents);
+        $player->markDirty();
+        $this->pluginEvents?->inventoryChanged($player, $before);
+
+        return $this->pluginInventoryProjection($player, $before);
+    }
+
+    private function removePluginInventoryStack(RemovePluginInventoryStack $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        if ($player === null) {
+            return new CommandRejected($command->session, 'not_joined');
+        }
+        if (!$this->pluginInventoryStackIsAdmitted($command->stack)) {
+            return new CommandRejected($command->session, 'unsupported_item');
+        }
+        $before = clone $player->inventory;
+        $proposed = clone $player->inventory;
+        if (!$proposed->removeMatching($command->stack)) {
+            return new CommandRejected($command->session, 'insufficient_items');
+        }
+        if ($this->pluginEvents !== null && !$this->pluginEvents->allowInventoryChange($player, $before, $proposed)) {
+            return new CommandRejected($command->session, 'plugin_cancelled');
+        }
+        if (!$player->inventory->removeMatching($command->stack)) {
+            throw new \LogicException('Validated inventory removal could not be committed.');
+        }
+        $player->markDirty();
+        $this->pluginEvents?->inventoryChanged($player, $before);
+
+        return $this->pluginInventoryProjection($player, $before);
+    }
+
+    private function pluginEquipmentSlot(SetPluginEquipmentSlot $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        if ($player === null) {
+            return new CommandRejected($command->session, 'not_joined');
+        }
+        if (!$this->pluginInventoryStackIsAdmitted($command->stack)) {
+            return new CommandRejected($command->session, 'unsupported_item');
+        }
+        $previous = match ($command->slot) {
+            ApiEquipmentSlot::HEAD => $player->inventory->armorStack(ArmorSlot::Head),
+            ApiEquipmentSlot::CHEST => $player->inventory->armorStack(ArmorSlot::Chest),
+            ApiEquipmentSlot::LEGS => $player->inventory->armorStack(ArmorSlot::Legs),
+            ApiEquipmentSlot::FEET => $player->inventory->armorStack(ArmorSlot::Feet),
+            ApiEquipmentSlot::OFF_HAND => $player->inventory->offhandStack(),
+            ApiEquipmentSlot::MAIN_HAND => null,
+        };
+        $replacement = $command->stack;
+        if ($this->pluginEvents !== null) {
+            $event = $this->pluginEvents->equipmentChange($player, $command->slot, $previous, $replacement);
+            if ($event === null) {
+                return new CommandRejected($command->session, 'plugin_cancelled');
+            }
+            try {
+                $replacement = $event->item() === null ? null : $this->inventoryStackFromApi($event->item());
+                if (!$this->pluginInventoryStackIsAdmitted($replacement)) {
+                    return new CommandRejected($command->session, 'plugin_result');
+                }
+            } catch (InvalidArgumentException|OverflowException) {
+                return new CommandRejected($command->session, 'plugin_result');
+            }
+        }
+        try {
+            self::replaceEquipment($player->inventory, $command->slot, $replacement);
+        } catch (InvalidArgumentException|OverflowException) {
+            return new CommandRejected($command->session, 'invalid_item');
+        }
+        $player->markDirty();
+        $this->pluginEvents?->equipmentChanged($player, $command->slot, $previous, $replacement);
+
+        $container = $command->slot === ApiEquipmentSlot::OFF_HAND
+            ? InventoryContainer::Offhand
+            : InventoryContainer::Armor;
+        $slot = match ($command->slot) {
+            ApiEquipmentSlot::HEAD => ArmorSlot::Head->value,
+            ApiEquipmentSlot::CHEST => ArmorSlot::Chest->value,
+            ApiEquipmentSlot::LEGS => ArmorSlot::Legs->value,
+            ApiEquipmentSlot::FEET => ArmorSlot::Feet->value,
+            ApiEquipmentSlot::OFF_HAND => 0,
+            ApiEquipmentSlot::MAIN_HAND => throw new \LogicException('Main hand is not an equipment container.'),
+        };
 
         return new InventoryStackRequestProcessed(
             $player->sessionId,
             0,
             true,
-            [new InventorySlotReference(InventoryContainer::Main, $command->slot, 0)],
+            [new InventorySlotReference($container, $slot, 0)],
             $player->inventory->slots(),
             $player->inventory->cursorStack(),
             $player->inventory->selectedHotbarSlot(),
-            $selectedAfter,
-            $selectedChanged && $selectedBefore !== $selectedAfter,
+            $player->inventory->selectedStack(),
+            false,
             $player->runtimeActorId,
             $this->players->recipients($player->sessionId),
             responseMode: InventoryResponseMode::LegacySlotSync,
@@ -6917,6 +7286,128 @@ final class WorldSimulation
             offhandStack: $player->inventory->offhandStack(),
             craftingInventory: $player->inventory->craftingSlots(),
         );
+    }
+
+    private function pluginArmorContents(SetPluginArmorContents $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        if ($player === null) {
+            return new CommandRejected($command->session, 'not_joined');
+        }
+        foreach ($command->contents as $stack) {
+            if (!$this->pluginInventoryStackIsAdmitted($stack)) {
+                return new CommandRejected($command->session, 'unsupported_item');
+            }
+        }
+        $proposed = clone $player->inventory;
+        try {
+            $proposed->replaceArmorContents($command->contents);
+        } catch (InvalidArgumentException|OverflowException) {
+            return new CommandRejected($command->session, 'invalid_item');
+        }
+        /** @var list<array{ApiEquipmentSlot, ?InventoryStack, ?InventoryStack}> $changes */
+        $changes = [];
+        foreach (self::equipmentChanges($player->inventory, $proposed) as [$slot, $previous, $next]) {
+            if ($slot === ApiEquipmentSlot::OFF_HAND) {
+                continue;
+            }
+            if ($this->pluginEvents !== null) {
+                $event = $this->pluginEvents->equipmentChange($player, $slot, $previous, $next);
+                if ($event === null) {
+                    return new CommandRejected($command->session, 'plugin_cancelled');
+                }
+                try {
+                    $next = $event->item() === null ? null : $this->inventoryStackFromApi($event->item());
+                    if (!$this->pluginInventoryStackIsAdmitted($next)) {
+                        return new CommandRejected($command->session, 'plugin_result');
+                    }
+                    self::replaceEquipment($proposed, $slot, $next);
+                } catch (InvalidArgumentException|OverflowException) {
+                    return new CommandRejected($command->session, 'plugin_result');
+                }
+            }
+            $changes[] = [$slot, $previous, $next];
+        }
+        try {
+            $player->inventory->replaceArmorContents($proposed->armorSlots());
+        } catch (InvalidArgumentException|OverflowException) {
+            throw new \LogicException('Validated armor contents could not be committed.');
+        }
+        if ($changes !== []) {
+            $player->markDirty();
+        }
+        foreach ($changes as [$slot, $previous, $next]) {
+            $this->pluginEvents?->equipmentChanged($player, $slot, $previous, $next);
+        }
+        $affected = array_map(
+            static fn(array $change): InventorySlotReference => new InventorySlotReference(
+                InventoryContainer::Armor,
+                match ($change[0]) {
+                    ApiEquipmentSlot::HEAD => ArmorSlot::Head->value,
+                    ApiEquipmentSlot::CHEST => ArmorSlot::Chest->value,
+                    ApiEquipmentSlot::LEGS => ArmorSlot::Legs->value,
+                    ApiEquipmentSlot::FEET => ArmorSlot::Feet->value,
+                    ApiEquipmentSlot::MAIN_HAND, ApiEquipmentSlot::OFF_HAND => throw new \LogicException(
+                        'Armor contents produced a non-armor slot.',
+                    ),
+                },
+                0,
+            ),
+            $changes,
+        );
+
+        return new InventoryStackRequestProcessed(
+            $player->sessionId,
+            0,
+            true,
+            $affected,
+            $player->inventory->slots(),
+            $player->inventory->cursorStack(),
+            $player->inventory->selectedHotbarSlot(),
+            $player->inventory->selectedStack(),
+            false,
+            $player->runtimeActorId,
+            $this->players->recipients($player->sessionId),
+            responseMode: InventoryResponseMode::LegacySlotSync,
+            armorInventory: $player->inventory->armorSlots(),
+            offhandStack: $player->inventory->offhandStack(),
+            craftingInventory: $player->inventory->craftingSlots(),
+        );
+    }
+
+    private function pluginInventoryProjection(Player $player, PlayerInventory $before): InventoryStackRequestProcessed
+    {
+        return new InventoryStackRequestProcessed(
+            $player->sessionId,
+            0,
+            true,
+            self::changedMainInventorySlots($before, $player->inventory),
+            $player->inventory->slots(),
+            $player->inventory->cursorStack(),
+            $player->inventory->selectedHotbarSlot(),
+            $player->inventory->selectedStack(),
+            !self::sameInventoryStack($before->selectedStack(), $player->inventory->selectedStack()),
+            $player->runtimeActorId,
+            $this->players->recipients($player->sessionId),
+            responseMode: InventoryResponseMode::LegacySlotSync,
+            armorInventory: $player->inventory->armorSlots(),
+            offhandStack: $player->inventory->offhandStack(),
+            craftingInventory: $player->inventory->craftingSlots(),
+        );
+    }
+
+    private function pluginInventoryStackIsAdmitted(?InventoryStack $stack): bool
+    {
+        if ($stack === null) {
+            return true;
+        }
+        if ($this->itemCatalog !== null) {
+            return $this->itemCatalog->has($stack->identifier)
+                && $stack->count <= $this->itemCatalog->type($stack->identifier)->maximumStackSize;
+        }
+
+        return SupportedInventoryItem::supports($stack->identifier)
+            && $stack->count <= SupportedInventoryItem::maximumStackSize($stack->identifier);
     }
 
     private function blockIdentifier(int $state): string

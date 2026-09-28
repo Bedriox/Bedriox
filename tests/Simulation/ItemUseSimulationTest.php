@@ -119,7 +119,7 @@ final class ItemUseSimulationTest extends TestCase
         $event = $world->tick()->events[0];
         self::assertInstanceOf(CommandRejected::class, $event);
         self::assertSame('item_not_usable', $event->reason);
-        self::assertSame(3, $world->pluginPlayers()[0]->inventory->stackAt(0)?->count);
+        self::assertSame(3, $world->pluginPlayers()[0]->getInventory()->getItem(0)?->count);
     }
 
     public function testFullPlayerCannotBeginOrdinaryFoodUse(): void
@@ -264,7 +264,7 @@ final class ItemUseSimulationTest extends TestCase
         $world->enqueue($factory->useItem('session', 0));
 
         self::assertInstanceOf(InstantItemUsed::class, $world->tick()->events[0]);
-        self::assertSame('example:wand', $world->pluginPlayers()[0]->inventory->stackAt(0)?->identifier);
+        self::assertSame('example:wand', $world->pluginPlayers()[0]->getInventory()->getItem(0)?->identifier);
         $world->enqueue($factory->useItem('session', 0));
         self::assertInstanceOf(CommandRejected::class, $world->tick()->events[0]);
     }

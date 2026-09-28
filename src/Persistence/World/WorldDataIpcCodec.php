@@ -12,7 +12,7 @@ use RuntimeException;
 
 final class WorldDataIpcCodec
 {
-    public const int MAXIMUM_BYTES = 4_096;
+    public const int MAXIMUM_BYTES = 65_536;
 
     public function encode(WorldData $data): string
     {
@@ -20,12 +20,13 @@ final class WorldDataIpcCodec
             $encoded = json_encode([
                 'difficulty' => $data->difficulty,
                 'generator' => $data->generatorName,
+                'generator_options' => $data->generatorOptions,
                 'generator_version' => $data->generatorVersion,
                 'name' => $data->metadata->name,
                 'seed' => $data->metadata->seed,
                 'spawn' => [$data->spawn->x, $data->spawn->y, $data->spawn->z],
                 'time' => $data->time,
-                'version' => 1,
+                'version' => 2,
             ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
         } catch (JsonException $error) {
             throw new RuntimeException('World data IPC value could not be encoded.', previous: $error);
@@ -48,9 +49,10 @@ final class WorldDataIpcCodec
             throw new RuntimeException('World data IPC value is malformed.', previous: $error);
         }
         if (!is_array($value) || array_keys($value) !== [
-            'difficulty', 'generator', 'generator_version', 'name', 'seed', 'spawn', 'time', 'version',
-        ] || $value['version'] !== 1 || !is_int($value['difficulty'])
+            'difficulty', 'generator', 'generator_options', 'generator_version', 'name', 'seed', 'spawn', 'time', 'version',
+        ] || $value['version'] !== 2 || !is_int($value['difficulty'])
             || !is_string($value['generator']) || !is_int($value['generator_version'])
+            || !is_string($value['generator_options'])
             || !is_string($value['name']) || !is_int($value['seed'])
             || !is_array($value['spawn']) || !array_is_list($value['spawn']) || count($value['spawn']) !== 3
             || !is_int($value['spawn'][0]) || !is_int($value['spawn'][1]) || !is_int($value['spawn'][2])
@@ -65,6 +67,7 @@ final class WorldDataIpcCodec
             $value['time'],
             $value['difficulty'],
             $value['generator_version'],
+            $value['generator_options'],
         );
     }
 }

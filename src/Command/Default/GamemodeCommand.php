@@ -51,7 +51,7 @@ final readonly class GamemodeCommand implements BuiltinCommand
         if ($target === null) {
             return CommandResult::failure('A player target is required when running this command from the console.');
         }
-        if ($target->getGamemode() === $gameMode) {
+        if ($target->getGameMode() === $gameMode) {
             return CommandResult::success("{$target->name} is already in {$gameMode->value} mode.");
         }
         if ($this->changeGameMode === null || !($this->changeGameMode)($target, $gameMode)) {

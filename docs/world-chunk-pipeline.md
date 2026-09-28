@@ -40,6 +40,12 @@ Generation, preparation admission, and delivery have independent count limits. P
 
 The configured spawn-radius square is delivered before `PlayerSpawn`. Remaining negotiated-view chunks continue afterward. Completed views remain idle until movement changes the center; they must not continually regenerate or resend their full set.
 
+## Same-dimension world transfers
+
+A transfer between two loaded Overworld instances does not use `ChangeDimension`; consequently it does not invoke Bedrock's dimension loading screen. The destination's central configured spawn-radius square is retained and prepared before authoritative player ownership moves. Source terrain admission stops during this preparation, while already ordered compression and encrypted output drains normally. Encrypted payloads are never discarded because doing so would create a cipher-counter hole.
+
+After the ordered source boundary is empty, Bedriox removes source-world visibility, synchronizes destination time and difficulty, sends the owner `MovePlayer` in teleport mode, publishes the destination chunk center, and delivers the prepared destination columns nearest-first. Destination items and actors remain hidden until their containing chunks have entered that player's sent view. Early movement and interaction input during the transition is accepted as a bounded no-op instead of disconnecting the session. Normal gameplay resumes after the central destination chunk enters reliable delivery and the client acknowledges the teleport; a bounded fallback prevents a missing acknowledgement from leaving the session permanently gated.
+
 ## Wire translation
 
 `BlockNetworkTranslator` maps each internal canonical state to the active Data network runtime ID. `BedrockChunkPacketSerializer` translates each unique section palette once and passes the storage's pre-packed words to Protocol to encode complete columns for the current contract, including section palettes, air sections, biome data, height maps, coordinates, and bounded block entities. Production workers prepare and compress the same byte-equivalent representation; the main-thread serializer remains the bounded fallback and the authority for small block-event projections.

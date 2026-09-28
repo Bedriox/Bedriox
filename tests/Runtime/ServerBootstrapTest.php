@@ -46,6 +46,8 @@ final class ServerBootstrapTest extends TestCase
             self::assertSame($port, $server->localPort);
             self::assertSame(ServerBootstrap::SELF_SIGNED_WARNING, $server->securityWarning);
             self::assertFalse($server->runtime->isClosed());
+            self::assertSame('world', $server->worldManager->getDefault()->id());
+            self::assertSame([$server->worldManager->getDefault()], $server->worldManager->getLoaded());
         } finally {
             $server->runtime->close();
         }

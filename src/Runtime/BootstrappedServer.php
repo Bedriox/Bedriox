@@ -18,5 +18,6 @@ final readonly class BootstrappedServer
         public SimulationPluginApiBackend $pluginApi,
         public World $world,
         public CraftingCatalog $craftingCatalog,
+        public RuntimeWorldManager $worldManager,
     ) {}
 }

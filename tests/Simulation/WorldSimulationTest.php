@@ -125,7 +125,7 @@ final class WorldSimulationTest extends TestCase
         self::assertCount(1, $spawned);
         self::assertSame('minecraft:cow', $spawned[0]->entity->getType()->identifier());
         self::assertSame(1, $world->entityRuntime()->registry()->count());
-        self::assertSame(1, $world->pluginPlayer('identity-one')?->inventory->stackAt(0)?->count);
+        self::assertSame(1, $world->pluginPlayer('identity-one')?->getInventory()->getItem(0)?->count);
     }
 
     public function testGiveSynchronizesOnlyChangedInventorySlots(): void
@@ -597,9 +597,8 @@ final class WorldSimulationTest extends TestCase
     public function testDisconnectDropsCraftingInputsWhenTheMainInventoryIsFull(): void
     {
         $data = BedrockDataSet::bundled();
-        $palette = FixedFlatBlockPalette::fromRegistry(new BlockStateRegistry(
-            $data->blockStateRegistry()->states(),
-        ));
+        $registry = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
         $items = new ItemEntityRegistry(firstEntityId: 1_000_000_000);
         $world = new WorldSimulation(blockPalette: $palette, itemEntities: $items);
         $factory = new SimulationCommandFactory();
@@ -636,9 +635,13 @@ final class WorldSimulationTest extends TestCase
         self::assertTrue($world->enqueue($factory->pluginInventorySlot(
             'one',
             0,
-            new InventoryStack('minecraft:stone', 64, 1),
+            new InventoryStack('minecraft:grass_block', 64, 1, $palette->grassBlock),
         )));
-        $world->tick();
+        $slotChange = $world->tick()->events[0];
+        if ($slotChange instanceof CommandRejected) {
+            self::fail('Plugin inventory replacement was rejected: ' . $slotChange->reason);
+        }
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $slotChange);
 
         self::assertTrue($world->enqueue($factory->disconnect('one')));
         $events = $world->tick()->events;

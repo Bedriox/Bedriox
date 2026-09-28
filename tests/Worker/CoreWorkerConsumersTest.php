@@ -8,6 +8,7 @@ use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Batch\BatchLimits;
 use Bedriox\Protocol\Batch\CompressionMode;
 use Bedriox\Protocol\ProtocolVersion;
+use Bedriox\Server\Tests\Fixtures\WorkerPluginGenerator;
 use Bedriox\Server\Worker\Chunk\ChunkGenerationRequest;
 use Bedriox\Server\Worker\Chunk\ChunkGenerationRequestCodec;
 use Bedriox\Server\Worker\Chunk\ChunkPreparationRequest;
@@ -21,14 +22,76 @@ use Bedriox\Server\Worker\Network\BatchCompressionRequest;
 use Bedriox\Server\Worker\Network\BatchCompressionRequestCodec;
 use Bedriox\Server\Worker\WorkerResult;
 use Bedriox\Server\Worker\WorkerResultStatus;
+use Bedriox\Server\Worker\World\WorldPreparationCodec;
+use Bedriox\Server\Worker\World\WorldPreparationRequest;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\FlatWorldGenerator;
+use Bedriox\Server\World\Generator\BuiltInGeneratorDefinitions;
+use Bedriox\Server\World\Generator\WorkerGeneratorSource;
 use PHPUnit\Framework\TestCase;
 
 final class CoreWorkerConsumersTest extends TestCase
 {
+    public function testProductionBrokerLoadsAdmittedPluginGeneratorSource(): void
+    {
+        $pool = ManagedWorkerPool::start('plugin-generator-consumer-test', 1);
+        try {
+            $submission = $pool->submit(
+                CoreWorkerTaskCatalog::GENERATE_CHUNK,
+                (new ChunkGenerationRequestCodec())->encode(new ChunkGenerationRequest(
+                    'test:worker',
+                    1,
+                    73,
+                    'minecraft:overworld',
+                    new ChunkPosition(4, -2),
+                    workerSource: WorkerGeneratorSource::capture(WorkerPluginGenerator::class),
+                )),
+            );
+            self::assertNotNull($submission->receipt);
+
+            $result = $this->await($pool, 1)[$submission->receipt->taskId];
+            self::assertSame(WorkerResultStatus::SUCCESS, $result->status, $result->failureCode ?? '');
+            $states = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+            $chunk = (new ChunkTransferCodec())->decode($result->payload, $states);
+            self::assertSame('minecraft:grass_block', $states->state($chunk->blockStateAt(0, 64, 0))->identifier());
+        } finally {
+            $pool->shutdown();
+        }
+    }
+
+    public function testProductionBrokerPreparesWorldGeneratorMetadata(): void
+    {
+        $pool = ManagedWorkerPool::start('world-preparation-consumer-test', 1);
+        try {
+            $codec = new WorldPreparationCodec();
+            $submission = $pool->submit(
+                CoreWorkerTaskCatalog::PREPARE_WORLD,
+                $codec->encodeRequest(new WorldPreparationRequest(
+                    'flat',
+                    BuiltInGeneratorDefinitions::FLAT,
+                    1,
+                    73,
+                    'minecraft:overworld',
+                )),
+            );
+            self::assertNotNull($submission->receipt);
+
+            $result = $this->await($pool, 1)[$submission->receipt->taskId];
+            self::assertSame(WorkerResultStatus::SUCCESS, $result->status, $result->failureCode ?? '');
+            $prepared = $codec->decodeResult($result->payload);
+            self::assertSame(BuiltInGeneratorDefinitions::FLAT, $prepared->generatorIdentifier);
+            self::assertSame([0, 64, 0], [
+                $prepared->defaultSpawn->x,
+                $prepared->defaultSpawn->y,
+                $prepared->defaultSpawn->z,
+            ]);
+        } finally {
+            $pool->shutdown();
+        }
+    }
+
     public function testProductionBrokerExecutesCompressionAndChunkGenerationTasks(): void
     {
         $pool = ManagedWorkerPool::start('consumer-test', 1);
@@ -45,7 +108,7 @@ final class CoreWorkerConsumersTest extends TestCase
             $generation = $pool->submit(
                 CoreWorkerTaskCatalog::GENERATE_CHUNK,
                 (new ChunkGenerationRequestCodec())->encode(new ChunkGenerationRequest(
-                    'flat',
+                    BuiltInGeneratorDefinitions::FLAT,
                     1,
                     123,
                     'minecraft:overworld',

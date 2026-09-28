@@ -8,6 +8,7 @@ use Bedriox\Api\Inventory\ContainerLayout;
 use Bedriox\Api\Inventory\ContainerType;
 use Bedriox\Api\Inventory\ItemStack;
 use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
+use Bedriox\Api\World\World as ApiWorld;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Data\CanonicalBlockState;
 use Bedriox\Server\Player\InventoryContainer;
@@ -63,7 +64,7 @@ final class SimulationPluginContainerServiceTest extends TestCase
             new PluginOwnershipRegistry(),
             $simulation,
         ))->manager();
-        $container = $manager->at(new ApiBlockPosition(1, 64, 0));
+        $container = $manager->at(new ApiWorld('plugin-container-test', 1), new ApiBlockPosition(1, 64, 0));
         self::assertNotNull($container);
         self::assertTrue($container->isAvailable());
 
@@ -195,7 +196,7 @@ final class SimulationPluginContainerServiceTest extends TestCase
         }
         self::assertTrue($processed->success);
         self::assertSame(1, $container->contents()[0]?->count);
-        self::assertSame(2, $simulation->pluginPlayer($firstUuid)?->inventory->stackAt(5)?->count);
+        self::assertSame(2, $simulation->pluginPlayer($firstUuid)?->getInventory()->getItem(5)?->count);
         $synchronized = $events[1];
         if (!$synchronized instanceof ContainerContentsChanged) {
             self::fail('Expected the container request to synchronize its viewers.');

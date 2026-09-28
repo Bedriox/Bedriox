@@ -9,13 +9,26 @@ use Bedriox\Server\Entity\EntityMotion;
 use Bedriox\Server\Entity\Persistence\CorruptEntityPersistenceException;
 use Bedriox\Server\Entity\Persistence\EntityChunkSnapshot;
 use Bedriox\Server\Entity\Persistence\EntityOwnershipTransfer;
+use Bedriox\Server\Entity\Persistence\EntityPersistenceCodec;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceRecord;
 use Bedriox\Server\Persistence\PersistenceSubmission;
 use Bedriox\Server\Persistence\World\ProcessWorldProvider;
+use Bedriox\Server\Persistence\World\ProcessWorldProviderFactory;
 use Bedriox\Server\Persistence\World\WorldDataIpcCodec;
 use Bedriox\Server\Persistence\World\WorldStorageStartup;
 use Bedriox\Server\Persistence\World\WorldStorageStartupCodec;
 use Bedriox\Server\Simulation\Position;
+use Bedriox\Server\Worker\CoreWorkerTaskCatalog;
+use Bedriox\Server\Worker\ManagedWorkerDispatcher;
+use Bedriox\Server\Worker\ManagedWorkerPool;
+use Bedriox\Server\Worker\Task\SpawnWorldStorageOwnerRequest;
+use Bedriox\Server\Worker\WorkerDispatcher;
+use Bedriox\Server\Worker\WorkerPoolSnapshot;
+use Bedriox\Server\Worker\WorkerReceipt;
+use Bedriox\Server\Worker\WorkerRejectionReason;
+use Bedriox\Server\Worker\WorkerResult;
+use Bedriox\Server\Worker\WorkerResultStatus;
+use Bedriox\Server\Worker\WorkerSubmission;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\VanillaBlockStates;
 use Bedriox\Server\World\ChunkPosition;
@@ -72,6 +85,322 @@ final class ProcessWorldProviderTest extends TestCase
 
         $this->expectException(WorldProviderClosedException::class);
         $provider->worldData();
+    }
+
+    public function testDedicatedOwnerStartupCanBePolledWithoutBlockingTheCaller(): void
+    {
+        $startedAt = hrtime(true);
+        $provider = ProcessWorldProvider::beginStart(
+            'test-version',
+            new WorldStorageStartup('create', 'fixture-slow-start', self::worldData(), 1234),
+            self::states(),
+            entryPoint: self::FIXTURE,
+        );
+        try {
+            self::assertLessThan(1_000_000_000, hrtime(true) - $startedAt);
+            self::assertFalse($provider->pollStartup());
+
+            $ready = false;
+            $maximumPollNanoseconds = 0;
+            $deadline = hrtime(true) + 8_000_000_000;
+            while (hrtime(true) < $deadline) {
+                $pollStartedAt = hrtime(true);
+                $ready = $provider->pollStartup();
+                $maximumPollNanoseconds = max($maximumPollNanoseconds, hrtime(true) - $pollStartedAt);
+                if ($ready) {
+                    break;
+                }
+                usleep(1_000);
+            }
+
+            self::assertTrue($ready);
+            self::assertLessThan(1_000_000_000, $maximumPollNanoseconds);
+            self::assertSame('Process Test', $provider->worldData()->metadata->name);
+        } finally {
+            $provider->close();
+        }
+    }
+
+    public function testDedicatedOwnerCanDelegateColdProcessLaunchWithoutBlockingTheCaller(): void
+    {
+        $launcher = new class implements WorkerDispatcher {
+            public ?string $submittedPayload = null;
+            public ?int $submittedTaskType = null;
+
+            public function submit(int $taskTypeId, string $payload, \Closure $completion, ?int $deadlineNanoseconds = null): WorkerSubmission
+            {
+                unset($completion);
+                $this->submittedPayload = $payload;
+                $this->submittedTaskType = $taskTypeId;
+
+                return WorkerSubmission::accepted(new WorkerReceipt('test', 1, $taskTypeId, 'test', $deadlineNanoseconds ?? PHP_INT_MAX));
+            }
+
+            public function cancel(WorkerReceipt $receipt): bool
+            {
+                return false;
+            }
+
+            public function poll(int $maximumCompletions = 256): void {}
+
+            public function snapshot(): WorkerPoolSnapshot
+            {
+                return new WorkerPoolSnapshot('test', 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, true);
+            }
+
+            public function shutdown(): void {}
+        };
+        $worldData = self::worldData();
+        $states = self::states();
+        $startedAt = hrtime(true);
+        $provider = ProcessWorldProvider::beginStart(
+            'test-version',
+            new WorldStorageStartup('create', 'delegated-launch', $worldData, 1234),
+            $states,
+            processLauncher: $launcher,
+            processLauncherTaskType: 7,
+        );
+        try {
+            self::assertLessThan(50_000_000, hrtime(true) - $startedAt);
+            self::assertSame(7, $launcher->submittedTaskType);
+            self::assertIsString($launcher->submittedPayload);
+            $request = SpawnWorldStorageOwnerRequest::decode($launcher->submittedPayload);
+            self::assertSame('test-version', $request->applicationVersion);
+            self::assertStringStartsWith('tcp://127.0.0.1:', $request->endpoint);
+            self::assertFalse($provider->pollStartup());
+        } finally {
+            $provider->close();
+        }
+    }
+
+    public function testFactorySharesItsImmutableEntityCodecAcrossDynamicProviders(): void
+    {
+        $launcher = new class implements WorkerDispatcher {
+            private int $nextTaskId = 1;
+
+            public function submit(int $taskTypeId, string $payload, \Closure $completion, ?int $deadlineNanoseconds = null): WorkerSubmission
+            {
+                unset($payload, $completion);
+
+                return WorkerSubmission::accepted(new WorkerReceipt(
+                    'test',
+                    $this->nextTaskId++,
+                    $taskTypeId,
+                    'test',
+                    $deadlineNanoseconds ?? PHP_INT_MAX,
+                ));
+            }
+
+            public function cancel(WorkerReceipt $receipt): bool
+            {
+                return false;
+            }
+
+            public function poll(int $maximumCompletions = 256): void {}
+
+            public function snapshot(): WorkerPoolSnapshot
+            {
+                return new WorkerPoolSnapshot('test', 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, true);
+            }
+
+            public function shutdown(): void {}
+        };
+        $codec = new EntityPersistenceCodec(['minecraft:cow']);
+        $factory = new ProcessWorldProviderFactory(
+            'test-version',
+            entryPoint: self::FIXTURE,
+            entityPersistenceCodec: $codec,
+        );
+        $factory->useProcessLauncher($launcher, 7);
+        $states = self::states();
+        $first = $factory->beginCreate('first', self::worldData(), $states);
+        $second = $factory->beginCreate('second', self::worldData(), $states);
+
+        try {
+            $property = new \ReflectionProperty(ProcessWorldProvider::class, 'entityPersistenceCodec');
+            self::assertSame($codec, $property->getValue($first));
+            self::assertSame($codec, $property->getValue($second));
+        } finally {
+            $first->close();
+            $second->close();
+        }
+    }
+
+    public function testDelegatedOwnerRemainsOpenWithoutAParentProcessHandle(): void
+    {
+        $fixture = self::FIXTURE;
+        $launcher = new class ($fixture) implements WorkerDispatcher {
+            /** @var resource|null */
+            private mixed $process = null;
+
+            public function __construct(private readonly string $fixture) {}
+
+            public function submit(int $taskTypeId, string $payload, \Closure $completion, ?int $deadlineNanoseconds = null): WorkerSubmission
+            {
+                unset($completion);
+                $request = SpawnWorldStorageOwnerRequest::decode($payload);
+                $pipes = [];
+                $process = proc_open(
+                    [
+                        PHP_BINARY,
+                        $this->fixture,
+                        'world',
+                        $request->epochHex,
+                        $request->applicationVersion,
+                        $request->endpoint,
+                        $request->tokenHex,
+                    ],
+                    [
+                        0 => ['file', PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null', 'r'],
+                        1 => ['file', PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null', 'a'],
+                        2 => ['file', PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null', 'a'],
+                    ],
+                    $pipes,
+                    dirname($this->fixture, 2),
+                    options: ['bypass_shell' => true, 'blocking_pipes' => false],
+                );
+                if (!is_resource($process)) {
+                    return WorkerSubmission::rejected(WorkerRejectionReason::UNAVAILABLE_BROKER);
+                }
+                $this->process = $process;
+
+                return WorkerSubmission::accepted(new WorkerReceipt('test', 1, $taskTypeId, 'test', $deadlineNanoseconds ?? PHP_INT_MAX));
+            }
+
+            public function cancel(WorkerReceipt $receipt): bool
+            {
+                return false;
+            }
+
+            public function poll(int $maximumCompletions = 256): void {}
+
+            public function snapshot(): WorkerPoolSnapshot
+            {
+                return new WorkerPoolSnapshot('test', 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, true);
+            }
+
+            public function shutdown(): void
+            {
+                if (!is_resource($this->process)) {
+                    return;
+                }
+                $deadline = hrtime(true) + 1_000_000_000;
+                do {
+                    $status = proc_get_status($this->process);
+                    if (!$status['running']) {
+                        proc_close($this->process);
+                        $this->process = null;
+
+                        return;
+                    }
+                    usleep(1_000);
+                } while (hrtime(true) < $deadline);
+                proc_terminate($this->process);
+                proc_close($this->process);
+                $this->process = null;
+            }
+        };
+        $provider = ProcessWorldProvider::beginStart(
+            'test-version',
+            new WorldStorageStartup('create', 'delegated-ready', self::worldData(), 1234),
+            self::states(),
+            processLauncher: $launcher,
+            processLauncherTaskType: 7,
+        );
+        try {
+            $deadline = hrtime(true) + 8_000_000_000;
+            while (!$provider->pollStartup() && hrtime(true) < $deadline) {
+                usleep(1_000);
+            }
+
+            self::assertSame('Process Test', $provider->worldData()->metadata->name);
+            $provider->close();
+            self::assertTrue($provider->ownerConfirmedClosed());
+            $provider->close();
+        } finally {
+            $provider->close();
+            $launcher->shutdown();
+        }
+    }
+
+    public function testFailedDelegatedStartupCanBeClosedRepeatedly(): void
+    {
+        $launcher = new class implements WorkerDispatcher {
+            public function submit(int $taskTypeId, string $payload, \Closure $completion, ?int $deadlineNanoseconds = null): WorkerSubmission
+            {
+                unset($payload);
+                $receipt = new WorkerReceipt('test', 1, $taskTypeId, 'test', $deadlineNanoseconds ?? PHP_INT_MAX);
+                $completion(new WorkerResult($receipt, WorkerResultStatus::FAILED, failureCode: 'launch_failed'));
+
+                return WorkerSubmission::accepted($receipt);
+            }
+
+            public function cancel(WorkerReceipt $receipt): bool
+            {
+                return false;
+            }
+
+            public function poll(int $maximumCompletions = 256): void {}
+
+            public function snapshot(): WorkerPoolSnapshot
+            {
+                return new WorkerPoolSnapshot('test', 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, true);
+            }
+
+            public function shutdown(): void {}
+        };
+        $provider = ProcessWorldProvider::beginStart(
+            'test-version',
+            new WorldStorageStartup('create', 'delegated-failure', self::worldData(), 1234),
+            self::states(),
+            processLauncher: $launcher,
+            processLauncherTaskType: 7,
+        );
+
+        try {
+            $provider->pollStartup();
+            self::fail('Failed delegated startup was accepted.');
+        } catch (WorldStorageException $failure) {
+            self::assertStringContainsString('launch failed', $failure->getMessage());
+        }
+        $provider->close();
+        $provider->close();
+    }
+
+    public function testProductionWorkerLaunchesDedicatedOwnerThroughCompleteStartupHandshake(): void
+    {
+        if (!extension_loaded('leveldb')) {
+            self::markTestSkipped('The production world-storage handshake requires the qualified LevelDB runtime.');
+        }
+        $directory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'bedriox-worker-world-' . bin2hex(random_bytes(8));
+        $pool = ManagedWorkerPool::start('test-version', 1);
+        $dispatcher = new ManagedWorkerDispatcher($pool);
+        $provider = ProcessWorldProvider::beginStart(
+            'test-version',
+            new WorldStorageStartup('create', $directory, self::worldData(), 1234),
+            self::states(),
+            processLauncher: $dispatcher,
+            processLauncherTaskType: CoreWorkerTaskCatalog::SPAWN_WORLD_STORAGE_OWNER,
+        );
+        try {
+            $ready = false;
+            $deadline = hrtime(true) + 10_000_000_000;
+            do {
+                $dispatcher->poll();
+                if ($provider->pollStartup()) {
+                    $ready = true;
+                    break;
+                }
+                usleep(1_000);
+            } while (hrtime(true) < $deadline);
+
+            self::assertTrue($ready, $pool->diagnostic());
+            self::assertSame('Process Test', $provider->worldData()->metadata->name);
+        } finally {
+            $provider->close();
+            $dispatcher->shutdown();
+            self::removeDirectory($directory);
+        }
     }
 
     public function testCorruptChunkCategoryCrossesProcessBoundary(): void
@@ -398,5 +727,24 @@ final class ProcessWorldProviderTest extends TestCase
             '',
             $revision,
         );
+    }
+
+    private static function removeDirectory(string $path): void
+    {
+        if (!is_dir($path)) {
+            return;
+        }
+        foreach (scandir($path) ?: [] as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+            $entryPath = $path . DIRECTORY_SEPARATOR . $entry;
+            if (is_dir($entryPath)) {
+                self::removeDirectory($entryPath);
+            } else {
+                @unlink($entryPath);
+            }
+        }
+        @rmdir($path);
     }
 }

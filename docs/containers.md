@@ -14,15 +14,16 @@ World storage closes when its backing block disappears or the viewer moves out o
 
 ## Plugin API
 
-`PluginContext::server()->containers()` returns a plugin-scoped `ContainerManager`. Look up a world container by canonical block position or create a bounded virtual layout:
+`PluginContext::containers()` returns a plugin-scoped `ContainerManager`. World-container lookup requires the owning loaded-world handle plus a canonical block position; virtual creation remains world-independent:
 
 ```php
 use Bedriox\Api\Inventory\ContainerLayout;
 use Bedriox\Api\Inventory\ItemStack;
 use Bedriox\Api\World\BlockPosition;
 
-$worldChest = $this->context()->server()->containers()->at(new BlockPosition(10, 65, -4));
-$menu = $this->context()->server()->containers()->create(ContainerLayout::HOPPER, 'Travel menu');
+$containers = $this->context()->containers();
+$worldChest = $containers->at($world, new BlockPosition(10, 65, -4));
+$menu = $containers->create(ContainerLayout::HOPPER, 'Travel menu');
 
 $menu->setItem(0, new ItemStack('minecraft:apple', 4));
 $menu->open($player);

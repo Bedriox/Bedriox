@@ -15,6 +15,7 @@ use Bedriox\Server\Persistence\World\ChunkLoadCompletion;
 use Bedriox\Server\Worker\Chunk\AsyncChunkGenerator;
 use Bedriox\Server\World\Block\InternalBlockStateId;
 use Bedriox\Server\World\BlockEntity\BlockEntity;
+use Bedriox\Server\World\Generator\GeneratorOptions;
 use Bedriox\Server\World\Provider\AsynchronousWorldDataProvider;
 use Bedriox\Server\World\Provider\AsynchronousWorldProvider;
 use Bedriox\Server\World\Provider\ChunkSaveData;
@@ -53,6 +54,8 @@ final class World
 
     private readonly ChunkUnloadManager $chunkUnloads;
 
+    private readonly string $generatorOptions;
+
     private bool $spawnChunkRetained = false;
 
     private ?EntityPersistenceManager $entityPersistence = null;
@@ -66,11 +69,14 @@ final class World
         private readonly ?WorldProvider $provider = null,
         ?AsyncChunkGenerator $asyncChunks = null,
         ?ChunkUnloadManager $chunkUnloads = null,
+        ?string $generatorOptions = null,
     ) {
         $this->asyncChunks = $asyncChunks;
         $this->chunkUnloads = $chunkUnloads ?? new ChunkUnloadManager();
         $this->overrides = $overrides ?? new BlockOverrideStore();
         $worldData = $provider?->worldData();
+        $this->generatorOptions = $generatorOptions ?? ($worldData === null ? '{}' : $worldData->generatorOptions);
+        GeneratorOptions::fromJson($this->generatorOptions);
         if ($worldData !== null && (
             $worldData->metadata->name !== $metadata->name
             || $worldData->metadata->seed !== $metadata->seed
@@ -246,6 +252,9 @@ final class World
         }
 
         unset($this->pendingChunkRetains[$key]);
+        if (!$this->asyncChunks->allowsSynchronousFallback()) {
+            return false;
+        }
         $this->retainChunk($position);
 
         return true;
@@ -636,10 +645,11 @@ final class World
             $this->time,
             $this->difficulty,
             $this->generator instanceof VersionedWorldGenerator ? $this->generator->version() : 1,
+            $this->generatorOptions,
         );
     }
 
-    public function close(): void
+    public function close(bool $save = true): void
     {
         if ($this->closed) {
             return;
@@ -648,7 +658,7 @@ final class World
 
         $failure = null;
         try {
-            if ($this->provider instanceof WritableWorldProvider) {
+            if ($save && $this->provider instanceof WritableWorldProvider) {
                 $this->flush();
             }
         } catch (Throwable $error) {

@@ -429,8 +429,7 @@ final class PluginHost
         ], JSON_THROW_ON_ERROR);
         $manifest = (new PluginManifestParser())->parse($json);
         if (!in_array($manifest->api, [
-            '0.1', '0.1.0', '^0.1', '^0.1.0', '~0.1', '~0.1.0',
-            '0.2', '0.2.0', '^0.2', '^0.2.0', '~0.2', '~0.2.0',
+            '0.3', '0.3.0', '^0.3', '^0.3.0', '~0.3', '~0.3.0',
         ], true)) {
             throw new PluginException("Plugin {$manifest->name} requires unsupported API {$manifest->api}.");
         }

@@ -67,6 +67,8 @@ use Bedriox\Protocol\Packet\MineBlockItemStackRequestAction;
 use Bedriox\Protocol\Packet\MobArmorEquipmentPacket;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
 use Bedriox\Protocol\Packet\MovementPredictionSyncPacket;
+use Bedriox\Protocol\Packet\MovePlayerMode;
+use Bedriox\Protocol\Packet\MovePlayerPacket;
 use Bedriox\Protocol\Packet\NetworkChunkPublisherUpdatePacket;
 use Bedriox\Protocol\Packet\NetworkStackLatencyPacket;
 use Bedriox\Protocol\Packet\Packet;
@@ -1911,6 +1913,141 @@ final class BedrockPlayChannelTest extends TestCase
         $worldRepository->clear();
     }
 
+    public function testWorldSwitchDiscardsOldStreamingStateAndStreamsDestinationChunks(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $network = $data->blockStateRegistry();
+        $internal = new BlockStateRegistry($network->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($internal);
+        $source = new World(
+            new WorldMetadata('source', 1),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(32),
+        );
+        $destination = new World(
+            new WorldMetadata('destination', 2),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(32),
+        );
+        $serializer = new BedrockChunkPacketSerializer(new BlockNetworkTranslator($internal, $network));
+        [$channel, $client, $server] = $this->channel(
+            [new ChunkRadiusUpdatedPacket(1)],
+            world: $source,
+            serializer: $serializer,
+            generatePerTick: 4,
+            sendPerTick: 4,
+            viewDistance: 1,
+            spawnRadius: 1,
+        );
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new RequestChunkRadiusPacket(1, 1)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        foreach ($channel->drainOutgoing() as $outgoing) {
+            $server->decryptEnvelope($outgoing->payload);
+        }
+        self::assertTrue($channel->worldTick());
+        foreach ($channel->drainOutgoing() as $outgoing) {
+            $server->decryptEnvelope($outgoing->payload);
+        }
+
+        self::assertTrue($channel->switchWorld($destination, null, 160.0, 70.0, -80.0));
+        $publisherPayloads = $channel->drainOutgoing();
+        self::assertCount(1, $publisherPayloads);
+        $transition = BedrockBatchCodec::decode(
+            $server->decryptEnvelope($publisherPayloads[0]->payload),
+            CompressionMode::NegotiatedZlib,
+            new BatchLimits(),
+            NetworkCompressionPolicy::THRESHOLD_BYTES,
+        );
+        self::assertCount(4, $transition->packets);
+        self::assertSame(PacketIds::MOVE_PLAYER, $transition->packets[2]->header->packetId);
+        $move = BedrockPacketCodec::decode(PacketIds::MOVE_PLAYER, $transition->packets[2]->payload);
+        self::assertInstanceOf(MovePlayerPacket::class, $move);
+        self::assertSame(MovePlayerMode::TELEPORT, $move->mode);
+        self::assertSame(PacketIds::NETWORK_CHUNK_PUBLISHER_UPDATE, $transition->packets[3]->header->packetId);
+        $publisher = BedrockPacketCodec::decode(
+            PacketIds::NETWORK_CHUNK_PUBLISHER_UPDATE,
+            $transition->packets[3]->payload,
+        );
+        self::assertInstanceOf(NetworkChunkPublisherUpdatePacket::class, $publisher);
+        self::assertSame(160, $publisher->x);
+        self::assertSame(70, $publisher->y);
+        self::assertSame(-80, $publisher->z);
+        self::assertFalse($channel->hasSentChunkAt(0.0, 0.0));
+
+        self::assertTrue($channel->worldTick());
+        $destinationPayloads = $channel->drainOutgoing();
+        self::assertNotEmpty($destinationPayloads);
+        foreach ($destinationPayloads as $outgoing) {
+            $packet = $this->decode($server->decryptEnvelope($outgoing->payload));
+            self::assertInstanceOf(LevelChunkPacket::class, $packet);
+            self::assertGreaterThanOrEqual(9, $packet->chunkX);
+            self::assertLessThanOrEqual(11, $packet->chunkX);
+            self::assertGreaterThanOrEqual(-6, $packet->chunkZ);
+            self::assertLessThanOrEqual(-4, $packet->chunkZ);
+        }
+    }
+
+    public function testWorldSwitchGatesEarlyMovementAndHarmlessTeleportAcknowledgementTiming(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $internal = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $destination = new World(
+            new WorldMetadata('destination-input-gate', 2),
+            new FlatWorldGenerator(FixedFlatBlockPalette::fromRegistry($internal)),
+            new ChunkRepository(32),
+        );
+        [$channel, $client] = $this->channel();
+        self::assertTrue($channel->beginWorldSwitch($destination, null, 160.0, 70.0, -80.0));
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([
+                $this->movementPacket(UnsignedLong::fromInt(1), x: 1.0),
+            ])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        self::assertSame([], $channel->drainCommands());
+
+        $ready = false;
+        for ($attempt = 0; $attempt < 16; ++$attempt) {
+            if ($channel->worldSwitchReady()) {
+                $ready = true;
+                break;
+            }
+        }
+        self::assertTrue($ready);
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([
+                $this->movementPacket(
+                    UnsignedLong::fromInt(2),
+                    x: 2.0,
+                    inputFlags: [PlayerAuthInputFlag::HandledTeleport->value],
+                ),
+            ])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        self::assertSame([], $channel->drainCommands());
+
+        self::assertTrue($channel->commitWorldSwitch(90.0, 0.0));
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([
+                $this->movementPacket(
+                    UnsignedLong::fromInt(3),
+                    x: 3.0,
+                    inputFlags: [PlayerAuthInputFlag::HandledTeleport->value],
+                ),
+            ])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        self::assertSame([], $channel->drainCommands());
+        self::assertFalse($channel->isClosed());
+    }
+
     public function testQueuedChunkIsSerializedFromLatestAuthoritativeWorldAtSendTime(): void
     {
         $data = BedrockDataSet::bundled();
@@ -3237,6 +3374,30 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertFalse($channel->queuePacket($chunk));
         self::assertFalse($channel->isClosed());
         self::assertSame(0, $workers->submissionCount);
+    }
+
+    public function testUnresolvedOrderedCompressionPreventsWorldSwitchReadinessAndCommit(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $internal = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $destination = new World(
+            new WorldMetadata('destination-compression-fence', 3),
+            new FlatWorldGenerator(FixedFlatBlockPalette::fromRegistry($internal)),
+            new ChunkRepository(32),
+        );
+        $workers = new NonCompletingCompressionWorkerDispatcher();
+        [$channel] = $this->channel(compressionWorkers: $workers);
+        self::assertTrue($channel->queuePacket(
+            new LevelChunkPacket(0, 0, 0, 0, str_repeat('x', 150_000)),
+        ));
+        self::assertSame(1, $workers->submissionCount);
+        self::assertTrue($channel->beginWorldSwitch($destination, null, 160.0, 70.0, -80.0));
+
+        for ($attempt = 0; $attempt < 16; ++$attempt) {
+            self::assertFalse($channel->worldSwitchReady());
+        }
+        self::assertFalse($channel->commitWorldSwitch(90.0, 0.0));
+        self::assertFalse($channel->isClosed());
     }
 
     public function testPreparedTransientBatchDoesNotQueueBehindUnresolvedCompression(): void

@@ -53,7 +53,7 @@ final class PluginPackageLoaderTest extends TestCase
 
     public function testRejectsUnsupportedApiAndSerializedMetadataIndependently(): void
     {
-        $this->buildPhar('unsupported.phar', str_replace('"^0.1"', '"^2.0"', $this->manifest()), '<?php');
+        $this->buildPhar('unsupported.phar', str_replace('"^0.3"', '"^2.0"', $this->manifest()), '<?php');
         $this->buildPhar('metadata.phar', $this->manifest('MetadataPlugin'), '<?php', true);
         $failures = [];
 
@@ -100,7 +100,7 @@ final class PluginPackageLoaderTest extends TestCase
             'schema' => 1,
             'name' => $name,
             'version' => '1.0.0',
-            'api' => '^0.1',
+            'api' => '^0.3',
             'main' => "Fixture\\{$name}\\Main",
             'namespace' => "Fixture\\{$name}",
             'authors' => ['Bedriox Team'],

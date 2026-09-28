@@ -6,6 +6,7 @@ namespace Bedriox\Server\Simulation;
 
 use Bedriox\Api\Entity\EntityDamageCause;
 use Bedriox\Api\Entity\EntityInteractionType;
+use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Server\Player\InventoryContainer;
 use Bedriox\Server\Player\InventoryResponseMode;
@@ -33,11 +34,15 @@ use Bedriox\Server\Simulation\Command\MovePlayer;
 use Bedriox\Server\Simulation\Command\PerformEmote;
 use Bedriox\Server\Simulation\Command\PlaceBlock;
 use Bedriox\Server\Simulation\Command\ReleaseItem;
+use Bedriox\Server\Simulation\Command\RemovePluginInventoryStack;
 use Bedriox\Server\Simulation\Command\RespawnPlayer;
 use Bedriox\Server\Simulation\Command\SelectHotbarSlot;
 use Bedriox\Server\Simulation\Command\SendChat;
 use Bedriox\Server\Simulation\Command\SendPluginMessage;
+use Bedriox\Server\Simulation\Command\SetPluginArmorContents;
 use Bedriox\Server\Simulation\Command\SetPluginBlock;
+use Bedriox\Server\Simulation\Command\SetPluginEquipmentSlot;
+use Bedriox\Server\Simulation\Command\SetPluginInventoryContents;
 use Bedriox\Server\Simulation\Command\SetPluginInventorySlot;
 use Bedriox\Server\Simulation\Command\SwingArm;
 use Bedriox\Server\Simulation\Command\SyncInventory;
@@ -212,6 +217,47 @@ final readonly class SimulationCommandFactory
         }
 
         return new SetPluginInventorySlot($session, $slot, $stack);
+    }
+
+    /** @param array<int, InventoryStack|null> $contents */
+    public function pluginInventoryContents(string $session, array $contents): SetPluginInventoryContents
+    {
+        $this->assertOpaqueId($session, 128, 'session');
+        if (count($contents) !== PlayerInventory::SLOT_COUNT || !array_is_list($contents)) {
+            throw new CommandValidationException('Plugin inventory contents must contain exactly 36 slots.');
+        }
+        return new SetPluginInventoryContents($session, $contents);
+    }
+
+    /** @param array<int, InventoryStack|null> $contents */
+    public function pluginArmorContents(string $session, array $contents): SetPluginArmorContents
+    {
+        $this->assertOpaqueId($session, 128, 'session');
+        if (count($contents) !== PlayerInventory::ARMOR_SLOT_COUNT || !array_is_list($contents)) {
+            throw new CommandValidationException('Plugin armor contents must contain exactly four slots.');
+        }
+
+        return new SetPluginArmorContents($session, $contents);
+    }
+
+    public function removePluginInventoryStack(string $session, InventoryStack $stack): RemovePluginInventoryStack
+    {
+        $this->assertOpaqueId($session, 128, 'session');
+
+        return new RemovePluginInventoryStack($session, $stack);
+    }
+
+    public function pluginEquipmentSlot(
+        string $session,
+        EquipmentSlot $slot,
+        ?InventoryStack $stack,
+    ): SetPluginEquipmentSlot {
+        $this->assertOpaqueId($session, 128, 'session');
+        if ($slot === EquipmentSlot::MAIN_HAND) {
+            throw new CommandValidationException('Main-hand changes must target the selected main inventory slot.');
+        }
+
+        return new SetPluginEquipmentSlot($session, $slot, $stack);
     }
 
     public function emote(string $session, string $emoteId): PerformEmote

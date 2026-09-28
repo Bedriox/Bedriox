@@ -97,7 +97,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
         $sender = new BuiltinCommandSender();
         self::assertTrue(($registry->dispatch($sender, 'ver'))->isSuccess());
         self::assertSame(
-            'This server is running Bedriox version 0.2.0-alpha.1 (protocol 2193).',
+            'This server is running Bedriox version 0.3.0-alpha.1 (protocol 2193).',
             $sender->messages[0],
         );
         self::assertSame('Visit https://bedriox.com', $sender->messages[1]);
@@ -234,7 +234,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
         $versionSender = new BuiltinCommandSender(CommandSenderType::PLAYER);
         self::assertTrue(($registry->dispatch($versionSender, 'version'))->isSuccess());
         self::assertSame(
-            "\u{00a7}aThis server is running Bedriox version 0.2.0-alpha.1 (protocol 2193).\u{00a7}r",
+            "\u{00a7}aThis server is running Bedriox version 0.3.0-alpha.1 (protocol 2193).\u{00a7}r",
             $versionSender->messages[0],
         );
         self::assertSame("\u{00a7}bVisit https://bedriox.com\u{00a7}r", $versionSender->messages[1]);
@@ -325,7 +325,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
         self::assertTrue(($registry->dispatch($sender, 'status'))->isSuccess());
         self::assertSame([
             '--------- Bedriox Status ---------',
-            'Version: Bedriox 0.2.0-alpha.1',
+            'Version: Bedriox 0.3.0-alpha.1',
             'Uptime: 1d 01h 01m 01s',
             'Players: 2/20 online',
             'TPS: 20.00 current, 19.95 average',

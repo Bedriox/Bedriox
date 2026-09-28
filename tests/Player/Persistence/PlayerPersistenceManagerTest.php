@@ -64,7 +64,7 @@ final class PlayerPersistenceManagerTest extends TestCase
         self::assertSame($stored, $store->profile);
     }
 
-    public function testUnavailableWorldUsesDefaultSpawnWithoutDiscardingInventory(): void
+    public function testSavedWorldIsPreservedForRuntimeAvailabilityResolution(): void
     {
         $palette = self::palette();
         $stored = new PlayerBootstrap(
@@ -87,8 +87,9 @@ final class PlayerPersistenceManagerTest extends TestCase
 
         $loaded = $manager->load(self::login());
 
-        self::assertEquals($spawn, $loaded->position);
-        self::assertSame(0.0, $loaded->yaw);
+        self::assertSame('unavailable', $loaded->worldName);
+        self::assertEquals($stored->position, $loaded->position);
+        self::assertSame(40.0, $loaded->yaw);
         self::assertEquals($stored->inventory, $loaded->inventory);
     }
 

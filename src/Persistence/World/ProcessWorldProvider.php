@@ -31,6 +31,9 @@ use Bedriox\Server\Worker\Protocol\WorkerFrame;
 use Bedriox\Server\Worker\Protocol\WorkerFrameCodec;
 use Bedriox\Server\Worker\Protocol\WorkerFrameDecoder;
 use Bedriox\Server\Worker\Protocol\WorkerFrameKind;
+use Bedriox\Server\Worker\Task\SpawnWorldStorageOwnerRequest;
+use Bedriox\Server\Worker\WorkerDispatcher;
+use Bedriox\Server\Worker\WorkerResultStatus;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\Provider\AsynchronousWorldDataProvider;
@@ -56,6 +59,16 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
     private $process = null;
     /** @var resource|null */
     private $connection = null;
+    /** @var resource|null */
+    private $startupListener = null;
+    private string $startupToken = '';
+    private string $startupReceivedToken = '';
+    private string $startupOutgoing = '';
+    private string $startupNonce = '';
+    private int $startupDeadlineNanoseconds = 0;
+    private bool $startupReady = false;
+    private bool $externallyLaunched = false;
+    private ?string $externalLaunchFailure = null;
     private readonly string $epoch;
     private readonly WorkerFrameCodec $frames;
     private readonly ChunkTransferCodec $chunks;
@@ -105,6 +118,9 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
         private readonly BlockStateRegistry $blockStates,
         private readonly int $requestTimeoutMilliseconds,
         private readonly string $entryPoint,
+        private readonly ?WorkerDispatcher $processLauncher = null,
+        private readonly int $processLauncherTaskType = 0,
+        ?EntityPersistenceCodec $entityPersistenceCodec = null,
     ) {
         if ($applicationVersion === '' || strlen($applicationVersion) > 128
             || $requestTimeoutMilliseconds < 100 || $requestTimeoutMilliseconds > 300_000) {
@@ -114,7 +130,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
         $this->frames = new WorkerFrameCodec();
         $this->chunks = new ChunkTransferCodec();
         $this->worldDataCodec = new WorldDataIpcCodec();
-        $this->entityPersistenceCodec = EntityPersistenceCodec::vanilla();
+        $this->entityPersistenceCodec = $entityPersistenceCodec ?? EntityPersistenceCodec::vanilla();
         $this->entityOwnershipTransfers = new EntityOwnershipTransferCodec($this->entityPersistenceCodec);
         $this->entityOwnershipTransferResults = new EntityOwnershipTransferResultCodec($this->entityPersistenceCodec);
         $this->chunkLoadPayloads = new WorldChunkLoadPayloadCodec();
@@ -135,6 +151,40 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
         BlockStateRegistry $blockStates,
         int $requestTimeoutMilliseconds = 30_000,
         ?string $entryPoint = null,
+        ?WorkerDispatcher $processLauncher = null,
+        int $processLauncherTaskType = 0,
+        ?EntityPersistenceCodec $entityPersistenceCodec = null,
+    ): self {
+        $provider = self::beginStart(
+            $applicationVersion,
+            $startup,
+            $blockStates,
+            $requestTimeoutMilliseconds,
+            $entryPoint,
+            $processLauncher,
+            $processLauncherTaskType,
+            $entityPersistenceCodec,
+        );
+        while (!$provider->pollStartup()) {
+            usleep(1_000);
+        }
+
+        return $provider;
+    }
+
+    /**
+     * Starts the dedicated storage owner without waiting for its LevelDB open/create work.
+     * Call pollStartup() from the authoritative loop and publish the provider only after it returns true.
+     */
+    public static function beginStart(
+        string $applicationVersion,
+        WorldStorageStartup $startup,
+        BlockStateRegistry $blockStates,
+        int $requestTimeoutMilliseconds = 30_000,
+        ?string $entryPoint = null,
+        ?WorkerDispatcher $processLauncher = null,
+        int $processLauncherTaskType = 0,
+        ?EntityPersistenceCodec $entityPersistenceCodec = null,
     ): self {
         $provider = new self(
             $applicationVersion,
@@ -142,10 +192,179 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
             $blockStates,
             $requestTimeoutMilliseconds,
             $entryPoint ?? dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . 'bootstrap' . DIRECTORY_SEPARATOR . 'bedriox-io.php',
+            $processLauncher,
+            $processLauncherTaskType,
+            $entityPersistenceCodec,
         );
-        $provider->launch();
+        $provider->beginLaunch();
 
         return $provider;
+    }
+
+    /** @phpstan-impure Advances the bounded nonblocking startup handshake. */
+    public function pollStartup(): bool
+    {
+        if ($this->startupReady) {
+            return true;
+        }
+        if ($this->closed) {
+            throw new WorldProviderClosedException('World provider startup is closed.');
+        }
+        if (hrtime(true) >= $this->startupDeadlineNanoseconds) {
+            throw $this->failOwner('Timed out starting the world storage process.');
+        }
+        if (!is_resource($this->connection)) {
+            if (!is_resource($this->startupListener)) {
+                throw $this->failOwner('World storage IPC listener is unavailable during startup.');
+            }
+            if (!$this->startupListenerReadable()) {
+                $this->assertStartupProcessRunning();
+
+                return false;
+            }
+            $connection = @stream_socket_accept($this->startupListener, 0);
+            if (!is_resource($connection)) {
+                $this->assertStartupProcessRunning();
+
+                return false;
+            }
+            @fclose($this->startupListener);
+            $this->startupListener = null;
+            stream_set_blocking($connection, false);
+            $this->connection = $connection;
+        }
+
+        if (strlen($this->startupReceivedToken) < strlen($this->startupToken)) {
+            if (!$this->startupConnectionReadable()) {
+                $this->assertStartupProcessRunning();
+
+                return false;
+            }
+            $chunk = @fread(
+                $this->connection,
+                max(1, strlen($this->startupToken) - strlen($this->startupReceivedToken)),
+            );
+            if ($chunk === false) {
+                throw $this->failOwner('World storage IPC authentication read failed.');
+            }
+            $this->startupReceivedToken .= $chunk;
+            if (strlen($this->startupReceivedToken) < strlen($this->startupToken)) {
+                $this->assertStartupProcessRunning();
+
+                return false;
+            }
+            if (!hash_equals($this->startupToken, $this->startupReceivedToken)) {
+                throw $this->failOwner('World storage IPC authentication failed.');
+            }
+            $this->startupOutgoing = $this->frames->encode(new WorkerFrame(
+                WorkerFrameKind::HELLO,
+                $this->epoch,
+                metadata: WorldStorageProcessProgram::identity($this->applicationVersion, $this->startupNonce),
+                payload: (new WorldStorageStartupCodec())->encode($this->startup),
+            ));
+        }
+
+        if ($this->startupOutgoing !== '') {
+            $written = @fwrite($this->connection, $this->startupOutgoing);
+            if ($written === false) {
+                throw $this->failOwner('World storage IPC handshake write failed.');
+            }
+            if ($written > 0) {
+                $this->startupOutgoing = substr($this->startupOutgoing, $written);
+            }
+            if ($this->startupOutgoing !== '') {
+                return false;
+            }
+
+            // The storage owner performs its potentially expensive open/create work
+            // only after receiving HELLO. Never wait for READY in the same poll.
+            return false;
+        }
+
+        if (!$this->startupConnectionReadable()) {
+            $this->assertStartupProcessRunning();
+
+            return false;
+        }
+
+        $bytes = @fread($this->connection, 262_144);
+        if ($bytes === false) {
+            throw $this->failOwner('World storage IPC handshake read failed.');
+        }
+        if ($bytes === '') {
+            $this->assertStartupProcessRunning();
+
+            return false;
+        }
+        try {
+            $readyFrames = $this->asyncDecoder->push($bytes, 2);
+        } catch (Throwable $error) {
+            throw $this->failOwner('World storage process handshake framing failed.', $error);
+        }
+        if ($readyFrames === []) {
+            return false;
+        }
+        if (count($readyFrames) !== 1) {
+            throw $this->failOwner('World storage process returned an invalid startup frame count.');
+        }
+        $ready = $readyFrames[0];
+        if (!hash_equals($this->epoch, $ready->epoch)) {
+            throw $this->failOwner('World storage process handshake failed.');
+        }
+        if ($ready->kind === WorkerFrameKind::FAILURE) {
+            $this->closed = true;
+            $this->closeProcess();
+            throw self::mappedFailure(
+                is_string($ready->metadata['code'] ?? null) ? $ready->metadata['code'] : 'storage_failure',
+                $ready->metadata,
+            );
+        }
+        if ($ready->kind !== WorkerFrameKind::READY
+            || $ready->metadata !== WorldStorageProcessProgram::identity($this->applicationVersion, $this->startupNonce)) {
+            throw $this->failOwner('World storage process identity did not match.');
+        }
+        try {
+            $this->data = $this->worldDataCodec->decode($ready->payload);
+        } catch (Throwable $error) {
+            throw $this->failOwner('World storage process returned invalid world data.', $error);
+        }
+        stream_set_timeout(
+            $this->connection,
+            intdiv($this->requestTimeoutMilliseconds, 1_000),
+            ($this->requestTimeoutMilliseconds % 1_000) * 1_000,
+        );
+        $this->startupToken = '';
+        $this->startupReceivedToken = '';
+        $this->startupNonce = '';
+        $this->startupReady = true;
+
+        return true;
+    }
+
+    private function startupListenerReadable(): bool
+    {
+        if (!is_resource($this->startupListener)) {
+            return false;
+        }
+        $read = [$this->startupListener];
+        $write = [];
+        $except = [];
+        $selected = @stream_select($read, $write, $except, 0, 0);
+
+        return is_int($selected) && $selected > 0;
+    }
+
+    private function startupConnectionReadable(): bool
+    {
+        if (!is_resource($this->connection)) {
+            return false;
+        }
+        $read = [$this->connection];
+        $write = [];
+        $except = [];
+        $selected = @stream_select($read, $write, $except, 0, 0);
+
+        return is_int($selected) && $selected > 0;
     }
 
     public function worldData(): WorldData
@@ -598,6 +817,12 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
         if ($this->closed) {
             return;
         }
+        if (!$this->startupReady) {
+            $this->closed = true;
+            $this->closeProcess();
+
+            return;
+        }
         $failure = null;
         try {
             $this->drainChunkSaves($this->requestTimeoutMilliseconds);
@@ -640,7 +865,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
         }
     }
 
-    private function launch(): void
+    private function beginLaunch(): void
     {
         if (!is_file($this->entryPoint)) {
             throw new WorldStorageException('World storage process entry point is unavailable.');
@@ -655,6 +880,39 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
             throw new WorldStorageException('World storage IPC endpoint is unavailable.');
         }
         $token = random_bytes(32);
+        if ($this->processLauncher !== null) {
+            if ($this->processLauncherTaskType < 1) {
+                @fclose($listener);
+                throw new WorldStorageException('World storage process launcher task is invalid.');
+            }
+            $submission = $this->processLauncher->submit(
+                $this->processLauncherTaskType,
+                (new SpawnWorldStorageOwnerRequest(
+                    bin2hex($this->epoch),
+                    $this->applicationVersion,
+                    'tcp://' . $endpoint,
+                    bin2hex($token),
+                ))->encode(),
+                function (\Bedriox\Server\Worker\WorkerResult $result): void {
+                    if ($result->status !== WorkerResultStatus::SUCCESS) {
+                        $this->externalLaunchFailure = $result->failureCode ?? $result->status->value;
+                    }
+                },
+                hrtime(true) + 10_000_000_000,
+            );
+            if (!$submission->isAccepted()) {
+                @fclose($listener);
+                throw new WorldStorageException('World storage process launch queue rejected the request.');
+            }
+            $this->externallyLaunched = true;
+            $this->startupListener = $listener;
+            stream_set_blocking($this->startupListener, false);
+            $this->startupToken = $token;
+            $this->startupNonce = bin2hex(random_bytes(16));
+            $this->startupDeadlineNanoseconds = hrtime(true) + max(5_000, $this->requestTimeoutMilliseconds) * 1_000_000;
+
+            return;
+        }
         $pipes = [];
         $process = @proc_open(
             ProcessEnvironment::phpCommand(
@@ -679,58 +937,31 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
             @fclose($listener);
             throw new WorldStorageException('World storage process could not be started.');
         }
-        $connection = @stream_socket_accept($listener, 5);
-        @fclose($listener);
-        if (!is_resource($connection)) {
-            @proc_terminate($process);
-            throw new WorldStorageException('World storage process did not connect to its IPC endpoint.');
-        }
-        stream_set_blocking($connection, true);
-        stream_set_timeout($connection, 5);
-        $receivedToken = $this->readExact($connection, strlen($token));
-        if (!is_string($receivedToken) || !hash_equals($token, $receivedToken)) {
-            @fclose($connection);
-            @proc_terminate($process);
-            throw new WorldStorageException('World storage IPC authentication failed.');
-        }
         $this->process = $process;
-        $this->connection = $connection;
-        $nonce = bin2hex(random_bytes(16));
-        $this->writeFrame(new WorkerFrame(
-            WorkerFrameKind::HELLO,
-            $this->epoch,
-            metadata: WorldStorageProcessProgram::identity($this->applicationVersion, $nonce),
-            payload: (new WorldStorageStartupCodec())->encode($this->startup),
-        ));
-        $ready = $this->readFrame();
-        if ($ready === null || !hash_equals($this->epoch, $ready->epoch)) {
-            $this->closeProcess();
-            throw new WorldStorageException('World storage process handshake failed.');
+        $this->startupListener = $listener;
+        stream_set_blocking($this->startupListener, false);
+        $this->startupToken = $token;
+        $this->startupNonce = bin2hex(random_bytes(16));
+        // Startup has always had its own five-second process-handshake allowance;
+        // short request deadlines apply only after the provider is ready.
+        $this->startupDeadlineNanoseconds = hrtime(true) + max(5_000, $this->requestTimeoutMilliseconds) * 1_000_000;
+    }
+
+    private function assertStartupProcessRunning(): void
+    {
+        if ($this->externallyLaunched) {
+            if ($this->externalLaunchFailure !== null) {
+                throw $this->failOwner('World storage process launch failed: ' . $this->externalLaunchFailure);
+            }
+
+            return;
         }
-        if ($ready->kind === WorkerFrameKind::FAILURE) {
-            $this->closeProcess();
-            throw self::mappedFailure(
-                is_string($ready->metadata['code'] ?? null) ? $ready->metadata['code'] : 'storage_failure',
-                $ready->metadata,
-            );
+        if (!is_resource($this->process)) {
+            throw $this->failOwner('World storage process exited during startup.');
         }
-        if ($ready->kind !== WorkerFrameKind::READY
-            || $ready->metadata !== WorldStorageProcessProgram::identity($this->applicationVersion, $nonce)) {
-            $this->closeProcess();
-            throw new WorldStorageException('World storage process identity did not match.');
-        }
-        try {
-            $this->data = $this->worldDataCodec->decode($ready->payload);
-        } catch (Throwable $error) {
-            $this->closeProcess();
-            throw new WorldStorageException('World storage process returned invalid world data.', previous: $error);
-        }
-        stream_set_timeout(
-            $connection,
-            intdiv($this->requestTimeoutMilliseconds, 1_000),
-            ($this->requestTimeoutMilliseconds % 1_000) * 1_000,
-        );
-        stream_set_blocking($connection, false);
+        // proc_get_status() may synchronously wait on Windows process bookkeeping.
+        // Socket EOF and the bounded startup deadline detect an exited owner without
+        // placing that platform cost on the authoritative loop.
     }
 
     private function request(
@@ -1119,7 +1350,8 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
 
     private function assertOpen(): void
     {
-        if ($this->closed || !is_resource($this->process) || !is_resource($this->connection)) {
+        $processUnavailable = !$this->externallyLaunched && !is_resource($this->process);
+        if (!$this->startupReady || $this->closed || $processUnavailable || !is_resource($this->connection)) {
             throw new WorldProviderClosedException('World provider is closed.');
         }
     }
@@ -1223,6 +1455,10 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
 
     private function closeProcess(): void
     {
+        if (is_resource($this->startupListener)) {
+            @fclose($this->startupListener);
+        }
+        $this->startupListener = null;
         if (is_resource($this->connection)) {
             @fclose($this->connection);
         }

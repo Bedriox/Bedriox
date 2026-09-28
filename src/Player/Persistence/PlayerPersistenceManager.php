@@ -58,13 +58,12 @@ final class PlayerPersistenceManager
             );
         }
 
-        $sameWorld = $saved->worldName === $this->worldName;
         $savedAlive = $saved->health > 0.0;
-        $restoreLocation = $sameWorld && $savedAlive;
+        $restoreLocation = $savedAlive;
 
         return new PlayerBootstrap(
             new PlayerIdentity($uuid, $login->displayName, $login->xuid),
-            $this->worldName,
+            $restoreLocation ? $saved->worldName : $this->worldName,
             $restoreLocation ? $saved->position : $this->defaultSpawn,
             $restoreLocation ? $saved->yaw : 0.0,
             $restoreLocation ? $saved->pitch : 0.0,
@@ -83,7 +82,7 @@ final class PlayerPersistenceManager
     {
         return new PlayerBootstrap(
             $player->identity,
-            $player->worldName,
+            $player->worldName(),
             $player->movement->position,
             $player->movement->yaw,
             $player->movement->pitch,
