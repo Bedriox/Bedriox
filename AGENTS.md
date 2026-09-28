@@ -32,6 +32,7 @@ Do not commit `vendor/`, credentials, access tokens, Minecraft client assets, pe
 
 ## Coding rules
 
+- Every first-party `.php` file must begin with the repository's exact Bedriox copyright and `GPL-3.0-only` source header. This includes production source, tests, bootstrap processes, tools, PHP configuration files, and executable PHP entry points. Preserve an executable shebang before `<?php` when required. Never add, move, or generate a PHP file without the header, and run `composer validate:headers` after any PHP file is added or moved.
 - Target 64-bit PHP 8.4 through PHP 8.x and begin every PHP source file with `declare(strict_types=1);`.
 - Keep `bin/bedriox` thin; behavior belongs in testable classes under `src/`.
 - Prefer immutable commands, events, configuration, and boundary values.

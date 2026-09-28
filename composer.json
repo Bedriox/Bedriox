@@ -71,6 +71,7 @@
         "verify:audit": "composer audit --locked",
         "validate:manifest": "@php tools/validate-manifest.php",
         "validate:docs": "@php tools/validate-docs.php",
+        "validate:headers": "@php tools/validate-source-headers.php",
         "validate:licenses": "@php tools/validate-licenses.php",
         "format:check": "php-cs-fixer fix --dry-run --diff",
         "format": "php-cs-fixer fix",
@@ -79,6 +80,7 @@
             "@verify:audit",
             "@validate:manifest",
             "@validate:docs",
+            "@validate:headers",
             "@validate:licenses",
             "@format:check",
             "@analyse"
