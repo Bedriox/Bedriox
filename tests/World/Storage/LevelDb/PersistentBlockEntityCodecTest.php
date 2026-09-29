@@ -22,6 +22,11 @@ namespace Bedriox\Server\Tests\World\Storage\LevelDb;
 
 use Bedriox\Api\Inventory\ItemNbt;
 use Bedriox\Protocol\Packet\LittleEndianNbtToNetwork;
+use Bedriox\Server\Gameplay\Processing\CampfireBlockEntity;
+use Bedriox\Server\Gameplay\Processing\CampfireType;
+use Bedriox\Server\Gameplay\Processing\CauldronBlockEntity;
+use Bedriox\Server\Gameplay\Processing\FurnaceBlockEntity;
+use Bedriox\Server\Gameplay\Processing\FurnaceType;
 use Bedriox\Server\World\BlockEntity\BlockEntityCollection;
 use Bedriox\Server\World\BlockEntity\BlockEntityType;
 use Bedriox\Server\World\BlockEntity\ContainerBlockEntity;
@@ -36,6 +41,52 @@ use PHPUnit\Framework\TestCase;
 
 final class PersistentBlockEntityCodecTest extends TestCase
 {
+    public function testPotionCauldronMetadataRoundTripsAndProjectsToNetworkNbt(): void
+    {
+        $chunk = new ChunkPosition(0, 0);
+        $entity = new CauldronBlockEntity(new BlockPosition(3, 70, 4), 17);
+        $codec = new PersistentBlockEntityCodec();
+
+        $decoded = $codec->decode($codec->encode(new BlockEntityCollection($chunk, [$entity])), $chunk)
+            ->at($entity->position);
+
+        self::assertInstanceOf(CauldronBlockEntity::class, $decoded);
+        self::assertSame(17, $decoded->potionAuxValue);
+        self::assertNotSame('', $codec->encodeNetworkEntity($decoded));
+    }
+
+    public function testProcessingStationsRoundTripProgressAndInventories(): void
+    {
+        $chunk = new ChunkPosition(0, 0);
+        $furnace = FurnaceBlockEntity::empty(FurnaceType::BlastFurnace, new BlockPosition(1, 64, 1));
+        $furnace = $furnace->withState(
+            $furnace->inventory->withStack(0, new ContainerItemStack('minecraft:raw_iron', 3)),
+            80,
+            100,
+            42,
+            700,
+        );
+        $campfire = CampfireBlockEntity::empty(CampfireType::SoulCampfire, new BlockPosition(2, 64, 1));
+        $campfire = $campfire->withState(
+            $campfire->inventory->withStack(2, new ContainerItemStack('minecraft:beef', 1)),
+            [2 => 125],
+            [2 => 600],
+        );
+        $codec = new PersistentBlockEntityCodec();
+
+        $decoded = $codec->decode($codec->encode(new BlockEntityCollection($chunk, [$furnace, $campfire])), $chunk);
+
+        $loadedFurnace = $decoded->at($furnace->position);
+        self::assertInstanceOf(FurnaceBlockEntity::class, $loadedFurnace);
+        self::assertSame(FurnaceType::BlastFurnace, $loadedFurnace->furnaceType);
+        self::assertSame(42, $loadedFurnace->cookTime);
+        self::assertSame(700, $loadedFurnace->storedExperienceMilli);
+        $loadedCampfire = $decoded->at($campfire->position);
+        self::assertInstanceOf(CampfireBlockEntity::class, $loadedCampfire);
+        self::assertSame(CampfireType::SoulCampfire, $loadedCampfire->campfireType);
+        self::assertSame(125, $loadedCampfire->progressBySlot[2]);
+    }
+
     public function testContainerDataUsesMojangFieldsAndRoundTripsCanonicalItems(): void
     {
         $position = new ChunkPosition(-1, 2);

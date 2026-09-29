@@ -25,9 +25,11 @@ use Bedriox\Data\BedrockDataSet;
 use Bedriox\Data\RecipeIngredient as DataIngredient;
 use Bedriox\Data\RecipeIngredientType;
 use Bedriox\Data\RecipeOutput as DataOutput;
+use Bedriox\Data\RecipeStation;
 use Bedriox\Data\RecipeType as DataRecipeType;
 use Bedriox\Data\ShapedRecipe as DataShapedRecipe;
 use Bedriox\Data\ShapelessRecipe as DataShapelessRecipe;
+use Bedriox\Data\SmithingTransformRecipe as DataSmithingTransformRecipe;
 use Bedriox\Protocol\Packet\ContainerMixData;
 use Bedriox\Protocol\Packet\CraftingDataPacket;
 use Bedriox\Protocol\Packet\CraftingRecipe as ProtocolRecipe;
@@ -39,6 +41,8 @@ use Bedriox\Protocol\Packet\MultiCraftingRecipe;
 use Bedriox\Protocol\Packet\PotionMixData;
 use Bedriox\Protocol\Packet\ShapedCraftingRecipe;
 use Bedriox\Protocol\Packet\ShapelessCraftingRecipe;
+use Bedriox\Protocol\Packet\SmithingTransformRecipe as ProtocolSmithingTransformRecipe;
+use Bedriox\Protocol\Packet\SmithingTrimRecipe as ProtocolSmithingTrimRecipe;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Runtime\BedrockInventoryPacketProjector;
 use Bedriox\Server\World\Block\BlockStateRegistry;
@@ -58,11 +62,23 @@ final class CraftingCatalog
     /** @var array<int, string> */
     private array $complexByNetworkId;
 
+    /** @var list<ProtocolSmithingTransformRecipe> */
+    private array $smithingTransformRecipes;
+
+    /** @var list<ProtocolSmithingTrimRecipe> */
+    private array $smithingTrimRecipes;
+
+    /** @var array<int, int> Protocol recipe network ID to admitted workstation source index. */
+    private array $workstationSourceIndexes;
+
     /**
      * @param list<ProtocolRecipe> $protocolRecipes
      * @param array<int, string> $complexByNetworkId
      * @param list<PotionMixData> $potionMixData
      * @param list<ContainerMixData> $containerMixData
+     * @param list<ProtocolSmithingTransformRecipe> $smithingTransformRecipes
+     * @param list<ProtocolSmithingTrimRecipe> $smithingTrimRecipes
+     * @param array<int, int> $workstationSourceIndexes
      */
     private function __construct(
         private readonly CraftingRecipeRegistry $recipes,
@@ -71,9 +87,15 @@ final class CraftingCatalog
         private readonly BedrockInventoryPacketProjector $projector,
         private readonly array $potionMixData,
         private readonly array $containerMixData,
+        array $smithingTransformRecipes,
+        array $smithingTrimRecipes,
+        array $workstationSourceIndexes,
     ) {
         $this->staticProtocolRecipes = $protocolRecipes;
         $this->complexByNetworkId = $complexByNetworkId;
+        $this->smithingTransformRecipes = $smithingTransformRecipes;
+        $this->smithingTrimRecipes = $smithingTrimRecipes;
+        $this->workstationSourceIndexes = $workstationSourceIndexes;
     }
 
     public static function fromData(
@@ -139,13 +161,53 @@ final class CraftingCatalog
 
         $complexByNetworkId = [];
         $complexRecipes = $data->recipeRegistry()->complexRecipes();
-        $registry->reserveNetworkIds(count($complexRecipes));
+        $stonecutterRecipes = $data->recipeRegistry()->recipesForStation(RecipeStation::STONECUTTER);
+        $smithingTransformSources = $data->recipeRegistry()->smithingTransformRecipes();
+        $smithingTrimSources = $data->recipeRegistry()->smithingTrimRecipes();
+        $registry->reserveNetworkIds(
+            count($complexRecipes)
+            + count($stonecutterRecipes)
+            + count($smithingTransformSources)
+            + count($smithingTrimSources),
+        );
         $nextNetworkId = count($protocol) + 1;
         foreach ($complexRecipes as $source) {
             $uuid = $source->uuid();
             $protocol[] = new MultiCraftingRecipe($uuid, $nextNetworkId);
             $complexByNetworkId[$nextNetworkId] = $uuid;
             ++$nextNetworkId;
+        }
+
+        $workstationSourceIndexes = [];
+        foreach ($stonecutterRecipes as $source) {
+            if (!$source instanceof DataShapelessRecipe) {
+                throw new InvalidArgumentException('Stonecutter recipe has an unsupported admitted type.');
+            }
+            $protocol[] = self::protocolRecipe($source, $nextNetworkId, $projector, $items, $blocks);
+            $workstationSourceIndexes[$nextNetworkId] = $source->sourceIndex();
+            ++$nextNetworkId;
+        }
+
+        $smithingTransforms = [];
+        foreach ($smithingTransformSources as $source) {
+            $smithingTransforms[] = self::protocolSmithingTransform(
+                $source,
+                $nextNetworkId++,
+                $projector,
+                $items,
+                $blocks,
+            );
+        }
+        $smithingTrims = [];
+        foreach ($smithingTrimSources as $source) {
+            $smithingTrims[] = new ProtocolSmithingTrimRecipe(
+                'minecraft:smithing_trim/' . $source->sourceIndex(),
+                self::protocolIngredient($source->template()),
+                self::protocolIngredient($source->base()),
+                self::protocolIngredient($source->addition()),
+                'smithing_table',
+                $nextNetworkId++,
+            );
         }
 
         $networkItems = $data->itemNetworkRegistry();
@@ -163,12 +225,27 @@ final class CraftingCatalog
             $networkItems->definitionForIdentifier($mix->outputItemIdentifier())->networkRuntimeId(),
         ), $data->recipeRegistry()->containerMixes());
 
-        return new self($registry, $protocol, $complexByNetworkId, $projector, $potionMixData, $containerMixData);
+        return new self(
+            $registry,
+            $protocol,
+            $complexByNetworkId,
+            $projector,
+            $potionMixData,
+            $containerMixData,
+            $smithingTransforms,
+            $smithingTrims,
+            $workstationSourceIndexes,
+        );
     }
 
     public function recipes(): CraftingRecipeRegistry
     {
         return $this->recipes;
+    }
+
+    public function workstationSourceIndex(int $recipeNetworkId): ?int
+    {
+        return $this->workstationSourceIndexes[$recipeNetworkId] ?? null;
     }
 
     /** @return list<ProtocolRecipe> */
@@ -212,6 +289,8 @@ final class CraftingCatalog
             true,
             $this->potionMixData,
             $this->containerMixData,
+            $this->smithingTransformRecipes,
+            $this->smithingTrimRecipes,
         );
     }
 
@@ -481,7 +560,7 @@ final class CraftingCatalog
             $ingredients,
             $results,
             $uuid,
-            'crafting_table',
+            $source->station()->value,
             $source->priority(),
             $requirement,
             $networkId,
@@ -501,6 +580,33 @@ final class CraftingCatalog
             $source->itemIdentifier() ?? throw new InvalidArgumentException('Exact recipe ingredient has no item.'),
             $source->count(),
             $source->auxValue() ?? 0x7fff,
+        );
+    }
+
+    private static function protocolSmithingTransform(
+        DataSmithingTransformRecipe $source,
+        int $networkId,
+        BedrockInventoryPacketProjector $projector,
+        ItemCatalog $items,
+        BlockStateRegistry $blocks,
+    ): ProtocolSmithingTransformRecipe {
+        $result = $projector->toProtocol(self::output($source->output(), $items, $blocks)->toInventoryStack(1));
+
+        return new ProtocolSmithingTransformRecipe(
+            'minecraft:smithing_transform/' . $source->sourceIndex(),
+            self::protocolIngredient($source->template()),
+            self::protocolIngredient($source->base()),
+            self::protocolIngredient($source->addition()),
+            new ProtocolItemStack(
+                $result->runtimeId,
+                $result->count,
+                $result->aux,
+                null,
+                $result->blockRuntimeId,
+                $result->userData,
+            ),
+            'smithing_table',
+            $networkId,
         );
     }
 

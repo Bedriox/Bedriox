@@ -43,10 +43,12 @@ use Bedriox\Protocol\Packet\CommandRequestPacket;
 use Bedriox\Protocol\Packet\ConsumeItemStackRequestAction;
 use Bedriox\Protocol\Packet\ContainerClosePacket;
 use Bedriox\Protocol\Packet\ContainerOpenPacket;
+use Bedriox\Protocol\Packet\ContainerSlotType;
 use Bedriox\Protocol\Packet\ContainerType;
 use Bedriox\Protocol\Packet\CorrectPlayerMovePredictionPacket;
 use Bedriox\Protocol\Packet\CraftCreativeItemStackRequestAction;
 use Bedriox\Protocol\Packet\CraftRecipeItemStackRequestAction;
+use Bedriox\Protocol\Packet\CraftRecipeOptionalItemStackRequestAction;
 use Bedriox\Protocol\Packet\CreateItemStackRequestAction;
 use Bedriox\Protocol\Packet\DeathInfoPacket;
 use Bedriox\Protocol\Packet\DropItemStackRequestAction;
@@ -121,6 +123,7 @@ use Bedriox\Server\Login\AuthenticatedLogin;
 use Bedriox\Server\Login\LoginChannelReady;
 use Bedriox\Server\Player\InventoryContainer;
 use Bedriox\Server\Player\InventoryResponseMode;
+use Bedriox\Server\Player\InventorySlotReference;
 use Bedriox\Server\Player\InventoryStackRequestActionType;
 use Bedriox\Server\Runtime\BedrockChunkPacketSerializer;
 use Bedriox\Server\Runtime\BedrockInventoryPacketProjector;
@@ -149,6 +152,7 @@ use Bedriox\Server\Simulation\Command\SwingArm;
 use Bedriox\Server\Simulation\Command\SyncInventory;
 use Bedriox\Server\Simulation\Command\SyncInventorySlots;
 use Bedriox\Server\Simulation\Command\UseItem;
+use Bedriox\Server\Simulation\Command\WorkstationRequestType;
 use Bedriox\Server\Simulation\Event\BlockPlaced;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\MovementMode;
@@ -2681,6 +2685,141 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertSame(3, $commands[0]->count);
         self::assertSame(-17, $commands[0]->requestId);
         self::assertSame(InventoryResponseMode::ItemStackResponse, $commands[0]->responseMode);
+    }
+
+    public function testAnvilOptionalRecipeWithoutAResultRemainsAValidRequest(): void
+    {
+        [$channel, $clientEncryptor, , $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        self::assertTrue($channel->queuePacket(ContainerOpenPacket::blockInventory(
+            7,
+            ContainerType::Anvil,
+            new BlockPosition(1, 64, 1),
+        )));
+        $channel->drainOutgoing();
+        $request = new ItemStackRequest(-18, [
+            new CraftRecipeOptionalItemStackRequestAction(0, -1),
+        ]);
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([$request])])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(ApplyInventoryStackRequest::class, $commands[0]);
+        self::assertNull($commands[0]->rejectionReason);
+        self::assertNotNull($commands[0]->workstation);
+        self::assertSame(WorkstationRequestType::OPTIONAL_RECIPE, $commands[0]->workstation->type);
+        self::assertSame(0, $commands[0]->workstation->recipeNetworkId);
+        self::assertSame(
+            [0, 1, 2, FullContainerName::CREATED_OUTPUT],
+            array_map(
+                static fn(InventorySlotReference $slot): ?int => $slot->responseContainerId,
+                $commands[0]->workstation->responseSlots,
+            ),
+        );
+        self::assertSame(
+            [1, 2, 50, 50],
+            array_map(
+                static fn(InventorySlotReference $slot): int => $slot->responseSlotId(),
+                $commands[0]->workstation->responseSlots,
+            ),
+        );
+        self::assertFalse($channel->isClosed());
+    }
+
+    public function testEnchantingSelectionRetainsTheComplexUiResponseSlots(): void
+    {
+        [$channel, $clientEncryptor, , $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        self::assertTrue($channel->queuePacket(ContainerOpenPacket::blockInventory(
+            8,
+            ContainerType::Enchantment,
+            new BlockPosition(1, 64, 1),
+        )));
+        $channel->drainOutgoing();
+        $request = new ItemStackRequest(-399, [new CraftRecipeItemStackRequestAction(6, 1)]);
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([$request])])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(ApplyInventoryStackRequest::class, $commands[0]);
+        self::assertNull($commands[0]->rejectionReason);
+        $workstation = $commands[0]->workstation;
+        self::assertNotNull($workstation);
+        self::assertSame(WorkstationRequestType::ENCHANT, $workstation->type);
+        self::assertSame(6, $workstation->recipeNetworkId);
+        self::assertSame(
+            [
+                ContainerSlotType::EnchantingInput->value,
+                ContainerSlotType::EnchantingMaterial->value,
+                FullContainerName::CREATED_OUTPUT,
+            ],
+            array_map(
+                static fn(InventorySlotReference $slot): ?int => $slot->responseContainerId,
+                $workstation->responseSlots,
+            ),
+        );
+        self::assertSame(
+            [14, 15, 50],
+            array_map(
+                static fn(InventorySlotReference $slot): int => $slot->responseSlotId(),
+                $workstation->responseSlots,
+            ),
+        );
+        self::assertFalse($channel->isClosed());
+    }
+
+    public function testStonecutterSelectionUsesTheAuthoritativeWorkstationPath(): void
+    {
+        [$channel, $clientEncryptor, , $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        self::assertTrue($channel->queuePacket(ContainerOpenPacket::blockInventory(
+            8,
+            ContainerType::Stonecutter,
+            new BlockPosition(1, 64, 1),
+        )));
+        $channel->drainOutgoing();
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([
+                new ItemStackRequest(-401, [new CraftRecipeItemStackRequestAction(4_203, 1)]),
+            ])])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(ApplyInventoryStackRequest::class, $commands[0]);
+        self::assertNull($commands[0]->rejectionReason);
+        self::assertNull($commands[0]->crafting);
+        $workstation = $commands[0]->workstation;
+        self::assertNotNull($workstation);
+        self::assertSame(WorkstationRequestType::OPTIONAL_RECIPE, $workstation->type);
+        self::assertSame(4_203, $workstation->recipeNetworkId);
+        self::assertSame(1, $workstation->requestedCrafts);
+        self::assertFalse($channel->isClosed());
     }
 
     public function testStorageStackRequestRetainsItsContainerNameAndDynamicIdentity(): void

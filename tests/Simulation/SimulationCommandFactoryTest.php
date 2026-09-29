@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Simulation;
 
+use Bedriox\Api\Player\ExperienceChangeCause;
 use Bedriox\Server\Simulation\CommandValidationException;
 use Bedriox\Server\Simulation\MovementMode;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
@@ -63,6 +64,10 @@ final class SimulationCommandFactoryTest extends TestCase
         self::assertSame('Hello, world', $chat->message);
         self::assertSame('00112233-4455-6677-8899-aabbccddeeff', $emote->emoteId);
         self::assertSame(7, $factory->closeContainer('session-1', 7)->windowId);
+        self::assertSame(
+            10,
+            $factory->setPlayerExperience('session-1', 10, ExperienceChangeCause::COMMAND)->totalPoints,
+        );
         self::assertGreaterThan(0, $factory->disconnect('session-1')->estimatedBytes());
     }
 

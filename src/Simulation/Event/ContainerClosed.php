@@ -39,7 +39,7 @@ final readonly class ContainerClosed implements WorldEvent
         public bool $serverInitiated = true,
         public ?ContainerLayout $layout = null,
     ) {
-        $double = in_array($containerType, [ContainerType::DOUBLE_CHEST, ContainerType::DOUBLE_TRAPPED_CHEST], true);
+        $double = $containerType->isPaired();
         if ($windowId < 2 || $windowId > 99
             || ($containerType === ContainerType::VIRTUAL) !== ($position === null)
             || ($containerType === ContainerType::VIRTUAL) !== ($layout !== null)

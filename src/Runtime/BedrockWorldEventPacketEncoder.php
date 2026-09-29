@@ -66,7 +66,10 @@ use Bedriox\Protocol\Packet\DeathInfoPacket;
 use Bedriox\Protocol\Packet\DimensionId;
 use Bedriox\Protocol\Packet\EmoteFlag;
 use Bedriox\Protocol\Packet\EmotePacket;
+use Bedriox\Protocol\Packet\EnchantData;
+use Bedriox\Protocol\Packet\EnchantOption as ProtocolEnchantOption;
 use Bedriox\Protocol\Packet\FullContainerName;
+use Bedriox\Protocol\Packet\FurnaceProperty;
 use Bedriox\Protocol\Packet\InventoryContainerId;
 use Bedriox\Protocol\Packet\InventoryContentPacket;
 use Bedriox\Protocol\Packet\InventoryItemStack as ProtocolInventoryItemStack;
@@ -94,6 +97,7 @@ use Bedriox\Protocol\Packet\Packet;
 use Bedriox\Protocol\Packet\PlayerAbilities;
 use Bedriox\Protocol\Packet\PlayerActorMetadata;
 use Bedriox\Protocol\Packet\PlayerAttribute;
+use Bedriox\Protocol\Packet\PlayerEnchantOptionsPacket;
 use Bedriox\Protocol\Packet\PlayerListAddEntry;
 use Bedriox\Protocol\Packet\PlayerListAddPacket;
 use Bedriox\Protocol\Packet\PlayerListRemovePacket;
@@ -120,6 +124,7 @@ use Bedriox\Protocol\Packet\UpdateBlockPacket;
 use Bedriox\Protocol\Packet\UpdatePlayerGameTypePacket;
 use Bedriox\Protocol\Value\BuildPlatform;
 use Bedriox\Protocol\Value\UnsignedLong;
+use Bedriox\Server\Gameplay\Enchanting\VanillaEnchantmentIdMap;
 use Bedriox\Server\Gameplay\Potion\PotionColorMixer;
 use Bedriox\Server\Player\InventoryContainer;
 use Bedriox\Server\Player\InventoryResponseMode;
@@ -142,6 +147,7 @@ use Bedriox\Server\Simulation\Event\ContainerContentsChanged;
 use Bedriox\Server\Simulation\Event\ContainerOpened;
 use Bedriox\Server\Simulation\Event\CraftingTableOpened;
 use Bedriox\Server\Simulation\Event\EmotePerformed;
+use Bedriox\Server\Simulation\Event\EnchantingOptionsUpdated;
 use Bedriox\Server\Simulation\Event\EntityActorAttackStarted;
 use Bedriox\Server\Simulation\Event\EntityActorDamaged;
 use Bedriox\Server\Simulation\Event\EntityActorDied;
@@ -152,6 +158,11 @@ use Bedriox\Server\Simulation\Event\EntityActorMetadataChanged;
 use Bedriox\Server\Simulation\Event\EntityActorMoved;
 use Bedriox\Server\Simulation\Event\EntityActorRemoved;
 use Bedriox\Server\Simulation\Event\EntityActorSpawned;
+use Bedriox\Server\Simulation\Event\ExperienceOrbMoved;
+use Bedriox\Server\Simulation\Event\ExperienceOrbPickedUp;
+use Bedriox\Server\Simulation\Event\ExperienceOrbRemoved;
+use Bedriox\Server\Simulation\Event\ExperienceOrbSpawned;
+use Bedriox\Server\Simulation\Event\FurnaceUpdated;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InventorySlotChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
@@ -172,6 +183,7 @@ use Bedriox\Server\Simulation\Event\PlayerDied;
 use Bedriox\Server\Simulation\Event\PlayerDisconnected;
 use Bedriox\Server\Simulation\Event\PlayerEffectChanged;
 use Bedriox\Server\Simulation\Event\PlayerEnvironmentChanged;
+use Bedriox\Server\Simulation\Event\PlayerExperienceChanged;
 use Bedriox\Server\Simulation\Event\PlayerGameModeChanged;
 use Bedriox\Server\Simulation\Event\PlayerHealed;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
@@ -246,6 +258,7 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             $event instanceof ContainerClosed => $this->containerClosed($event),
             $event instanceof ContainerContentsChanged => $this->containerContentsChanged($event),
             $event instanceof BrewingStandUpdated => $this->brewingStandUpdated($event),
+            $event instanceof FurnaceUpdated => $this->furnaceUpdated($event),
             $event instanceof BrewingCompleted => $this->brewingCompleted($event),
             $event instanceof EmotePerformed => $this->emote($event, $sessions),
             $event instanceof ArmSwung => $this->armSwung($event),
@@ -265,6 +278,14 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             $event instanceof ItemConsumed => $this->itemConsumed($event),
             $event instanceof NutritionChanged => $this->nutritionChanged($event),
             $event instanceof PlayerEffectChanged => $this->playerEffectChanged($event),
+            $event instanceof PlayerExperienceChanged => [new DirectedPacket(
+                $event->player->sessionId,
+                $this->experiencePacket($event->player),
+            )],
+            $event instanceof EnchantingOptionsUpdated => [new DirectedPacket(
+                $event->sessionId,
+                new PlayerEnchantOptionsPacket($this->enchantingOptions($event)),
+            )],
             $event instanceof PlayerEnvironmentChanged => $this->playerEnvironmentChanged($event),
             $event instanceof PotionProjectileSpawned => $this->potionProjectileSpawned($event),
             $event instanceof PotionProjectileMoved => $this->potionProjectileMoved($event),
@@ -289,6 +310,16 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             $event instanceof ItemEntityMoved => $this->itemEntityMoved($event),
             $event instanceof ItemEntityPickedUp => $this->itemEntityPickedUp($event),
             $event instanceof ItemEntityDespawned => array_map(
+                static fn(string $recipient): DirectedPacket => new DirectedPacket(
+                    $recipient,
+                    new RemoveActorPacket($event->runtimeActorId),
+                ),
+                $event->recipientSessionIds,
+            ),
+            $event instanceof ExperienceOrbSpawned => $this->experienceOrbSpawned($event),
+            $event instanceof ExperienceOrbMoved => $this->experienceOrbMoved($event),
+            $event instanceof ExperienceOrbPickedUp => $this->experienceOrbPickedUp($event),
+            $event instanceof ExperienceOrbRemoved => array_map(
                 static fn(string $recipient): DirectedPacket => new DirectedPacket(
                     $recipient,
                     new RemoveActorPacket($event->runtimeActorId),
@@ -321,6 +352,42 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             )],
             default => [],
         };
+    }
+
+    /** @return list<ProtocolEnchantOption> */
+    private function enchantingOptions(EnchantingOptionsUpdated $event): array
+    {
+        $projected = [];
+        foreach ($event->options as $networkId => $option) {
+            $enchants = [];
+            foreach ($option->enchantments as $identifier => $level) {
+                $id = VanillaEnchantmentIdMap::id($identifier);
+                if ($id !== null) {
+                    $enchants[] = new EnchantData($id, $level);
+                }
+            }
+            $projected[] = new ProtocolEnchantOption(
+                $option->requiredLevel,
+                0,
+                $enchants,
+                [],
+                [],
+                self::enchantingDisplayName($networkId),
+                $networkId,
+            );
+        }
+
+        return $projected;
+    }
+
+    private static function enchantingDisplayName(int $networkId): string
+    {
+        $words = ['ancient', 'bless', 'creature', 'darkness', 'elemental', 'free', 'range', 'sphere'];
+        $first = $words[$networkId % count($words)];
+        $second = $words[intdiv($networkId, count($words)) % count($words)];
+        $third = $words[intdiv($networkId, count($words) ** 2) % count($words)];
+
+        return $first . ' ' . $second . ' ' . $third;
     }
 
     /** @return list<DirectedPacket> */
@@ -480,6 +547,33 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
     }
 
     /** @return list<DirectedPacket> */
+    private function furnaceUpdated(FurnaceUpdated $event): array
+    {
+        $packets = [];
+        foreach ($event->viewers as $viewer) {
+            if ($event->changedSlots !== []) {
+                $packets[] = new DirectedPacket($viewer->sessionId, new InventoryContentPacket(
+                    $viewer->windowId,
+                    array_map($this->requireInventoryProjector()->toProtocol(...), $viewer->slots),
+                ));
+            }
+            foreach ([
+                [FurnaceProperty::TickCount, $event->cookTime],
+                [FurnaceProperty::LitTime, $event->burnTime],
+                [FurnaceProperty::LitDuration, $event->burnDuration],
+                [FurnaceProperty::StoredExperience, intdiv($event->storedExperienceMilli, 1000)],
+            ] as [$property, $value]) {
+                $packets[] = new DirectedPacket(
+                    $viewer->sessionId,
+                    ContainerSetDataPacket::furnace($viewer->windowId, $property, $value),
+                );
+            }
+        }
+
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
     private function brewingCompleted(BrewingCompleted $event): array
     {
         $position = new LevelEventPosition(
@@ -508,7 +602,14 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
         array $recipients,
         bool $open,
     ): array {
-        if ($position === null || in_array($type, [ApiContainerType::VIRTUAL, ApiContainerType::BARREL], true)) {
+        if ($position === null || !in_array($type, [
+            ApiContainerType::CHEST,
+            ApiContainerType::DOUBLE_CHEST,
+            ApiContainerType::TRAPPED_CHEST,
+            ApiContainerType::DOUBLE_TRAPPED_CHEST,
+            ApiContainerType::ENDER_CHEST,
+            ApiContainerType::SHULKER_BOX,
+        ], true)) {
             return [];
         }
         $positions = [$position];
@@ -533,9 +634,20 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
         ?ContainerLayout $layout,
     ): ContainerType {
         if ($type !== ApiContainerType::VIRTUAL) {
-            return $type === ApiContainerType::BREWING_STAND
-                ? ContainerType::BrewingStand
-                : ContainerType::Container;
+            return match ($type) {
+                ApiContainerType::BREWING_STAND => ContainerType::BrewingStand,
+                ApiContainerType::FURNACE => ContainerType::Furnace,
+                ApiContainerType::BLAST_FURNACE => ContainerType::BlastFurnace,
+                ApiContainerType::SMOKER => ContainerType::Smoker,
+                ApiContainerType::STONECUTTER => ContainerType::Stonecutter,
+                ApiContainerType::SMITHING_TABLE => ContainerType::SmithingTable,
+                ApiContainerType::ANVIL => ContainerType::Anvil,
+                ApiContainerType::GRINDSTONE => ContainerType::Grindstone,
+                ApiContainerType::ENCHANTING_TABLE => ContainerType::Enchantment,
+                ApiContainerType::LOOM => ContainerType::Loom,
+                ApiContainerType::CARTOGRAPHY_TABLE => ContainerType::Cartography,
+                default => ContainerType::Container,
+            };
         }
 
         return match ($layout) {
@@ -849,6 +961,20 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
                 new PlayerAttribute('minecraft:player.hunger', 0.0, 20.0, $player->food, 0.0, 20.0, 20.0),
                 new PlayerAttribute('minecraft:player.saturation', 0.0, 20.0, $player->saturation, 0.0, 20.0, 20.0),
                 new PlayerAttribute('minecraft:player.exhaustion', 0.0, 4.0, $player->exhaustion, 0.0, 4.0, 0.0),
+            ],
+            UnsignedLong::fromInt(max(0, $player->movementSequence)),
+        );
+    }
+
+    private function experiencePacket(PlayerSnapshot $player): UpdateAttributesPacket
+    {
+        $experience = new \Bedriox\Api\Player\ExperienceSnapshot($player->totalExperience);
+
+        return new UpdateAttributesPacket(
+            UnsignedLong::fromInt($player->runtimeActorId),
+            [
+                new PlayerAttribute('minecraft:player.level', 0.0, 24_791.0, (float) $experience->level, 0.0, 24_791.0, 0.0),
+                new PlayerAttribute('minecraft:player.experience', 0.0, 1.0, $experience->progress, 0.0, 1.0, 0.0),
             ],
             UnsignedLong::fromInt(max(0, $player->movementSequence)),
         );
@@ -1919,6 +2045,78 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             $packets[] = new DirectedPacket($recipient, $position);
             if ($motion !== null) {
                 $packets[] = new DirectedPacket($recipient, $motion);
+            }
+        }
+
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function experienceOrbSpawned(ExperienceOrbSpawned $event): array
+    {
+        $entity = $event->entity;
+        $packet = AddActorPacket::experienceOrb(
+            $entity->uniqueEntityId,
+            UnsignedLong::fromInt($entity->runtimeEntityId),
+            $entity->position->x,
+            $entity->position->y,
+            $entity->position->z,
+            $entity->value,
+            $entity->motion->x,
+            $entity->motion->y,
+            $entity->motion->z,
+        );
+
+        return array_map(
+            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
+            $event->recipientSessionIds,
+        );
+    }
+
+    /** @return list<DirectedPacket> */
+    private function experienceOrbMoved(ExperienceOrbMoved $event): array
+    {
+        $entity = $event->entity;
+        $position = new MoveActorAbsolutePacket(
+            UnsignedLong::fromInt($entity->runtimeEntityId),
+            $entity->position->x,
+            $entity->position->y,
+            $entity->position->z,
+            0.0,
+            0.0,
+            0.0,
+            $entity->motion->y === 0.0 ? [MoveActorAbsoluteFlag::OnGround] : [],
+        );
+        $motion = $event->motionChanged ? new SetActorMotionPacket(
+            UnsignedLong::fromInt($entity->runtimeEntityId),
+            $entity->motion->x,
+            $entity->motion->y,
+            $entity->motion->z,
+            UnsignedLong::fromInt(0),
+        ) : null;
+        $packets = [];
+        foreach ($event->recipientSessionIds as $recipient) {
+            $packets[] = new DirectedPacket($recipient, $position);
+            if ($motion !== null) {
+                $packets[] = new DirectedPacket($recipient, $motion);
+            }
+        }
+
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function experienceOrbPickedUp(ExperienceOrbPickedUp $event): array
+    {
+        $packets = [];
+        $take = new TakeItemActorPacket(
+            UnsignedLong::fromInt($event->orbRuntimeActorId),
+            UnsignedLong::fromInt($event->collectorRuntimeActorId),
+        );
+        foreach ($event->recipientSessionIds as $recipient) {
+            $packets[] = new DirectedPacket($recipient, $take);
+            if ($event->removed) {
+                $packets[] = new DirectedPacket($recipient, new RemoveActorPacket($event->orbRuntimeActorId));
             }
         }
 

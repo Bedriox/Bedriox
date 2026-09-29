@@ -54,7 +54,10 @@ use Bedriox\Api\Player\FoodLevelChangeCause as ApiFoodLevelChangeCause;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\Player\HealthRegainCause as ApiHealthRegainCause;
 use Bedriox\Api\Player\Nutrition as ApiNutrition;
+use Bedriox\Api\Processing\CartographyOperation;
+use Bedriox\Api\Processing\SmithingRecipeType;
 use Bedriox\Api\TranslatableMessage;
+use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
 use Bedriox\Api\World\WeatherState;
 use Bedriox\Data\BlockPropertyRegistry;
 use Bedriox\Data\CanonicalBlockState;
@@ -74,6 +77,10 @@ use Bedriox\Server\Entity\EntityPhysicsResolver;
 use Bedriox\Server\Entity\EntityRegistry;
 use Bedriox\Server\Entity\EntityWorldRuntime;
 use Bedriox\Server\Entity\Equipment\EntityEquipmentTransition;
+use Bedriox\Server\Entity\Experience\ExperienceOrbCollisionResolver;
+use Bedriox\Server\Entity\Experience\ExperienceOrbMotion;
+use Bedriox\Server\Entity\Experience\ExperienceOrbRegistry;
+use Bedriox\Server\Entity\Experience\ExperienceOrbTarget;
 use Bedriox\Server\Entity\Item\DroppedItemCollisionResolver;
 use Bedriox\Server\Entity\Item\DroppedItemEntity;
 use Bedriox\Server\Entity\Item\ItemEntityMotion;
@@ -124,6 +131,23 @@ use Bedriox\Server\Gameplay\Potion\PotionEffectProjector;
 use Bedriox\Server\Gameplay\Potion\PotionEntityPersistenceCodec;
 use Bedriox\Server\Gameplay\Potion\PotionProjectileRegistry;
 use Bedriox\Server\Gameplay\Potion\ProjectileCollisionMath;
+use Bedriox\Server\Gameplay\Processing\CampfireBlockEntity;
+use Bedriox\Server\Gameplay\Processing\CampfireProcessor;
+use Bedriox\Server\Gameplay\Processing\CampfireRecipeResolver;
+use Bedriox\Server\Gameplay\Processing\CampfireType;
+use Bedriox\Server\Gameplay\Processing\CauldronBlockEntity;
+use Bedriox\Server\Gameplay\Processing\CauldronProcessor;
+use Bedriox\Server\Gameplay\Processing\CauldronState;
+use Bedriox\Server\Gameplay\Processing\ComposterProcessor;
+use Bedriox\Server\Gameplay\Processing\ComposterState;
+use Bedriox\Server\Gameplay\Processing\FurnaceBlockEntity;
+use Bedriox\Server\Gameplay\Processing\FurnaceProcessor;
+use Bedriox\Server\Gameplay\Processing\FurnaceRecipeCatalog;
+use Bedriox\Server\Gameplay\Processing\FurnaceType;
+use Bedriox\Server\Gameplay\Processing\StationTickScheduler;
+use Bedriox\Server\Gameplay\Processing\TransientWorkstationProcessor;
+use Bedriox\Server\Gameplay\Processing\TransientWorkstationType;
+use Bedriox\Server\Gameplay\Processing\WorkstationResult;
 use Bedriox\Server\Inventory\ContainerInventory as LiveContainerInventory;
 use Bedriox\Server\Inventory\ContainerRevisionMismatchException;
 use Bedriox\Server\Inventory\ResolvedWorldContainer;
@@ -173,6 +197,7 @@ use Bedriox\Server\Simulation\Command\RespawnPlayer;
 use Bedriox\Server\Simulation\Command\SelectHotbarSlot;
 use Bedriox\Server\Simulation\Command\SendChat;
 use Bedriox\Server\Simulation\Command\SendPluginMessage;
+use Bedriox\Server\Simulation\Command\SetPlayerExperience;
 use Bedriox\Server\Simulation\Command\SetPluginArmorContents;
 use Bedriox\Server\Simulation\Command\SetPluginBlock;
 use Bedriox\Server\Simulation\Command\SetPluginEquipmentSlot;
@@ -184,6 +209,7 @@ use Bedriox\Server\Simulation\Command\SyncInventory;
 use Bedriox\Server\Simulation\Command\SyncInventorySlots;
 use Bedriox\Server\Simulation\Command\TeleportPlayer;
 use Bedriox\Server\Simulation\Command\UseItem;
+use Bedriox\Server\Simulation\Command\WorkstationRequest;
 use Bedriox\Server\Simulation\Command\WorldCommand;
 use Bedriox\Server\Simulation\Event\AreaEffectCloudRemoved;
 use Bedriox\Server\Simulation\Event\AreaEffectCloudSpawned;
@@ -206,6 +232,7 @@ use Bedriox\Server\Simulation\Event\ContainerOpened;
 use Bedriox\Server\Simulation\Event\ContainerViewerProjection;
 use Bedriox\Server\Simulation\Event\CraftingTableOpened;
 use Bedriox\Server\Simulation\Event\EmotePerformed;
+use Bedriox\Server\Simulation\Event\EnchantingOptionsUpdated;
 use Bedriox\Server\Simulation\Event\EntityActorAttackStarted;
 use Bedriox\Server\Simulation\Event\EntityActorDamaged;
 use Bedriox\Server\Simulation\Event\EntityActorDied;
@@ -217,6 +244,11 @@ use Bedriox\Server\Simulation\Event\EntityActorMoved;
 use Bedriox\Server\Simulation\Event\EntityActorRemoved;
 use Bedriox\Server\Simulation\Event\EntityActorSpawned;
 use Bedriox\Server\Simulation\Event\EntityInteracted;
+use Bedriox\Server\Simulation\Event\ExperienceOrbMoved;
+use Bedriox\Server\Simulation\Event\ExperienceOrbPickedUp;
+use Bedriox\Server\Simulation\Event\ExperienceOrbRemoved;
+use Bedriox\Server\Simulation\Event\ExperienceOrbSpawned;
+use Bedriox\Server\Simulation\Event\FurnaceUpdated;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InstantItemUsed;
 use Bedriox\Server\Simulation\Event\InventorySlotChanged;
@@ -237,6 +269,7 @@ use Bedriox\Server\Simulation\Event\PlayerDied;
 use Bedriox\Server\Simulation\Event\PlayerDisconnected;
 use Bedriox\Server\Simulation\Event\PlayerEffectChanged;
 use Bedriox\Server\Simulation\Event\PlayerEnvironmentChanged;
+use Bedriox\Server\Simulation\Event\PlayerExperienceChanged;
 use Bedriox\Server\Simulation\Event\PlayerGameModeChanged;
 use Bedriox\Server\Simulation\Event\PlayerHealed;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
@@ -345,6 +378,10 @@ final class WorldSimulation
     private readonly DropRandom $dropRandom;
     private readonly ItemEntityRegistry $itemEntities;
 
+    private readonly ExperienceOrbRegistry $experienceOrbs;
+
+    private readonly ?ExperienceOrbCollisionResolver $experienceOrbCollisions;
+
     private readonly ?EntityLootResolver $entityLoot;
 
     private readonly EntityWorldRuntime $entityRuntime;
@@ -411,6 +448,34 @@ final class WorldSimulation
     private readonly ?WorldContainerStore $worldContainers;
 
     private readonly ?BrewingStandProcessor $brewingStands;
+
+    private readonly ?FurnaceProcessor $furnaces;
+
+    private readonly ?CampfireProcessor $campfires;
+
+    private readonly ?FurnaceRecipeCatalog $processingRecipes;
+
+    private readonly StationTickScheduler $processingStations;
+
+    private readonly StationTickScheduler $campfireStations;
+
+    private readonly ComposterProcessor $composters;
+
+    private readonly CauldronProcessor $cauldrons;
+
+    private readonly StationTickScheduler $composterStations;
+
+    /** @var array<string, BlockPosition> */
+    private array $composterPositions = [];
+
+    /** @var array<string, true> Loaded chunks already inspected for pending composter maturation. */
+    private array $knownComposterChunks = [];
+
+    /** @var array<string, BlockPosition> */
+    private array $furnacePositions = [];
+
+    /** @var array<string, BlockPosition> */
+    private array $campfirePositions = [];
 
     /** @var array<string, BlockPosition> Dirty or actively brewing stands only. */
     private array $activeBrewingStands = [];
@@ -482,7 +547,9 @@ final class WorldSimulation
         private readonly ?PluginActionBuffer $pluginActions = null,
         ?string $worldId = null,
         ?BrewingRecipeCatalog $brewingRecipes = null,
+        ?FurnaceRecipeCatalog $furnaceRecipes = null,
         private readonly WorldDimension $dimension = WorldDimension::OVERWORLD,
+        private readonly ?TransientWorkstationProcessor $transientWorkstations = null,
     ) {
         $this->worldId = $worldId ?? $blockWorld?->metadata->name ?? 'world';
         if ($this->worldId === '' || strlen($this->worldId) > 64) {
@@ -495,6 +562,7 @@ final class WorldSimulation
         $this->players = new PlayerRegistry($this->limits->maximumPlayers);
         $this->dropRandom = $dropRandom ?? new SystemDropRandom();
         $this->itemEntities = $itemEntities ?? new ItemEntityRegistry(firstEntityId: 1_000_000_000);
+        $this->experienceOrbs = new ExperienceOrbRegistry(firstEntityId: 3_750_000_000);
         $this->entityLoot = $itemCatalog === null
             ? null
             : EntityLootResolver::vanilla(new GameplayLootItemRegistry($itemCatalog));
@@ -503,6 +571,18 @@ final class WorldSimulation
         $this->brewingStands = $blockWorld === null || $brewingRecipes === null
             ? null
             : new BrewingStandProcessor($brewingRecipes);
+        $this->furnaces = $blockWorld === null || $furnaceRecipes === null
+            ? null
+            : new FurnaceProcessor($furnaceRecipes);
+        $this->campfires = $blockWorld === null || $furnaceRecipes === null
+            ? null
+            : new CampfireProcessor($furnaceRecipes);
+        $this->processingRecipes = $furnaceRecipes;
+        $this->processingStations = new StationTickScheduler();
+        $this->campfireStations = new StationTickScheduler();
+        $this->composters = new ComposterProcessor();
+        $this->cauldrons = new CauldronProcessor();
+        $this->composterStations = new StationTickScheduler();
         $this->potionProjectiles = new PotionProjectileRegistry(firstEntityId: 3_000_000_000);
         $this->areaEffectClouds = new AreaEffectCloudRegistry(firstEntityId: 3_500_000_000);
         $this->potionEntityCodec = new PotionEntityPersistenceCodec();
@@ -532,6 +612,7 @@ final class WorldSimulation
         $this->blockCollisions = $collisionQuery;
         $this->collisionResolver = $collisionQuery === null ? null : new PlayerCollisionResolver($collisionQuery);
         $this->itemCollisionResolver = $collisionQuery === null ? null : new DroppedItemCollisionResolver($collisionQuery);
+        $this->experienceOrbCollisions = $collisionQuery === null ? null : new ExperienceOrbCollisionResolver($collisionQuery);
         $definitions = $entityDefinitions ?? EntityDefinitionRegistry::baseline();
         $this->entityEnvironment = $blockWorld !== null && $blockPalette !== null
             && $blockStateRegistry !== null && $blockCollisionRegistry !== null
@@ -686,6 +767,7 @@ final class WorldSimulation
             airTicks: $bootstrap->airTicks,
             fireTicks: $bootstrap->fireTicks,
             effectPersistenceState: $bootstrap->effectPersistenceState,
+            totalExperience: $bootstrap->totalExperience,
         );
         $candidate->movement->yaw = $bootstrap->yaw;
         $candidate->movement->headYaw = $bootstrap->yaw;
@@ -723,6 +805,7 @@ final class WorldSimulation
             $bootstrap->airTicks,
             $bootstrap->fireTicks,
             $bootstrap->effectPersistenceState,
+            $bootstrap->totalExperience,
         );
     }
 
@@ -881,11 +964,15 @@ final class WorldSimulation
         array_push($events, ...$this->advancePlayerEnvironment());
         array_push($events, ...$this->advanceNutrition());
         array_push($events, ...$this->advanceBrewingStands());
+        array_push($events, ...$this->advanceFurnaces());
+        array_push($events, ...$this->advanceCampfires());
+        array_push($events, ...$this->advanceComposters());
         array_push($events, ...$this->advanceBlockBreakParticles());
         $nextStageNanoseconds = hrtime(true);
         $stages['players'] = $nextStageNanoseconds - $stageCompletedNanoseconds;
         $stageCompletedNanoseconds = $nextStageNanoseconds;
         array_push($events, ...$this->advanceItemEntities());
+        array_push($events, ...$this->advanceExperienceOrbs());
         array_push($events, ...$this->advancePotionProjectiles());
         $nextStageNanoseconds = hrtime(true);
         $stages['items'] = $nextStageNanoseconds - $stageCompletedNanoseconds;
@@ -1024,6 +1111,9 @@ final class WorldSimulation
         foreach ($this->itemEntities->all() as $entity) {
             $events[] = new ItemEntityDespawned($entity->runtimeEntityId, [$player->sessionId]);
         }
+        foreach ($this->experienceOrbs->all() as $entity) {
+            $events[] = new ExperienceOrbRemoved($entity->runtimeEntityId, [$player->sessionId]);
+        }
         foreach ($this->announcedEntities as $entity) {
             if ($entity->isAlive()) {
                 $events[] = new EntityActorRemoved($entity, [$player->sessionId]);
@@ -1092,6 +1182,9 @@ final class WorldSimulation
         )];
         foreach ($this->itemEntities->all() as $entity) {
             $events[] = new ItemEntitySpawned($entity, [$player->sessionId]);
+        }
+        foreach ($this->experienceOrbs->all() as $entity) {
+            $events[] = new ExperienceOrbSpawned($entity, [$player->sessionId]);
         }
         foreach ($this->announcedEntities as $entity) {
             if ($entity->isAlive()) {
@@ -2175,6 +2268,9 @@ final class WorldSimulation
             if ($resolved->type === ApiContainerType::BREWING_STAND) {
                 $this->scheduleBrewingStand($resolved->position);
             }
+            if (in_array($resolved->type, [ApiContainerType::FURNACE, ApiContainerType::BLAST_FURNACE, ApiContainerType::SMOKER], true)) {
+                $this->scheduleFurnace($resolved->position);
+            }
         } catch (ContainerRevisionMismatchException) {
             return false;
         }
@@ -2416,6 +2512,14 @@ final class WorldSimulation
             && $this->enqueue($this->validator->clearPlayerEffects($player->sessionId, $cause));
     }
 
+    public function enqueuePlayerExperience(string $identity, int $totalPoints, \Bedriox\Api\Player\ExperienceChangeCause $cause): bool
+    {
+        $player = $this->players->playerByIdentity($identity);
+
+        return $player !== null
+            && $this->enqueue($this->validator->setPlayerExperience($player->sessionId, $totalPoints, $cause));
+    }
+
     public function enqueuePluginBlock(string $plugin, BlockPosition $position, string $identifier): bool
     {
         return $this->enqueue($this->validator->pluginBlock($plugin, $position, $identifier));
@@ -2574,6 +2678,7 @@ final class WorldSimulation
             $command instanceof AddPlayerEffect => $this->addPlayerEffect($command),
             $command instanceof RemovePlayerEffect => $this->removePlayerEffect($command),
             $command instanceof ClearPlayerEffects => $this->clearPlayerEffects($command),
+            $command instanceof SetPlayerExperience => $this->setPlayerExperience($command),
             $command instanceof RespawnPlayer => $this->respawn($command),
             $command instanceof AcknowledgeRespawn => $this->acknowledgeRespawn($command),
             $command instanceof UseItem => $this->useItem($command),
@@ -2582,6 +2687,26 @@ final class WorldSimulation
         };
 
         $this->reconcileActiveItemUse($this->players->player($command->sessionId()));
+
+        return $event;
+    }
+
+    private function setPlayerExperience(SetPlayerExperience $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        if ($player === null) {
+            return new CommandRejected($command->session, 'not_joined');
+        }
+        $previous = $player->experience->snapshot();
+        $requested = $this->pluginEvents === null
+            ? new \Bedriox\Api\Player\ExperienceSnapshot($command->totalPoints)
+            : $this->pluginEvents->experienceChange($player, $command->totalPoints, $command->cause);
+        if ($requested === null) {
+            return new CommandRejected($command->session, 'experience_change_cancelled');
+        }
+        $player->experience->setTotalPoints($requested->totalPoints);
+        $event = new PlayerExperienceChanged($player->snapshot(), $previous, $command->cause);
+        $this->pluginEvents?->experienceChanged($player, $previous, $command->cause);
 
         return $event;
     }
@@ -3156,7 +3281,8 @@ final class WorldSimulation
             $bootstrap === null ? 0.0 : $bootstrap->absorption,
             $bootstrap === null ? \Bedriox\Server\Player\PlayerVitals::MAX_AIR_TICKS : $bootstrap->airTicks,
             $bootstrap === null ? 0 : $bootstrap->fireTicks,
-            $bootstrap?->effectPersistenceState,
+            $bootstrap === null ? null : $bootstrap->effectPersistenceState,
+            $bootstrap === null ? 0 : $bootstrap->totalExperience,
         );
         if ($bootstrap !== null) {
             $player->movement->yaw = $bootstrap->yaw;
@@ -3172,6 +3298,9 @@ final class WorldSimulation
         $this->players->add($player);
         foreach ($this->itemEntities->all() as $entity) {
             $this->deferredEvents[] = new ItemEntitySpawned($entity, [$player->sessionId]);
+        }
+        foreach ($this->experienceOrbs->all() as $entity) {
+            $this->deferredEvents[] = new ExperienceOrbSpawned($entity, [$player->sessionId]);
         }
         foreach ($this->potionProjectiles->all() as $projectile) {
             $this->deferredEvents[] = new PotionProjectileSpawned($projectile, [$player->sessionId]);
@@ -4500,6 +4629,11 @@ final class WorldSimulation
                     $command->session,
                     $command->cause,
                 ),
+                $command instanceof SetPlayerExperience => $this->validator->setPlayerExperience(
+                    $command->session,
+                    $command->totalPoints,
+                    $command->cause,
+                ),
                 $command instanceof SetPluginBlock => $this->validator->pluginBlock(
                     $command->plugin,
                     $command->position,
@@ -4666,6 +4800,21 @@ final class WorldSimulation
     private static function sessionKey(string $session): string
     {
         return 'session:' . $session;
+    }
+
+    private static function transientWorkstationInventoryIdentifier(
+        string $session,
+        BlockPosition $position,
+        ApiContainerType $type,
+    ): string {
+        return implode('/', [
+            'workstation',
+            hash('sha256', $session),
+            (string) $position->x,
+            (string) $position->y,
+            (string) $position->z,
+            $type->value,
+        ]);
     }
 
     private function nextAvailableRuntimeActorId(): int
@@ -5590,6 +5739,530 @@ final class WorldSimulation
     private function scheduleBrewingStand(BlockPosition $position): void
     {
         $this->activeBrewingStands[$position->x . ':' . $position->y . ':' . $position->z] = $position;
+    }
+
+    /** @return list<WorldEvent> */
+    private function advanceFurnaces(): array
+    {
+        if ($this->blockWorld === null || $this->worldContainers === null || $this->furnaces === null) {
+            return [];
+        }
+        if ($this->tick % 20 === 0) {
+            foreach ($this->blockWorld->loadedBlockEntities() as $loaded) {
+                if ($loaded instanceof FurnaceBlockEntity && $loaded->active()) {
+                    $this->scheduleFurnace($loaded->position);
+                }
+            }
+        }
+        $events = [];
+        foreach ($this->processingStations->drainDue($this->tick, 1_024) as $scheduled) {
+            $position = $this->furnacePositions[$scheduled->key] ?? null;
+            if (!$position instanceof BlockPosition) {
+                continue;
+            }
+            $entity = $this->blockWorld->blockEntityAt($position);
+            if (!$entity instanceof FurnaceBlockEntity) {
+                unset($this->furnacePositions[$scheduled->key]);
+                continue;
+            }
+            $result = $this->furnaces->tick($entity);
+            $state = $result->state;
+            $changedSlots = $result->changedSlots;
+            $fuelConsumed = $result->fuelConsumed;
+            $started = $result->started;
+            $completed = $result->completed;
+            $input = $entity->inventory->stackAt(FurnaceBlockEntity::SLOT_INPUT);
+            $recipe = $input === null ? null : $this->processingRecipes?->match($entity->furnaceType, $input);
+            $apiPosition = new \Bedriox\Api\World\BlockPosition($position->x, $position->y, $position->z);
+            $apiFurnaceType = match ($entity->furnaceType) {
+                FurnaceType::Furnace => \Bedriox\Api\Processing\FurnaceType::FURNACE,
+                FurnaceType::BlastFurnace => \Bedriox\Api\Processing\FurnaceType::BLAST_FURNACE,
+                FurnaceType::Smoker => \Bedriox\Api\Processing\FurnaceType::SMOKER,
+            };
+            $fuelEvent = null;
+            $startEvent = null;
+            $smeltEvent = null;
+
+            if ($fuelConsumed) {
+                $fuel = $entity->inventory->stackAt(FurnaceBlockEntity::SLOT_FUEL);
+                if ($fuel !== null) {
+                    $fuelEvent = $this->pluginEvents?->furnaceFuel(
+                        $apiPosition,
+                        $apiFurnaceType,
+                        new ApiItemStack($fuel->identifier, 1, $fuel->damage, $fuel->nbt, $fuel->auxValue),
+                        \Bedriox\Api\Processing\FurnaceFuelCause::PROCESSING,
+                        $state->burnDuration,
+                    );
+                    if ($this->pluginEvents !== null && $fuelEvent === null) {
+                        $state = $entity;
+                        $changedSlots = [];
+                        $fuelConsumed = $started = $completed = false;
+                    } elseif ($fuelEvent !== null && $fuelEvent->burnTicks() !== $state->burnDuration) {
+                        $state = new FurnaceBlockEntity(
+                            $state->furnaceType,
+                            $state->position,
+                            $state->inventory,
+                            max(0, $fuelEvent->burnTicks() - 1),
+                            $fuelEvent->burnTicks(),
+                            $state->cookTime,
+                            $state->cookDuration,
+                            $state->storedExperienceMilli,
+                            $state->customName,
+                            $state->revision,
+                        );
+                    }
+                }
+            }
+
+            if ($started && $input !== null && $recipe !== null) {
+                $startEvent = $this->pluginEvents?->furnaceStartSmelt(
+                    $apiPosition,
+                    $apiFurnaceType,
+                    new ApiItemStack($input->identifier, $input->count, $input->damage, $input->nbt, $input->auxValue),
+                    new ApiItemStack(
+                        $recipe->output->identifier,
+                        $recipe->output->count,
+                        $recipe->output->damage,
+                        $recipe->output->nbt,
+                        $recipe->output->auxValue,
+                    ),
+                    $state->cookDuration,
+                );
+                if ($this->pluginEvents !== null && $startEvent === null) {
+                    $state = new FurnaceBlockEntity(
+                        $state->furnaceType,
+                        $state->position,
+                        $state->inventory,
+                        $state->burnTime,
+                        $state->burnDuration,
+                        0,
+                        $state->cookDuration,
+                        $state->storedExperienceMilli,
+                        $state->customName,
+                        $state->revision,
+                    );
+                    $started = $completed = false;
+                } elseif ($startEvent !== null && $startEvent->cookTicks() !== $state->cookDuration) {
+                    $state = new FurnaceBlockEntity(
+                        $state->furnaceType,
+                        $state->position,
+                        $state->inventory,
+                        $state->burnTime,
+                        $state->burnDuration,
+                        min($state->cookTime, $startEvent->cookTicks()),
+                        $startEvent->cookTicks(),
+                        $state->storedExperienceMilli,
+                        $state->customName,
+                        $state->revision,
+                    );
+                }
+            }
+
+            if ($completed && $input !== null && $recipe !== null) {
+                $smeltEvent = $this->pluginEvents?->furnaceSmelt(
+                    $apiPosition,
+                    $apiFurnaceType,
+                    new ApiItemStack($input->identifier, $input->count, $input->damage, $input->nbt, $input->auxValue),
+                    new ApiItemStack(
+                        $recipe->output->identifier,
+                        $recipe->output->count,
+                        $recipe->output->damage,
+                        $recipe->output->nbt,
+                        $recipe->output->auxValue,
+                    ),
+                );
+                if ($this->pluginEvents !== null && $smeltEvent === null) {
+                    $inventory = $state->inventory
+                        ->withStack(FurnaceBlockEntity::SLOT_INPUT, $input)
+                        ->withStack(FurnaceBlockEntity::SLOT_RESULT, $entity->inventory->stackAt(FurnaceBlockEntity::SLOT_RESULT));
+                    $state = $state->withState(
+                        $inventory,
+                        $state->burnTime,
+                        $state->burnDuration,
+                        $entity->cookTime,
+                        $entity->storedExperienceMilli,
+                    );
+                    $changedSlots = array_values(array_diff(
+                        $changedSlots,
+                        [FurnaceBlockEntity::SLOT_INPUT, FurnaceBlockEntity::SLOT_RESULT],
+                    ));
+                    $completed = false;
+                } elseif ($smeltEvent !== null && $smeltEvent->result() != new ApiItemStack(
+                    $recipe->output->identifier,
+                    $recipe->output->count,
+                    $recipe->output->damage,
+                    $recipe->output->nbt,
+                    $recipe->output->auxValue,
+                )) {
+                    $replacement = $smeltEvent->result();
+                    $existing = $entity->inventory->stackAt(FurnaceBlockEntity::SLOT_RESULT);
+                    $canMerge = $existing === null || ($existing->identifier === $replacement->identifier
+                        && $existing->damage === $replacement->damage
+                        && $existing->auxValue === $replacement->auxValue
+                        && $existing->nbt == $replacement->nbt
+                        && $existing->count + $replacement->count <= 64);
+                    if ($canMerge) {
+                        $output = $existing === null
+                            ? new ContainerItemStack($replacement->identifier, $replacement->count, $replacement->damage, $replacement->nbt, $replacement->auxValue)
+                            : new ContainerItemStack($existing->identifier, $existing->count + $replacement->count, $existing->damage, $existing->nbt, $existing->auxValue);
+                        $state = $state->withState(
+                            $state->inventory->withStack(FurnaceBlockEntity::SLOT_RESULT, $output),
+                            $state->burnTime,
+                            $state->burnDuration,
+                            $state->cookTime,
+                            $state->storedExperienceMilli,
+                        );
+                    } else {
+                        $inventory = $state->inventory
+                            ->withStack(FurnaceBlockEntity::SLOT_INPUT, $input)
+                            ->withStack(FurnaceBlockEntity::SLOT_RESULT, $existing);
+                        $state = $state->withState(
+                            $inventory,
+                            $state->burnTime,
+                            $state->burnDuration,
+                            $entity->cookTime,
+                            $entity->storedExperienceMilli,
+                        );
+                        $changedSlots = array_values(array_diff(
+                            $changedSlots,
+                            [FurnaceBlockEntity::SLOT_INPUT, FurnaceBlockEntity::SLOT_RESULT],
+                        ));
+                        $completed = false;
+                    }
+                }
+            }
+
+            if ($state === $entity) {
+                unset($this->furnacePositions[$scheduled->key]);
+                continue;
+            }
+            $this->blockWorld->setBlockEntity($state);
+            $litChanged = $this->synchronizeFurnaceLitState($position, $state->active());
+            if ($litChanged !== null) {
+                $events[] = $litChanged;
+            }
+            if ($fuelConsumed && $fuelEvent !== null) {
+                $this->pluginEvents->furnaceFuelConsumed(
+                    $apiPosition,
+                    $apiFurnaceType,
+                    $fuelEvent->fuel,
+                    $fuelEvent->cause,
+                    $fuelEvent->burnTicks(),
+                );
+            }
+            if ($started && $startEvent !== null) {
+                $this->pluginEvents->furnaceStartedSmelting(
+                    $apiPosition,
+                    $apiFurnaceType,
+                    $startEvent->input,
+                    $startEvent->result,
+                    $startEvent->cookTicks(),
+                );
+            }
+            if ($completed && $smeltEvent !== null) {
+                $this->pluginEvents->furnaceSmelted(
+                    $apiPosition,
+                    $apiFurnaceType,
+                    $smeltEvent->input,
+                    $smeltEvent->result(),
+                );
+            }
+            if ($state->active()) {
+                $this->processingStations->schedule($scheduled->key, $this->tick + 1);
+            } else {
+                unset($this->furnacePositions[$scheduled->key]);
+            }
+            $inventory = $this->worldContainers->synchronizeFurnace($state);
+            if ($inventory === null) {
+                continue;
+            }
+            $viewers = [];
+            foreach ($this->openContainers as $key => $session) {
+                if (!in_array($session->type, [
+                    ApiContainerType::FURNACE,
+                    ApiContainerType::BLAST_FURNACE,
+                    ApiContainerType::SMOKER,
+                ], true) || $session->position?->equals($position) !== true) {
+                    continue;
+                }
+                $player = $this->players->player(substr($key, strlen('session:')));
+                if ($player === null) {
+                    continue;
+                }
+                $this->refreshContainerProjection($player, $session);
+                $viewers[] = new ContainerViewerProjection(
+                    $player->sessionId,
+                    $session->windowId,
+                    $session->projection->slots(),
+                );
+            }
+            if ($viewers !== []) {
+                $events[] = new FurnaceUpdated(
+                    $viewers,
+                    $changedSlots,
+                    $state->cookTime,
+                    $state->burnTime,
+                    $state->burnDuration,
+                    $state->storedExperienceMilli,
+                );
+            }
+        }
+
+        return $events;
+    }
+
+    private function scheduleFurnace(BlockPosition $position): void
+    {
+        $key = 'furnace/' . $position->x . ':' . $position->y . ':' . $position->z;
+        $this->furnacePositions[$key] = $position;
+        $this->processingStations->schedule($key, $this->tick + 1);
+    }
+
+    private function synchronizeFurnaceLitState(BlockPosition $position, bool $lit): ?BlockChanged
+    {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null) {
+            return null;
+        }
+        $current = $this->blockWorld->blockStateAt($position->x, $position->y, $position->z);
+        $canonical = $this->blockStateRegistry->state($current);
+        $baseIdentifier = match ($canonical->identifier()) {
+            'minecraft:furnace', 'minecraft:lit_furnace' => 'minecraft:furnace',
+            'minecraft:blast_furnace', 'minecraft:lit_blast_furnace' => 'minecraft:blast_furnace',
+            'minecraft:smoker', 'minecraft:lit_smoker' => 'minecraft:smoker',
+            default => null,
+        };
+        if ($baseIdentifier === null) {
+            return null;
+        }
+        $targetIdentifier = $lit ? str_replace('minecraft:', 'minecraft:lit_', $baseIdentifier) : $baseIdentifier;
+        if ($canonical->identifier() === $targetIdentifier) {
+            return null;
+        }
+        $updated = $this->blockStateRegistry->internalId(CanonicalBlockState::from(
+            $targetIdentifier,
+            $canonical->properties(),
+        ));
+        $this->setBlockStateAndSchedule($position, $updated);
+
+        return new BlockChanged('server', $position, $updated, $this->players->recipients());
+    }
+
+    /** @return list<WorldEvent> */
+    private function advanceCampfires(): array
+    {
+        if ($this->blockWorld === null || $this->campfires === null) {
+            return [];
+        }
+        if ($this->tick % 20 === 0) {
+            foreach ($this->blockWorld->loadedBlockEntities() as $loaded) {
+                if ($loaded instanceof CampfireBlockEntity && $loaded->active()) {
+                    $this->scheduleCampfire($loaded->position);
+                }
+            }
+        }
+        $events = [];
+        foreach ($this->campfireStations->drainDue($this->tick, 1_024) as $scheduled) {
+            $position = $this->campfirePositions[$scheduled->key] ?? null;
+            if (!$position instanceof BlockPosition) {
+                continue;
+            }
+            $entity = $this->blockWorld->blockEntityAt($position);
+            if (!$entity instanceof CampfireBlockEntity) {
+                unset($this->campfirePositions[$scheduled->key]);
+                continue;
+            }
+            $state = $this->blockWorld->blockStateAt($position->x, $position->y, $position->z);
+            $canonical = $this->blockStateRegistry?->state($state);
+            $lit = ($canonical?->properties()['extinguished'] ?? 0) === 0;
+            $result = $this->campfires->tick($entity, $lit);
+            if ($result->state === $entity) {
+                unset($this->campfirePositions[$scheduled->key]);
+                continue;
+            }
+            $state = $result->state;
+            $completed = [];
+            foreach ($result->completed as $slot => $output) {
+                $input = $entity->inventory->stackAt($slot);
+                if ($input === null) {
+                    continue;
+                }
+                $cookEvent = $this->pluginEvents?->campfireCook(
+                    new \Bedriox\Api\World\BlockPosition($position->x, $position->y, $position->z),
+                    $slot,
+                    new ApiItemStack($input->identifier, $input->count, $input->damage, $input->nbt, $input->auxValue),
+                    new ApiItemStack($output->identifier, $output->count, $output->damage, $output->nbt, $output->auxValue),
+                    $entity->campfireType === CampfireType::SoulCampfire,
+                );
+                if ($this->pluginEvents !== null && $cookEvent === null) {
+                    $progress = $state->progressBySlot;
+                    $duration = $state->durationBySlot;
+                    $cookDuration = $entity->durationBySlot[$slot] ?? CampfireBlockEntity::DEFAULT_COOK_TIME_TICKS;
+                    $progress[$slot] = max(0, $cookDuration - 1);
+                    $duration[$slot] = $cookDuration;
+                    $state = $state->withState(
+                        $state->inventory->withStack($slot, $input),
+                        $progress,
+                        $duration,
+                    );
+                    continue;
+                }
+                $committedOutput = $cookEvent?->result() ?? new ApiItemStack(
+                    $output->identifier,
+                    $output->count,
+                    $output->damage,
+                    $output->nbt,
+                    $output->auxValue,
+                );
+                $completed[] = [$committedOutput, $cookEvent];
+            }
+            $this->blockWorld->setBlockEntity($state);
+            $events[] = new BlockEntityChanged($state, $this->players->recipients());
+            foreach ($completed as [$output, $cookEvent]) {
+                if ($cookEvent !== null && $this->pluginEvents !== null) {
+                    $this->pluginEvents->campfireCooked(
+                        $cookEvent->position,
+                        $cookEvent->slot,
+                        $cookEvent->input,
+                        $cookEvent->result(),
+                        $cookEvent->soulCampfire,
+                    );
+                }
+                if (!$this->itemEntities->canSpawn()) {
+                    continue;
+                }
+                $stack = $this->inventoryStackFromApi($output);
+                $item = $this->itemEntities->spawn(
+                    $stack,
+                    new Position($position->x + 0.5, $position->y + 1.0, $position->z + 0.5),
+                    new ItemEntityMotion(0.0, 0.1, 0.0),
+                    10,
+                );
+                $events[] = new ItemEntitySpawned($item, $this->players->recipients());
+            }
+            if ($state->active()) {
+                $this->campfireStations->schedule($scheduled->key, $this->tick + 1);
+            } else {
+                unset($this->campfirePositions[$scheduled->key]);
+            }
+        }
+
+        return $events;
+    }
+
+    private function scheduleCampfire(BlockPosition $position): void
+    {
+        $key = 'campfire/' . $position->x . ':' . $position->y . ':' . $position->z;
+        $this->campfirePositions[$key] = $position;
+        $this->campfireStations->schedule($key, $this->tick + 1);
+    }
+
+    /** @return list<WorldEvent> */
+    private function advanceComposters(): array
+    {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null) {
+            return [];
+        }
+        $this->discoverPendingComposters();
+        $events = [];
+        foreach ($this->composterStations->drainDue($this->tick, 1_024) as $scheduled) {
+            $position = $this->composterPositions[$scheduled->key] ?? null;
+            unset($this->composterPositions[$scheduled->key]);
+            if (!$position instanceof BlockPosition) {
+                continue;
+            }
+            $current = $this->blockWorld->loadedBlockStateAt($position->x, $position->y, $position->z);
+            if ($current === null) {
+                continue;
+            }
+            $canonical = $this->blockStateRegistry->state($current);
+            $level = $canonical->properties()['composter_fill_level'] ?? null;
+            if ($canonical->identifier() !== 'minecraft:composter' || $level !== 7) {
+                continue;
+            }
+            $matured = $this->composters->mature(new ComposterState($level));
+            $apiPosition = new ApiBlockPosition($position->x, $position->y, $position->z);
+            $change = $this->pluginEvents?->composterChange(
+                null,
+                $apiPosition,
+                $level,
+                $matured->level,
+                \Bedriox\Api\Processing\ComposterChangeCause::MATURE,
+            );
+            if ($this->pluginEvents !== null && $change === null) {
+                $this->scheduleComposter($position);
+                continue;
+            }
+            $newLevel = $change?->newLevel() ?? $matured->level;
+            $properties = $canonical->properties();
+            $properties['composter_fill_level'] = $newLevel;
+            $updated = $this->blockStateRegistry->internalId(CanonicalBlockState::from(
+                'minecraft:composter',
+                $properties,
+            ));
+            $this->setBlockStateAndSchedule($position, $updated);
+            if ($newLevel === 7) {
+                $this->scheduleComposter($position);
+            }
+            $this->pluginEvents?->composterChanged(
+                null,
+                $apiPosition,
+                $level,
+                $newLevel,
+                \Bedriox\Api\Processing\ComposterChangeCause::MATURE,
+            );
+            $events[] = new BlockChanged('server', $position, $updated, $this->players->recipients());
+        }
+
+        return $events;
+    }
+
+    private function scheduleComposter(BlockPosition $position): void
+    {
+        $key = 'composter/' . $position->x . ':' . $position->y . ':' . $position->z;
+        $this->composterPositions[$key] = $position;
+        $this->composterStations->schedule($key, $this->tick + 20);
+    }
+
+    private function discoverPendingComposters(): void
+    {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null) {
+            return;
+        }
+        $loaded = [];
+        foreach ($this->blockWorld->loadedChunks() as $chunk) {
+            $chunkKey = $chunk->position->key();
+            $loaded[$chunkKey] = true;
+            if (isset($this->knownComposterChunks[$chunkKey])) {
+                continue;
+            }
+            $this->knownComposterChunks[$chunkKey] = true;
+            foreach ($chunk->populatedSections() as $section) {
+                $storage = $section->blockStorageLayer(0);
+                $pendingPaletteIndexes = [];
+                foreach ($storage->palette() as $paletteIndex => $state) {
+                    $canonical = $this->blockStateRegistry->state($state);
+                    if ($canonical->identifier() === 'minecraft:composter'
+                        && ($canonical->properties()['composter_fill_level'] ?? null) === 7) {
+                        $pendingPaletteIndexes[$paletteIndex] = true;
+                    }
+                }
+                if ($pendingPaletteIndexes === []) {
+                    continue;
+                }
+                $indices = $storage->paletteIndices();
+                for ($offset = 0; $offset < \Bedriox\Server\World\SubChunkBlockStorage::BLOCK_COUNT; ++$offset) {
+                    if (!isset($pendingPaletteIndexes[ord($indices[$offset])])) {
+                        continue;
+                    }
+                    $this->scheduleComposter(new BlockPosition(
+                        $chunk->position->x * 16 + ($offset & 0x0f),
+                        $section->sectionY * 16 + (($offset >> 8) & 0x0f),
+                        $chunk->position->z * 16 + (($offset >> 4) & 0x0f),
+                    ));
+                }
+            }
+        }
+        $this->knownComposterChunks = array_intersect_key($this->knownComposterChunks, $loaded);
     }
 
     private function synchronizeBrewingStandBottleState(BrewingStandBlockEntity $entity): ?BlockChanged
@@ -7028,8 +7701,7 @@ final class WorldSimulation
         BlockPosition $position,
         InternalBlockStateId $state,
         bool $prioritizeNeighborFluids = true,
-    ): InternalBlockStateId
-    {
+    ): InternalBlockStateId {
         if ($this->blockWorld === null) {
             throw new \LogicException('The authoritative block world is unavailable.');
         }
@@ -7695,7 +8367,40 @@ final class WorldSimulation
                 craftingInventory: $player->inventory->craftingSlots(),
             );
         }
+        $workstationRequest = $command->workstation
+            ?? ($session->type === ApiContainerType::ENCHANTING_TABLE ? null : $session->workstationRequest);
+        if ($session->type->isTransient()) {
+            if ($command->rejectionReason === null
+                && $command->workstation !== null
+                && !($session->type === ApiContainerType::ENCHANTING_TABLE
+                    && $command->workstation->type
+                        === \Bedriox\Server\Simulation\Command\WorkstationRequestType::ENCHANT)) {
+                try {
+                    $this->refreshTransientWorkstationPreview($player, $session, $workstationRequest);
+                } catch (InvalidArgumentException|OverflowException|ContainerRevisionMismatchException) {
+                    $command = new ApplyInventoryStackRequest(
+                        $command->session,
+                        $command->requestId,
+                        $command->actions,
+                        'workstation_preview',
+                        $command->responseMode,
+                        workstation: $command->workstation,
+                    );
+                }
+            }
+            $command = $this->normalizeTransientWorkstationRequest($session, $command);
+        }
         $reason = $command->rejectionReason;
+        $resultSlot = $session->type->resultSlot();
+        if ($reason === null && $resultSlot !== null) {
+            foreach ($command->actions as $action) {
+                if ($action->destination->container === InventoryContainer::OpenedContainer
+                    && $action->destination->slot === $resultSlot) {
+                    $reason = 'container_result_read_only';
+                    break;
+                }
+            }
+        }
         if ($command->authoritativeCreativeStack !== null || $command->crafting !== null) {
             $reason = 'container_mixed_action';
         } elseif (!hash_equals($session->canonicalRevision, $session->inventory->revision())) {
@@ -7706,13 +8411,140 @@ final class WorldSimulation
         $beforeProjection = clone $session->projection;
         $proposedPlayer = clone $player->inventory;
         $proposedProjection = clone $session->projection;
+        $workstationSelection = $session->type->isTransient()
+            && $command->workstation !== null
+            && $command->actions === [];
         $result = $reason === null
-            ? $proposedPlayer->applyOpenedContainerStackRequest(
-                $command->requestId,
-                $command->actions,
-                $proposedProjection,
-            )
+            ? ($workstationSelection
+                ? new InventoryStackRequestResult(true, [])
+                : $proposedPlayer->applyOpenedContainerStackRequest(
+                    $command->requestId,
+                    $command->actions,
+                    $proposedProjection,
+                ))
             : new InventoryStackRequestResult(false, reason: $reason);
+        $furnaceExtraction = null;
+        if ($result->success
+            && in_array($session->type, [ApiContainerType::FURNACE, ApiContainerType::BLAST_FURNACE, ApiContainerType::SMOKER], true)
+            && $session->position !== null
+            && $this->blockWorld !== null) {
+            $beforeResult = $beforeProjection->stackAt(FurnaceBlockEntity::SLOT_RESULT);
+            $afterResult = $proposedProjection->stackAt(FurnaceBlockEntity::SLOT_RESULT);
+            $extractedCount = $beforeResult->count ?? 0;
+            if ($beforeResult !== null && $afterResult !== null
+                && self::sameInventoryStackType($beforeResult, $afterResult)) {
+                $extractedCount -= $afterResult->count;
+            }
+            if ($beforeResult !== null && $extractedCount > 0) {
+                $entity = $this->blockWorld->blockEntityAt($session->position);
+                if (!$entity instanceof FurnaceBlockEntity) {
+                    $result = new InventoryStackRequestResult(false, reason: 'furnace_missing');
+                } else {
+                    $experience = intdiv($entity->storedExperienceMilli + 500, 1_000);
+                    $extracted = new ApiItemStack(
+                        $beforeResult->identifier,
+                        $extractedCount,
+                        $beforeResult->damage,
+                        $beforeResult->nbt,
+                        $beforeResult->auxValue,
+                    );
+                    $apiFurnaceType = match ($entity->furnaceType) {
+                        FurnaceType::Furnace => \Bedriox\Api\Processing\FurnaceType::FURNACE,
+                        FurnaceType::BlastFurnace => \Bedriox\Api\Processing\FurnaceType::BLAST_FURNACE,
+                        FurnaceType::Smoker => \Bedriox\Api\Processing\FurnaceType::SMOKER,
+                    };
+                    $extractEvent = $this->pluginEvents?->furnaceExtract(
+                        $this->pluginEvents->playerView($player),
+                        new ApiBlockPosition($session->position->x, $session->position->y, $session->position->z),
+                        $apiFurnaceType,
+                        $extracted,
+                        $experience,
+                    );
+                    if ($this->pluginEvents !== null && $extractEvent === null) {
+                        $result = new InventoryStackRequestResult(false, reason: 'plugin_cancelled');
+                    } else {
+                        $furnaceExtraction = [
+                            'entityRevision' => $entity->revision,
+                            'experience' => $extractEvent?->experience() ?? $experience,
+                            'result' => $extracted,
+                            'type' => $apiFurnaceType,
+                        ];
+                    }
+                }
+            }
+        }
+        $committedWorkstationResult = null;
+        $workstationExperiencePrevious = null;
+        $workstationExperienceTarget = null;
+        $workstationExperienceCause = null;
+        if ($result->success && $session->type->isTransient()) {
+            try {
+                $workstationResult = $this->stageTransientWorkstation(
+                    $player,
+                    $session,
+                    $command,
+                    $beforeProjection,
+                    $proposedPlayer,
+                    $proposedProjection,
+                    $workstationRequest,
+                );
+                if ($workstationResult === false) {
+                    $result = new InventoryStackRequestResult(false, reason: 'workstation_result');
+                } else {
+                    $committedWorkstationResult = $workstationResult;
+                }
+            } catch (InvalidArgumentException|OverflowException) {
+                $result = new InventoryStackRequestResult(false, reason: 'workstation_result');
+            }
+            if ($result->success) {
+                $affected = [];
+                foreach ($result->affectedSlots as $reference) {
+                    $affected[$reference->responseKey()] = $reference;
+                }
+                if ($workstationSelection && $command->workstation->responseSlots !== []) {
+                    foreach ($command->workstation->responseSlots as $reference) {
+                        $affected[$reference->responseKey()] = $reference;
+                    }
+                } else {
+                    foreach ($proposedProjection->slots() as $slot => $stack) {
+                        if (self::sameInventoryStack($beforeProjection->stackAt($slot), $stack)) {
+                            continue;
+                        }
+                        $reference = new InventorySlotReference(InventoryContainer::OpenedContainer, $slot, 0);
+                        $affected[$reference->responseKey()] = $reference;
+                    }
+                }
+                $result = new InventoryStackRequestResult(
+                    true,
+                    array_values($affected),
+                    selectedStackChanged: $result->selectedStackChanged,
+                );
+            }
+        }
+        if ($result->success && $committedWorkstationResult instanceof WorkstationResult
+            && $committedWorkstationResult->experienceLevelCost > 0
+            && $player->gameMode()->consumesItems()) {
+            $workstationExperiencePrevious = $player->experience->snapshot();
+            $targetLevel = $workstationExperiencePrevious->level - $committedWorkstationResult->experienceLevelCost;
+            if ($targetLevel < 0) {
+                $result = new InventoryStackRequestResult(false, reason: 'workstation_experience');
+            } else {
+                $targetPoints = \Bedriox\Server\Player\ExperienceMath::totalPointsToReachLevel($targetLevel)
+                    + (int) floor(
+                        $workstationExperiencePrevious->progress
+                        * \Bedriox\Server\Player\ExperienceMath::pointsToCompleteLevel($targetLevel),
+                    );
+                $workstationExperienceCause = $session->type === ApiContainerType::ENCHANTING_TABLE
+                    ? \Bedriox\Api\Player\ExperienceChangeCause::ENCHANTING
+                    : \Bedriox\Api\Player\ExperienceChangeCause::ANVIL;
+                $workstationExperienceTarget = $this->pluginEvents === null
+                    ? new \Bedriox\Api\Player\ExperienceSnapshot($targetPoints)
+                    : $this->pluginEvents->experienceChange($player, $targetPoints, $workstationExperienceCause);
+                if ($workstationExperienceTarget === null) {
+                    $result = new InventoryStackRequestResult(false, reason: 'workstation_experience_cancelled');
+                }
+            }
+        }
         if ($result->success
             && $session->type === ApiContainerType::SHULKER_BOX
             && self::requestPlacesShulkerInOpenedContainer($command->actions, $beforePlayer, $beforeProjection)) {
@@ -7767,12 +8599,85 @@ final class WorldSimulation
                     $proposedProjection->lastRequestIds(),
                 );
                 $session->canonicalRevision = $session->inventory->revision();
+                if (is_array($furnaceExtraction) && $session->position !== null && $this->blockWorld !== null) {
+                    $furnace = $this->blockWorld->blockEntityAt($session->position);
+                    if (!$furnace instanceof FurnaceBlockEntity
+                        || $furnace->revision < $furnaceExtraction['entityRevision']) {
+                        throw new ContainerRevisionMismatchException();
+                    }
+                    $cleared = $furnace->withState(
+                        $furnace->inventory,
+                        $furnace->burnTime,
+                        $furnace->burnDuration,
+                        $furnace->cookTime,
+                        0,
+                    );
+                    $this->blockWorld->setBlockEntity($cleared);
+                    $this->worldContainers?->synchronizeFurnace($cleared);
+                    if ($furnaceExtraction['experience'] > 0) {
+                        array_push($this->deferredEvents, ...$this->spawnExperienceOrbs(
+                            $furnaceExtraction['experience'],
+                            new Position(
+                                $session->position->x + 0.5,
+                                $session->position->y + 1.0,
+                                $session->position->z + 0.5,
+                            ),
+                        ));
+                    }
+                    $this->pluginEvents?->furnaceExtracted(
+                        $this->pluginEvents->playerView($player),
+                        new ApiBlockPosition($session->position->x, $session->position->y, $session->position->z),
+                        $furnaceExtraction['type'],
+                        $furnaceExtraction['result'],
+                        $furnaceExtraction['experience'],
+                    );
+                }
+                if ($session->type->isTransient()) {
+                    $session->workstationRequest = $workstationRequest;
+                }
                 $player->markDirty();
                 if ($playerInventoryChanged) {
                     $this->pluginEvents?->inventoryChanged($player, $beforePlayer);
                 }
                 if ($transaction !== null) {
                     $this->pluginEvents?->containerTransactionCommitted($player, $transaction);
+                }
+                if ($committedWorkstationResult instanceof WorkstationResult) {
+                    if ($workstationExperienceTarget instanceof \Bedriox\Api\Player\ExperienceSnapshot
+                        && $workstationExperiencePrevious instanceof \Bedriox\Api\Player\ExperienceSnapshot
+                        && $workstationExperienceCause instanceof \Bedriox\Api\Player\ExperienceChangeCause) {
+                        $player->experience->setTotalPoints($workstationExperienceTarget->totalPoints);
+                        $this->pluginEvents?->experienceChanged(
+                            $player,
+                            $workstationExperiencePrevious,
+                            $workstationExperienceCause,
+                        );
+                        $this->deferredEvents[] = new PlayerExperienceChanged(
+                            $player->snapshot(),
+                            $workstationExperiencePrevious,
+                            $workstationExperienceCause,
+                        );
+                    }
+                    $this->publishWorkstationProcessed(
+                        $player,
+                        $session,
+                        $beforeProjection,
+                        $committedWorkstationResult,
+                        $workstationRequest,
+                    );
+                    if ($committedWorkstationResult->experience > 0 && $session->position !== null) {
+                        array_push($this->deferredEvents, ...$this->spawnExperienceOrbs(
+                            $committedWorkstationResult->experience,
+                            new Position(
+                                $session->position->x + 0.5,
+                                $session->position->y + 1.0,
+                                $session->position->z + 0.5,
+                            ),
+                        ));
+                    }
+                }
+                if ($session->type === ApiContainerType::ENCHANTING_TABLE) {
+                    $this->deferEnchantingOptions($player, $session);
                 }
                 $this->deferContainerViewerSync($player, $session, $result->affectedSlots);
             } catch (InvalidArgumentException|OverflowException|ContainerRevisionMismatchException) {
@@ -7803,10 +8708,616 @@ final class WorldSimulation
         );
     }
 
+    private function normalizeTransientWorkstationRequest(
+        PlayerContainerSession $session,
+        ApplyInventoryStackRequest $command,
+    ): ApplyInventoryStackRequest {
+        $resultSlot = $session->type->resultSlot();
+        if ($resultSlot === null) {
+            if ($session->type === ApiContainerType::ENCHANTING_TABLE) {
+                return $command->workstation?->type === \Bedriox\Server\Simulation\Command\WorkstationRequestType::ENCHANT
+                    ? new ApplyInventoryStackRequest(
+                        $command->session,
+                        $command->requestId,
+                        [],
+                        $command->rejectionReason,
+                        $command->responseMode,
+                        workstation: $command->workstation,
+                    )
+                    : $command;
+            }
+            return new ApplyInventoryStackRequest(
+                $command->session,
+                $command->requestId,
+                [],
+                'workstation_layout',
+                $command->responseMode,
+                workstation: $command->workstation,
+            );
+        }
+        $actions = [];
+        foreach ($command->actions as $action) {
+            if ($action->type === InventoryStackRequestActionType::Consume
+                || $action->type === InventoryStackRequestActionType::SelectCraftingResult) {
+                continue;
+            }
+            $source = $action->source;
+            $destination = $action->destination;
+            if ($source->container === InventoryContainer::CreatedOutput) {
+                $preview = $session->projection->stackAt($resultSlot);
+                if ($preview === null) {
+                    return new ApplyInventoryStackRequest(
+                        $command->session,
+                        $command->requestId,
+                        [],
+                        'workstation_result',
+                        $command->responseMode,
+                        workstation: $command->workstation,
+                    );
+                }
+                $source = new InventorySlotReference(
+                    InventoryContainer::OpenedContainer,
+                    $resultSlot,
+                    $preview->stackNetworkId,
+                    $source->responseContainerId,
+                    responseSlot: $source->responseSlot,
+                    responseContainerDynamicId: $source->responseContainerDynamicId,
+                );
+            }
+            if ($destination->container === InventoryContainer::CreatedOutput) {
+                $preview = $session->projection->stackAt($resultSlot);
+                if ($preview === null) {
+                    return new ApplyInventoryStackRequest(
+                        $command->session,
+                        $command->requestId,
+                        [],
+                        'workstation_result',
+                        $command->responseMode,
+                        workstation: $command->workstation,
+                    );
+                }
+                $destination = new InventorySlotReference(
+                    InventoryContainer::OpenedContainer,
+                    $resultSlot,
+                    $preview->stackNetworkId,
+                    $destination->responseContainerId,
+                    responseSlot: $destination->responseSlot,
+                    responseContainerDynamicId: $destination->responseContainerDynamicId,
+                );
+            }
+            $actions[] = new InventoryStackRequestAction($action->type, $source, $destination, $action->count);
+        }
+
+        return new ApplyInventoryStackRequest(
+            $command->session,
+            $command->requestId,
+            $actions,
+            $command->rejectionReason,
+            $command->responseMode,
+            $command->authoritativeCreativeStack,
+            $command->crafting,
+            $command->workstation,
+        );
+    }
+
+    private function refreshTransientWorkstationPreview(
+        Player $player,
+        PlayerContainerSession $session,
+        ?WorkstationRequest $request,
+    ): void {
+        if ($this->transientWorkstations === null) {
+            throw new InvalidArgumentException('Transient workstation processing is unavailable.');
+        }
+        if ($session->type === ApiContainerType::ENCHANTING_TABLE) {
+            $this->deferEnchantingOptions($player, $session);
+            $session->workstationRequest = $request;
+            return;
+        }
+        $resultSlot = $session->type->resultSlot();
+        if ($resultSlot === null) {
+            throw new InvalidArgumentException('Transient workstation has no result slot.');
+        }
+        $context = $this->workstationContext($player, $session, $session->projection, $request);
+        $result = $this->transientWorkstations->evaluate(
+            $session->type,
+            $this->containerItems($session->projection->slots(), $resultSlot),
+            $context,
+        );
+        $this->replaceWorkstationPreview($player->inventory, $session->projection, $resultSlot, $result?->outputs[0] ?? null);
+        $this->commitContainerContents($session, array_map(
+            static fn(?InventoryStack $stack): ?ApiItemStack => $stack === null
+                ? null : self::apiInventoryStack($stack),
+            $session->projection->slots(),
+        ));
+        $session->canonicalRevision = $session->inventory->revision();
+        $session->workstationRequest = $request;
+    }
+
+    /** Returns false when an attempted result extraction is not backed by an authoritative proposal. */
+    private function stageTransientWorkstation(
+        Player $player,
+        PlayerContainerSession $session,
+        ApplyInventoryStackRequest $command,
+        \Bedriox\Server\Player\OpenedContainerInventory $before,
+        PlayerInventory $proposedPlayer,
+        \Bedriox\Server\Player\OpenedContainerInventory $proposed,
+        ?WorkstationRequest $request,
+    ): WorkstationResult|false|null {
+        if ($this->transientWorkstations === null) {
+            return false;
+        }
+        if ($session->type === ApiContainerType::ENCHANTING_TABLE) {
+            if ($request?->type !== \Bedriox\Server\Simulation\Command\WorkstationRequestType::ENCHANT) {
+                return null;
+            }
+            $option = $session->enchantingOptions[$request->recipeNetworkId] ?? null;
+            $input = $before->stackAt(0);
+            $lapis = $before->stackAt(1);
+            if (!$option instanceof \Bedriox\Api\Processing\EnchantingOption
+                || !$input instanceof InventoryStack
+                || !$lapis instanceof InventoryStack) {
+                return false;
+            }
+            $processed = $this->transientWorkstations->enchanting()->apply(
+                new ContainerItemStack($input->identifier, 1, $input->damage, $input->nbt, $input->auxValue),
+                $option,
+                $player->experience->snapshot()->level,
+                $lapis->count,
+            );
+            if ($processed === null) {
+                return false;
+            }
+            $authoritative = new WorkstationResult(
+                [0 => 1, 1 => $processed->lapisCost],
+                [$processed->item],
+                experienceLevelCost: $processed->experienceLevelCost,
+                lapisCost: $processed->lapisCost,
+            );
+            if (!$this->allowWorkstationProcess($player, $session, $before, $authoritative, $request)) {
+                return false;
+            }
+            $indexed = $proposed->indexedStacks();
+            $proposedInput = $indexed[0] ?? null;
+            $proposedLapis = $indexed[1] ?? null;
+            if (!$proposedInput instanceof InventoryStack || !$proposedLapis instanceof InventoryStack
+                || $proposedLapis->count < $authoritative->lapisCost) {
+                return false;
+            }
+            $output = $proposedPlayer->projectOpenedContainer(
+                $proposed->identifier . '/enchant',
+                [$this->inventoryStackFromContainerItem($authoritative->outputs[0])],
+            )->stackAt(0);
+            if ($output === null) {
+                return false;
+            }
+            $indexed[0] = $output;
+            if ($proposedLapis->count === $authoritative->lapisCost) {
+                unset($indexed[1]);
+            } else {
+                $indexed[1] = $proposedLapis->withCountAndNetworkId(
+                    $proposedLapis->count - $authoritative->lapisCost,
+                    $proposedLapis->stackNetworkId,
+                );
+            }
+            $proposed->commit($indexed, $proposed->lastRequestIds());
+
+            return $authoritative;
+        }
+        $resultSlot = $session->type->resultSlot();
+        if ($resultSlot === null) {
+            return false;
+        }
+        $takingResult = false;
+        $takenCount = 0;
+        foreach ($command->actions as $action) {
+            if ($action->source->container === InventoryContainer::OpenedContainer
+                && $action->source->slot === $resultSlot) {
+                $takingResult = true;
+                $takenCount += $action->count;
+            }
+        }
+        $context = $this->workstationContext($player, $session, $before, $request);
+        $authoritative = $this->transientWorkstations->evaluate(
+            $session->type,
+            $this->containerItems($before->slots(), $resultSlot),
+            $context,
+        );
+        if ($takingResult) {
+            $preview = $before->stackAt($resultSlot);
+            $output = $authoritative?->outputs[0] ?? null;
+            if ($preview === null || $output === null || $takenCount !== $output->count
+                || !self::sameInventoryStack($preview, $this->inventoryStackFromContainerItem($output))) {
+                return false;
+            }
+            if (!$this->allowWorkstationProcess($player, $session, $before, $authoritative, $request)) {
+                return false;
+            }
+            $indexed = $proposed->indexedStacks();
+            foreach ($authoritative->consumedBySlot as $slot => $count) {
+                $input = $indexed[$slot] ?? null;
+                if (!$input instanceof InventoryStack || $input->count < $count) {
+                    return false;
+                }
+                if ($input->count === $count) {
+                    unset($indexed[$slot]);
+                } else {
+                    $indexed[$slot] = $input->withCountAndNetworkId($input->count - $count, $input->stackNetworkId);
+                }
+            }
+            $proposed->commit($indexed, $proposed->lastRequestIds());
+        }
+        $nextContext = $this->workstationContext($player, $session, $proposed, $request);
+        $next = $this->transientWorkstations->evaluate(
+            $session->type,
+            $this->containerItems($proposed->slots(), $resultSlot),
+            $nextContext,
+        );
+        $this->replaceWorkstationPreview($proposedPlayer, $proposed, $resultSlot, $next?->outputs[0] ?? null);
+
+        return $takingResult ? $authoritative : null;
+    }
+
+    private function workstationContext(
+        Player $player,
+        PlayerContainerSession $session,
+        \Bedriox\Server\Player\OpenedContainerInventory $inventory,
+        ?WorkstationRequest $request,
+    ): \Bedriox\Server\Gameplay\Processing\WorkstationEvaluationContext {
+        $first = $inventory->stackAt(0);
+        $addition = $inventory->stackAt(1);
+        $operation = match ($addition?->identifier) {
+            'minecraft:empty_map' => CartographyOperation::CLONE,
+            'minecraft:paper' => CartographyOperation::SCALE,
+            'minecraft:glass_pane' => CartographyOperation::LOCK,
+            default => ($request?->filteredText !== null ? CartographyOperation::RENAME : null),
+        };
+        $networkChoice = $request?->recipeNetworkId;
+        $recipeSourceIndex = $networkChoice === null
+            ? null
+            : $this->craftingCatalog?->workstationSourceIndex($networkChoice);
+        return new \Bedriox\Server\Gameplay\Processing\WorkstationEvaluationContext(
+            recipeSourceIndex: $recipeSourceIndex,
+            name: $request?->filteredText,
+            maximumDurability: $first === null || $this->itemCatalog === null
+                ? 0 : ($this->itemCatalog->type($first->identifier)->durability() ?? 0),
+            enchantingOption: $networkChoice !== null && $networkChoice >= 1 && $networkChoice <= 3
+                ? $networkChoice - 1 : 0,
+            bookshelves: $session->position === null ? 0 : $this->countEnchantingBookshelves($session->position),
+            enchantmentSeed: (int) (hexdec(substr(hash('sha256', strtolower($player->identity->uuid)), 0, 7))),
+            playerLevel: $player->experience->snapshot()->level,
+            availableLapis: $addition === null ? 0 : $addition->count,
+            loomPattern: $request?->patternId,
+            cartographyOperation: $session->type === ApiContainerType::CARTOGRAPHY_TABLE ? $operation : null,
+        );
+    }
+
+    private function countEnchantingBookshelves(BlockPosition $table): int
+    {
+        if ($this->blockWorld === null || $this->blockPalette === null) {
+            return 0;
+        }
+        $count = 0;
+        for ($x = -2; $x <= 2; ++$x) {
+            for ($z = -2; $z <= 2; ++$z) {
+                if (abs($x) !== 2 && abs($z) !== 2) {
+                    continue;
+                }
+                $spaceX = max(-1, min(1, $x));
+                $spaceZ = max(-1, min(1, $z));
+                for ($y = 0; $y <= 1; ++$y) {
+                    $space = $this->blockWorld->loadedBlockStateAt(
+                        $table->x + $spaceX,
+                        $table->y + $y,
+                        $table->z + $spaceZ,
+                    );
+                    if ($space === null || $space->value !== $this->blockPalette->air->value) {
+                        continue 3;
+                    }
+                }
+                for ($y = 0; $y <= 1; ++$y) {
+                    $shelf = $this->blockWorld->loadedBlockStateAt($table->x + $x, $table->y + $y, $table->z + $z);
+                    if ($shelf !== null && $this->blockIdentifier($shelf->value) === 'minecraft:bookshelf'
+                        && ++$count === 15) {
+                        return $count;
+                    }
+                }
+            }
+        }
+
+        return $count;
+    }
+
+    private function deferEnchantingOptions(Player $player, PlayerContainerSession $session): void
+    {
+        if ($this->transientWorkstations === null || $session->position === null) {
+            return;
+        }
+        $input = $session->projection->stackAt(0);
+        if ($input === null) {
+            $session->enchantingOptions = [];
+            $this->deferredEvents[] = new EnchantingOptionsUpdated($player->sessionId, []);
+            return;
+        }
+        $item = new ContainerItemStack($input->identifier, 1, $input->damage, $input->nbt, $input->auxValue);
+        $context = $this->workstationContext($player, $session, $session->projection, null);
+        $options = $this->transientWorkstations->enchanting()->options(
+            $item,
+            $context->bookshelves,
+            $context->enchantmentSeed,
+        );
+        if ($this->pluginEvents !== null) {
+            $event = $this->pluginEvents->enchantingOptions(
+                $this->pluginEvents->playerView($player),
+                new ApiBlockPosition($session->position->x, $session->position->y, $session->position->z),
+                self::apiInventoryStack($input),
+                $options,
+            );
+            $options = $event?->options() ?? [];
+            if ($event !== null) {
+                $this->pluginEvents->enchantingOptionsGenerated(
+                    $this->pluginEvents->playerView($player),
+                    new ApiBlockPosition($session->position->x, $session->position->y, $session->position->z),
+                    self::apiInventoryStack($input),
+                    $options,
+                );
+            }
+        }
+        $networkOptions = [];
+        foreach ($options as $option) {
+            if ($session->nextEnchantingOptionNetworkId > 0xffffffff) {
+                $session->nextEnchantingOptionNetworkId = 1;
+            }
+            $networkOptions[$session->nextEnchantingOptionNetworkId++] = $option;
+        }
+        $session->enchantingOptions = $networkOptions;
+        $this->deferredEvents[] = new EnchantingOptionsUpdated($player->sessionId, $networkOptions);
+    }
+
+    /**
+     * @param list<InventoryStack|null> $slots
+     * @return list<ContainerItemStack|null>
+     */
+    private function containerItems(array $slots, int $resultSlot): array
+    {
+        $items = [];
+        foreach ($slots as $slot => $stack) {
+            $items[] = $slot === $resultSlot || $stack === null ? null : new ContainerItemStack(
+                $stack->identifier,
+                $stack->count,
+                $stack->damage,
+                $stack->nbt,
+                $stack->auxValue,
+            );
+        }
+        return $items;
+    }
+
+    private function replaceWorkstationPreview(
+        PlayerInventory $player,
+        \Bedriox\Server\Player\OpenedContainerInventory $inventory,
+        int $resultSlot,
+        ?ContainerItemStack $output,
+    ): void {
+        $indexed = $inventory->indexedStacks();
+        unset($indexed[$resultSlot]);
+        if ($output !== null) {
+            $projected = $player->projectOpenedContainer(
+                $inventory->identifier . '/result',
+                [$this->inventoryStackFromContainerItem($output)],
+            )->stackAt(0);
+            if ($projected !== null) {
+                $indexed[$resultSlot] = $projected;
+            }
+        }
+        $inventory->commit($indexed, $inventory->lastRequestIds());
+    }
+
+    private function allowWorkstationProcess(
+        Player $player,
+        PlayerContainerSession $session,
+        \Bedriox\Server\Player\OpenedContainerInventory $inventory,
+        WorkstationResult $result,
+        ?WorkstationRequest $request,
+    ): bool {
+        if ($this->pluginEvents === null || $session->position === null) {
+            return true;
+        }
+        $apiPlayer = $this->pluginEvents->playerView($player);
+        $position = new ApiBlockPosition($session->position->x, $session->position->y, $session->position->z);
+        $inputs = $this->apiWorkstationInputs($inventory, $session->type->resultSlot());
+        $output = self::apiInventoryStack($this->inventoryStackFromContainerItem($result->outputs[0]));
+        $stoneRecipe = $request?->recipeNetworkId;
+        $pattern = $request?->patternId;
+        return match ($session->type) {
+            ApiContainerType::STONECUTTER => isset($inputs[0]) && $stoneRecipe !== null && $this->pluginEvents->stonecutterProcess(
+                $apiPlayer,
+                $position,
+                $inputs[0],
+                $output,
+                'minecraft:stonecutter/' . ($this->craftingCatalog?->workstationSourceIndex($stoneRecipe) ?? 0),
+            ) !== null,
+            ApiContainerType::SMITHING_TABLE => isset($inputs[0], $inputs[1], $inputs[2])
+                && $this->pluginEvents->smithingProcess(
+                    $apiPlayer,
+                    $position,
+                    $output->identifier === $inputs[1]->identifier
+                        ? SmithingRecipeType::TRIM : SmithingRecipeType::TRANSFORM,
+                    $inputs[0],
+                    $inputs[1],
+                    $inputs[2],
+                    $output,
+                ) !== null,
+            ApiContainerType::ANVIL => isset($inputs[0]) && $this->pluginEvents->anvilProcess(
+                $apiPlayer,
+                $position,
+                $inputs[0],
+                $inputs[1] ?? null,
+                $output,
+                $result->experienceLevelCost,
+                $request->filteredText ?? '',
+            ) !== null,
+            ApiContainerType::GRINDSTONE => isset($inputs[0]) && $this->pluginEvents->grindstoneProcess(
+                $apiPlayer,
+                $position,
+                $inputs[0],
+                $inputs[1] ?? null,
+                $output,
+                $result->experience,
+            ) !== null,
+            ApiContainerType::ENCHANTING_TABLE => isset($inputs[0])
+                && $this->allowEnchantingProcess($player, $session, $inventory, $inputs[0], $output, $request),
+            ApiContainerType::LOOM => isset($inputs[0], $inputs[1]) && $pattern !== null && $this->pluginEvents->loomProcess(
+                $apiPlayer,
+                $position,
+                $inputs[0],
+                $inputs[1],
+                $inputs[2] ?? null,
+                $output,
+                $pattern,
+            ) !== null,
+            ApiContainerType::CARTOGRAPHY_TABLE => isset($inputs[0]) && $this->pluginEvents->cartographyProcess(
+                $apiPlayer,
+                $position,
+                $this->cartographyOperation($inventory, $request) ?? CartographyOperation::RENAME,
+                $inputs[0],
+                $inputs[1] ?? null,
+                $output,
+            ) !== null,
+            default => false,
+        };
+    }
+
+    private function publishWorkstationProcessed(
+        Player $player,
+        PlayerContainerSession $session,
+        \Bedriox\Server\Player\OpenedContainerInventory $inventory,
+        WorkstationResult $result,
+        ?WorkstationRequest $request,
+    ): void {
+        if ($this->pluginEvents === null || $session->position === null) {
+            return;
+        }
+        $apiPlayer = $this->pluginEvents->playerView($player);
+        $position = new ApiBlockPosition($session->position->x, $session->position->y, $session->position->z);
+        $inputs = $this->apiWorkstationInputs($inventory, $session->type->resultSlot());
+        $output = self::apiInventoryStack($this->inventoryStackFromContainerItem($result->outputs[0]));
+        $stoneRecipe = $request?->recipeNetworkId;
+        $pattern = $request?->patternId;
+        switch ($session->type) {
+            case ApiContainerType::STONECUTTER:
+                if (isset($inputs[0]) && $stoneRecipe !== null) {
+                    $this->pluginEvents->stonecutterProcessed($apiPlayer, $position, $inputs[0], $output, 'minecraft:stonecutter/' . ($this->craftingCatalog?->workstationSourceIndex($stoneRecipe) ?? 0));
+                }
+                break;
+            case ApiContainerType::SMITHING_TABLE:
+                if (isset($inputs[0], $inputs[1], $inputs[2])) {
+                    $this->pluginEvents->smithingProcessed($apiPlayer, $position, $output->identifier === $inputs[1]->identifier ? SmithingRecipeType::TRIM : SmithingRecipeType::TRANSFORM, $inputs[0], $inputs[1], $inputs[2], $output);
+                }
+                break;
+            case ApiContainerType::ANVIL:
+                if (isset($inputs[0])) {
+                    $this->pluginEvents->anvilProcessed($apiPlayer, $position, $inputs[0], $inputs[1] ?? null, $output, $result->experienceLevelCost, $request->filteredText ?? '');
+                }
+                break;
+            case ApiContainerType::GRINDSTONE:
+                if (isset($inputs[0])) {
+                    $this->pluginEvents->grindstoneProcessed($apiPlayer, $position, $inputs[0], $inputs[1] ?? null, $output, $result->experience);
+                }
+                break;
+            case ApiContainerType::ENCHANTING_TABLE:
+                $this->publishEnchantingProcessed($player, $session, $inventory, $inputs[0] ?? null, $output, $request);
+                break;
+            case ApiContainerType::LOOM:
+                if (isset($inputs[0], $inputs[1]) && $pattern !== null) {
+                    $this->pluginEvents->loomProcessed($apiPlayer, $position, $inputs[0], $inputs[1], $inputs[2] ?? null, $output, $pattern);
+                }
+                break;
+            case ApiContainerType::CARTOGRAPHY_TABLE:
+                if (isset($inputs[0])) {
+                    $this->pluginEvents->cartographyProcessed($apiPlayer, $position, $this->cartographyOperation($inventory, $request) ?? CartographyOperation::RENAME, $inputs[0], $inputs[1] ?? null, $output);
+                }
+                break;
+            default:
+                break;
+        }
+    }
+
+    /** @return array<int, ApiItemStack> */
+    private function apiWorkstationInputs(
+        \Bedriox\Server\Player\OpenedContainerInventory $inventory,
+        ?int $resultSlot,
+    ): array {
+        $inputs = [];
+        foreach ($inventory->slots() as $slot => $stack) {
+            if ($slot !== $resultSlot && $stack !== null) {
+                $inputs[$slot] = self::apiInventoryStack($stack);
+            }
+        }
+        return $inputs;
+    }
+
+    private function cartographyOperation(
+        \Bedriox\Server\Player\OpenedContainerInventory $inventory,
+        ?WorkstationRequest $request,
+    ): ?CartographyOperation {
+        return match ($inventory->stackAt(1)?->identifier) {
+            'minecraft:empty_map' => CartographyOperation::CLONE,
+            'minecraft:paper' => CartographyOperation::SCALE,
+            'minecraft:glass_pane' => CartographyOperation::LOCK,
+            default => $request?->filteredText !== null ? CartographyOperation::RENAME : null,
+        };
+    }
+
+    private function allowEnchantingProcess(
+        Player $player,
+        PlayerContainerSession $session,
+        \Bedriox\Server\Player\OpenedContainerInventory $inventory,
+        ApiItemStack $input,
+        ApiItemStack $output,
+        ?WorkstationRequest $request,
+    ): bool {
+        if ($this->pluginEvents === null || $session->position === null || $this->transientWorkstations === null) {
+            return true;
+        }
+        $option = $request === null ? null : ($session->enchantingOptions[$request->recipeNetworkId] ?? null);
+        return $option !== null && $this->pluginEvents->playerEnchantItem(
+            $this->pluginEvents->playerView($player),
+            new ApiBlockPosition($session->position->x, $session->position->y, $session->position->z),
+            $input,
+            $output,
+            $option,
+        ) !== null;
+    }
+
+    private function publishEnchantingProcessed(
+        Player $player,
+        PlayerContainerSession $session,
+        \Bedriox\Server\Player\OpenedContainerInventory $inventory,
+        ?ApiItemStack $input,
+        ApiItemStack $output,
+        ?WorkstationRequest $request,
+    ): bool {
+        if ($input === null || $this->pluginEvents === null || $session->position === null || $this->transientWorkstations === null) {
+            return false;
+        }
+        $option = $request === null ? null : ($session->enchantingOptions[$request->recipeNetworkId] ?? null);
+        if ($option === null) {
+            return false;
+        }
+        $this->pluginEvents->playerEnchantedItem(
+            $this->pluginEvents->playerView($player),
+            new ApiBlockPosition($session->position->x, $session->position->y, $session->position->z),
+            $input,
+            $output,
+            $option,
+        );
+        return true;
+    }
+
     private function refreshContainerProjection(Player $player, PlayerContainerSession $session): void
     {
-        $session->projection = $player->inventory->projectOpenedContainer(
-            $session->inventory->identifier(),
+        $session->projection = $player->inventory->refreshOpenedContainer(
+            $session->projection,
             array_map(
                 fn(?ApiItemStack $stack): ?InventoryStack => $stack === null
                     ? null
@@ -7861,6 +9372,16 @@ final class WorldSimulation
                 );
             }
         }
+        if ($actions === []) {
+            $actions = self::containerTransactionSlotChanges(
+                $player,
+                $beforePlayer,
+                $beforeOpened,
+                $afterPlayer,
+                $afterOpened,
+                $container,
+            );
+        }
 
         return new ApiInventoryTransaction(
             'container:' . $command->requestId . ':' . strtolower($player->identity->uuid),
@@ -7869,6 +9390,43 @@ final class WorldSimulation
             $after,
             $actions,
         );
+    }
+
+    /** @return list<ApiInventoryTransactionAction> */
+    private static function containerTransactionSlotChanges(
+        Player $player,
+        PlayerInventory $beforePlayer,
+        \Bedriox\Server\Player\OpenedContainerInventory $beforeOpened,
+        PlayerInventory $afterPlayer,
+        \Bedriox\Server\Player\OpenedContainerInventory $afterOpened,
+        LiveContainerInventory $container,
+    ): array {
+        $prefix = 'player/' . strtolower($player->identity->uuid);
+        $inventories = [
+            [$prefix . '/main', $beforePlayer->slots(), $afterPlayer->slots()],
+            [$prefix . '/cursor', [$beforePlayer->cursorStack()], [$afterPlayer->cursorStack()]],
+            [$prefix . '/armor', $beforePlayer->armorSlots(), $afterPlayer->armorSlots()],
+            [$prefix . '/offhand', [$beforePlayer->offhandStack()], [$afterPlayer->offhandStack()]],
+            [self::containerInventoryIdentifier($container), $beforeOpened->slots(), $afterOpened->slots()],
+        ];
+        $actions = [];
+        foreach ($inventories as [$identifier, $before, $after]) {
+            foreach ($before as $slot => $previous) {
+                $next = $after[$slot];
+                if (self::sameInventoryStack($previous, $next)) {
+                    continue;
+                }
+                $actions[] = new ApiInventoryTransactionAction(
+                    ApiInventoryActionType::SLOT_CHANGE,
+                    $identifier,
+                    $slot,
+                    $previous === null ? null : self::apiInventoryStack($previous),
+                    $next === null ? null : self::apiInventoryStack($next),
+                );
+            }
+        }
+
+        return $actions;
     }
 
     private function containerDropTransactionView(
@@ -8079,6 +9637,13 @@ final class WorldSimulation
             if ($session->worldContainer->type === ApiContainerType::BREWING_STAND) {
                 $this->scheduleBrewingStand($session->worldContainer->position);
             }
+            if (in_array($session->worldContainer->type, [
+                ApiContainerType::FURNACE,
+                ApiContainerType::BLAST_FURNACE,
+                ApiContainerType::SMOKER,
+            ], true)) {
+                $this->scheduleFurnace($session->worldContainer->position);
+            }
 
             return;
         }
@@ -8188,6 +9753,15 @@ final class WorldSimulation
                 && ($left->nbt?->toBinary() ?? '') === ($right->nbt?->toBinary() ?? ''));
     }
 
+    private static function sameInventoryStackType(InventoryStack $left, InventoryStack $right): bool
+    {
+        return $left->identifier === $right->identifier
+            && $left->damage === $right->damage
+            && $left->auxValue === $right->auxValue
+            && $left->placedBlockState?->value === $right->placedBlockState?->value
+            && ($left->nbt?->toBinary() ?? '') === ($right->nbt?->toBinary() ?? '');
+    }
+
     /** @return list<InventorySlotReference> */
     private static function changedMainInventorySlots(
         PlayerInventory $before,
@@ -8237,6 +9811,61 @@ final class WorldSimulation
             }
 
             return new CraftingTableOpened($player->sessionId, $command->clickedPosition);
+        }
+        $transientWorkstation = TransientWorkstationType::fromBlockIdentifier($clickedIdentifier);
+        if ($transientWorkstation !== null
+            && !$player->movement->sneaking
+            && $this->blockIsReachable($player->snapshot(), $command->clickedPosition)) {
+            if ($command->sequence > $player->placementSequence) {
+                $player->placementSequence = $command->sequence;
+            }
+            $type = $transientWorkstation->containerType();
+            $inventory = new SimpleContainerInventory(
+                self::transientWorkstationInventoryIdentifier(
+                    $player->sessionId,
+                    $command->clickedPosition,
+                    $type,
+                ),
+                $transientWorkstation->slotCount(),
+            );
+
+            return $this->openContainerInventory(
+                $player,
+                $type,
+                $inventory,
+                $command->clickedPosition,
+            );
+        }
+        if (($clickedIdentifier === 'minecraft:campfire' || $clickedIdentifier === 'minecraft:soul_campfire')
+            && !$player->movement->sneaking
+            && $this->blockIsReachable($player->snapshot(), $command->clickedPosition)) {
+            return $this->useCampfire(
+                $player,
+                $command,
+                $clickedIdentifier,
+                $clickedState,
+                $this->blockWorld->blockStateAt($placedPosition->x, $placedPosition->y, $placedPosition->z),
+            );
+        }
+        if ($clickedIdentifier === 'minecraft:composter'
+            && !$player->movement->sneaking
+            && $this->blockIsReachable($player->snapshot(), $command->clickedPosition)) {
+            return $this->useComposter(
+                $player,
+                $command,
+                $clickedState,
+                $this->blockWorld->blockStateAt($placedPosition->x, $placedPosition->y, $placedPosition->z),
+            );
+        }
+        if ($clickedIdentifier === 'minecraft:cauldron'
+            && !$player->movement->sneaking
+            && $this->blockIsReachable($player->snapshot(), $command->clickedPosition)) {
+            return $this->useCauldron(
+                $player,
+                $command,
+                $clickedState,
+                $this->blockWorld->blockStateAt($placedPosition->x, $placedPosition->y, $placedPosition->z),
+            );
         }
         $key = self::sessionKey($command->session);
         $activeBreak = $this->breakingBlocks[$key] ?? null;
@@ -8545,6 +10174,424 @@ final class WorldSimulation
         );
     }
 
+    private function useCampfire(
+        Player $player,
+        PlaceBlock $command,
+        string $blockIdentifier,
+        InternalBlockStateId $clickedState,
+        InternalBlockStateId $adjacentState,
+    ): WorldEvent {
+        $entity = $this->blockWorld?->blockEntityAt($command->clickedPosition);
+        $held = $player->inventory->selectedStack();
+        $campfireType = $blockIdentifier === 'minecraft:soul_campfire'
+            ? CampfireType::SoulCampfire
+            : CampfireType::Campfire;
+        $persistentHeld = $held === null ? null : new ContainerItemStack(
+            $held->identifier,
+            1,
+            $held->damage,
+            $held->nbt,
+            $held->auxValue,
+        );
+        $recipe = $persistentHeld === null || $this->processingRecipes === null
+            ? null
+            : CampfireRecipeResolver::match($this->processingRecipes, $campfireType, $persistentHeld);
+        $freeSlot = null;
+        if ($entity instanceof CampfireBlockEntity) {
+            for ($slot = 0; $slot < CampfireBlockEntity::SLOT_COUNT; ++$slot) {
+                if ($entity->inventory->stackAt($slot) === null) {
+                    $freeSlot = $slot;
+                    break;
+                }
+            }
+        }
+        $canonical = $this->blockStateRegistry?->state($clickedState);
+        $lit = ($canonical?->properties()['extinguished'] ?? 0) === 0;
+        $failure = match (true) {
+            !$entity instanceof CampfireBlockEntity => 'campfire_block_entity',
+            $held === null => 'empty_hand',
+            $recipe === null => 'campfire_recipe',
+            $freeSlot === null => 'campfire_full',
+            !$lit => 'campfire_unlit',
+            $command->sequence <= $player->placementSequence => 'stale_sequence',
+            $command->hotbarSlot !== $player->inventory->selectedHotbarSlot() => 'selected_slot',
+            default => null,
+        };
+        if ($command->sequence > $player->placementSequence) {
+            $player->placementSequence = $command->sequence;
+        }
+        $cookStartEvent = null;
+        if ($failure === null) {
+            $cookStartEvent = $this->pluginEvents?->campfireCookStart(
+                new \Bedriox\Api\World\BlockPosition(
+                    $command->clickedPosition->x,
+                    $command->clickedPosition->y,
+                    $command->clickedPosition->z,
+                ),
+                $freeSlot,
+                new ApiItemStack(
+                    $persistentHeld->identifier,
+                    $persistentHeld->count,
+                    $persistentHeld->damage,
+                    $persistentHeld->nbt,
+                    $persistentHeld->auxValue,
+                ),
+                new ApiItemStack(
+                    $recipe->output->identifier,
+                    $recipe->output->count,
+                    $recipe->output->damage,
+                    $recipe->output->nbt,
+                    $recipe->output->auxValue,
+                ),
+                CampfireBlockEntity::DEFAULT_COOK_TIME_TICKS,
+                $campfireType === CampfireType::SoulCampfire,
+            );
+            if ($this->pluginEvents !== null && $cookStartEvent === null) {
+                $failure = 'plugin_cancelled';
+            }
+        }
+        if ($failure === null) {
+            $progress = $entity->progressBySlot;
+            $duration = $entity->durationBySlot;
+            $progress[$freeSlot] = 0;
+            $duration[$freeSlot] = $cookStartEvent?->cookTicks() ?? CampfireBlockEntity::DEFAULT_COOK_TIME_TICKS;
+            $updated = $entity->withState(
+                $entity->inventory->withStack($freeSlot, $persistentHeld),
+                $progress,
+                $duration,
+            );
+            $this->blockWorld->setBlockEntity($updated);
+            $this->deferredEvents[] = new BlockEntityChanged($updated, $this->players->recipients());
+            $remaining = $player->gameMode()->consumesItems()
+                ? $player->inventory->decrementSelectedOne()
+                : $held;
+            if ($player->gameMode()->consumesItems()) {
+                $player->markDirty();
+            }
+            $this->deferredEvents[] = new HeldItemChanged(
+                $player->sessionId,
+                $player->runtimeActorId,
+                $player->inventory->selectedHotbarSlot(),
+                $remaining,
+                $this->players->recipients($player->sessionId),
+                ownerSlotCorrection: false,
+            );
+            if ($cookStartEvent !== null) {
+                $this->pluginEvents->campfireCookingStarted(
+                    $cookStartEvent->position,
+                    $cookStartEvent->slot,
+                    $cookStartEvent->input,
+                    $cookStartEvent->result,
+                    $cookStartEvent->cookTicks(),
+                    $cookStartEvent->soulCampfire,
+                );
+            }
+            $this->scheduleCampfire($command->clickedPosition);
+        }
+
+        return new BlockPlacementCorrected(
+            $player->sessionId,
+            $command->clickedPosition,
+            $clickedState,
+            self::adjacentBlock($command->clickedPosition, $command->face) ?? $command->clickedPosition,
+            $adjacentState,
+            $player->inventory->selectedHotbarSlot(),
+            $player->inventory->selectedStack(),
+            null,
+            $failure ?? 'campfire_cooking_started',
+        );
+    }
+
+    private function useComposter(
+        Player $player,
+        PlaceBlock $command,
+        InternalBlockStateId $clickedState,
+        InternalBlockStateId $adjacentState,
+    ): WorldEvent {
+        $registry = $this->blockStateRegistry;
+        if ($registry === null) {
+            return $this->processingCorrection($player, $command, $clickedState, $adjacentState, 'composter_state');
+        }
+        $canonical = $registry->state($clickedState);
+        $level = $canonical->properties()['composter_fill_level'] ?? null;
+        $held = $player->inventory->selectedStack();
+        $item = $held === null ? null : new ContainerItemStack(
+            $held->identifier,
+            1,
+            $held->damage,
+            $held->nbt,
+            $held->auxValue,
+        );
+        $failure = match (true) {
+            !is_int($level) => 'composter_state',
+            $command->sequence <= $player->placementSequence => 'stale_sequence',
+            $command->hotbarSlot !== $player->inventory->selectedHotbarSlot() => 'selected_slot',
+            default => null,
+        };
+        if ($command->sequence > $player->placementSequence) {
+            $player->placementSequence = $command->sequence;
+        }
+        if ($failure !== null) {
+            return $this->processingCorrection($player, $command, $clickedState, $adjacentState, $failure);
+        }
+        $cause = $level === 8
+            ? \Bedriox\Api\Processing\ComposterChangeCause::EXTRACT
+            : \Bedriox\Api\Processing\ComposterChangeCause::INSERT;
+        $result = $level === 8
+            ? $this->composters->extract(new ComposterState($level))
+            : ($item === null ? null : $this->composters->insert(
+                new ComposterState($level),
+                $item,
+                $this->dropRandom->integer(0, 99),
+            ));
+        if ($result === null) {
+            return $this->processingCorrection($player, $command, $clickedState, $adjacentState, 'composter_item');
+        }
+        $apiPosition = new ApiBlockPosition(
+            $command->clickedPosition->x,
+            $command->clickedPosition->y,
+            $command->clickedPosition->z,
+        );
+        $apiItem = $item === null ? null : new ApiItemStack(
+            $item->identifier,
+            $item->count,
+            $item->damage,
+            $item->nbt,
+            $item->auxValue,
+        );
+        $change = $this->pluginEvents?->composterChange(
+            $this->pluginEvents->playerView($player),
+            $apiPosition,
+            $level,
+            $result->state->level,
+            $cause,
+            $apiItem,
+        );
+        if ($this->pluginEvents !== null && $change === null) {
+            return $this->processingCorrection($player, $command, $clickedState, $adjacentState, 'plugin_cancelled');
+        }
+        $newLevel = $change?->newLevel() ?? $result->state->level;
+        if (!$this->applyProcessingInventory($player, $result->consumed, $result->output)) {
+            return $this->processingCorrection($player, $command, $clickedState, $adjacentState, 'inventory_capacity');
+        }
+        $properties = $canonical->properties();
+        $properties['composter_fill_level'] = $newLevel;
+        $updated = $registry->internalId(CanonicalBlockState::from('minecraft:composter', $properties));
+        $this->setBlockStateAndSchedule($command->clickedPosition, $updated);
+        if ($newLevel === 7) {
+            $this->scheduleComposter($command->clickedPosition);
+        }
+        $this->pluginEvents?->composterChanged(
+            $this->pluginEvents->playerView($player),
+            $apiPosition,
+            $level,
+            $newLevel,
+            $cause,
+            $apiItem,
+        );
+
+        return new BlockChanged($player->sessionId, $command->clickedPosition, $updated, $this->players->recipients());
+    }
+
+    private function useCauldron(
+        Player $player,
+        PlaceBlock $command,
+        InternalBlockStateId $clickedState,
+        InternalBlockStateId $adjacentState,
+    ): WorldEvent {
+        $registry = $this->blockStateRegistry;
+        $world = $this->blockWorld;
+        if ($registry === null || $world === null) {
+            return $this->processingCorrection($player, $command, $clickedState, $adjacentState, 'cauldron_state');
+        }
+        $canonical = $registry->state($clickedState);
+        $properties = $canonical->properties();
+        $level = $properties['fill_level'] ?? null;
+        $liquid = $properties['cauldron_liquid'] ?? null;
+        $entity = $world->blockEntityAt($command->clickedPosition);
+        $potionAux = $entity instanceof CauldronBlockEntity ? $entity->potionAuxValue : null;
+        $content = match (true) {
+            $level === 0 => \Bedriox\Api\Processing\CauldronContentType::EMPTY,
+            $potionAux !== null => \Bedriox\Api\Processing\CauldronContentType::POTION,
+            $liquid === 'water' => \Bedriox\Api\Processing\CauldronContentType::WATER,
+            $liquid === 'lava' => \Bedriox\Api\Processing\CauldronContentType::LAVA,
+            $liquid === 'powder_snow' => \Bedriox\Api\Processing\CauldronContentType::POWDER_SNOW,
+            default => null,
+        };
+        $held = $player->inventory->selectedStack();
+        $item = $held === null ? null : new ContainerItemStack(
+            $held->identifier,
+            1,
+            $held->damage,
+            $held->nbt,
+            $held->auxValue,
+        );
+        $failure = match (true) {
+            !is_int($level) || $content === null => 'cauldron_state',
+            $item === null => 'empty_hand',
+            $command->sequence <= $player->placementSequence => 'stale_sequence',
+            $command->hotbarSlot !== $player->inventory->selectedHotbarSlot() => 'selected_slot',
+            default => null,
+        };
+        if ($command->sequence > $player->placementSequence) {
+            $player->placementSequence = $command->sequence;
+        }
+        if ($failure !== null) {
+            return $this->processingCorrection($player, $command, $clickedState, $adjacentState, $failure);
+        }
+        $state = new CauldronState($content, $level, $potionAux);
+        $result = $this->cauldrons->interact($state, $item);
+        if ($result === null) {
+            return $this->processingCorrection($player, $command, $clickedState, $adjacentState, 'cauldron_item');
+        }
+        $cause = match ($held->identifier) {
+            'minecraft:water_bucket', 'minecraft:lava_bucket', 'minecraft:powder_snow_bucket', 'minecraft:bucket' =>
+                \Bedriox\Api\Processing\CauldronChangeCause::BUCKET,
+            'minecraft:glass_bottle', 'minecraft:potion' => \Bedriox\Api\Processing\CauldronChangeCause::BOTTLE,
+            default => \Bedriox\Api\Processing\CauldronChangeCause::WASH,
+        };
+        $apiPosition = new ApiBlockPosition(
+            $command->clickedPosition->x,
+            $command->clickedPosition->y,
+            $command->clickedPosition->z,
+        );
+        $apiItem = new ApiItemStack(
+            $item->identifier,
+            $item->count,
+            $item->damage,
+            $item->nbt,
+            $item->auxValue,
+        );
+        $change = $this->pluginEvents?->cauldronChange(
+            $this->pluginEvents->playerView($player),
+            $apiPosition,
+            $content,
+            $level,
+            $result->state->content,
+            $result->state->level,
+            $cause,
+            $apiItem,
+        );
+        if ($this->pluginEvents !== null && $change === null) {
+            return $this->processingCorrection($player, $command, $clickedState, $adjacentState, 'plugin_cancelled');
+        }
+        try {
+            $next = new CauldronState(
+                $change?->newContent() ?? $result->state->content,
+                $change?->newLevel() ?? $result->state->level,
+                ($change?->newContent() ?? $result->state->content) === \Bedriox\Api\Processing\CauldronContentType::POTION
+                    ? $result->state->potionAuxValue
+                    : null,
+            );
+        } catch (InvalidArgumentException) {
+            return $this->processingCorrection($player, $command, $clickedState, $adjacentState, 'plugin_outcome');
+        }
+        if (!$this->applyProcessingInventory($player, true, $result->heldItem)) {
+            return $this->processingCorrection($player, $command, $clickedState, $adjacentState, 'inventory_capacity');
+        }
+        $updated = $registry->internalId(CanonicalBlockState::from('minecraft:cauldron', [
+            'cauldron_liquid' => match ($next->content) {
+                \Bedriox\Api\Processing\CauldronContentType::LAVA => 'lava',
+                \Bedriox\Api\Processing\CauldronContentType::POWDER_SNOW => 'powder_snow',
+                default => 'water',
+            },
+            'fill_level' => $next->level,
+        ]));
+        $this->setBlockStateAndSchedule($command->clickedPosition, $updated);
+        if ($next->content === \Bedriox\Api\Processing\CauldronContentType::POTION) {
+            $cauldron = new CauldronBlockEntity($command->clickedPosition, $next->potionAuxValue);
+            $world->setBlockEntity($cauldron);
+            $this->deferredEvents[] = new BlockEntityChanged($cauldron, $this->players->recipients());
+        } elseif ($entity instanceof CauldronBlockEntity) {
+            $world->removeBlockEntity($command->clickedPosition);
+        }
+        $this->pluginEvents?->cauldronChanged(
+            $this->pluginEvents->playerView($player),
+            $apiPosition,
+            $content,
+            $level,
+            $next->content,
+            $next->level,
+            $cause,
+            $apiItem,
+        );
+
+        return new BlockChanged($player->sessionId, $command->clickedPosition, $updated, $this->players->recipients());
+    }
+
+    private function processingCorrection(
+        Player $player,
+        PlaceBlock $command,
+        InternalBlockStateId $clickedState,
+        InternalBlockStateId $adjacentState,
+        string $reason,
+    ): BlockPlacementCorrected {
+        return new BlockPlacementCorrected(
+            $player->sessionId,
+            $command->clickedPosition,
+            $clickedState,
+            self::adjacentBlock($command->clickedPosition, $command->face) ?? $command->clickedPosition,
+            $adjacentState,
+            $player->inventory->selectedHotbarSlot(),
+            $player->inventory->selectedStack(),
+            reason: $reason,
+        );
+    }
+
+    private function applyProcessingInventory(
+        Player $player,
+        bool $consumeHeld,
+        ?ContainerItemStack $output,
+    ): bool {
+        if (!$player->gameMode()->consumesItems()) {
+            return true;
+        }
+        $before = $player->inventory->slots();
+        $staged = clone $player->inventory;
+        $held = $staged->selectedStack();
+        if ($consumeHeld && $held === null) {
+            return false;
+        }
+        if ($consumeHeld && $output !== null && $held->count === 1) {
+            $staged->replaceSlot(
+                $staged->selectedHotbarSlot(),
+                new InventoryStack($output->identifier, $output->count, 1, damage: $output->damage, nbt: $output->nbt, auxValue: $output->auxValue),
+            );
+        } else {
+            if ($consumeHeld) {
+                $staged->decrementSelectedOne();
+            }
+            if ($output !== null && $staged->add(new InventoryStack(
+                $output->identifier,
+                $output->count,
+                1,
+                damage: $output->damage,
+                nbt: $output->nbt,
+                auxValue: $output->auxValue,
+            )) !== null) {
+                return false;
+            }
+        }
+        $player->inventory->replaceMainContents($staged->slots());
+        $player->markDirty();
+        foreach ($before as $slot => $stack) {
+            $replacement = $player->inventory->stackAt($slot);
+            if (self::sameInventoryStack($stack, $replacement)) {
+                continue;
+            }
+            $this->deferredEvents[] = new InventorySlotChanged($player->sessionId, $slot, $replacement);
+        }
+        $this->deferredEvents[] = new HeldItemChanged(
+            $player->sessionId,
+            $player->runtimeActorId,
+            $player->inventory->selectedHotbarSlot(),
+            $player->inventory->selectedStack(),
+            $this->players->recipients($player->sessionId),
+        );
+
+        return true;
+    }
+
     private function storageBlockEntityForPlacement(
         BlockPosition $position,
         string $blockIdentifier,
@@ -8560,6 +10607,21 @@ final class WorldSimulation
         }
         if ($type === BlockEntityType::BrewingStand) {
             return BrewingStandBlockEntity::empty($position);
+        }
+        if (in_array($type, [BlockEntityType::Furnace, BlockEntityType::BlastFurnace, BlockEntityType::Smoker], true)) {
+            $furnaceType = match ($type) {
+                BlockEntityType::Furnace => FurnaceType::Furnace,
+                BlockEntityType::BlastFurnace => FurnaceType::BlastFurnace,
+                BlockEntityType::Smoker => FurnaceType::Smoker,
+            };
+
+            return FurnaceBlockEntity::empty($furnaceType, $position);
+        }
+        if ($type === BlockEntityType::Campfire) {
+            return CampfireBlockEntity::empty(
+                $blockIdentifier === 'minecraft:soul_campfire' ? CampfireType::SoulCampfire : CampfireType::Campfire,
+                $position,
+            );
         }
 
         return $type->ownsPersistentInventory()
@@ -8685,6 +10747,9 @@ final class WorldSimulation
             if ($type === ApiContainerType::BREWING_STAND) {
                 $this->scheduleBrewingStand($worldContainer->position);
             }
+            if (in_array($type, [ApiContainerType::FURNACE, ApiContainerType::BLAST_FURNACE, ApiContainerType::SMOKER], true)) {
+                $this->scheduleFurnace($worldContainer->position);
+            }
             if ($worldContainer->pairedPosition !== null
                 && $this->containerIsObstructed($worldContainer->pairedPosition, $type)) {
                 return new CommandRejected($player->sessionId, 'container_obstructed');
@@ -8750,6 +10815,9 @@ final class WorldSimulation
             $firstViewer = !$this->hasContainerPresentationViewer($type, $position, $pairedPosition);
             $inventory->addViewer($player->identity->uuid);
             $this->openContainers[$key] = $session;
+            if ($type === ApiContainerType::ENCHANTING_TABLE) {
+                $this->deferEnchantingOptions($player, $session);
+            }
             if ($type === ApiContainerType::BREWING_STAND && $position !== null) {
                 $brewing = $this->blockWorld?->blockEntityAt($position);
                 if ($brewing instanceof BrewingStandBlockEntity) {
@@ -8759,6 +10827,20 @@ final class WorldSimulation
                         $brewing->brewTime,
                         $brewing->fuelAmount,
                         $brewing->fuelTotal,
+                    );
+                }
+            }
+            if (in_array($type, [ApiContainerType::FURNACE, ApiContainerType::BLAST_FURNACE, ApiContainerType::SMOKER], true)
+                && $position !== null) {
+                $furnace = $this->blockWorld?->blockEntityAt($position);
+                if ($furnace instanceof FurnaceBlockEntity) {
+                    $this->deferredEvents[] = new FurnaceUpdated(
+                        [new ContainerViewerProjection($player->sessionId, $windowId, $projection->slots())],
+                        [],
+                        $furnace->cookTime,
+                        $furnace->burnTime,
+                        $furnace->burnDuration,
+                        $furnace->storedExperienceMilli,
                     );
                 }
             }
@@ -8811,6 +10893,9 @@ final class WorldSimulation
         }
         unset($this->openContainers[$key]);
         $session->inventory->removeViewer($player->identity->uuid);
+        if ($session->type->isTransient()) {
+            $this->returnTransientWorkstationInputs($player, $session);
+        }
         $view = $this->containerView($session);
         $lastViewer = !$this->hasContainerPresentationViewer(
             $session->type,
@@ -8837,6 +10922,58 @@ final class WorldSimulation
             $serverInitiated,
             $session->layout,
         );
+    }
+
+    private function returnTransientWorkstationInputs(Player $player, PlayerContainerSession $session): void
+    {
+        $resultSlot = $session->type->resultSlot();
+        $before = clone $player->inventory;
+        $changed = false;
+        foreach ($session->inventory->contents() as $slot => $item) {
+            if ($slot === $resultSlot || $item === null) {
+                continue;
+            }
+            $remaining = $player->inventory->add($this->inventoryStackFromApi($item));
+            $changed = true;
+            if ($remaining === null || !$this->itemEntities->canSpawn()) {
+                continue;
+            }
+            $entity = $this->itemEntities->spawn(
+                $remaining,
+                new Position(
+                    $player->movement->position->x,
+                    $player->movement->position->y + 1.0,
+                    $player->movement->position->z,
+                ),
+                new ItemEntityMotion(0.0, 0.05, 0.0),
+                10,
+            );
+            $this->deferredEvents[] = new ItemEntitySpawned($entity, $this->players->recipients());
+        }
+        if ($changed) {
+            $player->markDirty();
+            foreach ($before->slots() as $slot => $previous) {
+                $replacement = $player->inventory->stackAt($slot);
+                if (self::sameInventoryStack($previous, $replacement)) {
+                    continue;
+                }
+                $this->deferredEvents[] = new InventorySlotChanged(
+                    $player->sessionId,
+                    $slot,
+                    $replacement,
+                );
+            }
+            if (!self::sameInventoryStack($before->selectedStack(), $player->inventory->selectedStack())) {
+                $this->deferredEvents[] = new HeldItemChanged(
+                    $player->sessionId,
+                    $player->runtimeActorId,
+                    $player->inventory->selectedHotbarSlot(),
+                    $player->inventory->selectedStack(),
+                    $this->players->recipients($player->sessionId),
+                );
+            }
+            $this->pluginEvents?->inventoryChanged($player, $before);
+        }
     }
 
     private function resolveWorldContainer(BlockPosition $position): ?ResolvedWorldContainer
@@ -9573,6 +11710,111 @@ final class WorldSimulation
 
         return $fluid?->type === FluidType::LAVA
             && $blockY + $fluid->height() > $entity->position->y;
+    }
+
+    /**
+     * Creates a bounded vanilla-style orb split. The entire admission is rejected when capacity is insufficient.
+     *
+     * @return list<ExperienceOrbSpawned>
+     */
+    public function spawnExperienceOrbs(int $totalExperience, Position $position): array
+    {
+        $values = ExperienceOrbRegistry::splitValues($totalExperience);
+        if (count($values) > $this->experienceOrbs->remainingCapacity()) {
+            return [];
+        }
+        $events = [];
+        $recipients = $this->players->recipients();
+        foreach ($values as $value) {
+            $value = $this->pluginEvents?->experienceOrbSpawn($position, $value) ?? ($this->pluginEvents === null ? $value : null);
+            if ($value === null) {
+                continue;
+            }
+            $entity = $this->experienceOrbs->spawn(
+                $value,
+                $position,
+                new ExperienceOrbMotion(0.0, 0.1, 0.0),
+                pickupDelayTicks: 10,
+            );
+            $events[] = new ExperienceOrbSpawned($entity, $recipients);
+            $this->pluginEvents?->experienceOrbSpawned($entity->runtimeEntityId, $entity->position, $entity->value);
+        }
+
+        return $events;
+    }
+
+    /** @return list<WorldEvent> */
+    private function advanceExperienceOrbs(): array
+    {
+        if ($this->experienceOrbs->count() === 0) {
+            return [];
+        }
+        $targets = [];
+        foreach ($this->players->players() as $player) {
+            $targets[] = new ExperienceOrbTarget(
+                $player->sessionId,
+                $player->runtimeActorId,
+                new Position(
+                    $player->movement->position->x,
+                    $player->movement->position->y + 0.9,
+                    $player->movement->position->z,
+                ),
+                $player->vitals->isAlive(),
+                $player->gameMode() === GameMode::SPECTATOR,
+            );
+        }
+        $result = $this->experienceOrbs->tick($targets, $this->experienceOrbCollisions);
+        $recipients = $this->players->recipients();
+        $events = [];
+        $pickedUp = [];
+        foreach ($result->pickups as $pickup) {
+            $pickedUp[$pickup->runtimeEntityId] = true;
+            $player = $this->players->player($pickup->collectorSessionId);
+            if ($player === null) {
+                continue;
+            }
+            $previous = $player->experience->snapshot();
+            $requestedTotal = min(0x7fffffff, $previous->totalPoints + $pickup->awardedExperience);
+            $requested = $this->pluginEvents === null
+                ? new \Bedriox\Api\Player\ExperienceSnapshot($requestedTotal)
+                : $this->pluginEvents->experienceChange($player, $requestedTotal, \Bedriox\Api\Player\ExperienceChangeCause::ORB);
+            if ($requested === null) {
+                $replacement = $this->experienceOrbs->spawn(
+                    $pickup->awardedExperience,
+                    $player->movement->position,
+                    pickupDelayTicks: 10,
+                );
+                $events[] = new ExperienceOrbSpawned($replacement, $recipients);
+                continue;
+            }
+            $player->experience->setTotalPoints($requested->totalPoints);
+            $this->pluginEvents?->experienceChanged($player, $previous, \Bedriox\Api\Player\ExperienceChangeCause::ORB);
+            $events[] = new ExperienceOrbPickedUp(
+                $pickup->runtimeEntityId,
+                $pickup->collectorRuntimeActorId,
+                $pickup->collectorSessionId,
+                $pickup->awardedExperience,
+                $pickup->removed,
+                $recipients,
+            );
+            $events[] = new PlayerExperienceChanged(
+                $player->snapshot(),
+                $previous,
+                \Bedriox\Api\Player\ExperienceChangeCause::ORB,
+            );
+        }
+        foreach ($result->updated as $entity) {
+            if (!isset($pickedUp[$entity->runtimeEntityId])) {
+                $events[] = new ExperienceOrbMoved($entity, $this->tick, $recipients);
+            }
+        }
+        foreach ($result->removed as $entity) {
+            if (!isset($pickedUp[$entity->runtimeEntityId])) {
+                $events[] = new ExperienceOrbRemoved($entity->runtimeEntityId, $recipients);
+            }
+        }
+
+        return $events;
     }
 
     /** @return list<WorldEvent> */

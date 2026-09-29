@@ -248,11 +248,38 @@ final class PlayerDataCodecTest extends TestCase
         self::assertNull($decodedLegacy->inventory->offhand);
     }
 
+    public function testPersistsExperienceAndMigratesOlderProfilesToZero(): void
+    {
+        $profile = self::profile();
+        $profile = new PlayerBootstrap(
+            $profile->identity,
+            $profile->worldName,
+            $profile->position,
+            $profile->yaw,
+            $profile->pitch,
+            $profile->inventory,
+            $profile->firstPlayedAt,
+            $profile->lastPlayedAt,
+            $profile->gamemode,
+            totalExperience: 1_234,
+        );
+        $codec = new PlayerDataCodec();
+        self::assertSame(1_234, $codec->decode($codec->encode($profile))->totalExperience);
+
+        $legacy = self::root();
+        $legacy['SchemaVersion'] = LittleEndianNbtTag::int(10);
+        unset($legacy['TotalExperience']);
+        self::assertSame(
+            0,
+            $codec->decode((new LittleEndianNbtCodec())->encodeRootCompound($legacy))->totalExperience,
+        );
+    }
+
     public function testSchemaSixProfilesMigrateToAnEmptyEnderChest(): void
     {
         $legacy = self::root();
         $legacy['SchemaVersion'] = LittleEndianNbtTag::int(6);
-        unset($legacy['EnderChest'], $legacy['Effects'], $legacy['Absorption'], $legacy['AirTicks'], $legacy['FireTicks']);
+        unset($legacy['EnderChest'], $legacy['Effects'], $legacy['Absorption'], $legacy['AirTicks'], $legacy['FireTicks'], $legacy['TotalExperience']);
 
         $decoded = (new PlayerDataCodec())->decode((new LittleEndianNbtCodec())->encodeRootCompound($legacy));
 
@@ -531,6 +558,7 @@ final class PlayerDataCodecTest extends TestCase
             $root['Absorption'],
             $root['AirTicks'],
             $root['FireTicks'],
+            $root['TotalExperience'],
         );
     }
 

@@ -26,6 +26,8 @@ use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Entity\EntityDamageCause;
 use Bedriox\Api\Entity\EntityInteractionType;
 use Bedriox\Api\Inventory\EquipmentSlot;
+use Bedriox\Api\Player\ExperienceChangeCause;
+use Bedriox\Api\Player\ExperienceSnapshot;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\World\Particle\Particle;
 use Bedriox\Server\Player\InventoryContainer;
@@ -62,6 +64,7 @@ use Bedriox\Server\Simulation\Command\RespawnPlayer;
 use Bedriox\Server\Simulation\Command\SelectHotbarSlot;
 use Bedriox\Server\Simulation\Command\SendChat;
 use Bedriox\Server\Simulation\Command\SendPluginMessage;
+use Bedriox\Server\Simulation\Command\SetPlayerExperience;
 use Bedriox\Server\Simulation\Command\SetPluginArmorContents;
 use Bedriox\Server\Simulation\Command\SetPluginBlock;
 use Bedriox\Server\Simulation\Command\SetPluginEquipmentSlot;
@@ -73,6 +76,7 @@ use Bedriox\Server\Simulation\Command\SyncInventory;
 use Bedriox\Server\Simulation\Command\SyncInventorySlots;
 use Bedriox\Server\Simulation\Command\TeleportPlayer;
 use Bedriox\Server\Simulation\Command\UseItem;
+use Bedriox\Server\Simulation\Command\WorkstationRequest;
 use Bedriox\Server\World\BlockPosition;
 
 final readonly class SimulationCommandFactory
@@ -216,6 +220,17 @@ final readonly class SimulationCommandFactory
         $this->assertOpaqueId($session, 128, 'session');
 
         return new ClearPlayerEffects($session, $cause);
+    }
+
+    public function setPlayerExperience(
+        string $session,
+        int $totalPoints,
+        ExperienceChangeCause $cause,
+    ): SetPlayerExperience {
+        $this->assertOpaqueId($session, 128, 'session');
+        new ExperienceSnapshot($totalPoints);
+
+        return new SetPlayerExperience($session, $totalPoints, $cause);
     }
 
     public function teleport(
@@ -627,9 +642,11 @@ final readonly class SimulationCommandFactory
         InventoryResponseMode $responseMode = InventoryResponseMode::ItemStackResponse,
         ?InventoryStack $authoritativeCreativeStack = null,
         ?CraftingRequest $crafting = null,
+        ?WorkstationRequest $workstation = null,
     ): ApplyInventoryStackRequest {
         $this->assertOpaqueId($session, 128, 'session');
-        if ($actions === [] && $rejectionReason === null) {
+        if ($actions === [] && $rejectionReason === null
+            && $authoritativeCreativeStack === null && $crafting === null && $workstation === null) {
             $rejectionReason = 'empty_actions';
         }
         if ($requestId < -0x80000000 || $requestId > 0x7fffffff || count($actions) > 100
@@ -677,6 +694,7 @@ final readonly class SimulationCommandFactory
             $responseMode,
             $authoritativeCreativeStack,
             $crafting,
+            $workstation,
         );
     }
 

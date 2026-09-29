@@ -56,6 +56,8 @@ use Bedriox\Api\Event\Entity\EntityEquipmentChangeEvent;
 use Bedriox\Api\Event\Entity\EntityInteractEvent;
 use Bedriox\Api\Event\Entity\EntitySpawnedEvent;
 use Bedriox\Api\Event\Entity\EntitySpawnEvent;
+use Bedriox\Api\Event\Entity\ExperienceOrbSpawnedEvent;
+use Bedriox\Api\Event\Entity\ExperienceOrbSpawnEvent;
 use Bedriox\Api\Event\Entity\PotionProjectileImpactedEvent;
 use Bedriox\Api\Event\Entity\PotionProjectileImpactEvent;
 use Bedriox\Api\Event\Event;
@@ -78,8 +80,12 @@ use Bedriox\Api\Event\Player\PlayerDamageEvent;
 use Bedriox\Api\Event\Player\PlayerDeathEvent;
 use Bedriox\Api\Event\Player\PlayerDropItemEvent;
 use Bedriox\Api\Event\Player\PlayerDroppedItemEvent;
+use Bedriox\Api\Event\Player\PlayerEnchantedItemEvent;
+use Bedriox\Api\Event\Player\PlayerEnchantItemEvent;
 use Bedriox\Api\Event\Player\PlayerEquipmentChangedEvent;
 use Bedriox\Api\Event\Player\PlayerEquipmentChangeEvent;
+use Bedriox\Api\Event\Player\PlayerExperienceChangedEvent as ApiPlayerExperienceChangedEvent;
+use Bedriox\Api\Event\Player\PlayerExperienceChangeEvent;
 use Bedriox\Api\Event\Player\PlayerFoodLevelChangedEvent;
 use Bedriox\Api\Event\Player\PlayerFoodLevelChangeEvent;
 use Bedriox\Api\Event\Player\PlayerGameModeChangedEvent;
@@ -107,6 +113,36 @@ use Bedriox\Api\Event\Player\PlayerRespawnedEvent;
 use Bedriox\Api\Event\Player\PlayerRespawnEvent;
 use Bedriox\Api\Event\Player\PlayerTeleportedEvent;
 use Bedriox\Api\Event\Player\PlayerTeleportEvent;
+use Bedriox\Api\Event\Processing\AnvilProcessedEvent;
+use Bedriox\Api\Event\Processing\AnvilProcessEvent;
+use Bedriox\Api\Event\Processing\CampfireCookedEvent;
+use Bedriox\Api\Event\Processing\CampfireCookEvent;
+use Bedriox\Api\Event\Processing\CampfireCookingStartedEvent;
+use Bedriox\Api\Event\Processing\CampfireCookStartEvent;
+use Bedriox\Api\Event\Processing\CartographyProcessedEvent;
+use Bedriox\Api\Event\Processing\CartographyProcessEvent;
+use Bedriox\Api\Event\Processing\CauldronChangedEvent;
+use Bedriox\Api\Event\Processing\CauldronChangeEvent;
+use Bedriox\Api\Event\Processing\ComposterChangedEvent;
+use Bedriox\Api\Event\Processing\ComposterChangeEvent;
+use Bedriox\Api\Event\Processing\EnchantingOptionsEvent;
+use Bedriox\Api\Event\Processing\EnchantingOptionsGeneratedEvent;
+use Bedriox\Api\Event\Processing\FurnaceExtractedEvent;
+use Bedriox\Api\Event\Processing\FurnaceExtractEvent;
+use Bedriox\Api\Event\Processing\FurnaceFuelConsumedEvent;
+use Bedriox\Api\Event\Processing\FurnaceFuelConsumeEvent;
+use Bedriox\Api\Event\Processing\FurnaceSmeltedEvent;
+use Bedriox\Api\Event\Processing\FurnaceSmeltEvent;
+use Bedriox\Api\Event\Processing\FurnaceStartedSmeltingEvent;
+use Bedriox\Api\Event\Processing\FurnaceStartSmeltEvent;
+use Bedriox\Api\Event\Processing\GrindstoneProcessedEvent;
+use Bedriox\Api\Event\Processing\GrindstoneProcessEvent;
+use Bedriox\Api\Event\Processing\LoomProcessedEvent;
+use Bedriox\Api\Event\Processing\LoomProcessEvent;
+use Bedriox\Api\Event\Processing\SmithingProcessedEvent;
+use Bedriox\Api\Event\Processing\SmithingProcessEvent;
+use Bedriox\Api\Event\Processing\StonecutterProcessedEvent;
+use Bedriox\Api\Event\Processing\StonecutterProcessEvent;
 use Bedriox\Api\Event\World\WeatherChangeCause;
 use Bedriox\Api\Event\World\WeatherChangedEvent;
 use Bedriox\Api\Event\World\WeatherChangeEvent;
@@ -121,6 +157,8 @@ use Bedriox\Api\Inventory\ItemStack as ApiItemStack;
 use Bedriox\Api\Inventory\ItemUseCancellationReason as ApiItemUseCancellationReason;
 use Bedriox\Api\Inventory\ItemUseKind;
 use Bedriox\Api\Inventory\PlayerInventoryActions;
+use Bedriox\Api\Player\ExperienceChangeCause;
+use Bedriox\Api\Player\ExperienceSnapshot;
 use Bedriox\Api\Player\FoodLevelChangeCause;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\Player\HealthRegainCause as ApiHealthRegainCause;
@@ -128,6 +166,15 @@ use Bedriox\Api\Player\Nutrition;
 use Bedriox\Api\Player\Player as ApiPlayer;
 use Bedriox\Api\Player\PlayerActions;
 use Bedriox\Api\Player\PlayerConnection;
+use Bedriox\Api\Processing\CartographyOperation;
+use Bedriox\Api\Processing\CauldronChangeCause;
+use Bedriox\Api\Processing\CauldronContentType;
+use Bedriox\Api\Processing\ComposterChangeCause;
+use Bedriox\Api\Processing\EnchantingOption;
+use Bedriox\Api\Processing\FurnaceFuelCause;
+use Bedriox\Api\Processing\FurnaceType;
+use Bedriox\Api\Processing\SmithingRecipeType;
+use Bedriox\Api\Processing\StationProcessCause;
 use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\Block as ApiBlock;
 use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
@@ -152,6 +199,7 @@ final readonly class PluginGameplayEventBridge
      * @param null|Closure(string): PlayerInventoryActions $playerInventoryActions
      * @param null|Closure(string): (Closure(ApiItemStack): int) $maximumStackSize
      * @param null|Closure(string): EffectActions $playerEffectActions
+     * @param null|Closure(string): (Closure(int, ExperienceChangeCause): void) $playerExperienceActions
      * @param null|Closure(string): ?\Bedriox\Api\World\World $worldResolver
      */
     public function __construct(
@@ -162,6 +210,7 @@ final readonly class PluginGameplayEventBridge
         private ?Closure $playerInventoryActions = null,
         private ?Closure $maximumStackSize = null,
         private ?Closure $playerEffectActions = null,
+        private ?Closure $playerExperienceActions = null,
     ) {}
 
     /** @internal Dispatches lifecycle events that are owned outside the simulation. */
@@ -173,19 +222,19 @@ final readonly class PluginGameplayEventBridge
     /** @param Closure(string): PlayerConnection $playerConnections */
     public function withPlayerConnections(Closure $playerConnections): self
     {
-        return new self($this->events, $playerConnections, $this->worldResolver, $this->playerActions, $this->playerInventoryActions, $this->maximumStackSize, $this->playerEffectActions);
+        return new self($this->events, $playerConnections, $this->worldResolver, $this->playerActions, $this->playerInventoryActions, $this->maximumStackSize, $this->playerEffectActions, $this->playerExperienceActions);
     }
 
     /** @param Closure(string): ?\Bedriox\Api\World\World $worldResolver */
     public function withWorldResolver(Closure $worldResolver): self
     {
-        return new self($this->events, $this->playerConnections, $worldResolver, $this->playerActions, $this->playerInventoryActions, $this->maximumStackSize, $this->playerEffectActions);
+        return new self($this->events, $this->playerConnections, $worldResolver, $this->playerActions, $this->playerInventoryActions, $this->maximumStackSize, $this->playerEffectActions, $this->playerExperienceActions);
     }
 
     /** @param Closure(string): PlayerActions $playerActions */
     public function withPlayerActions(Closure $playerActions): self
     {
-        return new self($this->events, $this->playerConnections, $this->worldResolver, $playerActions, $this->playerInventoryActions, $this->maximumStackSize, $this->playerEffectActions);
+        return new self($this->events, $this->playerConnections, $this->worldResolver, $playerActions, $this->playerInventoryActions, $this->maximumStackSize, $this->playerEffectActions, $this->playerExperienceActions);
     }
 
     /**
@@ -204,6 +253,7 @@ final readonly class PluginGameplayEventBridge
             $playerInventoryActions,
             $maximumStackSize,
             $this->playerEffectActions,
+            $this->playerExperienceActions,
         );
     }
 
@@ -218,6 +268,22 @@ final readonly class PluginGameplayEventBridge
             $this->playerInventoryActions,
             $this->maximumStackSize,
             $playerEffectActions,
+            $this->playerExperienceActions,
+        );
+    }
+
+    /** @param Closure(string): (Closure(int, ExperienceChangeCause): void) $playerExperienceActions */
+    public function withPlayerExperienceActions(Closure $playerExperienceActions): self
+    {
+        return new self(
+            $this->events,
+            $this->playerConnections,
+            $this->worldResolver,
+            $this->playerActions,
+            $this->playerInventoryActions,
+            $this->maximumStackSize,
+            $this->playerEffectActions,
+            $playerExperienceActions,
         );
     }
 
@@ -753,6 +819,46 @@ final readonly class PluginGameplayEventBridge
         return $event->isCancelled() ? null : $event->gameMode();
     }
 
+    public function experienceChange(Player $player, int $totalPoints, ExperienceChangeCause $cause): ?ExperienceSnapshot
+    {
+        $event = new PlayerExperienceChangeEvent(
+            $this->playerView($player),
+            $player->experience->snapshot(),
+            new ExperienceSnapshot($totalPoints),
+            $cause,
+        );
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->experience();
+    }
+
+    public function experienceChanged(Player $player, ExperienceSnapshot $previous, ExperienceChangeCause $cause): void
+    {
+        $this->events->dispatch(new ApiPlayerExperienceChangedEvent(
+            $this->playerView($player),
+            $previous,
+            $player->experience->snapshot(),
+            $cause,
+        ));
+    }
+
+    public function experienceOrbSpawn(Position $position, int $value): ?int
+    {
+        $event = new ExperienceOrbSpawnEvent(self::position($position), $value);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->value();
+    }
+
+    public function experienceOrbSpawned(int $runtimeEntityId, Position $position, int $value): void
+    {
+        $this->events->dispatch(new ExperienceOrbSpawnedEvent(
+            $runtimeEntityId,
+            self::position($position),
+            $value,
+        ));
+    }
+
     public function gameModeChanged(Player $player, GameMode $previous): void
     {
         $this->events->dispatch(new PlayerGameModeChangedEvent(
@@ -1007,6 +1113,557 @@ final readonly class PluginGameplayEventBridge
         ));
     }
 
+    public function furnaceFuel(
+        ApiBlockPosition $position,
+        FurnaceType $furnaceType,
+        ApiItemStack $fuel,
+        FurnaceFuelCause $cause,
+        int $burnTicks,
+    ): ?FurnaceFuelConsumeEvent {
+        $event = new FurnaceFuelConsumeEvent($position, $furnaceType, $fuel, $cause, $burnTicks);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event;
+    }
+
+    public function furnaceFuelConsumed(
+        ApiBlockPosition $position,
+        FurnaceType $furnaceType,
+        ApiItemStack $fuel,
+        FurnaceFuelCause $cause,
+        int $burnTicks,
+    ): void {
+        $this->events->dispatch(new FurnaceFuelConsumedEvent(
+            $position,
+            $furnaceType,
+            $fuel,
+            $cause,
+            $burnTicks,
+        ));
+    }
+
+    public function furnaceStartSmelt(
+        ApiBlockPosition $position,
+        FurnaceType $furnaceType,
+        ApiItemStack $input,
+        ApiItemStack $result,
+        int $cookTicks,
+    ): ?FurnaceStartSmeltEvent {
+        $event = new FurnaceStartSmeltEvent($position, $furnaceType, $input, $result, $cookTicks);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event;
+    }
+
+    public function furnaceStartedSmelting(
+        ApiBlockPosition $position,
+        FurnaceType $furnaceType,
+        ApiItemStack $input,
+        ApiItemStack $result,
+        int $cookTicks,
+    ): void {
+        $this->events->dispatch(new FurnaceStartedSmeltingEvent(
+            $position,
+            $furnaceType,
+            $input,
+            $result,
+            $cookTicks,
+        ));
+    }
+
+    public function furnaceSmelt(
+        ApiBlockPosition $position,
+        FurnaceType $furnaceType,
+        ApiItemStack $input,
+        ApiItemStack $result,
+    ): ?FurnaceSmeltEvent {
+        $event = new FurnaceSmeltEvent($position, $furnaceType, $input, $result);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event;
+    }
+
+    public function furnaceSmelted(
+        ApiBlockPosition $position,
+        FurnaceType $furnaceType,
+        ApiItemStack $input,
+        ApiItemStack $result,
+    ): void {
+        $this->events->dispatch(new FurnaceSmeltedEvent($position, $furnaceType, $input, $result));
+    }
+
+    public function furnaceExtract(
+        ApiPlayer $player,
+        ApiBlockPosition $position,
+        FurnaceType $furnaceType,
+        ApiItemStack $result,
+        int $experience,
+    ): ?FurnaceExtractEvent {
+        $event = new FurnaceExtractEvent($player, $position, $furnaceType, $result, $experience);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event;
+    }
+
+    public function furnaceExtracted(
+        ApiPlayer $player,
+        ApiBlockPosition $position,
+        FurnaceType $furnaceType,
+        ApiItemStack $result,
+        int $experience,
+    ): void {
+        $this->events->dispatch(new FurnaceExtractedEvent(
+            $player,
+            $position,
+            $furnaceType,
+            $result,
+            $experience,
+        ));
+    }
+
+    public function campfireCookStart(
+        ApiBlockPosition $position,
+        int $slot,
+        ApiItemStack $input,
+        ApiItemStack $result,
+        int $cookTicks,
+        bool $soulCampfire = false,
+    ): ?CampfireCookStartEvent {
+        $event = new CampfireCookStartEvent($position, $slot, $input, $result, $cookTicks, $soulCampfire);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event;
+    }
+
+    public function campfireCookingStarted(
+        ApiBlockPosition $position,
+        int $slot,
+        ApiItemStack $input,
+        ApiItemStack $result,
+        int $cookTicks,
+        bool $soulCampfire = false,
+    ): void {
+        $this->events->dispatch(new CampfireCookingStartedEvent(
+            $position,
+            $slot,
+            $input,
+            $result,
+            $cookTicks,
+            $soulCampfire,
+        ));
+    }
+
+    public function campfireCook(
+        ApiBlockPosition $position,
+        int $slot,
+        ApiItemStack $input,
+        ApiItemStack $result,
+        bool $soulCampfire = false,
+    ): ?CampfireCookEvent {
+        $event = new CampfireCookEvent($position, $slot, $input, $result, $soulCampfire);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event;
+    }
+
+    public function campfireCooked(
+        ApiBlockPosition $position,
+        int $slot,
+        ApiItemStack $input,
+        ApiItemStack $result,
+        bool $soulCampfire = false,
+    ): void {
+        $this->events->dispatch(new CampfireCookedEvent($position, $slot, $input, $result, $soulCampfire));
+    }
+
+    public function stonecutterProcess(
+        ApiPlayer $player,
+        ApiBlockPosition $position,
+        ApiItemStack $input,
+        ApiItemStack $result,
+        string $recipeId,
+        StationProcessCause $cause = StationProcessCause::PLAYER,
+    ): ?StonecutterProcessEvent {
+        $event = new StonecutterProcessEvent($player, $position, $input, $result, $recipeId, $cause);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event;
+    }
+
+    public function stonecutterProcessed(
+        ApiPlayer $player,
+        ApiBlockPosition $position,
+        ApiItemStack $input,
+        ApiItemStack $result,
+        string $recipeId,
+        StationProcessCause $cause = StationProcessCause::PLAYER,
+    ): void {
+        $this->events->dispatch(new StonecutterProcessedEvent(
+            $player,
+            $position,
+            $input,
+            $result,
+            $recipeId,
+            $cause,
+        ));
+    }
+
+    public function smithingProcess(
+        ApiPlayer $player,
+        ApiBlockPosition $position,
+        SmithingRecipeType $recipeType,
+        ApiItemStack $template,
+        ApiItemStack $base,
+        ApiItemStack $addition,
+        ApiItemStack $result,
+        StationProcessCause $cause = StationProcessCause::PLAYER,
+    ): ?SmithingProcessEvent {
+        $event = new SmithingProcessEvent(
+            $player,
+            $position,
+            $recipeType,
+            $template,
+            $base,
+            $addition,
+            $result,
+            $cause,
+        );
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event;
+    }
+
+    public function smithingProcessed(
+        ApiPlayer $player,
+        ApiBlockPosition $position,
+        SmithingRecipeType $recipeType,
+        ApiItemStack $template,
+        ApiItemStack $base,
+        ApiItemStack $addition,
+        ApiItemStack $result,
+        StationProcessCause $cause = StationProcessCause::PLAYER,
+    ): void {
+        $this->events->dispatch(new SmithingProcessedEvent(
+            $player,
+            $position,
+            $recipeType,
+            $template,
+            $base,
+            $addition,
+            $result,
+            $cause,
+        ));
+    }
+
+    public function anvilProcess(
+        ApiPlayer $player,
+        ApiBlockPosition $position,
+        ApiItemStack $left,
+        ?ApiItemStack $right,
+        ApiItemStack $result,
+        int $levelCost,
+        string $resultName = '',
+        StationProcessCause $cause = StationProcessCause::PLAYER,
+    ): ?AnvilProcessEvent {
+        $event = new AnvilProcessEvent(
+            $player,
+            $position,
+            $left,
+            $right,
+            $result,
+            $levelCost,
+            $resultName,
+            $cause,
+        );
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event;
+    }
+
+    public function anvilProcessed(
+        ApiPlayer $player,
+        ApiBlockPosition $position,
+        ApiItemStack $left,
+        ?ApiItemStack $right,
+        ApiItemStack $result,
+        int $levelCost,
+        string $resultName = '',
+        StationProcessCause $cause = StationProcessCause::PLAYER,
+    ): void {
+        $this->events->dispatch(new AnvilProcessedEvent(
+            $player,
+            $position,
+            $left,
+            $right,
+            $result,
+            $levelCost,
+            $resultName,
+            $cause,
+        ));
+    }
+
+    public function grindstoneProcess(
+        ApiPlayer $player,
+        ApiBlockPosition $position,
+        ApiItemStack $top,
+        ?ApiItemStack $bottom,
+        ApiItemStack $result,
+        int $experience,
+        StationProcessCause $cause = StationProcessCause::PLAYER,
+    ): ?GrindstoneProcessEvent {
+        $event = new GrindstoneProcessEvent(
+            $player,
+            $position,
+            $top,
+            $bottom,
+            $result,
+            $experience,
+            $cause,
+        );
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event;
+    }
+
+    public function grindstoneProcessed(
+        ApiPlayer $player,
+        ApiBlockPosition $position,
+        ApiItemStack $top,
+        ?ApiItemStack $bottom,
+        ApiItemStack $result,
+        int $experience,
+        StationProcessCause $cause = StationProcessCause::PLAYER,
+    ): void {
+        $this->events->dispatch(new GrindstoneProcessedEvent(
+            $player,
+            $position,
+            $top,
+            $bottom,
+            $result,
+            $experience,
+            $cause,
+        ));
+    }
+
+    /**
+     * @param list<EnchantingOption> $options
+     */
+    public function enchantingOptions(
+        ApiPlayer $player,
+        ApiBlockPosition $position,
+        ApiItemStack $item,
+        array $options,
+    ): ?EnchantingOptionsEvent {
+        $event = new EnchantingOptionsEvent($player, $position, $item, $options);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event;
+    }
+
+    /**
+     * @param list<EnchantingOption> $options
+     */
+    public function enchantingOptionsGenerated(
+        ApiPlayer $player,
+        ApiBlockPosition $position,
+        ApiItemStack $item,
+        array $options,
+    ): void {
+        $this->events->dispatch(new EnchantingOptionsGeneratedEvent($player, $position, $item, $options));
+    }
+
+    public function playerEnchantItem(
+        ApiPlayer $player,
+        ApiBlockPosition $position,
+        ApiItemStack $item,
+        ApiItemStack $result,
+        EnchantingOption $option,
+    ): ?PlayerEnchantItemEvent {
+        $event = new PlayerEnchantItemEvent($player, $position, $item, $result, $option);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event;
+    }
+
+    public function playerEnchantedItem(
+        ApiPlayer $player,
+        ApiBlockPosition $position,
+        ApiItemStack $item,
+        ApiItemStack $result,
+        EnchantingOption $option,
+    ): void {
+        $this->events->dispatch(new PlayerEnchantedItemEvent($player, $position, $item, $result, $option));
+    }
+
+    public function loomProcess(
+        ApiPlayer $player,
+        ApiBlockPosition $position,
+        ApiItemStack $banner,
+        ApiItemStack $dye,
+        ?ApiItemStack $patternItem,
+        ApiItemStack $result,
+        string $pattern,
+        StationProcessCause $cause = StationProcessCause::PLAYER,
+    ): ?LoomProcessEvent {
+        $event = new LoomProcessEvent(
+            $player,
+            $position,
+            $banner,
+            $dye,
+            $patternItem,
+            $result,
+            $pattern,
+            $cause,
+        );
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event;
+    }
+
+    public function loomProcessed(
+        ApiPlayer $player,
+        ApiBlockPosition $position,
+        ApiItemStack $banner,
+        ApiItemStack $dye,
+        ?ApiItemStack $patternItem,
+        ApiItemStack $result,
+        string $pattern,
+        StationProcessCause $cause = StationProcessCause::PLAYER,
+    ): void {
+        $this->events->dispatch(new LoomProcessedEvent(
+            $player,
+            $position,
+            $banner,
+            $dye,
+            $patternItem,
+            $result,
+            $pattern,
+            $cause,
+        ));
+    }
+
+    public function cartographyProcess(
+        ApiPlayer $player,
+        ApiBlockPosition $position,
+        CartographyOperation $operation,
+        ApiItemStack $map,
+        ?ApiItemStack $addition,
+        ApiItemStack $result,
+        StationProcessCause $cause = StationProcessCause::PLAYER,
+    ): ?CartographyProcessEvent {
+        $event = new CartographyProcessEvent(
+            $player,
+            $position,
+            $operation,
+            $map,
+            $addition,
+            $result,
+            $cause,
+        );
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event;
+    }
+
+    public function cartographyProcessed(
+        ApiPlayer $player,
+        ApiBlockPosition $position,
+        CartographyOperation $operation,
+        ApiItemStack $map,
+        ?ApiItemStack $addition,
+        ApiItemStack $result,
+        StationProcessCause $cause = StationProcessCause::PLAYER,
+    ): void {
+        $this->events->dispatch(new CartographyProcessedEvent(
+            $player,
+            $position,
+            $operation,
+            $map,
+            $addition,
+            $result,
+            $cause,
+        ));
+    }
+
+    public function composterChange(
+        ?ApiPlayer $player,
+        ApiBlockPosition $position,
+        int $oldLevel,
+        int $newLevel,
+        ComposterChangeCause $cause,
+        ?ApiItemStack $item = null,
+    ): ?ComposterChangeEvent {
+        $event = new ComposterChangeEvent($player, $position, $oldLevel, $newLevel, $cause, $item);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event;
+    }
+
+    public function composterChanged(
+        ?ApiPlayer $player,
+        ApiBlockPosition $position,
+        int $oldLevel,
+        int $newLevel,
+        ComposterChangeCause $cause,
+        ?ApiItemStack $item = null,
+    ): void {
+        $this->events->dispatch(new ComposterChangedEvent(
+            $player,
+            $position,
+            $oldLevel,
+            $newLevel,
+            $cause,
+            $item,
+        ));
+    }
+
+    public function cauldronChange(
+        ?ApiPlayer $player,
+        ApiBlockPosition $position,
+        CauldronContentType $oldContent,
+        int $oldLevel,
+        CauldronContentType $newContent,
+        int $newLevel,
+        CauldronChangeCause $cause,
+        ?ApiItemStack $item = null,
+    ): ?CauldronChangeEvent {
+        $event = new CauldronChangeEvent(
+            $player,
+            $position,
+            $oldContent,
+            $oldLevel,
+            $newContent,
+            $newLevel,
+            $cause,
+            $item,
+        );
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event;
+    }
+
+    public function cauldronChanged(
+        ?ApiPlayer $player,
+        ApiBlockPosition $position,
+        CauldronContentType $oldContent,
+        int $oldLevel,
+        CauldronContentType $newContent,
+        int $newLevel,
+        CauldronChangeCause $cause,
+        ?ApiItemStack $item = null,
+    ): void {
+        $this->events->dispatch(new CauldronChangedEvent(
+            $player,
+            $position,
+            $oldContent,
+            $oldLevel,
+            $newContent,
+            $newLevel,
+            $cause,
+            $item,
+        ));
+    }
+
     /** @return null|list<ApiItemStack|null> */
     public function brew(BrewingStandBlockEntity $state): ?array
     {
@@ -1126,6 +1783,7 @@ final readonly class PluginGameplayEventBridge
             armorInventory: self::armorInventory($inventory ?? $player->inventory),
             offHandItem: self::item(($inventory ?? $player->inventory)->offhandStack()),
             effects: $player->effects->snapshot(),
+            experience: new ExperienceSnapshot($player->experience->totalPoints()),
         );
 
         return $this->playerActions === null || $this->playerInventoryActions === null || $this->maximumStackSize === null
@@ -1136,6 +1794,7 @@ final readonly class PluginGameplayEventBridge
                 ($this->playerInventoryActions)($snapshot->identity),
                 ($this->maximumStackSize)($snapshot->identity),
                 $this->playerEffectActions === null ? null : ($this->playerEffectActions)($snapshot->identity),
+                $this->playerExperienceActions === null ? null : ($this->playerExperienceActions)($snapshot->identity),
             );
     }
 
@@ -1161,6 +1820,7 @@ final readonly class PluginGameplayEventBridge
             armorInventory: self::armorInventory($inventory ?? $player->inventory),
             offHandItem: self::item(($inventory ?? $player->inventory)->offhandStack()),
             effects: $player->effects->snapshot(),
+            experience: new ExperienceSnapshot($player->experience->totalPoints()),
         );
     }
 

@@ -23,6 +23,7 @@ namespace Bedriox\Server\Tests\Runtime;
 use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Inventory\ItemStack as ApiItemStack;
+use Bedriox\Api\Processing\EnchantingOption;
 use Bedriox\Api\World\BlockFace;
 use Bedriox\Api\World\Particle\BlockParticle;
 use Bedriox\Api\World\Particle\BlockParticleType;
@@ -80,6 +81,7 @@ use Bedriox\Protocol\Packet\MoveActorAbsoluteFlag;
 use Bedriox\Protocol\Packet\MoveActorAbsolutePacket;
 use Bedriox\Protocol\Packet\MovePlayerMode;
 use Bedriox\Protocol\Packet\MovePlayerPacket;
+use Bedriox\Protocol\Packet\PlayerEnchantOptionsPacket;
 use Bedriox\Protocol\Packet\PlayerListAddPacket;
 use Bedriox\Protocol\Packet\PlayerListRemovePacket;
 use Bedriox\Protocol\Packet\PlayerSkinPacket;
@@ -117,6 +119,7 @@ use Bedriox\Server\Simulation\Event\BlockPlacementCorrected;
 use Bedriox\Server\Simulation\Event\ChatBroadcast;
 use Bedriox\Server\Simulation\Event\CraftingTableOpened;
 use Bedriox\Server\Simulation\Event\EmotePerformed;
+use Bedriox\Server\Simulation\Event\EnchantingOptionsUpdated;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
 use Bedriox\Server\Simulation\Event\ItemConsumed;
@@ -151,6 +154,25 @@ use ReflectionProperty;
 
 final class BedrockWorldEventPacketEncoderTest extends TestCase
 {
+    public function testEnchantingOptionsPreserveServerAllocatedNetworkIdentity(): void
+    {
+        $packets = (new BedrockWorldEventPacketEncoder())->encode(new EnchantingOptionsUpdated('one', [
+            41 => new EnchantingOption(0, 5, 1, 123, ['minecraft:unbreaking' => 1]),
+            44 => new EnchantingOption(1, 12, 2, 123, ['minecraft:efficiency' => 2]),
+        ]), []);
+
+        self::assertCount(1, $packets);
+        self::assertInstanceOf(PlayerEnchantOptionsPacket::class, $packets[0]->packet);
+        self::assertSame([41, 44], array_map(
+            static fn(\Bedriox\Protocol\Packet\EnchantOption $option): int => $option->networkId,
+            $packets[0]->packet->options,
+        ));
+        foreach ($packets[0]->packet->options as $option) {
+            self::assertNotSame('', $option->name);
+            self::assertMatchesRegularExpression('/^[a-z]+ [a-z]+ [a-z]+$/D', $option->name);
+        }
+    }
+
     public function testWeatherChangesProjectTypedLevelEventsToEveryWorldRecipient(): void
     {
         $packets = (new BedrockWorldEventPacketEncoder())->encode(new WeatherChanged(
@@ -1709,6 +1731,45 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         );
         self::assertCount(1, $positionOnly);
         self::assertInstanceOf(MoveActorAbsolutePacket::class, $positionOnly[0]->packet);
+    }
+
+    public function testExperienceOrbLifecycleUsesTypedActorPackets(): void
+    {
+        $entity = new \Bedriox\Server\Entity\Experience\ExperienceOrbEntity(
+            4_000_000_001,
+            4_000_000_001,
+            37,
+            new Position(2.0, 64.0, 3.0),
+            new \Bedriox\Server\Entity\Experience\ExperienceOrbMotion(0.1, 0.2, 0.3),
+        );
+        $encoder = new BedrockWorldEventPacketEncoder();
+
+        $spawn = $encoder->encode(new \Bedriox\Server\Simulation\Event\ExperienceOrbSpawned($entity, ['one']), []);
+        self::assertCount(1, $spawn);
+        self::assertInstanceOf(\Bedriox\Protocol\Packet\AddActorPacket::class, $spawn[0]->packet);
+        self::assertSame('minecraft:xp_orb', $spawn[0]->packet->identifier);
+        self::assertNotEmpty($spawn[0]->packet->metadata);
+        self::assertSame(
+            $spawn[0]->packet->encode(),
+            \Bedriox\Protocol\Packet\AddActorPacket::decode($spawn[0]->packet->encode())->encode(),
+        );
+
+        $moved = $encoder->encode(new \Bedriox\Server\Simulation\Event\ExperienceOrbMoved($entity, 12, ['one']), []);
+        self::assertCount(2, $moved);
+        self::assertInstanceOf(MoveActorAbsolutePacket::class, $moved[0]->packet);
+        self::assertInstanceOf(SetActorMotionPacket::class, $moved[1]->packet);
+
+        $pickedUp = $encoder->encode(new \Bedriox\Server\Simulation\Event\ExperienceOrbPickedUp(
+            $entity->runtimeEntityId,
+            99,
+            'one',
+            37,
+            true,
+            ['one', 'two'],
+        ), []);
+        self::assertCount(4, $pickedUp);
+        self::assertInstanceOf(\Bedriox\Protocol\Packet\TakeItemActorPacket::class, $pickedUp[0]->packet);
+        self::assertInstanceOf(RemoveActorPacket::class, $pickedUp[1]->packet);
     }
 
     /** @return array{BedrockWorldEventPacketEncoder, FixedFlatBlockPalette} */

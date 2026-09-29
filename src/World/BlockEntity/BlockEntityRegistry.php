@@ -21,6 +21,11 @@ declare(strict_types=1);
 namespace Bedriox\Server\World\BlockEntity;
 
 use Bedriox\Server\Gameplay\Potion\BrewingStandBlockEntity;
+use Bedriox\Server\Gameplay\Processing\CampfireBlockEntity;
+use Bedriox\Server\Gameplay\Processing\CampfireType;
+use Bedriox\Server\Gameplay\Processing\CauldronBlockEntity;
+use Bedriox\Server\Gameplay\Processing\FurnaceBlockEntity;
+use Bedriox\Server\Gameplay\Processing\FurnaceType;
 use Bedriox\Server\World\BlockPosition;
 use InvalidArgumentException;
 
@@ -46,6 +51,16 @@ final readonly class BlockEntityRegistry
             'minecraft:ender_chest' => BlockEntityType::EnderChest,
             'BrewingStand' => BlockEntityType::BrewingStand,
             'minecraft:brewing_stand' => BlockEntityType::BrewingStand,
+            'Furnace' => BlockEntityType::Furnace,
+            'minecraft:furnace' => BlockEntityType::Furnace,
+            'BlastFurnace' => BlockEntityType::BlastFurnace,
+            'minecraft:blast_furnace' => BlockEntityType::BlastFurnace,
+            'Smoker' => BlockEntityType::Smoker,
+            'minecraft:smoker' => BlockEntityType::Smoker,
+            'Campfire' => BlockEntityType::Campfire,
+            'minecraft:campfire' => BlockEntityType::Campfire,
+            'Cauldron' => BlockEntityType::Cauldron,
+            'minecraft:cauldron' => BlockEntityType::Cauldron,
         ];
         $this->saveIds = [
             BlockEntityType::Chest->value => 'Chest',
@@ -53,6 +68,11 @@ final readonly class BlockEntityRegistry
             BlockEntityType::ShulkerBox->value => 'ShulkerBox',
             BlockEntityType::EnderChest->value => 'EnderChest',
             BlockEntityType::BrewingStand->value => 'BrewingStand',
+            BlockEntityType::Furnace->value => 'Furnace',
+            BlockEntityType::BlastFurnace->value => 'BlastFurnace',
+            BlockEntityType::Smoker->value => 'Smoker',
+            BlockEntityType::Campfire->value => 'Campfire',
+            BlockEntityType::Cauldron->value => 'Cauldron',
         ];
     }
 
@@ -71,6 +91,11 @@ final readonly class BlockEntityRegistry
     {
         return match ($type) {
             BlockEntityType::BrewingStand => BrewingStandBlockEntity::empty($position),
+            BlockEntityType::Furnace => FurnaceBlockEntity::empty(FurnaceType::Furnace, $position),
+            BlockEntityType::BlastFurnace => FurnaceBlockEntity::empty(FurnaceType::BlastFurnace, $position),
+            BlockEntityType::Smoker => FurnaceBlockEntity::empty(FurnaceType::Smoker, $position),
+            BlockEntityType::Campfire => CampfireBlockEntity::empty(CampfireType::Campfire, $position),
+            BlockEntityType::Cauldron => new CauldronBlockEntity($position),
             BlockEntityType::Chest, BlockEntityType::Barrel, BlockEntityType::ShulkerBox =>
                 ContainerBlockEntity::empty($type, $position),
             BlockEntityType::EnderChest => new SimpleBlockEntity($type, $position),

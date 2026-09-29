@@ -1314,6 +1314,52 @@ final class PlayerInventory
         return new OpenedContainerInventory($identifier, count($slots), $projected);
     }
 
+    /**
+     * Reprojects authoritative container contents while retaining network identities for unchanged stacks.
+     *
+     * @param list<InventoryStack|null> $slots
+     */
+    public function refreshOpenedContainer(OpenedContainerInventory $current, array $slots): OpenedContainerInventory
+    {
+        if (count($slots) !== $current->size) {
+            throw new InvalidArgumentException('Refreshed container projection has an invalid slot count.');
+        }
+        $usedIds = $this->usedNetworkIds();
+        foreach ($current->indexedStacks() as $stack) {
+            $usedIds[$stack->stackNetworkId] = true;
+        }
+        $projected = [];
+        $lineage = [];
+        $nextId = $this->nextStackNetworkId;
+        foreach ($slots as $slot => $stack) {
+            if ($stack === null) {
+                continue;
+            }
+            if ($stack->count > $this->maximumStackSize($stack->identifier)) {
+                throw new InvalidArgumentException('Opened container contains an invalid or oversized stack.');
+            }
+            $previous = $current->stackAt($slot);
+            if ($previous !== null && self::sameContent($previous, $stack)) {
+                $projected[$slot] = $stack->withCountAndNetworkId($stack->count, $previous->stackNetworkId);
+                if (isset($current->lastRequestIds()[$slot])) {
+                    $lineage[$slot] = $current->lastRequestIds()[$slot];
+                }
+                continue;
+            }
+            $networkId = self::allocateStackNetworkId($nextId, $usedIds);
+            if ($networkId === null) {
+                throw new OverflowException('Inventory stack network ID space is exhausted.');
+            }
+            $projected[$slot] = $stack->withCountAndNetworkId($stack->count, $networkId);
+            $usedIds[$networkId] = true;
+        }
+        $this->nextStackNetworkId = $nextId;
+        $refreshed = new OpenedContainerInventory($current->identifier, $current->size, $projected);
+        $refreshed->commit($projected, $lineage);
+
+        return $refreshed;
+    }
+
     /** Atomically adopts staged state only if the authoritative baseline is still current. */
     public function commitStagedState(self $expected, self $staged): bool
     {

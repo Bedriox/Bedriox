@@ -96,6 +96,7 @@ final class PlayerPersistenceManager
             $savedAlive ? $saved->airTicks : \Bedriox\Server\Player\PlayerVitals::MAX_AIR_TICKS,
             $savedAlive ? $saved->fireTicks : 0,
             $savedAlive ? $saved->effectPersistenceState : null,
+            $savedAlive ? $saved->totalExperience : 0,
         );
     }
 
@@ -120,6 +121,7 @@ final class PlayerPersistenceManager
             $player->vitals->airTicks,
             $player->vitals->fireTicks,
             $player->effects->persistenceState(),
+            $player->experience->totalPoints(),
         );
     }
 

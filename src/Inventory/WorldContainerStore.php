@@ -23,6 +23,7 @@ namespace Bedriox\Server\Inventory;
 use Bedriox\Api\Inventory\ContainerType;
 use Bedriox\Api\Inventory\ItemStack;
 use Bedriox\Server\Gameplay\Potion\BrewingStandBlockEntity;
+use Bedriox\Server\Gameplay\Processing\FurnaceBlockEntity;
 use Bedriox\Server\World\BlockEntity\BlockEntity;
 use Bedriox\Server\World\BlockEntity\BlockEntityType;
 use Bedriox\Server\World\BlockEntity\ContainerBlockEntity;
@@ -58,12 +59,14 @@ final class WorldContainerStore
             return null;
         }
         $entity = $this->world->blockEntityAt($position);
-        if ((!$entity instanceof ContainerBlockEntity && !$entity instanceof BrewingStandBlockEntity)
+        if ((!$entity instanceof ContainerBlockEntity
+            && !$entity instanceof BrewingStandBlockEntity
+            && !$entity instanceof FurnaceBlockEntity)
             || !self::entityMatchesBlock($entity, $blockIdentifier)) {
             return null;
         }
         $first = $this->inventory($entity);
-        if ($entity instanceof BrewingStandBlockEntity) {
+        if ($entity instanceof BrewingStandBlockEntity || $entity instanceof FurnaceBlockEntity) {
             return new ResolvedWorldContainer($type, $position, $first, customName: $entity->customName);
         }
         if ($entity->type !== BlockEntityType::Chest || $entity->pairedPosition === null) {
@@ -191,8 +194,26 @@ final class WorldContainerStore
         return $inventory;
     }
 
-    private function inventory(ContainerBlockEntity|BrewingStandBlockEntity $entity): SimpleContainerInventory
+    public function synchronizeFurnace(FurnaceBlockEntity $entity): ?SimpleContainerInventory
     {
+        $inventory = $this->inventories[self::positionKey($entity->position)] ?? null;
+        if (!$inventory instanceof SimpleContainerInventory) {
+            return null;
+        }
+        $contents = array_map(
+            static fn(?ContainerItemStack $stack): ?ItemStack => $stack === null ? null : self::apiStack($stack),
+            $entity->inventory->slots(),
+        );
+        $revision = $inventory->revision();
+        $inventory->replaceContents($contents, $revision);
+        $inventory->acknowledgePersistedRevision($inventory->revision());
+
+        return $inventory;
+    }
+
+    private function inventory(
+        ContainerBlockEntity|BrewingStandBlockEntity|FurnaceBlockEntity $entity,
+    ): SimpleContainerInventory {
         $key = self::positionKey($entity->position);
         $cached = $this->inventories[$key] ?? null;
         if ($cached instanceof SimpleContainerInventory) {
@@ -219,7 +240,9 @@ final class WorldContainerStore
     private function replacementAtContents(BlockPosition $position, array $contents): BlockEntity
     {
         $entity = $this->world->blockEntityAt($position);
-        if (!$entity instanceof ContainerBlockEntity && !$entity instanceof BrewingStandBlockEntity) {
+        if (!$entity instanceof ContainerBlockEntity
+            && !$entity instanceof BrewingStandBlockEntity
+            && !$entity instanceof FurnaceBlockEntity) {
             throw new LogicException('The storage block entity disappeared before its inventory committed.');
         }
         $persistentContents = [];
@@ -230,9 +253,22 @@ final class WorldContainerStore
         }
         $inventory = new PersistentContainerInventory(count($contents), $persistentContents);
 
-        return $entity instanceof BrewingStandBlockEntity
-            ? $entity->withState($inventory, $entity->brewTime, $entity->fuelAmount, $entity->fuelTotal)
-            : $entity->withInventory($inventory);
+        return match (true) {
+            $entity instanceof BrewingStandBlockEntity => $entity->withState(
+                $inventory,
+                $entity->brewTime,
+                $entity->fuelAmount,
+                $entity->fuelTotal,
+            ),
+            $entity instanceof FurnaceBlockEntity => $entity->withState(
+                $inventory,
+                $entity->burnTime,
+                $entity->burnDuration,
+                $entity->cookTime,
+                $entity->storedExperienceMilli,
+            ),
+            default => $entity->withInventory($inventory),
+        };
     }
 
     /** @param array<mixed> $contents */
@@ -284,7 +320,7 @@ final class WorldContainerStore
     }
 
     private static function entityMatchesBlock(
-        ContainerBlockEntity|BrewingStandBlockEntity $entity,
+        ContainerBlockEntity|BrewingStandBlockEntity|FurnaceBlockEntity $entity,
         string $identifier,
     ): bool {
         return match ($entity->type) {
@@ -293,6 +329,12 @@ final class WorldContainerStore
             BlockEntityType::ShulkerBox => self::isShulkerBox($identifier),
             BlockEntityType::EnderChest => false,
             BlockEntityType::BrewingStand => $identifier === 'minecraft:brewing_stand',
+            BlockEntityType::Furnace => $identifier === 'minecraft:furnace' || $identifier === 'minecraft:lit_furnace',
+            BlockEntityType::BlastFurnace => $identifier === 'minecraft:blast_furnace'
+                || $identifier === 'minecraft:lit_blast_furnace',
+            BlockEntityType::Smoker => $identifier === 'minecraft:smoker' || $identifier === 'minecraft:lit_smoker',
+            BlockEntityType::Campfire => false,
+            BlockEntityType::Cauldron => false,
         };
     }
 
@@ -307,6 +349,9 @@ final class WorldContainerStore
             self::isShulkerBox($identifier) => ContainerType::SHULKER_BOX,
             $identifier === 'minecraft:ender_chest' => ContainerType::ENDER_CHEST,
             $identifier === 'minecraft:brewing_stand' => ContainerType::BREWING_STAND,
+            $identifier === 'minecraft:furnace', $identifier === 'minecraft:lit_furnace' => ContainerType::FURNACE,
+            $identifier === 'minecraft:blast_furnace', $identifier === 'minecraft:lit_blast_furnace' => ContainerType::BLAST_FURNACE,
+            $identifier === 'minecraft:smoker', $identifier === 'minecraft:lit_smoker' => ContainerType::SMOKER,
             default => null,
         };
     }
@@ -324,6 +369,10 @@ final class WorldContainerStore
             self::isShulkerBox($identifier) => BlockEntityType::ShulkerBox,
             $identifier === 'minecraft:ender_chest' => BlockEntityType::EnderChest,
             $identifier === 'minecraft:brewing_stand' => BlockEntityType::BrewingStand,
+            $identifier === 'minecraft:furnace', $identifier === 'minecraft:lit_furnace' => BlockEntityType::Furnace,
+            $identifier === 'minecraft:blast_furnace', $identifier === 'minecraft:lit_blast_furnace' => BlockEntityType::BlastFurnace,
+            $identifier === 'minecraft:smoker', $identifier === 'minecraft:lit_smoker' => BlockEntityType::Smoker,
+            $identifier === 'minecraft:campfire', $identifier === 'minecraft:soul_campfire' => BlockEntityType::Campfire,
             default => null,
         };
     }

@@ -46,9 +46,14 @@ use Bedriox\Protocol\Packet\CommandRequestPacket;
 use Bedriox\Protocol\Packet\ConsumeItemStackRequestAction;
 use Bedriox\Protocol\Packet\ContainerClosePacket;
 use Bedriox\Protocol\Packet\ContainerOpenPacket;
+use Bedriox\Protocol\Packet\ContainerSlotType;
 use Bedriox\Protocol\Packet\ContainerType;
 use Bedriox\Protocol\Packet\CraftCreativeItemStackRequestAction;
+use Bedriox\Protocol\Packet\CraftLoomItemStackRequestAction;
+use Bedriox\Protocol\Packet\CraftNonImplementedItemStackRequestAction;
 use Bedriox\Protocol\Packet\CraftRecipeItemStackRequestAction;
+use Bedriox\Protocol\Packet\CraftRecipeOptionalItemStackRequestAction;
+use Bedriox\Protocol\Packet\CraftRepairAndDisenchantItemStackRequestAction;
 use Bedriox\Protocol\Packet\CraftResultsItemStackRequestAction;
 use Bedriox\Protocol\Packet\CreateItemStackRequestAction;
 use Bedriox\Protocol\Packet\DropItemStackRequestAction;
@@ -71,6 +76,7 @@ use Bedriox\Protocol\Packet\ItemUseActionType;
 use Bedriox\Protocol\Packet\ItemUseInventoryTransaction;
 use Bedriox\Protocol\Packet\ItemUseOnEntityActionType;
 use Bedriox\Protocol\Packet\ItemUseOnEntityInventoryTransaction;
+use Bedriox\Protocol\Packet\MapInfoRequestPacket;
 use Bedriox\Protocol\Packet\MineBlockItemStackRequestAction;
 use Bedriox\Protocol\Packet\MobArmorEquipmentPacket;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
@@ -103,6 +109,7 @@ use Bedriox\Protocol\Packet\ServerboundLoadingScreenPacket;
 use Bedriox\Protocol\Packet\ServerSettingsRequestPacket;
 use Bedriox\Protocol\Packet\SetDifficultyPacket;
 use Bedriox\Protocol\Packet\SetLocalPlayerAsInitializedPacket;
+use Bedriox\Protocol\Packet\SetPlayerFurnaceOptionsPacket;
 use Bedriox\Protocol\Packet\SetPlayerInventoryOptionsPacket;
 use Bedriox\Protocol\Packet\SetTimePacket;
 use Bedriox\Protocol\Packet\SubChunkPacket;
@@ -127,6 +134,8 @@ use Bedriox\Server\Simulation\BlockBreakAction;
 use Bedriox\Server\Simulation\ClientInputTick;
 use Bedriox\Server\Simulation\Command\CraftingRequest;
 use Bedriox\Server\Simulation\Command\MovePlayer;
+use Bedriox\Server\Simulation\Command\WorkstationRequest;
+use Bedriox\Server\Simulation\Command\WorkstationRequestType;
 use Bedriox\Server\Simulation\Command\WorldCommand;
 use Bedriox\Server\Simulation\MovementMode;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
@@ -1826,6 +1835,14 @@ final class BedrockPlayChannel
         if ($packet instanceof SetPlayerInventoryOptionsPacket) {
             return $this->initialized;
         }
+        if ($packet instanceof SetPlayerFurnaceOptionsPacket) {
+            // Recipe-book presentation preferences are client-owned and do not mutate furnace state.
+            return $this->initialized;
+        }
+        if ($packet instanceof MapInfoRequestPacket) {
+            // Map rendering is supplied only for server-owned map IDs; unknown requests are harmless.
+            return $this->initialized;
+        }
         if ($packet instanceof ChatPacket) {
             if (!$this->initialized || $this->commands->count() >= $this->limits->maximumCommandsPerPayload) {
                 return false;
@@ -2249,6 +2266,7 @@ final class BedrockPlayChannel
             $dropCount = 0;
             $creativeStack = null;
             $crafting = null;
+            $workstation = null;
             $sawCreativeSelection = false;
             $sawMineBlock = false;
             $rejectionReason = $request->actions === [] ? 'empty_actions' : null;
@@ -2301,29 +2319,101 @@ final class BedrockPlayChannel
                         'recipe_network_id' => $action->recipeNetworkId,
                         'requested_crafts' => $action->requestedCrafts,
                     ]);
-                    if ($crafting !== null || $sawCreativeSelection) {
+                    if ($crafting !== null || $workstation !== null || $sawCreativeSelection) {
                         $rejectionReason = 'duplicate_crafting_selection';
                         break;
                     }
                     try {
-                        $crafting = new CraftingRequest(
-                            $action->recipeNetworkId,
-                            $action->requestedCrafts,
-                            $action instanceof AutoCraftRecipeItemStackRequestAction,
-                        );
+                        if (!($action instanceof AutoCraftRecipeItemStackRequestAction)
+                            && in_array(
+                                $this->storageContainerType,
+                                [ContainerType::Enchantment, ContainerType::Stonecutter],
+                                true,
+                            )) {
+                            $workstation = new WorkstationRequest(
+                                $this->storageContainerType === ContainerType::Enchantment
+                                    ? WorkstationRequestType::ENCHANT
+                                    : WorkstationRequestType::OPTIONAL_RECIPE,
+                                $action->recipeNetworkId,
+                                requestedCrafts: $action->requestedCrafts,
+                                responseSlots: $this->storageContainerType === ContainerType::Enchantment
+                                    ? $this->enchantingWorkstationResponseSlots()
+                                    : [],
+                            );
+                        } else {
+                            $crafting = new CraftingRequest(
+                                $action->recipeNetworkId,
+                                $action->requestedCrafts,
+                                $action instanceof AutoCraftRecipeItemStackRequestAction,
+                            );
+                        }
                     } catch (\InvalidArgumentException) {
                         $rejectionReason = 'invalid_crafting_selection';
                         break;
                     }
+                } elseif ($action instanceof CraftRecipeOptionalItemStackRequestAction) {
+                    if ($workstation !== null || $crafting !== null || $sawCreativeSelection) {
+                        $rejectionReason = 'duplicate_workstation_selection';
+                        break;
+                    }
+                    $filteredText = null;
+                    if ($request->filterStrings !== []) {
+                        if (!isset($request->filterStrings[$action->filteredStringIndex])) {
+                            $rejectionReason = 'invalid_filter_string';
+                            break;
+                        }
+                        $filteredText = $request->filterStrings[$action->filteredStringIndex];
+                    }
+                    $workstation = new WorkstationRequest(
+                        WorkstationRequestType::OPTIONAL_RECIPE,
+                        $action->recipeNetworkId,
+                        $filteredText,
+                        responseSlots: $this->optionalWorkstationResponseSlots(),
+                    );
+                } elseif ($action instanceof CraftRepairAndDisenchantItemStackRequestAction) {
+                    if ($workstation !== null || $crafting !== null || $sawCreativeSelection) {
+                        $rejectionReason = 'duplicate_workstation_selection';
+                        break;
+                    }
+                    $workstation = new WorkstationRequest(
+                        WorkstationRequestType::REPAIR_AND_DISENCHANT,
+                        $action->recipeNetworkId,
+                        requestedCrafts: $action->requestedCrafts,
+                        reportedCost: $action->repairCost,
+                    );
+                } elseif ($action instanceof CraftLoomItemStackRequestAction) {
+                    if ($workstation !== null || $crafting !== null || $sawCreativeSelection) {
+                        $rejectionReason = 'duplicate_workstation_selection';
+                        break;
+                    }
+                    $workstation = new WorkstationRequest(
+                        WorkstationRequestType::LOOM,
+                        patternId: $action->patternId,
+                        requestedCrafts: max(1, $action->timesCrafted),
+                    );
+                } elseif ($action instanceof CraftNonImplementedItemStackRequestAction) {
+                    if ($workstation !== null || $crafting !== null || $sawCreativeSelection) {
+                        $rejectionReason = 'duplicate_workstation_selection';
+                        break;
+                    }
+                    $workstation = new WorkstationRequest(WorkstationRequestType::CLIENT_COMPUTED);
                 } elseif ($action instanceof ConsumeItemStackRequestAction) {
                     $source = self::inventorySlotReference($action->source);
-                    if ($crafting === null || $source === null
-                        || (!$crafting->automatic && $source->container !== InventoryContainer::CraftingInput)
-                        || ($crafting->automatic && !in_array(
+                    if (($crafting === null && $workstation === null) || $source === null
+                        || ($workstation !== null && $source->container !== InventoryContainer::OpenedContainer)) {
+                        $rejectionReason = 'invalid_crafting_consume';
+                        break;
+                    }
+                    if ($workstation === null
+                        && ((!$crafting->automatic && !in_array(
+                            $source->container,
+                            [InventoryContainer::CraftingInput, InventoryContainer::OpenedContainer],
+                            true,
+                        )) || ($crafting->automatic && !in_array(
                             $source->container,
                             [InventoryContainer::Main, InventoryContainer::CraftingInput],
                             true,
-                        ))) {
+                        )))) {
                         $rejectionReason = 'invalid_crafting_consume';
                         break;
                     }
@@ -2339,11 +2429,11 @@ final class BedrockPlayChannel
                         'action' => 'create',
                         'slot' => $action->slot,
                     ]);
-                    if (!$sawCreativeSelection && $crafting === null) {
+                    if (!$sawCreativeSelection && $crafting === null && $workstation === null) {
                         $rejectionReason = 'create_without_selection';
                         break;
                     }
-                    if ($crafting !== null) {
+                    if ($crafting !== null || $workstation !== null) {
                         $createdOutput = new InventorySlotReference(
                             InventoryContainer::CreatedOutput,
                             50,
@@ -2364,7 +2454,7 @@ final class BedrockPlayChannel
                         'action' => 'craft_results',
                         'result_count' => count($action->results),
                     ]);
-                    if (!$sawCreativeSelection && $crafting === null) {
+                    if (!$sawCreativeSelection && $crafting === null && $workstation === null) {
                         $rejectionReason = 'craft_results_without_selection';
                         break;
                     }
@@ -2387,7 +2477,7 @@ final class BedrockPlayChannel
                         $rejectionReason = 'unsupported_container';
                         break;
                     }
-                    if (!$sawCreativeSelection && $crafting === null
+                    if (!$sawCreativeSelection && $crafting === null && $workstation === null
                         && ($source->container === InventoryContainer::CreatedOutput
                             || $destination->container === InventoryContainer::CreatedOutput)) {
                         $rejectionReason = 'created_output_before_selection';
@@ -2418,7 +2508,7 @@ final class BedrockPlayChannel
                         $rejectionReason = 'unsupported_container';
                         break;
                     }
-                    if (!$sawCreativeSelection && $crafting === null
+                    if (!$sawCreativeSelection && $crafting === null && $workstation === null
                         && ($source->container === InventoryContainer::CreatedOutput
                             || $destination->container === InventoryContainer::CreatedOutput)) {
                         $rejectionReason = 'created_output_before_selection';
@@ -2481,6 +2571,7 @@ final class BedrockPlayChannel
                 $rejectionReason,
                 authoritativeCreativeStack: $creativeStack,
                 crafting: $crafting,
+                workstation: $workstation,
             ));
         }
 
@@ -2507,6 +2598,36 @@ final class BedrockPlayChannel
             !== ($slot->containerName->dynamicId !== null)) {
             return null;
         }
+        $slotType = ContainerSlotType::tryFrom($slot->containerName->containerNameId);
+        $workstationSlot = match ($slotType) {
+            ContainerSlotType::AnvilInput,
+            ContainerSlotType::SmithingTableTemplate,
+            ContainerSlotType::EnchantingInput,
+            ContainerSlotType::FurnaceIngredient,
+            ContainerSlotType::BlastFurnaceIngredient,
+            ContainerSlotType::SmokerIngredient,
+            ContainerSlotType::LoomInput,
+            ContainerSlotType::GrindstoneInput,
+            ContainerSlotType::StonecutterInput,
+            ContainerSlotType::CartographyInput => 0,
+            ContainerSlotType::AnvilMaterial,
+            ContainerSlotType::SmithingTableInput,
+            ContainerSlotType::EnchantingMaterial,
+            ContainerSlotType::FurnaceFuel,
+            ContainerSlotType::LoomDye,
+            ContainerSlotType::GrindstoneAdditional,
+            ContainerSlotType::StonecutterResult,
+            ContainerSlotType::CartographyAdditional => 1,
+            ContainerSlotType::AnvilResult,
+            ContainerSlotType::SmithingTableMaterial,
+            ContainerSlotType::FurnaceResult,
+            ContainerSlotType::LoomMaterial,
+            ContainerSlotType::GrindstoneResult,
+            ContainerSlotType::CartographyResult => 2,
+            ContainerSlotType::SmithingTableResult,
+            ContainerSlotType::LoomResult => 3,
+            default => null,
+        };
         $container = match ($slot->containerName->containerNameId) {
             FullContainerName::COMBINED_HOTBAR_AND_INVENTORY,
             FullContainerName::HOTBAR,
@@ -2520,7 +2641,7 @@ final class BedrockPlayChannel
             FullContainerName::SHULKER_BOX,
             FullContainerName::BARREL,
             FullContainerName::DYNAMIC => InventoryContainer::OpenedContainer,
-            default => null,
+            default => $workstationSlot === null ? null : InventoryContainer::OpenedContainer,
         };
         $internalSlot = match ($container) {
             InventoryContainer::Offhand => 0,
@@ -2529,6 +2650,7 @@ final class BedrockPlayChannel
                 $slot->slot >= 32 && $slot->slot <= 40 => $slot->slot - 32,
                 default => -1,
             },
+            InventoryContainer::OpenedContainer => $workstationSlot ?? $slot->slot,
             default => $slot->slot,
         };
         if ($container === null
@@ -2550,6 +2672,49 @@ final class BedrockPlayChannel
             responseSlot: $slot->slot,
             responseContainerDynamicId: $slot->containerName->dynamicId,
         );
+    }
+
+    /** @return list<InventorySlotReference> */
+    private function optionalWorkstationResponseSlots(): array
+    {
+        if ($this->storageContainerType !== ContainerType::Anvil) {
+            return [];
+        }
+
+        return [
+            new InventorySlotReference(InventoryContainer::OpenedContainer, 0, 0, ContainerSlotType::AnvilInput->value, responseSlot: 1),
+            new InventorySlotReference(InventoryContainer::OpenedContainer, 1, 0, ContainerSlotType::AnvilMaterial->value, responseSlot: 2),
+            new InventorySlotReference(InventoryContainer::OpenedContainer, 2, 0, ContainerSlotType::AnvilResult->value, responseSlot: 50),
+            new InventorySlotReference(InventoryContainer::OpenedContainer, 2, 0, FullContainerName::CREATED_OUTPUT, responseSlot: 50),
+        ];
+    }
+
+    /** @return list<InventorySlotReference> */
+    private function enchantingWorkstationResponseSlots(): array
+    {
+        return [
+            new InventorySlotReference(
+                InventoryContainer::OpenedContainer,
+                0,
+                0,
+                ContainerSlotType::EnchantingInput->value,
+                responseSlot: 14,
+            ),
+            new InventorySlotReference(
+                InventoryContainer::OpenedContainer,
+                1,
+                0,
+                ContainerSlotType::EnchantingMaterial->value,
+                responseSlot: 15,
+            ),
+            new InventorySlotReference(
+                InventoryContainer::OpenedContainer,
+                0,
+                0,
+                FullContainerName::CREATED_OUTPUT,
+                responseSlot: 50,
+            ),
+        ];
     }
 
     private function handlePlacement(

@@ -115,6 +115,19 @@ final class ItemCatalogTest extends TestCase
                 $items->type($mapping->itemIdentifier())->placedBlockState?->canonicalKey(),
             );
         }
+        foreach ([
+            'minecraft:brewing_stand',
+            'minecraft:campfire',
+            'minecraft:cauldron',
+            'minecraft:soul_campfire',
+            'minecraft:stonecutter',
+        ] as $identifier) {
+            self::assertTrue($items->type($identifier)->isPlaceable(), $identifier);
+        }
+        self::assertSame(
+            'minecraft:stonecutter_block',
+            $items->type('minecraft:stonecutter')->placedBlockState?->identifier(),
+        );
     }
 
     public function testTieredToolsAndShearsHaveAuthoritativeProperties(): void

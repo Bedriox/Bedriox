@@ -21,12 +21,12 @@
         "protocol": {
             "package": "bedriox/protocol",
             "version": "0.1.0-alpha.1",
-            "commit": "55ba85cf5e5f1c681c0cdb0dc95d0269468ccffa"
+            "commit": "6f20a5d2184eeb892c2bdf5d12374df5fcdfe84c"
         },
         "data": {
             "package": "bedriox/data",
             "version": "0.1.0-alpha.1",
-            "commit": "c59af2c5260aecc565d6e160f3b10bb33af3e51b"
+            "commit": "45b9642290b4d63083a6d797fe2fa991ceeb2b1c"
         }
     },
     "runtime": {

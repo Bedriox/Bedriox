@@ -26,6 +26,7 @@ use Bedriox\Api\World\Position;
 use Bedriox\Server\Command\Default\BuiltinCommand;
 use Bedriox\Server\Command\Default\DeopCommand;
 use Bedriox\Server\Command\Default\EffectCommand;
+use Bedriox\Server\Command\Default\ExperienceCommand;
 use Bedriox\Server\Command\Default\GamemodeCommand;
 use Bedriox\Server\Command\Default\GarbageCollectionStatus;
 use Bedriox\Server\Command\Default\GarbageCollectorCommand;
@@ -140,6 +141,7 @@ final readonly class BuiltinCommandRegistrar
             new GiveCommand($itemIdentifiers, $this->giveItem, $this->itemExists),
             new TeleportCommand($this->teleport),
             new EffectCommand(),
+            new ExperienceCommand(),
             new ParticleCommand(),
         ];
         if ($this->killTarget !== null) {

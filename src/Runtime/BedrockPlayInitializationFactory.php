@@ -291,6 +291,7 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
                 $bootstrap === null ? 20.0 : $bootstrap->food,
                 $bootstrap === null ? 20.0 : $bootstrap->saturation,
                 $bootstrap === null ? 0.0 : $bootstrap->exhaustion,
+                $bootstrap === null ? 0 : $bootstrap->totalExperience,
             ),
             new ReusablePlayPacket(
                 'initialization.creative_content',
@@ -328,8 +329,10 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
         float $food,
         float $saturation,
         float $exhaustion,
+        int $totalExperience,
     ): UpdateAttributesPacket {
         $maximum = 3.4028234663852886e38;
+        $experience = new \Bedriox\Api\Player\ExperienceSnapshot($totalExperience);
 
         return new UpdateAttributesPacket($runtimeEntityId, [
             new PlayerAttribute('minecraft:health', 0.0, 20.0, $health, 0.0, 20.0, 20.0),
@@ -337,8 +340,8 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
             new PlayerAttribute('minecraft:player.saturation', 0.0, 20.0, $saturation, 0.0, 20.0, 20.0),
             new PlayerAttribute('minecraft:player.exhaustion', 0.0, 4.0, $exhaustion, 0.0, 4.0, 0.0),
             new PlayerAttribute('minecraft:movement', 0.0, $maximum, 0.1, 0.0, $maximum, 0.1),
-            new PlayerAttribute('minecraft:player.level', 0.0, 24_791.0, 0.0, 0.0, 24_791.0, 0.0),
-            new PlayerAttribute('minecraft:player.experience', 0.0, 1.0, 0.0, 0.0, 1.0, 0.0),
+            new PlayerAttribute('minecraft:player.level', 0.0, 24_791.0, (float) $experience->level, 0.0, 24_791.0, 0.0),
+            new PlayerAttribute('minecraft:player.experience', 0.0, 1.0, $experience->progress, 0.0, 1.0, 0.0),
         ], UnsignedLong::fromInt(0));
     }
 }

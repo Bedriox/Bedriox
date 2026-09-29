@@ -1,5 +1,10 @@
 # Changelog
 
+- Preserve unchanged workstation stack network identities across live processing updates so furnace input, fuel, and output remain removable while cooking.
+- Project furnace-family lit block states while fuel is burning and restore their unlit states when processing stops.
+- Return complete named anvil-slot responses for rename previews and send bounded non-empty enchanting-table display tokens.
+- Accept action-only anvil updates with no output recipe, acknowledge the current workstation slots, and return temporary inputs through targeted inventory synchronization without disconnecting the player.
+- Build the startup item catalog from the complete block-item catalog so campfires, stonecutters, cauldrons, and brewing stands retain their authoritative placement states.
 - Migrate block translation from positional palette indexes to Data's verified explicit network hashes, keep one signed identity in memory, advertise hash mode at StartGame, and project signed or unsigned wire values only at Protocol packet boundaries.
 - Distinguish player, mob, and source-less lethal attacks when presenting death messages so a missing attacker can never be displayed as the victim.
 - Sustain the qualified 100-player workload above 18 TPS by moving RakNet service ownership to a supervised local transport process, bounding main-loop admission and streaming work, and preserving per-session ordering and encryption boundaries.
@@ -48,6 +53,8 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Added
 
+- Add authoritative furnace, blast-furnace, smoker, campfire, stonecutter, smithing, anvil, grindstone, enchanting, loom, cartography, composter, and cauldron processing with persistent station state, bounded active scheduling, experience rewards and costs, typed plugin events, and atomic inventory reconciliation.
+- Add authoritative persisted player experience, derived level and progress projection, typed plugin events and API mutations, and the operator-only `/experience` command with `/xp` alias.
 - Add bounded loaded-chunk water and lava flow, source decay and renewal, fluid hardening, authoritative bucket fill/empty behavior, and flowing-fluid immersion.
 - Add persistent per-world clear, rain, and thunder cycles, join/transfer synchronization, typed cancellable plugin events, rain extinguishing, public world weather control, and the operator `weather` command.
 - Add typed player and living-entity effect snapshots, generation-bound player mutations, cancellable pre-events, committed post-events, bounded durable fallback state, deterministic periodic timing, client effect synchronization, air and fire persistence, and authoritative movement, mining, combat, health, nutrition, breathing, combustion, health-boost, absorption, and visibility behavior.

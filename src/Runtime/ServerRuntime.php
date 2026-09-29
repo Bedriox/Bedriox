@@ -32,6 +32,7 @@ use Bedriox\Api\Entity\VanillaEntityType;
 use Bedriox\Api\Event\World\WeatherChangeCause;
 use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Inventory\ItemStack as ApiItemStack;
+use Bedriox\Api\Player\ExperienceChangeCause;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\Player\Player as ApiPlayer;
 use Bedriox\Api\World\Position as ApiPosition;
@@ -477,6 +478,11 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     public function clearPlayerEffects(string $uuid, EffectCause $cause): bool
     {
         return $this->simulationForIdentity($uuid)?->enqueuePluginEffectClear($uuid, $cause) ?? false;
+    }
+
+    public function setPlayerExperience(string $uuid, int $totalPoints, ExperienceChangeCause $cause): bool
+    {
+        return $this->simulationForIdentity($uuid)?->enqueuePlayerExperience($uuid, $totalPoints, $cause) ?? false;
     }
 
     public function teleportPlayer(
@@ -2633,6 +2639,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 ),
                 fn(EffectCause $cause): bool => $this->acceptPluginAction(
                     fn(): bool => $this->clearPlayerEffects($identity, $cause),
+                ),
+                fn(int $totalPoints, ExperienceChangeCause $cause): bool => $this->acceptPluginAction(
+                    fn(): bool => $this->setPlayerExperience($identity, $totalPoints, $cause),
                 ),
             );
             $this->flush($key, $session);

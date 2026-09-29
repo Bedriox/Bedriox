@@ -568,7 +568,7 @@ final class ServerRuntimeTest extends TestCase
         self::assertCount(1, $packets);
         self::assertInstanceOf(CraftingDataPacket::class, $packets[0]);
         self::assertTrue($packets[0]->cleanRecipes);
-        self::assertCount(4_143, $packets[0]->recipes);
+        self::assertCount(4_497, $packets[0]->recipes);
         $transport->sent = [];
 
         $catalog->register(new ShapelessRecipe(
@@ -597,7 +597,7 @@ final class ServerRuntimeTest extends TestCase
         $packets = $this->decodeEncryptedPackets($transport->sent, $decryptor);
         self::assertCount(1, $packets);
         self::assertInstanceOf(CraftingDataPacket::class, $packets[0]);
-        self::assertCount(4_142, $packets[0]->recipes);
+        self::assertCount(4_496, $packets[0]->recipes);
     }
 
     public function testRuntimePublishesCompletedPhaseTimingsAndInboundPayloadRate(): void

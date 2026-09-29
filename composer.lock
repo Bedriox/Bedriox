@@ -12,7 +12,7 @@
             "dist": {
                 "type": "path",
                 "url": "../Data",
-                "reference": "c59af2c5260aecc565d6e160f3b10bb33af3e51b"
+                "reference": "45b9642290b4d63083a6d797fe2fa991ceeb2b1c"
             },
             "require": {
                 "php": "^8.4"
@@ -60,7 +60,7 @@
             "dist": {
                 "type": "path",
                 "url": "../Protocol",
-                "reference": "55ba85cf5e5f1c681c0cdb0dc95d0269468ccffa"
+                "reference": "6f20a5d2184eeb892c2bdf5d12374df5fcdfe84c"
             },
             "require": {
                 "ext-openssl": "*",

@@ -55,9 +55,12 @@ final class CraftingCatalogTest extends TestCase
         );
 
         self::assertCount(4_128, $catalog->recipes()->all());
-        self::assertCount(4_142, $catalog->protocolRecipes());
+        self::assertCount(4_496, $catalog->protocolRecipes());
         self::assertNotNull($catalog->recipes()->recipeByNetworkId(1));
         self::assertNotNull($catalog->complexUuid(4_129));
+        $stonecutter = $data->recipeRegistry()->recipesForStation(\Bedriox\Data\RecipeStation::STONECUTTER);
+        self::assertNotEmpty($stonecutter);
+        self::assertSame($stonecutter[0]->sourceIndex(), $catalog->workstationSourceIndex(4_143));
 
         $bedSource = $data->recipeRegistry()->recipesForIdentifier('bed_color_0')[0];
         $bedRecipe = $catalog->recipes()->recipe('minecraft:recipe/' . $bedSource->sourceIndex());
@@ -79,7 +82,7 @@ final class CraftingCatalogTest extends TestCase
             [new RecipeOutput('minecraft:dirt')],
             recipeOwner: 'Example',
         ));
-        self::assertSame(4_143, $catalog->recipes()->networkId('example:reserved_after_complex'));
+        self::assertSame(4_510, $catalog->recipes()->networkId('example:reserved_after_complex'));
     }
 
     public function testEveryBundledStaticGridRecipeHasAnExecutableAuthoritativeMatch(): void

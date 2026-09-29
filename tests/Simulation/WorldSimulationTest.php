@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Simulation;
 
+use Bedriox\Api\Player\ExperienceChangeCause;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Packet\MultiCraftingRecipe;
@@ -63,6 +64,7 @@ use Bedriox\Server\Simulation\Event\ItemEntitySpawned;
 use Bedriox\Server\Simulation\Event\MovementCorrected;
 use Bedriox\Server\Simulation\Event\NutritionChanged;
 use Bedriox\Server\Simulation\Event\PlayerDisconnected;
+use Bedriox\Server\Simulation\Event\PlayerExperienceChanged;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
 use Bedriox\Server\Simulation\MovementMode;
@@ -91,6 +93,20 @@ use PHPUnit\Framework\TestCase;
 
 final class WorldSimulationTest extends TestCase
 {
+    public function testPlayerExperienceCommandsPassTheWorldAdmissionBoundary(): void
+    {
+        $world = new WorldSimulation();
+        $factory = new SimulationCommandFactory();
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        $world->tick();
+
+        self::assertTrue($world->enqueuePlayerExperience('identity-one', 10, ExperienceChangeCause::COMMAND));
+        $event = $world->tick()->events[0];
+
+        self::assertInstanceOf(PlayerExperienceChanged::class, $event);
+        self::assertSame(10, $event->player->totalExperience);
+    }
+
     public function testSolidBlocksReplaceBucketAndGeneratedFluidCells(): void
     {
         $data = BedrockDataSet::bundled();
@@ -145,7 +161,15 @@ final class WorldSimulationTest extends TestCase
         $simulation->tick();
 
         self::assertTrue($simulation->enqueue($commands->placeBlock(
-            'one', 1, new BlockPosition(2, 64, 0), 1, 0, 0, 0.5, 0.5, 0.5,
+            'one',
+            1,
+            new BlockPosition(2, 64, 0),
+            1,
+            0,
+            0,
+            0.5,
+            0.5,
+            0.5,
         )));
         $direct = array_values(array_filter(
             $simulation->tick()->events,
@@ -156,7 +180,15 @@ final class WorldSimulationTest extends TestCase
         self::assertSame('minecraft:cobblestone', $states->state($blocks->blockStateAt(2, 64, 0))->identifier());
 
         self::assertTrue($simulation->enqueue($commands->placeBlock(
-            'one', 2, new BlockPosition(3, 63, 0), 1, 0, 0, 0.5, 1.0, 0.5,
+            'one',
+            2,
+            new BlockPosition(3, 63, 0),
+            1,
+            0,
+            0,
+            0.5,
+            1.0,
+            0.5,
         )));
         $adjacent = array_values(array_filter(
             $simulation->tick()->events,

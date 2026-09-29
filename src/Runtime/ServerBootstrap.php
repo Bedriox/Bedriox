@@ -37,8 +37,11 @@ use Bedriox\Server\Authentication\SystemAuthenticationClock;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Gameplay\Block\BlockCatalog;
 use Bedriox\Server\Gameplay\Crafting\CraftingCatalog;
+use Bedriox\Server\Gameplay\Crafting\RecipeItemTagRegistry;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Gameplay\Potion\BrewingRecipeCatalog;
+use Bedriox\Server\Gameplay\Processing\FurnaceRecipeCatalog;
+use Bedriox\Server\Gameplay\Processing\TransientWorkstationProcessor;
 use Bedriox\Server\Login\AuthenticationMode;
 use Bedriox\Server\Login\DevelopmentLoginAuthenticator;
 use Bedriox\Server\Login\ExplicitSelfSignedLoginAuthenticator;
@@ -160,7 +163,8 @@ final class ServerBootstrap
                 $playerConnections->inventoryActions(...),
                 $playerConnections->maximumStackSize(...),
             )
-            ->withPlayerEffectActions($playerConnections->effectActions(...));
+            ->withPlayerEffectActions($playerConnections->effectActions(...))
+            ->withPlayerExperienceActions($playerConnections->experienceActions(...));
         $worldHandleResolver = new WorldHandleResolver();
         $pluginEvents = $pluginEvents?->withWorldResolver($worldHandleResolver->resolve(...));
         $simulationLimits = new SimulationLimits(
@@ -197,6 +201,11 @@ final class ServerBootstrap
         $brewingRecipes = new BrewingRecipeCatalog(
             $data->recipeRegistry()->containerMixes(),
             $data->recipeRegistry()->potionMixes(),
+        );
+        $furnaceRecipes = new FurnaceRecipeCatalog($data->recipeRegistry());
+        $workstations = new TransientWorkstationProcessor(
+            $data->recipeRegistry(),
+            RecipeItemTagRegistry::vanilla($itemCatalog),
         );
         $flatPalette = FixedFlatBlockPalette::fromRegistry($internalStates);
         $defaultPalette = DefaultBlockPalette::fromRegistry($internalStates);
@@ -308,6 +317,8 @@ final class ServerBootstrap
                 pluginActions: $pluginActions,
                 worldId: $defaultWorldHandle->id(),
                 brewingRecipes: $brewingRecipes,
+                furnaceRecipes: $furnaceRecipes,
+                transientWorkstations: $workstations,
             );
             $entityPersistenceStore = $flatWorld->entityPersistenceStore();
             if ($entityPersistenceStore !== null) {
@@ -345,6 +356,8 @@ final class ServerBootstrap
                 $blockCollisions,
                 $craftingCatalog,
                 $brewingRecipes,
+                $furnaceRecipes,
+                $workstations,
                 $entityDefinitions,
                 $pluginEntityLifecycle,
                 $pluginActions,
@@ -425,6 +438,8 @@ final class ServerBootstrap
                     pluginActions: $pluginActions,
                     worldId: $handle->id(),
                     brewingRecipes: $brewingRecipes,
+                    furnaceRecipes: $furnaceRecipes,
+                    transientWorkstations: $workstations,
                 );
                 $simulationAt = hrtime(true);
                 $entityStore = $internalWorld->entityPersistenceStore();

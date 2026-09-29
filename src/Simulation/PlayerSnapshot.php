@@ -60,5 +60,6 @@ final readonly class PlayerSnapshot
         public float $absorption = 0.0,
         public int $airTicks = 300,
         public int $fireTicks = 0,
+        public int $totalExperience = 0,
     ) {}
 }

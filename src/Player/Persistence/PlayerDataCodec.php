@@ -43,7 +43,7 @@ use InvalidArgumentException;
 /** Bounded schema-versioned player profile encoding with no session-local identifiers. */
 final readonly class PlayerDataCodec
 {
-    public const int SCHEMA_VERSION = 10;
+    public const int SCHEMA_VERSION = 11;
     public const int MAX_BYTES = 131_072;
 
     private const array REQUIRED_ROOT_TAGS = [
@@ -69,6 +69,7 @@ final readonly class PlayerDataCodec
         'Absorption',
         'AirTicks',
         'FireTicks',
+        'TotalExperience',
     ];
 
     public function __construct(private LittleEndianNbtCodec $nbt = new LittleEndianNbtCodec()) {}
@@ -184,6 +185,7 @@ final readonly class PlayerDataCodec
             'Absorption' => LittleEndianNbtTag::float($player->absorption),
             'AirTicks' => LittleEndianNbtTag::int($player->airTicks),
             'FireTicks' => LittleEndianNbtTag::int($player->fireTicks),
+            'TotalExperience' => LittleEndianNbtTag::int($player->totalExperience),
         ];
         if ($player->inventory->cursor !== null) {
             $root['Cursor'] = self::encodedStack($player->inventory->cursor);
@@ -234,7 +236,8 @@ final readonly class PlayerDataCodec
                 ))
                 && !($schemaVersion < 7 && $name === 'EnderChest')
                 && !($schemaVersion < 8 && $name === 'Effects')
-                && !($schemaVersion < 9 && in_array($name, ['Absorption', 'AirTicks', 'FireTicks'], true)),
+                && !($schemaVersion < 9 && in_array($name, ['Absorption', 'AirTicks', 'FireTicks'], true))
+                && !($schemaVersion < 11 && $name === 'TotalExperience'),
         );
         $allowed = array_fill_keys([
             ...$required,
@@ -469,6 +472,9 @@ final readonly class PlayerDataCodec
                     ? self::integer($root['FireTicks'], LittleEndianNbtTag::INT, 'FireTicks')
                     : 0,
                 $effectPersistenceState,
+                isset($root['TotalExperience'])
+                    ? self::integer($root['TotalExperience'], LittleEndianNbtTag::INT, 'TotalExperience')
+                    : 0,
             );
         } catch (CorruptPlayerDataException $error) {
             throw $error;

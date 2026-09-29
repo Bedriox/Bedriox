@@ -30,6 +30,7 @@ use Bedriox\Server\Player\InventorySlotReference;
 use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Player\InventoryStackRequestAction;
 use Bedriox\Server\Player\InventoryStackRequestActionType;
+use Bedriox\Server\Player\OpenedContainerInventory;
 use Bedriox\Server\Player\PlayerInventory;
 use Bedriox\Server\Player\PlayerInventoryEntry;
 use Bedriox\Server\Player\PlayerInventoryStackState;
@@ -42,6 +43,37 @@ use PHPUnit\Framework\TestCase;
 
 final class PlayerInventoryTest extends TestCase
 {
+    public function testRefreshingOpenedContainerPreservesOnlyUnchangedStackIdentities(): void
+    {
+        $inventory = PlayerInventory::empty();
+        $current = new OpenedContainerInventory('world/0:64:0', 3, [
+            0 => new InventoryStack('minecraft:raw_iron', 3, 101),
+            1 => new InventoryStack('minecraft:coal', 2, 102),
+            2 => new InventoryStack('minecraft:iron_ingot', 1, 103),
+        ]);
+
+        $refreshed = $inventory->refreshOpenedContainer($current, [
+            new InventoryStack('minecraft:raw_iron', 3, 201),
+            new InventoryStack('minecraft:coal', 1, 202),
+            new InventoryStack('minecraft:iron_ingot', 1, 203),
+        ]);
+
+        $refreshedInput = $refreshed->stackAt(0);
+        $refreshedFuel = $refreshed->stackAt(1);
+        $refreshedOutput = $refreshed->stackAt(2);
+        self::assertNotNull($refreshedInput);
+        self::assertNotNull($refreshedFuel);
+        self::assertNotNull($refreshedOutput);
+        self::assertSame(101, $refreshedInput->stackNetworkId);
+        self::assertNotSame(102, $refreshedFuel->stackNetworkId);
+        self::assertSame(103, $refreshedOutput->stackNetworkId);
+
+        $second = $inventory->refreshOpenedContainer($refreshed, $refreshed->slots());
+        self::assertEquals($refreshedInput, $second->stackAt(0));
+        self::assertEquals($refreshedFuel, $second->stackAt(1));
+        self::assertEquals($refreshedOutput, $second->stackAt(2));
+    }
+
     public function testCraftingInputRequiresTheActiveGridWireOffset(): void
     {
         $inventory = PlayerInventory::empty();

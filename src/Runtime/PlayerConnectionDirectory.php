@@ -27,6 +27,7 @@ use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Inventory\ItemStack;
 use Bedriox\Api\Inventory\PlayerInventoryActions;
+use Bedriox\Api\Player\ExperienceChangeCause;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\Player\Player;
 use Bedriox\Api\Player\PlayerActions;
@@ -39,7 +40,7 @@ use LogicException;
 /** @internal Binds immutable public player handles to the current runtime session without exposing it. */
 final class PlayerConnectionDirectory
 {
-    /** @var array<string, array{session: string, connected: Closure(): bool, send: Closure(Packet, bool): bool, kick: Closure(string, ?string, ?string): bool, swing: Closure(): bool, teleport: Closure(Position): bool, gameMode: Closure(GameMode): bool, give: Closure(ItemStack): bool, slot: Closure(int, ?ItemStack): bool, contents: Closure(list<ItemStack|null>): bool, remove: Closure(ItemStack): bool, select: Closure(int): bool, equipment: Closure(EquipmentSlot, ?ItemStack): bool, armor: Closure(array<string, ItemStack|null>): bool, damage: Closure(float): bool, maximumStackSize: Closure(ItemStack): int, effectAdd: Closure(EffectInstance, EffectCause): bool, effectRemove: Closure(EffectType, EffectCause): bool, effectClear: Closure(EffectCause): bool}> */
+    /** @var array<string, array{session: string, connected: Closure(): bool, send: Closure(Packet, bool): bool, kick: Closure(string, ?string, ?string): bool, swing: Closure(): bool, teleport: Closure(Position): bool, gameMode: Closure(GameMode): bool, give: Closure(ItemStack): bool, slot: Closure(int, ?ItemStack): bool, contents: Closure(list<ItemStack|null>): bool, remove: Closure(ItemStack): bool, select: Closure(int): bool, equipment: Closure(EquipmentSlot, ?ItemStack): bool, armor: Closure(array<string, ItemStack|null>): bool, damage: Closure(float): bool, maximumStackSize: Closure(ItemStack): int, effectAdd: Closure(EffectInstance, EffectCause): bool, effectRemove: Closure(EffectType, EffectCause): bool, effectClear: Closure(EffectCause): bool, experience: Closure(int, ExperienceChangeCause): bool}> */
     private array $connections = [];
 
     /**
@@ -80,6 +81,7 @@ final class PlayerConnectionDirectory
         ?Closure $addEffect = null,
         ?Closure $removeEffect = null,
         ?Closure $clearEffects = null,
+        ?Closure $setExperience = null,
     ): void {
         /** @var Closure(list<ItemStack|null>): bool $contents */
         $contents = $setInventoryContents ?? static fn(array $contents): bool => false;
@@ -106,6 +108,7 @@ final class PlayerConnectionDirectory
             'effectAdd' => $addEffect ?? static fn(EffectInstance $effect, EffectCause $cause): bool => false,
             'effectRemove' => $removeEffect ?? static fn(EffectType $type, EffectCause $cause): bool => false,
             'effectClear' => $clearEffects ?? static fn(EffectCause $cause): bool => false,
+            'experience' => $setExperience ?? static fn(int $points, ExperienceChangeCause $cause): bool => false,
         ];
     }
 
@@ -237,6 +240,18 @@ final class PlayerConnectionDirectory
         );
     }
 
+    /** @return Closure(int, ExperienceChangeCause): void */
+    public function experienceActions(string $identity): Closure
+    {
+        $key = self::key($identity);
+        $session = $this->connections[$key]['session'] ?? null;
+
+        return function (int $points, ExperienceChangeCause $cause) use ($key, $session): void {
+            $connection = $this->currentConnection($key, $session);
+            $this->requireAccepted(($connection['experience'])($points, $cause));
+        };
+    }
+
     /** Rebinds an immutable public snapshot to its current runtime connection. */
     public function attach(Player $player): Player
     {
@@ -246,6 +261,7 @@ final class PlayerConnectionDirectory
             $this->inventoryActions($player->uuid),
             $this->maximumStackSize($player->uuid),
             $this->effectActions($player->uuid),
+            $this->experienceActions($player->uuid),
         );
     }
 
@@ -257,7 +273,7 @@ final class PlayerConnectionDirectory
     }
 
     /**
-     * @return array{session: string, connected: Closure(): bool, send: Closure(Packet, bool): bool, kick: Closure(string, ?string, ?string): bool, swing: Closure(): bool, teleport: Closure(Position): bool, gameMode: Closure(GameMode): bool, give: Closure(ItemStack): bool, slot: Closure(int, ?ItemStack): bool, contents: Closure(list<ItemStack|null>): bool, remove: Closure(ItemStack): bool, select: Closure(int): bool, equipment: Closure(EquipmentSlot, ?ItemStack): bool, armor: Closure(array<string, ItemStack|null>): bool, damage: Closure(float): bool, maximumStackSize: Closure(ItemStack): int, effectAdd: Closure(EffectInstance, EffectCause): bool, effectRemove: Closure(EffectType, EffectCause): bool, effectClear: Closure(EffectCause): bool}
+     * @return array{session: string, connected: Closure(): bool, send: Closure(Packet, bool): bool, kick: Closure(string, ?string, ?string): bool, swing: Closure(): bool, teleport: Closure(Position): bool, gameMode: Closure(GameMode): bool, give: Closure(ItemStack): bool, slot: Closure(int, ?ItemStack): bool, contents: Closure(list<ItemStack|null>): bool, remove: Closure(ItemStack): bool, select: Closure(int): bool, equipment: Closure(EquipmentSlot, ?ItemStack): bool, armor: Closure(array<string, ItemStack|null>): bool, damage: Closure(float): bool, maximumStackSize: Closure(ItemStack): int, effectAdd: Closure(EffectInstance, EffectCause): bool, effectRemove: Closure(EffectType, EffectCause): bool, effectClear: Closure(EffectCause): bool, experience: Closure(int, ExperienceChangeCause): bool}
      */
     private function currentConnection(string $key, ?string $session): array
     {

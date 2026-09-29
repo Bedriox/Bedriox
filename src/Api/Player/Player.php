@@ -71,6 +71,8 @@ final readonly class Player
         /** @var array<string, EffectInstance> $effects */
         private array $effects = [],
         private ?EffectActions $effectActions = null,
+        private ExperienceSnapshot $experience = new ExperienceSnapshot(0),
+        private ?Closure $setExperience = null,
     ) {
         $this->inventorySnapshot = $inventory;
         $armor = new ArmorInventory(
@@ -141,6 +143,13 @@ final readonly class Player
         return new EffectManager($this->effects, $this->effectActions ?? EffectActions::unavailable());
     }
 
+    public function getExperience(): ExperienceManager
+    {
+        return $this->setExperience === null
+            ? ExperienceManager::unavailable($this->experience)
+            : new ExperienceManager($this->experience, $this->setExperience);
+    }
+
     public function damage(float $amount): void
     {
         if (!is_finite($amount) || $amount <= 0.0 || $amount > 1_000_000.0) {
@@ -156,6 +165,7 @@ final readonly class Player
         PlayerInventoryActions $inventoryActions,
         Closure $maximumStackSize,
         ?EffectActions $effectActions = null,
+        ?Closure $setExperience = null,
     ): self {
         return new self(
             $this->name,
@@ -179,6 +189,8 @@ final readonly class Player
             $maximumStackSize,
             $this->effects,
             $effectActions,
+            $this->experience,
+            $setExperience,
         );
     }
 

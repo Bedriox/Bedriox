@@ -43,6 +43,7 @@ final class Player
     public readonly PlayerInventory $inventory;
     public readonly PlayerVitals $vitals;
     public readonly ActiveEffectCollection $effects;
+    public readonly PlayerExperience $experience;
     private string $worldName;
     public readonly int $firstPlayedAt;
     /** Persisted canonical value; mutate only through setGameMode(). */
@@ -72,6 +73,7 @@ final class Player
         int $airTicks = PlayerVitals::MAX_AIR_TICKS,
         int $fireTicks = 0,
         ?ActiveEffectPersistenceState $effectPersistenceState = null,
+        int $totalExperience = 0,
     ) {
         $this->chatTokens = $chatTokens;
         $this->lastChatRefillTick = $tick;
@@ -92,6 +94,9 @@ final class Player
         } else {
             $this->effects->restorePersistenceState($effectPersistenceState);
         }
+        $this->experience = new PlayerExperience($totalExperience, function (): void {
+            $this->markDirty();
+        });
     }
 
     public function snapshot(): PlayerSnapshot
@@ -126,6 +131,7 @@ final class Player
             $this->vitals->absorption,
             $this->vitals->airTicks,
             $this->vitals->fireTicks,
+            $this->experience->totalPoints(),
         );
     }
 

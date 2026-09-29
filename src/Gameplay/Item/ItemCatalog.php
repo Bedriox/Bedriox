@@ -109,6 +109,9 @@ final class ItemCatalog
             && isset($creativeBlockStates['minecraft:undyed_shulker_box'])) {
             $creativeBlockStates['minecraft:shulker_box'] = $creativeBlockStates['minecraft:undyed_shulker_box'];
         }
+        if (isset($creativeBlockStates['minecraft:stonecutter_block'])) {
+            $creativeBlockStates['minecraft:stonecutter'] = $creativeBlockStates['minecraft:stonecutter_block'];
+        }
         foreach ($networkRegistry->definitions() as $identifier => $_definition) {
             if ($identifier === 'minecraft:air') {
                 continue;

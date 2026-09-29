@@ -50,13 +50,11 @@ final readonly class ContainerOpened implements WorldEvent
             || ($title !== null && ($title === '' || strlen($title) > 256 || preg_match('//u', $title) !== 1))) {
             throw new InvalidArgumentException('Storage-container open projection is invalid.');
         }
-        $double = in_array($containerType, [ContainerType::DOUBLE_CHEST, ContainerType::DOUBLE_TRAPPED_CHEST], true);
+        $double = $containerType->isPaired();
+        $expectedSlots = $containerType === ContainerType::VIRTUAL ? $layout?->size() : $containerType->slotCount();
         if ($double !== ($pairedPosition !== null)
-            || ($containerType === ContainerType::VIRTUAL && count($slots) !== $layout?->size())
-            || ($containerType !== ContainerType::VIRTUAL && !in_array(count($slots), [5, 27, 54], true))
-            || ($double && count($slots) !== 54)
-            || (!$double && $containerType !== ContainerType::VIRTUAL
-                && count($slots) !== ($containerType === ContainerType::BREWING_STAND ? 5 : 27))) {
+            || $expectedSlots === null
+            || count($slots) !== $expectedSlots) {
             throw new InvalidArgumentException('Storage-container slot projection does not match its type.');
         }
     }

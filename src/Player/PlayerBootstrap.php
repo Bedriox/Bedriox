@@ -50,6 +50,7 @@ final readonly class PlayerBootstrap
         public int $airTicks = PlayerVitals::MAX_AIR_TICKS,
         public int $fireTicks = 0,
         public ?ActiveEffectPersistenceState $effectPersistenceState = null,
+        public int $totalExperience = 0,
     ) {
         if ($this->worldName === '' || strlen($this->worldName) > 64
             || preg_match('//u', $this->worldName) !== 1
@@ -115,6 +116,9 @@ final readonly class PlayerBootstrap
         if ($this->airTicks < -20 || $this->airTicks > PlayerVitals::MAX_AIR_TICKS
             || $this->fireTicks < 0 || $this->fireTicks > PlayerVitals::MAX_FIRE_TICKS) {
             throw new InvalidArgumentException('Player air or fire ticks are outside their authoritative range.');
+        }
+        if ($this->totalExperience < 0 || $this->totalExperience > ExperienceMath::MAXIMUM_TOTAL_POINTS) {
+            throw new InvalidArgumentException('Player experience is outside its authoritative range.');
         }
     }
 }

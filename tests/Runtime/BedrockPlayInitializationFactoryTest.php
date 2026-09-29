@@ -111,7 +111,7 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
         $packets = self::packets($factory->create($this->login(), UnsignedLong::fromInt(7)));
 
         self::assertInstanceOf(CraftingDataPacket::class, $packets[22]);
-        self::assertCount(4_143, $packets[22]->recipes);
+        self::assertCount(4_497, $packets[22]->recipes);
         self::assertNotEmpty(array_filter(
             $packets[22]->recipes,
             static fn(CraftingRecipe $recipe): bool => $recipe->networkId()
@@ -234,14 +234,14 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
         self::assertInstanceOf(TrimDataPacket::class, $packets[21]);
         self::assertInstanceOf(CraftingDataPacket::class, $packets[22]);
         self::assertTrue($packets[22]->cleanRecipes);
-        self::assertCount(4_142, $packets[22]->recipes);
-        self::assertCount(4_142, array_unique(array_map(
+        self::assertCount(4_496, $packets[22]->recipes);
+        self::assertCount(4_496, array_unique(array_map(
             static fn(CraftingRecipe $recipe): int => $recipe->networkId(),
             $packets[22]->recipes,
         )));
         $decodedCrafting = CraftingDataPacket::decode($packets[22]->encode());
         self::assertTrue($decodedCrafting->cleanRecipes);
-        self::assertCount(4_142, $decodedCrafting->recipes);
+        self::assertCount(4_496, $decodedCrafting->recipes);
         self::assertNotEmpty($decodedCrafting->potionMixData);
         self::assertNotEmpty($decodedCrafting->containerMixData);
         self::assertInstanceOf(SetActorDataPacket::class, $packets[23]);

@@ -112,6 +112,19 @@ final readonly class BlockCatalog
                     $indicesByIdentifier[$state->identifier()] = count($types) - 1;
                 }
             }
+            foreach (self::supplementalVanillaItemBlocks() as $itemIdentifier => $blockIdentifier) {
+                $state = self::firstStateForIdentifier($registry, $blockIdentifier);
+                if ($state === null) {
+                    continue;
+                }
+                $index = $indicesByIdentifier[$blockIdentifier] ?? null;
+                if ($index !== null) {
+                    $types[$index] = $types[$index]->withItemIdentifier($itemIdentifier);
+                    continue;
+                }
+                $types[] = self::mappedType($state, $itemIdentifier);
+                $indicesByIdentifier[$blockIdentifier] = count($types) - 1;
+            }
         }
         if ($blockItems !== null) {
             foreach ($blockItems->mappings() as $mapping) {
@@ -250,6 +263,35 @@ final readonly class BlockCatalog
             true,
             $itemIdentifier,
         );
+    }
+
+    private static function firstStateForIdentifier(
+        BlockStateRegistry $registry,
+        string $identifier,
+    ): ?CanonicalBlockState {
+        foreach ($registry->states() as $state) {
+            if ($state->identifier() === $identifier) {
+                return $state;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Vanilla block items whose current creative records do not carry a block state.
+     *
+     * @return array<string, string> item identifier => block identifier
+     */
+    private static function supplementalVanillaItemBlocks(): array
+    {
+        return [
+            'minecraft:brewing_stand' => 'minecraft:brewing_stand',
+            'minecraft:campfire' => 'minecraft:campfire',
+            'minecraft:cauldron' => 'minecraft:cauldron',
+            'minecraft:soul_campfire' => 'minecraft:soul_campfire',
+            'minecraft:stonecutter' => 'minecraft:stonecutter',
+        ];
     }
 
     /** @return list<string> */

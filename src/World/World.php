@@ -351,6 +351,12 @@ final class World
         return $entities;
     }
 
+    /** @return list<Chunk> Immutable snapshots currently loaded by this world. */
+    public function loadedChunks(): array
+    {
+        return $this->chunks->loadedChunks();
+    }
+
     /** Installs immutable durable state and returns the block entity previously stored at the position. */
     public function setBlockEntity(BlockEntity $blockEntity): ?BlockEntity
     {

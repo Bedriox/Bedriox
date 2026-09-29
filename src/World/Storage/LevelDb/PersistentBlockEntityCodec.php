@@ -24,6 +24,11 @@ use Bedriox\Api\Inventory\ItemNbt;
 use Bedriox\Protocol\Exception\InvalidValueException;
 use Bedriox\Protocol\Packet\LittleEndianNbtToNetwork;
 use Bedriox\Server\Gameplay\Potion\BrewingStandBlockEntity;
+use Bedriox\Server\Gameplay\Processing\CampfireBlockEntity;
+use Bedriox\Server\Gameplay\Processing\CampfireType;
+use Bedriox\Server\Gameplay\Processing\CauldronBlockEntity;
+use Bedriox\Server\Gameplay\Processing\FurnaceBlockEntity;
+use Bedriox\Server\Gameplay\Processing\FurnaceType;
 use Bedriox\Server\World\BlockEntity\BlockEntity;
 use Bedriox\Server\World\BlockEntity\BlockEntityCollection;
 use Bedriox\Server\World\BlockEntity\BlockEntityRegistry;
@@ -134,6 +139,34 @@ final readonly class PersistentBlockEntityCodec
             'z' => LittleEndianNbtTag::int($entity->position->z),
             'isMovable' => LittleEndianNbtTag::byte(1),
         ];
+        if ($entity instanceof FurnaceBlockEntity) {
+            if ($entity->customName !== null) {
+                $root['CustomName'] = LittleEndianNbtTag::string($entity->customName);
+            }
+            $items = [];
+            foreach ($entity->inventory->contents() as $slot => $stack) {
+                $items[] = LittleEndianNbtTag::compound($this->encodeItem($slot, $stack));
+            }
+            $root['Items'] = LittleEndianNbtTag::list(LittleEndianNbtTag::COMPOUND, $items);
+            $root['BurnTime'] = new LittleEndianNbtTag(LittleEndianNbtTag::SHORT, $entity->burnTime);
+            $root['BurnDuration'] = new LittleEndianNbtTag(LittleEndianNbtTag::SHORT, $entity->burnDuration);
+            $root['CookTime'] = new LittleEndianNbtTag(LittleEndianNbtTag::SHORT, $entity->cookTime);
+            $root['CookTimeTotal'] = new LittleEndianNbtTag(LittleEndianNbtTag::SHORT, $entity->cookDuration);
+            $root['BedrioxStoredExperienceMilli'] = LittleEndianNbtTag::int($entity->storedExperienceMilli);
+            return $root;
+        }
+        if ($entity instanceof CampfireBlockEntity) {
+            $root['BedrioxCampfireType'] = LittleEndianNbtTag::string($entity->campfireType->value);
+            foreach ($entity->inventory->contents() as $slot => $stack) {
+                $suffix = (string) ($slot + 1);
+                $root['Item' . $suffix] = LittleEndianNbtTag::compound($this->encodeItem($slot, $stack));
+                $root['ItemTime' . $suffix] = LittleEndianNbtTag::int($entity->progressBySlot[$slot] ?? 0);
+                $root['ItemTimeTotal' . $suffix] = LittleEndianNbtTag::int(
+                    $entity->durationBySlot[$slot] ?? CampfireBlockEntity::DEFAULT_COOK_TIME_TICKS,
+                );
+            }
+            return $root;
+        }
         if ($entity instanceof BrewingStandBlockEntity) {
             if ($entity->customName !== null) {
                 $root['CustomName'] = LittleEndianNbtTag::string($entity->customName);
@@ -146,6 +179,14 @@ final readonly class PersistentBlockEntityCodec
             $root['CookTime'] = new LittleEndianNbtTag(LittleEndianNbtTag::SHORT, $entity->brewTime);
             $root['FuelAmount'] = new LittleEndianNbtTag(LittleEndianNbtTag::SHORT, $entity->fuelAmount);
             $root['FuelTotal'] = new LittleEndianNbtTag(LittleEndianNbtTag::SHORT, $entity->fuelTotal);
+
+            return $root;
+        }
+        if ($entity instanceof CauldronBlockEntity) {
+            $root['PotionId'] = new LittleEndianNbtTag(
+                LittleEndianNbtTag::SHORT,
+                $entity->potionAuxValue ?? -1,
+            );
 
             return $root;
         }
@@ -181,6 +222,26 @@ final readonly class PersistentBlockEntityCodec
             'y' => LittleEndianNbtTag::int($entity->position->y),
             'z' => LittleEndianNbtTag::int($entity->position->z),
         ];
+        if ($entity instanceof FurnaceBlockEntity) {
+            if ($entity->customName !== null) {
+                $root['CustomName'] = LittleEndianNbtTag::string($entity->customName);
+            }
+            $root['BurnTime'] = new LittleEndianNbtTag(LittleEndianNbtTag::SHORT, $entity->burnTime);
+            $root['CookTime'] = new LittleEndianNbtTag(LittleEndianNbtTag::SHORT, $entity->cookTime);
+            $root['CookTimeTotal'] = new LittleEndianNbtTag(LittleEndianNbtTag::SHORT, $entity->cookDuration);
+            return $root;
+        }
+        if ($entity instanceof CampfireBlockEntity) {
+            foreach ($entity->inventory->contents() as $slot => $stack) {
+                $suffix = (string) ($slot + 1);
+                $root['Item' . $suffix] = LittleEndianNbtTag::compound($this->encodeItem($slot, $stack));
+                $root['ItemTime' . $suffix] = LittleEndianNbtTag::int($entity->progressBySlot[$slot] ?? 0);
+                $root['ItemTimeTotal' . $suffix] = LittleEndianNbtTag::int(
+                    $entity->durationBySlot[$slot] ?? CampfireBlockEntity::DEFAULT_COOK_TIME_TICKS,
+                );
+            }
+            return $root;
+        }
         if ($entity instanceof BrewingStandBlockEntity) {
             if ($entity->customName !== null) {
                 $root['CustomName'] = LittleEndianNbtTag::string($entity->customName);
@@ -188,6 +249,14 @@ final readonly class PersistentBlockEntityCodec
             $root['CookTime'] = new LittleEndianNbtTag(LittleEndianNbtTag::SHORT, $entity->brewTime);
             $root['FuelAmount'] = new LittleEndianNbtTag(LittleEndianNbtTag::SHORT, $entity->fuelAmount);
             $root['FuelTotal'] = new LittleEndianNbtTag(LittleEndianNbtTag::SHORT, $entity->fuelTotal);
+
+            return $root;
+        }
+        if ($entity instanceof CauldronBlockEntity) {
+            $root['PotionId'] = new LittleEndianNbtTag(
+                LittleEndianNbtTag::SHORT,
+                $entity->potionAuxValue ?? -1,
+            );
 
             return $root;
         }
@@ -218,11 +287,23 @@ final readonly class PersistentBlockEntityCodec
             self::integer(self::required($root, 'z'), LittleEndianNbtTag::INT, 'z'),
         );
         if (!$type->ownsPersistentInventory()) {
+            if ($type === BlockEntityType::Cauldron) {
+                $potionId = isset($root['PotionId'])
+                    ? self::integer($root['PotionId'], LittleEndianNbtTag::SHORT, 'PotionId')
+                    : -1;
+
+                return new CauldronBlockEntity($position, $potionId < 0 ? null : $potionId);
+            }
             return $this->registry->create($type, $position);
         }
-        $slotCount = $type === BlockEntityType::BrewingStand
-            ? BrewingStandBlockEntity::SLOT_COUNT
-            : ContainerBlockEntity::STORAGE_SLOT_COUNT;
+        if ($type === BlockEntityType::Campfire) {
+            return $this->decodeCampfire($root, $position);
+        }
+        $slotCount = match ($type) {
+            BlockEntityType::BrewingStand => BrewingStandBlockEntity::SLOT_COUNT,
+            BlockEntityType::Furnace, BlockEntityType::BlastFurnace, BlockEntityType::Smoker => FurnaceBlockEntity::SLOT_COUNT,
+            default => ContainerBlockEntity::STORAGE_SLOT_COUNT,
+        };
         $contents = [];
         $items = $root['Items'] ?? null;
         if ($items !== null) {
@@ -266,6 +347,28 @@ final readonly class PersistentBlockEntityCodec
                 $customName,
             );
         }
+        if ($type === BlockEntityType::Furnace || $type === BlockEntityType::BlastFurnace || $type === BlockEntityType::Smoker) {
+            $furnaceType = match ($type) {
+                BlockEntityType::Furnace => FurnaceType::Furnace,
+                BlockEntityType::BlastFurnace => FurnaceType::BlastFurnace,
+                BlockEntityType::Smoker => FurnaceType::Smoker,
+            };
+            $cookDuration = isset($root['CookTimeTotal'])
+                ? self::integer($root['CookTimeTotal'], LittleEndianNbtTag::SHORT, 'CookTimeTotal')
+                : $furnaceType->cookTimeTicks();
+            return new FurnaceBlockEntity(
+                $furnaceType,
+                $position,
+                new ContainerInventory(FurnaceBlockEntity::SLOT_COUNT, $contents),
+                isset($root['BurnTime']) ? self::integer($root['BurnTime'], LittleEndianNbtTag::SHORT, 'BurnTime') : 0,
+                isset($root['BurnDuration']) ? self::integer($root['BurnDuration'], LittleEndianNbtTag::SHORT, 'BurnDuration') : 0,
+                isset($root['CookTime']) ? self::integer($root['CookTime'], LittleEndianNbtTag::SHORT, 'CookTime') : 0,
+                $cookDuration,
+                isset($root['BedrioxStoredExperienceMilli'])
+                    ? self::integer($root['BedrioxStoredExperienceMilli'], LittleEndianNbtTag::INT, 'BedrioxStoredExperienceMilli') : 0,
+                $customName,
+            );
+        }
         $pairedPosition = null;
         $pairLead = false;
         if (isset($root['pairx']) || isset($root['pairz'])) {
@@ -289,6 +392,40 @@ final readonly class PersistentBlockEntityCodec
             $pairedPosition,
             $pairLead,
             $facing,
+        );
+    }
+
+    /** @param array<string, LittleEndianNbtTag> $root */
+    private function decodeCampfire(array $root, BlockPosition $position): CampfireBlockEntity
+    {
+        $typeName = isset($root['BedrioxCampfireType'])
+            ? self::string($root['BedrioxCampfireType'], 'BedrioxCampfireType')
+            : CampfireType::Campfire->value;
+        $type = CampfireType::tryFrom($typeName)
+            ?? throw new InvalidArgumentException('Campfire type is invalid.');
+        $contents = [];
+        $progress = [];
+        $durations = [];
+        for ($slot = 0; $slot < CampfireBlockEntity::SLOT_COUNT; ++$slot) {
+            $suffix = (string) ($slot + 1);
+            $tag = $root['Item' . $suffix] ?? null;
+            if ($tag === null) {
+                continue;
+            }
+            [, $stack] = $this->decodeItem(self::compound($tag, 'Item' . $suffix), CampfireBlockEntity::SLOT_COUNT);
+            $contents[$slot] = $stack;
+            $progress[$slot] = isset($root['ItemTime' . $suffix])
+                ? self::integer($root['ItemTime' . $suffix], LittleEndianNbtTag::INT, 'ItemTime' . $suffix) : 0;
+            $durations[$slot] = isset($root['ItemTimeTotal' . $suffix])
+                ? self::integer($root['ItemTimeTotal' . $suffix], LittleEndianNbtTag::INT, 'ItemTimeTotal' . $suffix)
+                : CampfireBlockEntity::DEFAULT_COOK_TIME_TICKS;
+        }
+        return new CampfireBlockEntity(
+            $position,
+            $type,
+            new ContainerInventory(CampfireBlockEntity::SLOT_COUNT, $contents),
+            $progress,
+            $durations,
         );
     }
 

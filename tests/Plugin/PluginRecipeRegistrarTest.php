@@ -67,7 +67,7 @@ final class PluginRecipeRegistrarTest extends TestCase
         self::assertSame(1, $ownership->count('Example'));
         self::assertSame(2, $registered->outputs()[0]->count);
         self::assertSame($initialRevision + 2, $catalog->revision());
-        self::assertCount(4_143, $catalog->protocolRecipes());
+        self::assertCount(4_497, $catalog->protocolRecipes());
     }
 
     public function testOwnerCleanupRemovesRecipesAndDoesNotReuseTheirNetworkIds(): void
@@ -84,7 +84,7 @@ final class PluginRecipeRegistrarTest extends TestCase
         self::assertSame([], $ownership->releaseAll('example'));
         self::assertNull($registry->recipe('example:first'));
         self::assertNull($registry->networkId('example:first'));
-        self::assertCount(4_142, $catalog->protocolRecipes());
+        self::assertCount(4_496, $catalog->protocolRecipes());
 
         (new OwnedRecipeRegistrar('Other', $registrar))->register(new ApiShapelessRecipe(
             'other:second',
@@ -135,7 +135,7 @@ final class PluginRecipeRegistrarTest extends TestCase
             $registry->recipe('example:alternative_planks'),
             $registry->recipeByNetworkId($networkIds[1]),
         );
-        self::assertCount(4_144, $catalog->protocolRecipes());
+        self::assertCount(4_498, $catalog->protocolRecipes());
 
         (new OwnedRecipeRegistrar('Example', $registrar))->register(new ApiShapelessRecipe(
             'example:alternative_planks',
@@ -143,7 +143,7 @@ final class PluginRecipeRegistrarTest extends TestCase
             [new ItemStack('minecraft:stick', 2)],
         ), true);
         self::assertSame($networkIds, $registry->networkIdsFor('example:alternative_planks'));
-        self::assertCount(4_144, $catalog->protocolRecipes());
+        self::assertCount(4_498, $catalog->protocolRecipes());
     }
 
     public function testUnprojectableIngredientConstraintFailsWithoutPublishingARevisionOrOwnership(): void
@@ -162,7 +162,7 @@ final class PluginRecipeRegistrarTest extends TestCase
             self::assertNull($registry->recipe('example:damaged_stone'));
             self::assertSame($revision, $catalog->revision());
             self::assertSame(0, $ownership->count('Example'));
-            self::assertCount(4_142, $catalog->protocolRecipes());
+            self::assertCount(4_496, $catalog->protocolRecipes());
         }
     }
 

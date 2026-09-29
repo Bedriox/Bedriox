@@ -183,8 +183,13 @@ final class Bedriox
             $permissionStore = new PermissionStore($workingDirectory . DIRECTORY_SEPARATOR . 'permissions.json');
             $data = \Bedriox\Data\BedrockDataSet::bundled();
             $generatorRegistry = WorldGeneratorFactory::builtIns();
+            $blockCatalog = \Bedriox\Server\Gameplay\Block\BlockCatalog::vanilla(
+                new \Bedriox\Server\World\Block\BlockStateRegistry($data->blockStateRegistry()->states()),
+                $data->blockItemMappingRegistry(),
+            );
             $itemCatalog = \Bedriox\Server\Gameplay\Item\ItemCatalog::vanilla(
                 $data->itemNetworkRegistry(),
+                $blockCatalog,
                 creative: $data->creativeInventoryRegistry(),
                 blockItems: $data->blockItemMappingRegistry(),
             );
