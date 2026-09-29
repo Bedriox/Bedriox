@@ -31,7 +31,7 @@ final readonly class TranslatableMessage
     /** @param array<array-key, mixed> $parameters */
     public function __construct(public string $key, array $parameters = [])
     {
-        if ($key === '' || strlen($key) > 128 || preg_match('/^[a-z0-9_.-]+$/D', $key) !== 1) {
+        if ($key === '' || strlen($key) > 128 || preg_match('/^[A-Za-z0-9_.-]+$/D', $key) !== 1) {
             throw new InvalidArgumentException('Translation key must use a bounded canonical identifier.');
         }
         if (count($parameters) > 16) {

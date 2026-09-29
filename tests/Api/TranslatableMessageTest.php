@@ -35,6 +35,13 @@ final class TranslatableMessageTest extends TestCase
         self::assertSame(['Victim', 'Killer'], $message->parameters);
     }
 
+    public function testAcceptsCaseSensitiveVanillaTranslationKeys(): void
+    {
+        $message = new TranslatableMessage('death.attack.onFire', ['Player']);
+
+        self::assertSame('death.attack.onFire', $message->key);
+    }
+
     /** @return iterable<string, array{string, array<array-key, mixed>}> */
     public static function invalidMessages(): iterable
     {

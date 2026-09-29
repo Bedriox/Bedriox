@@ -57,6 +57,7 @@ use Bedriox\Server\Simulation\Event\CraftingTableOpened;
 use Bedriox\Server\Simulation\Event\EntityActorSpawned;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
+use Bedriox\Server\Simulation\Event\ItemEntityDespawned;
 use Bedriox\Server\Simulation\Event\ItemEntityMoved;
 use Bedriox\Server\Simulation\Event\ItemEntitySpawned;
 use Bedriox\Server\Simulation\Event\MovementCorrected;
@@ -90,6 +91,82 @@ use PHPUnit\Framework\TestCase;
 
 final class WorldSimulationTest extends TestCase
 {
+    public function testSolidBlocksReplaceBucketAndGeneratedFluidCells(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $states = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $flat = FixedFlatBlockPalette::fromRegistry($states);
+        $generation = GenerationBlockPalette::fromRegistry($states);
+        $blocks = new World(
+            new WorldMetadata('fluid-replacement-test', 11),
+            new FlatWorldGenerator($flat),
+            new ChunkRepository(4),
+        );
+        $blocks->chunk(new ChunkPosition(0, 0));
+        $source = $states->internalId(FluidState::source(FluidType::WATER)->canonicalState());
+        $blocks->setBlockState(2, 64, 0, $source);
+        $blocks->setBlockState(3, 64, 0, $generation->state('minecraft:water'));
+        $catalog = BlockCatalog::vanilla($states, $data->blockItemMappingRegistry());
+        $items = ItemCatalog::vanilla(
+            $data->itemNetworkRegistry(),
+            $catalog,
+            $data->creativeInventoryRegistry(),
+            $data->blockItemMappingRegistry(),
+        );
+        $bootstrap = new PlayerBootstrap(
+            new PlayerIdentity('identity-one', 'One'),
+            'fluid-replacement-test',
+            new Position(0.5, 64.0, 0.5),
+            0.0,
+            0.0,
+            new PlayerInventoryState([
+                new PlayerInventoryEntry(0, new PlayerInventoryStackState('minecraft:cobblestone', 2)),
+            ], 0),
+            1,
+            1,
+        );
+        $simulation = new WorldSimulation(
+            blockWorld: $blocks,
+            blockPalette: $flat,
+            itemCatalog: $items,
+            blockCatalog: $catalog,
+            waterState: $generation->state('minecraft:water'),
+            lavaState: $generation->state('minecraft:lava'),
+            blockStateRegistry: $states,
+            blockCollisionRegistry: BlockCollisionRegistry::forGenerationPalette($states, $generation),
+        );
+        $commands = new SimulationCommandFactory();
+        self::assertTrue($simulation->enqueue($commands->join(
+            'one',
+            'identity-one',
+            'One',
+            bootstrap: $bootstrap,
+        )));
+        $simulation->tick();
+
+        self::assertTrue($simulation->enqueue($commands->placeBlock(
+            'one', 1, new BlockPosition(2, 64, 0), 1, 0, 0, 0.5, 0.5, 0.5,
+        )));
+        $direct = array_values(array_filter(
+            $simulation->tick()->events,
+            static fn($event): bool => $event instanceof BlockPlaced,
+        ));
+        self::assertCount(1, $direct);
+        self::assertSame([2, 64, 0], [$direct[0]->position->x, $direct[0]->position->y, $direct[0]->position->z]);
+        self::assertSame('minecraft:cobblestone', $states->state($blocks->blockStateAt(2, 64, 0))->identifier());
+
+        self::assertTrue($simulation->enqueue($commands->placeBlock(
+            'one', 2, new BlockPosition(3, 63, 0), 1, 0, 0, 0.5, 1.0, 0.5,
+        )));
+        $adjacent = array_values(array_filter(
+            $simulation->tick()->events,
+            static fn($event): bool => $event instanceof BlockPlaced,
+        ));
+        self::assertCount(1, $adjacent);
+        self::assertSame([3, 64, 0], [$adjacent[0]->position->x, $adjacent[0]->position->y, $adjacent[0]->position->z]);
+        self::assertSame('minecraft:cobblestone', $states->state($blocks->blockStateAt(3, 64, 0))->identifier());
+    }
+
     public function testWaterBucketCreatesAFlowingAuthoritativeFluidAndReturnsTheBucket(): void
     {
         $data = BedrockDataSet::bundled();
@@ -2292,6 +2369,46 @@ final class WorldSimulationTest extends TestCase
         self::assertNotNull($settled);
         self::assertSame(64.0, $settled->position->y);
         self::assertSame(0.0, $settled->motion->y);
+    }
+
+    public function testDroppedItemIsDestroyedWhenItTouchesLava(): void
+    {
+        $states = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($states);
+        $blocks = new World(
+            new WorldMetadata('item-lava-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+        );
+        $blocks->chunk(new ChunkPosition(0, 0));
+        $blocks->setBlockState(
+            0,
+            64,
+            0,
+            $states->internalId(FluidState::source(FluidType::LAVA)->canonicalState()),
+        );
+        $items = new ItemEntityRegistry();
+        $entity = $items->spawn(
+            new InventoryStack('minecraft:cobblestone', 1, 1),
+            new Position(0.5, 64.5, 0.5),
+            pickupDelayTicks: 100,
+        );
+        $world = new WorldSimulation(
+            blockWorld: $blocks,
+            blockPalette: $palette,
+            itemEntities: $items,
+            blockStateRegistry: $states,
+        );
+
+        $events = $world->tick()->events;
+        $destroyed = array_values(array_filter(
+            $events,
+            static fn($event): bool => $event instanceof ItemEntityDespawned,
+        ));
+
+        self::assertSame(0, $items->count());
+        self::assertCount(1, $destroyed);
+        self::assertSame($entity->runtimeEntityId, $destroyed[0]->runtimeActorId);
     }
 
     public function testDropAtomicallyRemovesInventoryAndSpawnsTheAuthoritativeItemActor(): void

@@ -75,6 +75,7 @@ use Bedriox\Server\Entity\EntityRegistry;
 use Bedriox\Server\Entity\EntityWorldRuntime;
 use Bedriox\Server\Entity\Equipment\EntityEquipmentTransition;
 use Bedriox\Server\Entity\Item\DroppedItemCollisionResolver;
+use Bedriox\Server\Entity\Item\DroppedItemEntity;
 use Bedriox\Server\Entity\Item\ItemEntityMotion;
 use Bedriox\Server\Entity\Item\ItemEntityRegistry;
 use Bedriox\Server\Entity\Loot\EntityLootResolver;
@@ -6996,7 +6997,7 @@ final class WorldSimulation
                     if ($previous === null || $previous->value === $state->value) {
                         continue;
                     }
-                    $this->setBlockStateAndSchedule($mutation->position, $state);
+                    $this->setBlockStateAndSchedule($mutation->position, $state, false);
                     $events[] = new BlockChanged(
                         'server',
                         $mutation->position,
@@ -7023,25 +7024,29 @@ final class WorldSimulation
         return $events;
     }
 
-    private function setBlockStateAndSchedule(BlockPosition $position, InternalBlockStateId $state): InternalBlockStateId
+    private function setBlockStateAndSchedule(
+        BlockPosition $position,
+        InternalBlockStateId $state,
+        bool $prioritizeNeighborFluids = true,
+    ): InternalBlockStateId
     {
         if ($this->blockWorld === null) {
             throw new \LogicException('The authoritative block world is unavailable.');
         }
         $previous = $this->blockWorld->setBlockState($position->x, $position->y, $position->z, $state);
         if ($previous->value !== $state->value) {
-            $this->scheduleFluidNeighborhood($position);
+            $this->scheduleFluidNeighborhood($position, $prioritizeNeighborFluids);
         }
 
         return $previous;
     }
 
-    private function scheduleFluidNeighborhood(BlockPosition $origin): void
+    private function scheduleFluidNeighborhood(BlockPosition $origin, bool $prioritizeNeighbors): void
     {
         if ($this->fluidWorld === null || $this->environmentTicks === null) {
             return;
         }
-        foreach ([[0, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, -1], [0, 0, 1], [-1, 0, 0], [1, 0, 0]] as [$x, $y, $z]) {
+        foreach ([[0, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, -1], [0, 0, 1], [-1, 0, 0], [1, 0, 0]] as $index => [$x, $y, $z]) {
             try {
                 $position = new BlockPosition($origin->x + $x, $origin->y + $y, $origin->z + $z);
             } catch (InvalidArgumentException) {
@@ -7049,7 +7054,11 @@ final class WorldSimulation
             }
             $fluid = $this->fluidWorld->cellAt($position)?->fluid;
             if ($fluid !== null) {
-                $this->scheduleEnvironmentTick($position, $fluid->type);
+                $this->scheduleEnvironmentTick(
+                    $position,
+                    $fluid->type,
+                    $index !== 0 && $prioritizeNeighbors ? 1 : null,
+                );
             }
         }
     }
@@ -8229,7 +8238,6 @@ final class WorldSimulation
 
             return new CraftingTableOpened($player->sessionId, $command->clickedPosition);
         }
-        $placedState = $this->blockWorld->blockStateAt($placedPosition->x, $placedPosition->y, $placedPosition->z);
         $key = self::sessionKey($command->session);
         $activeBreak = $this->breakingBlocks[$key] ?? null;
         unset($this->breakingBlocks[$key]);
@@ -8237,6 +8245,16 @@ final class WorldSimulation
         $heldType = $held !== null && $this->itemCatalog?->has($held->identifier) === true
             ? $this->itemCatalog->type($held->identifier)
             : null;
+        $bucketFluid = match ($held?->identifier) {
+            'minecraft:water_bucket' => FluidType::WATER,
+            'minecraft:lava_bucket' => FluidType::LAVA,
+            default => null,
+        };
+        $heldPlacesBlock = $heldType?->placedBlockState !== null || $held?->placedBlockState !== null;
+        if ($bucketFluid === null && $heldPlacesBlock && $this->fluidState($clickedState) !== null) {
+            $placedPosition = $command->clickedPosition;
+        }
+        $placedState = $this->blockWorld->blockStateAt($placedPosition->x, $placedPosition->y, $placedPosition->z);
         if ($held?->identifier === 'minecraft:bucket') {
             return $this->fillFluidBucket($player, $command, $clickedState, $held, $activeBreak['position'] ?? null);
         }
@@ -8256,11 +8274,6 @@ final class WorldSimulation
         $storageEntityValid = true;
         $storageEntity = null;
         try {
-            $bucketFluid = match ($held?->identifier) {
-                'minecraft:water_bucket' => FluidType::WATER,
-                'minecraft:lava_bucket' => FluidType::LAVA,
-                default => null,
-            };
             $placedBlockState = $bucketFluid !== null && $this->blockStateRegistry !== null
                 ? $this->blockStateRegistry->internalId(FluidState::source($bucketFluid)->canonicalState())
                 : ($heldType?->placedBlockState !== null && $this->blockPlacementStates !== null
@@ -8298,7 +8311,7 @@ final class WorldSimulation
             !$storageEntityValid => 'invalid_block_entity_item',
             $placedBlockState === null => 'unsupported_item',
             $clickedState->value === $this->blockPalette->air->value => 'clicked_air',
-            $placedState->value !== $this->blockPalette->air->value => 'occupied',
+            !$this->isReplaceablePlacementState($placedState) => 'occupied',
             !$this->blockIsReachable($player->snapshot(), $command->clickedPosition) => 'reach',
             $this->placementIntersectsPlayer($placedPosition) => 'collision',
             default => null,
@@ -9525,6 +9538,43 @@ final class WorldSimulation
         };
     }
 
+    private function fluidState(InternalBlockStateId $state): ?FluidState
+    {
+        if ($this->blockStateRegistry === null) {
+            return null;
+        }
+
+        return FluidState::fromCanonical($this->blockStateRegistry->state($state));
+    }
+
+    private function isReplaceablePlacementState(InternalBlockStateId $state): bool
+    {
+        return $state->value === $this->blockPalette?->air->value || $this->fluidState($state) !== null;
+    }
+
+    private function itemTouchesLava(DroppedItemEntity $entity): bool
+    {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null) {
+            return false;
+        }
+        $blockY = (int) floor($entity->position->y);
+        if ($blockY < \Bedriox\Server\World\Chunk::MIN_Y || $blockY > \Bedriox\Server\World\Chunk::MAX_Y) {
+            return false;
+        }
+        $state = $this->blockWorld->loadedBlockStateAt(
+            (int) floor($entity->position->x),
+            $blockY,
+            (int) floor($entity->position->z),
+        );
+        if ($state === null) {
+            return false;
+        }
+        $fluid = $this->fluidState($state);
+
+        return $fluid?->type === FluidType::LAVA
+            && $blockY + $fluid->height() > $entity->position->y;
+    }
+
     /** @return list<WorldEvent> */
     private function advanceItemEntities(): array
     {
@@ -9547,6 +9597,12 @@ final class WorldSimulation
                 $before = $entity->withPositionAndMotion($previous, $entity->motion);
                 $entity = $this->itemCollisionResolver->resolve($before, $entity);
                 $this->itemEntities->replace($entity);
+            }
+            if ($this->itemTouchesLava($entity)) {
+                $this->itemEntities->remove($entity->runtimeEntityId);
+                unset($this->itemPublishedMotions[$entity->runtimeEntityId]);
+                $this->pendingItemDespawns[] = $entity->runtimeEntityId;
+                continue;
             }
             if ($previous === null || $previous->x !== $entity->position->x
                 || $previous->y !== $entity->position->y || $previous->z !== $entity->position->z) {

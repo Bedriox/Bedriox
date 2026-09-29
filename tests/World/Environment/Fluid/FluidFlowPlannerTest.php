@@ -80,6 +80,32 @@ final class FluidFlowPlannerTest extends TestCase
         self::assertSame(1, $plan->mutations[0]->state->properties()['liquid_depth']);
     }
 
+    public function testHorizontalFlowReroutesWhenThePreferredOpeningIsBlocked(): void
+    {
+        $world = new ArrayFluidWorldView();
+        $origin = new BlockPosition(0, 64, 0);
+        $north = new BlockPosition(0, 64, -1);
+        $east = new BlockPosition(1, 64, 0);
+        $world->put($origin, self::fluid(FluidState::source(FluidType::WATER)));
+        $world->put(new BlockPosition(0, 63, 0), self::solid());
+        foreach ([$north, $east, new BlockPosition(0, 64, 1), new BlockPosition(-1, 64, 0)] as $target) {
+            $world->put($target, FluidCell::air());
+            $world->put(new BlockPosition($target->x, 63, $target->z), self::solid());
+        }
+        $world->put(new BlockPosition(0, 63, -1), FluidCell::air());
+
+        $initial = new FluidFlowPlanner()->plan($world, $origin);
+        self::assertCount(1, $initial->mutations);
+        self::assertTrue($initial->mutations[0]->position->equals($north));
+
+        $world->put($north, self::solid());
+        $world->put(new BlockPosition(1, 63, 0), FluidCell::air());
+        $rerouted = new FluidFlowPlanner()->plan($world, $origin);
+
+        self::assertCount(1, $rerouted->mutations);
+        self::assertTrue($rerouted->mutations[0]->position->equals($east));
+    }
+
     public function testTwoWaterSourcesCreateSourceAboveSolidSupport(): void
     {
         $world = new ArrayFluidWorldView();

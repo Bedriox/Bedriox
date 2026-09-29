@@ -23,9 +23,11 @@ namespace Bedriox\Server\Tests\Simulation;
 use Bedriox\Api\Effect\EffectCause;
 use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Effect\EffectType;
+use Bedriox\Api\TranslatableMessage;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Simulation\Event\PlayerDamaged;
 use Bedriox\Server\Simulation\Event\PlayerEffectChanged;
+use Bedriox\Server\Simulation\Event\PlayerDied;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
 use Bedriox\Server\Simulation\WorldSimulation;
 use Bedriox\Server\World\Block\BlockStateRegistry;
@@ -124,6 +126,34 @@ final class PlayerEffectSimulationTest extends TestCase
         $player = $simulation->pluginPlayer('identity-one');
         self::assertNotNull($player);
         self::assertSame(16.0, $player->health);
+    }
+
+    public function testLavaDeathUsesTheCaseSensitiveVanillaTranslationKeyWithoutEscapingTheTick(): void
+    {
+        [$simulation, $world] = self::environmentWorld();
+        $factory = new SimulationCommandFactory();
+        self::assertTrue($simulation->enqueue($factory->join('one', 'identity-one', 'One')));
+        $simulation->tick();
+        $player = $simulation->authoritativePlayer('identity-one');
+        self::assertNotNull($player);
+        $player->vitals->health = 4.0;
+        $states = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $lava = $states->internalId(FluidState::source(FluidType::LAVA)->canonicalState());
+        $world->setBlockState(0, 64, 0, $lava);
+        $world->setBlockState(0, 65, 0, $lava);
+
+        $events = [];
+        for ($tick = 2; $tick <= 10; ++$tick) {
+            array_push($events, ...$simulation->tick()->events);
+        }
+        $deaths = array_values(array_filter(
+            $events,
+            static fn($event): bool => $event instanceof PlayerDied,
+        ));
+
+        self::assertCount(1, $deaths);
+        self::assertInstanceOf(TranslatableMessage::class, $deaths[0]->deathMessage);
+        self::assertSame('death.attack.onFire', $deaths[0]->deathMessage->key);
     }
 
     public function testFlowingWaterSurfaceDrainsAirAndAppliesDrowningDamage(): void
