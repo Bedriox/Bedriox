@@ -107,6 +107,9 @@ use Bedriox\Api\Event\Player\PlayerRespawnedEvent;
 use Bedriox\Api\Event\Player\PlayerRespawnEvent;
 use Bedriox\Api\Event\Player\PlayerTeleportedEvent;
 use Bedriox\Api\Event\Player\PlayerTeleportEvent;
+use Bedriox\Api\Event\World\WeatherChangeCause;
+use Bedriox\Api\Event\World\WeatherChangedEvent;
+use Bedriox\Api\Event\World\WeatherChangeEvent;
 use Bedriox\Api\Inventory\ConsumptionResult;
 use Bedriox\Api\Inventory\Container;
 use Bedriox\Api\Inventory\ContainerView;
@@ -129,6 +132,7 @@ use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\Block as ApiBlock;
 use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
 use Bedriox\Api\World\Position as ApiPosition;
+use Bedriox\Api\World\WeatherState;
 use Bedriox\Server\Entity\AbstractLivingEntity;
 use Bedriox\Server\Gameplay\Potion\BrewingStandBlockEntity;
 use Bedriox\Server\Player\InventoryStack;
@@ -803,6 +807,34 @@ final readonly class PluginGameplayEventBridge
     public function blockPlaced(Player $player, BlockPosition $position, string $identifier): void
     {
         $this->events->dispatch(new BlockPlacedEvent($this->playerView($player), self::block($position, $identifier)));
+    }
+
+    public function allowWeatherChange(
+        string $worldName,
+        WeatherState $previous,
+        WeatherState $weather,
+        WeatherChangeCause $cause,
+    ): ?WeatherState {
+        $world = $this->worldResolver === null ? null : ($this->worldResolver)($worldName);
+        if ($world === null) {
+            return $weather;
+        }
+        $event = new WeatherChangeEvent($world, $previous, $weather, $cause);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->weather();
+    }
+
+    public function weatherChanged(
+        string $worldName,
+        WeatherState $previous,
+        WeatherState $weather,
+        WeatherChangeCause $cause,
+    ): void {
+        $world = $this->worldResolver === null ? null : ($this->worldResolver)($worldName);
+        if ($world !== null) {
+            $this->events->dispatch(new WeatherChangedEvent($world, $previous, $weather, $cause));
+        }
     }
 
     public function allowChestPair(Player $player, BlockPosition $left, BlockPosition $right, string $identifier): bool

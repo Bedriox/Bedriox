@@ -20,8 +20,11 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World\Storage\Nbt;
 
+use Bedriox\Api\World\WeatherState;
+use Bedriox\Api\World\WeatherType;
 use Bedriox\Server\World\Storage\Exception\CorruptWorldDataException;
 use Bedriox\Server\World\Storage\Exception\UnsupportedWorldDataException;
+use Bedriox\Server\World\WeatherCycleState;
 
 final readonly class LevelDatMetadata
 {
@@ -152,6 +155,87 @@ final readonly class LevelDatMetadata
         }
         if ($tag->type !== LittleEndianNbtTag::INT || !is_int($tag->value) || $tag->value < 0 || $tag->value > 3) {
             throw new CorruptWorldDataException("Invalid 'Difficulty' tag in level.dat.");
+        }
+
+        return $tag->value;
+    }
+
+    public function weather(): WeatherCycleState
+    {
+        $type = $this->optionalString('BedrioxWeatherType');
+        $weatherType = $type === null ? $this->inferredWeatherType() : WeatherType::tryFrom($type);
+        if ($weatherType === null) {
+            throw new CorruptWorldDataException("Invalid 'BedrioxWeatherType' tag in level.dat.");
+        }
+        $remaining = $this->optionalInteger('BedrioxWeatherRemainingTicks')
+            ?? max(0, $this->optionalInteger($weatherType === WeatherType::THUNDER ? 'lightningTime' : 'rainTime') ?? 0);
+        $sequence = $this->optionalInteger('BedrioxWeatherSequence') ?? 0;
+        try {
+            return new WeatherCycleState(new WeatherState($weatherType, $remaining), $sequence);
+        } catch (\InvalidArgumentException $error) {
+            throw new CorruptWorldDataException('Weather metadata in level.dat is outside supported bounds.', previous: $error);
+        }
+    }
+
+    public function weatherCycleEnabled(): bool
+    {
+        $value = $this->optionalInteger('BedrioxWeatherCycleEnabled');
+        if ($value === null) {
+            return true;
+        }
+        if ($value !== 0 && $value !== 1) {
+            throw new CorruptWorldDataException("Invalid 'BedrioxWeatherCycleEnabled' tag in level.dat.");
+        }
+
+        return $value === 1;
+    }
+
+    private function inferredWeatherType(): WeatherType
+    {
+        $lightning = $this->optionalFloat('lightningLevel') ?? 0.0;
+        $rain = $this->optionalFloat('rainLevel') ?? 0.0;
+        if ($lightning > 0.0) {
+            return WeatherType::THUNDER;
+        }
+
+        return $rain > 0.0 ? WeatherType::RAIN : WeatherType::CLEAR;
+    }
+
+    private function optionalInteger(string $name): ?int
+    {
+        $tag = $this->root[$name] ?? null;
+        if ($tag === null) {
+            return null;
+        }
+        if (!in_array($tag->type, [LittleEndianNbtTag::BYTE, LittleEndianNbtTag::INT, LittleEndianNbtTag::LONG], true)
+            || !is_int($tag->value)) {
+            throw new CorruptWorldDataException("Invalid '$name' tag in level.dat.");
+        }
+
+        return $tag->value;
+    }
+
+    private function optionalFloat(string $name): ?float
+    {
+        $tag = $this->root[$name] ?? null;
+        if ($tag === null) {
+            return null;
+        }
+        if ($tag->type !== LittleEndianNbtTag::FLOAT || !is_float($tag->value) || !is_finite($tag->value)) {
+            throw new CorruptWorldDataException("Invalid '$name' tag in level.dat.");
+        }
+
+        return $tag->value;
+    }
+
+    private function optionalString(string $name): ?string
+    {
+        $tag = $this->root[$name] ?? null;
+        if ($tag === null) {
+            return null;
+        }
+        if ($tag->type !== LittleEndianNbtTag::STRING || !is_string($tag->value)) {
+            throw new CorruptWorldDataException("Invalid '$name' tag in level.dat.");
         }
 
         return $tag->value;

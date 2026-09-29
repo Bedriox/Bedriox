@@ -53,6 +53,14 @@ final readonly class WorldEntityEnvironment
             || !$this->isDaylight() || $this->isTouchingWater($entity)) {
             return false;
         }
+        return $this->hasSkyExposure($entity);
+    }
+
+    public function hasSkyExposure(AbstractLivingEntity $entity): bool
+    {
+        if ($entity->getWorldName() !== $this->world->metadata->name) {
+            return false;
+        }
         $position = $entity->internalPosition();
         $chunk = $this->loadedChunkAt($position->x, $position->z);
         if ($chunk === null) {

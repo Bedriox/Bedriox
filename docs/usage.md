@@ -114,13 +114,17 @@ The qualified protocol family remains alpha software. Unknown commands fail with
 
 ## Commands and permissions
 
-The console and Bedrock slash-command input share one bounded dispatcher. Built-in commands include `version`, `help`, `list`, `stop`, `op`, `deop`, `permission`, `gamemode`, `give`, `effect`, `particle`, `gc`, `kill` (alias `suicide`), `summon`, `time`, and `tp` (alias `teleport`). The console always has administrative authority. Players receive only the commands currently available to their UUID when joining.
+The console and Bedrock slash-command input share one bounded dispatcher. Built-in commands include `version`, `help`, `list`, `stop`, `op`, `deop`, `permission`, `gamemode`, `give`, `effect`, `particle`, `gc`, `kill` (alias `suicide`), `summon`, `time`, `weather`, and `tp` (alias `teleport`). The console always has administrative authority. Players receive only the commands currently available to their UUID when joining.
 
 `gamemode <mode> [player]` accepts the canonical names and numeric aliases for survival, creative, adventure, and spectator. `give <player> <item> [amount]` resolves canonical `minecraft:*` identifiers through the active gameplay catalog. Both commands enqueue normal authoritative simulation work; they do not mutate network sessions directly.
 
 `tp <player>`, `tp <x> <y> <z> [yaw pitch]`, and their explicit-target forms enqueue the same authoritative teleport used by plugins. Coordinates accept `~` relative values. `bedriox.command.teleport` permits self teleportation and `bedriox.command.teleport.other` permits selecting another subject. Destination collision is deliberately not treated as command policy; the operator or plugin choosing the coordinate owns that decision.
 
 `time set <day|noon|sunset|night|midnight|sunrise|ticks>` changes the current world's bounded daylight-cycle position. `time add <ticks>` advances it, `time query` reports total time, day, and time-of-day, and `time stop` or `time start` controls progression for the running server. Time belongs to the world, advances once per simulation tick, is saved in `level.dat`, and is synchronized immediately after a command, periodically during play, and from the current value when a player joins. Stopping the cycle is a runtime control and intentionally resumes after a server restart. The command requires `bedriox.command.time`.
+
+`weather <clear|rain|thunder> [durationSeconds]` changes weather in the executing player's world, or the default world when run from the console. `weather query` reports that world's current state and remaining duration. Omitting the duration selects a deterministic value from 300 through 900 seconds. Weather survives restart and is synchronized on join and world transfer. The command requires `bedriox.command.weather`.
+
+Water and lava use authoritative scheduled updates that operate only in loaded chunks. Both flow downward and outward with distinct update speeds; water renews from valid adjacent sources, unsupported flow decays, and contact with lava forms the appropriate solid block. Buckets atomically change the world and held inventory. Flow work is deduplicated and bounded per tick so a cascade cannot monopolize movement, chat, or inventory processing.
 
 `effect <player> <effect> [seconds|infinite] [amplifier] [hideParticles]` adds a typed current-version effect through the same cancellable authoritative path available to plugins. `effect <player> clear [effect]` removes one or every active effect. Effect names omit the `minecraft:` prefix in command input. The command requires `bedriox.command.effect`.
 

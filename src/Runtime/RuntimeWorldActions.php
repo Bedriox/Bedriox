@@ -20,10 +20,12 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
+use Bedriox\Api\Event\World\WeatherChangeCause;
 use Bedriox\Api\World\Block;
 use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
 use Bedriox\Api\World\Particle\Particle;
 use Bedriox\Api\World\Position as ApiPosition;
+use Bedriox\Api\World\WeatherState;
 use Bedriox\Api\World\World;
 use Bedriox\Api\World\WorldActions;
 use Bedriox\Server\Gameplay\Block\BlockCatalog;
@@ -60,6 +62,8 @@ final class RuntimeWorldActions
             function (World $world, ApiPosition $position, Particle $particle, ?array $players): void {
                 $this->spawnParticle($world, $position, $particle, $players);
             },
+            fn(World $world): WeatherState => $this->runtime($world)->opened->world->weather()->weather,
+            fn(World $world, WeatherState $weather): bool => $this->setWeather($world, $weather),
         );
     }
 
@@ -134,6 +138,23 @@ final class RuntimeWorldActions
         } else {
             $action();
         }
+    }
+
+    private function setWeather(World $world, WeatherState $weather): bool
+    {
+        $runtime = $this->runtime($world);
+        $changed = false;
+        $action = static function () use ($runtime, $weather, &$changed): void {
+            $changed = $runtime->simulation->setWeather($weather, WeatherChangeCause::PLUGIN);
+        };
+        if ($this->pluginActions?->isCapturing() === true) {
+            $this->pluginActions->stage($action);
+
+            return true;
+        }
+        $action();
+
+        return $changed;
     }
 
     private function runtime(World $world): ManagedWorldRuntime

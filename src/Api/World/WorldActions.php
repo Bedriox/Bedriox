@@ -32,11 +32,15 @@ final readonly class WorldActions
      * @param Closure(World, BlockPosition): Block                         $getBlock
      * @param Closure(World, BlockPosition, string): void                  $setBlock
      * @param Closure(World, Position, Particle, list<Player>|null): void $spawnParticle
+     * @param Closure(World): WeatherState                              $getWeather
+     * @param Closure(World, WeatherState): bool                        $setWeather
      */
     public function __construct(
         private Closure $getBlock,
         private Closure $setBlock,
         private Closure $spawnParticle,
+        private ?Closure $getWeather = null,
+        private ?Closure $setWeather = null,
     ) {}
 
     public static function unavailable(): self
@@ -45,7 +49,7 @@ final readonly class WorldActions
             throw new LogicException('This world handle is not attached to an authoritative runtime.');
         };
 
-        return new self($unavailable, $unavailable, $unavailable);
+        return new self($unavailable, $unavailable, $unavailable, $unavailable, $unavailable);
     }
 
     public function getBlock(World $world, BlockPosition $position): Block
@@ -62,5 +66,25 @@ final readonly class WorldActions
     public function spawnParticle(World $world, Position $position, Particle $particle, ?array $players): void
     {
         ($this->spawnParticle)($world, $position, $particle, $players);
+    }
+
+    public function getWeather(World $world): WeatherState
+    {
+        $action = $this->getWeather;
+        if ($action === null) {
+            throw new LogicException('This world handle is not attached to an authoritative runtime.');
+        }
+
+        return $action($world);
+    }
+
+    public function setWeather(World $world, WeatherState $weather): bool
+    {
+        $action = $this->setWeather;
+        if ($action === null) {
+            throw new LogicException('This world handle is not attached to an authoritative runtime.');
+        }
+
+        return $action($world, $weather);
     }
 }

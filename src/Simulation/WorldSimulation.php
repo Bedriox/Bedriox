@@ -35,6 +35,7 @@ use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\Undead;
 use Bedriox\Api\Event\Entity\EntityDamageByEntityEvent;
 use Bedriox\Api\Event\Inventory\InventoryCloseReason as ApiInventoryCloseReason;
+use Bedriox\Api\Event\World\WeatherChangeCause;
 use Bedriox\Api\Inventory\ConsumptionResult as ApiConsumptionResult;
 use Bedriox\Api\Inventory\Container as ApiContainer;
 use Bedriox\Api\Inventory\ContainerLayout as ApiContainerLayout;
@@ -54,6 +55,7 @@ use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\Player\HealthRegainCause as ApiHealthRegainCause;
 use Bedriox\Api\Player\Nutrition as ApiNutrition;
 use Bedriox\Api\TranslatableMessage;
+use Bedriox\Api\World\WeatherState;
 use Bedriox\Data\BlockPropertyRegistry;
 use Bedriox\Data\CanonicalBlockState;
 use Bedriox\Data\EntityTypeRegistry;
@@ -246,6 +248,7 @@ use Bedriox\Server\Simulation\Event\PotionProjectileMoved;
 use Bedriox\Server\Simulation\Event\PotionProjectileRemoved;
 use Bedriox\Server\Simulation\Event\PotionProjectileSpawned;
 use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
+use Bedriox\Server\Simulation\Event\WeatherChanged;
 use Bedriox\Server\Simulation\Event\WorldEvent;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
@@ -261,6 +264,12 @@ use Bedriox\Server\World\Collision\BlockCollisionQuery;
 use Bedriox\Server\World\Collision\BlockCollisionRegistry;
 use Bedriox\Server\World\Collision\PlayerCollisionResolver;
 use Bedriox\Server\World\Collision\PlayerCollisionShape;
+use Bedriox\Server\World\Environment\EnvironmentTickScheduler;
+use Bedriox\Server\World\Environment\EnvironmentTickType;
+use Bedriox\Server\World\Environment\Fluid\FluidFlowPlanner;
+use Bedriox\Server\World\Environment\Fluid\FluidState;
+use Bedriox\Server\World\Environment\Fluid\FluidType;
+use Bedriox\Server\World\Environment\Fluid\LoadedWorldFluidView;
 use Bedriox\Server\World\World;
 use InvalidArgumentException;
 use OverflowException;
@@ -358,6 +367,12 @@ final class WorldSimulation
     private array $entityAiPlayers = [];
 
     private readonly ?WorldNaturalSpawnRuntime $naturalSpawns;
+
+    private readonly ?EnvironmentTickScheduler $environmentTicks;
+
+    private readonly ?FluidFlowPlanner $fluidFlow;
+
+    private readonly ?LoadedWorldFluidView $fluidWorld;
 
     /** @var array<int, int> Runtime actor ID to removal tick after its death animation. */
     private array $entityDeathRemovalTicks = [];
@@ -612,6 +627,15 @@ final class WorldSimulation
                 worldName: $this->worldId,
             )
             : null;
+        if ($blockWorld !== null && $blockStateRegistry !== null && $blockCollisionRegistry !== null) {
+            $this->environmentTicks = new EnvironmentTickScheduler();
+            $this->fluidFlow = new FluidFlowPlanner();
+            $this->fluidWorld = new LoadedWorldFluidView($blockWorld, $blockStateRegistry, $blockCollisionRegistry);
+        } else {
+            $this->environmentTicks = null;
+            $this->fluidFlow = null;
+            $this->fluidWorld = null;
+        }
         $this->blockPlacementStates = $blockStateRegistry === null
             ? null
             : new BlockPlacementStateResolver($blockStateRegistry);
@@ -849,6 +873,10 @@ final class WorldSimulation
         array_push($events, ...$this->advancePendingRespawns());
         array_push($events, ...$this->advanceItemUseSessions());
         array_push($events, ...$this->advancePlayerEffects());
+        $environmentStartedNanoseconds = hrtime(true);
+        array_push($events, ...$this->advanceEnvironmentalBlocks());
+        array_push($events, ...$this->advanceWeather());
+        $stages['environment'] = hrtime(true) - $environmentStartedNanoseconds;
         array_push($events, ...$this->advancePlayerEnvironment());
         array_push($events, ...$this->advanceNutrition());
         array_push($events, ...$this->advanceBrewingStands());
@@ -1055,7 +1083,12 @@ final class WorldSimulation
         $player->markDirty();
         $this->players->add($player);
 
-        $events = [new PlayerJoined($player->snapshot(), $peers, $this->players->recipients())];
+        $events = [new PlayerJoined(
+            $player->snapshot(),
+            $peers,
+            $this->players->recipients(),
+            $this->blockWorld?->weather()->weather,
+        )];
         foreach ($this->itemEntities->all() as $entity) {
             $events[] = new ItemEntitySpawned($entity, [$player->sessionId]);
         }
@@ -1838,6 +1871,12 @@ final class WorldSimulation
                 $entity->extinguish();
             }
             if ($wasOnFire && $this->entityEnvironment->isTouchingWater($entity)) {
+                $entity->extinguish();
+            }
+            if ($entity->isOnFire()
+                && $this->blockWorld?->weather()->weather->isRaining() === true
+                && ($this->tick + $entity->getRuntimeId()) % 20 === 0
+                && $this->entityEnvironment->hasSkyExposure($entity)) {
                 $entity->extinguish();
             }
             if ($entity->isOnFire() && $entity->advanceFireTick()) {
@@ -3153,7 +3192,12 @@ final class WorldSimulation
         }
         $this->pluginEvents?->joined($player);
 
-        return new PlayerJoined($player->snapshot(), $peers, $this->players->recipients());
+        return new PlayerJoined(
+            $player->snapshot(),
+            $peers,
+            $this->players->recipients(),
+            $this->blockWorld?->weather()->weather,
+        );
     }
 
     private function acceptMovementInput(MovePlayer $command): WorldEvent
@@ -4814,7 +4858,7 @@ final class WorldSimulation
             $this->deferredEvents[] = $swing;
         }
         try {
-            $this->blockWorld->setBlockState($position->x, $position->y, $position->z, $this->blockPalette->air);
+            $this->setBlockStateAndSchedule($position, $this->blockPalette->air);
         } catch (OverflowException) {
             return new BlockChanged(
                 $command->session,
@@ -5569,7 +5613,7 @@ final class WorldSimulation
         if ($updated->value === $current->value) {
             return null;
         }
-        $this->blockWorld->setBlockState($entity->position->x, $entity->position->y, $entity->position->z, $updated);
+        $this->setBlockStateAndSchedule($entity->position, $updated);
 
         return new BlockChanged('server', $entity->position, $updated, $this->players->recipients());
     }
@@ -6197,8 +6241,8 @@ final class WorldSimulation
             if ($this->blockWorld->blockStateAt($x, $originY, $z)->value !== $this->blockPalette->air->value) {
                 continue;
             }
-            $this->blockWorld->setBlockState($x, $originY, $z, $web);
             $block = new BlockPosition($x, $originY, $z);
+            $this->setBlockStateAndSchedule($block, $web);
             $this->deferredEvents[] = new BlockChanged('server', $block, $web, $this->players->recipients());
             ++$placed;
         }
@@ -6866,6 +6910,165 @@ final class WorldSimulation
     }
 
     /** @return list<WorldEvent> */
+    private function advanceWeather(): array
+    {
+        if ($this->blockWorld === null) {
+            return [];
+        }
+        $previousCycle = $this->blockWorld->weather();
+        $previous = $previousCycle->weather;
+        if (!$this->blockWorld->advanceWeather()) {
+            return [];
+        }
+
+        $proposed = $this->blockWorld->weather()->weather;
+        $accepted = $this->pluginEvents === null
+            ? $proposed
+            : $this->pluginEvents->allowWeatherChange(
+                $this->worldId,
+                $previous,
+                $proposed,
+                WeatherChangeCause::NATURAL,
+            );
+        if ($accepted === null) {
+            $this->blockWorld->setWeather($previousCycle);
+
+            return [];
+        }
+        if ($accepted != $proposed) {
+            $this->blockWorld->setCurrentWeather($accepted);
+        }
+        $this->pluginEvents?->weatherChanged(
+            $this->worldId,
+            $previous,
+            $accepted,
+            WeatherChangeCause::NATURAL,
+        );
+
+        return [new WeatherChanged($previous, $accepted, $this->players->recipients())];
+    }
+
+    public function setWeather(WeatherState $weather, WeatherChangeCause $cause = WeatherChangeCause::PLUGIN): bool
+    {
+        if ($this->blockWorld === null) {
+            return false;
+        }
+        $previous = $this->blockWorld->weather()->weather;
+        $accepted = $this->pluginEvents === null
+            ? $weather
+            : $this->pluginEvents->allowWeatherChange($this->worldId, $previous, $weather, $cause);
+        if ($accepted === null) {
+            return false;
+        }
+        $this->blockWorld->setCurrentWeather($accepted);
+        $this->pluginEvents?->weatherChanged($this->worldId, $previous, $accepted, $cause);
+        $this->deferredEvents[] = new WeatherChanged($previous, $accepted, $this->players->recipients());
+
+        return true;
+    }
+
+    /** @return list<WorldEvent> */
+    private function advanceEnvironmentalBlocks(): array
+    {
+        if ($this->environmentTicks === null || $this->fluidFlow === null || $this->fluidWorld === null
+            || $this->blockWorld === null || $this->blockStateRegistry === null) {
+            return [];
+        }
+        $drain = $this->environmentTicks->drain($this->tick, 256, 1_500);
+        $events = [];
+        foreach ($drain->ticks as $scheduled) {
+            if ($scheduled->type !== EnvironmentTickType::FLUID) {
+                continue;
+            }
+            $cell = $this->fluidWorld->cellAt($scheduled->position);
+            if ($cell?->fluid === null) {
+                continue;
+            }
+            $plan = $this->fluidFlow->plan($this->fluidWorld, $scheduled->position);
+            foreach ($plan->mutations as $mutation) {
+                try {
+                    $state = $this->blockStateRegistry->internalId($mutation->state);
+                    $previous = $this->blockWorld->loadedBlockStateAt(
+                        $mutation->position->x,
+                        $mutation->position->y,
+                        $mutation->position->z,
+                    );
+                    if ($previous === null || $previous->value === $state->value) {
+                        continue;
+                    }
+                    $this->setBlockStateAndSchedule($mutation->position, $state);
+                    $events[] = new BlockChanged(
+                        'server',
+                        $mutation->position,
+                        $state,
+                        $this->players->recipients(),
+                        false,
+                        $previous,
+                    );
+                } catch (InvalidArgumentException|OverflowException) {
+                    continue;
+                }
+            }
+            $remaining = $this->fluidWorld->cellAt($scheduled->position)?->fluid;
+            if ($remaining !== null || $plan->deferredPositions !== []) {
+                $retryType = $remaining === null ? $cell->fluid->type : $remaining->type;
+                $this->scheduleEnvironmentTick(
+                    $scheduled->position,
+                    $retryType,
+                    $plan->deferredPositions === [] ? null : 20,
+                );
+            }
+        }
+
+        return $events;
+    }
+
+    private function setBlockStateAndSchedule(BlockPosition $position, InternalBlockStateId $state): InternalBlockStateId
+    {
+        if ($this->blockWorld === null) {
+            throw new \LogicException('The authoritative block world is unavailable.');
+        }
+        $previous = $this->blockWorld->setBlockState($position->x, $position->y, $position->z, $state);
+        if ($previous->value !== $state->value) {
+            $this->scheduleFluidNeighborhood($position);
+        }
+
+        return $previous;
+    }
+
+    private function scheduleFluidNeighborhood(BlockPosition $origin): void
+    {
+        if ($this->fluidWorld === null || $this->environmentTicks === null) {
+            return;
+        }
+        foreach ([[0, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, -1], [0, 0, 1], [-1, 0, 0], [1, 0, 0]] as [$x, $y, $z]) {
+            try {
+                $position = new BlockPosition($origin->x + $x, $origin->y + $y, $origin->z + $z);
+            } catch (InvalidArgumentException) {
+                continue;
+            }
+            $fluid = $this->fluidWorld->cellAt($position)?->fluid;
+            if ($fluid !== null) {
+                $this->scheduleEnvironmentTick($position, $fluid->type);
+            }
+        }
+    }
+
+    private function scheduleEnvironmentTick(BlockPosition $position, FluidType $type, ?int $delay = null): void
+    {
+        try {
+            $this->environmentTicks?->schedule(
+                $position,
+                EnvironmentTickType::FLUID,
+                $this->tick,
+                $delay ?? $type->tickDelay(),
+            );
+        } catch (OverflowException) {
+            // Saturation is observable through the queue metrics; gameplay remains bounded and authoritative.
+        }
+    }
+
+    /** @return list<WorldEvent> */
     private function advancePlayerEnvironment(): array
     {
         if ($this->blockWorld === null) {
@@ -6890,7 +7093,16 @@ final class WorldSimulation
                 (int) floor($position->z),
             );
             $effects = $player->effects->snapshot();
-            $submerged = $headState->value === $this->waterState?->value;
+            $headFluid = $this->blockStateRegistry === null
+                ? null
+                : FluidState::fromCanonical($this->blockStateRegistry->state($headState));
+            $feetFluid = $this->blockStateRegistry === null
+                ? null
+                : FluidState::fromCanonical($this->blockStateRegistry->state($feetState));
+            $headY = $position->y + 1.62;
+            $submerged = $headFluid?->type === FluidType::WATER
+                ? floor($headY) + $headFluid->height() > $headY
+                : $headState->value === $this->waterState?->value;
             if (!$submerged || VanillaEffectBehavior::canBreatheUnderwater($effects)) {
                 $player->vitals->airTicks = min(
                     \Bedriox\Server\Player\PlayerVitals::MAX_AIR_TICKS,
@@ -6909,11 +7121,16 @@ final class WorldSimulation
                 }
             }
 
-            $touchingWater = $headState->value === $this->waterState?->value
-                || $feetState->value === $this->waterState?->value;
-            $touchingLava = $headState->value === $this->lavaState?->value
-                || $feetState->value === $this->lavaState?->value;
+            $touchingWater = $headFluid?->type === FluidType::WATER || $feetFluid?->type === FluidType::WATER
+                || $headState->value === $this->waterState?->value || $feetState->value === $this->waterState?->value;
+            $touchingLava = $headFluid?->type === FluidType::LAVA || $feetFluid?->type === FluidType::LAVA
+                || $headState->value === $this->lavaState?->value || $feetState->value === $this->lavaState?->value;
             if ($touchingWater || VanillaEffectBehavior::hasFireResistance($effects)) {
+                $player->vitals->fireTicks = 0;
+            } elseif ($player->vitals->fireTicks > 0
+                && $this->blockWorld->weather()->weather->isRaining()
+                && ($this->tick + $player->runtimeActorId) % 20 === 0
+                && $this->isPlayerExposedToRain($player)) {
                 $player->vitals->fireTicks = 0;
             } elseif ($touchingLava) {
                 $player->vitals->fireTicks = max($player->vitals->fireTicks, 300);
@@ -6958,6 +7175,28 @@ final class WorldSimulation
         }
 
         return $events;
+    }
+
+    private function isPlayerExposedToRain(Player $player): bool
+    {
+        if ($this->blockWorld === null || $this->blockCollisionRegistry === null) {
+            return false;
+        }
+        $position = $player->movement->position;
+        $x = (int) floor($position->x);
+        $z = (int) floor($position->z);
+        for ($y = min(319, (int) floor($position->y + 1.8)); $y <= 319; ++$y) {
+            $state = $this->blockWorld->loadedBlockStateAt($x, $y, $z);
+            if ($state === null) {
+                return false;
+            }
+            $shape = $this->blockCollisionRegistry->find($state);
+            if ($shape !== null && !$shape->isEmpty()) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private function pruneItemCooldowns(string $key): void
@@ -7998,6 +8237,9 @@ final class WorldSimulation
         $heldType = $held !== null && $this->itemCatalog?->has($held->identifier) === true
             ? $this->itemCatalog->type($held->identifier)
             : null;
+        if ($held?->identifier === 'minecraft:bucket') {
+            return $this->fillFluidBucket($player, $command, $clickedState, $held, $activeBreak['position'] ?? null);
+        }
         if ($held !== null && $this->entityTypes !== null
             && isset($this->entityTypes->spawnEggMappings()[$held->identifier])) {
             return $this->useSpawnEgg(
@@ -8014,18 +8256,27 @@ final class WorldSimulation
         $storageEntityValid = true;
         $storageEntity = null;
         try {
-            $placedBlockState = $heldType?->placedBlockState !== null && $this->blockPlacementStates !== null
+            $bucketFluid = match ($held?->identifier) {
+                'minecraft:water_bucket' => FluidType::WATER,
+                'minecraft:lava_bucket' => FluidType::LAVA,
+                default => null,
+            };
+            $placedBlockState = $bucketFluid !== null && $this->blockStateRegistry !== null
+                ? $this->blockStateRegistry->internalId(FluidState::source($bucketFluid)->canonicalState())
+                : ($heldType?->placedBlockState !== null && $this->blockPlacementStates !== null
                 ? $this->blockPlacementStates->resolve(
                     $heldType->placedBlockState,
                     $command->face,
                     $player->movement->yaw,
                 )
-                : $held?->placedBlockState;
+                : $held?->placedBlockState);
         } catch (InvalidArgumentException) {
             $placedBlockState = null;
             $placementStateValid = false;
         }
-        $placedIdentifier = $heldType?->placedBlockState?->identifier() ?? $held?->identifier;
+        $placedIdentifier = $bucketFluid === null
+            ? $heldType?->placedBlockState?->identifier() ?? $held?->identifier
+            : $bucketFluid->value;
         if ($placedIdentifier !== null) {
             try {
                 $storageEntity = $this->storageBlockEntityForPlacement(
@@ -8083,12 +8334,7 @@ final class WorldSimulation
             );
         }
         try {
-            $this->blockWorld->setBlockState(
-                $placedPosition->x,
-                $placedPosition->y,
-                $placedPosition->z,
-                $placedBlockState,
-            );
+            $this->setBlockStateAndSchedule($placedPosition, $placedBlockState);
         } catch (OverflowException) {
             return new BlockPlacementCorrected(
                 $command->session,
@@ -8102,14 +8348,24 @@ final class WorldSimulation
                 'capacity',
             );
         }
-        $placedIdentifier = $heldType?->placedBlockState?->identifier() ?? $held->identifier;
+        $placedIdentifier = $bucketFluid === null
+            ? $heldType?->placedBlockState?->identifier() ?? $held->identifier
+            : $bucketFluid->value;
         if ($storageEntity !== null) {
             $this->installStorageBlockEntity($player, $storageEntity, $placedIdentifier);
         }
         $this->refreshPlayerGroundStates();
-        $remaining = $player->gameMode()->consumesItems()
-            ? $player->inventory->decrementSelectedOne()
-            : $held;
+        if ($player->gameMode()->consumesItems() && $bucketFluid !== null) {
+            $player->inventory->replaceSlot(
+                $player->inventory->selectedHotbarSlot(),
+                new InventoryStack('minecraft:bucket', 1, $held->stackNetworkId),
+            );
+            $remaining = $player->inventory->selectedStack();
+        } else {
+            $remaining = $player->gameMode()->consumesItems()
+                ? $player->inventory->decrementSelectedOne()
+                : $held;
+        }
         if ($player->gameMode()->consumesItems()) {
             $player->markDirty();
         }
@@ -8124,6 +8380,76 @@ final class WorldSimulation
             $remaining,
             $this->players->recipients(),
             $activeBreak['position'] ?? null,
+        );
+    }
+
+    private function fillFluidBucket(
+        Player $player,
+        PlaceBlock $command,
+        InternalBlockStateId $clickedState,
+        InventoryStack $held,
+        ?BlockPosition $stoppedBreakingPosition,
+    ): WorldEvent {
+        $placedPosition = self::adjacentBlock($command->clickedPosition, $command->face)
+            ?? $command->clickedPosition;
+        $placedState = $this->blockWorld?->loadedBlockStateAt(
+            $placedPosition->x,
+            $placedPosition->y,
+            $placedPosition->z,
+        ) ?? $clickedState;
+        $fluid = $this->blockStateRegistry === null
+            ? null
+            : FluidState::fromCanonical($this->blockStateRegistry->state($clickedState));
+        $failure = match (true) {
+            !$player->gameMode()->canBuild() => 'gamemode',
+            $command->sequence <= $player->placementSequence => 'stale_sequence',
+            $command->hotbarSlot !== $player->inventory->selectedHotbarSlot() => 'selected_slot',
+            $fluid === null || !$fluid->isSource() => 'fluid_source',
+            !$this->blockIsReachable($player->snapshot(), $command->clickedPosition) => 'reach',
+            default => null,
+        };
+        if ($command->sequence > $player->placementSequence) {
+            $player->placementSequence = $command->sequence;
+        }
+        if ($failure === null && $this->pluginEvents !== null
+            && !$this->pluginEvents->allowBlockPlace($player, $command->clickedPosition, $held->identifier)) {
+            $failure = 'plugin_cancelled';
+        }
+        if ($failure !== null || $this->blockPalette === null || $this->blockWorld === null) {
+            return new BlockPlacementCorrected(
+                $command->session,
+                $command->clickedPosition,
+                $clickedState,
+                $placedPosition,
+                $placedState,
+                $player->inventory->selectedHotbarSlot(),
+                $held,
+                $stoppedBreakingPosition,
+                $failure ?? 'block_world_unavailable',
+            );
+        }
+
+        $this->setBlockStateAndSchedule($command->clickedPosition, $this->blockPalette->air);
+        $filledIdentifier = $fluid->type === FluidType::WATER
+            ? 'minecraft:water_bucket'
+            : 'minecraft:lava_bucket';
+        $player->inventory->replaceSlot(
+            $player->inventory->selectedHotbarSlot(),
+            new InventoryStack($filledIdentifier, 1, $held->stackNetworkId),
+        );
+        $player->markDirty();
+        $remaining = $player->inventory->selectedStack();
+        $this->pluginEvents?->blockPlaced($player, $command->clickedPosition, $filledIdentifier);
+
+        return new BlockPlaced(
+            $command->session,
+            $player->runtimeActorId,
+            $command->clickedPosition,
+            $this->blockPalette->air,
+            $player->inventory->selectedHotbarSlot(),
+            $remaining,
+            $this->players->recipients(),
+            $stoppedBreakingPosition,
         );
     }
 
@@ -8734,7 +9060,7 @@ final class WorldSimulation
         }
         $properties['open_bit'] = $openBit;
         $updated = $this->blockStateRegistry->internalId(CanonicalBlockState::from('minecraft:barrel', $properties));
-        $this->blockWorld->setBlockState($position->x, $position->y, $position->z, $updated);
+        $this->setBlockStateAndSchedule($position, $updated);
 
         return new BlockChanged($ownerSessionId, $position, $updated, $this->players->recipients());
     }
@@ -8867,12 +9193,7 @@ final class WorldSimulation
             return new CommandRejected($command->sessionId(), 'unsupported_block');
         }
         try {
-            $this->blockWorld->setBlockState(
-                $command->position->x,
-                $command->position->y,
-                $command->position->z,
-                $state,
-            );
+            $this->setBlockStateAndSchedule($command->position, $state);
         } catch (OverflowException) {
             return new CommandRejected($command->sessionId(), 'block_capacity');
         }

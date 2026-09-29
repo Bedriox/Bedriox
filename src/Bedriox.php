@@ -401,6 +401,14 @@ final class Bedriox
                     $composition->server?->runtime->setWorldTimeRunning($running),
                 killTarget: static fn(\Bedriox\Api\Player\Player|\Bedriox\Api\Entity\Entity $target): bool =>
                     $composition->server?->runtime->killTarget($target) ?? false,
+                currentWeather: static fn(?\Bedriox\Api\World\World $world): ?\Bedriox\Api\World\WeatherState =>
+                    $composition->server?->runtime->currentWeather($world),
+                setWeather: static fn(
+                    ?\Bedriox\Api\World\World $world,
+                    \Bedriox\Api\World\WeatherType $type,
+                    ?int $durationSeconds,
+                ): ?\Bedriox\Api\World\WeatherState =>
+                    $composition->server?->runtime->setWeather($world, $type, $durationSeconds),
             ))->register();
             $server = (new ServerBootstrap(
                 new PersistentWorldFactory(

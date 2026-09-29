@@ -48,6 +48,8 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Added
 
+- Add bounded loaded-chunk water and lava flow, source decay and renewal, fluid hardening, authoritative bucket fill/empty behavior, and flowing-fluid immersion.
+- Add persistent per-world clear, rain, and thunder cycles, join/transfer synchronization, typed cancellable plugin events, rain extinguishing, public world weather control, and the operator `weather` command.
 - Add typed player and living-entity effect snapshots, generation-bound player mutations, cancellable pre-events, committed post-events, bounded durable fallback state, deterministic periodic timing, client effect synchronization, air and fire persistence, and authoritative movement, mining, combat, health, nutrition, breathing, combustion, health-boost, absorption, and visibility behavior.
 - Add typed, bounded world particle requests covering the current named effect catalog and data-backed color, block, item, scale, direction, and size families, with optional audiences delivered only after recipients receive the containing chunk.
 - Introduce plugin API 0.3 with global discovery on `Server`, session-bound authoritative actions on `Player`, generation-bound block access on `World`, and world-explicit plugin container lookup.

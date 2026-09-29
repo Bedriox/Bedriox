@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World;
 
+use Bedriox\Api\World\WeatherState;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceConflictException;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceManager;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
@@ -53,6 +54,10 @@ final class World
     private int $time;
 
     private bool $timeRunning = true;
+
+    private WeatherCycleState $weather;
+
+    private bool $weatherCycleEnabled;
 
     private readonly int $difficulty;
 
@@ -105,6 +110,8 @@ final class World
         $this->spawnOverride = $spawnOverride ?? ($worldData === null ? null : $worldData->spawn);
         $this->time = WorldTimeRules::validate($worldData === null ? 0 : $worldData->time);
         $this->difficulty = $worldData === null ? 2 : $worldData->difficulty;
+        $this->weather = $worldData === null ? WeatherCycle::initial($metadata->seed) : $worldData->weather;
+        $this->weatherCycleEnabled = $worldData === null || $worldData->weatherCycleEnabled;
     }
 
     /** Enables worker generation before the world begins serving chunks. */
@@ -317,6 +324,17 @@ final class World
         return $this->chunk($position)->blockStateAt(self::localCoordinate($x), $y, self::localCoordinate($z));
     }
 
+    /** Reads one cell only when its chunk is already loaded, without changing LRU or generation state. */
+    public function loadedBlockStateAt(int $x, int $y, int $z): ?InternalBlockStateId
+    {
+        if ($y < Chunk::MIN_Y || $y > Chunk::MAX_Y) {
+            return null;
+        }
+        $chunk = $this->loadedChunk(self::chunkPosition($x, $z));
+
+        return $chunk?->blockStateAt(self::localCoordinate($x), $y, self::localCoordinate($z));
+    }
+
     public function blockEntityAt(BlockPosition $position): ?BlockEntity
     {
         return $this->chunk(self::chunkPosition($position->x, $position->z))->blockEntityAt($position);
@@ -495,6 +513,48 @@ final class World
     public function stopTime(): void
     {
         $this->timeRunning = false;
+    }
+
+    public function weather(): WeatherCycleState
+    {
+        return $this->weather;
+    }
+
+    public function setWeather(WeatherCycleState $weather): void
+    {
+        $this->weather = $weather;
+    }
+
+    public function setCurrentWeather(WeatherState $weather): void
+    {
+        $sequence = $this->weather->transitionSequence === 0x7fffffff
+            ? 0
+            : $this->weather->transitionSequence + 1;
+        $this->weather = new WeatherCycleState($weather, $sequence);
+    }
+
+    public function advanceWeather(): bool
+    {
+        $next = WeatherCycle::advance(
+            $this->weather,
+            1,
+            $this->weatherCycleEnabled,
+            $this->metadata->seed,
+        );
+        $changed = $next->weather->type !== $this->weather->weather->type;
+        $this->weather = $next;
+
+        return $changed;
+    }
+
+    public function isWeatherCycleEnabled(): bool
+    {
+        return $this->weatherCycleEnabled;
+    }
+
+    public function setWeatherCycleEnabled(bool $enabled): void
+    {
+        $this->weatherCycleEnabled = $enabled;
     }
 
     /** Saves a bounded number of dirty chunks, oldest-dirty first. */
@@ -679,6 +739,8 @@ final class World
             $this->difficulty,
             $this->generator instanceof VersionedWorldGenerator ? $this->generator->version() : 1,
             $this->generatorOptions,
+            $this->weather,
+            $this->weatherCycleEnabled,
         );
     }
 

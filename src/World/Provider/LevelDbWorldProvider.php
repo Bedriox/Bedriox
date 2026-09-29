@@ -292,6 +292,14 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
         $root['SpawnZ'] = LittleEndianNbtTag::int($worldData->spawn->z);
         $root['Time'] = LittleEndianNbtTag::long($worldData->time);
         $root['Difficulty'] = LittleEndianNbtTag::int($worldData->difficulty);
+        $root['lightningLevel'] = LittleEndianNbtTag::float($worldData->weather->weather->lightningLevel());
+        $root['lightningTime'] = LittleEndianNbtTag::int($worldData->weather->weather->remainingTicks);
+        $root['rainLevel'] = LittleEndianNbtTag::float($worldData->weather->weather->rainLevel());
+        $root['rainTime'] = LittleEndianNbtTag::int($worldData->weather->weather->remainingTicks);
+        $root['BedrioxWeatherType'] = LittleEndianNbtTag::string($worldData->weather->weather->type->value);
+        $root['BedrioxWeatherRemainingTicks'] = LittleEndianNbtTag::int($worldData->weather->weather->remainingTicks);
+        $root['BedrioxWeatherSequence'] = LittleEndianNbtTag::int($worldData->weather->transitionSequence);
+        $root['BedrioxWeatherCycleEnabled'] = LittleEndianNbtTag::byte($worldData->weatherCycleEnabled ? 1 : 0);
         $metadata = new LevelDatMetadata($this->levelDat->headerVersion, $root);
         try {
             $this->levelDatStore->save($this->levelDatPath, $metadata);
@@ -419,6 +427,8 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
                 $metadata->difficulty(),
                 $metadata->generatorVersion(),
                 $metadata->generatorOptions() === '' ? '{}' : $metadata->generatorOptions(),
+                $metadata->weather(),
+                $metadata->weatherCycleEnabled(),
             );
         } catch (UnsupportedWorldDataException $error) {
             throw new UnsupportedWorldFormatException($error->getMessage(), previous: $error);
@@ -455,10 +465,14 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
             'pvp' => LittleEndianNbtTag::byte(1),
             'spawnMobs' => LittleEndianNbtTag::byte(1),
             'texturePacksRequired' => LittleEndianNbtTag::byte(0),
-            'lightningLevel' => LittleEndianNbtTag::float(0.0),
-            'lightningTime' => LittleEndianNbtTag::int(0),
-            'rainLevel' => LittleEndianNbtTag::float(0.0),
-            'rainTime' => LittleEndianNbtTag::int(0),
+            'lightningLevel' => LittleEndianNbtTag::float($data->weather->weather->lightningLevel()),
+            'lightningTime' => LittleEndianNbtTag::int($data->weather->weather->remainingTicks),
+            'rainLevel' => LittleEndianNbtTag::float($data->weather->weather->rainLevel()),
+            'rainTime' => LittleEndianNbtTag::int($data->weather->weather->remainingTicks),
+            'BedrioxWeatherType' => LittleEndianNbtTag::string($data->weather->weather->type->value),
+            'BedrioxWeatherRemainingTicks' => LittleEndianNbtTag::int($data->weather->weather->remainingTicks),
+            'BedrioxWeatherSequence' => LittleEndianNbtTag::int($data->weather->transitionSequence),
+            'BedrioxWeatherCycleEnabled' => LittleEndianNbtTag::byte($data->weatherCycleEnabled ? 1 : 0),
             'lastOpenedWithVersion' => LittleEndianNbtTag::list(
                 LittleEndianNbtTag::INT,
                 array_map(LittleEndianNbtTag::int(...), self::gameVersionParts()),

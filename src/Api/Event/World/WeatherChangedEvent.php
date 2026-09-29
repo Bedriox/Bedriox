@@ -18,26 +18,20 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Server\Simulation\Event;
+namespace Bedriox\Api\Event\World;
 
+use Bedriox\Api\Event\Event;
+use Bedriox\Api\Event\PostEvent;
 use Bedriox\Api\World\WeatherState;
-use Bedriox\Server\Simulation\PlayerSnapshot;
+use Bedriox\Api\World\World;
 
-final readonly class PlayerJoined implements WorldEvent
+/** Immutable notification emitted after authoritative weather changes. */
+final class WeatherChangedEvent extends Event implements PostEvent
 {
-    /**
-     * @param list<PlayerSnapshot> $existingPeers
-     * @param list<string>         $recipientSessionIds
-     */
     public function __construct(
-        public PlayerSnapshot $player,
-        public array $existingPeers,
-        public array $recipientSessionIds,
-        public ?WeatherState $weather = null,
+        public readonly World $world,
+        public readonly WeatherState $previous,
+        public readonly WeatherState $weather,
+        public readonly WeatherChangeCause $cause,
     ) {}
-
-    public function recipients(): array
-    {
-        return $this->recipientSessionIds;
-    }
 }

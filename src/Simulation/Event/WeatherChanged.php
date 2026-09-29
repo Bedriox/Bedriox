@@ -21,19 +21,14 @@ declare(strict_types=1);
 namespace Bedriox\Server\Simulation\Event;
 
 use Bedriox\Api\World\WeatherState;
-use Bedriox\Server\Simulation\PlayerSnapshot;
 
-final readonly class PlayerJoined implements WorldEvent
+final readonly class WeatherChanged implements WorldEvent
 {
-    /**
-     * @param list<PlayerSnapshot> $existingPeers
-     * @param list<string>         $recipientSessionIds
-     */
+    /** @param list<string> $recipientSessionIds */
     public function __construct(
-        public PlayerSnapshot $player,
-        public array $existingPeers,
+        public WeatherState $previous,
+        public WeatherState $weather,
         public array $recipientSessionIds,
-        public ?WeatherState $weather = null,
     ) {}
 
     public function recipients(): array

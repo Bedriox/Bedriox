@@ -29,11 +29,15 @@ use Bedriox\Api\Entity\Entity as ApiEntity;
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\VanillaEntityIdentifier;
 use Bedriox\Api\Entity\VanillaEntityType;
+use Bedriox\Api\Event\World\WeatherChangeCause;
 use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Inventory\ItemStack as ApiItemStack;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\Player\Player as ApiPlayer;
 use Bedriox\Api\World\Position as ApiPosition;
+use Bedriox\Api\World\WeatherState;
+use Bedriox\Api\World\WeatherType;
+use Bedriox\Api\World\World as ApiWorld;
 use Bedriox\Protocol\Batch\BatchLimits;
 use Bedriox\Protocol\Batch\BedrockBatch;
 use Bedriox\Protocol\Batch\BedrockBatchCodec;
@@ -708,6 +712,52 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     public function currentWorldTime(): ?int
     {
         return $this->persistentWorld?->time();
+    }
+
+    public function currentWeather(?ApiWorld $world = null): ?WeatherState
+    {
+        return $this->weatherRuntime($world)?->opened->world->weather()->weather;
+    }
+
+    public function setWeather(
+        ?ApiWorld $world,
+        WeatherType $type,
+        ?int $durationSeconds = null,
+    ): ?WeatherState {
+        $runtime = $this->weatherRuntime($world);
+        if ($runtime === null) {
+            return null;
+        }
+        if ($durationSeconds === null) {
+            $state = $runtime->opened->world->weather();
+            $sample = unpack('Vvalue', substr(hash(
+                'sha256',
+                $runtime->opened->world->metadata->seed . ':' . $state->transitionSequence . ':command-weather',
+                true,
+            ), 0, 4));
+            $durationSeconds = 300 + ((is_array($sample) && is_int($sample['value'] ?? null)
+                ? $sample['value']
+                : 0) % 601);
+        }
+        $weather = WeatherState::fromCommandDuration($type, $durationSeconds);
+        if (!$runtime->simulation->setWeather($weather, WeatherChangeCause::COMMAND)) {
+            return null;
+        }
+
+        return $runtime->opened->world->weather()->weather;
+    }
+
+    private function weatherRuntime(?ApiWorld $world): ?ManagedWorldRuntime
+    {
+        if ($this->worldRuntimes === null) {
+            return null;
+        }
+        if ($world === null) {
+            return $this->worldRuntimes->default();
+        }
+        $runtime = $this->worldRuntimes->get($world->id());
+
+        return $runtime !== null && $runtime->handle->isSameLoad($world) ? $runtime : null;
     }
 
     public function setWorldTime(int $time): ?int

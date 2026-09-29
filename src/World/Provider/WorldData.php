@@ -22,6 +22,8 @@ namespace Bedriox\Server\World\Provider;
 
 use Bedriox\Server\World\Generator\GeneratorOptions;
 use Bedriox\Server\World\SpawnPosition;
+use Bedriox\Server\World\WeatherCycle;
+use Bedriox\Server\World\WeatherCycleState;
 use Bedriox\Server\World\WorldMetadata;
 use Bedriox\Server\World\WorldTimeRules;
 use InvalidArgumentException;
@@ -29,6 +31,8 @@ use InvalidArgumentException;
 /** Immutable provider boundary value containing format-independent world metadata. */
 final readonly class WorldData
 {
+    public WeatherCycleState $weather;
+
     public function __construct(
         public WorldMetadata $metadata,
         public string $generatorName,
@@ -37,6 +41,8 @@ final readonly class WorldData
         public int $difficulty = 2,
         public int $generatorVersion = 1,
         public string $generatorOptions = '{}',
+        ?WeatherCycleState $weather = null,
+        public bool $weatherCycleEnabled = true,
     ) {
         if (
             $generatorName === ''
@@ -53,5 +59,6 @@ final readonly class WorldData
             throw new InvalidArgumentException('Generator version must be a positive bounded integer.');
         }
         GeneratorOptions::fromJson($this->generatorOptions);
+        $this->weather = $weather ?? WeatherCycle::initial($metadata->seed);
     }
 }

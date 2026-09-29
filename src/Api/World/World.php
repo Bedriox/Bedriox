@@ -78,6 +78,17 @@ final readonly class World
         ($this->actions ?? WorldActions::unavailable())->setBlock($this, $position, $identifier);
     }
 
+    public function getWeather(): WeatherState
+    {
+        return ($this->actions ?? WorldActions::unavailable())->getWeather($this);
+    }
+
+    /** Requests an authoritative plugin-caused weather transition. */
+    public function setWeather(WeatherState $weather): bool
+    {
+        return ($this->actions ?? WorldActions::unavailable())->setWeather($this, $weather);
+    }
+
     /**
      * Requests a presentation-only particle for viewers of the containing chunk.
      *

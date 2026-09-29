@@ -32,6 +32,8 @@ use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\ChunkRepository;
+use Bedriox\Server\World\Environment\Fluid\FluidState;
+use Bedriox\Server\World\Environment\Fluid\FluidType;
 use Bedriox\Server\World\FlatWorldGenerator;
 use Bedriox\Server\World\Generation\GenerationBlockPalette;
 use Bedriox\Server\World\World;
@@ -94,11 +96,12 @@ final class PlayerEffectSimulationTest extends TestCase
 
     public function testLavaContactHasIndependentDamageCadenceAndFireResistanceSuppressesIt(): void
     {
-        [$simulation, $world, $generation] = self::environmentWorld();
+        [$simulation, $world] = self::environmentWorld();
         $factory = new SimulationCommandFactory();
         self::assertTrue($simulation->enqueue($factory->join('one', 'identity-one', 'One')));
         $simulation->tick();
-        $lava = $generation->state('minecraft:lava');
+        $states = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $lava = $states->internalId(FluidState::source(FluidType::LAVA)->canonicalState());
         $world->setBlockState(0, 64, 0, $lava);
         $world->setBlockState(0, 65, 0, $lava);
 
@@ -121,6 +124,27 @@ final class PlayerEffectSimulationTest extends TestCase
         $player = $simulation->pluginPlayer('identity-one');
         self::assertNotNull($player);
         self::assertSame(16.0, $player->health);
+    }
+
+    public function testFlowingWaterSurfaceDrainsAirAndAppliesDrowningDamage(): void
+    {
+        [$simulation, $world] = self::environmentWorld();
+        $factory = new SimulationCommandFactory();
+        self::assertTrue($simulation->enqueue($factory->join('one', 'identity-one', 'One')));
+        $simulation->tick();
+        $player = $simulation->authoritativePlayer('identity-one');
+        self::assertNotNull($player);
+        $player->vitals->airTicks = 1;
+        $states = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $flowing = $states->internalId(FluidState::falling(FluidType::WATER)->canonicalState());
+        $world->setBlockState(0, 64, 0, $flowing);
+        $world->setBlockState(0, 65, 0, $flowing);
+
+        for ($tick = 0; $tick < 21; ++$tick) {
+            $simulation->tick();
+        }
+
+        self::assertSame(18.0, $simulation->pluginPlayer('identity-one')?->health);
     }
 
     private static function joinedWorld(): WorldSimulation

@@ -26,7 +26,7 @@ use Bedriox\Server\World\Block\InternalBlockStateId;
 use Bedriox\Server\World\Generation\GenerationBlockPalette;
 use LogicException;
 
-/** Bounded process-local collision definitions for every built-in generation state. */
+/** Bounded process-local collision definitions for generation states and runtime-created fluid variants. */
 final readonly class BlockCollisionRegistry
 {
     /** @var array<int, BlockCollisionShape> */
@@ -35,8 +35,8 @@ final readonly class BlockCollisionRegistry
     /** @param array<int, BlockCollisionShape> $shapes */
     private function __construct(array $shapes)
     {
-        if ($shapes === [] || count($shapes) > 256) {
-            throw new LogicException('Block collision registry must contain between 1 and 256 generation states.');
+        if ($shapes === [] || count($shapes) > 512) {
+            throw new LogicException('Block collision registry must contain between 1 and 512 supported states.');
         }
         $this->shapes = $shapes;
     }
@@ -49,8 +49,17 @@ final readonly class BlockCollisionRegistry
         foreach ($palette->states() as $stateId) {
             $shapes[$stateId->value] = self::shapeForState($states->state($stateId));
         }
-        if (count($shapes) !== count($palette->states())) {
+        $generationStateCount = count($shapes);
+        if ($generationStateCount !== count($palette->states())) {
             throw new LogicException('Generation collision definitions are incomplete or duplicated.');
+        }
+        foreach ($states->states() as $value => $state) {
+            if (in_array($state->identifier(), ['minecraft:water', 'minecraft:lava'], true)) {
+                $shapes[$value] = BlockCollisionShape::empty();
+            }
+        }
+        if (count($shapes) < $generationStateCount) {
+            throw new LogicException('Runtime fluid collision definitions are incomplete.');
         }
 
         return new self($shapes);

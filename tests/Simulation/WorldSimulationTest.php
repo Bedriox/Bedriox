@@ -79,13 +79,91 @@ use Bedriox\Server\World\BlockOverrideStore;
 use Bedriox\Server\World\BlockPosition;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\ChunkRepository;
+use Bedriox\Server\World\Collision\BlockCollisionRegistry;
+use Bedriox\Server\World\Environment\Fluid\FluidState;
+use Bedriox\Server\World\Environment\Fluid\FluidType;
 use Bedriox\Server\World\FlatWorldGenerator;
+use Bedriox\Server\World\Generation\GenerationBlockPalette;
 use Bedriox\Server\World\World;
 use Bedriox\Server\World\WorldMetadata;
 use PHPUnit\Framework\TestCase;
 
 final class WorldSimulationTest extends TestCase
 {
+    public function testWaterBucketCreatesAFlowingAuthoritativeFluidAndReturnsTheBucket(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $states = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $flat = FixedFlatBlockPalette::fromRegistry($states);
+        $generation = GenerationBlockPalette::fromRegistry($states);
+        $blocks = new World(
+            new WorldMetadata('fluid-bucket-test', 7),
+            new FlatWorldGenerator($flat),
+            new ChunkRepository(4),
+        );
+        $blocks->chunk(new ChunkPosition(0, 0));
+        $catalog = BlockCatalog::vanilla($states, $data->blockItemMappingRegistry());
+        $items = ItemCatalog::vanilla(
+            $data->itemNetworkRegistry(),
+            $catalog,
+            $data->creativeInventoryRegistry(),
+            $data->blockItemMappingRegistry(),
+        );
+        $bootstrap = new PlayerBootstrap(
+            new PlayerIdentity('identity-one', 'One'),
+            'fluid-bucket-test',
+            new Position(0.5, 64.0, 0.5),
+            0.0,
+            0.0,
+            new PlayerInventoryState([
+                new PlayerInventoryEntry(0, new PlayerInventoryStackState('minecraft:water_bucket', 1)),
+            ], 0),
+            1,
+            1,
+        );
+        $simulation = new WorldSimulation(
+            blockWorld: $blocks,
+            blockPalette: $flat,
+            itemCatalog: $items,
+            blockCatalog: $catalog,
+            waterState: $generation->state('minecraft:water'),
+            lavaState: $generation->state('minecraft:lava'),
+            blockStateRegistry: $states,
+            blockCollisionRegistry: BlockCollisionRegistry::forGenerationPalette($states, $generation),
+        );
+        $commands = new SimulationCommandFactory();
+        self::assertTrue($simulation->enqueue($commands->join(
+            'one',
+            'identity-one',
+            'One',
+            bootstrap: $bootstrap,
+        )));
+        $simulation->tick();
+        self::assertTrue($simulation->enqueue($commands->placeBlock(
+            'one',
+            1,
+            new BlockPosition(2, 63, 0),
+            1,
+            0,
+            0,
+            0.5,
+            1.0,
+            0.5,
+        )));
+        $placed = $simulation->tick()->events;
+        self::assertNotEmpty(array_filter($placed, static fn($event): bool => $event instanceof BlockPlaced));
+
+        for ($tick = 0; $tick < 8; ++$tick) {
+            $simulation->tick();
+        }
+        $source = FluidState::fromCanonical($states->state($blocks->blockStateAt(2, 64, 0)));
+        $flow = FluidState::fromCanonical($states->state($blocks->blockStateAt(3, 64, 0)));
+        self::assertSame(FluidType::WATER, $source?->type);
+        self::assertTrue($source->isSource());
+        self::assertSame(FluidType::WATER, $flow?->type);
+        self::assertSame('minecraft:bucket', $simulation->authoritativePlayer('identity-one')?->inventory->selectedStack()?->identifier);
+    }
+
     public function testSpawnEggCreatesADataAdmittedEntityAndConsumesOneItem(): void
     {
         $data = BedrockDataSet::bundled();

@@ -27,11 +27,14 @@ use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
+use Bedriox\Server\World\Block\InternalBlockStateId;
 use Bedriox\Server\World\ChunkRepository;
 use Bedriox\Server\World\Collision\AxisAlignedBox;
 use Bedriox\Server\World\Collision\BlockCollisionQuery;
 use Bedriox\Server\World\Collision\BlockCollisionRegistry;
 use Bedriox\Server\World\Collision\PlayerCollisionResolver;
+use Bedriox\Server\World\Environment\Fluid\FluidState;
+use Bedriox\Server\World\Environment\Fluid\FluidType;
 use Bedriox\Server\World\FlatWorldGenerator;
 use Bedriox\Server\World\Generation\GenerationBlockPalette;
 use Bedriox\Server\World\World;
@@ -46,9 +49,40 @@ final class GeneratedBlockCollisionTest extends TestCase
         $collisions = BlockCollisionRegistry::forGenerationPalette($states, $generation);
 
         self::assertCount(165, $generation->states());
-        self::assertSame(count($generation->states()), $collisions->count());
+        self::assertGreaterThanOrEqual(count($generation->states()), $collisions->count());
         foreach ($generation->states() as $state) {
             self::assertTrue($collisions->contains($state));
+        }
+        foreach ($states->states() as $value => $state) {
+            if (in_array($state->identifier(), ['minecraft:water', 'minecraft:lava'], true)) {
+                $fluid = new InternalBlockStateId($value);
+                self::assertTrue($collisions->contains($fluid));
+                self::assertTrue($collisions->find($fluid)?->isEmpty());
+            }
+        }
+    }
+
+    public function testBucketSourceFluidVariantsArePassable(): void
+    {
+        [$states, $generation] = self::generationPalette();
+        $flat = FixedFlatBlockPalette::fromRegistry($states);
+        $world = new World(
+            new WorldMetadata('bucket-fluid-collision', 0),
+            new FlatWorldGenerator($flat),
+            new ChunkRepository(4),
+        );
+        $query = new BlockCollisionQuery(
+            $world,
+            $flat->air,
+            [],
+            BlockCollisionRegistry::forGenerationPalette($states, $generation),
+        );
+        $cell = new AxisAlignedBox(0.1, 64.1, 0.1, 0.9, 64.9, 0.9);
+
+        foreach ([FluidType::WATER, FluidType::LAVA] as $type) {
+            $source = $states->internalId(FluidState::source($type)->canonicalState());
+            $world->setBlockState(0, 64, 0, $source);
+            self::assertFalse($query->hasCollision($cell));
         }
     }
 

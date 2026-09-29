@@ -37,6 +37,8 @@ use Bedriox\Api\World\Particle\ScalarParticleType;
 use Bedriox\Api\World\Particle\SimpleParticle;
 use Bedriox\Api\World\Particle\StandardParticle;
 use Bedriox\Api\World\Particle\StandardParticleType;
+use Bedriox\Api\World\WeatherState;
+use Bedriox\Api\World\WeatherType;
 use Bedriox\Protocol\Codec\UnsignedVarInt;
 use Bedriox\Protocol\Packet\AbilityLayer;
 use Bedriox\Protocol\Packet\ActorEventPacket;
@@ -182,6 +184,7 @@ use Bedriox\Server\Simulation\Event\PotionProjectileMoved;
 use Bedriox\Server\Simulation\Event\PotionProjectileRemoved;
 use Bedriox\Server\Simulation\Event\PotionProjectileSpawned;
 use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
+use Bedriox\Server\Simulation\Event\WeatherChanged;
 use Bedriox\Server\Simulation\Event\WorldEvent;
 use Bedriox\Server\Simulation\PlayerSnapshot;
 use Bedriox\Server\Simulation\VerticalState;
@@ -212,6 +215,7 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
         return match (true) {
             $event instanceof ParticleSpawned => $this->particle($event, $sessions),
             $event instanceof PlayerJoined => $this->joined($event, $sessions),
+            $event instanceof WeatherChanged => $this->weatherChanged($event),
             $event instanceof PlayerBecameVisible => $this->visible($event, $sessions),
             $event instanceof PlayerBecameHidden => [
                 new DirectedPacket($event->recipientSessionId, new RemoveActorPacket($event->runtimeActorId)),
@@ -977,8 +981,44 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
                 ),
             );
         }
+        if ($event->weather !== null) {
+            foreach ($this->weatherPackets($event->weather) as $packet) {
+                $packets[] = new DirectedPacket($event->player->sessionId, $packet);
+            }
+        }
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function weatherChanged(WeatherChanged $event): array
+    {
+        $packets = [];
+        foreach ($event->recipientSessionIds as $recipient) {
+            foreach ($this->weatherPackets($event->weather) as $packet) {
+                $packets[] = new DirectedPacket($recipient, $packet);
+            }
+        }
 
         return $packets;
+    }
+
+    /** @return list<LevelEventPacket> */
+    private function weatherPackets(WeatherState $weather): array
+    {
+        return match ($weather->type) {
+            WeatherType::CLEAR => [
+                LevelEventPacket::weather(LevelEventType::StopRain, 0),
+                LevelEventPacket::weather(LevelEventType::StopThunder, 0),
+            ],
+            WeatherType::RAIN => [
+                LevelEventPacket::weather(LevelEventType::StartRain),
+                LevelEventPacket::weather(LevelEventType::StopThunder, 0),
+            ],
+            WeatherType::THUNDER => [
+                LevelEventPacket::weather(LevelEventType::StartRain),
+                LevelEventPacket::weather(LevelEventType::StartThunder),
+            ],
+        };
     }
 
     /**

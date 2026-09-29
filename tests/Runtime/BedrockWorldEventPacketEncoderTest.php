@@ -40,6 +40,8 @@ use Bedriox\Api\World\Particle\ScalarParticleType;
 use Bedriox\Api\World\Particle\SimpleParticle;
 use Bedriox\Api\World\Particle\StandardParticle;
 use Bedriox\Api\World\Particle\StandardParticleType;
+use Bedriox\Api\World\WeatherState;
+use Bedriox\Api\World\WeatherType;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Encryption\BedrockDecryptor;
 use Bedriox\Protocol\Encryption\BedrockEncryptor;
@@ -67,6 +69,7 @@ use Bedriox\Protocol\Packet\ItemStackResponseContainer;
 use Bedriox\Protocol\Packet\ItemStackResponsePacket;
 use Bedriox\Protocol\Packet\ItemStackResponseSlot;
 use Bedriox\Protocol\Packet\LevelEventPacket;
+use Bedriox\Protocol\Packet\LevelEventType;
 use Bedriox\Protocol\Packet\LevelSoundEventPacket;
 use Bedriox\Protocol\Packet\MobArmorEquipmentPacket;
 use Bedriox\Protocol\Packet\MobEffectEvent;
@@ -131,6 +134,7 @@ use Bedriox\Server\Simulation\Event\PlayerJoined;
 use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
 use Bedriox\Server\Simulation\Event\PlayerMotionChanged;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
+use Bedriox\Server\Simulation\Event\WeatherChanged;
 use Bedriox\Server\Simulation\ItemUseCancellationReason;
 use Bedriox\Server\Simulation\MovementMode;
 use Bedriox\Server\Simulation\NutritionChangeReason;
@@ -147,6 +151,27 @@ use ReflectionProperty;
 
 final class BedrockWorldEventPacketEncoderTest extends TestCase
 {
+    public function testWeatherChangesProjectTypedLevelEventsToEveryWorldRecipient(): void
+    {
+        $packets = (new BedrockWorldEventPacketEncoder())->encode(new WeatherChanged(
+            new WeatherState(WeatherType::CLEAR, 100),
+            new WeatherState(WeatherType::THUNDER, 200),
+            ['one', 'two'],
+        ), []);
+
+        self::assertCount(4, $packets);
+        self::assertSame(['one', 'one', 'two', 'two'], array_column($packets, 'sessionId'));
+        self::assertSame(
+            [LevelEventType::StartRain, LevelEventType::StartThunder, LevelEventType::StartRain, LevelEventType::StartThunder],
+            array_map(static function (DirectedPacket $packet): LevelEventType {
+                self::assertInstanceOf(LevelEventPacket::class, $packet->packet);
+
+                return $packet->packet->type()
+                    ?? throw new \LogicException('Weather packet did not retain a typed level event.');
+            }, $packets),
+        );
+    }
+
     public function testPlayerEffectsProjectTypedAddModifyAndRemovePackets(): void
     {
         $encoder = new BedrockWorldEventPacketEncoder();

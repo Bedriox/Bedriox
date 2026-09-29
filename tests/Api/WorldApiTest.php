@@ -36,6 +36,8 @@ use Bedriox\Api\World\Particle\Particle;
 use Bedriox\Api\World\Particle\ParticleType;
 use Bedriox\Api\World\Particle\SimpleParticle;
 use Bedriox\Api\World\Position;
+use Bedriox\Api\World\WeatherState;
+use Bedriox\Api\World\WeatherType;
 use Bedriox\Api\World\World;
 use Bedriox\Api\World\WorldActions;
 use Bedriox\Api\World\WorldCreationOptions;
@@ -238,6 +240,29 @@ final class WorldApiTest extends TestCase
         $world->spawnParticle($position, $particle);
 
         self::assertSame([[$world, $position, $particle, null]], $requests);
+    }
+
+    public function testWorldWeatherMethodsDelegateTypedAuthoritativeState(): void
+    {
+        $current = new WeatherState(WeatherType::CLEAR, 600);
+        $requested = [];
+        $actions = new WorldActions(
+            static fn(World $world, BlockPosition $position): Block => new Block($position, 'minecraft:air'),
+            static function (): void {},
+            static function (): void {},
+            static fn(World $world): WeatherState => $current,
+            static function (World $world, WeatherState $weather) use (&$requested): bool {
+                $requested[] = [$world, $weather];
+
+                return true;
+            },
+        );
+        $world = new World('world', 1, $actions);
+        $rain = new WeatherState(WeatherType::RAIN, 1_200);
+
+        self::assertSame($current, $world->getWeather());
+        self::assertTrue($world->setWeather($rain));
+        self::assertSame([[$world, $rain]], $requested);
     }
 
     public function testWorldParticleMethodRejectsInvalidAudienceMember(): void

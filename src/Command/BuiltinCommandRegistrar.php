@@ -43,6 +43,7 @@ use Bedriox\Server\Command\Default\SummonCommand;
 use Bedriox\Server\Command\Default\TeleportCommand;
 use Bedriox\Server\Command\Default\TimeCommand;
 use Bedriox\Server\Command\Default\VersionCommand;
+use Bedriox\Server\Command\Default\WeatherCommand;
 use Bedriox\Server\Observability\Memory\GarbageCollectionReport;
 use Bedriox\Server\Observability\PerformanceSnapshot;
 use Bedriox\Server\Permission\PermissionStore;
@@ -72,6 +73,8 @@ final readonly class BuiltinCommandRegistrar
      * @param Closure(int): (int|null) $addWorldTime
      * @param Closure(bool): (int|null) $setWorldTimeRunning
      * @param Closure(Player|\Bedriox\Api\Entity\Entity): bool|null $killTarget
+     * @param Closure(?\Bedriox\Api\World\World): (?\Bedriox\Api\World\WeatherState)|null $currentWeather
+     * @param Closure(?\Bedriox\Api\World\World, \Bedriox\Api\World\WeatherType, ?int): (?\Bedriox\Api\World\WeatherState)|null $setWeather
      */
     public function __construct(
         private CommandRegistry $commands,
@@ -95,6 +98,8 @@ final readonly class BuiltinCommandRegistrar
         private ?Closure $addWorldTime = null,
         private ?Closure $setWorldTimeRunning = null,
         private ?Closure $killTarget = null,
+        private ?Closure $currentWeather = null,
+        private ?Closure $setWeather = null,
     ) {}
 
     public function register(): CommandSoftEnum
@@ -151,6 +156,9 @@ final readonly class BuiltinCommandRegistrar
                 $this->addWorldTime,
                 $this->setWorldTimeRunning,
             );
+        }
+        if ($this->currentWeather !== null && $this->setWeather !== null) {
+            $commands[] = new WeatherCommand($this->currentWeather, $this->setWeather);
         }
         if ($this->status !== null) {
             $commands[] = new StatusCommand($this->status);
