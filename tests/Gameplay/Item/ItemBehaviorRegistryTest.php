@@ -20,6 +20,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Gameplay\Item;
 
+use Bedriox\Api\Effect\EffectCause;
+use Bedriox\Api\Effect\EffectType;
 use Bedriox\Server\Gameplay\Item\ConsumableDefinition;
 use Bedriox\Server\Gameplay\Item\ItemBehaviorRegistry;
 use Bedriox\Server\Gameplay\Item\ItemUseBehavior;
@@ -48,6 +50,37 @@ final class ItemBehaviorRegistryTest extends TestCase
             self::assertSame(9.6, $consumable->saturationRestore);
             self::assertFalse($consumable->requiresHunger);
         }
+    }
+
+    public function testVanillaEffectConsumablesCarryAuthoritativePostUseBehavior(): void
+    {
+        $registry = ItemBehaviorRegistry::vanilla();
+        $golden = $registry->behavior('minecraft:golden_apple');
+        self::assertNotNull($golden?->effects);
+        self::assertSame(EffectCause::FOOD, $golden->effects->cause);
+        self::assertSame(EffectType::REGENERATION, $golden->effects->effects[0]->type);
+        self::assertSame(EffectType::ABSORPTION, $golden->effects->effects[1]->type);
+
+        $enchanted = $registry->behavior('minecraft:enchanted_golden_apple');
+        self::assertNotNull($enchanted);
+        self::assertNotNull($enchanted->effects);
+        self::assertCount(4, $enchanted->effects->effects);
+        self::assertSame(3, $enchanted->effects->effects[1]->amplifier);
+
+        $potion = $registry->behavior('minecraft:potion');
+        self::assertNotNull($potion);
+        self::assertNotNull($potion->effects);
+        self::assertNotNull($potion->consumable);
+        self::assertTrue($potion->effects->resolvePotionAuxiliaryValue);
+        self::assertSame('minecraft:glass_bottle', $potion->consumable->residueIdentifier);
+
+        $milk = $registry->behavior('minecraft:milk_bucket');
+        self::assertNotNull($milk);
+        self::assertNotNull($milk->effects);
+        self::assertNotNull($milk->consumable);
+        self::assertTrue($milk->effects->clearExisting);
+        self::assertSame(EffectCause::MILK, $milk->effects->cause);
+        self::assertSame('minecraft:bucket', $milk->consumable->residueIdentifier);
     }
 
     public function testOwnedDefinitionsCanBeReplacedAndRemovedWithoutGlobalState(): void

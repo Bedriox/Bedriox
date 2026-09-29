@@ -26,4 +26,8 @@ enum DamageCause: string
     case Fall = 'fall';
     case Kill = 'kill';
     case Plugin = 'plugin';
+    case Magic = 'magic';
+    case Projectile = 'projectile';
+    case Drowning = 'drowning';
+    case Fire = 'fire';
 }

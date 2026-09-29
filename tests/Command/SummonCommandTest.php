@@ -203,9 +203,12 @@ final class SummonCommandTest extends TestCase
             },
         ))->register();
 
-        self::assertSame(11, $registry->count());
         $commands = $registry->availableCommands(CommandSenderType::CONSOLE, static fn(string $permission): bool => true);
-        $summon = $commands[count($commands) - 1];
+        $summon = array_values(array_filter(
+            $commands,
+            static fn($command): bool => $command->definition->name === 'summon',
+        ))[0] ?? null;
+        self::assertNotNull($summon);
         self::assertSame('summon', $summon->definition->name);
         self::assertSame('bedriox.command.summon', $summon->definition->permission);
         self::assertSame(
@@ -238,11 +241,12 @@ final class SummonCommandTest extends TestCase
             entityIdentifiers: static fn(): array => ['minecraft:cow'],
         ))->register();
 
-        self::assertSame(10, $registry->count());
-        self::assertNotContains('summon', array_map(
+        $names = array_map(
             static fn($definition): string => $definition->name,
             $registry->availableDefinitions(CommandSenderType::CONSOLE, static fn(string $permission): bool => true),
-        ));
+        );
+        self::assertContains('help', $names);
+        self::assertNotContains('summon', $names);
     }
 
     private function registry(): CommandRegistry

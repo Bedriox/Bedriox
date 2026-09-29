@@ -30,4 +30,5 @@ enum SpawnCause: string
     case BREEDING = 'breeding';
     case STRUCTURE = 'structure';
     case CHUNK_LOAD = 'chunk_load';
+    case EFFECT = 'effect';
 }

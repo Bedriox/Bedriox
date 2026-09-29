@@ -38,6 +38,7 @@ use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Gameplay\Block\BlockCatalog;
 use Bedriox\Server\Gameplay\Crafting\CraftingCatalog;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
+use Bedriox\Server\Gameplay\Potion\BrewingRecipeCatalog;
 use Bedriox\Server\Login\AuthenticationMode;
 use Bedriox\Server\Login\DevelopmentLoginAuthenticator;
 use Bedriox\Server\Login\ExplicitSelfSignedLoginAuthenticator;
@@ -158,7 +159,8 @@ final class ServerBootstrap
             ->withPlayerInventoryActions(
                 $playerConnections->inventoryActions(...),
                 $playerConnections->maximumStackSize(...),
-            );
+            )
+            ->withPlayerEffectActions($playerConnections->effectActions(...));
         $worldHandleResolver = new WorldHandleResolver();
         $pluginEvents = $pluginEvents?->withWorldResolver($worldHandleResolver->resolve(...));
         $simulationLimits = new SimulationLimits(
@@ -191,6 +193,10 @@ final class ServerBootstrap
             $itemCatalog,
             $internalStates,
             $inventoryProjector,
+        );
+        $brewingRecipes = new BrewingRecipeCatalog(
+            $data->recipeRegistry()->containerMixes(),
+            $data->recipeRegistry()->potionMixes(),
         );
         $flatPalette = FixedFlatBlockPalette::fromRegistry($internalStates);
         $defaultPalette = DefaultBlockPalette::fromRegistry($internalStates);
@@ -301,6 +307,7 @@ final class ServerBootstrap
                 pluginEntityLifecycle: $pluginEntityLifecycle,
                 pluginActions: $pluginActions,
                 worldId: $defaultWorldHandle->id(),
+                brewingRecipes: $brewingRecipes,
             );
             $entityPersistenceStore = $flatWorld->entityPersistenceStore();
             if ($entityPersistenceStore !== null) {
@@ -337,6 +344,7 @@ final class ServerBootstrap
                 $blockCatalog,
                 $blockCollisions,
                 $craftingCatalog,
+                $brewingRecipes,
                 $entityDefinitions,
                 $pluginEntityLifecycle,
                 $pluginActions,
@@ -416,6 +424,7 @@ final class ServerBootstrap
                     pluginEntityLifecycle: $pluginEntityLifecycle,
                     pluginActions: $pluginActions,
                     worldId: $handle->id(),
+                    brewingRecipes: $brewingRecipes,
                 );
                 $simulationAt = hrtime(true);
                 $entityStore = $internalWorld->entityPersistenceStore();

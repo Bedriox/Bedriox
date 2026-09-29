@@ -29,6 +29,7 @@ use Bedriox\Api\Command\PlayerCommandSender;
 use Bedriox\Api\Inventory\Inventory;
 use Bedriox\Api\Player\Player;
 use Bedriox\Api\Player\PlayerConnection;
+use Bedriox\Api\World\Particle\ParticleType;
 use Bedriox\Api\World\Position;
 use Bedriox\Protocol\Packet\Packet;
 use Bedriox\Server\Entity\Vanilla\ZombieEntity;
@@ -163,6 +164,32 @@ final class CommandArgumentBinderTest extends TestCase
         $this->expectExceptionMessage("Argument 'amount' is outside its allowed range.");
         (new CommandArgumentBinder(static fn(): array => []))
             ->bind($arguments, new BinderCommandSender(), ['5']);
+    }
+
+    public function testParticleEnumRequiresARegisteredIdentifierWithoutListingTheCatalog(): void
+    {
+        $arguments = CommandArguments::create()->addArgument(CommandParameter::enum('particle', ParticleType::class));
+        $binder = new CommandArgumentBinder(static fn(): array => []);
+
+        self::assertSame(
+            ParticleType::HEART,
+            $binder->bind($arguments, new BinderCommandSender(), ['minecraft:heart_particle'])->enum(
+                'particle',
+                ParticleType::class,
+            ),
+        );
+        self::assertGreaterThan(1_024, strlen(implode(', ', array_map(
+            static fn(ParticleType $type): string => $type->value,
+            ParticleType::cases(),
+        ))));
+
+        try {
+            $binder->bind($arguments, new BinderCommandSender(), ['minecraft:heart']);
+            self::fail('An unregistered particle identifier was accepted.');
+        } catch (CommandBindingException $failure) {
+            self::assertSame("Argument 'particle' was not found.", $failure->getMessage());
+            self::assertLessThan(1_024, strlen($failure->getMessage()));
+        }
     }
 
     public function testJsonConsumesTheRemainingStructuredValue(): void

@@ -22,6 +22,9 @@ namespace Bedriox\Server\Simulation;
 
 use Bedriox\Api\Crafting\CraftingGrid as ApiCraftingGrid;
 use Bedriox\Api\Crafting\CraftingRecipe as ApiCraftingRecipe;
+use Bedriox\Api\Effect\EffectActions;
+use Bedriox\Api\Effect\EffectCause;
+use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Entity\Entity as ApiEntity;
 use Bedriox\Api\Entity\EntityCombustionCause;
 use Bedriox\Api\Entity\EntityDamageCause;
@@ -32,6 +35,10 @@ use Bedriox\Api\Event\Block\BlockBreakEvent;
 use Bedriox\Api\Event\Block\BlockBrokenEvent;
 use Bedriox\Api\Event\Block\BlockPlacedEvent;
 use Bedriox\Api\Event\Block\BlockPlaceEvent;
+use Bedriox\Api\Event\Block\BrewedEvent;
+use Bedriox\Api\Event\Block\BrewingEvent;
+use Bedriox\Api\Event\Block\BrewingFuelConsumedEvent;
+use Bedriox\Api\Event\Block\BrewingFuelConsumeEvent;
 use Bedriox\Api\Event\Block\ChestPairedEvent;
 use Bedriox\Api\Event\Block\ChestPairEvent;
 use Bedriox\Api\Event\Entity\EntityCombustEvent;
@@ -40,11 +47,17 @@ use Bedriox\Api\Event\Entity\EntityDamageEvent;
 use Bedriox\Api\Event\Entity\EntityDeathEvent;
 use Bedriox\Api\Event\Entity\EntityDespawnedEvent;
 use Bedriox\Api\Event\Entity\EntityDespawnEvent;
+use Bedriox\Api\Event\Entity\EntityEffectAddedEvent;
+use Bedriox\Api\Event\Entity\EntityEffectAddEvent;
+use Bedriox\Api\Event\Entity\EntityEffectRemovedEvent;
+use Bedriox\Api\Event\Entity\EntityEffectRemoveEvent;
 use Bedriox\Api\Event\Entity\EntityEquipmentChangedEvent;
 use Bedriox\Api\Event\Entity\EntityEquipmentChangeEvent;
 use Bedriox\Api\Event\Entity\EntityInteractEvent;
 use Bedriox\Api\Event\Entity\EntitySpawnedEvent;
 use Bedriox\Api\Event\Entity\EntitySpawnEvent;
+use Bedriox\Api\Event\Entity\PotionProjectileImpactedEvent;
+use Bedriox\Api\Event\Entity\PotionProjectileImpactEvent;
 use Bedriox\Api\Event\Event;
 use Bedriox\Api\Event\Inventory\InventoryChangedEvent;
 use Bedriox\Api\Event\Inventory\InventoryChangeEvent;
@@ -116,6 +129,8 @@ use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\Block as ApiBlock;
 use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
 use Bedriox\Api\World\Position as ApiPosition;
+use Bedriox\Server\Entity\AbstractLivingEntity;
+use Bedriox\Server\Gameplay\Potion\BrewingStandBlockEntity;
 use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Player\Player;
 use Bedriox\Server\Player\PlayerInventory;
@@ -132,6 +147,7 @@ final readonly class PluginGameplayEventBridge
      * @param null|Closure(string): PlayerActions    $playerActions
      * @param null|Closure(string): PlayerInventoryActions $playerInventoryActions
      * @param null|Closure(string): (Closure(ApiItemStack): int) $maximumStackSize
+     * @param null|Closure(string): EffectActions $playerEffectActions
      * @param null|Closure(string): ?\Bedriox\Api\World\World $worldResolver
      */
     public function __construct(
@@ -141,6 +157,7 @@ final readonly class PluginGameplayEventBridge
         private ?Closure $playerActions = null,
         private ?Closure $playerInventoryActions = null,
         private ?Closure $maximumStackSize = null,
+        private ?Closure $playerEffectActions = null,
     ) {}
 
     /** @internal Dispatches lifecycle events that are owned outside the simulation. */
@@ -152,19 +169,19 @@ final readonly class PluginGameplayEventBridge
     /** @param Closure(string): PlayerConnection $playerConnections */
     public function withPlayerConnections(Closure $playerConnections): self
     {
-        return new self($this->events, $playerConnections, $this->worldResolver, $this->playerActions, $this->playerInventoryActions, $this->maximumStackSize);
+        return new self($this->events, $playerConnections, $this->worldResolver, $this->playerActions, $this->playerInventoryActions, $this->maximumStackSize, $this->playerEffectActions);
     }
 
     /** @param Closure(string): ?\Bedriox\Api\World\World $worldResolver */
     public function withWorldResolver(Closure $worldResolver): self
     {
-        return new self($this->events, $this->playerConnections, $worldResolver, $this->playerActions, $this->playerInventoryActions, $this->maximumStackSize);
+        return new self($this->events, $this->playerConnections, $worldResolver, $this->playerActions, $this->playerInventoryActions, $this->maximumStackSize, $this->playerEffectActions);
     }
 
     /** @param Closure(string): PlayerActions $playerActions */
     public function withPlayerActions(Closure $playerActions): self
     {
-        return new self($this->events, $this->playerConnections, $this->worldResolver, $playerActions, $this->playerInventoryActions, $this->maximumStackSize);
+        return new self($this->events, $this->playerConnections, $this->worldResolver, $playerActions, $this->playerInventoryActions, $this->maximumStackSize, $this->playerEffectActions);
     }
 
     /**
@@ -182,6 +199,21 @@ final readonly class PluginGameplayEventBridge
             $this->playerActions,
             $playerInventoryActions,
             $maximumStackSize,
+            $this->playerEffectActions,
+        );
+    }
+
+    /** @param Closure(string): EffectActions $playerEffectActions */
+    public function withPlayerEffectActions(Closure $playerEffectActions): self
+    {
+        return new self(
+            $this->events,
+            $this->playerConnections,
+            $this->worldResolver,
+            $this->playerActions,
+            $this->playerInventoryActions,
+            $this->maximumStackSize,
+            $playerEffectActions,
         );
     }
 
@@ -548,6 +580,62 @@ final readonly class PluginGameplayEventBridge
         return $event->isCancelled() ? null : $event->amount();
     }
 
+    public function addEffect(Player|AbstractLivingEntity $entity, EffectInstance $effect, EffectCause $cause): ?EffectInstance
+    {
+        $event = new EntityEffectAddEvent(
+            $this->effectEntity($entity),
+            $effect,
+            $cause,
+            $entity instanceof Player
+                ? $entity->effects->get($effect->type)
+                : $entity->effectState()->get($effect->type),
+        );
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->effect();
+    }
+
+    public function effectAdded(
+        Player|AbstractLivingEntity $entity,
+        EffectInstance $effect,
+        EffectCause $cause,
+        ?EffectInstance $previous,
+    ): void {
+        $this->events->dispatch(new EntityEffectAddedEvent(
+            $this->effectEntity($entity),
+            $effect,
+            $cause,
+            $previous,
+        ));
+    }
+
+    public function allowEffectRemoval(Player|AbstractLivingEntity $entity, EffectInstance $effect, EffectCause $cause): bool
+    {
+        $event = new EntityEffectRemoveEvent($this->effectEntity($entity), $effect, $cause);
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function effectRemoved(
+        Player|AbstractLivingEntity $entity,
+        EffectInstance $effect,
+        EffectCause $cause,
+        ?EffectInstance $promoted = null,
+    ): void {
+        $this->events->dispatch(new EntityEffectRemovedEvent(
+            $this->effectEntity($entity),
+            $effect,
+            $cause,
+            $promoted,
+        ));
+    }
+
+    private function effectEntity(Player|AbstractLivingEntity $entity): ApiPlayer|ApiLivingEntity
+    {
+        return $entity instanceof Player ? $this->playerView($entity) : $entity;
+    }
+
     public function regainedHealth(Player $player, ApiHealthRegainCause $cause, float $amount): void
     {
         $this->events->dispatch(new PlayerRegainedHealthEvent($this->playerView($player), $cause, $amount));
@@ -887,6 +975,100 @@ final readonly class PluginGameplayEventBridge
         ));
     }
 
+    /** @return null|list<ApiItemStack|null> */
+    public function brew(BrewingStandBlockEntity $state): ?array
+    {
+        $event = new BrewingEvent(
+            new ApiBlockPosition($state->position->x, $state->position->y, $state->position->z),
+            self::brewingResults($state),
+        );
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->results();
+    }
+
+    public function brewed(BrewingStandBlockEntity $state): void
+    {
+        $this->events->dispatch(new BrewedEvent(
+            new ApiBlockPosition($state->position->x, $state->position->y, $state->position->z),
+            self::brewingResults($state),
+        ));
+    }
+
+    public function brewingFuel(BrewingStandBlockEntity $state, int $uses): ?int
+    {
+        $fuel = $state->inventory->stackAt(BrewingStandBlockEntity::SLOT_FUEL);
+        if ($fuel === null) {
+            return null;
+        }
+        $event = new BrewingFuelConsumeEvent(
+            new ApiBlockPosition($state->position->x, $state->position->y, $state->position->z),
+            new ApiItemStack($fuel->identifier, 1, $fuel->damage, $fuel->nbt, $fuel->auxValue),
+            $uses,
+        );
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->fuelUses();
+    }
+
+    public function brewingFuelConsumed(BrewingStandBlockEntity $before, int $uses): void
+    {
+        $fuel = $before->inventory->stackAt(BrewingStandBlockEntity::SLOT_FUEL);
+        if ($fuel === null) {
+            return;
+        }
+        $this->events->dispatch(new BrewingFuelConsumedEvent(
+            new ApiBlockPosition($before->position->x, $before->position->y, $before->position->z),
+            new ApiItemStack($fuel->identifier, 1, $fuel->damage, $fuel->nbt, $fuel->auxValue),
+            $uses,
+        ));
+    }
+
+    public function potionProjectileImpact(\Bedriox\Server\Gameplay\Potion\PotionProjectile $projectile): bool
+    {
+        $event = new PotionProjectileImpactEvent(
+            $projectile->runtimeEntityId,
+            $projectile->ownerUuid,
+            $projectile->potionType,
+            self::position($projectile->position),
+            $projectile->lingering,
+            $projectile->tippedArrow,
+        );
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function potionProjectileImpacted(\Bedriox\Server\Gameplay\Potion\PotionProjectile $projectile): void
+    {
+        $this->events->dispatch(new PotionProjectileImpactedEvent(
+            $projectile->runtimeEntityId,
+            $projectile->ownerUuid,
+            $projectile->potionType,
+            self::position($projectile->position),
+            $projectile->lingering,
+            $projectile->tippedArrow,
+        ));
+    }
+
+    /** @return list<ApiItemStack|null> */
+    private static function brewingResults(BrewingStandBlockEntity $state): array
+    {
+        $results = [];
+        foreach ([
+            BrewingStandBlockEntity::SLOT_BOTTLE_LEFT,
+            BrewingStandBlockEntity::SLOT_BOTTLE_MIDDLE,
+            BrewingStandBlockEntity::SLOT_BOTTLE_RIGHT,
+        ] as $slot) {
+            $stack = $state->inventory->stackAt($slot);
+            $results[] = $stack === null
+                ? null
+                : new ApiItemStack($stack->identifier, $stack->count, $stack->damage, $stack->nbt, $stack->auxValue);
+        }
+
+        return $results;
+    }
+
     public function playerView(Player $player, ?PlayerInventory $inventory = null): ApiPlayer
     {
         $snapshot = $player->snapshot();
@@ -911,6 +1093,7 @@ final readonly class PluginGameplayEventBridge
             self::nutrition($player),
             armorInventory: self::armorInventory($inventory ?? $player->inventory),
             offHandItem: self::item(($inventory ?? $player->inventory)->offhandStack()),
+            effects: $player->effects->snapshot(),
         );
 
         return $this->playerActions === null || $this->playerInventoryActions === null || $this->maximumStackSize === null
@@ -920,6 +1103,7 @@ final readonly class PluginGameplayEventBridge
                 ($this->playerActions)($snapshot->identity),
                 ($this->playerInventoryActions)($snapshot->identity),
                 ($this->maximumStackSize)($snapshot->identity),
+                $this->playerEffectActions === null ? null : ($this->playerEffectActions)($snapshot->identity),
             );
     }
 
@@ -944,6 +1128,7 @@ final readonly class PluginGameplayEventBridge
             self::nutrition($player),
             armorInventory: self::armorInventory($inventory ?? $player->inventory),
             offHandItem: self::item(($inventory ?? $player->inventory)->offhandStack()),
+            effects: $player->effects->snapshot(),
         );
     }
 

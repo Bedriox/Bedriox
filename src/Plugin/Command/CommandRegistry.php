@@ -68,6 +68,8 @@ final class CommandRegistry
     private int $nextSoftEnumId = 1;
     private int $schemaRevision = 0;
     private readonly CommandArgumentBinder $binder;
+    /** @var null|Closure(Throwable, string, ?string, ?string): void */
+    private readonly ?Closure $failureReporter;
 
     public function __construct(
         private readonly PluginRuntimeControl $plugins,
@@ -85,6 +87,7 @@ final class CommandRegistry
         ?Closure $entities = null,
         ?Closure $selectorRandomIndex = null,
         ?Closure $selectorOrigin = null,
+        ?Closure $failureReporter = null,
     ) {
         if ($maximumCommands < 1 || $maximumCommands > 4096
             || $maximumCommandsPerPlugin < 1 || $maximumCommandsPerPlugin > $maximumCommands
@@ -99,6 +102,7 @@ final class CommandRegistry
             $selectorRandomIndex,
             $selectorOrigin,
         );
+        $this->failureReporter = $failureReporter;
     }
 
     public function register(string $plugin, Command $command): CommandSubscription
@@ -259,6 +263,31 @@ final class CommandRegistry
 
     public function dispatch(CommandSender $sender, string $line): CommandResult
     {
+        $commandName = null;
+        $commandOwner = null;
+        $operation = 'command parsing';
+        try {
+            return $this->dispatchInternal($sender, $line, $commandName, $commandOwner, $operation);
+        } catch (Throwable $failure) {
+            $this->reportFailure($failure, $operation, $commandName, $commandOwner);
+            $this->sendMessageSafely(
+                $sender,
+                'The command failed internally.',
+                $commandName,
+                $commandOwner,
+            );
+
+            return CommandResult::failure('The command failed internally.');
+        }
+    }
+
+    private function dispatchInternal(
+        CommandSender $sender,
+        string $line,
+        ?string &$commandName,
+        ?string &$commandOwner,
+        string &$operation,
+    ): CommandResult {
         try {
             $normalized = ltrim($line);
             if (str_starts_with($normalized, '/')) {
@@ -274,6 +303,7 @@ final class CommandRegistry
         if (!is_string($rawLabel)) {
             return CommandResult::failure('The command line did not contain a command.');
         }
+        $operation = 'command lookup';
         $label = strtolower($rawLabel);
         $command = isset($this->labels[$label]) ? ($this->commands[$this->labels[$label]] ?? null) : null;
         if (!$command instanceof RegisteredCommand || ($command->pluginOwned && !$this->plugins->isEnabled($command->owner))) {
@@ -281,6 +311,9 @@ final class CommandRegistry
 
             return CommandResult::failure('Unknown command.');
         }
+        $commandName = $command->definition->name;
+        $commandOwner = $command->owner;
+        $operation = 'command policy';
         if (!$command->definition->allowedSenders->allows($sender->type())) {
             $sender->sendMessage('This command cannot be used by this sender.');
 
@@ -291,21 +324,24 @@ final class CommandRegistry
 
             return CommandResult::failure('You do not have permission to use this command.');
         }
+        $operation = 'argument binding';
         try {
             $values = $this->binder->bind($command->arguments, $sender, $tokens);
         } catch (CommandBindingException $failure) {
             $sender->sendMessage($failure->getMessage());
             foreach ($command->arguments->usage($command->definition->name) as $usage) {
-                $sender->sendMessage('Usage: ' . $usage);
+                $sender->sendMessage($this->boundedUsageMessage($usage, $command->definition->name));
             }
 
             return CommandResult::failure($failure->getMessage());
         }
+        $operation = 'pre-dispatch event';
         $pre = new CommandPreDispatchEvent($sender, $command->definition->name, $values, $command->owner);
         $this->events->dispatch($pre);
         if ($pre->isCancelled() || !$this->has($command->id)) {
             return CommandResult::failure('Command dispatch was cancelled.');
         }
+        $operation = 'command execution';
         $frame = $command->pluginOwned ? new PluginExecutionFrame(
             $command->owner,
             $this->plugins->version($command->owner),
@@ -334,8 +370,9 @@ final class CommandRegistry
             if ($command->pluginOwned) {
                 $this->plugins->disableAfterFailure($command->owner, $failure, $frame);
             } else {
-                $sender->sendMessage('The command failed internally.');
+                $this->reportFailure($failure, 'command execution', $commandName, $commandOwner);
             }
+            $this->sendMessageSafely($sender, 'The command failed internally.', $commandName, $commandOwner);
 
             return CommandResult::failure('The command failed internally.');
         } finally {
@@ -343,9 +380,11 @@ final class CommandRegistry
                 $this->execution->leave();
             }
         }
+        $operation = 'command result delivery';
         if ($result->message() !== null) {
             $sender->sendMessage($result->message());
         }
+        $operation = 'post-dispatch event';
         $this->events->dispatch(new CommandDispatchedEvent(
             $sender,
             $command->definition->name,
@@ -355,6 +394,51 @@ final class CommandRegistry
         ));
 
         return $result;
+    }
+
+    private function boundedUsageMessage(string $usage, string $commandName): string
+    {
+        $message = 'Usage: ' . $usage;
+        if (strlen($message) <= 1_024) {
+            return $message;
+        }
+        $withoutCatalogs = preg_replace(
+            '/([<\[])([a-zA-Z][a-zA-Z0-9_-]*):[^>\]]+([>\]])/',
+            '$1$2$3',
+            $usage,
+        );
+        $message = 'Usage: ' . (is_string($withoutCatalogs) ? $withoutCatalogs : '/' . $commandName);
+
+        return strlen($message) <= 1_024 ? $message : 'Usage: /' . $commandName;
+    }
+
+    private function sendMessageSafely(
+        CommandSender $sender,
+        string $message,
+        ?string $commandName = null,
+        ?string $commandOwner = null,
+    ): void {
+        try {
+            $sender->sendMessage($message);
+        } catch (Throwable $failure) {
+            $this->reportFailure($failure, 'command result delivery', $commandName, $commandOwner);
+        }
+    }
+
+    private function reportFailure(
+        Throwable $failure,
+        string $operation,
+        ?string $commandName = null,
+        ?string $commandOwner = null,
+    ): void {
+        if ($this->failureReporter === null) {
+            return;
+        }
+        try {
+            ($this->failureReporter)($failure, $operation, $commandName, $commandOwner);
+        } catch (Throwable) {
+            // Failure reporting must not make command dispatch unsafe.
+        }
     }
 
     public function submitJob(string $plugin, CommandJob $job): CommandJobSubscription

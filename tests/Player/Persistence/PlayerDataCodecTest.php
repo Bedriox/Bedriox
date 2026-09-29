@@ -20,7 +20,10 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Player\Persistence;
 
+use Bedriox\Api\Effect\EffectInstance;
+use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Inventory\ItemNbt;
+use Bedriox\Server\Effect\ActiveEffectCollection;
 use Bedriox\Server\Player\Persistence\Exception\CorruptPlayerDataException;
 use Bedriox\Server\Player\Persistence\Exception\UnsupportedPlayerDataException;
 use Bedriox\Server\Player\Persistence\PlayerDataCodec;
@@ -36,6 +39,61 @@ use PHPUnit\Framework\TestCase;
 
 final class PlayerDataCodecTest extends TestCase
 {
+    public function testPersistsActiveEffectsWithoutWireIdentifiers(): void
+    {
+        $profile = self::profile();
+        $profile = new PlayerBootstrap(
+            $profile->identity,
+            $profile->worldName,
+            $profile->position,
+            $profile->yaw,
+            $profile->pitch,
+            $profile->inventory,
+            $profile->firstPlayedAt,
+            $profile->lastPlayedAt,
+            $profile->gamemode,
+            $profile->health,
+            $profile->food,
+            $profile->saturation,
+            $profile->exhaustion,
+            [new EffectInstance(EffectType::SPEED, 600, 1, false, true, false)],
+        );
+
+        $decoded = (new PlayerDataCodec())->decode((new PlayerDataCodec())->encode($profile));
+
+        self::assertEquals($profile->effects, $decoded->effects);
+    }
+
+    public function testPersistsBoundedHiddenEffectFallbackState(): void
+    {
+        $effects = new ActiveEffectCollection();
+        $effects->add(new EffectInstance(EffectType::SPEED, 200));
+        $effects->add(new EffectInstance(EffectType::SPEED, 40, 1));
+        $profile = self::profile();
+        $profile = new PlayerBootstrap(
+            $profile->identity,
+            $profile->worldName,
+            $profile->position,
+            $profile->yaw,
+            $profile->pitch,
+            $profile->inventory,
+            $profile->firstPlayedAt,
+            $profile->lastPlayedAt,
+            effects: array_values($effects->snapshot()),
+            effectPersistenceState: $effects->persistenceState(),
+        );
+
+        $decoded = (new PlayerDataCodec())->decode((new PlayerDataCodec())->encode($profile));
+        self::assertNotNull($decoded->effectPersistenceState);
+        $restored = new ActiveEffectCollection();
+        $restored->restorePersistenceState($decoded->effectPersistenceState);
+        $restored->tick(40, static function (): void {});
+        $promoted = $restored->get(EffectType::SPEED);
+        self::assertNotNull($promoted);
+        self::assertSame(160, $promoted->durationTicks);
+        self::assertSame(0, $promoted->amplifier);
+    }
+
     public function testRoundTripsCompleteSessionIndependentProfile(): void
     {
         $profile = self::profile();
@@ -127,6 +185,34 @@ final class PlayerDataCodecTest extends TestCase
         );
     }
 
+    public function testPersistsEffectDerivedVitalsAndEnvironmentState(): void
+    {
+        $profile = self::profile();
+        $effect = new EffectInstance(EffectType::ABSORPTION, 200, 1);
+        $profile = new PlayerBootstrap(
+            $profile->identity,
+            $profile->worldName,
+            $profile->position,
+            $profile->yaw,
+            $profile->pitch,
+            $profile->inventory,
+            $profile->firstPlayedAt,
+            $profile->lastPlayedAt,
+            $profile->gamemode,
+            $profile->health,
+            effects: [$effect],
+            absorption: 6.0,
+            airTicks: 75,
+            fireTicks: 40,
+        );
+
+        $decoded = (new PlayerDataCodec())->decode((new PlayerDataCodec())->encode($profile));
+
+        self::assertSame(6.0, $decoded->absorption);
+        self::assertSame(75, $decoded->airTicks);
+        self::assertSame(40, $decoded->fireTicks);
+    }
+
     public function testPersistsNutritionAndMigratesSchemaFiveProfilesToEmptyEquipmentDefaults(): void
     {
         $profile = self::profile();
@@ -166,7 +252,7 @@ final class PlayerDataCodecTest extends TestCase
     {
         $legacy = self::root();
         $legacy['SchemaVersion'] = LittleEndianNbtTag::int(6);
-        unset($legacy['EnderChest']);
+        unset($legacy['EnderChest'], $legacy['Effects'], $legacy['Absorption'], $legacy['AirTicks'], $legacy['FireTicks']);
 
         $decoded = (new PlayerDataCodec())->decode((new LittleEndianNbtCodec())->encodeRootCompound($legacy));
 
@@ -441,6 +527,10 @@ final class PlayerDataCodecTest extends TestCase
             $root['FoodLevel'],
             $root['Saturation'],
             $root['Exhaustion'],
+            $root['Effects'],
+            $root['Absorption'],
+            $root['AirTicks'],
+            $root['FireTicks'],
         );
     }
 

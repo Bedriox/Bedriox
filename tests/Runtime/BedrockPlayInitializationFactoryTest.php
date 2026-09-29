@@ -222,7 +222,7 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
         self::assertSame(2, $mainInventory->items[0]->runtimeId);
         self::assertSame(64, $mainInventory->items[0]->count);
         self::assertSame(1, $mainInventory->items[0]->stackNetworkId);
-        self::assertSame(14_944, $mainInventory->items[0]->blockRuntimeId);
+        self::assertSame(14_932, $mainInventory->items[0]->blockRuntimeId);
         foreach (array_slice($mainInventory->items, 1) as $empty) {
             self::assertSame(0, $empty->runtimeId);
             self::assertSame(1, $empty->count);
@@ -241,6 +241,8 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
         $decodedCrafting = CraftingDataPacket::decode($packets[22]->encode());
         self::assertTrue($decodedCrafting->cleanRecipes);
         self::assertCount(4_142, $decodedCrafting->recipes);
+        self::assertNotEmpty($decodedCrafting->potionMixData);
+        self::assertNotEmpty($decodedCrafting->containerMixData);
         self::assertInstanceOf(SetActorDataPacket::class, $packets[23]);
         self::assertSame(400, $packets[23]->metadata[4]->value);
         self::assertSame(400, $packets[23]->metadata[7]->value);

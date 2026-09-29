@@ -20,6 +20,9 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Gameplay\Item;
 
+use Bedriox\Api\Effect\EffectInstance;
+use Bedriox\Api\Effect\EffectType;
+use Bedriox\Api\Potion\PotionContainer;
 use InvalidArgumentException;
 
 /** Mutable bounded behavior registry; canonical inventory identity remains owned by ItemCatalog. */
@@ -88,13 +91,55 @@ final class ItemBehaviorRegistry
                 new ConsumableDefinition($food, $saturation, residueIdentifier: $residue ?? null),
             );
         }
-        foreach (['minecraft:golden_apple', 'minecraft:enchanted_golden_apple'] as $identifier) {
-            $behaviors[] = new ItemUseBehavior(
-                $identifier,
-                32,
-                new ConsumableDefinition(4.0, 9.6, false),
-            );
-        }
+        $behaviors[] = new ItemUseBehavior(
+            'minecraft:golden_apple',
+            32,
+            new ConsumableDefinition(4.0, 9.6, false),
+            effects: ConsumableEffectDefinition::food([
+                new EffectInstance(EffectType::REGENERATION, 100, 1),
+                new EffectInstance(EffectType::ABSORPTION, 2_400),
+            ]),
+        );
+        $behaviors[] = new ItemUseBehavior(
+            'minecraft:enchanted_golden_apple',
+            32,
+            new ConsumableDefinition(4.0, 9.6, false),
+            effects: ConsumableEffectDefinition::food([
+                new EffectInstance(EffectType::REGENERATION, 600, 1),
+                new EffectInstance(EffectType::ABSORPTION, 2_400, 3),
+                new EffectInstance(EffectType::RESISTANCE, 6_000),
+                new EffectInstance(EffectType::FIRE_RESISTANCE, 6_000),
+            ]),
+        );
+        $behaviors[] = new ItemUseBehavior(
+            'minecraft:potion',
+            32,
+            new ConsumableDefinition(0.0, 0.0, false, 'minecraft:glass_bottle'),
+            effects: ConsumableEffectDefinition::potion(),
+        );
+        $behaviors[] = new ItemUseBehavior(
+            'minecraft:milk_bucket',
+            32,
+            new ConsumableDefinition(0.0, 0.0, false, 'minecraft:bucket'),
+            effects: ConsumableEffectDefinition::milk(),
+        );
+        $behaviors[] = new ItemUseBehavior(
+            PotionContainer::SPLASH->value,
+            0,
+            kind: \Bedriox\Api\Inventory\ItemUseKind::INSTANT,
+            throwablePotion: PotionContainer::SPLASH,
+        );
+        $behaviors[] = new ItemUseBehavior(
+            PotionContainer::LINGERING->value,
+            0,
+            kind: \Bedriox\Api\Inventory\ItemUseKind::INSTANT,
+            throwablePotion: PotionContainer::LINGERING,
+        );
+        $behaviors[] = new ItemUseBehavior(
+            'minecraft:bow',
+            1_200,
+            kind: \Bedriox\Api\Inventory\ItemUseKind::CHARGE,
+        );
 
         return new self($behaviors);
     }

@@ -22,6 +22,8 @@ namespace Bedriox\Server\Tests\Simulation;
 
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Data\CanonicalBlockState;
+use Bedriox\Server\Gameplay\Potion\BrewingRecipeCatalog;
+use Bedriox\Server\Gameplay\Potion\BrewingStandBlockEntity;
 use Bedriox\Server\Simulation\Event\ContainerClosed;
 use Bedriox\Server\Simulation\Event\ContainerOpened;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
@@ -39,6 +41,35 @@ use PHPUnit\Framework\TestCase;
 
 final class StorageContainerSimulationTest extends TestCase
 {
+    public function testIdleLoadedBrewingStandPerformsNoRecipeScans(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $registry = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $world = new World(
+            new WorldMetadata('idle-brewing-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+        );
+        $position = new BlockPosition(1, 64, 0);
+        $world->setBlockEntity(BrewingStandBlockEntity::empty($position));
+        $simulation = new WorldSimulation(
+            blockWorld: $world,
+            blockPalette: $palette,
+            blockStateRegistry: $registry,
+            brewingRecipes: new BrewingRecipeCatalog(
+                $data->recipeRegistry()->containerMixes(),
+                $data->recipeRegistry()->potionMixes(),
+            ),
+        );
+
+        for ($tick = 0; $tick < 100; ++$tick) {
+            $simulation->tick();
+        }
+
+        self::assertSame(0, $simulation->brewingRecipeEvaluationCount());
+    }
+
     public function testBarrelPresentationOpensForFirstViewerAndClosesForLastViewer(): void
     {
         $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());

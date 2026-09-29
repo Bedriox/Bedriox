@@ -20,6 +20,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\Event;
 
+use LogicException;
+
 abstract class CancellableEvent extends Event
 {
     private bool $cancelled = false;
@@ -37,7 +39,15 @@ abstract class CancellableEvent extends Event
     final public function setCancelled(bool $cancelled): void
     {
         $this->assertMutable();
+        if ($cancelled && !$this->cancellationAllowed()) {
+            throw new LogicException('This event occurrence cannot be cancelled.');
+        }
         $this->cancelled = $cancelled;
+    }
+
+    protected function cancellationAllowed(): bool
+    {
+        return true;
     }
 
     protected function state(): mixed

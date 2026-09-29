@@ -28,6 +28,7 @@ use Bedriox\Data\RecipeOutput as DataOutput;
 use Bedriox\Data\RecipeType as DataRecipeType;
 use Bedriox\Data\ShapedRecipe as DataShapedRecipe;
 use Bedriox\Data\ShapelessRecipe as DataShapelessRecipe;
+use Bedriox\Protocol\Packet\ContainerMixData;
 use Bedriox\Protocol\Packet\CraftingDataPacket;
 use Bedriox\Protocol\Packet\CraftingRecipe as ProtocolRecipe;
 use Bedriox\Protocol\Packet\CraftingRecipeIngredient as ProtocolIngredient;
@@ -35,6 +36,7 @@ use Bedriox\Protocol\Packet\CraftingRecipeType as ProtocolRecipeType;
 use Bedriox\Protocol\Packet\CraftingRecipeUnlockRequirement;
 use Bedriox\Protocol\Packet\InventoryItemStack as ProtocolItemStack;
 use Bedriox\Protocol\Packet\MultiCraftingRecipe;
+use Bedriox\Protocol\Packet\PotionMixData;
 use Bedriox\Protocol\Packet\ShapedCraftingRecipe;
 use Bedriox\Protocol\Packet\ShapelessCraftingRecipe;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
@@ -59,12 +61,16 @@ final class CraftingCatalog
     /**
      * @param list<ProtocolRecipe> $protocolRecipes
      * @param array<int, string> $complexByNetworkId
+     * @param list<PotionMixData> $potionMixData
+     * @param list<ContainerMixData> $containerMixData
      */
     private function __construct(
         private readonly CraftingRecipeRegistry $recipes,
         array $protocolRecipes,
         array $complexByNetworkId,
         private readonly BedrockInventoryPacketProjector $projector,
+        private readonly array $potionMixData,
+        private readonly array $containerMixData,
     ) {
         $this->staticProtocolRecipes = $protocolRecipes;
         $this->complexByNetworkId = $complexByNetworkId;
@@ -142,7 +148,22 @@ final class CraftingCatalog
             ++$nextNetworkId;
         }
 
-        return new self($registry, $protocol, $complexByNetworkId, $projector);
+        $networkItems = $data->itemNetworkRegistry();
+        $potionMixData = array_map(static fn(\Bedriox\Data\PotionMix $mix): PotionMixData => new PotionMixData(
+            $networkItems->definitionForIdentifier($mix->inputItemIdentifier())->networkRuntimeId(),
+            $mix->inputMetadata(),
+            $networkItems->definitionForIdentifier($mix->reagentItemIdentifier())->networkRuntimeId(),
+            $mix->reagentMetadata(),
+            $networkItems->definitionForIdentifier($mix->outputItemIdentifier())->networkRuntimeId(),
+            $mix->outputMetadata(),
+        ), $data->recipeRegistry()->potionMixes());
+        $containerMixData = array_map(static fn(\Bedriox\Data\ContainerMix $mix): ContainerMixData => new ContainerMixData(
+            $networkItems->definitionForIdentifier($mix->inputItemIdentifier())->networkRuntimeId(),
+            $networkItems->definitionForIdentifier($mix->reagentItemIdentifier())->networkRuntimeId(),
+            $networkItems->definitionForIdentifier($mix->outputItemIdentifier())->networkRuntimeId(),
+        ), $data->recipeRegistry()->containerMixes());
+
+        return new self($registry, $protocol, $complexByNetworkId, $projector, $potionMixData, $containerMixData);
     }
 
     public function recipes(): CraftingRecipeRegistry
@@ -186,7 +207,12 @@ final class CraftingCatalog
 
     public function protocolPacket(): CraftingDataPacket
     {
-        return new CraftingDataPacket($this->protocolRecipes(), true);
+        return new CraftingDataPacket(
+            $this->protocolRecipes(),
+            true,
+            $this->potionMixData,
+            $this->containerMixData,
+        );
     }
 
     public function revision(): int

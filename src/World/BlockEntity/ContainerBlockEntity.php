@@ -39,7 +39,7 @@ final readonly class ContainerBlockEntity extends BlockEntity
         int $revision = 0,
     ) {
         parent::__construct($type, $position, $revision);
-        if (!$type->ownsPersistentInventory()) {
+        if (!$type->isStorageContainer()) {
             throw new InvalidArgumentException('This block-entity type does not own persistent container contents.');
         }
         if ($inventory->size !== self::STORAGE_SLOT_COUNT) {

@@ -91,6 +91,11 @@ final class PlayerPersistenceManager
             $savedAlive ? $saved->food : \Bedriox\Server\Player\PlayerVitals::MAX_FOOD,
             $savedAlive ? $saved->saturation : \Bedriox\Server\Player\PlayerVitals::MAX_SATURATION,
             $savedAlive ? $saved->exhaustion : 0.0,
+            $savedAlive ? $saved->effects : [],
+            $savedAlive ? $saved->absorption : 0.0,
+            $savedAlive ? $saved->airTicks : \Bedriox\Server\Player\PlayerVitals::MAX_AIR_TICKS,
+            $savedAlive ? $saved->fireTicks : 0,
+            $savedAlive ? $saved->effectPersistenceState : null,
         );
     }
 
@@ -110,6 +115,11 @@ final class PlayerPersistenceManager
             $player->vitals->food,
             $player->vitals->saturation,
             $player->vitals->exhaustion,
+            array_values($player->effects->snapshot()),
+            $player->vitals->absorption,
+            $player->vitals->airTicks,
+            $player->vitals->fireTicks,
+            $player->effects->persistenceState(),
         );
     }
 

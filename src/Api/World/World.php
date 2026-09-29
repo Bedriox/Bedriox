@@ -20,6 +20,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\World;
 
+use Bedriox\Api\Player\Player;
+use Bedriox\Api\World\Particle\Particle;
 use InvalidArgumentException;
 
 /**
@@ -74,5 +76,25 @@ final readonly class World
     public function setBlock(BlockPosition $position, string $identifier): void
     {
         ($this->actions ?? WorldActions::unavailable())->setBlock($this, $position, $identifier);
+    }
+
+    /**
+     * Requests a presentation-only particle for viewers of the containing chunk.
+     *
+     * @param array<array-key, mixed>|null $players Optional audience; null selects every eligible world viewer.
+     */
+    public function spawnParticle(Position $position, Particle $particle, ?array $players = null): void
+    {
+        $audience = null;
+        if ($players !== null) {
+            $audience = [];
+            foreach ($players as $player) {
+                if (!$player instanceof Player) {
+                    throw new InvalidArgumentException('Particle audience must contain Player instances.');
+                }
+                $audience[] = $player;
+            }
+        }
+        ($this->actions ?? WorldActions::unavailable())->spawnParticle($this, $position, $particle, $audience);
     }
 }

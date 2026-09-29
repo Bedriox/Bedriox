@@ -20,6 +20,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\Entity;
 
+use Bedriox\Api\Effect\EffectManager;
+
 interface LivingEntityController extends EntityController
 {
     public function damage(
@@ -33,4 +35,6 @@ interface LivingEntityController extends EntityController
     public function setHealth(float $health): void;
 
     public function equipment(): EntityEquipment;
+
+    public function effects(): EffectManager;
 }

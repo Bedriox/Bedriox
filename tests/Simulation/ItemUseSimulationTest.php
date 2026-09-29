@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Simulation;
 
+use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Inventory\ItemUseKind;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Data\BedrockDataSet;
@@ -208,6 +209,11 @@ final class ItemUseSimulationTest extends TestCase
         self::assertNull($event->selectedStack);
         self::assertSame(20.0, $event->player->food);
         self::assertSame(19.6, $event->player->saturation);
+        $effects = $world->pluginPlayers()[0]->getEffects();
+        self::assertSame(1, $effects->get(EffectType::REGENERATION)?->amplifier);
+        self::assertSame(3, $effects->get(EffectType::ABSORPTION)?->amplifier);
+        self::assertTrue($effects->has(EffectType::RESISTANCE));
+        self::assertTrue($effects->has(EffectType::FIRE_RESISTANCE));
     }
 
     public function testHighHungerRegeneratesHealthAndChargesExhaustionAtVanillaCadence(): void

@@ -25,6 +25,7 @@ use Bedriox\Api\Player\Player;
 use Bedriox\Api\World\Position;
 use Bedriox\Server\Command\Default\BuiltinCommand;
 use Bedriox\Server\Command\Default\DeopCommand;
+use Bedriox\Server\Command\Default\EffectCommand;
 use Bedriox\Server\Command\Default\GamemodeCommand;
 use Bedriox\Server\Command\Default\GarbageCollectionStatus;
 use Bedriox\Server\Command\Default\GarbageCollectorCommand;
@@ -34,6 +35,7 @@ use Bedriox\Server\Command\Default\KillCommand;
 use Bedriox\Server\Command\Default\ListCommand;
 use Bedriox\Server\Command\Default\OnlinePlayerResolver;
 use Bedriox\Server\Command\Default\OpCommand;
+use Bedriox\Server\Command\Default\ParticleCommand;
 use Bedriox\Server\Command\Default\PermissionCommand;
 use Bedriox\Server\Command\Default\StatusCommand;
 use Bedriox\Server\Command\Default\StopCommand;
@@ -132,6 +134,8 @@ final readonly class BuiltinCommandRegistrar
             new GamemodeCommand($this->changeGameMode),
             new GiveCommand($itemIdentifiers, $this->giveItem, $this->itemExists),
             new TeleportCommand($this->teleport),
+            new EffectCommand(),
+            new ParticleCommand(),
         ];
         if ($this->killTarget !== null) {
             $commands[] = new KillCommand($this->killTarget);

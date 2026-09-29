@@ -2178,6 +2178,85 @@ final class ServerRuntimeTest extends TestCase
         }
     }
 
+    public function testInvalidCommandOutputCannotEscapeThePlayerSession(): void
+    {
+        $directory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'bedriox-runtime-command-output-' . bin2hex(random_bytes(8));
+        $permissions = new PermissionStore($directory . DIRECTORY_SEPARATOR . 'permissions.json');
+        $commands = $this->authorityCommands();
+        $commands->registerServer(new RuntimeAuthorityCommand(
+            'oversized-output',
+            'Emit invalid command output',
+            oversizedOutput: true,
+        ));
+        $transport = new FakeConnectedTransport();
+        $clock = new RuntimeTestClock();
+        $world = new WorldSimulation();
+        $loginFactory = new RuntimeLoginFactory();
+        $runtime = new ServerRuntime(
+            $transport,
+            $loginFactory,
+            new BedrockPlayChannelFactory(
+                new EmptyInitializationFactory(),
+                commandRegistry: $commands,
+                permissionStore: $permissions,
+            ),
+            $world,
+            new FixedRateWorldLoop($world, $clock),
+            new RecordingEventEncoder(),
+            commandRegistry: $commands,
+            permissionStore: $permissions,
+        );
+        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+
+        try {
+            $client = $this->advanceToInitializing($runtime, $transport, $info, $loginFactory);
+            $decryptor = $loginFactory->clientDecryptor();
+            $this->decodeEncryptedPackets($transport->sent, $decryptor);
+            $transport->sent = [];
+            $this->receiveEncrypted($transport, $info, $client, new SetLocalPlayerAsInitializedPacket(UnsignedLong::fromInt(1)));
+            self::assertTrue($runtime->poll());
+            $clock->advance(50_000_000);
+            self::assertTrue($runtime->poll());
+            $this->decodeEncryptedPackets($transport->sent, $decryptor);
+            $transport->sent = [];
+
+            $this->receiveEncrypted($transport, $info, $client, new CommandRequestPacket(
+                '/oversized-output',
+                new CommandOrigin(CommandOriginType::Player, 'ffffffff-ffff-ffff-ffff-ffffffffffff', 'invalid-output', 1),
+            ));
+            self::assertTrue($runtime->poll());
+            self::assertSame(1, $runtime->sessionCount());
+            self::assertNull($runtime->failure());
+            $failed = $this->decodeEncryptedPackets($transport->sent, $decryptor);
+            self::assertCount(1, $failed);
+            self::assertInstanceOf(CommandOutputPacket::class, $failed[0]);
+            self::assertSame(0, $failed[0]->successCount);
+            self::assertSame('The command failed internally.', $failed[0]->messages[0]->messageId);
+
+            $transport->sent = [];
+            $this->receiveEncrypted($transport, $info, $client, new CommandRequestPacket(
+                '/public',
+                new CommandOrigin(CommandOriginType::Player, 'ffffffff-ffff-ffff-ffff-ffffffffffff', 'following-command', 1),
+            ));
+            self::assertTrue($runtime->poll());
+            self::assertSame(1, $runtime->sessionCount());
+            $following = $this->decodeEncryptedPackets($transport->sent, $decryptor);
+            self::assertCount(1, $following);
+            self::assertInstanceOf(CommandOutputPacket::class, $following[0]);
+            self::assertSame(1, $following[0]->successCount);
+        } finally {
+            $runtime->close();
+            foreach (glob($directory . DIRECTORY_SEPARATOR . '*') ?: [] as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
+            if (is_dir($directory)) {
+                rmdir($directory);
+            }
+        }
+    }
+
     private function authorityCommands(): CommandRegistry
     {
         $plugins = new AuthorityPluginControl();
@@ -2481,6 +2560,7 @@ final class RuntimeAuthorityCommand extends AbstractCommand
         string $description,
         private readonly ?string $requiredPermission = null,
         private readonly bool $verbose = false,
+        private readonly bool $oversizedOutput = false,
     ) {
         parent::__construct($name, $description);
     }
@@ -2492,6 +2572,9 @@ final class RuntimeAuthorityCommand extends AbstractCommand
 
     public function execute(CommandContext $context): CommandResult
     {
+        if ($this->oversizedOutput) {
+            $context->sender()->sendMessage(str_repeat('x', 4_097));
+        }
         if ($this->verbose) {
             for ($line = 0; $line < 70; ++$line) {
                 $context->sender()->sendMessage('line ' . $line);

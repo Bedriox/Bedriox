@@ -32,4 +32,5 @@ enum ContainerType: string
     case BARREL = 'barrel';
     case SHULKER_BOX = 'shulker_box';
     case ENDER_CHEST = 'ender_chest';
+    case BREWING_STAND = 'brewing_stand';
 }

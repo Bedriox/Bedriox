@@ -28,6 +28,7 @@ use Bedriox\Server\Entity\Persistence\EntityOwnershipTransfer;
 use Bedriox\Server\Entity\Persistence\EntityOwnershipTransferResult;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceCodec;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
+use Bedriox\Server\Entity\Persistence\TransientEntityPersistenceStore;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\BlockEntity\BlockEntityCollection;
 use Bedriox\Server\World\Chunk;
@@ -62,10 +63,11 @@ use InvalidArgumentException;
 use Throwable;
 
 /** Mojang-compatible overworld provider backed by the qualified Bedriox LevelDB runtime. */
-final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersistenceStore
+final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersistenceStore, TransientEntityPersistenceStore
 {
     private const int CURRENT_CHUNK_VERSION = 42;
     private const int CURRENT_NETWORK_VERSION = 2193;
+    private const string TRANSIENT_ENTITY_KEY_PREFIX = "bedriox:transient_entities:";
 
     private bool $closed = false;
 
@@ -99,6 +101,36 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
     private readonly PersistentChunkMapper $mapper;
 
     private readonly LevelDbEntityPersistenceStore $entities;
+
+    public function loadTransientEntities(string $namespace): ?string
+    {
+        $this->assertOpen();
+        self::validateTransientNamespace($namespace);
+        try {
+            return $this->database->get(self::TRANSIENT_ENTITY_KEY_PREFIX . $namespace);
+        } catch (LevelDbIoException|LevelDbStorageException $error) {
+            throw new WorldStorageException('Transient entity state could not be loaded.', previous: $error);
+        }
+    }
+
+    public function saveTransientEntities(string $namespace, ?string $payload): void
+    {
+        $this->assertOpen();
+        self::validateTransientNamespace($namespace);
+        $key = self::TRANSIENT_ENTITY_KEY_PREFIX . $namespace;
+        try {
+            $this->database->writeBatch($payload === null ? [] : [$key => $payload], $payload === null ? [$key] : []);
+        } catch (LevelDbIoException|LevelDbStorageException $error) {
+            throw new WorldStorageException('Transient entity state could not be saved.', previous: $error);
+        }
+    }
+
+    private static function validateTransientNamespace(string $namespace): void
+    {
+        if (preg_match('/^[a-z0-9_.-]{1,64}$/D', $namespace) !== 1) {
+            throw new InvalidArgumentException('Transient entity namespace is invalid.');
+        }
+    }
 
     public static function open(
         string $worldPath,

@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
+use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Inventory\ItemStack;
 use Bedriox\Protocol\Packet\ActorAttribute;
@@ -52,7 +53,7 @@ final class BedrockLivingActorProjector
             new ActorSpawnAttribute('minecraft:knockback_resistance', 0.0, 1.0, 0.0),
             new ActorSpawnAttribute('minecraft:movement', 0.0, self::FLOAT32_MAX, 0.1),
             new ActorSpawnAttribute('minecraft:attack_damage', 0.0, self::FLOAT32_MAX, 1.0),
-            new ActorSpawnAttribute('minecraft:absorption', 0.0, self::FLOAT32_MAX, 0.0),
+            new ActorSpawnAttribute('minecraft:absorption', 0.0, self::FLOAT32_MAX, $entity->getAbsorption()),
         ];
     }
 
@@ -94,7 +95,7 @@ final class BedrockLivingActorProjector
         if ($entity->isNameTagVisible()) {
             $flags |= ActorFlag::CanShowName->mask();
         }
-        if ($entity->isInvisible()) {
+        if ($entity->isInvisible() || $entity->effectState()->has(EffectType::INVISIBILITY)) {
             $flags |= ActorFlag::Invisible->mask();
         }
         if ($entity->isOnFire()) {
@@ -119,6 +120,19 @@ final class BedrockLivingActorProjector
             0.0,
             $maximumHealth,
             $maximumHealth,
+        );
+    }
+
+    public function absorptionAttribute(AbstractLivingEntity $entity): ActorAttribute
+    {
+        return new ActorAttribute(
+            'minecraft:absorption',
+            0.0,
+            self::FLOAT32_MAX,
+            $entity->getAbsorption(),
+            0.0,
+            self::FLOAT32_MAX,
+            0.0,
         );
     }
 

@@ -27,9 +27,15 @@ enum BlockEntityType: string
     case Barrel = 'minecraft:barrel';
     case ShulkerBox = 'minecraft:shulker_box';
     case EnderChest = 'minecraft:ender_chest';
+    case BrewingStand = 'minecraft:brewing_stand';
 
     public function ownsPersistentInventory(): bool
     {
         return $this !== self::EnderChest;
+    }
+
+    public function isStorageContainer(): bool
+    {
+        return $this === self::Chest || $this === self::Barrel || $this === self::ShulkerBox;
     }
 }

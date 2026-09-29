@@ -20,7 +20,10 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Player\Persistence;
 
+use Bedriox\Api\Effect\EffectInstance;
+use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Inventory\ItemNbt;
+use Bedriox\Server\Effect\ActiveEffectPersistenceState;
 use Bedriox\Server\Player\Persistence\Exception\CorruptPlayerDataException;
 use Bedriox\Server\Player\Persistence\Exception\PlayerDataWriteException;
 use Bedriox\Server\Player\Persistence\Exception\UnsupportedPlayerDataException;
@@ -40,7 +43,7 @@ use InvalidArgumentException;
 /** Bounded schema-versioned player profile encoding with no session-local identifiers. */
 final readonly class PlayerDataCodec
 {
-    public const int SCHEMA_VERSION = 7;
+    public const int SCHEMA_VERSION = 10;
     public const int MAX_BYTES = 131_072;
 
     private const array REQUIRED_ROOT_TAGS = [
@@ -62,6 +65,10 @@ final readonly class PlayerDataCodec
         'FoodLevel',
         'Saturation',
         'Exhaustion',
+        'Effects',
+        'Absorption',
+        'AirTicks',
+        'FireTicks',
     ];
 
     public function __construct(private LittleEndianNbtCodec $nbt = new LittleEndianNbtCodec()) {}
@@ -128,6 +135,22 @@ final readonly class PlayerDataCodec
         foreach ($player->inventory->enderChest as $entry) {
             $enderChest[] = self::encodedStack($entry->stack, $entry->slot);
         }
+        $effectState = $player->effectPersistenceState ?? new ActiveEffectPersistenceState(array_combine(
+            array_map(static fn(EffectInstance $effect): string => $effect->type->value, $player->effects),
+            $player->effects,
+        ) ?: []);
+        $encodedEffects = [];
+        foreach ($effectState->active as $key => $effect) {
+            $encodedEffects[] = self::encodedEffect(
+                $effect,
+                true,
+                0,
+                $effectState->infiniteElapsedTicks[$key] ?? 0,
+            );
+            foreach ($effectState->hidden[$key] ?? [] as $order => $fallback) {
+                $encodedEffects[] = self::encodedEffect($fallback, false, $order, 0);
+            }
+        }
         $root = [
             'SchemaVersion' => LittleEndianNbtTag::int(self::SCHEMA_VERSION),
             'Uuid' => LittleEndianNbtTag::string($player->identity->uuid),
@@ -154,6 +177,13 @@ final readonly class PlayerDataCodec
             'FoodLevel' => LittleEndianNbtTag::float($player->food),
             'Saturation' => LittleEndianNbtTag::float($player->saturation),
             'Exhaustion' => LittleEndianNbtTag::float($player->exhaustion),
+            'Effects' => LittleEndianNbtTag::list(
+                LittleEndianNbtTag::COMPOUND,
+                $encodedEffects,
+            ),
+            'Absorption' => LittleEndianNbtTag::float($player->absorption),
+            'AirTicks' => LittleEndianNbtTag::int($player->airTicks),
+            'FireTicks' => LittleEndianNbtTag::int($player->fireTicks),
         ];
         if ($player->inventory->cursor !== null) {
             $root['Cursor'] = self::encodedStack($player->inventory->cursor);
@@ -202,7 +232,9 @@ final readonly class PlayerDataCodec
                     ['Armor', 'FoodLevel', 'Saturation', 'Exhaustion'],
                     true,
                 ))
-                && !($schemaVersion < 7 && $name === 'EnderChest'),
+                && !($schemaVersion < 7 && $name === 'EnderChest')
+                && !($schemaVersion < 8 && $name === 'Effects')
+                && !($schemaVersion < 9 && in_array($name, ['Absorption', 'AirTicks', 'FireTicks'], true)),
         );
         $allowed = array_fill_keys([
             ...$required,
@@ -315,6 +347,93 @@ final readonly class PlayerDataCodec
                     );
                 }
             }
+            $effects = [];
+            $effectPersistenceState = null;
+            if ($schemaVersion >= 8) {
+                $effectsTag = self::tag($root['Effects'], LittleEndianNbtTag::LIST, 'Effects');
+                if ($effectsTag->listType !== LittleEndianNbtTag::COMPOUND || !is_array($effectsTag->value)
+                    || count($effectsTag->value) > ($schemaVersion >= 10 ? 291 : count(EffectType::cases()))) {
+                    throw new CorruptPlayerDataException('Player effects list is malformed or exceeds its limit.');
+                }
+                $seenEffects = [];
+                $hiddenEffects = [];
+                $infiniteElapsedTicks = [];
+                $totalHidden = 0;
+                foreach ($effectsTag->value as $item) {
+                    if (!$item instanceof LittleEndianNbtTag) {
+                        throw new CorruptPlayerDataException('Player effects contain an invalid entry.');
+                    }
+                    $tags = self::compound($item, 'Effects');
+                    self::assertExactTags(
+                        $tags,
+                        $schemaVersion >= 10
+                            ? ['Type', 'Duration', 'Amplifier', 'Visible', 'Ambient', 'Infinite', 'Active', 'Order', 'Phase']
+                            : ['Type', 'Duration', 'Amplifier', 'Visible', 'Ambient', 'Infinite'],
+                        'effect entry',
+                    );
+                    $type = EffectType::tryFrom(self::string($tags['Type'], 'Effects.Type'));
+                    if ($type === null) {
+                        throw new CorruptPlayerDataException('Player effect type is unsupported.');
+                    }
+                    $effect = new EffectInstance(
+                        $type,
+                        self::integer($tags['Duration'], LittleEndianNbtTag::INT, 'Effects.Duration'),
+                        self::integer($tags['Amplifier'], LittleEndianNbtTag::BYTE, 'Effects.Amplifier'),
+                        self::integer($tags['Visible'], LittleEndianNbtTag::BYTE, 'Effects.Visible') === 1,
+                        self::integer($tags['Ambient'], LittleEndianNbtTag::BYTE, 'Effects.Ambient') === 1,
+                        self::integer($tags['Infinite'], LittleEndianNbtTag::BYTE, 'Effects.Infinite') === 1,
+                    );
+                    if (!$effect->infinite && $effect->durationTicks === 0) {
+                        throw new CorruptPlayerDataException('Persisted player effects must still be active.');
+                    }
+                    $active = $schemaVersion < 10
+                        || self::integer($tags['Active'], LittleEndianNbtTag::BYTE, 'Effects.Active') === 1;
+                    if ($active) {
+                        if (isset($seenEffects[$type->value])) {
+                            throw new CorruptPlayerDataException('Player active effect type is duplicated.');
+                        }
+                        $effects[] = $effect;
+                        $seenEffects[$type->value] = $effect;
+                        if ($schemaVersion >= 10) {
+                            $order = self::integer($tags['Order'], LittleEndianNbtTag::SHORT, 'Effects.Order');
+                            $phase = self::integer($tags['Phase'], LittleEndianNbtTag::INT, 'Effects.Phase');
+                            if ($order !== 0 || $phase < 0) {
+                                throw new CorruptPlayerDataException('Player active effect persistence metadata is invalid.');
+                            }
+                            $infiniteElapsedTicks[$type->value] = $phase;
+                        }
+                        continue;
+                    }
+                    $order = self::integer($tags['Order'], LittleEndianNbtTag::SHORT, 'Effects.Order');
+                    $phase = self::integer($tags['Phase'], LittleEndianNbtTag::INT, 'Effects.Phase');
+                    if ($order < 0 || $order >= 32 || $phase !== 0
+                        || isset($hiddenEffects[$type->value][$order])) {
+                        throw new CorruptPlayerDataException('Player hidden effect persistence metadata is invalid.');
+                    }
+                    $hiddenEffects[$type->value][$order] = $effect;
+                    if (++$totalHidden > 256) {
+                        throw new CorruptPlayerDataException('Player hidden effect state exceeds its total limit.');
+                    }
+                }
+                foreach ($hiddenEffects as $key => &$chain) {
+                    if (!isset($seenEffects[$key])) {
+                        throw new CorruptPlayerDataException('Player hidden effect has no active owner.');
+                    }
+                    ksort($chain);
+                    if (array_keys($chain) !== range(0, count($chain) - 1)) {
+                        throw new CorruptPlayerDataException('Player hidden effect order is not contiguous.');
+                    }
+                    $chain = array_values($chain);
+                }
+                unset($chain);
+                if ($hiddenEffects !== [] || array_filter($infiniteElapsedTicks) !== []) {
+                    $effectPersistenceState = new ActiveEffectPersistenceState(
+                        $seenEffects,
+                        $hiddenEffects,
+                        $infiniteElapsedTicks,
+                    );
+                }
+            }
 
             return new PlayerBootstrap(
                 new PlayerIdentity($uuid, $name, $xuid),
@@ -341,6 +460,15 @@ final readonly class PlayerDataCodec
                     ? self::floating($root['Saturation'], 'Saturation')
                     : PlayerVitals::MAX_SATURATION,
                 isset($root['Exhaustion']) ? self::floating($root['Exhaustion'], 'Exhaustion') : 0.0,
+                $effects,
+                isset($root['Absorption']) ? self::floating($root['Absorption'], 'Absorption') : 0.0,
+                isset($root['AirTicks'])
+                    ? self::integer($root['AirTicks'], LittleEndianNbtTag::INT, 'AirTicks')
+                    : PlayerVitals::MAX_AIR_TICKS,
+                isset($root['FireTicks'])
+                    ? self::integer($root['FireTicks'], LittleEndianNbtTag::INT, 'FireTicks')
+                    : 0,
+                $effectPersistenceState,
             );
         } catch (CorruptPlayerDataException $error) {
             throw $error;
@@ -365,6 +493,25 @@ final readonly class PlayerDataCodec
         }
 
         return LittleEndianNbtTag::compound($tags);
+    }
+
+    private static function encodedEffect(
+        EffectInstance $effect,
+        bool $active,
+        int $order,
+        int $phase,
+    ): LittleEndianNbtTag {
+        return LittleEndianNbtTag::compound([
+            'Type' => LittleEndianNbtTag::string($effect->type->value),
+            'Duration' => LittleEndianNbtTag::int($effect->durationTicks),
+            'Amplifier' => LittleEndianNbtTag::byte($effect->amplifier),
+            'Visible' => LittleEndianNbtTag::byte($effect->visible ? 1 : 0),
+            'Ambient' => LittleEndianNbtTag::byte($effect->ambient ? 1 : 0),
+            'Infinite' => LittleEndianNbtTag::byte($effect->infinite ? 1 : 0),
+            'Active' => LittleEndianNbtTag::byte($active ? 1 : 0),
+            'Order' => new LittleEndianNbtTag(LittleEndianNbtTag::SHORT, $order),
+            'Phase' => LittleEndianNbtTag::int($phase),
+        ]);
     }
 
     /** @param array<string, LittleEndianNbtTag> $tags */

@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World\BlockEntity;
 
+use Bedriox\Server\Gameplay\Potion\BrewingStandBlockEntity;
 use Bedriox\Server\World\BlockPosition;
 use InvalidArgumentException;
 
@@ -43,12 +44,15 @@ final readonly class BlockEntityRegistry
             'minecraft:shulker_box' => BlockEntityType::ShulkerBox,
             'EnderChest' => BlockEntityType::EnderChest,
             'minecraft:ender_chest' => BlockEntityType::EnderChest,
+            'BrewingStand' => BlockEntityType::BrewingStand,
+            'minecraft:brewing_stand' => BlockEntityType::BrewingStand,
         ];
         $this->saveIds = [
             BlockEntityType::Chest->value => 'Chest',
             BlockEntityType::Barrel->value => 'Barrel',
             BlockEntityType::ShulkerBox->value => 'ShulkerBox',
             BlockEntityType::EnderChest->value => 'EnderChest',
+            BlockEntityType::BrewingStand->value => 'BrewingStand',
         ];
     }
 
@@ -65,8 +69,11 @@ final readonly class BlockEntityRegistry
 
     public function create(BlockEntityType $type, BlockPosition $position): BlockEntity
     {
-        return $type->ownsPersistentInventory()
-            ? ContainerBlockEntity::empty($type, $position)
-            : new SimpleBlockEntity($type, $position);
+        return match ($type) {
+            BlockEntityType::BrewingStand => BrewingStandBlockEntity::empty($position),
+            BlockEntityType::Chest, BlockEntityType::Barrel, BlockEntityType::ShulkerBox =>
+                ContainerBlockEntity::empty($type, $position),
+            BlockEntityType::EnderChest => new SimpleBlockEntity($type, $position),
+        };
     }
 }

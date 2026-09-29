@@ -91,10 +91,10 @@ final class BuiltinCommandRegistrarTest extends TestCase
             static fn(): array => [],
         ))->register();
 
-        self::assertSame(10, $registry->count());
+        self::assertSame(12, $registry->count());
         $definitions = $registry->availableDefinitions(CommandSenderType::CONSOLE, static fn(string $permission): bool => true);
         self::assertSame(
-            ['version', 'help', 'list', 'stop', 'op', 'deop', 'permission', 'gamemode', 'give', 'tp'],
+            ['version', 'help', 'list', 'stop', 'op', 'deop', 'permission', 'gamemode', 'give', 'tp', 'effect'],
             array_map(static fn($definition): string => $definition->name, $definitions),
         );
         self::assertSame(['ver'], $definitions[0]->aliases);
@@ -109,6 +109,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
         self::assertSame('bedriox.command.give', $definitions[8]->permission);
         self::assertSame(['teleport'], $definitions[9]->aliases);
         self::assertSame('bedriox.command.teleport', $definitions[9]->permission);
+        self::assertSame('bedriox.command.effect', $definitions[10]->permission);
 
         $sender = new BuiltinCommandSender();
         self::assertTrue(($registry->dispatch($sender, 'ver'))->isSuccess());
@@ -118,7 +119,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
         );
         self::assertSame('Visit https://bedriox.com', $sender->messages[1]);
         self::assertTrue(($registry->dispatch($sender, 'commands'))->isSuccess());
-        self::assertContains('Available commands (10):', $sender->messages);
+        self::assertContains('Available commands (11):', $sender->messages);
     }
 
     public function testKillCommandIsRegisteredWithItsParentPermissionWhenRuntimeIsAvailable(): void
@@ -437,7 +438,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
             unloadChunks: static fn(): ChunkUnloadResult => new ChunkUnloadResult(1, 1, 0, false, 0),
         ))->register();
 
-        self::assertSame(11, $registry->count());
+        self::assertSame(13, $registry->count());
         $sender = new BuiltinCommandSender();
         self::assertTrue(($registry->dispatch($sender, 'gc'))->isSuccess());
         self::assertSame(1, $statusCalls);

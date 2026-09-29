@@ -21,6 +21,9 @@ declare(strict_types=1);
 namespace Bedriox\Server\Runtime;
 
 use Bedriox\Api\Command\CommandResult;
+use Bedriox\Api\Effect\EffectCause;
+use Bedriox\Api\Effect\EffectInstance;
+use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Entity\CustomEntityType;
 use Bedriox\Api\Entity\Entity as ApiEntity;
 use Bedriox\Api\Entity\SpawnCause;
@@ -61,6 +64,8 @@ use Bedriox\Server\Entity\Item\DroppedItemEntity;
 use Bedriox\Server\Entity\Spawn\EntitySpawnRequest;
 use Bedriox\Server\Gameplay\Crafting\CraftingCatalog;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
+use Bedriox\Server\Gameplay\Potion\AreaEffectCloud;
+use Bedriox\Server\Gameplay\Potion\PotionProjectile;
 use Bedriox\Server\Observability\CrashContextPublisher;
 use Bedriox\Server\Observability\CrashPlayer;
 use Bedriox\Server\Observability\Memory\GarbageCollectionReport;
@@ -78,6 +83,9 @@ use Bedriox\Server\Player\Persistence\PlayerPersistenceManager;
 use Bedriox\Server\Plugin\Command\CommandRegistry;
 use Bedriox\Server\Plugin\Command\ServerPlayerCommandSender;
 use Bedriox\Server\Plugin\PluginActionBuffer;
+use Bedriox\Server\Simulation\Event\AreaEffectCloudRemoved;
+use Bedriox\Server\Simulation\Event\AreaEffectCloudSpawned;
+use Bedriox\Server\Simulation\Event\AreaEffectCloudUpdated;
 use Bedriox\Server\Simulation\Event\ArmSwung;
 use Bedriox\Server\Simulation\Event\BlockBreakStarted;
 use Bedriox\Server\Simulation\Event\BlockBreakStopped;
@@ -113,6 +121,10 @@ use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
 use Bedriox\Server\Simulation\Event\PlayerMotionChanged;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
 use Bedriox\Server\Simulation\Event\PlayerRespawned;
+use Bedriox\Server\Simulation\Event\PotionProjectileImpacted;
+use Bedriox\Server\Simulation\Event\PotionProjectileMoved;
+use Bedriox\Server\Simulation\Event\PotionProjectileRemoved;
+use Bedriox\Server\Simulation\Event\PotionProjectileSpawned;
 use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
 use Bedriox\Server\Simulation\Event\WorldEvent;
 use Bedriox\Server\Simulation\FixedRateWorldLoop;
@@ -143,6 +155,7 @@ use Throwable;
 final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, RuntimeIdleAdvisor
 {
     private const int MAXIMUM_PLAYER_COMMAND_OUTPUT_MESSAGES = 256;
+    private const int MAXIMUM_PLAYER_COMMAND_OUTPUT_MESSAGE_BYTES = 4_096;
     private const int DEFERRED_WORLD_PACKETS_PER_TICK = 4_096;
     private const int DEFERRED_WORLD_PACKETS_PER_SESSION_PER_TICK = 64;
     private const int ACTOR_VISIBILITY_PAIRS_PER_TICK = 16;
@@ -252,6 +265,18 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
 
     /** @var array<string, array<int, array<string, true>>> */
     private array $entityActorViewers = [];
+
+    /** @var array<string, array<int, PotionProjectile>> */
+    private array $potionProjectileActors = [];
+
+    /** @var array<string, array<int, array<string, true>>> */
+    private array $potionProjectileViewers = [];
+
+    /** @var array<string, array<int, AreaEffectCloud>> */
+    private array $areaEffectCloudActors = [];
+
+    /** @var array<string, array<int, array<string, true>>> */
+    private array $areaEffectCloudViewers = [];
 
     public function __construct(
         private readonly ConnectedTransport $transport,
@@ -433,6 +458,21 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     public function damagePlayer(string $uuid, float $amount): bool
     {
         return $this->simulationForIdentity($uuid)?->enqueuePluginDamage($uuid, $amount) ?? false;
+    }
+
+    public function addPlayerEffect(string $uuid, EffectInstance $effect, EffectCause $cause): bool
+    {
+        return $this->simulationForIdentity($uuid)?->enqueuePluginEffect($uuid, $effect, $cause) ?? false;
+    }
+
+    public function removePlayerEffect(string $uuid, EffectType $type, EffectCause $cause): bool
+    {
+        return $this->simulationForIdentity($uuid)?->enqueuePluginEffectRemoval($uuid, $type, $cause) ?? false;
+    }
+
+    public function clearPlayerEffects(string $uuid, EffectCause $cause): bool
+    {
+        return $this->simulationForIdentity($uuid)?->enqueuePluginEffectClear($uuid, $cause) ?? false;
     }
 
     public function teleportPlayer(
@@ -641,6 +681,12 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     $event instanceof EntityActorDamaged,
                     $event instanceof EntityActorDied,
                     $event instanceof EntityActorRemoved => $this->reconcileEntityActorEvent($event),
+                    $event instanceof PotionProjectileSpawned,
+                    $event instanceof PotionProjectileMoved,
+                    $event instanceof PotionProjectileRemoved => $this->reconcilePotionProjectileEvent($event),
+                    $event instanceof AreaEffectCloudSpawned,
+                    $event instanceof AreaEffectCloudUpdated,
+                    $event instanceof AreaEffectCloudRemoved => $this->reconcileAreaEffectCloudEvent($event),
                     default => [$event],
                 };
                 foreach ($events as $projected) {
@@ -1144,6 +1190,20 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                             || $event instanceof BlockPlaced) {
                             $event = $this->filterBlockRecipients($event);
                         }
+                        if ($event instanceof PotionProjectileImpacted) {
+                            $event = new PotionProjectileImpacted(
+                                $event->position,
+                                $event->potionType,
+                                array_values(array_filter(
+                                    array_values(array_unique($event->recipientSessionIds)),
+                                    fn(string $recipient): bool => $this->transientActorViewerCanSee(
+                                        $recipient,
+                                        $this->processingWorldId ?? 'world',
+                                        $event->position,
+                                    ),
+                                )),
+                            );
+                        }
                         if ($event instanceof ChatBroadcast
                             && $this->eventEncoder instanceof ChatBroadcastPacketEncoder) {
                             if (!$this->collectSharedChatPacket(
@@ -1160,6 +1220,24 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                             || $event instanceof ItemEntityPickedUp || $event instanceof ItemEntityDespawned) {
                             foreach ($this->reconcileItemEvent($event) as $itemEvent) {
                                 if (!$this->dispatchWorldEvent($itemEvent, $directedCount)) {
+                                    return false;
+                                }
+                            }
+                            continue;
+                        }
+                        if ($event instanceof PotionProjectileSpawned || $event instanceof PotionProjectileMoved
+                            || $event instanceof PotionProjectileRemoved) {
+                            foreach ($this->reconcilePotionProjectileEvent($event) as $potionEvent) {
+                                if (!$this->dispatchWorldEvent($potionEvent, $directedCount)) {
+                                    return false;
+                                }
+                            }
+                            continue;
+                        }
+                        if ($event instanceof AreaEffectCloudSpawned || $event instanceof AreaEffectCloudUpdated
+                            || $event instanceof AreaEffectCloudRemoved) {
+                            foreach ($this->reconcileAreaEffectCloudEvent($event) as $cloudEvent) {
+                                if (!$this->dispatchWorldEvent($cloudEvent, $directedCount)) {
                                     return false;
                                 }
                             }
@@ -1268,6 +1346,14 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                                         return false;
                                     }
                                 }
+                                foreach ($this->reconcilePotionActorsForViewer(
+                                    $event->player->sessionId,
+                                    $changedChunkSet,
+                                ) as $potionVisibilityEvent) {
+                                    if (!$this->dispatchWorldEvent($potionVisibilityEvent, $directedCount)) {
+                                        return false;
+                                    }
+                                }
                             }
                             $newlyVisibleRecipients = [];
                             if ($actorVisibilityChanged) {
@@ -1327,6 +1413,14 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                                     $changedChunkSet,
                                 ) as $entityVisibilityEvent) {
                                     if (!$this->dispatchWorldEvent($entityVisibilityEvent, $directedCount)) {
+                                        return false;
+                                    }
+                                }
+                                foreach ($this->reconcilePotionActorsForViewer(
+                                    $event->authoritativePlayer->sessionId,
+                                    $changedChunkSet,
+                                ) as $potionVisibilityEvent) {
+                                    if (!$this->dispatchWorldEvent($potionVisibilityEvent, $directedCount)) {
                                         return false;
                                     }
                                 }
@@ -2304,39 +2398,53 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             return true;
         }
         foreach ($session->play->drainPlayerCommands() as $request) {
-            $messages = [];
-            $outputTruncated = false;
-            $result = CommandResult::failure('Commands are not available yet.');
-            $player = $session->phase === SessionPhase::SPAWNED
-                ? $this->simulationForSession($session)->pluginPlayer($session->play->login()->identity)
-                : null;
-            if ($player !== null) {
-                $player = $this->playerConnections->attach($player);
-            }
-            if ($this->commandRegistry !== null && $player !== null) {
-                $sender = new ServerPlayerCommandSender(
-                    $player,
-                    static function (string $message) use (&$messages, &$outputTruncated): void {
-                        if (count($messages) >= self::MAXIMUM_PLAYER_COMMAND_OUTPUT_MESSAGES - 1) {
-                            $outputTruncated = true;
+            try {
+                $messages = [];
+                $outputTruncated = false;
+                $result = CommandResult::failure('Commands are not available yet.');
+                $player = $session->phase === SessionPhase::SPAWNED
+                    ? $this->simulationForSession($session)->pluginPlayer($session->play->login()->identity)
+                    : null;
+                if ($player !== null) {
+                    $player = $this->playerConnections->attach($player);
+                }
+                if ($this->commandRegistry !== null && $player !== null) {
+                    $sender = new ServerPlayerCommandSender(
+                        $player,
+                        static function (string $message) use (&$messages, &$outputTruncated): void {
+                            if ($message === ''
+                                || strlen($message) > self::MAXIMUM_PLAYER_COMMAND_OUTPUT_MESSAGE_BYTES
+                                || preg_match('//u', $message) !== 1
+                                || str_contains($message, "\0")) {
+                                throw new InvalidArgumentException('Command output must be valid, bounded text.');
+                            }
+                            if (count($messages) >= self::MAXIMUM_PLAYER_COMMAND_OUTPUT_MESSAGES - 1) {
+                                $outputTruncated = true;
 
-                            return;
-                        }
-                        $messages[] = $message;
-                    },
-                    fn(string $permission): bool => $this->permissionStore?->hasPermission($player->uuid, $permission) ?? false,
+                                return;
+                            }
+                            $messages[] = $message;
+                        },
+                        fn(string $permission): bool => $this->permissionStore?->hasPermission($player->uuid, $permission) ?? false,
+                    );
+                    $result = $this->commandRegistry->dispatch($sender, $request->command);
+                } else {
+                    $messages[] = 'Commands are not available yet.';
+                }
+                if ($outputTruncated) {
+                    $messages[] = 'Additional command output was truncated.';
+                }
+                $outputMessages = array_map(
+                    static fn(string $message): CommandOutputMessage => new CommandOutputMessage($message),
+                    $messages === [] ? [$result->message() ?? ($result->isSuccess() ? 'Command completed.' : 'Command failed.')] : $messages,
                 );
-                $result = $this->commandRegistry->dispatch($sender, $request->command);
-            } else {
-                $messages[] = 'Commands are not available yet.';
+            } catch (Throwable $failure) {
+                $this->diagnostics->record('runtime.player_command_failed.protocol_trace', [
+                    'exception' => $failure::class,
+                ]);
+                $result = CommandResult::failure('The command failed internally.');
+                $outputMessages = [new CommandOutputMessage('The command failed internally.')];
             }
-            if ($outputTruncated) {
-                $messages[] = 'Additional command output was truncated.';
-            }
-            $outputMessages = array_map(
-                static fn(string $message): CommandOutputMessage => new CommandOutputMessage($message),
-                $messages === [] ? [$result->message() ?? ($result->isSuccess() ? 'Command completed.' : 'Command failed.')] : $messages,
-            );
             if (!$session->play->queuePacket(new CommandOutputPacket(
                 $request->origin,
                 CommandOutputType::AllOutput,
@@ -2467,6 +2575,15 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     fn(): bool => $this->setPlayerArmorContents($identity, $contents),
                 ),
                 fn(ApiItemStack $stack): int => $this->maximumPlayerStackSize($stack),
+                fn(EffectInstance $effect, EffectCause $cause): bool => $this->acceptPluginAction(
+                    fn(): bool => $this->addPlayerEffect($identity, $effect, $cause),
+                ),
+                fn(EffectType $type, EffectCause $cause): bool => $this->acceptPluginAction(
+                    fn(): bool => $this->removePlayerEffect($identity, $type, $cause),
+                ),
+                fn(EffectCause $cause): bool => $this->acceptPluginAction(
+                    fn(): bool => $this->clearPlayerEffects($identity, $cause),
+                ),
             );
             $this->flush($key, $session);
         } catch (Throwable $exception) {
@@ -2741,6 +2858,18 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 $this->entityActorViewers[$worldId][$runtimeId] = $viewers;
             }
         }
+        foreach ($this->potionProjectileViewers as $worldId => $actors) {
+            foreach ($actors as $runtimeId => $viewers) {
+                unset($viewers[$session->id]);
+                $this->potionProjectileViewers[$worldId][$runtimeId] = $viewers;
+            }
+        }
+        foreach ($this->areaEffectCloudViewers as $worldId => $actors) {
+            foreach ($actors as $runtimeId => $viewers) {
+                unset($viewers[$session->id]);
+                $this->areaEffectCloudViewers[$worldId][$runtimeId] = $viewers;
+            }
+        }
         $this->crashContextDirty = true;
         if ($session->joined || $session->phase === SessionPhase::ADMISSION_PENDING) {
             if (!$this->simulationForSession($session)->enqueue($this->commands->disconnect($session->id)) && $this->closed) {
@@ -2872,7 +3001,11 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             || $event instanceof ItemEntityPickedUp || $event instanceof ItemEntityDespawned
             || $event instanceof EntityActorSpawned || $event instanceof EntityActorMoved
             || $event instanceof EntityActorDamaged || $event instanceof EntityActorDied
-            || $event instanceof EntityActorRemoved) {
+            || $event instanceof EntityActorRemoved || $event instanceof \Bedriox\Server\Simulation\Event\EntityActorEffectChanged
+            || $event instanceof PotionProjectileSpawned || $event instanceof PotionProjectileMoved
+            || $event instanceof PotionProjectileImpacted || $event instanceof PotionProjectileRemoved
+            || $event instanceof AreaEffectCloudSpawned
+            || $event instanceof AreaEffectCloudUpdated || $event instanceof AreaEffectCloudRemoved) {
             return true;
         }
         if ($ownerSessionId === null) {
@@ -2903,7 +3036,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $event instanceof PlayerKnockedBack, $event instanceof PlayerMotionChanged => $event->ownerSessionId,
             $event instanceof PlayerJoined, $event instanceof PlayerMoved, $event instanceof PlayerDamaged,
             $event instanceof PlayerDied, $event instanceof PlayerRespawned, $event instanceof RespawnAcknowledged,
-            $event instanceof PlayerGameModeChanged => $event->player->sessionId,
+            $event instanceof PlayerGameModeChanged,
+            $event instanceof \Bedriox\Server\Simulation\Event\PlayerEffectChanged,
+            $event instanceof \Bedriox\Server\Simulation\Event\PlayerEnvironmentChanged => $event->player->sessionId,
             $event instanceof EntityInteracted => $event->ownerSessionId,
             default => null,
         };
@@ -3130,6 +3265,160 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
 
         return $events;
+    }
+
+    /** @return list<PotionProjectileSpawned|PotionProjectileMoved|PotionProjectileRemoved> */
+    private function reconcilePotionProjectileEvent(
+        PotionProjectileSpawned|PotionProjectileMoved|PotionProjectileRemoved $event,
+    ): array {
+        $worldId = $this->processingWorldId ?? 'world';
+        if ($event instanceof PotionProjectileRemoved) {
+            $viewers = array_keys($this->potionProjectileViewers[$worldId][$event->runtimeEntityId] ?? []);
+            unset(
+                $this->potionProjectileActors[$worldId][$event->runtimeEntityId],
+                $this->potionProjectileViewers[$worldId][$event->runtimeEntityId],
+            );
+
+            return $viewers === [] ? [] : [new PotionProjectileRemoved($event->runtimeEntityId, $viewers)];
+        }
+
+        $projectile = $event->projectile;
+        $runtimeId = $projectile->runtimeEntityId;
+        $this->potionProjectileActors[$worldId][$runtimeId] = $projectile;
+        $old = $this->potionProjectileViewers[$worldId][$runtimeId] ?? [];
+        $eligible = $old;
+        foreach (array_keys($eligible) as $recipient) {
+            if (!$this->transientActorViewerCanSee($recipient, $worldId, $projectile->position)) {
+                unset($eligible[$recipient]);
+            }
+        }
+        foreach (array_values(array_unique($event->recipientSessionIds)) as $recipient) {
+            if ($this->transientActorViewerCanSee($recipient, $worldId, $projectile->position)) {
+                $eligible[$recipient] = true;
+            } else {
+                unset($eligible[$recipient]);
+            }
+        }
+        $this->potionProjectileViewers[$worldId][$runtimeId] = $eligible;
+        $appeared = array_keys(array_diff_key($eligible, $old));
+        $disappeared = array_keys(array_diff_key($old, $eligible));
+        $events = [];
+        if ($disappeared !== []) {
+            $events[] = new PotionProjectileRemoved($runtimeId, $disappeared);
+        }
+        if ($appeared !== []) {
+            $events[] = new PotionProjectileSpawned($projectile, $appeared);
+        }
+        if ($event instanceof PotionProjectileMoved) {
+            $continuing = array_keys(array_intersect_key($eligible, $old));
+            if ($continuing !== []) {
+                $events[] = new PotionProjectileMoved($projectile, $continuing);
+            }
+        }
+
+        return $events;
+    }
+
+    /** @return list<AreaEffectCloudSpawned|AreaEffectCloudUpdated|AreaEffectCloudRemoved> */
+    private function reconcileAreaEffectCloudEvent(
+        AreaEffectCloudSpawned|AreaEffectCloudUpdated|AreaEffectCloudRemoved $event,
+    ): array {
+        $worldId = $this->processingWorldId ?? 'world';
+        if ($event instanceof AreaEffectCloudRemoved) {
+            $viewers = array_keys($this->areaEffectCloudViewers[$worldId][$event->runtimeEntityId] ?? []);
+            unset(
+                $this->areaEffectCloudActors[$worldId][$event->runtimeEntityId],
+                $this->areaEffectCloudViewers[$worldId][$event->runtimeEntityId],
+            );
+
+            return $viewers === [] ? [] : [new AreaEffectCloudRemoved($event->runtimeEntityId, $viewers)];
+        }
+
+        $cloud = $event->cloud;
+        $runtimeId = $cloud->runtimeEntityId;
+        $this->areaEffectCloudActors[$worldId][$runtimeId] = $cloud;
+        $old = $this->areaEffectCloudViewers[$worldId][$runtimeId] ?? [];
+        $eligible = $old;
+        foreach (array_keys($eligible) as $recipient) {
+            if (!$this->transientActorViewerCanSee($recipient, $worldId, $cloud->position)) {
+                unset($eligible[$recipient]);
+            }
+        }
+        foreach (array_values(array_unique($event->recipientSessionIds)) as $recipient) {
+            if ($this->transientActorViewerCanSee($recipient, $worldId, $cloud->position)) {
+                $eligible[$recipient] = true;
+            } else {
+                unset($eligible[$recipient]);
+            }
+        }
+        $this->areaEffectCloudViewers[$worldId][$runtimeId] = $eligible;
+        $appeared = array_keys(array_diff_key($eligible, $old));
+        $disappeared = array_keys(array_diff_key($old, $eligible));
+        $events = [];
+        if ($disappeared !== []) {
+            $events[] = new AreaEffectCloudRemoved($runtimeId, $disappeared);
+        }
+        if ($appeared !== []) {
+            $events[] = new AreaEffectCloudSpawned($cloud, $appeared);
+        }
+        if ($event instanceof AreaEffectCloudUpdated) {
+            $continuing = array_keys(array_intersect_key($eligible, $old));
+            if ($continuing !== []) {
+                $events[] = new AreaEffectCloudUpdated($cloud, $continuing);
+            }
+        }
+
+        return $events;
+    }
+
+    /**
+     * @param null|array<string, true> $chunkKeys
+     * @return list<PotionProjectileSpawned|PotionProjectileRemoved|AreaEffectCloudSpawned|AreaEffectCloudRemoved>
+     */
+    private function reconcilePotionActorsForViewer(string $sessionId, ?array $chunkKeys = null): array
+    {
+        $events = [];
+        $worldId = $this->processingWorldId ?? 'world';
+        foreach ($this->potionProjectileActors[$worldId] ?? [] as $projectile) {
+            if ($chunkKeys !== null && !isset($chunkKeys[self::positionChunkKey(
+                $projectile->position->x,
+                $projectile->position->z,
+            )])) {
+                continue;
+            }
+            foreach ($this->reconcilePotionProjectileEvent(new PotionProjectileSpawned($projectile, [$sessionId])) as $event) {
+                if ($event instanceof PotionProjectileSpawned || $event instanceof PotionProjectileRemoved) {
+                    $events[] = $event;
+                }
+            }
+        }
+        foreach ($this->areaEffectCloudActors[$worldId] ?? [] as $cloud) {
+            if ($chunkKeys !== null && !isset($chunkKeys[self::positionChunkKey(
+                $cloud->position->x,
+                $cloud->position->z,
+            )])) {
+                continue;
+            }
+            foreach ($this->reconcileAreaEffectCloudEvent(new AreaEffectCloudSpawned($cloud, [$sessionId])) as $event) {
+                if ($event instanceof AreaEffectCloudSpawned || $event instanceof AreaEffectCloudRemoved) {
+                    $events[] = $event;
+                }
+            }
+        }
+
+        return $events;
+    }
+
+    private function transientActorViewerCanSee(
+        string $sessionId,
+        string $worldId,
+        \Bedriox\Server\Simulation\Position $position,
+    ): bool {
+        $viewer = $this->sessionById($sessionId);
+
+        return $viewer?->phase === SessionPhase::SPAWNED
+            && $viewer->worldId === $worldId
+            && ($viewer->play?->hasSentChunkAt($position->x, $position->z) ?? false);
     }
 
     /**

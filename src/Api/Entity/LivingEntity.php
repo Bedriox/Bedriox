@@ -20,6 +20,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\Entity;
 
+use Bedriox\Api\Effect\EffectManager;
+
 interface LivingEntity extends Entity
 {
     public function getHealth(): float;
@@ -31,4 +33,6 @@ interface LivingEntity extends Entity
     public function isOnFire(): bool;
 
     public function getFireTicks(): int;
+
+    public function getEffects(): EffectManager;
 }

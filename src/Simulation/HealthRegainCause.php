@@ -23,4 +23,5 @@ namespace Bedriox\Server\Simulation;
 enum HealthRegainCause
 {
     case SATURATION;
+    case EFFECT;
 }

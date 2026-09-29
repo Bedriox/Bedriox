@@ -20,6 +20,11 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Plugin;
 
+use Bedriox\Api\Effect\EffectActions;
+use Bedriox\Api\Effect\EffectCause;
+use Bedriox\Api\Effect\EffectInstance;
+use Bedriox\Api\Effect\EffectManager;
+use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Entity\Entity;
 use Bedriox\Api\Entity\EntityCombustionCause;
 use Bedriox\Api\Entity\EntityDamageCause;
@@ -364,6 +369,40 @@ final class BufferedMobController implements MobController
     public function equipment(): EntityEquipment
     {
         return $this->equipmentView ?? $this->fullController()->equipment();
+    }
+
+    public function effects(): EffectManager
+    {
+        if ($this->delegate !== null) {
+            return $this->delegate->effects();
+        }
+
+        return new EffectManager(
+            $this->entity->effectState()->snapshot(),
+            new EffectActions(
+                function (EffectInstance $effect, EffectCause $cause): void {
+                    $this->stage(function () use ($effect, $cause): void {
+                        if (!$this->entity->isRemoved()) {
+                            $this->entity->requestControllerEffectAdd($effect, $cause);
+                        }
+                    });
+                },
+                function (EffectType $type, EffectCause $cause): void {
+                    $this->stage(function () use ($type, $cause): void {
+                        if (!$this->entity->isRemoved()) {
+                            $this->entity->requestControllerEffectRemove($type, $cause);
+                        }
+                    });
+                },
+                function (EffectCause $cause): void {
+                    $this->stage(function () use ($cause): void {
+                        if (!$this->entity->isRemoved()) {
+                            $this->entity->requestControllerEffectClear($cause);
+                        }
+                    });
+                },
+            ),
+        );
     }
 
     public function setAiEnabled(bool $enabled): void

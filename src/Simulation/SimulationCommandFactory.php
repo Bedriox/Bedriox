@@ -20,10 +20,14 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Simulation;
 
+use Bedriox\Api\Effect\EffectCause;
+use Bedriox\Api\Effect\EffectInstance;
+use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Entity\EntityDamageCause;
 use Bedriox\Api\Entity\EntityInteractionType;
 use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Player\GameMode;
+use Bedriox\Api\World\Particle\Particle;
 use Bedriox\Server\Player\InventoryContainer;
 use Bedriox\Server\Player\InventoryResponseMode;
 use Bedriox\Server\Player\InventorySlotReference;
@@ -32,10 +36,12 @@ use Bedriox\Server\Player\InventoryStackRequestAction;
 use Bedriox\Server\Player\PlayerBootstrap;
 use Bedriox\Server\Player\PlayerInventory;
 use Bedriox\Server\Simulation\Command\AcknowledgeRespawn;
+use Bedriox\Server\Simulation\Command\AddPlayerEffect;
 use Bedriox\Server\Simulation\Command\ApplyInventoryStackRequest;
 use Bedriox\Server\Simulation\Command\AttackPlayer;
 use Bedriox\Server\Simulation\Command\BreakBlock;
 use Bedriox\Server\Simulation\Command\ChangeGameMode;
+use Bedriox\Server\Simulation\Command\ClearPlayerEffects;
 use Bedriox\Server\Simulation\Command\CloseContainer;
 use Bedriox\Server\Simulation\Command\CloseCraftingGrid;
 use Bedriox\Server\Simulation\Command\CraftingRequest;
@@ -50,6 +56,7 @@ use Bedriox\Server\Simulation\Command\MovePlayer;
 use Bedriox\Server\Simulation\Command\PerformEmote;
 use Bedriox\Server\Simulation\Command\PlaceBlock;
 use Bedriox\Server\Simulation\Command\ReleaseItem;
+use Bedriox\Server\Simulation\Command\RemovePlayerEffect;
 use Bedriox\Server\Simulation\Command\RemovePluginInventoryStack;
 use Bedriox\Server\Simulation\Command\RespawnPlayer;
 use Bedriox\Server\Simulation\Command\SelectHotbarSlot;
@@ -60,6 +67,7 @@ use Bedriox\Server\Simulation\Command\SetPluginBlock;
 use Bedriox\Server\Simulation\Command\SetPluginEquipmentSlot;
 use Bedriox\Server\Simulation\Command\SetPluginInventoryContents;
 use Bedriox\Server\Simulation\Command\SetPluginInventorySlot;
+use Bedriox\Server\Simulation\Command\SpawnPluginParticle;
 use Bedriox\Server\Simulation\Command\SwingArm;
 use Bedriox\Server\Simulation\Command\SyncInventory;
 use Bedriox\Server\Simulation\Command\SyncInventorySlots;
@@ -183,6 +191,33 @@ final readonly class SimulationCommandFactory
         return new SendPluginMessage($session, $message);
     }
 
+    public function addPlayerEffect(
+        string $session,
+        EffectInstance $effect,
+        EffectCause $cause,
+    ): AddPlayerEffect {
+        $this->assertOpaqueId($session, 128, 'session');
+
+        return new AddPlayerEffect($session, $effect, $cause);
+    }
+
+    public function removePlayerEffect(
+        string $session,
+        EffectType $type,
+        EffectCause $cause,
+    ): RemovePlayerEffect {
+        $this->assertOpaqueId($session, 128, 'session');
+
+        return new RemovePlayerEffect($session, $type, $cause);
+    }
+
+    public function clearPlayerEffects(string $session, EffectCause $cause): ClearPlayerEffects
+    {
+        $this->assertOpaqueId($session, 128, 'session');
+
+        return new ClearPlayerEffects($session, $cause);
+    }
+
     public function teleport(
         string $session,
         float $x,
@@ -220,6 +255,28 @@ final readonly class SimulationCommandFactory
         }
 
         return new SetPluginBlock($plugin, $position, $identifier);
+    }
+
+    /** @param list<string>|null $targetIdentities */
+    public function pluginParticle(
+        string $plugin,
+        Position $position,
+        Particle $particle,
+        ?array $targetIdentities,
+    ): SpawnPluginParticle {
+        $this->assertOpaqueId($plugin, 64, 'plugin');
+        if (!is_finite($position->x) || !is_finite($position->y) || !is_finite($position->z)
+            || abs($position->x) > $this->limits->maximumCoordinate
+            || abs($position->z) > $this->limits->maximumCoordinate
+            || $position->y < -64.0 || $position->y > 319.0
+            || ($targetIdentities !== null && count($targetIdentities) > 128)) {
+            throw new CommandValidationException('Plugin particle request is invalid.');
+        }
+        foreach ($targetIdentities ?? [] as $identity) {
+            $this->assertOpaqueId($identity, 128, 'particle target identity');
+        }
+
+        return new SpawnPluginParticle($plugin, $position, $particle, $targetIdentities);
     }
 
     public function pluginInventorySlot(

@@ -187,6 +187,23 @@ final class LevelDbWorldProviderTest extends TestCase
         $provider->loadChunk(new ChunkPosition(1, 2));
     }
 
+    public function testTransientEntitySnapshotsRoundTripDeleteAndRespectProviderLifetime(): void
+    {
+        [$provider, $database] = self::provider();
+
+        $provider->saveTransientEntities('potions', '{"version":1}');
+        self::assertSame('{"version":1}', $provider->loadTransientEntities('potions'));
+        self::assertSame('{"version":1}', $database->records['bedriox:transient_entities:potions']);
+
+        $provider->saveTransientEntities('potions', null);
+        self::assertNull($provider->loadTransientEntities('potions'));
+        self::assertArrayNotHasKey('bedriox:transient_entities:potions', $database->records);
+
+        $provider->close();
+        $this->expectException(WorldProviderClosedException::class);
+        $provider->loadTransientEntities('potions');
+    }
+
     public function testValidButUnadmittedPersistentStateFailsExplicitlyInsteadOfBecomingAir(): void
     {
         [$provider, $database, $registry] = self::provider();

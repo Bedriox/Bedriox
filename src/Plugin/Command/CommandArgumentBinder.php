@@ -243,7 +243,7 @@ final readonly class CommandArgumentBinder
             }
         }
 
-        throw new CommandBindingException("Argument '{$parameter->name()}' must be one of: " . implode(', ', $parameter->choices()) . '.');
+        throw new CommandBindingException("Argument '{$parameter->name()}' was not found.");
     }
 
     private function enum(CommandParameter $parameter, string $token): BackedEnum
@@ -258,7 +258,7 @@ final readonly class CommandArgumentBinder
             }
         }
 
-        throw new CommandBindingException("Argument '{$parameter->name()}' must be one of: " . implode(', ', $parameter->choices()) . '.');
+        throw new CommandBindingException("Argument '{$parameter->name()}' was not found.");
     }
 
     private function softEnum(CommandParameter $parameter, string $token): string

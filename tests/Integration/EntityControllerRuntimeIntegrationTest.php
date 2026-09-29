@@ -20,6 +20,9 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Integration;
 
+use Bedriox\Api\Effect\EffectCause;
+use Bedriox\Api\Effect\EffectInstance;
+use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Entity\EntityDamageCause;
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\VanillaEntityType;
@@ -36,6 +39,7 @@ use Bedriox\Server\Gameplay\Block\DropRandom;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Simulation\Event\EntityActorDamaged;
 use Bedriox\Server\Simulation\Event\EntityActorDied;
+use Bedriox\Server\Simulation\Event\EntityActorEffectChanged;
 use Bedriox\Server\Simulation\Event\EntityActorEquipmentChanged;
 use Bedriox\Server\Simulation\Event\EntityActorMetadataChanged;
 use Bedriox\Server\Simulation\Event\EntityActorMoved;
@@ -85,6 +89,31 @@ final class EntityControllerRuntimeIntegrationTest extends TestCase
         $events = $simulation->tick()->events;
         self::assertFalse($controller->isAvailable());
         self::assertCount(1, self::events($events, EntityActorRemoved::class));
+    }
+
+    public function testLivingControllerEffectsUseAuthoritativeTimedAndInstantDamagePaths(): void
+    {
+        $simulation = self::simulation();
+        $spawn = $simulation->spawnEntity(new EntitySpawnRequest(
+            VanillaEntityType::COW,
+            SpawnCause::COMMAND,
+            'world',
+            new Position(1.0, 64.0, 1.0),
+        ));
+        self::assertInstanceOf(CowEntity::class, $spawn->entity);
+        $zombie = $spawn->entity;
+        $effects = $zombie->getController()->effects();
+
+        $effects->add(new EffectInstance(EffectType::RESISTANCE, 200), EffectCause::PLUGIN);
+        $events = $simulation->tick()->events;
+        self::assertTrue($zombie->effectState()->has(EffectType::RESISTANCE));
+        self::assertCount(1, self::events($events, EntityActorEffectChanged::class));
+
+        $effects->add(new EffectInstance(EffectType::INSTANT_DAMAGE, 1), EffectCause::PLUGIN);
+        $events = $simulation->tick()->events;
+        self::assertFalse($zombie->effectState()->has(EffectType::INSTANT_DAMAGE));
+        self::assertEqualsWithDelta(5.2, $zombie->getHealth(), 0.00001);
+        self::assertCount(1, self::events($events, EntityActorDamaged::class));
     }
 
     public function testDeathLootIsSpawnedAfterDeathWithoutRerolling(): void

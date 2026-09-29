@@ -23,25 +23,45 @@ namespace Bedriox\Server\Runtime;
 use Bedriox\Api\Inventory\ContainerLayout;
 use Bedriox\Api\Inventory\ContainerType as ApiContainerType;
 use Bedriox\Api\TranslatableMessage;
+use Bedriox\Api\World\BlockFace;
+use Bedriox\Api\World\Particle\BlockParticle;
+use Bedriox\Api\World\Particle\BlockParticleType;
+use Bedriox\Api\World\Particle\ColoredParticle;
+use Bedriox\Api\World\Particle\ColoredParticleType;
+use Bedriox\Api\World\Particle\DragonEggTeleportParticle;
+use Bedriox\Api\World\Particle\ItemBreakParticle;
+use Bedriox\Api\World\Particle\MobSpawnParticle;
+use Bedriox\Api\World\Particle\ParticleColor;
+use Bedriox\Api\World\Particle\ScalarParticle;
+use Bedriox\Api\World\Particle\ScalarParticleType;
+use Bedriox\Api\World\Particle\SimpleParticle;
+use Bedriox\Api\World\Particle\StandardParticle;
+use Bedriox\Api\World\Particle\StandardParticleType;
 use Bedriox\Protocol\Codec\UnsignedVarInt;
 use Bedriox\Protocol\Packet\AbilityLayer;
 use Bedriox\Protocol\Packet\ActorEventPacket;
 use Bedriox\Protocol\Packet\ActorEventType;
+use Bedriox\Protocol\Packet\ActorFlag;
+use Bedriox\Protocol\Packet\ActorMetadata;
 use Bedriox\Protocol\Packet\ActorProperties;
 use Bedriox\Protocol\Packet\AddActorPacket;
 use Bedriox\Protocol\Packet\AddItemActorPacket;
 use Bedriox\Protocol\Packet\AddPlayerPacket;
 use Bedriox\Protocol\Packet\AnimatePacket;
+use Bedriox\Protocol\Packet\AreaEffectCloudActorMetadata;
 use Bedriox\Protocol\Packet\BlockActorDataPacket;
 use Bedriox\Protocol\Packet\BlockEventPacket;
 use Bedriox\Protocol\Packet\BlockPosition as ProtocolBlockPosition;
+use Bedriox\Protocol\Packet\BrewingStandProperty;
 use Bedriox\Protocol\Packet\ChatPacket;
 use Bedriox\Protocol\Packet\CommandPermissionLevel;
 use Bedriox\Protocol\Packet\ContainerClosePacket;
 use Bedriox\Protocol\Packet\ContainerOpenPacket;
+use Bedriox\Protocol\Packet\ContainerSetDataPacket;
 use Bedriox\Protocol\Packet\ContainerType;
 use Bedriox\Protocol\Packet\CorrectPlayerMovePredictionPacket;
 use Bedriox\Protocol\Packet\DeathInfoPacket;
+use Bedriox\Protocol\Packet\DimensionId;
 use Bedriox\Protocol\Packet\EmoteFlag;
 use Bedriox\Protocol\Packet\EmotePacket;
 use Bedriox\Protocol\Packet\FullContainerName;
@@ -53,12 +73,16 @@ use Bedriox\Protocol\Packet\ItemStackResponse;
 use Bedriox\Protocol\Packet\ItemStackResponseContainer;
 use Bedriox\Protocol\Packet\ItemStackResponsePacket;
 use Bedriox\Protocol\Packet\ItemStackResponseSlot;
+use Bedriox\Protocol\Packet\LevelEventBlockFace;
 use Bedriox\Protocol\Packet\LevelEventPacket;
+use Bedriox\Protocol\Packet\LevelEventParticleColor;
+use Bedriox\Protocol\Packet\LevelEventParticleType;
 use Bedriox\Protocol\Packet\LevelEventPosition;
 use Bedriox\Protocol\Packet\LevelEventType;
 use Bedriox\Protocol\Packet\LevelSoundEventName;
 use Bedriox\Protocol\Packet\LevelSoundEventPacket;
 use Bedriox\Protocol\Packet\MobArmorEquipmentPacket;
+use Bedriox\Protocol\Packet\MobEffectPacket;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
 use Bedriox\Protocol\Packet\MoveActorAbsoluteFlag;
 use Bedriox\Protocol\Packet\MoveActorAbsolutePacket;
@@ -75,6 +99,7 @@ use Bedriox\Protocol\Packet\PlayerPermission;
 use Bedriox\Protocol\Packet\PlayerPositionProjection;
 use Bedriox\Protocol\Packet\PlayerSkin;
 use Bedriox\Protocol\Packet\PlayerSkinPacket;
+use Bedriox\Protocol\Packet\PotionProjectileActorMetadata;
 use Bedriox\Protocol\Packet\PredictionType;
 use Bedriox\Protocol\Packet\RemoveActorPacket;
 use Bedriox\Protocol\Packet\RespawnPacket;
@@ -82,8 +107,10 @@ use Bedriox\Protocol\Packet\RespawnState;
 use Bedriox\Protocol\Packet\SetActorDataPacket;
 use Bedriox\Protocol\Packet\SetActorMotionPacket;
 use Bedriox\Protocol\Packet\SetPlayerGameTypePacket;
+use Bedriox\Protocol\Packet\SpawnParticleEffectPacket;
 use Bedriox\Protocol\Packet\SystemTextPacket;
 use Bedriox\Protocol\Packet\TakeItemActorPacket;
+use Bedriox\Protocol\Packet\TippedArrowActorMetadata;
 use Bedriox\Protocol\Packet\TranslatedTextPacket;
 use Bedriox\Protocol\Packet\UpdateAttributesPacket;
 use Bedriox\Protocol\Packet\UpdateBlockFlag;
@@ -91,8 +118,12 @@ use Bedriox\Protocol\Packet\UpdateBlockPacket;
 use Bedriox\Protocol\Packet\UpdatePlayerGameTypePacket;
 use Bedriox\Protocol\Value\BuildPlatform;
 use Bedriox\Protocol\Value\UnsignedLong;
+use Bedriox\Server\Gameplay\Potion\PotionColorMixer;
 use Bedriox\Server\Player\InventoryContainer;
 use Bedriox\Server\Player\InventoryResponseMode;
+use Bedriox\Server\Simulation\Event\AreaEffectCloudRemoved;
+use Bedriox\Server\Simulation\Event\AreaEffectCloudSpawned;
+use Bedriox\Server\Simulation\Event\AreaEffectCloudUpdated;
 use Bedriox\Server\Simulation\Event\ArmSwung;
 use Bedriox\Server\Simulation\Event\BlockBreakStarted;
 use Bedriox\Server\Simulation\Event\BlockBreakStopped;
@@ -101,6 +132,8 @@ use Bedriox\Server\Simulation\Event\BlockEntityChanged;
 use Bedriox\Server\Simulation\Event\BlockPlaced;
 use Bedriox\Server\Simulation\Event\BlockPlacementCorrected;
 use Bedriox\Server\Simulation\Event\BlockPunch;
+use Bedriox\Server\Simulation\Event\BrewingCompleted;
+use Bedriox\Server\Simulation\Event\BrewingStandUpdated;
 use Bedriox\Server\Simulation\Event\ChatBroadcast;
 use Bedriox\Server\Simulation\Event\ContainerClosed;
 use Bedriox\Server\Simulation\Event\ContainerContentsChanged;
@@ -110,6 +143,7 @@ use Bedriox\Server\Simulation\Event\EmotePerformed;
 use Bedriox\Server\Simulation\Event\EntityActorAttackStarted;
 use Bedriox\Server\Simulation\Event\EntityActorDamaged;
 use Bedriox\Server\Simulation\Event\EntityActorDied;
+use Bedriox\Server\Simulation\Event\EntityActorEffectChanged;
 use Bedriox\Server\Simulation\Event\EntityActorEquipmentChanged;
 use Bedriox\Server\Simulation\Event\EntityActorHealthChanged;
 use Bedriox\Server\Simulation\Event\EntityActorMetadataChanged;
@@ -117,6 +151,7 @@ use Bedriox\Server\Simulation\Event\EntityActorMoved;
 use Bedriox\Server\Simulation\Event\EntityActorRemoved;
 use Bedriox\Server\Simulation\Event\EntityActorSpawned;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
+use Bedriox\Server\Simulation\Event\InventorySlotChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
 use Bedriox\Server\Simulation\Event\ItemConsumed;
 use Bedriox\Server\Simulation\Event\ItemEntityDespawned;
@@ -127,11 +162,14 @@ use Bedriox\Server\Simulation\Event\ItemUseCancelled;
 use Bedriox\Server\Simulation\Event\ItemUseStarted;
 use Bedriox\Server\Simulation\Event\MovementCorrected;
 use Bedriox\Server\Simulation\Event\NutritionChanged;
+use Bedriox\Server\Simulation\Event\ParticleSpawned;
 use Bedriox\Server\Simulation\Event\PlayerBecameHidden;
 use Bedriox\Server\Simulation\Event\PlayerBecameVisible;
 use Bedriox\Server\Simulation\Event\PlayerDamaged;
 use Bedriox\Server\Simulation\Event\PlayerDied;
 use Bedriox\Server\Simulation\Event\PlayerDisconnected;
+use Bedriox\Server\Simulation\Event\PlayerEffectChanged;
+use Bedriox\Server\Simulation\Event\PlayerEnvironmentChanged;
 use Bedriox\Server\Simulation\Event\PlayerGameModeChanged;
 use Bedriox\Server\Simulation\Event\PlayerHealed;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
@@ -139,6 +177,10 @@ use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
 use Bedriox\Server\Simulation\Event\PlayerMotionChanged;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
 use Bedriox\Server\Simulation\Event\PlayerRespawned;
+use Bedriox\Server\Simulation\Event\PotionProjectileImpacted;
+use Bedriox\Server\Simulation\Event\PotionProjectileMoved;
+use Bedriox\Server\Simulation\Event\PotionProjectileRemoved;
+use Bedriox\Server\Simulation\Event\PotionProjectileSpawned;
 use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
 use Bedriox\Server\Simulation\Event\WorldEvent;
 use Bedriox\Server\Simulation\PlayerSnapshot;
@@ -168,6 +210,7 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
     public function encode(WorldEvent $event, array $sessions): array
     {
         return match (true) {
+            $event instanceof ParticleSpawned => $this->particle($event, $sessions),
             $event instanceof PlayerJoined => $this->joined($event, $sessions),
             $event instanceof PlayerBecameVisible => $this->visible($event, $sessions),
             $event instanceof PlayerBecameHidden => [
@@ -198,6 +241,8 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             $event instanceof ContainerOpened => $this->containerOpened($event),
             $event instanceof ContainerClosed => $this->containerClosed($event),
             $event instanceof ContainerContentsChanged => $this->containerContentsChanged($event),
+            $event instanceof BrewingStandUpdated => $this->brewingStandUpdated($event),
+            $event instanceof BrewingCompleted => $this->brewingCompleted($event),
             $event instanceof EmotePerformed => $this->emote($event, $sessions),
             $event instanceof ArmSwung => $this->armSwung($event),
             $event instanceof PlayerDisconnected => $this->disconnected($event),
@@ -210,10 +255,32 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             $event instanceof BlockPlacementCorrected => $this->blockPlacementCorrected($event),
             $event instanceof HeldItemChanged => $this->heldItemChanged($event),
             $event instanceof InventoryStackRequestProcessed => $this->inventoryStackRequestProcessed($event),
+            $event instanceof InventorySlotChanged => $this->inventorySlotChanged($event),
             $event instanceof ItemUseStarted => $this->itemUseStarted($event),
             $event instanceof ItemUseCancelled => $this->itemUseCancelled($event),
             $event instanceof ItemConsumed => $this->itemConsumed($event),
             $event instanceof NutritionChanged => $this->nutritionChanged($event),
+            $event instanceof PlayerEffectChanged => $this->playerEffectChanged($event),
+            $event instanceof PlayerEnvironmentChanged => $this->playerEnvironmentChanged($event),
+            $event instanceof PotionProjectileSpawned => $this->potionProjectileSpawned($event),
+            $event instanceof PotionProjectileMoved => $this->potionProjectileMoved($event),
+            $event instanceof PotionProjectileImpacted => $this->potionProjectileImpacted($event),
+            $event instanceof PotionProjectileRemoved => array_map(
+                static fn(string $recipient): DirectedPacket => new DirectedPacket(
+                    $recipient,
+                    new RemoveActorPacket($event->runtimeEntityId),
+                ),
+                $event->recipientSessionIds,
+            ),
+            $event instanceof AreaEffectCloudSpawned => $this->areaEffectCloudSpawned($event),
+            $event instanceof AreaEffectCloudUpdated => $this->areaEffectCloudUpdated($event),
+            $event instanceof AreaEffectCloudRemoved => array_map(
+                static fn(string $recipient): DirectedPacket => new DirectedPacket(
+                    $recipient,
+                    new RemoveActorPacket($event->runtimeEntityId),
+                ),
+                $event->recipientSessionIds,
+            ),
             $event instanceof ItemEntitySpawned => $this->itemEntitySpawned($event),
             $event instanceof ItemEntityMoved => $this->itemEntityMoved($event),
             $event instanceof ItemEntityPickedUp => $this->itemEntityPickedUp($event),
@@ -225,6 +292,7 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
                 $event->recipientSessionIds,
             ),
             $event instanceof EntityActorSpawned => $this->entityActorSpawned($event),
+            $event instanceof EntityActorEffectChanged => $this->entityActorEffectChanged($event),
             $event instanceof EntityActorEquipmentChanged => $this->entityActorEquipmentChanged($event),
             $event instanceof EntityActorHealthChanged => $this->entityActorHealthChanged($event),
             $event instanceof EntityActorMetadataChanged => $this->entityActorMetadataChanged($event),
@@ -381,6 +449,50 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
         return $packets;
     }
 
+    /** @return list<DirectedPacket> */
+    private function brewingStandUpdated(BrewingStandUpdated $event): array
+    {
+        $packets = [];
+        foreach ($event->viewers as $viewer) {
+            if ($event->changedSlots !== []) {
+                $packets[] = new DirectedPacket($viewer->sessionId, new InventoryContentPacket(
+                    $viewer->windowId,
+                    array_map($this->requireInventoryProjector()->toProtocol(...), $viewer->slots),
+                ));
+            }
+            foreach ([
+                [BrewingStandProperty::BrewTime, $event->brewTime],
+                [BrewingStandProperty::FuelAmount, $event->fuelAmount],
+                [BrewingStandProperty::FuelTotal, $event->fuelTotal],
+            ] as [$property, $value]) {
+                $packets[] = new DirectedPacket(
+                    $viewer->sessionId,
+                    ContainerSetDataPacket::brewingStand($viewer->windowId, $property, $value),
+                );
+            }
+        }
+
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function brewingCompleted(BrewingCompleted $event): array
+    {
+        $position = new LevelEventPosition(
+            $event->position->x + 0.5,
+            $event->position->y + 0.5,
+            $event->position->z + 0.5,
+        );
+
+        return array_map(
+            static fn(string $recipient): DirectedPacket => new DirectedPacket(
+                $recipient,
+                new LevelSoundEventPacket(LevelSoundEventName::potionBrewed(), $position),
+            ),
+            $event->recipientSessionIds,
+        );
+    }
+
     /**
      * @param list<string> $recipients
      * @return list<DirectedPacket>
@@ -417,7 +529,9 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
         ?ContainerLayout $layout,
     ): ContainerType {
         if ($type !== ApiContainerType::VIRTUAL) {
-            return ContainerType::Container;
+            return $type === ApiContainerType::BREWING_STAND
+                ? ContainerType::BrewingStand
+                : ContainerType::Container;
         }
 
         return match ($layout) {
@@ -702,7 +816,23 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
     {
         return new UpdateAttributesPacket(
             UnsignedLong::fromInt($player->runtimeActorId),
-            [new PlayerAttribute('minecraft:health', 0.0, 20.0, $player->health, 0.0, 20.0, 20.0)],
+            [new PlayerAttribute(
+                'minecraft:health',
+                0.0,
+                $player->maximumHealth,
+                $player->health,
+                0.0,
+                $player->maximumHealth,
+                $player->maximumHealth,
+            ), new PlayerAttribute(
+                'minecraft:absorption',
+                0.0,
+                1_024.0,
+                $player->absorption,
+                0.0,
+                1_024.0,
+                0.0,
+            )],
             UnsignedLong::fromInt(max(0, $player->movementSequence)),
         );
     }
@@ -825,6 +955,28 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
         foreach ($this->boundedPlayerListPackets($existingEntries) as $packet) {
             $packets[] = new DirectedPacket($event->player->sessionId, $packet);
         }
+        $environmentMetadata = array_values(array_filter(
+            $this->playerMetadata($event->player),
+            static fn(ActorMetadata $entry): bool => PlayerActorMetadata::isFlags($entry)
+                || PlayerActorMetadata::isAirSupply($entry)
+                || PlayerActorMetadata::isMaximumAirSupply($entry),
+        ));
+        $packets[] = new DirectedPacket($event->player->sessionId, new SetActorDataPacket(
+            UnsignedLong::fromInt($event->player->runtimeActorId),
+            UnsignedLong::fromInt(max(0, $event->player->movementSequence)),
+            $environmentMetadata,
+        ));
+        foreach ($event->player->effects as $effect) {
+            $packets[] = new DirectedPacket(
+                $event->player->sessionId,
+                $this->effectPacket(
+                    $event->player->runtimeActorId,
+                    $effect,
+                    0,
+                    false,
+                ),
+            );
+        }
 
         return $packets;
     }
@@ -879,11 +1031,14 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             $player->verticalState === VerticalState::GROUNDED ? [MoveActorAbsoluteFlag::OnGround] : [],
         )];
         if ($event->postureChanged) {
-            $packets[] = SetActorDataPacket::playerPosture(
+            $flags = array_values(array_filter(
+                $this->playerMetadata($player),
+                static fn(ActorMetadata $entry): bool => PlayerActorMetadata::isFlags($entry),
+            ));
+            $packets[] = new SetActorDataPacket(
                 UnsignedLong::fromInt($player->runtimeActorId),
                 UnsignedLong::fromInt(max(0, $player->movementSequence)),
-                $player->sneaking,
-                $player->sprinting,
+                $flags,
             );
         }
 
@@ -1015,12 +1170,65 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             0,
             $abilities,
             buildPlatform: BuildPlatform::Unknown,
-            metadata: PlayerActorMetadata::baseline(
-                $player->displayName,
-                $player->sneaking,
-                $player->sprinting,
-            ),
+            metadata: $this->playerMetadata($player),
         );
+    }
+
+    /** @return list<ActorMetadata> */
+    private function playerMetadata(PlayerSnapshot $player): array
+    {
+        $metadata = PlayerActorMetadata::baseline(
+            $player->displayName,
+            $player->sneaking,
+            $player->sprinting,
+        );
+        $flags = PlayerActorMetadata::flags($player->sneaking, $player->sprinting);
+        if ($player->fireTicks > 0) {
+            $flags |= ActorFlag::OnFire->mask();
+        }
+        if (isset($player->effects[\Bedriox\Api\Effect\EffectType::INVISIBILITY->value])) {
+            $flags |= ActorFlag::Invisible->mask();
+        }
+        foreach ($metadata as $index => $entry) {
+            $metadata[$index] = match (true) {
+                PlayerActorMetadata::isFlags($entry) => PlayerActorMetadata::flagsEntry($flags),
+                PlayerActorMetadata::isAirSupply($entry) => PlayerActorMetadata::airSupply($player->airTicks),
+                PlayerActorMetadata::isMaximumAirSupply($entry) => PlayerActorMetadata::maximumAirSupply(
+                    \Bedriox\Server\Player\PlayerVitals::MAX_AIR_TICKS,
+                ),
+                default => $entry,
+            };
+        }
+
+        return $metadata;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function playerEnvironmentChanged(PlayerEnvironmentChanged $event): array
+    {
+        $metadata = $this->playerMetadata($event->player);
+        $packets = [];
+        foreach ($event->recipientSessionIds as $recipient) {
+            $owner = $recipient === $event->player->sessionId;
+            $entries = array_values(array_filter(
+                $metadata,
+                static fn(ActorMetadata $entry): bool => ($event->fireStateChanged
+                        && PlayerActorMetadata::isFlags($entry))
+                    || ($owner && $event->airSupplyChanged && (
+                        PlayerActorMetadata::isAirSupply($entry)
+                        || PlayerActorMetadata::isMaximumAirSupply($entry)
+                    )),
+            ));
+            if ($entries !== []) {
+                $packets[] = new DirectedPacket($recipient, new SetActorDataPacket(
+                    UnsignedLong::fromInt($event->player->runtimeActorId),
+                    UnsignedLong::fromInt(max(0, $event->tick)),
+                    $entries,
+                ));
+            }
+        }
+
+        return $packets;
     }
 
     /**
@@ -1035,7 +1243,7 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             return [];
         }
 
-        return [
+        $packets = [
             new DirectedPacket($event->recipientSessionId, $this->addPlayer($event->player)),
             new DirectedPacket($event->recipientSessionId, new PlayerSkinPacket(
                 $event->player->identity,
@@ -1059,6 +1267,349 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
                 $this->visualStack($event->player->offhand),
             )),
         ];
+        foreach ($event->player->effects as $effect) {
+            $packets[] = new DirectedPacket(
+                $event->recipientSessionId,
+                $this->effectPacket($event->player->runtimeActorId, $effect, 0, false),
+            );
+        }
+
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function playerEffectChanged(PlayerEffectChanged $event): array
+    {
+        $packet = $event->effect === null
+            ? MobEffectPacket::remove(
+                UnsignedLong::fromInt($event->player->runtimeActorId),
+                BedrockEffectTranslator::type($event->type),
+                UnsignedLong::fromInt(max(0, $event->tick)),
+            )
+            : $this->effectPacket(
+                $event->player->runtimeActorId,
+                $event->effect,
+                $event->tick,
+                $event->replacesExisting,
+            );
+
+        $packets = [];
+        foreach ($event->recipientSessionIds as $recipient) {
+            $packets[] = new DirectedPacket($recipient, $packet);
+            if ($event->type === \Bedriox\Api\Effect\EffectType::HEALTH_BOOST
+                || $event->type === \Bedriox\Api\Effect\EffectType::ABSORPTION) {
+                $packets[] = new DirectedPacket($recipient, $this->healthPacket($event->player));
+            }
+            if ($event->type === \Bedriox\Api\Effect\EffectType::INVISIBILITY) {
+                $metadata = $this->playerMetadata($event->player);
+                $flags = array_values(array_filter(
+                    $metadata,
+                    static fn(ActorMetadata $entry): bool => PlayerActorMetadata::isFlags($entry),
+                ));
+                $packets[] = new DirectedPacket($recipient, new SetActorDataPacket(
+                    UnsignedLong::fromInt($event->player->runtimeActorId),
+                    UnsignedLong::fromInt(max(0, $event->tick)),
+                    $flags,
+                ));
+            }
+        }
+
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function potionProjectileSpawned(PotionProjectileSpawned $event): array
+    {
+        $projectile = $event->projectile;
+        $packet = new AddActorPacket(
+            $projectile->uniqueEntityId,
+            UnsignedLong::fromInt($projectile->runtimeEntityId),
+            $projectile->tippedArrow ? 'minecraft:arrow' : 'minecraft:splash_potion',
+            $projectile->position->x,
+            $projectile->position->y,
+            $projectile->position->z,
+            $projectile->motion->x,
+            $projectile->motion->y,
+            $projectile->motion->z,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            metadata: $projectile->tippedArrow
+                ? TippedArrowActorMetadata::baseline($projectile->potionType->value)
+                : PotionProjectileActorMetadata::baseline(
+                    $projectile->potionType->value,
+                    $projectile->lingering,
+                ),
+        );
+
+        return array_map(
+            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
+            $event->recipientSessionIds,
+        );
+    }
+
+    /** @return list<DirectedPacket> */
+    private function potionProjectileMoved(PotionProjectileMoved $event): array
+    {
+        $projectile = $event->projectile;
+        $packet = new MoveActorAbsolutePacket(
+            UnsignedLong::fromInt($projectile->runtimeEntityId),
+            $projectile->position->x,
+            $projectile->position->y,
+            $projectile->position->z,
+            0.0,
+            0.0,
+            0.0,
+        );
+
+        return array_map(
+            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
+            $event->recipientSessionIds,
+        );
+    }
+
+    /** @return list<DirectedPacket> */
+    private function potionProjectileImpacted(PotionProjectileImpacted $event): array
+    {
+        $position = new LevelEventPosition($event->position->x, $event->position->y, $event->position->z);
+        $argb = PotionColorMixer::forPotion($event->potionType);
+        $color = new LevelEventParticleColor(
+            ($argb >> 16) & 0xff,
+            ($argb >> 8) & 0xff,
+            $argb & 0xff,
+            ($argb >> 24) & 0xff,
+        );
+        $packets = [];
+        foreach ($event->recipientSessionIds as $recipient) {
+            $packets[] = new DirectedPacket($recipient, LevelEventPacket::potionSplashParticle($position, $color));
+            $packets[] = new DirectedPacket(
+                $recipient,
+                new LevelSoundEventPacket(LevelSoundEventName::glass(), $position),
+            );
+        }
+
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function areaEffectCloudSpawned(AreaEffectCloudSpawned $event): array
+    {
+        $cloud = $event->cloud;
+        $packet = new AddActorPacket(
+            $cloud->uniqueEntityId,
+            UnsignedLong::fromInt($cloud->runtimeEntityId),
+            'minecraft:area_effect_cloud',
+            $cloud->position->x,
+            $cloud->position->y,
+            $cloud->position->z,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            metadata: AreaEffectCloudActorMetadata::baseline(
+                $cloud->radius,
+                PotionColorMixer::forPotion($cloud->potionType),
+            ),
+        );
+
+        return array_map(
+            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
+            $event->recipientSessionIds,
+        );
+    }
+
+    /** @return list<DirectedPacket> */
+    private function areaEffectCloudUpdated(AreaEffectCloudUpdated $event): array
+    {
+        $cloud = $event->cloud;
+        $packet = new SetActorDataPacket(
+            UnsignedLong::fromInt($cloud->runtimeEntityId),
+            UnsignedLong::fromInt($cloud->ageTicks),
+            AreaEffectCloudActorMetadata::baseline(
+                $cloud->radius,
+                PotionColorMixer::forPotion($cloud->potionType),
+            ),
+        );
+
+        return array_map(
+            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
+            $event->recipientSessionIds,
+        );
+    }
+
+    private function effectPacket(
+        int $runtimeId,
+        \Bedriox\Api\Effect\EffectInstance $effect,
+        int $tick,
+        bool $modify,
+    ): MobEffectPacket {
+        $arguments = [
+            UnsignedLong::fromInt($runtimeId),
+            BedrockEffectTranslator::type($effect->type),
+            $effect->amplifier,
+            $effect->visible,
+            $effect->infinite ? -1 : $effect->durationTicks,
+            UnsignedLong::fromInt(max(0, $tick)),
+            $effect->ambient,
+        ];
+
+        return $modify ? MobEffectPacket::modify(...$arguments) : MobEffectPacket::add(...$arguments);
+    }
+
+    /**
+     * @param array<string, RuntimeSession> $sessions
+     * @return list<DirectedPacket>
+     */
+    private function particle(ParticleSpawned $event, array $sessions): array
+    {
+        $position = new LevelEventPosition($event->position->x, $event->position->y, $event->position->z);
+        $particle = $event->particle;
+        $packet = match (true) {
+            $particle instanceof SimpleParticle => new SpawnParticleEffectPacket(
+                match ($event->dimension) {
+                    \Bedriox\Server\Simulation\WorldDimension::OVERWORLD => DimensionId::Overworld,
+                    \Bedriox\Server\Simulation\WorldDimension::NETHER => DimensionId::Nether,
+                    \Bedriox\Server\Simulation\WorldDimension::END => DimensionId::End,
+                },
+                SpawnParticleEffectPacket::UNATTACHED_ENTITY_ID,
+                $position,
+                $particle->type()->value,
+                $particle->variables()?->toJson(),
+            ),
+            $particle instanceof StandardParticle => $particle->type === StandardParticleType::ENDERMAN_TELEPORT
+                ? LevelEventPacket::endermanTeleportParticle($position)
+                : LevelEventPacket::particle($position, self::standardParticleType($particle->type)),
+            $particle instanceof ScalarParticle => LevelEventPacket::scalarParticle(
+                $position,
+                self::scalarParticleType($particle->type),
+                $particle->value,
+            ),
+            $particle instanceof ColoredParticle => $this->coloredParticle($position, $particle),
+            $particle instanceof BlockParticle => $this->blockParticle($position, $particle),
+            $particle instanceof ItemBreakParticle => LevelEventPacket::itemBreakParticle(
+                $position,
+                $this->requireInventoryProjector()->particleItemRuntimeId($particle->item->identifier),
+                $particle->item->auxValue,
+            ),
+            $particle instanceof DragonEggTeleportParticle => LevelEventPacket::dragonEggTeleportParticle(
+                $position,
+                $particle->offsetX,
+                $particle->offsetY,
+                $particle->offsetZ,
+            ),
+            $particle instanceof MobSpawnParticle => LevelEventPacket::mobSpawnParticle(
+                $position,
+                $particle->width,
+                $particle->height,
+            ),
+            default => throw new \LogicException('Particle type does not have a Bedrock projection.'),
+        };
+        $packets = [];
+        foreach ($event->recipientSessionIds as $recipient) {
+            $session = $sessions[$recipient] ?? null;
+            if ($session?->play?->hasSentChunkAt($event->position->x, $event->position->z) !== true) {
+                continue;
+            }
+            $packets[] = new DirectedPacket($recipient, $packet);
+        }
+
+        return $packets;
+    }
+
+    private static function standardParticleType(StandardParticleType $type): LevelEventParticleType
+    {
+        $name = match ($type) {
+            StandardParticleType::ANGRY_VILLAGER => 'VillagerAngry',
+            StandardParticleType::ENCHANTING_TABLE => 'EnchantmentTable',
+            StandardParticleType::ENTITY_FLAME => 'MobFlame',
+            StandardParticleType::EXPLOSION => 'Explode',
+            StandardParticleType::HUGE_EXPLOSION => 'HugeExplode',
+            StandardParticleType::HUGE_EXPLOSION_SEED => 'HugeExplodeSeed',
+            StandardParticleType::HONEY_DRIP => 'DripHoney',
+            StandardParticleType::LAVA_DRIP => 'DripLava',
+            StandardParticleType::HAPPY_VILLAGER => 'VillagerHappy',
+            StandardParticleType::SPORE => 'SuspendedTown',
+            StandardParticleType::STALACTITE_LAVA_DRIP => 'StalactiteDripLava',
+            StandardParticleType::STALACTITE_WATER_DRIP => 'StalactiteDripWater',
+            StandardParticleType::WATER_DRIP => 'DripWater',
+            StandardParticleType::WATER_SPLASH => 'Splash',
+            default => str_replace(' ', '', ucwords(str_replace('_', ' ', strtolower($type->name)))),
+        };
+        $particle = constant(LevelEventParticleType::class . '::' . $name);
+        if (!$particle instanceof LevelEventParticleType) {
+            throw new \LogicException('Standard particle is not available in the active protocol.');
+        }
+
+        return $particle;
+    }
+
+    private static function scalarParticleType(ScalarParticleType $type): LevelEventParticleType
+    {
+        return match ($type) {
+            ScalarParticleType::BLOCK_FORCE_FIELD => LevelEventParticleType::BlockForceField,
+            ScalarParticleType::CRITICAL => LevelEventParticleType::Critical,
+            ScalarParticleType::HEART => LevelEventParticleType::Heart,
+            ScalarParticleType::INK => LevelEventParticleType::Ink,
+            ScalarParticleType::REDSTONE => LevelEventParticleType::Redstone,
+            ScalarParticleType::SMOKE => LevelEventParticleType::Smoke,
+        };
+    }
+
+    private function coloredParticle(LevelEventPosition $position, ColoredParticle $particle): LevelEventPacket
+    {
+        $color = self::particleColor($particle->color);
+        if ($particle->type === ColoredParticleType::POTION_SPLASH) {
+            return LevelEventPacket::potionSplashParticle($position, $color);
+        }
+
+        return LevelEventPacket::coloredParticle($position, match ($particle->type) {
+            ColoredParticleType::DUST => LevelEventParticleType::FallingDust,
+            ColoredParticleType::ENCHANT => LevelEventParticleType::MobSpell,
+            ColoredParticleType::AMBIENT_ENCHANT => LevelEventParticleType::MobSpellAmbient,
+            ColoredParticleType::INSTANT_ENCHANT => LevelEventParticleType::MobSpellInstantaneous,
+        }, $color);
+    }
+
+    private function blockParticle(LevelEventPosition $position, BlockParticle $particle): LevelEventPacket
+    {
+        if ($this->chunks === null) {
+            throw new \LogicException('Block particles require the active block-network translator.');
+        }
+        $runtimeId = $this->chunks->networkRuntimeIdForCanonicalState(
+            $particle->block->identifier(),
+            $particle->block->properties(),
+        );
+
+        return match ($particle->type) {
+            BlockParticleType::BREAK => LevelEventPacket::destroyBlock($position, $runtimeId),
+            BlockParticleType::TERRAIN => LevelEventPacket::terrainParticle($position, $runtimeId),
+            BlockParticleType::PUNCH => LevelEventPacket::punchBlockFace(
+                $position,
+                $runtimeId,
+                self::particleBlockFace($particle->face ?? throw new \LogicException('Punch particle has no face.')),
+            ),
+        };
+    }
+
+    private static function particleColor(ParticleColor $color): LevelEventParticleColor
+    {
+        return new LevelEventParticleColor($color->red, $color->green, $color->blue, $color->alpha);
+    }
+
+    private static function particleBlockFace(BlockFace $face): LevelEventBlockFace
+    {
+        return match ($face) {
+            BlockFace::DOWN => LevelEventBlockFace::Down,
+            BlockFace::UP => LevelEventBlockFace::Up,
+            BlockFace::NORTH => LevelEventBlockFace::North,
+            BlockFace::SOUTH => LevelEventBlockFace::South,
+            BlockFace::WEST => LevelEventBlockFace::West,
+            BlockFace::EAST => LevelEventBlockFace::East,
+        };
     }
 
     /** @return list<DirectedPacket> */
@@ -1267,6 +1818,17 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
     }
 
     /** @return list<DirectedPacket> */
+    private function inventorySlotChanged(InventorySlotChanged $event): array
+    {
+        return $this->inventorySlotCorrection(
+            $event->ownerSessionId,
+            InventoryContainerId::INVENTORY,
+            $event->slot,
+            $event->stack,
+        );
+    }
+
+    /** @return list<DirectedPacket> */
     private function itemEntitySpawned(ItemEntitySpawned $event): array
     {
         $inventory = $this->requireInventoryProjector();
@@ -1351,11 +1913,69 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
         );
 
         $equipment = $this->livingActors->equipmentPackets($entity, $this->inventory);
+        $effects = array_map(
+            fn(\Bedriox\Api\Effect\EffectInstance $effect): MobEffectPacket => $this->effectPacket(
+                $runtimeId,
+                $effect,
+                0,
+                false,
+            ),
+            array_values($entity->effectState()->snapshot()),
+        );
         $packets = [];
         foreach ($event->recipientSessionIds as $recipient) {
             $packets[] = new DirectedPacket($recipient, $packet);
             foreach ($equipment as $equipmentPacket) {
                 $packets[] = new DirectedPacket($recipient, $equipmentPacket);
+            }
+            foreach ($effects as $effectPacket) {
+                $packets[] = new DirectedPacket($recipient, $effectPacket);
+            }
+        }
+
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function entityActorEffectChanged(EntityActorEffectChanged $event): array
+    {
+        $packet = $event->effect === null
+            ? MobEffectPacket::remove(
+                UnsignedLong::fromInt($event->entity->getRuntimeId()),
+                BedrockEffectTranslator::type($event->type),
+                UnsignedLong::fromInt(max(0, $event->tick)),
+            )
+            : $this->effectPacket(
+                $event->entity->getRuntimeId(),
+                $event->effect,
+                $event->tick,
+                $event->replacesExisting,
+            );
+
+        $attributes = null;
+        if ($event->type === \Bedriox\Api\Effect\EffectType::HEALTH_BOOST
+            || $event->type === \Bedriox\Api\Effect\EffectType::ABSORPTION) {
+            $attributes = new UpdateAttributesPacket(
+                UnsignedLong::fromInt($event->entity->getRuntimeId()),
+                [
+                    $this->livingActors->healthAttribute($event->entity),
+                    $this->livingActors->absorptionAttribute($event->entity),
+                ],
+                UnsignedLong::fromInt(max(0, $event->tick)),
+            );
+        }
+        $packets = [];
+        foreach ($event->recipientSessionIds as $recipient) {
+            $packets[] = new DirectedPacket($recipient, $packet);
+            if ($attributes !== null) {
+                $packets[] = new DirectedPacket($recipient, $attributes);
+            }
+            if ($event->type === \Bedriox\Api\Effect\EffectType::INVISIBILITY) {
+                $packets[] = new DirectedPacket($recipient, new SetActorDataPacket(
+                    UnsignedLong::fromInt($event->entity->getRuntimeId()),
+                    UnsignedLong::fromInt(max(0, $event->tick)),
+                    [$this->livingActors->flagsMetadata($event->entity)],
+                ));
             }
         }
 
@@ -1413,7 +2033,10 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
         $runtimeId = UnsignedLong::fromInt($event->entity->getRuntimeId());
         $health = new UpdateAttributesPacket(
             $runtimeId,
-            [$this->livingActors->healthAttribute($event->entity)],
+            [
+                $this->livingActors->healthAttribute($event->entity),
+                $this->livingActors->absorptionAttribute($event->entity),
+            ],
             UnsignedLong::fromInt(max(0, $event->tick)),
         );
         $hurt = new ActorEventPacket($runtimeId, ActorEventType::Hurt);
@@ -1431,7 +2054,10 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
     {
         $packet = new UpdateAttributesPacket(
             UnsignedLong::fromInt($event->entity->getRuntimeId()),
-            [$this->livingActors->healthAttribute($event->entity)],
+            [
+                $this->livingActors->healthAttribute($event->entity),
+                $this->livingActors->absorptionAttribute($event->entity),
+            ],
             UnsignedLong::fromInt(max(0, $event->tick)),
         );
 

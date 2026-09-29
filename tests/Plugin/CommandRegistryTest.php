@@ -32,6 +32,7 @@ use Bedriox\Api\Command\CommandSenderType;
 use Bedriox\Api\Event\Command\CommandDispatchedEvent;
 use Bedriox\Api\Event\Command\CommandPreDispatchEvent;
 use Bedriox\Api\Event\EventPriority;
+use Bedriox\Api\World\Particle\ParticleType;
 use Bedriox\Server\Plugin\Command\CommandLineParser;
 use Bedriox\Server\Plugin\Command\CommandRegistry;
 use Bedriox\Server\Plugin\Event\EventDispatcher;
@@ -164,11 +165,15 @@ final class CommandRegistryTest extends TestCase
 
     public function testPluginFailureDisablesOnlyOwnerAndOwnershipCleanupRemovesCommand(): void
     {
-        [$registry, , $plugins, $ownership] = $this->registry();
+        [$registry, , $plugins, $ownership, $actions] = $this->registry();
+        $stagedActionRan = false;
         $registry->register('Tools', new TestCommand(
             new CommandDefinition('explode', 'Explode'),
             CommandArguments::none(),
-            static function (): CommandResult {
+            static function () use ($actions, &$stagedActionRan): CommandResult {
+                $actions->stage(static function () use (&$stagedActionRan): void {
+                    $stagedActionRan = true;
+                });
                 throw new RuntimeException('failure');
             },
         ));
@@ -178,9 +183,164 @@ final class CommandRegistryTest extends TestCase
         self::assertFalse($result->isSuccess());
         self::assertSame(['Tools'], $plugins->disabled);
         self::assertSame('command', $plugins->frames[0]?->operation);
+        self::assertFalse($stagedActionRan);
+        self::assertFalse($actions->isCapturing());
         self::assertSame(1, $registry->count());
         $ownership->releaseAll('Tools');
         self::assertSame(0, $registry->count());
+    }
+
+    public function testInvalidParticleIdentifierReturnsABoundedFailureWithoutEscaping(): void
+    {
+        [$registry] = $this->registry();
+        $registry->registerServer(new TestCommand(
+            new CommandDefinition('particle', 'Spawn a particle'),
+            CommandArguments::create()->addArgument(CommandParameter::enum('particle', ParticleType::class)),
+            static fn(): CommandResult => CommandResult::success(),
+        ));
+        $sender = new RecordingCommandSender(CommandSenderType::CONSOLE);
+
+        $result = $registry->dispatch($sender, '/particle minecraft:heart');
+
+        self::assertFalse($result->isSuccess());
+        self::assertSame("Argument 'particle' was not found.", $result->message());
+        self::assertSame([
+            "Argument 'particle' was not found.",
+            'Usage: /particle <particle>',
+        ], $sender->messages);
+        self::assertLessThan(1_024, strlen(implode("\n", $sender->messages)));
+        self::assertTrue($registry->dispatch($sender, '/particle minecraft:heart_particle')->isSuccess());
+    }
+
+    public function testBuiltInCommandFailureIsReportedAndCannotEscape(): void
+    {
+        $failures = [];
+        [$registry] = $this->registry(failureReporter: static function (
+            Throwable $failure,
+            string $operation,
+            ?string $commandName,
+            ?string $commandOwner,
+        ) use (&$failures): void {
+            $failures[] = [$failure::class, $operation, $commandName, $commandOwner];
+        });
+        $registry->registerServer(new TestCommand(
+            new CommandDefinition('invalid-result', 'Return an invalid result'),
+            CommandArguments::none(),
+            static fn(): CommandResult => CommandResult::success(str_repeat('x', 1_025)),
+        ));
+        $sender = new RecordingCommandSender(CommandSenderType::CONSOLE);
+
+        $result = $registry->dispatch($sender, 'invalid-result');
+
+        self::assertFalse($result->isSuccess());
+        self::assertSame('The command failed internally.', $result->message());
+        self::assertSame(['The command failed internally.'], $sender->messages);
+        self::assertSame([[
+            \InvalidArgumentException::class,
+            'command execution',
+            'invalid-result',
+            'Bedriox',
+        ]], $failures);
+    }
+
+    public function testResultDeliveryFailureIsContainedAndReported(): void
+    {
+        $operations = [];
+        [$registry] = $this->registry(failureReporter: static function (
+            Throwable $failure,
+            string $operation,
+            ?string $commandName,
+            ?string $commandOwner,
+        ) use (&$operations): void {
+            $operations[] = $operation;
+        });
+        $registry->registerServer(new TestCommand(
+            new CommandDefinition('deliver', 'Deliver a result'),
+            CommandArguments::none(),
+            static fn(): CommandResult => CommandResult::success('Done'),
+        ));
+
+        $result = $registry->dispatch(new ThrowingCommandSender(), 'deliver');
+
+        self::assertFalse($result->isSuccess());
+        self::assertSame('The command failed internally.', $result->message());
+        self::assertSame(['command result delivery', 'command result delivery'], $operations);
+    }
+
+    public function testBindingDependencyFailureIsContainedAndAttributed(): void
+    {
+        $reported = [];
+        [$registry] = $this->registry(
+            onlinePlayers: static function (): array {
+                throw new RuntimeException('player lookup failed');
+            },
+            failureReporter: static function (
+                Throwable $failure,
+                string $operation,
+                ?string $commandName,
+                ?string $commandOwner,
+            ) use (&$reported): void {
+                $reported[] = [$operation, $commandName, $commandOwner, $failure::class];
+            },
+        );
+        $registry->registerServer(new TestCommand(
+            new CommandDefinition('find', 'Find a player'),
+            CommandArguments::create()->addArgument(CommandParameter::onlinePlayer('player')),
+            static fn(): CommandResult => CommandResult::success(),
+        ));
+        $sender = new RecordingCommandSender(CommandSenderType::CONSOLE);
+
+        $result = $registry->dispatch($sender, 'find Alex');
+
+        self::assertFalse($result->isSuccess());
+        self::assertSame(['The command failed internally.'], $sender->messages);
+        self::assertSame([['argument binding', 'find', 'Bedriox', RuntimeException::class]], $reported);
+    }
+
+    public function testPostEventInfrastructureFailureCannotEscape(): void
+    {
+        $operations = [];
+        [$registry, $events] = $this->registry(
+            maximumListenersPerDispatch: 1,
+            failureReporter: static function (
+                Throwable $failure,
+                string $operation,
+                ?string $commandName,
+                ?string $commandOwner,
+            ) use (&$operations): void {
+                $operations[] = [$operation, $commandName, $commandOwner];
+            },
+        );
+        $events->register('Observer', CommandDispatchedEvent::class, static function (): void {});
+        $events->register('Other', CommandDispatchedEvent::class, static function (): void {});
+        $registry->registerServer(self::emptyCommand('observe'));
+        $sender = new RecordingCommandSender(CommandSenderType::CONSOLE);
+
+        $result = $registry->dispatch($sender, 'observe');
+
+        self::assertFalse($result->isSuccess());
+        self::assertSame(['The command failed internally.'], $sender->messages);
+        self::assertSame([['post-dispatch event', 'observe', 'Bedriox']], $operations);
+    }
+
+    public function testFailureReporterFailureCannotEscape(): void
+    {
+        [$registry] = $this->registry(failureReporter: static function (): void {
+            throw new RuntimeException('logger failed');
+        });
+        $registry->registerServer(new TestCommand(
+            new CommandDefinition('explode-built-in', 'Explode'),
+            CommandArguments::none(),
+            static function (): CommandResult {
+                throw new RuntimeException('command failed');
+            },
+        ));
+        $sender = new RecordingCommandSender(CommandSenderType::CONSOLE);
+
+        $result = $registry->dispatch($sender, 'explode-built-in');
+
+        self::assertFalse($result->isSuccess());
+        self::assertSame(['The command failed internally.'], $sender->messages);
     }
 
     public function testRegistrationsAreBoundedAndManualUnregisterReleasesOwnership(): void
@@ -295,14 +455,24 @@ final class CommandRegistryTest extends TestCase
         );
     }
 
-    /** @return array{CommandRegistry, EventDispatcher, RecordingPluginControl, PluginOwnershipRegistry} */
-    private function registry(int $maximumCommands = 1024): array
-    {
+    /** @return array{CommandRegistry, EventDispatcher, RecordingPluginControl, PluginOwnershipRegistry, PluginActionBuffer} */
+    private function registry(
+        int $maximumCommands = 1024,
+        int $maximumListenersPerDispatch = 1024,
+        ?Closure $onlinePlayers = null,
+        ?Closure $failureReporter = null,
+    ): array {
         $plugins = new RecordingPluginControl();
         $ownership = new PluginOwnershipRegistry();
         $execution = new PluginExecutionContext();
         $actions = new PluginActionBuffer();
-        $events = new EventDispatcher($plugins, $execution, $actions, $ownership);
+        $events = new EventDispatcher(
+            $plugins,
+            $execution,
+            $actions,
+            $ownership,
+            maxListenersPerDispatch: $maximumListenersPerDispatch,
+        );
 
         return [
             new CommandRegistry(
@@ -313,10 +483,13 @@ final class CommandRegistryTest extends TestCase
                 $events,
                 maximumCommands: $maximumCommands,
                 maximumCommandsPerPlugin: $maximumCommands,
+                onlinePlayers: $onlinePlayers,
+                failureReporter: $failureReporter,
             ),
             $events,
             $plugins,
             $ownership,
+            $actions,
         ];
     }
 }
@@ -380,6 +553,29 @@ final class RecordingCommandSender implements CommandSender
     public function hasPermission(string $permission): bool
     {
         return in_array($permission, $this->permissions, true);
+    }
+}
+
+final class ThrowingCommandSender implements CommandSender
+{
+    public function type(): CommandSenderType
+    {
+        return CommandSenderType::CONSOLE;
+    }
+
+    public function name(): string
+    {
+        return 'throwing';
+    }
+
+    public function sendMessage(string $message): void
+    {
+        throw new RuntimeException('delivery failed');
+    }
+
+    public function hasPermission(string $permission): bool
+    {
+        return true;
     }
 }
 

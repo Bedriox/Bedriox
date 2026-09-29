@@ -87,6 +87,22 @@ final class PluginHost
             onlinePlayers: $onlinePlayers,
             entities: $commandEntities,
             selectorOrigin: $commandSelectorOrigin,
+            failureReporter: function (
+                Throwable $failure,
+                string $operation,
+                ?string $commandName,
+                ?string $commandOwner,
+            ): void {
+                $identity = $commandName === null
+                    ? 'unknown command'
+                    : ($commandOwner ?? 'unknown owner') . ':' . $commandName;
+                $this->logger->error(sprintf(
+                    'Command %s failed during %s (%s)',
+                    $identity,
+                    $operation,
+                    $failure::class,
+                ), 'Command');
+            },
         );
         $this->scheduler = new MainThreadPluginScheduler(
             $this->manager,

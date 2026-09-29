@@ -20,6 +20,10 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
+use Bedriox\Api\Effect\EffectActions;
+use Bedriox\Api\Effect\EffectCause;
+use Bedriox\Api\Effect\EffectInstance;
+use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Inventory\ItemStack;
 use Bedriox\Api\Inventory\PlayerInventoryActions;
@@ -35,7 +39,7 @@ use LogicException;
 /** @internal Binds immutable public player handles to the current runtime session without exposing it. */
 final class PlayerConnectionDirectory
 {
-    /** @var array<string, array{session: string, connected: Closure(): bool, send: Closure(Packet, bool): bool, kick: Closure(string, ?string, ?string): bool, swing: Closure(): bool, teleport: Closure(Position): bool, gameMode: Closure(GameMode): bool, give: Closure(ItemStack): bool, slot: Closure(int, ?ItemStack): bool, contents: Closure(list<ItemStack|null>): bool, remove: Closure(ItemStack): bool, select: Closure(int): bool, equipment: Closure(EquipmentSlot, ?ItemStack): bool, armor: Closure(array<string, ItemStack|null>): bool, damage: Closure(float): bool, maximumStackSize: Closure(ItemStack): int}> */
+    /** @var array<string, array{session: string, connected: Closure(): bool, send: Closure(Packet, bool): bool, kick: Closure(string, ?string, ?string): bool, swing: Closure(): bool, teleport: Closure(Position): bool, gameMode: Closure(GameMode): bool, give: Closure(ItemStack): bool, slot: Closure(int, ?ItemStack): bool, contents: Closure(list<ItemStack|null>): bool, remove: Closure(ItemStack): bool, select: Closure(int): bool, equipment: Closure(EquipmentSlot, ?ItemStack): bool, armor: Closure(array<string, ItemStack|null>): bool, damage: Closure(float): bool, maximumStackSize: Closure(ItemStack): int, effectAdd: Closure(EffectInstance, EffectCause): bool, effectRemove: Closure(EffectType, EffectCause): bool, effectClear: Closure(EffectCause): bool}> */
     private array $connections = [];
 
     /**
@@ -73,6 +77,9 @@ final class PlayerConnectionDirectory
         ?Closure $setEquipmentItem = null,
         ?Closure $setArmorContents = null,
         ?Closure $maximumStackSize = null,
+        ?Closure $addEffect = null,
+        ?Closure $removeEffect = null,
+        ?Closure $clearEffects = null,
     ): void {
         /** @var Closure(list<ItemStack|null>): bool $contents */
         $contents = $setInventoryContents ?? static fn(array $contents): bool => false;
@@ -96,6 +103,9 @@ final class PlayerConnectionDirectory
             'armor' => $armor,
             'damage' => $damage ?? static fn(float $amount): bool => false,
             'maximumStackSize' => $maximumStackSize ?? static fn(ItemStack $stack): int => throw new LogicException('Authoritative item rules are unavailable.'),
+            'effectAdd' => $addEffect ?? static fn(EffectInstance $effect, EffectCause $cause): bool => false,
+            'effectRemove' => $removeEffect ?? static fn(EffectType $type, EffectCause $cause): bool => false,
+            'effectClear' => $clearEffects ?? static fn(EffectCause $cause): bool => false,
         ];
     }
 
@@ -206,6 +216,27 @@ final class PlayerConnectionDirectory
         };
     }
 
+    public function effectActions(string $identity): EffectActions
+    {
+        $key = self::key($identity);
+        $session = $this->connections[$key]['session'] ?? null;
+
+        return new EffectActions(
+            function (EffectInstance $effect, EffectCause $cause) use ($key, $session): void {
+                $connection = $this->currentConnection($key, $session);
+                $this->requireAccepted(($connection['effectAdd'])($effect, $cause));
+            },
+            function (EffectType $type, EffectCause $cause) use ($key, $session): void {
+                $connection = $this->currentConnection($key, $session);
+                $this->requireAccepted(($connection['effectRemove'])($type, $cause));
+            },
+            function (EffectCause $cause) use ($key, $session): void {
+                $connection = $this->currentConnection($key, $session);
+                $this->requireAccepted(($connection['effectClear'])($cause));
+            },
+        );
+    }
+
     /** Rebinds an immutable public snapshot to its current runtime connection. */
     public function attach(Player $player): Player
     {
@@ -214,6 +245,7 @@ final class PlayerConnectionDirectory
             $this->actions($player->uuid),
             $this->inventoryActions($player->uuid),
             $this->maximumStackSize($player->uuid),
+            $this->effectActions($player->uuid),
         );
     }
 
@@ -225,7 +257,7 @@ final class PlayerConnectionDirectory
     }
 
     /**
-     * @return array{session: string, connected: Closure(): bool, send: Closure(Packet, bool): bool, kick: Closure(string, ?string, ?string): bool, swing: Closure(): bool, teleport: Closure(Position): bool, gameMode: Closure(GameMode): bool, give: Closure(ItemStack): bool, slot: Closure(int, ?ItemStack): bool, contents: Closure(list<ItemStack|null>): bool, remove: Closure(ItemStack): bool, select: Closure(int): bool, equipment: Closure(EquipmentSlot, ?ItemStack): bool, armor: Closure(array<string, ItemStack|null>): bool, damage: Closure(float): bool, maximumStackSize: Closure(ItemStack): int}
+     * @return array{session: string, connected: Closure(): bool, send: Closure(Packet, bool): bool, kick: Closure(string, ?string, ?string): bool, swing: Closure(): bool, teleport: Closure(Position): bool, gameMode: Closure(GameMode): bool, give: Closure(ItemStack): bool, slot: Closure(int, ?ItemStack): bool, contents: Closure(list<ItemStack|null>): bool, remove: Closure(ItemStack): bool, select: Closure(int): bool, equipment: Closure(EquipmentSlot, ?ItemStack): bool, armor: Closure(array<string, ItemStack|null>): bool, damage: Closure(float): bool, maximumStackSize: Closure(ItemStack): int, effectAdd: Closure(EffectInstance, EffectCause): bool, effectRemove: Closure(EffectType, EffectCause): bool, effectClear: Closure(EffectCause): bool}
      */
     private function currentConnection(string $key, ?string $session): array
     {

@@ -20,12 +20,34 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Runtime;
 
+use Bedriox\Api\Effect\EffectInstance;
+use Bedriox\Api\Effect\EffectType;
+use Bedriox\Api\Inventory\ItemStack as ApiItemStack;
+use Bedriox\Api\World\BlockFace;
+use Bedriox\Api\World\Particle\BlockParticle;
+use Bedriox\Api\World\Particle\BlockParticleType;
+use Bedriox\Api\World\Particle\ColoredParticle;
+use Bedriox\Api\World\Particle\ColoredParticleType;
+use Bedriox\Api\World\Particle\DragonEggTeleportParticle;
+use Bedriox\Api\World\Particle\ItemBreakParticle;
+use Bedriox\Api\World\Particle\MobSpawnParticle;
+use Bedriox\Api\World\Particle\ParticleBlockState;
+use Bedriox\Api\World\Particle\ParticleColor;
+use Bedriox\Api\World\Particle\ParticleType;
+use Bedriox\Api\World\Particle\ParticleVariables;
+use Bedriox\Api\World\Particle\ScalarParticle;
+use Bedriox\Api\World\Particle\ScalarParticleType;
+use Bedriox\Api\World\Particle\SimpleParticle;
+use Bedriox\Api\World\Particle\StandardParticle;
+use Bedriox\Api\World\Particle\StandardParticleType;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Encryption\BedrockDecryptor;
 use Bedriox\Protocol\Encryption\BedrockEncryptor;
 use Bedriox\Protocol\Identity\VerifiedClientData;
+use Bedriox\Protocol\Packet\ActorAttribute;
 use Bedriox\Protocol\Packet\ActorEventPacket;
 use Bedriox\Protocol\Packet\ActorFlag;
+use Bedriox\Protocol\Packet\ActorMetadata;
 use Bedriox\Protocol\Packet\AddPlayerPacket;
 use Bedriox\Protocol\Packet\AnimatePacket;
 use Bedriox\Protocol\Packet\BedrockPacketCodec;
@@ -33,6 +55,7 @@ use Bedriox\Protocol\Packet\ChatPacket;
 use Bedriox\Protocol\Packet\ContainerOpenPacket;
 use Bedriox\Protocol\Packet\ContainerType;
 use Bedriox\Protocol\Packet\CorrectPlayerMovePredictionPacket;
+use Bedriox\Protocol\Packet\DimensionId;
 use Bedriox\Protocol\Packet\EmoteFlag;
 use Bedriox\Protocol\Packet\EmotePacket;
 use Bedriox\Protocol\Packet\FullContainerName;
@@ -46,6 +69,9 @@ use Bedriox\Protocol\Packet\ItemStackResponseSlot;
 use Bedriox\Protocol\Packet\LevelEventPacket;
 use Bedriox\Protocol\Packet\LevelSoundEventPacket;
 use Bedriox\Protocol\Packet\MobArmorEquipmentPacket;
+use Bedriox\Protocol\Packet\MobEffectEvent;
+use Bedriox\Protocol\Packet\MobEffectPacket;
+use Bedriox\Protocol\Packet\MobEffectType;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
 use Bedriox\Protocol\Packet\MoveActorAbsoluteFlag;
 use Bedriox\Protocol\Packet\MoveActorAbsolutePacket;
@@ -58,6 +84,7 @@ use Bedriox\Protocol\Packet\PredictionType;
 use Bedriox\Protocol\Packet\RemoveActorPacket;
 use Bedriox\Protocol\Packet\SetActorDataPacket;
 use Bedriox\Protocol\Packet\SetActorMotionPacket;
+use Bedriox\Protocol\Packet\SpawnParticleEffectPacket;
 use Bedriox\Protocol\Packet\UpdateAttributesPacket;
 use Bedriox\Protocol\Packet\UpdateBlockPacket;
 use Bedriox\Protocol\Security\OpenSslEphemeralKeyFactory;
@@ -74,6 +101,7 @@ use Bedriox\Server\Runtime\BedrockChunkPacketSerializer;
 use Bedriox\Server\Runtime\BedrockInventoryPacketProjector;
 use Bedriox\Server\Runtime\BedrockPlayChannel;
 use Bedriox\Server\Runtime\BedrockWorldEventPacketEncoder;
+use Bedriox\Server\Runtime\ChunkViewManager;
 use Bedriox\Server\Runtime\DirectedPacket;
 use Bedriox\Server\Runtime\RuntimeSession;
 use Bedriox\Server\Simulation\ArmSwingSource;
@@ -93,9 +121,12 @@ use Bedriox\Server\Simulation\Event\ItemUseCancelled;
 use Bedriox\Server\Simulation\Event\ItemUseStarted;
 use Bedriox\Server\Simulation\Event\MovementCorrected;
 use Bedriox\Server\Simulation\Event\NutritionChanged;
+use Bedriox\Server\Simulation\Event\ParticleSpawned;
 use Bedriox\Server\Simulation\Event\PlayerBecameHidden;
 use Bedriox\Server\Simulation\Event\PlayerBecameVisible;
 use Bedriox\Server\Simulation\Event\PlayerDisconnected;
+use Bedriox\Server\Simulation\Event\PlayerEffectChanged;
+use Bedriox\Server\Simulation\Event\PlayerEnvironmentChanged;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
 use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
 use Bedriox\Server\Simulation\Event\PlayerMotionChanged;
@@ -106,14 +137,257 @@ use Bedriox\Server\Simulation\NutritionChangeReason;
 use Bedriox\Server\Simulation\PlayerSnapshot;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\Simulation\VerticalState;
+use Bedriox\Server\Simulation\WorldDimension;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\BlockPosition;
 use PHPUnit\Framework\TestCase;
+use ReflectionProperty;
 
 final class BedrockWorldEventPacketEncoderTest extends TestCase
 {
+    public function testPlayerEffectsProjectTypedAddModifyAndRemovePackets(): void
+    {
+        $encoder = new BedrockWorldEventPacketEncoder();
+        $player = $this->player('owner', 42, 'identity', 'Player');
+        $effect = new EffectInstance(EffectType::SPEED, 200, 1, ambient: true);
+
+        $added = $encoder->encode(new PlayerEffectChanged(
+            $player,
+            EffectType::SPEED,
+            $effect,
+            ['owner', 'peer'],
+            17,
+        ), []);
+        self::assertCount(2, $added);
+        self::assertInstanceOf(MobEffectPacket::class, $added[0]->packet);
+        self::assertSame(MobEffectEvent::Add, $added[0]->packet->event);
+        self::assertSame(MobEffectType::Speed, $added[0]->packet->effect);
+        self::assertSame(1, $added[0]->packet->amplifier);
+        self::assertSame(200, $added[0]->packet->duration);
+        self::assertTrue($added[0]->packet->ambient);
+
+        $modified = $encoder->encode(new PlayerEffectChanged(
+            $player,
+            EffectType::SPEED,
+            new EffectInstance(EffectType::SPEED, 100, 2, visible: false, infinite: true),
+            ['owner'],
+            18,
+            true,
+        ), []);
+        $modifiedPacket = $modified[0]->packet;
+        self::assertInstanceOf(MobEffectPacket::class, $modifiedPacket);
+        self::assertSame(MobEffectEvent::Modify, $modifiedPacket->event);
+        self::assertSame(-1, $modifiedPacket->duration);
+        self::assertFalse($modifiedPacket->particles);
+
+        $removed = $encoder->encode(new PlayerEffectChanged(
+            $player,
+            EffectType::SPEED,
+            null,
+            ['owner'],
+            19,
+        ), []);
+        $removedPacket = $removed[0]->packet;
+        self::assertInstanceOf(MobEffectPacket::class, $removedPacket);
+        self::assertSame(MobEffectEvent::Remove, $removedPacket->event);
+        self::assertSame(MobEffectType::Speed, $removedPacket->effect);
+    }
+
+    public function testCapacityEffectsProjectPlayerHealthAndAbsorptionAttributes(): void
+    {
+        $effect = new EffectInstance(EffectType::ABSORPTION, 200, 1);
+        $player = new PlayerSnapshot(
+            'owner',
+            'identity',
+            'Player',
+            new Position(0.0, 64.0, 0.0),
+            0.0,
+            0.0,
+            MovementMode::STOPPED,
+            0,
+            VerticalState::GROUNDED,
+            0.0,
+            42,
+            effects: [EffectType::ABSORPTION->value => $effect],
+            maximumHealth: 20.0,
+            absorption: 8.0,
+        );
+
+        $packets = (new BedrockWorldEventPacketEncoder())->encode(new PlayerEffectChanged(
+            $player,
+            EffectType::ABSORPTION,
+            $effect,
+            ['owner'],
+            20,
+        ), []);
+
+        self::assertCount(2, $packets);
+        self::assertInstanceOf(MobEffectPacket::class, $packets[0]->packet);
+        self::assertInstanceOf(UpdateAttributesPacket::class, $packets[1]->packet);
+        self::assertSame(
+            [ActorAttribute::HEALTH, 'minecraft:absorption'],
+            array_map(static fn($attribute): string => $attribute->name, $packets[1]->packet->attributes),
+        );
+        self::assertSame(8.0, $packets[1]->packet->attributes[1]->value);
+    }
+
+    public function testPlayerEnvironmentProjectsAirAndBurningMetadata(): void
+    {
+        $player = new PlayerSnapshot(
+            'owner',
+            'identity',
+            'Player',
+            new Position(0.0, 64.0, 0.0),
+            0.0,
+            0.0,
+            MovementMode::STOPPED,
+            1,
+            VerticalState::GROUNDED,
+            0.0,
+            42,
+            airTicks: 120,
+            fireTicks: 40,
+        );
+
+        $packets = (new BedrockWorldEventPacketEncoder())->encode(
+            new PlayerEnvironmentChanged($player, ['owner', 'peer'], 12),
+            [],
+        );
+
+        self::assertCount(2, $packets);
+        self::assertInstanceOf(SetActorDataPacket::class, $packets[0]->packet);
+        $metadata = [];
+        foreach ($packets[0]->packet->metadata as $entry) {
+            $metadata[$entry->id] = $entry->value;
+        }
+        self::assertSame(120, $metadata[7]);
+        self::assertSame(300, $metadata[42]);
+        self::assertIsInt($metadata[0]);
+        self::assertNotSame(0, $metadata[0] & ActorFlag::OnFire->mask());
+    }
+
+    public function testAirSupplyProjectionTargetsOnlyEachOwnerInsteadOfAllViewers(): void
+    {
+        $encoder = new BedrockWorldEventPacketEncoder();
+        $recipients = array_map(static fn(int $id): string => 'player-' . $id, range(0, 99));
+        $packets = [];
+        foreach ($recipients as $id => $owner) {
+            $player = new PlayerSnapshot(
+                $owner,
+                'identity-' . $id,
+                'Player ' . $id,
+                new Position(0.0, 64.0, 0.0),
+                0.0,
+                0.0,
+                MovementMode::STOPPED,
+                1,
+                VerticalState::GROUNDED,
+                0.0,
+                1000 + $id,
+                airTicks: 200,
+            );
+            array_push($packets, ...$encoder->encode(
+                new PlayerEnvironmentChanged($player, $recipients, 20, true, false),
+                [],
+            ));
+        }
+
+        self::assertCount(100, $packets);
+        self::assertSame($recipients, array_map(static fn($packet): string => $packet->sessionId, $packets));
+        foreach ($packets as $packet) {
+            $metadataPacket = $packet->packet;
+            self::assertInstanceOf(SetActorDataPacket::class, $metadataPacket);
+            self::assertSame(
+                [7, 42],
+                array_map(static fn(ActorMetadata $entry): int => $entry->id, $metadataPacket->metadata),
+            );
+        }
+    }
+
+    public function testParticleProjectionRequiresDeliveredChunkAndPreservesTypedVariables(): void
+    {
+        $visible = $this->authenticatedSession('visible', 10, 'identity-visible', 'Visible', '10');
+        $hidden = $this->authenticatedSession('hidden', 11, 'identity-hidden', 'Hidden', '11');
+        $view = new ChunkViewManager(1);
+        $view->centerOnChunk(0, 0);
+        $view->markPrepared(0, 0);
+        $view->markSent(0, 0);
+        (new ReflectionProperty(BedrockPlayChannel::class, 'chunkView'))->setValue($visible->play, $view);
+        $particle = new SimpleParticle(
+            ParticleType::SPLASH_SPELL,
+            new ParticleVariables(['variable.tint_r' => 1]),
+        );
+
+        $packets = (new BedrockWorldEventPacketEncoder())->encode(
+            new ParticleSpawned(
+                new Position(1.5, 65.0, 2.5),
+                $particle,
+                ['visible', 'hidden'],
+                WorldDimension::NETHER,
+            ),
+            ['visible' => $visible, 'hidden' => $hidden],
+        );
+
+        self::assertCount(1, $packets);
+        self::assertSame('visible', $packets[0]->sessionId);
+        self::assertInstanceOf(SpawnParticleEffectPacket::class, $packets[0]->packet);
+        self::assertSame(DimensionId::Nether, $packets[0]->packet->dimension);
+        self::assertSame(ParticleType::SPLASH_SPELL->value, $packets[0]->packet->identifier);
+        self::assertSame('{"variable.tint_r":1}', $packets[0]->packet->molangVariablesJson);
+    }
+
+    public function testEveryDataBackedParticleFamilyProjectsWithoutRawIds(): void
+    {
+        $visible = $this->authenticatedSession('visible', 10, 'identity-visible', 'Visible', '10');
+        $view = new ChunkViewManager(1);
+        $view->centerOnChunk(0, 0);
+        $view->markPrepared(0, 0);
+        $view->markSent(0, 0);
+        (new ReflectionProperty(BedrockPlayChannel::class, 'chunkView'))->setValue($visible->play, $view);
+        $sessions = ['visible' => $visible];
+        $position = new Position(1.5, 65.0, 2.5);
+        $event = static fn(\Bedriox\Api\World\Particle\Particle $particle): ParticleSpawned => new ParticleSpawned(
+            $position,
+            $particle,
+            ['visible'],
+        );
+        $plain = new BedrockWorldEventPacketEncoder();
+        foreach (StandardParticleType::cases() as $type) {
+            $packets = $plain->encode($event(new StandardParticle($type)), $sessions);
+            self::assertCount(1, $packets, $type->name);
+            self::assertInstanceOf(LevelEventPacket::class, $packets[0]->packet, $type->name);
+        }
+        foreach (ScalarParticleType::cases() as $type) {
+            $packets = $plain->encode($event(new ScalarParticle($type, 2)), $sessions);
+            self::assertInstanceOf(LevelEventPacket::class, $packets[0]->packet, $type->name);
+        }
+        foreach (ColoredParticleType::cases() as $type) {
+            $packets = $plain->encode($event(new ColoredParticle($type, new ParticleColor(1, 2, 3))), $sessions);
+            self::assertInstanceOf(LevelEventPacket::class, $packets[0]->packet, $type->name);
+        }
+        foreach ([new DragonEggTeleportParticle(-1, 2, 3), new MobSpawnParticle(2, 3)] as $particle) {
+            $packets = $plain->encode($event($particle), $sessions);
+            self::assertInstanceOf(LevelEventPacket::class, $packets[0]->packet);
+        }
+
+        [$registryEncoder] = $this->inventoryEncoder();
+        foreach ([
+            new BlockParticle(BlockParticleType::BREAK, new ParticleBlockState('minecraft:stone')),
+            new BlockParticle(BlockParticleType::TERRAIN, new ParticleBlockState('minecraft:stone')),
+            new BlockParticle(
+                BlockParticleType::PUNCH,
+                new ParticleBlockState('minecraft:stone'),
+                BlockFace::UP,
+            ),
+            new ItemBreakParticle(new ApiItemStack('minecraft:apple', 1)),
+        ] as $particle) {
+            $packets = $registryEncoder->encode($event($particle), $sessions);
+            self::assertInstanceOf(LevelEventPacket::class, $packets[0]->packet);
+        }
+    }
+
     public function testCraftingTableOpenUsesTheWorkbenchContainerConversation(): void
     {
         $packets = (new BedrockWorldEventPacketEncoder())->encode(new CraftingTableOpened(
@@ -928,9 +1202,9 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
             ['joined' => $joined, 'existing' => $existing],
         );
 
-        self::assertCount(2, $packets);
+        self::assertCount(3, $packets);
         self::assertSame(
-            ['existing', 'joined'],
+            ['existing', 'joined', 'joined'],
             array_map(static fn($value): string => $value->sessionId, $packets),
         );
         self::assertInstanceOf(PlayerListAddPacket::class, $packets[0]->packet);
@@ -939,6 +1213,7 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         self::assertInstanceOf(PlayerListAddPacket::class, $packets[1]->packet);
         self::assertSame(9, $packets[1]->packet->entries[0]->uniqueEntityId);
         self::assertSame(BuildPlatform::Unknown, $packets[1]->packet->entries[0]->buildPlatform);
+        self::assertInstanceOf(SetActorDataPacket::class, $packets[2]->packet);
     }
 
     public function testJoinSplitsAFullHundredPlayerSkinSnapshotIntoBoundedPackets(): void
@@ -978,13 +1253,19 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
 
         self::assertGreaterThan(1, count($packets));
         $entryCount = 0;
+        $environmentPackets = 0;
         foreach ($packets as $directed) {
             self::assertSame('joined', $directed->sessionId);
+            if ($directed->packet instanceof SetActorDataPacket) {
+                ++$environmentPackets;
+                continue;
+            }
             self::assertInstanceOf(PlayerListAddPacket::class, $directed->packet);
             $entryCount += count($directed->packet->entries);
             self::assertLessThanOrEqual(1_000_000, strlen(BedrockPacketCodec::encode($directed->packet)));
         }
         self::assertSame(100, $entryCount);
+        self::assertSame(1, $environmentPackets);
     }
 
     public function testActorVisibilityTransitionsDoNotDuplicatePlayerListMembership(): void

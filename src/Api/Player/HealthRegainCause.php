@@ -25,4 +25,5 @@ enum HealthRegainCause: string
 {
     case SATURATION = 'saturation';
     case CUSTOM = 'custom';
+    case EFFECT = 'effect';
 }

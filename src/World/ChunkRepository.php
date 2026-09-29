@@ -145,6 +145,12 @@ final class ChunkRepository
         return $this->chunks[$position->key()] ?? null;
     }
 
+    /** @return list<Chunk> Immutable snapshots currently admitted by the bounded cache. */
+    public function loadedChunks(): array
+    {
+        return array_values($this->chunks);
+    }
+
     /**
      * Removes a clean unretained chunk and all repository bookkeeping.
      *

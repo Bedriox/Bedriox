@@ -23,6 +23,7 @@ namespace Bedriox\Server\World;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceConflictException;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceManager;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
+use Bedriox\Server\Entity\Persistence\TransientEntityPersistenceStore;
 use Bedriox\Server\Persistence\PersistenceQueueSnapshot;
 use Bedriox\Server\Persistence\PersistenceQueueStatusProvider;
 use Bedriox\Server\Persistence\PersistenceSubmission;
@@ -130,6 +131,11 @@ final class World
     public function entityPersistenceStore(): ?EntityPersistenceStore
     {
         return $this->provider instanceof EntityPersistenceStore ? $this->provider : null;
+    }
+
+    public function transientEntityPersistenceStore(): ?TransientEntityPersistenceStore
+    {
+        return $this->provider instanceof TransientEntityPersistenceStore ? $this->provider : null;
     }
 
     public function chunk(ChunkPosition $position): Chunk
@@ -314,6 +320,17 @@ final class World
     public function blockEntityAt(BlockPosition $position): ?BlockEntity
     {
         return $this->chunk(self::chunkPosition($position->x, $position->z))->blockEntityAt($position);
+    }
+
+    /** @return list<BlockEntity> Immutable block entities in currently loaded chunks. */
+    public function loadedBlockEntities(): array
+    {
+        $entities = [];
+        foreach ($this->chunks->loadedChunks() as $chunk) {
+            array_push($entities, ...$chunk->blockEntities());
+        }
+
+        return $entities;
     }
 
     /** Installs immutable durable state and returns the block entity previously stored at the position. */

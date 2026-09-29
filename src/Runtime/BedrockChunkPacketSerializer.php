@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
+use Bedriox\Data\CanonicalBlockState;
 use Bedriox\Protocol\Packet\ChunkColumnData;
 use Bedriox\Protocol\Packet\ChunkSectionData;
 use Bedriox\Protocol\Packet\ChunkSerializer;
@@ -158,5 +159,13 @@ final class BedrockChunkPacketSerializer
     public function networkRuntimeId(\Bedriox\Server\World\Block\InternalBlockStateId $state): int
     {
         return $this->blocks->toNetwork($state);
+    }
+
+    /** @param array<string, int|string> $properties */
+    public function networkRuntimeIdForCanonicalState(string $identifier, array $properties): int
+    {
+        return $this->blocks->toNetwork($this->blocks->internalRegistry()->internalId(
+            CanonicalBlockState::from($identifier, $properties),
+        ));
     }
 }

@@ -309,7 +309,7 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
             new ReusablePlayPacket('initialization.trim_data', new TrimDataPacket()),
             new ReusablePlayPacket(
                 'initialization.crafting_data.' . $this->craftingCatalog->revision(),
-                new CraftingDataPacket($this->craftingCatalog->protocolRecipes()),
+                $this->craftingCatalog->protocolPacket(),
             ),
             SetActorDataPacket::baselinePlayer($runtimeEntityId, UnsignedLong::fromInt(0), $login->displayName),
         ];

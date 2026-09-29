@@ -47,6 +47,8 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Added
 
+- Add typed player and living-entity effect snapshots, generation-bound player mutations, cancellable pre-events, committed post-events, bounded durable fallback state, deterministic periodic timing, client effect synchronization, air and fire persistence, and authoritative movement, mining, combat, health, nutrition, breathing, combustion, health-boost, absorption, and visibility behavior.
+- Add typed, bounded world particle requests covering the current named effect catalog and data-backed color, block, item, scale, direction, and size families, with optional audiences delivered only after recipients receive the containing chunk.
 - Introduce plugin API 0.3 with global discovery on `Server`, session-bound authoritative actions on `Player`, generation-bound block access on `World`, and world-explicit plugin container lookup.
 - Add canonical multi-world lifecycle management with named LevelDB worlds, generation-stable public handles, world-aware positions, persisted cross-world player teleportation, per-world simulation and chunk ownership, typed lifecycle events, and owner-scoped plugin terrain generators.
 - Add built-in default, flat, and void generator registration with deterministic persisted options, worker-backed built-in generation, and a bounded main-thread execution path for plugin-defined generators.

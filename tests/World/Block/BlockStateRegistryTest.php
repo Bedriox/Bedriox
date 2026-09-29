@@ -51,10 +51,10 @@ final class BlockStateRegistryTest extends TestCase
         $flat = FixedFlatBlockPalette::fromRegistry($internal);
 
         self::assertSame([
-            'air' => 17_025,
-            'bedrock' => 17_901,
-            'dirt' => 13_456,
-            'grass_block' => 14_944,
+            'air' => 17_013,
+            'bedrock' => 17_889,
+            'dirt' => 13_444,
+            'grass_block' => 14_932,
         ], $flat->toNetworkRuntimeIds($translator));
         foreach ([$flat->air, $flat->bedrock, $flat->dirt, $flat->grassBlock] as $internalId) {
             self::assertSame($internalId->value, $translator->fromNetwork($translator->toNetwork($internalId))->value);

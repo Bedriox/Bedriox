@@ -20,7 +20,10 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Player;
 
+use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Player\GameMode;
+use Bedriox\Server\Effect\ActiveEffectPersistenceState;
+use Bedriox\Server\Effect\VanillaEffectBehavior;
 use Bedriox\Server\Simulation\Position;
 use InvalidArgumentException;
 
@@ -41,6 +44,12 @@ final readonly class PlayerBootstrap
         public float $food = PlayerVitals::MAX_FOOD,
         public float $saturation = PlayerVitals::MAX_SATURATION,
         public float $exhaustion = 0.0,
+        /** @var list<EffectInstance> */
+        public array $effects = [],
+        public float $absorption = 0.0,
+        public int $airTicks = PlayerVitals::MAX_AIR_TICKS,
+        public int $fireTicks = 0,
+        public ?ActiveEffectPersistenceState $effectPersistenceState = null,
     ) {
         if ($this->worldName === '' || strlen($this->worldName) > 64
             || preg_match('//u', $this->worldName) !== 1
@@ -66,7 +75,11 @@ final readonly class PlayerBootstrap
         if (GameMode::tryFrom($this->gamemode) === null) {
             throw new InvalidArgumentException('Player gamemode is unsupported.');
         }
-        if (!is_finite($this->health) || $this->health < 0.0 || $this->health > PlayerVitals::MAX_HEALTH) {
+        if (!is_finite($this->health) || $this->health < 0.0
+            || $this->health > VanillaEffectBehavior::maximumHealth(array_combine(
+                array_map(static fn(EffectInstance $effect): string => $effect->type->value, $this->effects),
+                $this->effects,
+            ) ?: [])) {
             throw new InvalidArgumentException('Player health must be finite and inside its authoritative range.');
         }
         if (!is_finite($this->food) || $this->food < 0.0 || $this->food > PlayerVitals::MAX_FOOD
@@ -75,6 +88,33 @@ final readonly class PlayerBootstrap
             || !is_finite($this->exhaustion) || $this->exhaustion < 0.0
             || $this->exhaustion >= PlayerVitals::EXHAUSTION_THRESHOLD) {
             throw new InvalidArgumentException('Player nutrition is outside its authoritative range.');
+        }
+        $seenEffects = [];
+        foreach ($this->effects as $effect) {
+            if (isset($seenEffects[$effect->type->value]) || (!$effect->infinite && $effect->durationTicks === 0)) {
+                throw new InvalidArgumentException('Persisted player effects must be unique and active.');
+            }
+            $seenEffects[$effect->type->value] = true;
+        }
+        if ($this->effectPersistenceState !== null
+            && array_values($this->effectPersistenceState->active) !== $this->effects) {
+            throw new InvalidArgumentException('Persisted complete effect state does not match its active effect view.');
+        }
+        if ($this->effectPersistenceState !== null) {
+            (new \Bedriox\Server\Effect\ActiveEffectCollection())->restorePersistenceState(
+                $this->effectPersistenceState,
+            );
+        }
+        if (!is_finite($this->absorption) || $this->absorption < 0.0
+            || $this->absorption > VanillaEffectBehavior::absorptionCapacity($seenEffects === [] ? [] : array_combine(
+                array_map(static fn(EffectInstance $effect): string => $effect->type->value, $this->effects),
+                $this->effects,
+            ))) {
+            throw new InvalidArgumentException('Player absorption exceeds the active effect capacity.');
+        }
+        if ($this->airTicks < -20 || $this->airTicks > PlayerVitals::MAX_AIR_TICKS
+            || $this->fireTicks < 0 || $this->fireTicks > PlayerVitals::MAX_FIRE_TICKS) {
+            throw new InvalidArgumentException('Player air or fire ticks are outside their authoritative range.');
         }
     }
 }

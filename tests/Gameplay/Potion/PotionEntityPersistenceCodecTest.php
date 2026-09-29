@@ -1,0 +1,108 @@
+<?php
+
+/*
+ *  ____           _      _
+ * | __ )  ___  __| |_ __(_) _____  __
+ * |  _ \ / _ \/ _` | '__| |/ _ \ \/ /
+ * | |_) |  __/ (_| | |  | | (_) >  <
+ * |____/ \___|\__,_|_|  |_|\___/_/\_\
+ *
+ * Bedriox - Minecraft: Bedrock Edition Server Software
+ * Copyright (C) 2026 Veno Ninja LLC
+ *
+ * Website: https://bedriox.com
+ * Source: https://github.com/Bedriox/Bedriox
+ *
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
+declare(strict_types=1);
+
+namespace Bedriox\Server\Tests\Gameplay\Potion;
+
+use Bedriox\Api\Potion\PotionType;
+use Bedriox\Server\Gameplay\Potion\AreaEffectCloudRegistry;
+use Bedriox\Server\Gameplay\Potion\PotionEntityPersistenceCodec;
+use Bedriox\Server\Gameplay\Potion\PotionProjectileRegistry;
+use Bedriox\Server\Simulation\Position;
+use InvalidArgumentException;
+use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\TestCase;
+
+#[CoversClass(PotionEntityPersistenceCodec::class)]
+final class PotionEntityPersistenceCodecTest extends TestCase
+{
+    public function testActivePotionActorsSurviveARegistryRestartExactly(): void
+    {
+        $projectiles = new PotionProjectileRegistry(firstEntityId: 3_000);
+        $arrow = $projectiles->spawnTippedArrow(
+            'owner-uuid',
+            PotionType::LONG_POISON,
+            new Position(4.5, 72.25, -9.0),
+            37.0,
+            -18.0,
+            2.25,
+            false,
+        );
+        $projectiles->tick(7);
+
+        $clouds = new AreaEffectCloudRegistry(firstEntityId: 4_000);
+        $cloud = $clouds->spawn('owner-uuid', PotionType::TURTLE_MASTER, new Position(-2.0, 65.0, 8.0));
+        for ($tick = 0; $tick < 10; ++$tick) {
+            $clouds->tick();
+        }
+        $clouds->affected($cloud->runtimeEntityId, 'victim-uuid');
+
+        $codec = new PotionEntityPersistenceCodec();
+        $payload = $codec->encode('overworld', $projectiles->all(), $clouds->all());
+        [$decodedProjectiles, $decodedClouds] = $codec->decode('overworld', $payload);
+
+        self::assertCount(1, $decodedProjectiles);
+        self::assertSame($arrow->runtimeEntityId, $decodedProjectiles[0]->runtimeEntityId);
+        self::assertSame(7, $decodedProjectiles[0]->ageTicks);
+        self::assertTrue($decodedProjectiles[0]->tippedArrow);
+        self::assertFalse($decodedProjectiles[0]->pickupAllowed);
+        self::assertEqualsWithDelta($projectiles->all()[0]->motion->y, $decodedProjectiles[0]->motion->y, 0.000001);
+
+        self::assertCount(1, $decodedClouds);
+        self::assertSame(10, $decodedClouds[0]->ageTicks);
+        self::assertArrayHasKey('victim-uuid', $decodedClouds[0]->victimCooldowns);
+        self::assertEqualsWithDelta($clouds->all()[0]->radius, $decodedClouds[0]->radius, 0.000001);
+
+        $restoredProjectiles = new PotionProjectileRegistry(firstEntityId: 1);
+        $restoredProjectiles->restore($decodedProjectiles[0]);
+        $nextArrow = $restoredProjectiles->spawnTippedArrow(
+            'next-owner',
+            PotionType::WATER,
+            new Position(0.0, 64.0, 0.0),
+            0.0,
+            0.0,
+            1.0,
+        );
+        self::assertGreaterThan($decodedProjectiles[0]->runtimeEntityId, $nextArrow->runtimeEntityId);
+
+        $restoredClouds = new AreaEffectCloudRegistry(firstEntityId: 1);
+        $restoredClouds->restore($decodedClouds[0]);
+        $nextCloud = $restoredClouds->spawn('next-owner', PotionType::WATER, new Position(0.0, 64.0, 0.0));
+        self::assertGreaterThan($decodedClouds[0]->runtimeEntityId, $nextCloud->runtimeEntityId);
+    }
+
+    public function testRejectsMalformedOversizedAndCrossWorldSnapshots(): void
+    {
+        $codec = new PotionEntityPersistenceCodec();
+
+        foreach ([
+            '',
+            '{',
+            json_encode(['version' => 1, 'world' => 'other', 'projectiles' => [], 'clouds' => []], JSON_THROW_ON_ERROR),
+            str_repeat('x', PotionEntityPersistenceCodec::MAXIMUM_BYTES + 1),
+        ] as $payload) {
+            try {
+                $codec->decode('overworld', $payload);
+                self::fail('Invalid potion entity state was accepted.');
+            } catch (InvalidArgumentException) {
+                self::addToAssertionCount(1);
+            }
+        }
+    }
+}

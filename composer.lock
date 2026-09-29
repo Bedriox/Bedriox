@@ -12,7 +12,7 @@
             "dist": {
                 "type": "path",
                 "url": "../Data",
-                "reference": "327c95dc56add66e8ea126bf2446ec5802f6a87c"
+                "reference": "7b4d556b1db3ddf4e9c1446ac435466d8cb24a40"
             },
             "require": {
                 "php": "^8.4"
@@ -21,7 +21,7 @@
                 "phpstan/phpstan": "^2.1",
                 "phpunit/phpunit": "^11.5"
             },
-            "type": "library",
+            "type": "project",
             "autoload": {
                 "psr-4": {
                     "Bedriox\\Data\\": "src/"
@@ -47,7 +47,7 @@
             "license": [
                 "GPL-3.0-only"
             ],
-            "description": "Versioned Minecraft: Bedrock Edition registry data for Bedriox.",
+            "description": "Versioned Minecraft: Bedrock Edition datasets and read-only registry views for Bedriox.",
             "homepage": "https://bedriox.com",
             "transport-options": {
                 "symlink": false,
@@ -60,7 +60,7 @@
             "dist": {
                 "type": "path",
                 "url": "../Protocol",
-                "reference": "1e7fa2f826e2e2b3913d093ed8ede2a8dba1315c"
+                "reference": "a5ba0a5d141f515fb69e3a9658becebcc373343f"
             },
             "require": {
                 "ext-openssl": "*",

@@ -20,6 +20,9 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\Player;
 
+use Bedriox\Api\Effect\EffectActions;
+use Bedriox\Api\Effect\EffectInstance;
+use Bedriox\Api\Effect\EffectManager;
 use Bedriox\Api\Inventory\ArmorInventory;
 use Bedriox\Api\Inventory\Container;
 use Bedriox\Api\Inventory\Inventory;
@@ -65,6 +68,9 @@ final readonly class Player
         private ?ItemStack $offHandItem = null,
         private ?PlayerInventoryActions $inventoryActions = null,
         private ?Closure $maximumStackSize = null,
+        /** @var array<string, EffectInstance> $effects */
+        private array $effects = [],
+        private ?EffectActions $effectActions = null,
     ) {
         $this->inventorySnapshot = $inventory;
         $armor = new ArmorInventory(
@@ -72,6 +78,11 @@ final readonly class Player
             PlayerInventoryActions::unavailable(),
         );
         $this->armorInventorySnapshot = $armor->getContents();
+        foreach ($this->effects as $identifier => $effect) {
+            if ($identifier !== $effect->type->value) {
+                throw new InvalidArgumentException('Player effects must be indexed by canonical effect identifier.');
+            }
+        }
     }
 
     public function connection(): PlayerConnection
@@ -125,6 +136,11 @@ final readonly class Player
         );
     }
 
+    public function getEffects(): EffectManager
+    {
+        return new EffectManager($this->effects, $this->effectActions ?? EffectActions::unavailable());
+    }
+
     public function damage(float $amount): void
     {
         if (!is_finite($amount) || $amount <= 0.0 || $amount > 1_000_000.0) {
@@ -139,6 +155,7 @@ final readonly class Player
         PlayerActions $actions,
         PlayerInventoryActions $inventoryActions,
         Closure $maximumStackSize,
+        ?EffectActions $effectActions = null,
     ): self {
         return new self(
             $this->name,
@@ -160,6 +177,8 @@ final readonly class Player
             $this->offHandItem,
             $inventoryActions,
             $maximumStackSize,
+            $this->effects,
+            $effectActions,
         );
     }
 

@@ -29,25 +29,59 @@ final class PlayerVitals
     public const float MAX_FOOD = 20.0;
     public const float MAX_SATURATION = 20.0;
     public const float EXHAUSTION_THRESHOLD = 4.0;
+    public const int MAX_AIR_TICKS = 300;
+    public const int MAX_FIRE_TICKS = 0x7fff;
 
     public int $invulnerableUntilTick = -1;
     public int $foodTickTimer = 0;
+    public float $absorption = 0.0;
+    public int $airTicks = self::MAX_AIR_TICKS;
+    public int $fireTicks = 0;
 
     public function __construct(
         public float $health = self::MAX_HEALTH,
         public float $food = self::MAX_FOOD,
         public float $saturation = self::MAX_SATURATION,
         public float $exhaustion = 0.0,
+        float $absorption = 0.0,
+        int $airTicks = self::MAX_AIR_TICKS,
+        int $fireTicks = 0,
     ) {
         self::assertRange($health, 0.0, self::MAX_HEALTH, 'health');
         self::assertRange($food, 0.0, self::MAX_FOOD, 'food');
         self::assertRange($saturation, 0.0, self::MAX_SATURATION, 'saturation');
         self::assertRange($exhaustion, 0.0, self::EXHAUSTION_THRESHOLD, 'exhaustion', false);
+        self::assertRange($absorption, 0.0, 1_024.0, 'absorption');
+        if ($airTicks < -20 || $airTicks > self::MAX_AIR_TICKS || $fireTicks < 0 || $fireTicks > self::MAX_FIRE_TICKS) {
+            throw new InvalidArgumentException('Player air or fire ticks are outside their authoritative range.');
+        }
+        $this->absorption = $absorption;
+        $this->airTicks = $airTicks;
+        $this->fireTicks = $fireTicks;
     }
 
     public function isAlive(): bool
     {
         return $this->health > 0.0;
+    }
+
+    public function applyDamage(float $amount): float
+    {
+        if (!is_finite($amount) || $amount < 0.0 || $amount > 1_000_000.0) {
+            throw new InvalidArgumentException('Damage must be finite, non-negative, and bounded.');
+        }
+        $absorbed = min($amount, $this->absorption);
+        $this->absorption -= $absorbed;
+        $healthDamage = min($amount - $absorbed, $this->health);
+        $this->health -= $healthDamage;
+
+        return $absorbed + $healthDamage;
+    }
+
+    public function setAbsorption(float $amount): void
+    {
+        self::assertRange($amount, 0.0, 1_024.0, 'absorption');
+        $this->absorption = $amount;
     }
 
     public function canConsume(bool $requiresHunger): bool

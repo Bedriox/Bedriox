@@ -203,6 +203,14 @@ final class BedrockInventoryPacketProjector
         );
     }
 
+    /** Resolves a canonical item identity for typed particle projection. */
+    public function particleItemRuntimeId(string $identifier): int
+    {
+        $this->gameplayItems->type($identifier);
+
+        return $this->items->definitionForIdentifier($identifier)->networkRuntimeId();
+    }
+
     public function creativeStack(int $networkId, int $stackNetworkId): InventoryStack
     {
         $this->synchronizeCreativeEntries();

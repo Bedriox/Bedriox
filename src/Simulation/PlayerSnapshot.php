@@ -20,13 +20,15 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Simulation;
 
+use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Server\Player\InventoryStack;
 
 final readonly class PlayerSnapshot
 {
     /**
-     * @param list<InventoryStack|null> $armor
+     * @param list<InventoryStack|null>          $armor
+     * @param array<string, EffectInstance> $effects
      */
     public function __construct(
         public string $sessionId,
@@ -53,5 +55,10 @@ final readonly class PlayerSnapshot
         public ?InventoryStack $offhand = null,
         public int $selectedHotbarSlot = 0,
         public ?InventoryStack $selectedStack = null,
+        public array $effects = [],
+        public float $maximumHealth = 20.0,
+        public float $absorption = 0.0,
+        public int $airTicks = 300,
+        public int $fireTicks = 0,
     ) {}
 }

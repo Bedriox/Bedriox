@@ -32,6 +32,9 @@ use Bedriox\Api\Event\World\WorldUnloadedEvent;
 use Bedriox\Api\Event\World\WorldUnloadEvent;
 use Bedriox\Api\World\Block;
 use Bedriox\Api\World\BlockPosition;
+use Bedriox\Api\World\Particle\Particle;
+use Bedriox\Api\World\Particle\ParticleType;
+use Bedriox\Api\World\Particle\SimpleParticle;
 use Bedriox\Api\World\Position;
 use Bedriox\Api\World\World;
 use Bedriox\Api\World\WorldActions;
@@ -208,6 +211,7 @@ final class WorldApiTest extends TestCase
             static function (World $world, BlockPosition $position, string $identifier) use (&$writes): void {
                 $writes[] = [$world, $position, $identifier];
             },
+            static function (): void {},
         );
         $world = new World('arena', 2, $actions);
         $position = new BlockPosition(1, 64, -3);
@@ -215,6 +219,36 @@ final class WorldApiTest extends TestCase
         self::assertSame('minecraft:stone', $world->getBlock($position)->identifier);
         $world->setBlock($position, 'minecraft:dirt');
         self::assertSame([[$world, $position, 'minecraft:dirt']], $writes);
+    }
+
+    public function testWorldParticleMethodDelegatesTypedPresentationRequest(): void
+    {
+        $requests = [];
+        $actions = new WorldActions(
+            static fn(World $world, BlockPosition $position): Block => new Block($position, 'minecraft:air'),
+            static function (): void {},
+            static function (World $world, Position $position, Particle $particle, ?array $players) use (&$requests): void {
+                $requests[] = [$world, $position, $particle, $players];
+            },
+        );
+        $world = new World('world', 1, $actions);
+        $position = new Position(1.5, 65.0, -2.5);
+        $particle = new SimpleParticle(ParticleType::FLAME);
+
+        $world->spawnParticle($position, $particle);
+
+        self::assertSame([[$world, $position, $particle, null]], $requests);
+    }
+
+    public function testWorldParticleMethodRejectsInvalidAudienceMember(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+
+        (new World('world', 1))->spawnParticle(
+            new Position(1.5, 65.0, -2.5),
+            new SimpleParticle(ParticleType::FLAME),
+            ['not-a-player'],
+        );
     }
 
     public function testDetachedWorldRejectsAuthoritativeMutation(): void

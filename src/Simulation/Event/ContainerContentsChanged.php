@@ -51,9 +51,10 @@ final readonly class ContainerContentsChanged implements WorldEvent
             || ($containerType === ContainerType::VIRTUAL) !== ($layout !== null)
             || $double !== ($pairedPosition !== null)
             || ($containerType === ContainerType::VIRTUAL && count($slots) !== $layout?->size())
-            || ($containerType !== ContainerType::VIRTUAL && !in_array(count($slots), [27, 54], true))
+            || ($containerType !== ContainerType::VIRTUAL && !in_array(count($slots), [5, 27, 54], true))
             || ($double && count($slots) !== 54)
-            || (!$double && $containerType !== ContainerType::VIRTUAL && count($slots) !== 27)) {
+            || (!$double && $containerType !== ContainerType::VIRTUAL
+                && count($slots) !== ($containerType === ContainerType::BREWING_STAND ? 5 : 27))) {
             throw new InvalidArgumentException('Storage-container content projection is invalid.');
         }
         $seen = [];

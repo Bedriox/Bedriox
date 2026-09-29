@@ -114,13 +114,19 @@ The qualified protocol family remains alpha software. Unknown commands fail with
 
 ## Commands and permissions
 
-The console and Bedrock slash-command input share one bounded dispatcher. Built-in commands include `version`, `help`, `list`, `stop`, `op`, `deop`, `permission`, `gamemode`, `give`, `gc`, `kill` (alias `suicide`), `summon`, `time`, and `tp` (alias `teleport`). The console always has administrative authority. Players receive only the commands currently available to their UUID when joining.
+The console and Bedrock slash-command input share one bounded dispatcher. Built-in commands include `version`, `help`, `list`, `stop`, `op`, `deop`, `permission`, `gamemode`, `give`, `effect`, `particle`, `gc`, `kill` (alias `suicide`), `summon`, `time`, and `tp` (alias `teleport`). The console always has administrative authority. Players receive only the commands currently available to their UUID when joining.
 
 `gamemode <mode> [player]` accepts the canonical names and numeric aliases for survival, creative, adventure, and spectator. `give <player> <item> [amount]` resolves canonical `minecraft:*` identifiers through the active gameplay catalog. Both commands enqueue normal authoritative simulation work; they do not mutate network sessions directly.
 
 `tp <player>`, `tp <x> <y> <z> [yaw pitch]`, and their explicit-target forms enqueue the same authoritative teleport used by plugins. Coordinates accept `~` relative values. `bedriox.command.teleport` permits self teleportation and `bedriox.command.teleport.other` permits selecting another subject. Destination collision is deliberately not treated as command policy; the operator or plugin choosing the coordinate owns that decision.
 
 `time set <day|noon|sunset|night|midnight|sunrise|ticks>` changes the current world's bounded daylight-cycle position. `time add <ticks>` advances it, `time query` reports total time, day, and time-of-day, and `time stop` or `time start` controls progression for the running server. Time belongs to the world, advances once per simulation tick, is saved in `level.dat`, and is synchronized immediately after a command, periodically during play, and from the current value when a player joins. Stopping the cycle is a runtime control and intentionally resumes after a server restart. The command requires `bedriox.command.time`.
+
+`effect <player> <effect> [seconds|infinite] [amplifier] [hideParticles]` adds a typed current-version effect through the same cancellable authoritative path available to plugins. `effect <player> clear [effect]` removes one or every active effect. Effect names omit the `minecraft:` prefix in command input. The command requires `bedriox.command.effect`.
+
+`particle <particle> [x y z]` is player-only because its world is the executing player's current loaded world. Omitting coordinates uses the player's position, and relative `~` coordinates are accepted. The request uses ordinary world visibility and particle budgets rather than broadcasting a raw packet. The command requires `bedriox.command.particle`.
+
+Potion items use their current creative-catalog variants. Drinkable potions complete through the ordinary held-item use action, splash and lingering potions launch from ordinary item use, and tipped arrows retain their potion variant when fired. Brewing stands use three bottle slots, one ingredient slot, blaze-powder fuel, and a 400-tick operation. See [effects, potions, and brewing](effects-and-potions.md) for authority, persistence, events, and qualification boundaries.
 
 `kill` targets the executing player, while `kill <targets>` accepts an exact player name, an entity UUID, or the bounded `@a`, `@e`, `@n`, `@p`, `@r`, and `@s` selectors. Selectors support `name`, `type`, `distance`, `limit`, and `sort` filters, with at most 128 results. Self-targeting requires `bedriox.command.kill.self`; every selection containing another entity requires `bedriox.command.kill.other`. Accepted targets enter the normal authoritative damage and death lifecycle, so plugins can observe or cancel the damage instead of the command deleting actors directly.
 

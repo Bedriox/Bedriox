@@ -47,4 +47,14 @@ final class PlayerVitalsTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
         new PlayerVitals(exhaustion: 4.0);
     }
+
+    public function testAbsorptionIsConsumedBeforeHealth(): void
+    {
+        $vitals = new PlayerVitals();
+        $vitals->setAbsorption(4.0);
+
+        self::assertSame(6.0, $vitals->applyDamage(6.0));
+        self::assertSame(0.0, $vitals->absorption);
+        self::assertSame(18.0, $vitals->health);
+    }
 }

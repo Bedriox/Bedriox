@@ -20,6 +20,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Runtime;
 
+use Bedriox\Api\Effect\EffectInstance;
+use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Entity\EntityCategory;
 use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Inventory\ItemStack;
@@ -33,6 +35,9 @@ use Bedriox\Protocol\Packet\AddActorPacket;
 use Bedriox\Protocol\Packet\BedrockPacketCodec;
 use Bedriox\Protocol\Packet\InventoryContainerId;
 use Bedriox\Protocol\Packet\MobArmorEquipmentPacket;
+use Bedriox\Protocol\Packet\MobEffectEvent;
+use Bedriox\Protocol\Packet\MobEffectPacket;
+use Bedriox\Protocol\Packet\MobEffectType;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
 use Bedriox\Protocol\Packet\MoveActorAbsolutePacket;
 use Bedriox\Protocol\Packet\RemoveActorPacket;
@@ -51,6 +56,7 @@ use Bedriox\Server\Runtime\BedrockWorldEventPacketEncoder;
 use Bedriox\Server\Simulation\Event\EntityActorAttackStarted;
 use Bedriox\Server\Simulation\Event\EntityActorDamaged;
 use Bedriox\Server\Simulation\Event\EntityActorDied;
+use Bedriox\Server\Simulation\Event\EntityActorEffectChanged;
 use Bedriox\Server\Simulation\Event\EntityActorEquipmentChanged;
 use Bedriox\Server\Simulation\Event\EntityActorMetadataChanged;
 use Bedriox\Server\Simulation\Event\EntityActorMoved;
@@ -63,6 +69,92 @@ use PHPUnit\Framework\TestCase;
 
 final class BedrockEntityActorPacketEncoderTest extends TestCase
 {
+    public function testLivingActorEffectsReplayOnSpawnAndProjectLiveRemoval(): void
+    {
+        $zombie = new ZombieEntity(
+            '00000000-0000-4000-8000-000000000200',
+            200,
+            'world',
+            new Position(0.0, 64.0, 0.0),
+        );
+        $effect = new EffectInstance(EffectType::INVISIBILITY, 200);
+        $zombie->addEffect($effect);
+        $encoder = new BedrockWorldEventPacketEncoder();
+
+        $spawned = $encoder->encode(new EntityActorSpawned($zombie, ['viewer'], false), []);
+        $mobEffects = array_values(array_filter(
+            $spawned,
+            static fn($packet): bool => $packet->packet instanceof MobEffectPacket,
+        ));
+        self::assertCount(1, $mobEffects);
+        $spawnEffect = $mobEffects[0]->packet;
+        self::assertInstanceOf(MobEffectPacket::class, $spawnEffect);
+        self::assertSame(MobEffectType::Invisibility, $spawnEffect->effect);
+        self::assertSame(MobEffectEvent::Add, $spawnEffect->event);
+
+        $zombie->removeEffect(EffectType::INVISIBILITY);
+        $removed = $encoder->encode(new EntityActorEffectChanged(
+            $zombie,
+            EffectType::INVISIBILITY,
+            null,
+            10,
+            false,
+            ['viewer'],
+        ), []);
+        self::assertCount(2, $removed);
+        self::assertInstanceOf(MobEffectPacket::class, $removed[0]->packet);
+        self::assertSame(MobEffectEvent::Remove, $removed[0]->packet->event);
+        self::assertInstanceOf(SetActorDataPacket::class, $removed[1]->packet);
+    }
+
+    public function testFireResistanceSuppressesLivingActorCombustion(): void
+    {
+        $zombie = new ZombieEntity(
+            '00000000-0000-4000-8000-000000000202',
+            202,
+            'world',
+            new Position(0.0, 64.0, 0.0),
+        );
+        $zombie->addEffect(new EffectInstance(EffectType::FIRE_RESISTANCE, 200));
+        $zombie->setOnFire(100);
+        self::assertFalse($zombie->isOnFire());
+
+        $zombie->removeEffect(EffectType::FIRE_RESISTANCE);
+        $zombie->setOnFire(100);
+        self::assertTrue($zombie->isOnFire());
+    }
+
+    public function testLivingActorCapacityEffectsProjectHealthAndAbsorptionAttributes(): void
+    {
+        $zombie = new ZombieEntity(
+            '00000000-0000-4000-8000-000000000203',
+            203,
+            'world',
+            new Position(0.0, 64.0, 0.0),
+        );
+        $effect = new EffectInstance(EffectType::ABSORPTION, 200, 1);
+        $zombie->addEffect($effect);
+
+        $packets = (new BedrockWorldEventPacketEncoder())->encode(new EntityActorEffectChanged(
+            $zombie,
+            EffectType::ABSORPTION,
+            $effect,
+            20,
+            false,
+            ['viewer'],
+        ), []);
+
+        self::assertCount(2, $packets);
+        self::assertInstanceOf(MobEffectPacket::class, $packets[0]->packet);
+        self::assertInstanceOf(UpdateAttributesPacket::class, $packets[1]->packet);
+        self::assertSame(
+            [ActorAttribute::HEALTH, 'minecraft:absorption'],
+            array_map(static fn($attribute): string => $attribute->name, $packets[1]->packet->attributes),
+        );
+        self::assertSame(8.0, $packets[1]->packet->attributes[1]->value);
+    }
+
+
     public function testZombieAttackStateIsVisibleOnlyToSuppliedRecipients(): void
     {
         $zombie = new ZombieEntity(
@@ -254,10 +346,12 @@ final class BedrockEntityActorPacketEncoderTest extends TestCase
 
         $health = $packets[6]->packet;
         self::assertInstanceOf(UpdateAttributesPacket::class, $health);
-        self::assertCount(1, $health->attributes);
+        self::assertCount(2, $health->attributes);
         self::assertSame(ActorAttribute::HEALTH, $health->attributes[0]->name);
         self::assertSame(16.0, $health->attributes[0]->value);
         self::assertSame(20.0, $health->attributes[0]->maximum);
+        self::assertSame('minecraft:absorption', $health->attributes[1]->name);
+        self::assertSame(0.0, $health->attributes[1]->value);
         self::assertTrue($health->tick->equals(UnsignedLong::fromInt(42)));
 
         self::assertInstanceOf(ActorEventPacket::class, $packets[7]->packet);

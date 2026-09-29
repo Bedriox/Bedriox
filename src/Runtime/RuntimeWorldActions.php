@@ -22,6 +22,8 @@ namespace Bedriox\Server\Runtime;
 
 use Bedriox\Api\World\Block;
 use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
+use Bedriox\Api\World\Particle\Particle;
+use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\World;
 use Bedriox\Api\World\WorldActions;
 use Bedriox\Server\Gameplay\Block\BlockCatalog;
@@ -55,6 +57,9 @@ final class RuntimeWorldActions
             function (World $world, ApiBlockPosition $position, string $identifier): void {
                 $this->setBlock($world, $position, $identifier);
             },
+            function (World $world, ApiPosition $position, Particle $particle, ?array $players): void {
+                $this->spawnParticle($world, $position, $particle, $players);
+            },
         );
     }
 
@@ -80,6 +85,48 @@ final class RuntimeWorldActions
                 $identifier,
             )) {
                 throw new OverflowException('The authoritative world action queue rejected the block change.');
+            }
+        };
+        if ($this->pluginActions?->isCapturing() === true) {
+            $this->pluginActions->stage($action);
+        } else {
+            $action();
+        }
+    }
+
+    /** @param list<\Bedriox\Api\Player\Player>|null $players */
+    private function spawnParticle(World $world, ApiPosition $position, Particle $particle, ?array $players): void
+    {
+        $position->validate();
+        if ($position->world !== null && !$position->world->isSameLoad($world)) {
+            throw new InvalidArgumentException('Particle position belongs to a different world load.');
+        }
+        if ($position->y < -64.0 || $position->y > 319.0) {
+            throw new InvalidArgumentException('Particle position exceeds the supported build height.');
+        }
+        if ($players !== null && count($players) > 128) {
+            throw new InvalidArgumentException('Particle audience exceeds the supported capacity.');
+        }
+        $identities = null;
+        if ($players !== null) {
+            $identities = [];
+            foreach ($players as $player) {
+                if ($player->position->world === null || !$player->position->world->isSameLoad($world)) {
+                    throw new InvalidArgumentException('Particle audience contains a player outside this world load.');
+                }
+                $identities[$player->uuid] = true;
+            }
+            $identities = array_keys($identities);
+        }
+        $runtime = $this->runtime($world);
+        $action = static function () use ($runtime, $position, $particle, $identities): void {
+            if (!$runtime->simulation->enqueuePluginParticle(
+                'api',
+                new \Bedriox\Server\Simulation\Position($position->x, $position->y, $position->z),
+                $particle,
+                $identities,
+            )) {
+                throw new OverflowException('The authoritative world action queue rejected the particle.');
             }
         };
         if ($this->pluginActions?->isCapturing() === true) {

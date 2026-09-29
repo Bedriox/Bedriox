@@ -20,12 +20,16 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Api;
 
+use Bedriox\Api\Effect\EffectCause;
+use Bedriox\Api\Effect\EffectInstance;
+use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Entity\EntityCombustionCause;
 use Bedriox\Api\Entity\EntityDamageCause;
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Event\Entity\EntityCombustEvent;
 use Bedriox\Api\Event\Entity\EntityDamageByEntityEvent;
 use Bedriox\Api\Event\Entity\EntityDeathEvent;
+use Bedriox\Api\Event\Entity\EntityEffectRemoveEvent;
 use Bedriox\Api\Event\Entity\EntityEquipmentChangedEvent;
 use Bedriox\Api\Event\Entity\EntityEquipmentChangeEvent;
 use Bedriox\Api\Event\Entity\EntitySpawnEvent;
@@ -35,10 +39,24 @@ use Bedriox\Server\Entity\Vanilla\CowEntity;
 use Bedriox\Server\Entity\Vanilla\ZombieEntity;
 use Bedriox\Server\Simulation\Position;
 use InvalidArgumentException;
+use LogicException;
 use PHPUnit\Framework\TestCase;
 
 final class EntityEventTest extends TestCase
 {
+    public function testNaturalEffectExpirationCannotBeCancelled(): void
+    {
+        $cow = new CowEntity('00000000-0000-4000-8000-000000000099', 99, 'world', new Position(0.0, 64.0, 0.0));
+        $event = new EntityEffectRemoveEvent(
+            $cow,
+            new EffectInstance(EffectType::SPEED, 1),
+            EffectCause::EXPIRATION,
+        );
+
+        $this->expectException(LogicException::class);
+        $event->cancel();
+    }
+
     public function testSpawnAndDamageEventsExposeTypedEntitiesAndBoundedMutableDamage(): void
     {
         $cow = new CowEntity('00000000-0000-4000-8000-000000000001', 1, 'world', new Position(0.0, 64.0, 0.0));

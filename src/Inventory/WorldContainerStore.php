@@ -22,6 +22,8 @@ namespace Bedriox\Server\Inventory;
 
 use Bedriox\Api\Inventory\ContainerType;
 use Bedriox\Api\Inventory\ItemStack;
+use Bedriox\Server\Gameplay\Potion\BrewingStandBlockEntity;
+use Bedriox\Server\World\BlockEntity\BlockEntity;
 use Bedriox\Server\World\BlockEntity\BlockEntityType;
 use Bedriox\Server\World\BlockEntity\ContainerBlockEntity;
 use Bedriox\Server\World\BlockEntity\ContainerInventory as PersistentContainerInventory;
@@ -56,10 +58,14 @@ final class WorldContainerStore
             return null;
         }
         $entity = $this->world->blockEntityAt($position);
-        if (!$entity instanceof ContainerBlockEntity || !self::entityMatchesBlock($entity, $blockIdentifier)) {
+        if ((!$entity instanceof ContainerBlockEntity && !$entity instanceof BrewingStandBlockEntity)
+            || !self::entityMatchesBlock($entity, $blockIdentifier)) {
             return null;
         }
         $first = $this->inventory($entity);
+        if ($entity instanceof BrewingStandBlockEntity) {
+            return new ResolvedWorldContainer($type, $position, $first, customName: $entity->customName);
+        }
         if ($entity->type !== BlockEntityType::Chest || $entity->pairedPosition === null) {
             return new ResolvedWorldContainer($type, $position, $first, customName: $entity->customName);
         }
@@ -168,31 +174,52 @@ final class WorldContainerStore
         }
     }
 
-    private function inventory(ContainerBlockEntity $entity): SimpleContainerInventory
+    public function synchronizeBrewingStand(BrewingStandBlockEntity $entity): ?SimpleContainerInventory
+    {
+        $inventory = $this->inventories[self::positionKey($entity->position)] ?? null;
+        if (!$inventory instanceof SimpleContainerInventory) {
+            return null;
+        }
+        $contents = array_map(
+            static fn(?ContainerItemStack $stack): ?ItemStack => $stack === null ? null : self::apiStack($stack),
+            $entity->inventory->slots(),
+        );
+        $revision = $inventory->revision();
+        $inventory->replaceContents($contents, $revision);
+        $inventory->acknowledgePersistedRevision($inventory->revision());
+
+        return $inventory;
+    }
+
+    private function inventory(ContainerBlockEntity|BrewingStandBlockEntity $entity): SimpleContainerInventory
     {
         $key = self::positionKey($entity->position);
         $cached = $this->inventories[$key] ?? null;
         if ($cached instanceof SimpleContainerInventory) {
             return $cached;
         }
-        $contents = array_fill(0, ContainerBlockEntity::STORAGE_SLOT_COUNT, null);
+        $contents = array_fill(0, $entity->inventory->size, null);
         foreach ($entity->inventory->contents() as $slot => $stack) {
             $contents[$slot] = self::apiStack($stack);
         }
 
-        return $this->inventories[$key] = new SimpleContainerInventory('world/' . $key, 27, $contents);
+        return $this->inventories[$key] = new SimpleContainerInventory(
+            'world/' . $key,
+            $entity->inventory->size,
+            $contents,
+        );
     }
 
-    private function replacementAt(BlockPosition $position, ContainerInventory $inventory): ContainerBlockEntity
+    private function replacementAt(BlockPosition $position, ContainerInventory $inventory): BlockEntity
     {
         return $this->replacementAtContents($position, $inventory->contents());
     }
 
     /** @param list<ItemStack|null> $contents */
-    private function replacementAtContents(BlockPosition $position, array $contents): ContainerBlockEntity
+    private function replacementAtContents(BlockPosition $position, array $contents): BlockEntity
     {
         $entity = $this->world->blockEntityAt($position);
-        if (!$entity instanceof ContainerBlockEntity) {
+        if (!$entity instanceof ContainerBlockEntity && !$entity instanceof BrewingStandBlockEntity) {
             throw new LogicException('The storage block entity disappeared before its inventory committed.');
         }
         $persistentContents = [];
@@ -201,7 +228,11 @@ final class WorldContainerStore
                 $persistentContents[$slot] = self::persistentStack($stack);
             }
         }
-        return $entity->withInventory(new PersistentContainerInventory(27, $persistentContents));
+        $inventory = new PersistentContainerInventory(count($contents), $persistentContents);
+
+        return $entity instanceof BrewingStandBlockEntity
+            ? $entity->withState($inventory, $entity->brewTime, $entity->fuelAmount, $entity->fuelTotal)
+            : $entity->withInventory($inventory);
     }
 
     /** @param array<mixed> $contents */
@@ -252,13 +283,16 @@ final class WorldContainerStore
         return new ContainerItemStack($stack->identifier, $stack->count, $stack->damage, $stack->nbt, $stack->auxValue);
     }
 
-    private static function entityMatchesBlock(ContainerBlockEntity $entity, string $identifier): bool
-    {
+    private static function entityMatchesBlock(
+        ContainerBlockEntity|BrewingStandBlockEntity $entity,
+        string $identifier,
+    ): bool {
         return match ($entity->type) {
             BlockEntityType::Chest => $identifier === 'minecraft:chest' || $identifier === 'minecraft:trapped_chest',
             BlockEntityType::Barrel => $identifier === 'minecraft:barrel',
             BlockEntityType::ShulkerBox => self::isShulkerBox($identifier),
             BlockEntityType::EnderChest => false,
+            BlockEntityType::BrewingStand => $identifier === 'minecraft:brewing_stand',
         };
     }
 
@@ -272,6 +306,7 @@ final class WorldContainerStore
             $identifier === 'minecraft:barrel' => ContainerType::BARREL,
             self::isShulkerBox($identifier) => ContainerType::SHULKER_BOX,
             $identifier === 'minecraft:ender_chest' => ContainerType::ENDER_CHEST,
+            $identifier === 'minecraft:brewing_stand' => ContainerType::BREWING_STAND,
             default => null,
         };
     }
@@ -288,6 +323,7 @@ final class WorldContainerStore
             $identifier === 'minecraft:barrel' => BlockEntityType::Barrel,
             self::isShulkerBox($identifier) => BlockEntityType::ShulkerBox,
             $identifier === 'minecraft:ender_chest' => BlockEntityType::EnderChest,
+            $identifier === 'minecraft:brewing_stand' => BlockEntityType::BrewingStand,
             default => null,
         };
     }

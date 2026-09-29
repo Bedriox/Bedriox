@@ -20,9 +20,14 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Simulation;
 
+use Bedriox\Api\Effect\EffectCause;
+use Bedriox\Api\Effect\EffectInstance;
+use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Event\Block\BlockBreakEvent;
 use Bedriox\Api\Event\Block\BlockBrokenEvent;
 use Bedriox\Api\Event\Block\BlockPlaceEvent;
+use Bedriox\Api\Event\Entity\EntityEffectAddedEvent;
+use Bedriox\Api\Event\Entity\EntityEffectAddEvent;
 use Bedriox\Api\Event\EventPriority;
 use Bedriox\Api\Event\Inventory\InventoryChangedEvent;
 use Bedriox\Api\Event\Inventory\InventoryChangeEvent;
@@ -59,6 +64,7 @@ use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
+use Bedriox\Server\Gameplay\Potion\PotionEffectDose;
 use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Plugin\Event\EventDispatcher;
 use Bedriox\Server\Plugin\PluginActionBuffer;
@@ -68,6 +74,7 @@ use Bedriox\Server\Plugin\PluginOwnershipRegistry;
 use Bedriox\Server\Plugin\PluginRuntimeControl;
 use Bedriox\Server\Simulation\ArmSwingSource;
 use Bedriox\Server\Simulation\BlockBreakAction;
+use Bedriox\Server\Simulation\DamageCause;
 use Bedriox\Server\Simulation\Event\BlockChanged;
 use Bedriox\Server\Simulation\Event\BlockPlacementCorrected;
 use Bedriox\Server\Simulation\Event\ChatBroadcast;
@@ -98,6 +105,67 @@ use Throwable;
 
 final class PluginGameplayEventBridgeTest extends TestCase
 {
+    public function testDirectSplashAndLingeringInstantDosesBypassEffectLifecycleAndUseVitalEvents(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $effectAdds = 0;
+        $effectAdded = 0;
+        $damageCauses = [];
+        $regainEvents = 0;
+        $dispatcher->register('Example', EntityEffectAddEvent::class, static function () use (&$effectAdds): void {
+            ++$effectAdds;
+        });
+        $dispatcher->register('Example', EntityEffectAddedEvent::class, static function () use (&$effectAdded): void {
+            ++$effectAdded;
+        });
+        $dispatcher->register('Example', PlayerDamageEvent::class, static function (PlayerDamageEvent $event) use (&$damageCauses): void {
+            $damageCauses[] = $event->cause;
+        });
+        $dispatcher->register('Example', PlayerRegainHealthEvent::class, static function () use (&$regainEvents): void {
+            ++$regainEvents;
+        });
+
+        [$simulation, $factory] = self::simulation($bridge);
+        $simulation->enqueue($factory->join('one', 'identity-one', 'One'));
+        $simulation->tick();
+        $players = (new \ReflectionProperty(WorldSimulation::class, 'players'))->getValue($simulation);
+        self::assertInstanceOf(\Bedriox\Server\Player\PlayerRegistry::class, $players);
+        $player = $players->player('one');
+        self::assertNotNull($player);
+        $applyDose = new \ReflectionMethod(WorldSimulation::class, 'applyPotionDoseToPlayer');
+
+        $damaged = $applyDose->invoke(
+            $simulation,
+            $player,
+            new PotionEffectDose(new EffectInstance(EffectType::INSTANT_DAMAGE, 1)),
+            EffectCause::SPLASH_POTION,
+        );
+        self::assertInstanceOf(PlayerDamaged::class, $damaged);
+        self::assertSame([DamageCause::Magic->value], $damageCauses);
+        self::assertSame(0, $effectAdds);
+        self::assertSame(0, $effectAdded);
+
+        $healed = $applyDose->invoke(
+            $simulation,
+            $player,
+            new PotionEffectDose(new EffectInstance(EffectType::INSTANT_HEALTH, 1)),
+            EffectCause::LINGERING_POTION,
+        );
+        self::assertInstanceOf(PlayerHealed::class, $healed);
+        self::assertSame(1, $regainEvents);
+        self::assertSame(0, $effectAdds);
+        self::assertSame(0, $effectAdded);
+
+        $applyDose->invoke(
+            $simulation,
+            $player,
+            new PotionEffectDose(new EffectInstance(EffectType::SPEED, 100)),
+            EffectCause::SPLASH_POTION,
+        );
+        self::assertSame(1, $effectAdds);
+        self::assertSame(1, $effectAdded);
+    }
+
     public function testKickEventCanChangeMessagesOrCancelTheRequest(): void
     {
         [$dispatcher, $bridge] = self::bridge();

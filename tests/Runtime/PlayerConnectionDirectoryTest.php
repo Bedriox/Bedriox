@@ -20,6 +20,9 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Runtime;
 
+use Bedriox\Api\Effect\EffectCause;
+use Bedriox\Api\Effect\EffectInstance;
+use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Inventory\ItemStack;
 use Bedriox\Api\World\Position;
 use Bedriox\Protocol\Packet\Packet;
@@ -142,5 +145,28 @@ final class PlayerConnectionDirectoryTest extends TestCase
 
         $this->expectException(LogicException::class);
         $maximumStackSize(new ItemStack('minecraft:stone', 1));
+    }
+
+    public function testEffectActionsRejectAReplacementSession(): void
+    {
+        $directory = new PlayerConnectionDirectory();
+        $directory->connect(
+            'player-uuid',
+            'session-one',
+            static fn(): bool => true,
+            static fn(Packet $packet, bool $immediate): bool => true,
+            addEffect: static fn(EffectInstance $effect, EffectCause $cause): bool => true,
+        );
+        $actions = $directory->effectActions('player-uuid');
+        $directory->connect(
+            'player-uuid',
+            'session-two',
+            static fn(): bool => true,
+            static fn(Packet $packet, bool $immediate): bool => true,
+            addEffect: static fn(EffectInstance $effect, EffectCause $cause): bool => true,
+        );
+
+        $this->expectException(LogicException::class);
+        $actions->add(new EffectInstance(EffectType::SPEED, 20), EffectCause::PLUGIN);
     }
 }

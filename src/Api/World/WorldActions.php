@@ -20,6 +20,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\World;
 
+use Bedriox\Api\Player\Player;
+use Bedriox\Api\World\Particle\Particle;
 use Closure;
 use LogicException;
 
@@ -27,12 +29,14 @@ use LogicException;
 final readonly class WorldActions
 {
     /**
-     * @param Closure(World, BlockPosition): Block        $getBlock
-     * @param Closure(World, BlockPosition, string): void $setBlock
+     * @param Closure(World, BlockPosition): Block                         $getBlock
+     * @param Closure(World, BlockPosition, string): void                  $setBlock
+     * @param Closure(World, Position, Particle, list<Player>|null): void $spawnParticle
      */
     public function __construct(
         private Closure $getBlock,
         private Closure $setBlock,
+        private Closure $spawnParticle,
     ) {}
 
     public static function unavailable(): self
@@ -41,7 +45,7 @@ final readonly class WorldActions
             throw new LogicException('This world handle is not attached to an authoritative runtime.');
         };
 
-        return new self($unavailable, $unavailable);
+        return new self($unavailable, $unavailable, $unavailable);
     }
 
     public function getBlock(World $world, BlockPosition $position): Block
@@ -52,5 +56,11 @@ final readonly class WorldActions
     public function setBlock(World $world, BlockPosition $position, string $identifier): void
     {
         ($this->setBlock)($world, $position, $identifier);
+    }
+
+    /** @param list<Player>|null $players */
+    public function spawnParticle(World $world, Position $position, Particle $particle, ?array $players): void
+    {
+        ($this->spawnParticle)($world, $position, $particle, $players);
     }
 }

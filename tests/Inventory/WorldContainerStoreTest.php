@@ -22,6 +22,7 @@ namespace Bedriox\Server\Tests\Inventory;
 
 use Bedriox\Api\Inventory\ItemStack;
 use Bedriox\Data\BedrockDataSet;
+use Bedriox\Server\Gameplay\Potion\BrewingStandBlockEntity;
 use Bedriox\Server\Inventory\ContainerRevisionMismatchException;
 use Bedriox\Server\Inventory\WorldContainerStore;
 use Bedriox\Server\World\Block\BlockStateRegistry;
@@ -38,6 +39,32 @@ use PHPUnit\Framework\TestCase;
 
 final class WorldContainerStoreTest extends TestCase
 {
+    public function testBrewingStandUsesItsFiveSlotLayoutAndPreservesProgress(): void
+    {
+        $world = $this->world();
+        $position = new BlockPosition(2, 64, 2);
+        $world->setBlockEntity(new BrewingStandBlockEntity(
+            $position,
+            ContainerInventory::empty(BrewingStandBlockEntity::SLOT_COUNT),
+            brewTime: 200,
+            fuelAmount: 7,
+            fuelTotal: 20,
+        ));
+        $store = new WorldContainerStore($world);
+        $resolved = $store->resolve($position, 'minecraft:brewing_stand');
+        self::assertNotNull($resolved);
+        self::assertSame(5, $resolved->inventory->size());
+        $contents = array_fill(0, 5, null);
+        $contents[BrewingStandBlockEntity::SLOT_FUEL] = new ItemStack('minecraft:blaze_powder', 3);
+
+        self::assertTrue($store->replaceAndPersist($resolved, $contents, $resolved->inventory->revision()));
+        $persisted = $world->blockEntityAt($position);
+        self::assertInstanceOf(BrewingStandBlockEntity::class, $persisted);
+        self::assertSame(200, $persisted->brewTime);
+        self::assertSame(7, $persisted->fuelAmount);
+        self::assertSame('minecraft:blaze_powder', $persisted->inventory->stackAt(4)?->identifier);
+    }
+
     public function testPairedChestReplacementPublishesBothDurableHalvesAndLiveContents(): void
     {
         $world = $this->world();

@@ -20,7 +20,10 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Player;
 
+use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Player\GameMode;
+use Bedriox\Server\Effect\ActiveEffectCollection;
+use Bedriox\Server\Effect\ActiveEffectPersistenceState;
 use Bedriox\Server\Simulation\PlayerSnapshot;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\Simulation\VerticalState;
@@ -39,6 +42,7 @@ final class Player
     public readonly PlayerMovement $movement;
     public readonly PlayerInventory $inventory;
     public readonly PlayerVitals $vitals;
+    public readonly ActiveEffectCollection $effects;
     private string $worldName;
     public readonly int $firstPlayedAt;
     /** Persisted canonical value; mutate only through setGameMode(). */
@@ -46,6 +50,7 @@ final class Player
     private int $stateRevision = 0;
     private int $savedRevision = 0;
 
+    /** @param list<EffectInstance> $effects */
     public function __construct(
         public readonly string $sessionId,
         public readonly int $runtimeActorId,
@@ -62,6 +67,11 @@ final class Player
         float $food = PlayerVitals::MAX_FOOD,
         float $saturation = PlayerVitals::MAX_SATURATION,
         float $exhaustion = 0.0,
+        array $effects = [],
+        float $absorption = 0.0,
+        int $airTicks = PlayerVitals::MAX_AIR_TICKS,
+        int $fireTicks = 0,
+        ?ActiveEffectPersistenceState $effectPersistenceState = null,
     ) {
         $this->chatTokens = $chatTokens;
         $this->lastChatRefillTick = $tick;
@@ -75,7 +85,13 @@ final class Player
         $this->worldName = $worldName;
         $this->firstPlayedAt = $firstPlayedAt;
         $this->gamemode = GameMode::from($gamemode)->value;
-        $this->vitals = new PlayerVitals($health, $food, $saturation, $exhaustion);
+        $this->vitals = new PlayerVitals($health, $food, $saturation, $exhaustion, $absorption, $airTicks, $fireTicks);
+        $this->effects = new ActiveEffectCollection();
+        if ($effectPersistenceState === null) {
+            $this->effects->restore($effects);
+        } else {
+            $this->effects->restorePersistenceState($effectPersistenceState);
+        }
     }
 
     public function snapshot(): PlayerSnapshot
@@ -105,6 +121,11 @@ final class Player
             $this->inventory->offhandStack(),
             $this->inventory->selectedHotbarSlot(),
             $this->inventory->selectedStack(),
+            $this->effects->snapshot(),
+            \Bedriox\Server\Effect\VanillaEffectBehavior::maximumHealth($this->effects->snapshot()),
+            $this->vitals->absorption,
+            $this->vitals->airTicks,
+            $this->vitals->fireTicks,
         );
     }
 

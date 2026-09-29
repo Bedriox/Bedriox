@@ -46,9 +46,6 @@ final readonly class ConsumableDefinition
             || !is_finite($saturationRestore) || $saturationRestore < 0.0 || $saturationRestore > 20.0) {
             throw new InvalidArgumentException('Consumable nutrition must be finite and bounded.');
         }
-        if ($foodRestore === 0.0 && $saturationRestore === 0.0) {
-            throw new InvalidArgumentException('Consumable nutrition must change at least one player value.');
-        }
         if ($residueIdentifier !== null
             && preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $residueIdentifier) !== 1) {
             throw new InvalidArgumentException('Consumable residue must use a canonical namespaced identifier.');

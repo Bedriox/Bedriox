@@ -21,5 +21,6 @@ declare(strict_types=1);
 namespace Bedriox\Api\Entity\Vanilla;
 
 use Bedriox\Api\Entity\Monster;
+use Bedriox\Api\Entity\Undead;
 
-interface Zombie extends Monster {}
+interface Zombie extends Monster, Undead {}

@@ -23,6 +23,7 @@ namespace Bedriox\Server\World\Storage\LevelDb;
 use Bedriox\Api\Inventory\ItemNbt;
 use Bedriox\Protocol\Exception\InvalidValueException;
 use Bedriox\Protocol\Packet\LittleEndianNbtToNetwork;
+use Bedriox\Server\Gameplay\Potion\BrewingStandBlockEntity;
 use Bedriox\Server\World\BlockEntity\BlockEntity;
 use Bedriox\Server\World\BlockEntity\BlockEntityCollection;
 use Bedriox\Server\World\BlockEntity\BlockEntityRegistry;
@@ -133,6 +134,21 @@ final readonly class PersistentBlockEntityCodec
             'z' => LittleEndianNbtTag::int($entity->position->z),
             'isMovable' => LittleEndianNbtTag::byte(1),
         ];
+        if ($entity instanceof BrewingStandBlockEntity) {
+            if ($entity->customName !== null) {
+                $root['CustomName'] = LittleEndianNbtTag::string($entity->customName);
+            }
+            $items = [];
+            foreach ($entity->inventory->contents() as $slot => $stack) {
+                $items[] = LittleEndianNbtTag::compound($this->encodeItem($slot, $stack));
+            }
+            $root['Items'] = LittleEndianNbtTag::list(LittleEndianNbtTag::COMPOUND, $items);
+            $root['CookTime'] = new LittleEndianNbtTag(LittleEndianNbtTag::SHORT, $entity->brewTime);
+            $root['FuelAmount'] = new LittleEndianNbtTag(LittleEndianNbtTag::SHORT, $entity->fuelAmount);
+            $root['FuelTotal'] = new LittleEndianNbtTag(LittleEndianNbtTag::SHORT, $entity->fuelTotal);
+
+            return $root;
+        }
         if (!$entity instanceof ContainerBlockEntity) {
             return $root;
         }
@@ -165,6 +181,16 @@ final readonly class PersistentBlockEntityCodec
             'y' => LittleEndianNbtTag::int($entity->position->y),
             'z' => LittleEndianNbtTag::int($entity->position->z),
         ];
+        if ($entity instanceof BrewingStandBlockEntity) {
+            if ($entity->customName !== null) {
+                $root['CustomName'] = LittleEndianNbtTag::string($entity->customName);
+            }
+            $root['CookTime'] = new LittleEndianNbtTag(LittleEndianNbtTag::SHORT, $entity->brewTime);
+            $root['FuelAmount'] = new LittleEndianNbtTag(LittleEndianNbtTag::SHORT, $entity->fuelAmount);
+            $root['FuelTotal'] = new LittleEndianNbtTag(LittleEndianNbtTag::SHORT, $entity->fuelTotal);
+
+            return $root;
+        }
         if (!$entity instanceof ContainerBlockEntity) {
             return $root;
         }
@@ -194,11 +220,14 @@ final readonly class PersistentBlockEntityCodec
         if (!$type->ownsPersistentInventory()) {
             return $this->registry->create($type, $position);
         }
+        $slotCount = $type === BlockEntityType::BrewingStand
+            ? BrewingStandBlockEntity::SLOT_COUNT
+            : ContainerBlockEntity::STORAGE_SLOT_COUNT;
         $contents = [];
         $items = $root['Items'] ?? null;
         if ($items !== null) {
             if ($items->type !== LittleEndianNbtTag::LIST || $items->listType !== LittleEndianNbtTag::COMPOUND
-                || !is_array($items->value) || count($items->value) > ContainerBlockEntity::STORAGE_SLOT_COUNT) {
+                || !is_array($items->value) || count($items->value) > $slotCount) {
                 throw new InvalidArgumentException('Block-entity Items tag is malformed or exceeds its slot limit.');
             }
             foreach ($items->value as $entry) {
@@ -206,7 +235,7 @@ final readonly class PersistentBlockEntityCodec
                     || !is_array($entry->value)) {
                     throw new InvalidArgumentException('Block-entity Items tag contains an invalid entry.');
                 }
-                [$slot, $stack] = $this->decodeItem(self::compound($entry, 'Items'));
+                [$slot, $stack] = $this->decodeItem(self::compound($entry, 'Items'), $slotCount);
                 if (isset($contents[$slot])) {
                     throw new InvalidArgumentException('Block-entity Items tag contains a duplicate slot.');
                 }
@@ -216,6 +245,26 @@ final readonly class PersistentBlockEntityCodec
         $customName = isset($root['CustomName']) ? self::string($root['CustomName'], 'CustomName') : null;
         if ($customName === '') {
             $customName = null;
+        }
+        if ($type === BlockEntityType::BrewingStand) {
+            $brewTime = isset($root['CookTime'])
+                ? self::integer($root['CookTime'], LittleEndianNbtTag::SHORT, 'CookTime')
+                : 0;
+            $fuelAmount = isset($root['FuelAmount'])
+                ? self::integer($root['FuelAmount'], LittleEndianNbtTag::SHORT, 'FuelAmount')
+                : 0;
+            $fuelTotal = isset($root['FuelTotal'])
+                ? self::integer($root['FuelTotal'], LittleEndianNbtTag::SHORT, 'FuelTotal')
+                : $fuelAmount;
+
+            return new BrewingStandBlockEntity(
+                $position,
+                new ContainerInventory(BrewingStandBlockEntity::SLOT_COUNT, $contents),
+                $brewTime,
+                $fuelAmount,
+                $fuelTotal,
+                $customName,
+            );
         }
         $pairedPosition = null;
         $pairLead = false;
@@ -270,10 +319,10 @@ final readonly class PersistentBlockEntityCodec
      * @param array<string, LittleEndianNbtTag> $item
      * @return array{int, ContainerItemStack}
      */
-    private function decodeItem(array $item): array
+    private function decodeItem(array $item, int $slotCount = ContainerBlockEntity::STORAGE_SLOT_COUNT): array
     {
         $slot = self::integer(self::required($item, 'Slot'), LittleEndianNbtTag::BYTE, 'Items.Slot');
-        if ($slot < 0 || $slot >= ContainerBlockEntity::STORAGE_SLOT_COUNT) {
+        if ($slot < 0 || $slot >= $slotCount) {
             throw new InvalidArgumentException('Block-entity item slot is outside the container range.');
         }
         $identifier = self::string(self::required($item, 'Name'), 'Items.Name');
