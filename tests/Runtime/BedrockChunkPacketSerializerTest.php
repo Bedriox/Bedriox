@@ -79,11 +79,11 @@ final class BedrockChunkPacketSerializerTest extends TestCase
         $chunk = (new FlatWorldGenerator($palette))->generate(new ChunkPosition(-1, -1));
 
         self::assertSame(
-            $translator->toNetwork($palette->grassBlock),
+            $translator->toNetwork($palette->grassBlock)->signed(),
             $serializer->networkRuntimeIdAt($chunk, -1, 63, -1),
         );
         self::assertSame(
-            $translator->toNetwork($palette->air),
+            $translator->toNetwork($palette->air)->signed(),
             $serializer->networkRuntimeIdAt($chunk, -16, 64, -16),
         );
 
@@ -159,7 +159,7 @@ final class BedrockChunkPacketSerializerTest extends TestCase
             for ($x = 0; $x < 16; ++$x) {
                 for ($z = 0; $z < 16; ++$z) {
                     for ($y = 0; $y < 16; ++$y) {
-                        $values[] = $translator->toNetwork($chunk->blockStateAt($x, ($sectionY * 16) + $y, $z));
+                        $values[] = $translator->toNetwork($chunk->blockStateAt($x, ($sectionY * 16) + $y, $z))->signed();
                     }
                 }
             }

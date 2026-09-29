@@ -186,7 +186,7 @@ final class BedrockInventoryPacketProjectorTest extends TestCase
         $network = $projector->toItemActorProtocol($stack);
 
         self::assertSame(4, $network->runtimeId);
-        self::assertSame(6777, $network->blockRuntimeId);
+        self::assertSame(1_741_778_478, $network->blockRuntimeId);
         self::assertNotNull($projector->fromProtocol($network)->placedBlockState);
     }
 

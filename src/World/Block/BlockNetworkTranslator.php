@@ -21,12 +21,13 @@ declare(strict_types=1);
 namespace Bedriox\Server\World\Block;
 
 use Bedriox\Data\NetworkBlockStateRegistry;
+use Bedriox\Protocol\Value\BlockNetworkId;
 use InvalidArgumentException;
 
 /** The sole translation boundary between Bedriox-owned state IDs and versioned Bedrock network IDs. */
 final readonly class BlockNetworkTranslator
 {
-    /** @var list<int> */
+    /** @var list<BlockNetworkId> */
     private array $networkIdsByInternalId;
 
     /** @var array<int, int> */
@@ -40,26 +41,26 @@ final readonly class BlockNetworkTranslator
         $internalIdsByNetworkId = [];
         foreach ($internal->states() as $state) {
             $internalId = count($networkIdsByInternalId);
-            $networkId = $network->networkRuntimeId($state);
-            if (isset($internalIdsByNetworkId[$networkId])) {
+            $networkId = BlockNetworkId::fromSigned($network->networkRuntimeId($state));
+            if (isset($internalIdsByNetworkId[$networkId->signed()])) {
                 throw new InvalidArgumentException('Bedrock network block-state mapping is not one-to-one.');
             }
             $networkIdsByInternalId[] = $networkId;
-            $internalIdsByNetworkId[$networkId] = $internalId;
+            $internalIdsByNetworkId[$networkId->signed()] = $internalId;
         }
         $this->networkIdsByInternalId = $networkIdsByInternalId;
         $this->internalIdsByNetworkId = $internalIdsByNetworkId;
     }
 
-    public function toNetwork(InternalBlockStateId $internalId): int
+    public function toNetwork(InternalBlockStateId $internalId): BlockNetworkId
     {
         return $this->networkIdsByInternalId[$internalId->value]
             ?? throw new InvalidArgumentException('Internal block-state ID has no Bedrock network mapping.');
     }
 
-    public function fromNetwork(int $networkId): InternalBlockStateId
+    public function fromNetwork(BlockNetworkId $networkId): InternalBlockStateId
     {
-        $internalId = $this->internalIdsByNetworkId[$networkId] ?? null;
+        $internalId = $this->internalIdsByNetworkId[$networkId->signed()] ?? null;
         if (!is_int($internalId)) {
             throw new InvalidArgumentException('Bedrock network block-state ID has no internal mapping.');
         }

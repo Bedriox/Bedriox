@@ -191,7 +191,8 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
         self::assertInstanceOf(VoxelShapesPacket::class, $packets[1]);
         self::assertInstanceOf(StartGamePacket::class, $packets[2]);
         self::assertSame(76_835, strlen($packets[2]->encode()));
-        self::assertSame('ad94c7ca05df5c37938e06e05d34b11729d56c2319e9fa87a70811d1a6595e0e', hash('sha256', $packets[2]->encode()));
+        self::assertTrue($packets[2]->blockNetworkIdsAreHashes);
+        self::assertSame('69d991a3ffd1537e61ad502b8e0529a52fea2c38b82356b13f8077c91cf69e36', hash('sha256', $packets[2]->encode()));
         self::assertInstanceOf(ItemRegistryPacket::class, $packets[3]);
         self::assertSame(166_607, strlen($packets[3]->encode()));
         self::assertSame('0cbe4e9e93a3003e8f8cf4f322ed36a18a373b2000fbaac8c164c5320ba2e7af', hash('sha256', $packets[3]->encode()));
@@ -222,7 +223,7 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
         self::assertSame(2, $mainInventory->items[0]->runtimeId);
         self::assertSame(64, $mainInventory->items[0]->count);
         self::assertSame(1, $mainInventory->items[0]->stackNetworkId);
-        self::assertSame(14_932, $mainInventory->items[0]->blockRuntimeId);
+        self::assertSame(-567_203_660, $mainInventory->items[0]->blockRuntimeId);
         foreach (array_slice($mainInventory->items, 1) as $empty) {
             self::assertSame(0, $empty->runtimeId);
             self::assertSame(1, $empty->count);

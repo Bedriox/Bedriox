@@ -22,6 +22,7 @@ namespace Bedriox\Server\Tests\World\Block;
 
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Data\CanonicalBlockState;
+use Bedriox\Protocol\Value\BlockNetworkId;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
@@ -51,10 +52,10 @@ final class BlockStateRegistryTest extends TestCase
         $flat = FixedFlatBlockPalette::fromRegistry($internal);
 
         self::assertSame([
-            'air' => 17_013,
-            'bedrock' => 17_889,
-            'dirt' => 13_444,
-            'grass_block' => 14_932,
+            'air' => -604_749_536,
+            'bedrock' => -173_245_189,
+            'dirt' => -2_108_756_090,
+            'grass_block' => -567_203_660,
         ], $flat->toNetworkRuntimeIds($translator));
         foreach ([$flat->air, $flat->bedrock, $flat->dirt, $flat->grassBlock] as $internalId) {
             self::assertSame($internalId->value, $translator->fromNetwork($translator->toNetwork($internalId))->value);
@@ -92,6 +93,6 @@ final class BlockStateRegistryTest extends TestCase
         $translator = new BlockNetworkTranslator(new BlockStateRegistry($network->states()), $network);
 
         $this->expectException(InvalidArgumentException::class);
-        $translator->fromNetwork(PHP_INT_MAX);
+        $translator->fromNetwork(BlockNetworkId::fromSigned(0x7fffffff));
     }
 }

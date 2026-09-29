@@ -32,6 +32,7 @@ use Bedriox\Protocol\Packet\CreativeItemCategory;
 use Bedriox\Protocol\Packet\CreativeItemEntry;
 use Bedriox\Protocol\Packet\CreativeItemGroup;
 use Bedriox\Protocol\Packet\InventoryItemStack as ProtocolInventoryItemStack;
+use Bedriox\Protocol\Value\BlockNetworkId;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Gameplay\Item\ItemType;
 use Bedriox\Server\Player\InventoryStack;
@@ -100,7 +101,7 @@ final class BedrockInventoryPacketProjector
             : $this->blocks->internalRegistry()->internalId($type->itemBlockState()));
         $blockRuntimeId = $itemBlockState === null
             ? 0
-            : $this->blocks->toNetwork($itemBlockState);
+            : $this->blocks->toNetwork($itemBlockState)->signed();
 
         return new ProtocolInventoryItemStack(
             $definition->networkRuntimeId(),
@@ -129,7 +130,9 @@ final class BedrockInventoryPacketProjector
         }
         $identifier = $this->items->definitionForNetworkRuntimeId($stack->runtimeId)->identifier();
         $type = $this->gameplayItems->type($identifier);
-        $placed = $stack->blockRuntimeId === 0 ? null : $this->blocks->fromNetwork($stack->blockRuntimeId);
+        $placed = $stack->blockRuntimeId === 0
+            ? null
+            : $this->blocks->fromNetwork(BlockNetworkId::fromSigned($stack->blockRuntimeId));
         if (!$this->isAdmittedBlockState($identifier, $type, $placed)) {
             throw new \InvalidArgumentException('Client item block runtime ID does not match the admitted item.');
         }
@@ -263,7 +266,7 @@ final class BedrockInventoryPacketProjector
             null,
             $item->blockState() === null
                 ? 0
-                : $this->blocks->toNetwork($this->blocks->internalRegistry()->internalId($item->blockState())),
+                : $this->blocks->toNetwork($this->blocks->internalRegistry()->internalId($item->blockState()))->signed(),
             ItemExtraDataCodec::encodeCreative($nbt),
         );
     }
@@ -279,7 +282,7 @@ final class BedrockInventoryPacketProjector
             null,
             $type->itemBlockState() === null
                 ? 0
-                : $this->blocks->toNetwork($this->blocks->internalRegistry()->internalId($type->itemBlockState())),
+                : $this->blocks->toNetwork($this->blocks->internalRegistry()->internalId($type->itemBlockState()))->signed(),
             ItemExtraDataCodec::encodeCreative(null),
         );
     }

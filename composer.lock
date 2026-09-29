@@ -12,7 +12,7 @@
             "dist": {
                 "type": "path",
                 "url": "../Data",
-                "reference": "7b4d556b1db3ddf4e9c1446ac435466d8cb24a40"
+                "reference": "c59af2c5260aecc565d6e160f3b10bb33af3e51b"
             },
             "require": {
                 "php": "^8.4"
@@ -60,7 +60,7 @@
             "dist": {
                 "type": "path",
                 "url": "../Protocol",
-                "reference": "a5ba0a5d141f515fb69e3a9658becebcc373343f"
+                "reference": "9602c14c246498f2470e2833dc63446d4fb4f17e"
             },
             "require": {
                 "ext-openssl": "*",
@@ -116,7 +116,7 @@
             "dist": {
                 "type": "path",
                 "url": "../RakNet",
-                "reference": "6fc5c7b48cc5f84aa9159e1eb20e76b966069fa6"
+                "reference": "eddc38670977c8f01cb46802293e4bd9fe9eb7d5"
             },
             "require": {
                 "ext-sockets": "*",

@@ -110,7 +110,7 @@ final class ChunkProjectionTransferCodec
             $chunkX = $reader->signedInt();
             $chunkZ = $reader->signedInt();
             self::decodeDecimal($reader);
-            $airRuntimeId = $blocks->toNetwork($states->internalId(self::decodeState($reader)));
+            $airRuntimeId = $blocks->toNetwork($states->internalId(self::decodeState($reader)))->signed();
 
             $sectionCount = $reader->byte();
             if ($sectionCount > Chunk::SECTION_COUNT) {
@@ -130,7 +130,7 @@ final class ChunkProjectionTransferCodec
                 }
                 $palette = [];
                 for ($paletteIndex = 0; $paletteIndex < $paletteCount; ++$paletteIndex) {
-                    $palette[] = $blocks->toNetwork($states->internalId(self::decodeState($reader)));
+                    $palette[] = $blocks->toNetwork($states->internalId(self::decodeState($reader)))->signed();
                 }
                 $bits = $reader->byte();
                 if ($bits !== PackedPaletteWords::bitsForPaletteSize($paletteCount)) {

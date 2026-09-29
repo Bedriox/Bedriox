@@ -3195,7 +3195,7 @@ final class BedrockPlayChannelTest extends TestCase
             64,
             0,
             1,
-            $translator->toNetwork($palette->grassBlock),
+            $translator->toNetwork($palette->grassBlock)->signed(),
             '',
         );
         self::assertTrue($channel->accept(new ConnectedPayloadEvent(

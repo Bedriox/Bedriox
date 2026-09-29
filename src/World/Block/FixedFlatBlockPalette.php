@@ -44,10 +44,10 @@ final readonly class FixedFlatBlockPalette
     public function toNetworkRuntimeIds(BlockNetworkTranslator $translator): array
     {
         return [
-            'air' => $translator->toNetwork($this->air),
-            'bedrock' => $translator->toNetwork($this->bedrock),
-            'dirt' => $translator->toNetwork($this->dirt),
-            'grass_block' => $translator->toNetwork($this->grassBlock),
+            'air' => $translator->toNetwork($this->air)->signed(),
+            'bedrock' => $translator->toNetwork($this->bedrock)->signed(),
+            'dirt' => $translator->toNetwork($this->dirt)->signed(),
+            'grass_block' => $translator->toNetwork($this->grassBlock)->signed(),
         ];
     }
 }

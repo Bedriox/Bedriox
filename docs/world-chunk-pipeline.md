@@ -48,7 +48,7 @@ After the ordered source boundary is empty, Bedriox removes source-world visibil
 
 ## Wire translation
 
-`BlockNetworkTranslator` maps each internal canonical state to the active Data network runtime ID. `BedrockChunkPacketSerializer` translates each unique section palette once and passes the storage's pre-packed words to Protocol to encode complete columns for the current contract, including section palettes, air sections, biome data, height maps, coordinates, and bounded block entities. Production workers prepare and compress the same byte-equivalent representation; the main-thread serializer remains the bounded fallback and the authority for small block-event projections.
+`BlockNetworkTranslator` maps each internal canonical state to the active Data network hash as a typed signed 32-bit value. Chunk palettes deliberately select its signed projection before passing the storage's pre-packed words to Protocol. `BedrockChunkPacketSerializer` translates each unique section palette once and encodes complete columns for the current contract, including section palettes, air sections, biome data, height maps, coordinates, and bounded block entities. Production workers prepare and compress the same byte-equivalent representation; the main-thread serializer remains the bounded fallback and the authority for small block-event projections.
 
 Biome palettes use Data's separate canonical `LevelChunk` runtime-ID registry. Definition-list ordering is never treated as a runtime ID, and every biome—including plains—uses the same bijective translation path in synchronous and worker serializers.
 

@@ -74,7 +74,7 @@ final class BedrockChunkPacketSerializer
             $highestSectionY = max($highestSectionY, $section->sectionY);
         }
 
-        $airRuntimeId = $this->blocks->toNetwork($chunk->airState());
+        $airRuntimeId = $this->blocks->toNetwork($chunk->airState())->signed();
         $sections = [];
         for ($sectionY = Chunk::MIN_SECTION_Y; $sectionY <= $highestSectionY; ++$sectionY) {
             $section = $chunk->section($sectionY);
@@ -86,7 +86,7 @@ final class BedrockChunkPacketSerializer
             $storage = $section->blockStorageLayer(0);
             $palette = [];
             foreach ($storage->palette() as $state) {
-                $palette[] = $this->blocks->toNetwork($state);
+                $palette[] = $this->blocks->toNetwork($state)->signed();
             }
             $sections[] = new ChunkSectionData($sectionY, [new PackedPalettedStorage(
                 $palette,
@@ -153,12 +153,12 @@ final class BedrockChunkPacketSerializer
         $localX = (($worldX % 16) + 16) % 16;
         $localZ = (($worldZ % 16) + 16) % 16;
 
-        return $this->blocks->toNetwork($chunk->blockStateAt($localX, $y, $localZ));
+        return $this->blocks->toNetwork($chunk->blockStateAt($localX, $y, $localZ))->signed();
     }
 
     public function networkRuntimeId(\Bedriox\Server\World\Block\InternalBlockStateId $state): int
     {
-        return $this->blocks->toNetwork($state);
+        return $this->blocks->toNetwork($state)->signed();
     }
 
     /** @param array<string, int|string> $properties */
@@ -166,6 +166,6 @@ final class BedrockChunkPacketSerializer
     {
         return $this->blocks->toNetwork($this->blocks->internalRegistry()->internalId(
             CanonicalBlockState::from($identifier, $properties),
-        ));
+        ))->signed();
     }
 }
