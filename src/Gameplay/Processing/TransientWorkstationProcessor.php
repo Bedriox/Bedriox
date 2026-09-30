@@ -23,6 +23,7 @@ namespace Bedriox\Server\Gameplay\Processing;
 use Bedriox\Api\Inventory\ContainerType;
 use Bedriox\Data\RecipeRegistry;
 use Bedriox\Server\Gameplay\Crafting\RecipeItemTagRegistry;
+use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\World\BlockEntity\ContainerItemStack;
 use InvalidArgumentException;
 
@@ -37,13 +38,13 @@ final readonly class TransientWorkstationProcessor
     private LoomProcessor $loom;
     private CartographyProcessor $cartography;
 
-    public function __construct(RecipeRegistry $recipes, RecipeItemTagRegistry $tags)
+    public function __construct(RecipeRegistry $recipes, RecipeItemTagRegistry $tags, ItemCatalog $items)
     {
         $this->stonecutter = new StonecutterProcessor($recipes);
         $this->smithing = new SmithingProcessor($recipes, $tags);
         $this->anvil = new AnvilProcessor();
         $this->grindstone = new GrindstoneProcessor();
-        $this->enchanting = new EnchantingProcessor();
+        $this->enchanting = new EnchantingProcessor($items);
         $this->loom = new LoomProcessor();
         $this->cartography = new CartographyProcessor();
     }

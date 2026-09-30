@@ -88,6 +88,12 @@ final class BlockBreakRules
             $seconds *= 5.0;
         }
         $progress = 1.0 / ($seconds * 20.0);
+        $tool = $heldItem?->tool;
+        if ($context->efficiencyLevel > 0 && $tool !== null && $tool->type === $block->preferredTool) {
+            $baseSpeed = max(1.0, $tool->miningEfficiency);
+            $enchantedSpeed = $baseSpeed + ($context->efficiencyLevel ** 2) + 1.0;
+            $progress *= $enchantedSpeed / $baseSpeed;
+        }
         if ($context->hasteLevel > 0) {
             $progress *= (1.0 + 0.2 * $context->hasteLevel) * (1.2 ** $context->hasteLevel);
         }

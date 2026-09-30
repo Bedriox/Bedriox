@@ -18,16 +18,12 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Server\Simulation\Event;
+namespace Bedriox\Api\Event\Player;
 
-use Bedriox\Server\Gameplay\Potion\PotionProjectile;
-
-final readonly class PotionProjectileSpawned implements WorldEvent
+enum PlayerFishState: string
 {
-    /** @param list<string> $recipientSessionIds */
-    public function __construct(public PotionProjectile $projectile, public array $recipientSessionIds) {}
-    public function recipients(): array
-    {
-        return $this->recipientSessionIds;
-    }
+    case CAST = 'cast';
+    case REEL = 'reel';
+    case CAUGHT_ITEM = 'caught_item';
+    case FAILED_ATTEMPT = 'failed_attempt';
 }

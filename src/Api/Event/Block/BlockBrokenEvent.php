@@ -22,6 +22,7 @@ namespace Bedriox\Api\Event\Block;
 
 use Bedriox\Api\Event\Event;
 use Bedriox\Api\Event\PostEvent;
+use Bedriox\Api\Inventory\ItemStack;
 use Bedriox\Api\Player\Player;
 use Bedriox\Api\World\Block;
 
@@ -30,5 +31,7 @@ final class BlockBrokenEvent extends Event implements PostEvent
     public function __construct(
         public readonly Player $player,
         public readonly Block $block,
+        /** @var list<ItemStack> */
+        public readonly array $drops = [],
     ) {}
 }

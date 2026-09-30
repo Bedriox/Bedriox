@@ -29,8 +29,11 @@ use Bedriox\Api\Entity\Entity as ApiEntity;
 use Bedriox\Api\Entity\EntityCombustionCause;
 use Bedriox\Api\Entity\EntityDamageCause;
 use Bedriox\Api\Entity\EntityInteractionType;
+use Bedriox\Api\Entity\KnockbackCause;
+use Bedriox\Api\Entity\KnockbackVector;
 use Bedriox\Api\Entity\LivingEntity as ApiLivingEntity;
 use Bedriox\Api\Entity\SpawnCause;
+use Bedriox\Api\Entity\Vector3;
 use Bedriox\Api\Event\Block\BlockBreakEvent;
 use Bedriox\Api\Event\Block\BlockBrokenEvent;
 use Bedriox\Api\Event\Block\BlockPlacedEvent;
@@ -41,6 +44,8 @@ use Bedriox\Api\Event\Block\BrewingFuelConsumedEvent;
 use Bedriox\Api\Event\Block\BrewingFuelConsumeEvent;
 use Bedriox\Api\Event\Block\ChestPairedEvent;
 use Bedriox\Api\Event\Block\ChestPairEvent;
+use Bedriox\Api\Event\Entity\ActorKnockbackEvent;
+use Bedriox\Api\Event\Entity\ActorKnockedBackEvent;
 use Bedriox\Api\Event\Entity\EntityCombustEvent;
 use Bedriox\Api\Event\Entity\EntityDamageByEntityEvent;
 use Bedriox\Api\Event\Entity\EntityDamageEvent;
@@ -60,6 +65,10 @@ use Bedriox\Api\Event\Entity\ExperienceOrbSpawnedEvent;
 use Bedriox\Api\Event\Entity\ExperienceOrbSpawnEvent;
 use Bedriox\Api\Event\Entity\PotionProjectileImpactedEvent;
 use Bedriox\Api\Event\Entity\PotionProjectileImpactEvent;
+use Bedriox\Api\Event\Entity\ProjectileImpactedEvent;
+use Bedriox\Api\Event\Entity\ProjectileImpactEvent;
+use Bedriox\Api\Event\Entity\ProjectileLaunchedEvent;
+use Bedriox\Api\Event\Entity\ProjectileLaunchEvent;
 use Bedriox\Api\Event\Event;
 use Bedriox\Api\Event\Inventory\InventoryChangedEvent;
 use Bedriox\Api\Event\Inventory\InventoryChangeEvent;
@@ -86,6 +95,9 @@ use Bedriox\Api\Event\Player\PlayerEquipmentChangedEvent;
 use Bedriox\Api\Event\Player\PlayerEquipmentChangeEvent;
 use Bedriox\Api\Event\Player\PlayerExperienceChangedEvent as ApiPlayerExperienceChangedEvent;
 use Bedriox\Api\Event\Player\PlayerExperienceChangeEvent;
+use Bedriox\Api\Event\Player\PlayerFishedEvent;
+use Bedriox\Api\Event\Player\PlayerFishEvent;
+use Bedriox\Api\Event\Player\PlayerFishState;
 use Bedriox\Api\Event\Player\PlayerFoodLevelChangedEvent;
 use Bedriox\Api\Event\Player\PlayerFoodLevelChangeEvent;
 use Bedriox\Api\Event\Player\PlayerGameModeChangedEvent;
@@ -94,6 +106,8 @@ use Bedriox\Api\Event\Player\PlayerItemBreakEvent;
 use Bedriox\Api\Event\Player\PlayerItemConsumedEvent;
 use Bedriox\Api\Event\Player\PlayerItemConsumeEvent;
 use Bedriox\Api\Event\Player\PlayerItemDamageEvent;
+use Bedriox\Api\Event\Player\PlayerItemMendedEvent;
+use Bedriox\Api\Event\Player\PlayerItemMendEvent;
 use Bedriox\Api\Event\Player\PlayerItemUseCancelledEvent;
 use Bedriox\Api\Event\Player\PlayerItemUsedEvent;
 use Bedriox\Api\Event\Player\PlayerItemUseEvent;
@@ -344,6 +358,27 @@ final readonly class PluginGameplayEventBridge
         $this->events->dispatch($event);
 
         return $event->isCancelled() ? null : $event;
+    }
+
+    public function knockback(
+        ApiPlayer|ApiLivingEntity $actor,
+        ApiPlayer|ApiEntity|null $source,
+        KnockbackCause $cause,
+        KnockbackVector $motion,
+    ): ?KnockbackVector {
+        $event = new ActorKnockbackEvent($actor, $source, $cause, $motion);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->motion();
+    }
+
+    public function knockedBack(
+        ApiPlayer|ApiLivingEntity $actor,
+        ApiPlayer|ApiEntity|null $source,
+        KnockbackCause $cause,
+        KnockbackVector $motion,
+    ): void {
+        $this->events->dispatch(new ActorKnockedBackEvent($actor, $source, $cause, $motion));
     }
 
     public function combust(
@@ -775,6 +810,43 @@ final readonly class PluginGameplayEventBridge
         ));
     }
 
+    public function itemMend(
+        Player $player,
+        InventoryStack $item,
+        EquipmentSlot $slot,
+        int $repairAmount,
+        int $experienceCost,
+    ): ?PlayerItemMendEvent {
+        $event = new PlayerItemMendEvent(
+            $this->playerView($player),
+            self::itemRequired($item),
+            $slot,
+            $repairAmount,
+            $experienceCost,
+        );
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event;
+    }
+
+    public function itemMended(
+        Player $player,
+        InventoryStack $previous,
+        InventoryStack $item,
+        EquipmentSlot $slot,
+        int $repairAmount,
+        int $experienceCost,
+    ): void {
+        $this->events->dispatch(new PlayerItemMendedEvent(
+            $this->playerView($player),
+            self::itemRequired($previous),
+            self::itemRequired($item),
+            $slot,
+            $repairAmount,
+            $experienceCost,
+        ));
+    }
+
     public function death(
         Player $player,
         DamageCause $cause,
@@ -889,17 +961,30 @@ final readonly class PluginGameplayEventBridge
         return !$event->isCancelled();
     }
 
-    public function allowBlockBreak(Player $player, BlockPosition $position, string $identifier): bool
+    /**
+     * @param list<ApiItemStack> $drops
+     * @return null|list<ApiItemStack>
+     */
+    public function blockBreak(Player $player, BlockPosition $position, string $identifier, array $drops): ?array
     {
-        $event = new BlockBreakEvent($this->playerView($player), self::block($position, $identifier));
+        $event = new BlockBreakEvent($this->playerView($player), self::block($position, $identifier), $drops);
         $this->events->dispatch($event);
 
-        return !$event->isCancelled();
+        return $event->isCancelled() ? null : $event->getDrops();
     }
 
-    public function blockBroken(Player $player, BlockPosition $position, string $identifier): void
-    {
-        $this->events->dispatch(new BlockBrokenEvent($this->playerView($player), self::block($position, $identifier)));
+    /** @param list<ApiItemStack> $drops */
+    public function blockBroken(
+        Player $player,
+        BlockPosition $position,
+        string $identifier,
+        array $drops = [],
+    ): void {
+        $this->events->dispatch(new BlockBrokenEvent(
+            $this->playerView($player),
+            self::block($position, $identifier),
+            $drops,
+        ));
     }
 
     public function allowBlockPlace(Player $player, BlockPosition $position, string $identifier): bool
@@ -1713,8 +1798,68 @@ final readonly class PluginGameplayEventBridge
         ));
     }
 
-    public function potionProjectileImpact(\Bedriox\Server\Gameplay\Potion\PotionProjectile $projectile): bool
-    {
+    public function projectileLaunch(
+        Player $shooter,
+        \Bedriox\Server\Gameplay\Projectile\Projectile $projectile,
+        string $identifier,
+    ): ?\Bedriox\Server\Gameplay\Projectile\Projectile {
+        $event = new ProjectileLaunchEvent(
+            $this->playerView($shooter),
+            $projectile->runtimeEntityId,
+            $identifier,
+            self::position($projectile->position),
+            new Vector3($projectile->motion->x, $projectile->motion->y, $projectile->motion->z),
+        );
+        $this->events->dispatch($event);
+        if ($event->isCancelled()) {
+            return null;
+        }
+        $motion = $event->motion();
+
+        return $projectile->withMotion(new \Bedriox\Server\Entity\EntityMotion(
+            $motion->x,
+            $motion->y,
+            $motion->z,
+        ));
+    }
+
+    public function projectileLaunched(
+        Player $shooter,
+        \Bedriox\Server\Gameplay\Projectile\Projectile $projectile,
+        string $identifier,
+    ): void {
+        $this->events->dispatch(new ProjectileLaunchedEvent(
+            $this->playerView($shooter),
+            $projectile->runtimeEntityId,
+            $identifier,
+            self::position($projectile->position),
+            new Vector3($projectile->motion->x, $projectile->motion->y, $projectile->motion->z),
+        ));
+    }
+
+    public function projectileImpact(
+        \Bedriox\Server\Gameplay\Projectile\Projectile $projectile,
+        ?Player $playerTarget = null,
+        ?\Bedriox\Server\Entity\AbstractLivingEntity $entityTarget = null,
+        ?BlockPosition $blockTarget = null,
+    ): bool {
+        $target = $playerTarget === null ? $entityTarget : $this->playerView($playerTarget);
+        $generic = new ProjectileImpactEvent(
+            $projectile->runtimeEntityId,
+            $projectile->ownerUuid,
+            $projectile->type->value,
+            self::position($projectile->position),
+            $target,
+            $blockTarget === null ? null : new ApiBlockPosition($blockTarget->x, $blockTarget->y, $blockTarget->z),
+        );
+        $this->events->dispatch($generic);
+        if ($generic->isCancelled()) {
+            return false;
+        }
+        if (!$projectile->type->isPotion()
+            && $projectile->type !== \Bedriox\Server\Gameplay\Projectile\ProjectileType::ARROW) {
+            return true;
+        }
         $event = new PotionProjectileImpactEvent(
             $projectile->runtimeEntityId,
             $projectile->ownerUuid,
@@ -1728,8 +1873,25 @@ final readonly class PluginGameplayEventBridge
         return !$event->isCancelled();
     }
 
-    public function potionProjectileImpacted(\Bedriox\Server\Gameplay\Potion\PotionProjectile $projectile): void
-    {
+    public function projectileImpacted(
+        \Bedriox\Server\Gameplay\Projectile\Projectile $projectile,
+        ?Player $playerTarget = null,
+        ?\Bedriox\Server\Entity\AbstractLivingEntity $entityTarget = null,
+        ?BlockPosition $blockTarget = null,
+    ): void {
+        $target = $playerTarget === null ? $entityTarget : $this->playerView($playerTarget);
+        $this->events->dispatch(new ProjectileImpactedEvent(
+            $projectile->runtimeEntityId,
+            $projectile->ownerUuid,
+            $projectile->type->value,
+            self::position($projectile->position),
+            $target,
+            $blockTarget === null ? null : new ApiBlockPosition($blockTarget->x, $blockTarget->y, $blockTarget->z),
+        ));
+        if (!$projectile->type->isPotion()
+            && $projectile->type !== \Bedriox\Server\Gameplay\Projectile\ProjectileType::ARROW) {
+            return;
+        }
         $this->events->dispatch(new PotionProjectileImpactedEvent(
             $projectile->runtimeEntityId,
             $projectile->ownerUuid,
@@ -1737,6 +1899,41 @@ final readonly class PluginGameplayEventBridge
             self::position($projectile->position),
             $projectile->lingering,
             $projectile->tippedArrow,
+        ));
+    }
+
+    public function fish(
+        Player $player,
+        int $hookRuntimeEntityId,
+        PlayerFishState $state,
+        ?InventoryStack $caughtItem = null,
+        int $experience = 0,
+    ): ?PlayerFishEvent {
+        $event = new PlayerFishEvent(
+            $this->playerView($player),
+            $hookRuntimeEntityId,
+            $state,
+            self::item($caughtItem),
+            $experience,
+        );
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event;
+    }
+
+    public function fished(
+        Player $player,
+        int $hookRuntimeEntityId,
+        PlayerFishState $state,
+        ?InventoryStack $caughtItem = null,
+        int $experience = 0,
+    ): void {
+        $this->events->dispatch(new PlayerFishedEvent(
+            $this->playerView($player),
+            $hookRuntimeEntityId,
+            $state,
+            self::item($caughtItem),
+            $experience,
         ));
     }
 

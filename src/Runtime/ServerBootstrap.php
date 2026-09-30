@@ -206,6 +206,7 @@ final class ServerBootstrap
         $workstations = new TransientWorkstationProcessor(
             $data->recipeRegistry(),
             RecipeItemTagRegistry::vanilla($itemCatalog),
+            $itemCatalog,
         );
         $flatPalette = FixedFlatBlockPalette::fromRegistry($internalStates);
         $defaultPalette = DefaultBlockPalette::fromRegistry($internalStates);

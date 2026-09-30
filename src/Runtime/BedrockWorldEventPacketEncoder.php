@@ -68,6 +68,7 @@ use Bedriox\Protocol\Packet\EmoteFlag;
 use Bedriox\Protocol\Packet\EmotePacket;
 use Bedriox\Protocol\Packet\EnchantData;
 use Bedriox\Protocol\Packet\EnchantOption as ProtocolEnchantOption;
+use Bedriox\Protocol\Packet\FishingHookActorMetadata;
 use Bedriox\Protocol\Packet\FullContainerName;
 use Bedriox\Protocol\Packet\FurnaceProperty;
 use Bedriox\Protocol\Packet\InventoryContainerId;
@@ -126,6 +127,7 @@ use Bedriox\Protocol\Value\BuildPlatform;
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\Server\Gameplay\Enchanting\VanillaEnchantmentIdMap;
 use Bedriox\Server\Gameplay\Potion\PotionColorMixer;
+use Bedriox\Server\Gameplay\Projectile\ProjectileType;
 use Bedriox\Server\Player\InventoryContainer;
 use Bedriox\Server\Player\InventoryResponseMode;
 use Bedriox\Server\Simulation\Event\AreaEffectCloudRemoved;
@@ -191,10 +193,10 @@ use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
 use Bedriox\Server\Simulation\Event\PlayerMotionChanged;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
 use Bedriox\Server\Simulation\Event\PlayerRespawned;
-use Bedriox\Server\Simulation\Event\PotionProjectileImpacted;
-use Bedriox\Server\Simulation\Event\PotionProjectileMoved;
-use Bedriox\Server\Simulation\Event\PotionProjectileRemoved;
-use Bedriox\Server\Simulation\Event\PotionProjectileSpawned;
+use Bedriox\Server\Simulation\Event\PotionSplashImpacted;
+use Bedriox\Server\Simulation\Event\ProjectileMoved;
+use Bedriox\Server\Simulation\Event\ProjectileRemoved;
+use Bedriox\Server\Simulation\Event\ProjectileSpawned;
 use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
 use Bedriox\Server\Simulation\Event\WeatherChanged;
 use Bedriox\Server\Simulation\Event\WorldEvent;
@@ -287,10 +289,10 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
                 new PlayerEnchantOptionsPacket($this->enchantingOptions($event)),
             )],
             $event instanceof PlayerEnvironmentChanged => $this->playerEnvironmentChanged($event),
-            $event instanceof PotionProjectileSpawned => $this->potionProjectileSpawned($event),
-            $event instanceof PotionProjectileMoved => $this->potionProjectileMoved($event),
-            $event instanceof PotionProjectileImpacted => $this->potionProjectileImpacted($event),
-            $event instanceof PotionProjectileRemoved => array_map(
+            $event instanceof ProjectileSpawned => $this->projectileSpawned($event),
+            $event instanceof ProjectileMoved => $this->projectileMoved($event),
+            $event instanceof PotionSplashImpacted => $this->projectileImpacted($event),
+            $event instanceof ProjectileRemoved => array_map(
                 static fn(string $recipient): DirectedPacket => new DirectedPacket(
                     $recipient,
                     new RemoveActorPacket($event->runtimeEntityId),
@@ -1484,29 +1486,37 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
     }
 
     /** @return list<DirectedPacket> */
-    private function potionProjectileSpawned(PotionProjectileSpawned $event): array
+    private function projectileSpawned(ProjectileSpawned $event): array
     {
         $projectile = $event->projectile;
+        [$pitch, $yaw] = self::projectileRotation($projectile->motion);
         $packet = new AddActorPacket(
             $projectile->uniqueEntityId,
             UnsignedLong::fromInt($projectile->runtimeEntityId),
-            $projectile->tippedArrow ? 'minecraft:arrow' : 'minecraft:splash_potion',
+            $projectile->type->value,
             $projectile->position->x,
             $projectile->position->y,
             $projectile->position->z,
             $projectile->motion->x,
             $projectile->motion->y,
             $projectile->motion->z,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            metadata: $projectile->tippedArrow
-                ? TippedArrowActorMetadata::baseline($projectile->potionType->value)
-                : PotionProjectileActorMetadata::baseline(
+            $pitch,
+            $yaw,
+            $yaw,
+            $yaw,
+            metadata: match ($projectile->type) {
+                ProjectileType::ARROW => $projectile->tippedArrow
+                    ? TippedArrowActorMetadata::baseline($projectile->potionType->value)
+                    : [],
+                ProjectileType::SPLASH_POTION, ProjectileType::LINGERING_POTION => PotionProjectileActorMetadata::baseline(
                     $projectile->potionType->value,
                     $projectile->lingering,
                 ),
+                ProjectileType::FISHING_HOOK => FishingHookActorMetadata::baseline(
+                    $projectile->ownerRuntimeEntityId,
+                ),
+                default => [],
+            },
         );
 
         return array_map(
@@ -1516,17 +1526,18 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
     }
 
     /** @return list<DirectedPacket> */
-    private function potionProjectileMoved(PotionProjectileMoved $event): array
+    private function projectileMoved(ProjectileMoved $event): array
     {
         $projectile = $event->projectile;
+        [$pitch, $yaw] = self::projectileRotation($projectile->motion);
         $packet = new MoveActorAbsolutePacket(
             UnsignedLong::fromInt($projectile->runtimeEntityId),
             $projectile->position->x,
             $projectile->position->y,
             $projectile->position->z,
-            0.0,
-            0.0,
-            0.0,
+            $pitch,
+            $yaw,
+            $yaw,
         );
 
         return array_map(
@@ -1535,8 +1546,22 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
         );
     }
 
+    /** @return array{float, float} Pitch and yaw in Bedrock degrees. */
+    private static function projectileRotation(\Bedriox\Server\Entity\EntityMotion $motion): array
+    {
+        $horizontal = hypot($motion->x, $motion->z);
+        if ($horizontal <= 0.000_001 && abs($motion->y) <= 0.000_001) {
+            return [0.0, 0.0];
+        }
+
+        return [
+            rad2deg(atan2(-$motion->y, $horizontal)),
+            rad2deg(atan2(-$motion->x, $motion->z)),
+        ];
+    }
+
     /** @return list<DirectedPacket> */
-    private function potionProjectileImpacted(PotionProjectileImpacted $event): array
+    private function projectileImpacted(PotionSplashImpacted $event): array
     {
         $position = new LevelEventPosition($event->position->x, $event->position->y, $event->position->z);
         $argb = PotionColorMixer::forPotion($event->potionType);

@@ -18,35 +18,43 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Server\Gameplay\Potion;
+namespace Bedriox\Server\Gameplay\Projectile;
 
+use Bedriox\Api\Inventory\ItemNbt;
 use Bedriox\Api\Potion\PotionType;
 use Bedriox\Server\Entity\EntityMotion;
+use Bedriox\Server\Gameplay\Potion\AreaEffectCloud;
+use Bedriox\Server\Gameplay\Potion\AreaEffectCloudRegistry;
+use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Simulation\Position;
 use InvalidArgumentException;
 use JsonException;
 
-/** Bounded versioned persistence for transient potion actors owned by one world. */
-final class PotionEntityPersistenceCodec
+/** Bounded versioned persistence for transient projectile and potion-cloud actors owned by one world. */
+final class ProjectilePersistenceCodec
 {
     public const int MAXIMUM_BYTES = 1_048_576;
     private const int VERSION = 1;
 
     /**
-     * @param list<PotionProjectile> $projectiles
+     * @param list<Projectile> $projectiles
      * @param list<AreaEffectCloud> $clouds
      */
     public function encode(string $worldId, array $projectiles, array $clouds): string
     {
         if ($worldId === '' || strlen($worldId) > 128
-            || count($projectiles) > PotionProjectileRegistry::MAXIMUM_CAPACITY
+            || count($projectiles) > ProjectileRegistry::MAXIMUM_CAPACITY
             || count($clouds) > AreaEffectCloudRegistry::MAXIMUM_CAPACITY) {
             throw new InvalidArgumentException('Potion entity snapshot exceeds supported bounds.');
         }
+        $persistedProjectiles = array_values(array_filter(
+            $projectiles,
+            static fn(Projectile $projectile): bool => $projectile->type !== ProjectileType::FISHING_HOOK,
+        ));
         $document = [
             'version' => self::VERSION,
             'world' => $worldId,
-            'projectiles' => array_map(static fn(PotionProjectile $entity): array => [
+            'projectiles' => array_map(static fn(Projectile $entity): array => [
                 'unique' => $entity->uniqueEntityId,
                 'runtime' => $entity->runtimeEntityId,
                 'owner' => $entity->ownerUuid,
@@ -57,7 +65,22 @@ final class PotionEntityPersistenceCodec
                 'age' => $entity->ageTicks,
                 'arrow' => $entity->tippedArrow,
                 'pickup' => $entity->pickupAllowed,
-            ], $projectiles),
+                'damageBonus' => $entity->damageBonus,
+                'knockbackStrength' => $entity->knockbackStrength,
+                'fireTicks' => $entity->fireTicks,
+                'type' => $entity->type->value,
+                'piercing' => $entity->piercingRemaining,
+                'hitActors' => $entity->hitActorKeys,
+                'loyalty' => $entity->loyaltyLevel,
+                'channeling' => $entity->channeling,
+                'carriedItem' => self::encodedStack($entity->carriedItem),
+                'ownerRuntime' => $entity->ownerRuntimeEntityId,
+                'fishingBobbing' => $entity->fishingBobbing,
+                'fishingWait' => $entity->fishingWaitTicks,
+                'fishingBite' => $entity->fishingBiteTicks,
+                'fishingLuck' => $entity->fishingLuckLevel,
+                'fishingLure' => $entity->fishingLureLevel,
+            ], $persistedProjectiles),
             'clouds' => array_map(static fn(AreaEffectCloud $entity): array => [
                 'unique' => $entity->uniqueEntityId,
                 'runtime' => $entity->runtimeEntityId,
@@ -82,7 +105,7 @@ final class PotionEntityPersistenceCodec
         return $encoded;
     }
 
-    /** @return array{list<PotionProjectile>, list<AreaEffectCloud>} */
+    /** @return array{list<Projectile>, list<AreaEffectCloud>} */
     public function decode(string $worldId, string $payload): array
     {
         if ($payload === '' || strlen($payload) > self::MAXIMUM_BYTES) {
@@ -98,16 +121,16 @@ final class PotionEntityPersistenceCodec
             || !isset($document['projectiles'], $document['clouds'])
             || !is_array($document['projectiles']) || !array_is_list($document['projectiles'])
             || !is_array($document['clouds']) || !array_is_list($document['clouds'])
-            || count($document['projectiles']) > PotionProjectileRegistry::MAXIMUM_CAPACITY
+            || count($document['projectiles']) > ProjectileRegistry::MAXIMUM_CAPACITY
             || count($document['clouds']) > AreaEffectCloudRegistry::MAXIMUM_CAPACITY) {
             throw new InvalidArgumentException('Potion entity snapshot contract is invalid.');
         }
         $projectiles = [];
         foreach ($document['projectiles'] as $record) {
             if (!is_array($record)) {
-                throw new InvalidArgumentException('Potion projectile record is invalid.');
+                throw new InvalidArgumentException('Projectile record is invalid.');
             }
-            $projectiles[] = new PotionProjectile(
+            $projectiles[] = new Projectile(
                 self::integer($record, 'unique'),
                 self::integer($record, 'runtime'),
                 self::string($record, 'owner'),
@@ -118,6 +141,24 @@ final class PotionEntityPersistenceCodec
                 self::integer($record, 'age'),
                 self::boolean($record, 'arrow'),
                 self::boolean($record, 'pickup'),
+                self::optionalNumber($record, 'damageBonus', 0.0),
+                self::optionalNumber($record, 'knockbackStrength', 0.4),
+                self::optionalInteger($record, 'fireTicks', 0),
+                self::optionalProjectileType(
+                    $record,
+                    self::boolean($record, 'arrow') ? ProjectileType::ARROW : ProjectileType::SPLASH_POTION,
+                ),
+                self::optionalInteger($record, 'piercing', 0),
+                self::optionalStringList($record, 'hitActors'),
+                self::optionalInteger($record, 'loyalty', 0),
+                self::optionalBoolean($record, 'channeling', false),
+                self::optionalStack($record, 'carriedItem'),
+                self::optionalInteger($record, 'ownerRuntime', 0),
+                self::optionalBoolean($record, 'fishingBobbing', false),
+                self::optionalInteger($record, 'fishingWait', 0),
+                self::optionalInteger($record, 'fishingBite', 0),
+                self::optionalInteger($record, 'fishingLuck', 0),
+                self::optionalInteger($record, 'fishingLure', 0),
             );
         }
         $clouds = [];
@@ -220,6 +261,102 @@ final class PotionEntityPersistenceCodec
     private static function number(array $record, string $key): float
     {
         return self::numeric($record[$key] ?? null);
+    }
+
+    /** @param array<mixed> $record */
+    private static function optionalNumber(array $record, string $key, float $default): float
+    {
+        return array_key_exists($key, $record) ? self::number($record, $key) : $default;
+    }
+
+    /** @param array<mixed> $record */
+    private static function optionalInteger(array $record, string $key, int $default): int
+    {
+        return array_key_exists($key, $record) ? self::integer($record, $key) : $default;
+    }
+
+    /** @param array<mixed> $record */
+    private static function optionalBoolean(array $record, string $key, bool $default): bool
+    {
+        return array_key_exists($key, $record) ? self::boolean($record, $key) : $default;
+    }
+
+    /** @param array<mixed> $record */
+    private static function optionalProjectileType(array $record, ProjectileType $default): ProjectileType
+    {
+        if (!array_key_exists('type', $record)) {
+            return $default;
+        }
+
+        return ProjectileType::tryFrom(self::string($record, 'type'))
+            ?? throw new InvalidArgumentException('Projectile entity type is invalid.');
+    }
+
+    /**
+     * @param array<mixed> $record
+     * @return list<string>
+     */
+    private static function optionalStringList(array $record, string $key): array
+    {
+        if (!array_key_exists($key, $record)) {
+            return [];
+        }
+        $value = $record[$key];
+        if (!is_array($value) || !array_is_list($value)) {
+            throw new InvalidArgumentException('Projectile string list is invalid.');
+        }
+        $validated = [];
+        foreach ($value as $entry) {
+            if (!is_string($entry)) {
+                throw new InvalidArgumentException('Projectile string list entry is invalid.');
+            }
+            $validated[] = $entry;
+        }
+
+        return $validated;
+    }
+
+    /** @return array{identifier: string, count: int, networkId: int, damage: int, nbt: string, aux: int}|null */
+    private static function encodedStack(?InventoryStack $stack): ?array
+    {
+        if ($stack === null) {
+            return null;
+        }
+
+        return [
+            'identifier' => $stack->identifier,
+            'count' => $stack->count,
+            'networkId' => $stack->stackNetworkId,
+            'damage' => $stack->damage,
+            'nbt' => base64_encode($stack->nbt?->toBinary() ?? ''),
+            'aux' => $stack->auxValue,
+        ];
+    }
+
+    /** @param array<mixed> $record */
+    private static function optionalStack(array $record, string $key): ?InventoryStack
+    {
+        $value = $record[$key] ?? null;
+        if ($value === null) {
+            return null;
+        }
+        if (!is_array($value)) {
+            throw new InvalidArgumentException('Projectile carried item is invalid.');
+        }
+        $nbt = self::string($value, 'nbt');
+        $decodedNbt = base64_decode($nbt, true);
+        if ($decodedNbt === false) {
+            throw new InvalidArgumentException('Projectile carried item NBT is invalid.');
+        }
+
+        return new InventoryStack(
+            self::string($value, 'identifier'),
+            self::integer($value, 'count'),
+            self::integer($value, 'networkId'),
+            damage: self::integer($value, 'damage'),
+            nbt: $decodedNbt === '' ? null : ItemNbt::fromBinary($decodedNbt),
+            auxValue: self::integer($value, 'aux'),
+        );
     }
 
     private static function numeric(mixed $value): float

@@ -140,6 +140,21 @@ final class ItemBehaviorRegistry
             1_200,
             kind: \Bedriox\Api\Inventory\ItemUseKind::CHARGE,
         );
+        $behaviors[] = new ItemUseBehavior(
+            'minecraft:crossbow',
+            25,
+            kind: \Bedriox\Api\Inventory\ItemUseKind::CHARGE,
+        );
+        $behaviors[] = new ItemUseBehavior(
+            'minecraft:trident',
+            1_200,
+            kind: \Bedriox\Api\Inventory\ItemUseKind::CHARGE,
+        );
+        $behaviors[] = new ItemUseBehavior(
+            'minecraft:fishing_rod',
+            0,
+            kind: \Bedriox\Api\Inventory\ItemUseKind::INSTANT,
+        );
 
         return new self($behaviors);
     }

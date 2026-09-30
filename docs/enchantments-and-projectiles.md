@@ -1,0 +1,13 @@
+# Enchantments and projectiles
+
+Bedriox resolves enchantments from canonical names such as `minecraft:sharpness`; Bedrock numeric IDs are confined to item-NBT translation. The central registry owns maximum levels, weights, enchanting costs, compatible equipment categories, conflicts, treasure and curse flags, and table discoverability. Enchanting-table offers, anvil combination, item serialization, and gameplay effects consume the same definitions.
+
+Authoritative gameplay applies tool damage bonuses, target-category bonuses, armor protection, Feather Falling, Fire Protection, Respiration, Aqua Affinity, Efficiency, Silk Touch, Fortune, Unbreaking, Mending, Looting, Thorns, Depth Strider, Soul Speed, Swift Sneak, Fire Aspect, Knockback, mace Density, Breach and Wind Burst, and bow Power, Punch, Flame and Infinity. Enchantments tied to a weapon or world system are activated through that system rather than through packet-specific conditionals.
+
+Bow and crossbow use starts and releases are accepted as intent. The server owns charge time, ammunition selection and consumption, durability, projectile velocity, damage, knockback, fire, pickup policy, tipped-arrow effects, and collision. Crossbows support Quick Charge and Multishot; the projectile registry keeps motion and enchantment-derived impact state immutable between ticks. Client-reported item state never chooses the projectile result.
+
+Plugins can observe or cancel `ProjectileLaunchEvent`, replace its bounded motion, and observe `ProjectileLaunchedEvent` after admission. `ProjectileImpactEvent` exposes the resolved player, entity, or block target before effects commit, while `ProjectileImpactedEvent` reports the committed impact. Existing potion-specific impact events remain available for potion type, lingering state, and tipped-arrow details.
+
+`ActorKnockbackEvent` owns the single pre-commit motion vector for melee and projectile knockback. Cancelling it cancels motion, not accepted damage. `ActorKnockedBackEvent` observes the committed result. `PlayerItemMendEvent` may cancel or adjust a bounded Mending repair and experience cost; `PlayerItemMendedEvent` reports the final item. `BlockBreakEvent` exposes mutable authoritative drops, including Silk Touch and Fortune results, before block mutation, and `BlockBrokenEvent` includes the committed drop list.
+
+Projectile, combat, mining, durability, and drop calculations remain in simulation code. Packet encoders only project accepted state. New gameplay must therefore add semantic definitions and events first, then teach the active protocol adapter how to display the result without moving authority into networking code.

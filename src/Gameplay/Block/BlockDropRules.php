@@ -34,9 +34,13 @@ final class BlockDropRules
         ?ItemType $heldItem,
         DropRandom $random,
         bool $silkTouch = false,
+        int $fortuneLevel = 0,
     ): array {
         if (!BlockBreakRules::canHarvest($block, $heldItem)) {
             return [];
+        }
+        if ($silkTouch && $block->dropKind !== BlockDropKind::None) {
+            return [new BlockDrop($block->itemIdentifier() ?? $block->identifier(), 1)];
         }
 
         return match ($block->dropKind) {
@@ -46,22 +50,47 @@ final class BlockDropRules
             BlockDropKind::Cobblestone => [new BlockDrop('minecraft:cobblestone', 1)],
             BlockDropKind::CobbledDeepslate => [new BlockDrop('minecraft:cobbled_deepslate', 1)],
             BlockDropKind::Gravel => [new BlockDrop(
-                $silkTouch || $random->integer(1, 10) !== 1 ? 'minecraft:gravel' : 'minecraft:flint',
+                $random->integer(1, max(1, 10 - (3 * min(3, $fortuneLevel)))) !== 1
+                    ? 'minecraft:gravel'
+                    : 'minecraft:flint',
                 1,
             )],
-            BlockDropKind::Coal => [new BlockDrop('minecraft:coal', 1)],
-            BlockDropKind::RawCopper => [new BlockDrop('minecraft:raw_copper', $random->integer(2, 5))],
-            BlockDropKind::RawIron => [new BlockDrop('minecraft:raw_iron', 1)],
-            BlockDropKind::RawGold => [new BlockDrop('minecraft:raw_gold', 1)],
-            BlockDropKind::Redstone => [new BlockDrop('minecraft:redstone', $random->integer(4, 5))],
-            BlockDropKind::Diamond => [new BlockDrop('minecraft:diamond', 1)],
+            BlockDropKind::Coal => [new BlockDrop('minecraft:coal', self::fortuneCount(1, $fortuneLevel, $random))],
+            BlockDropKind::RawCopper => [new BlockDrop(
+                'minecraft:raw_copper',
+                self::fortuneCount($random->integer(2, 5), $fortuneLevel, $random),
+            )],
+            BlockDropKind::RawIron => [new BlockDrop('minecraft:raw_iron', self::fortuneCount(1, $fortuneLevel, $random))],
+            BlockDropKind::RawGold => [new BlockDrop('minecraft:raw_gold', self::fortuneCount(1, $fortuneLevel, $random))],
+            BlockDropKind::Redstone => [new BlockDrop(
+                'minecraft:redstone',
+                self::redstoneCount($fortuneLevel, $random),
+            )],
+            BlockDropKind::Diamond => [new BlockDrop('minecraft:diamond', self::fortuneCount(1, $fortuneLevel, $random))],
             BlockDropKind::ClayBalls => [new BlockDrop('minecraft:clay_ball', 4)],
             BlockDropKind::Snowballs => [new BlockDrop('minecraft:snowball', 4)],
-            BlockDropKind::Ice => $silkTouch ? [new BlockDrop('minecraft:ice', 1)] : [],
+            BlockDropKind::Ice => [],
             BlockDropKind::OakLeaves => self::leaves($block, $heldItem, $random, 'minecraft:oak_sapling', true),
             BlockDropKind::BirchLeaves => self::leaves($block, $heldItem, $random, 'minecraft:birch_sapling', false),
             BlockDropKind::SpruceLeaves => self::leaves($block, $heldItem, $random, 'minecraft:spruce_sapling', false),
         };
+    }
+
+    private static function fortuneCount(int $base, int $level, DropRandom $random): int
+    {
+        if ($level <= 0) {
+            return $base;
+        }
+        $bonus = $random->integer(0, $level + 1) - 1;
+
+        return $base * (max(0, $bonus) + 1);
+    }
+
+    private static function redstoneCount(int $level, DropRandom $random): int
+    {
+        $base = $random->integer(4, 5);
+
+        return $level <= 0 ? $base : min(8, $base + $random->integer(0, $level));
     }
 
     /** @return list<BlockDrop> */

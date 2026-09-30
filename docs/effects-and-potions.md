@@ -51,7 +51,7 @@ Pre-event cancellation leaves fuel, ingredients, bottles, and progress consisten
 
 ## Runtime projection
 
-`BedrockEffectTranslator` owns semantic-to-wire effect mapping. Player and living-actor effect changes become typed mob-effect packets, and active player effects are re-synchronized after admission when required. `BedrockWorldEventPacketEncoder` projects potion projectiles, clouds, and particles without allowing simulation code to write packet IDs or raw metadata integers.
+`BedrockEffectTranslator` owns semantic-to-wire effect mapping. Player and living-actor effect changes become typed mob-effect packets, and active player effects are re-synchronized after admission when required. `BedrockWorldEventPacketEncoder` projects projectile actors, potion clouds, and particles without allowing simulation code to write packet IDs or raw metadata integers.
 
 Brewing windows use the ordinary authoritative inventory request path plus typed container-property updates for fuel and progress. Crafting data includes the Data-owned potion and container mixes so the client can present the same transition graph, while the server still validates and commits every result.
 

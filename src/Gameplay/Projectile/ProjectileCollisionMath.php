@@ -18,7 +18,7 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Server\Gameplay\Potion;
+namespace Bedriox\Server\Gameplay\Projectile;
 
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\Collision\AxisAlignedBox;

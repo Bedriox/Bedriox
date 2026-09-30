@@ -70,7 +70,7 @@ use Bedriox\Server\Entity\Spawn\EntitySpawnRequest;
 use Bedriox\Server\Gameplay\Crafting\CraftingCatalog;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Gameplay\Potion\AreaEffectCloud;
-use Bedriox\Server\Gameplay\Potion\PotionProjectile;
+use Bedriox\Server\Gameplay\Projectile\Projectile;
 use Bedriox\Server\Observability\CrashContextPublisher;
 use Bedriox\Server\Observability\CrashPlayer;
 use Bedriox\Server\Observability\Memory\GarbageCollectionReport;
@@ -126,10 +126,10 @@ use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
 use Bedriox\Server\Simulation\Event\PlayerMotionChanged;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
 use Bedriox\Server\Simulation\Event\PlayerRespawned;
-use Bedriox\Server\Simulation\Event\PotionProjectileImpacted;
-use Bedriox\Server\Simulation\Event\PotionProjectileMoved;
-use Bedriox\Server\Simulation\Event\PotionProjectileRemoved;
-use Bedriox\Server\Simulation\Event\PotionProjectileSpawned;
+use Bedriox\Server\Simulation\Event\PotionSplashImpacted;
+use Bedriox\Server\Simulation\Event\ProjectileMoved;
+use Bedriox\Server\Simulation\Event\ProjectileRemoved;
+use Bedriox\Server\Simulation\Event\ProjectileSpawned;
 use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
 use Bedriox\Server\Simulation\Event\WorldEvent;
 use Bedriox\Server\Simulation\FixedRateWorldLoop;
@@ -271,11 +271,11 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     /** @var array<string, array<int, array<string, true>>> */
     private array $entityActorViewers = [];
 
-    /** @var array<string, array<int, PotionProjectile>> */
-    private array $potionProjectileActors = [];
+    /** @var array<string, array<int, Projectile>> */
+    private array $projectileActors = [];
 
     /** @var array<string, array<int, array<string, true>>> */
-    private array $potionProjectileViewers = [];
+    private array $projectileViewers = [];
 
     /** @var array<string, array<int, AreaEffectCloud>> */
     private array $areaEffectCloudActors = [];
@@ -691,9 +691,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     $event instanceof EntityActorDamaged,
                     $event instanceof EntityActorDied,
                     $event instanceof EntityActorRemoved => $this->reconcileEntityActorEvent($event),
-                    $event instanceof PotionProjectileSpawned,
-                    $event instanceof PotionProjectileMoved,
-                    $event instanceof PotionProjectileRemoved => $this->reconcilePotionProjectileEvent($event),
+                    $event instanceof ProjectileSpawned,
+                    $event instanceof ProjectileMoved,
+                    $event instanceof ProjectileRemoved => $this->reconcileProjectileEvent($event),
                     $event instanceof AreaEffectCloudSpawned,
                     $event instanceof AreaEffectCloudUpdated,
                     $event instanceof AreaEffectCloudRemoved => $this->reconcileAreaEffectCloudEvent($event),
@@ -1246,8 +1246,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                             || $event instanceof BlockPlaced) {
                             $event = $this->filterBlockRecipients($event);
                         }
-                        if ($event instanceof PotionProjectileImpacted) {
-                            $event = new PotionProjectileImpacted(
+                        if ($event instanceof PotionSplashImpacted) {
+                            $event = new PotionSplashImpacted(
                                 $event->position,
                                 $event->potionType,
                                 array_values(array_filter(
@@ -1281,10 +1281,10 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                             }
                             continue;
                         }
-                        if ($event instanceof PotionProjectileSpawned || $event instanceof PotionProjectileMoved
-                            || $event instanceof PotionProjectileRemoved) {
-                            foreach ($this->reconcilePotionProjectileEvent($event) as $potionEvent) {
-                                if (!$this->dispatchWorldEvent($potionEvent, $directedCount)) {
+                        if ($event instanceof ProjectileSpawned || $event instanceof ProjectileMoved
+                            || $event instanceof ProjectileRemoved) {
+                            foreach ($this->reconcileProjectileEvent($event) as $projectileEvent) {
+                                if (!$this->dispatchWorldEvent($projectileEvent, $directedCount)) {
                                     return false;
                                 }
                             }
@@ -1402,7 +1402,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                                         return false;
                                     }
                                 }
-                                foreach ($this->reconcilePotionActorsForViewer(
+                                foreach ($this->reconcileTransientActorsForViewer(
                                     $event->player->sessionId,
                                     $changedChunkSet,
                                 ) as $potionVisibilityEvent) {
@@ -1472,7 +1472,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                                         return false;
                                     }
                                 }
-                                foreach ($this->reconcilePotionActorsForViewer(
+                                foreach ($this->reconcileTransientActorsForViewer(
                                     $event->authoritativePlayer->sessionId,
                                     $changedChunkSet,
                                 ) as $potionVisibilityEvent) {
@@ -2917,10 +2917,10 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 $this->entityActorViewers[$worldId][$runtimeId] = $viewers;
             }
         }
-        foreach ($this->potionProjectileViewers as $worldId => $actors) {
+        foreach ($this->projectileViewers as $worldId => $actors) {
             foreach ($actors as $runtimeId => $viewers) {
                 unset($viewers[$session->id]);
-                $this->potionProjectileViewers[$worldId][$runtimeId] = $viewers;
+                $this->projectileViewers[$worldId][$runtimeId] = $viewers;
             }
         }
         foreach ($this->areaEffectCloudViewers as $worldId => $actors) {
@@ -3061,8 +3061,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             || $event instanceof EntityActorSpawned || $event instanceof EntityActorMoved
             || $event instanceof EntityActorDamaged || $event instanceof EntityActorDied
             || $event instanceof EntityActorRemoved || $event instanceof \Bedriox\Server\Simulation\Event\EntityActorEffectChanged
-            || $event instanceof PotionProjectileSpawned || $event instanceof PotionProjectileMoved
-            || $event instanceof PotionProjectileImpacted || $event instanceof PotionProjectileRemoved
+            || $event instanceof ProjectileSpawned || $event instanceof ProjectileMoved
+            || $event instanceof PotionSplashImpacted || $event instanceof ProjectileRemoved
             || $event instanceof AreaEffectCloudSpawned
             || $event instanceof AreaEffectCloudUpdated || $event instanceof AreaEffectCloudRemoved) {
             return true;
@@ -3326,25 +3326,25 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         return $events;
     }
 
-    /** @return list<PotionProjectileSpawned|PotionProjectileMoved|PotionProjectileRemoved> */
-    private function reconcilePotionProjectileEvent(
-        PotionProjectileSpawned|PotionProjectileMoved|PotionProjectileRemoved $event,
+    /** @return list<ProjectileSpawned|ProjectileMoved|ProjectileRemoved> */
+    private function reconcileProjectileEvent(
+        ProjectileSpawned|ProjectileMoved|ProjectileRemoved $event,
     ): array {
         $worldId = $this->processingWorldId ?? 'world';
-        if ($event instanceof PotionProjectileRemoved) {
-            $viewers = array_keys($this->potionProjectileViewers[$worldId][$event->runtimeEntityId] ?? []);
+        if ($event instanceof ProjectileRemoved) {
+            $viewers = array_keys($this->projectileViewers[$worldId][$event->runtimeEntityId] ?? []);
             unset(
-                $this->potionProjectileActors[$worldId][$event->runtimeEntityId],
-                $this->potionProjectileViewers[$worldId][$event->runtimeEntityId],
+                $this->projectileActors[$worldId][$event->runtimeEntityId],
+                $this->projectileViewers[$worldId][$event->runtimeEntityId],
             );
 
-            return $viewers === [] ? [] : [new PotionProjectileRemoved($event->runtimeEntityId, $viewers)];
+            return $viewers === [] ? [] : [new ProjectileRemoved($event->runtimeEntityId, $viewers)];
         }
 
         $projectile = $event->projectile;
         $runtimeId = $projectile->runtimeEntityId;
-        $this->potionProjectileActors[$worldId][$runtimeId] = $projectile;
-        $old = $this->potionProjectileViewers[$worldId][$runtimeId] ?? [];
+        $this->projectileActors[$worldId][$runtimeId] = $projectile;
+        $old = $this->projectileViewers[$worldId][$runtimeId] ?? [];
         $eligible = $old;
         foreach (array_keys($eligible) as $recipient) {
             if (!$this->transientActorViewerCanSee($recipient, $worldId, $projectile->position)) {
@@ -3358,20 +3358,20 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 unset($eligible[$recipient]);
             }
         }
-        $this->potionProjectileViewers[$worldId][$runtimeId] = $eligible;
+        $this->projectileViewers[$worldId][$runtimeId] = $eligible;
         $appeared = array_keys(array_diff_key($eligible, $old));
         $disappeared = array_keys(array_diff_key($old, $eligible));
         $events = [];
         if ($disappeared !== []) {
-            $events[] = new PotionProjectileRemoved($runtimeId, $disappeared);
+            $events[] = new ProjectileRemoved($runtimeId, $disappeared);
         }
         if ($appeared !== []) {
-            $events[] = new PotionProjectileSpawned($projectile, $appeared);
+            $events[] = new ProjectileSpawned($projectile, $appeared);
         }
-        if ($event instanceof PotionProjectileMoved) {
+        if ($event instanceof ProjectileMoved) {
             $continuing = array_keys(array_intersect_key($eligible, $old));
             if ($continuing !== []) {
-                $events[] = new PotionProjectileMoved($projectile, $continuing);
+                $events[] = new ProjectileMoved($projectile, $continuing);
             }
         }
 
@@ -3432,21 +3432,21 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
 
     /**
      * @param null|array<string, true> $chunkKeys
-     * @return list<PotionProjectileSpawned|PotionProjectileRemoved|AreaEffectCloudSpawned|AreaEffectCloudRemoved>
+     * @return list<ProjectileSpawned|ProjectileRemoved|AreaEffectCloudSpawned|AreaEffectCloudRemoved>
      */
-    private function reconcilePotionActorsForViewer(string $sessionId, ?array $chunkKeys = null): array
+    private function reconcileTransientActorsForViewer(string $sessionId, ?array $chunkKeys = null): array
     {
         $events = [];
         $worldId = $this->processingWorldId ?? 'world';
-        foreach ($this->potionProjectileActors[$worldId] ?? [] as $projectile) {
+        foreach ($this->projectileActors[$worldId] ?? [] as $projectile) {
             if ($chunkKeys !== null && !isset($chunkKeys[self::positionChunkKey(
                 $projectile->position->x,
                 $projectile->position->z,
             )])) {
                 continue;
             }
-            foreach ($this->reconcilePotionProjectileEvent(new PotionProjectileSpawned($projectile, [$sessionId])) as $event) {
-                if ($event instanceof PotionProjectileSpawned || $event instanceof PotionProjectileRemoved) {
+            foreach ($this->reconcileProjectileEvent(new ProjectileSpawned($projectile, [$sessionId])) as $event) {
+                if ($event instanceof ProjectileSpawned || $event instanceof ProjectileRemoved) {
                     $events[] = $event;
                 }
             }

@@ -18,9 +18,9 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Server\Tests\Gameplay\Potion;
+namespace Bedriox\Server\Tests\Gameplay\Projectile;
 
-use Bedriox\Server\Gameplay\Potion\ProjectileCollisionMath;
+use Bedriox\Server\Gameplay\Projectile\ProjectileCollisionMath;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\Collision\AxisAlignedBox;
 use PHPUnit\Framework\Attributes\CoversClass;

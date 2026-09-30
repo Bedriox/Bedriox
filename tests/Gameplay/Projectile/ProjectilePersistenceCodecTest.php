@@ -18,23 +18,25 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Server\Tests\Gameplay\Potion;
+namespace Bedriox\Server\Tests\Gameplay\Projectile;
 
 use Bedriox\Api\Potion\PotionType;
 use Bedriox\Server\Gameplay\Potion\AreaEffectCloudRegistry;
-use Bedriox\Server\Gameplay\Potion\PotionEntityPersistenceCodec;
-use Bedriox\Server\Gameplay\Potion\PotionProjectileRegistry;
+use Bedriox\Server\Gameplay\Projectile\ProjectilePersistenceCodec;
+use Bedriox\Server\Gameplay\Projectile\ProjectileRegistry;
+use Bedriox\Server\Gameplay\Projectile\ProjectileType;
+use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Simulation\Position;
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
 
-#[CoversClass(PotionEntityPersistenceCodec::class)]
-final class PotionEntityPersistenceCodecTest extends TestCase
+#[CoversClass(ProjectilePersistenceCodec::class)]
+final class ProjectilePersistenceCodecTest extends TestCase
 {
     public function testActivePotionActorsSurviveARegistryRestartExactly(): void
     {
-        $projectiles = new PotionProjectileRegistry(firstEntityId: 3_000);
+        $projectiles = new ProjectileRegistry(firstEntityId: 3_000);
         $arrow = $projectiles->spawnTippedArrow(
             'owner-uuid',
             PotionType::LONG_POISON,
@@ -53,7 +55,7 @@ final class PotionEntityPersistenceCodecTest extends TestCase
         }
         $clouds->affected($cloud->runtimeEntityId, 'victim-uuid');
 
-        $codec = new PotionEntityPersistenceCodec();
+        $codec = new ProjectilePersistenceCodec();
         $payload = $codec->encode('overworld', $projectiles->all(), $clouds->all());
         [$decodedProjectiles, $decodedClouds] = $codec->decode('overworld', $payload);
 
@@ -69,7 +71,7 @@ final class PotionEntityPersistenceCodecTest extends TestCase
         self::assertArrayHasKey('victim-uuid', $decodedClouds[0]->victimCooldowns);
         self::assertEqualsWithDelta($clouds->all()[0]->radius, $decodedClouds[0]->radius, 0.000001);
 
-        $restoredProjectiles = new PotionProjectileRegistry(firstEntityId: 1);
+        $restoredProjectiles = new ProjectileRegistry(firstEntityId: 1);
         $restoredProjectiles->restore($decodedProjectiles[0]);
         $nextArrow = $restoredProjectiles->spawnTippedArrow(
             'next-owner',
@@ -89,13 +91,13 @@ final class PotionEntityPersistenceCodecTest extends TestCase
 
     public function testRejectsMalformedOversizedAndCrossWorldSnapshots(): void
     {
-        $codec = new PotionEntityPersistenceCodec();
+        $codec = new ProjectilePersistenceCodec();
 
         foreach ([
             '',
             '{',
             json_encode(['version' => 1, 'world' => 'other', 'projectiles' => [], 'clouds' => []], JSON_THROW_ON_ERROR),
-            str_repeat('x', PotionEntityPersistenceCodec::MAXIMUM_BYTES + 1),
+            str_repeat('x', ProjectilePersistenceCodec::MAXIMUM_BYTES + 1),
         ] as $payload) {
             try {
                 $codec->decode('overworld', $payload);
@@ -104,5 +106,44 @@ final class PotionEntityPersistenceCodecTest extends TestCase
                 self::addToAssertionCount(1);
             }
         }
+    }
+
+    public function testThrownTridentPersistsButFishingHookDoesNot(): void
+    {
+        $projectiles = new ProjectileRegistry(firstEntityId: 5_000);
+        $projectiles->spawnTrident(
+            'owner',
+            PotionType::WATER,
+            new Position(1.0, 70.0, 1.0),
+            0.0,
+            0.0,
+            2.4,
+            7.5,
+            2,
+            true,
+            true,
+            new InventoryStack('minecraft:trident', 1, 17, damage: 4),
+        );
+        $projectiles->spawnFishingHook(
+            'owner',
+            44,
+            new Position(1.0, 70.0, 1.0),
+            0.0,
+            0.0,
+            1,
+            2,
+        );
+
+        $codec = new ProjectilePersistenceCodec();
+        [$decoded] = $codec->decode('overworld', $codec->encode('overworld', $projectiles->all(), []));
+
+        self::assertCount(1, $decoded);
+        self::assertSame(ProjectileType::TRIDENT, $decoded[0]->type);
+        self::assertSame(2, $decoded[0]->loyaltyLevel);
+        self::assertTrue($decoded[0]->channeling);
+        $carriedItem = $decoded[0]->carriedItem;
+        self::assertNotNull($carriedItem);
+        self::assertSame('minecraft:trident', $carriedItem->identifier);
+        self::assertSame(4, $carriedItem->damage);
     }
 }

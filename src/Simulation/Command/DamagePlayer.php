@@ -24,13 +24,18 @@ use Bedriox\Server\Simulation\DamageCause;
 
 final readonly class DamagePlayer implements WorldCommand
 {
-    public function __construct(public string $session, public float $amount, public DamageCause $cause) {}
+    public function __construct(
+        public string $session,
+        public float $amount,
+        public DamageCause $cause,
+        public ?string $sourceSession = null,
+    ) {}
     public function sessionId(): string
     {
         return $this->session;
     }
     public function estimatedBytes(): int
     {
-        return 48 + strlen($this->session);
+        return 48 + strlen($this->session) + strlen($this->sourceSession ?? '');
     }
 }

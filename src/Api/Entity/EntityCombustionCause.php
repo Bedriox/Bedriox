@@ -24,5 +24,6 @@ namespace Bedriox\Api\Entity;
 enum EntityCombustionCause: string
 {
     case SUNLIGHT = 'sunlight';
+    case ENCHANTMENT = 'enchantment';
     case PLUGIN = 'plugin';
 }

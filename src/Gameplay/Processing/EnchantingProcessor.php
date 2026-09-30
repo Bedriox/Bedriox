@@ -21,6 +21,11 @@ declare(strict_types=1);
 namespace Bedriox\Server\Gameplay\Processing;
 
 use Bedriox\Api\Processing\EnchantingOption;
+use Bedriox\Server\Gameplay\Enchanting\EnchantmentApplicability;
+use Bedriox\Server\Gameplay\Enchanting\EnchantmentDefinition;
+use Bedriox\Server\Gameplay\Enchanting\EnchantmentRegistry;
+use Bedriox\Server\Gameplay\Enchanting\VanillaEnchantmentRegistry;
+use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\World\BlockEntity\ContainerItemStack;
 use InvalidArgumentException;
 
@@ -28,6 +33,15 @@ use InvalidArgumentException;
 final readonly class EnchantingProcessor
 {
     private const int MAXIMUM_BOOKSHELVES = 15;
+
+    private EnchantmentRegistry $enchantments;
+
+    public function __construct(
+        private ?ItemCatalog $items = null,
+        ?EnchantmentRegistry $enchantments = null,
+    ) {
+        $this->enchantments = $enchantments ?? VanillaEnchantmentRegistry::create();
+    }
 
     /** @return list<EnchantingOption> */
     public function options(ContainerItemStack $item, int $bookshelves, int $seed): array
@@ -38,7 +52,7 @@ final readonly class EnchantingProcessor
         if (WorkstationItemData::enchantments($item->nbt) !== []) {
             return [];
         }
-        $pool = self::pool($item->identifier);
+        $pool = $this->pool($item->identifier);
         if ($pool === []) {
             return [];
         }
@@ -54,11 +68,12 @@ final readonly class EnchantingProcessor
             $enchantments = [];
             $maximumOffers = $required >= 25 ? 3 : ($required >= 12 ? 2 : 1);
             for ($offset = 0; $offset < $maximumOffers; ++$offset) {
-                $identifier = $pool[($entropy + $offset * 7) % count($pool)];
-                if (isset($enchantments[$identifier]) || !self::compatible($identifier, array_keys($enchantments))) {
+                $definition = $pool[($entropy + $offset * 7) % count($pool)];
+                if (isset($enchantments[$definition->identifier])
+                    || !$this->compatible($definition, array_keys($enchantments))) {
                     continue;
                 }
-                $enchantments[$identifier] = min(self::maximumLevel($identifier), max(1, intdiv($required, 10) + 1));
+                $enchantments[$definition->identifier] = self::levelForPower($definition, $required);
             }
             $options[] = new EnchantingOption($slot, min(30, $required), $slot + 1, $seed, $enchantments);
         }
@@ -94,97 +109,48 @@ final readonly class EnchantingProcessor
         );
     }
 
-    /** @return list<string> */
-    private static function pool(string $identifier): array
+    /** @return list<EnchantmentDefinition> */
+    private function pool(string $identifier): array
     {
         if ($identifier === 'minecraft:book') {
-            return [
-                'minecraft:unbreaking', 'minecraft:efficiency', 'minecraft:sharpness', 'minecraft:smite',
-                'minecraft:bane_of_arthropods', 'minecraft:protection', 'minecraft:fire_protection',
-                'minecraft:blast_protection', 'minecraft:projectile_protection', 'minecraft:power',
-                'minecraft:fortune', 'minecraft:looting', 'minecraft:respiration',
-            ];
+            return array_values(array_filter(
+                $this->enchantments->all(),
+                static fn(EnchantmentDefinition $definition): bool => $definition->discoverable
+                    && !$definition->treasure && !$definition->curse,
+            ));
         }
-        if (str_ends_with($identifier, '_sword')) {
-            return [
-                'minecraft:sharpness', 'minecraft:smite', 'minecraft:bane_of_arthropods',
-                'minecraft:knockback', 'minecraft:fire_aspect', 'minecraft:looting', 'minecraft:unbreaking',
-            ];
+        if ($this->items === null || !$this->items->has($identifier)) {
+            return [];
         }
-        if (str_ends_with($identifier, '_pickaxe') || str_ends_with($identifier, '_axe')
-            || str_ends_with($identifier, '_shovel') || str_ends_with($identifier, '_hoe')) {
-            return ['minecraft:efficiency', 'minecraft:silk_touch', 'minecraft:unbreaking', 'minecraft:fortune'];
-        }
-        foreach (['_helmet', '_chestplate', '_leggings', '_boots'] as $suffix) {
-            if (str_ends_with($identifier, $suffix)) {
-                $pool = [
-                    'minecraft:protection', 'minecraft:fire_protection', 'minecraft:blast_protection',
-                    'minecraft:projectile_protection', 'minecraft:unbreaking', 'minecraft:thorns',
-                ];
-                if ($suffix === '_helmet') {
-                    $pool[] = 'minecraft:respiration';
-                    $pool[] = 'minecraft:aqua_affinity';
-                } elseif ($suffix === '_boots') {
-                    $pool[] = 'minecraft:feather_falling';
-                    $pool[] = 'minecraft:depth_strider';
-                }
-                return $pool;
-            }
-        }
-        if ($identifier === 'minecraft:bow') {
-            return ['minecraft:power', 'minecraft:unbreaking', 'minecraft:punch'];
-        }
-        if ($identifier === 'minecraft:crossbow') {
-            return ['minecraft:quick_charge', 'minecraft:multishot', 'minecraft:piercing', 'minecraft:unbreaking'];
-        }
-        if ($identifier === 'minecraft:trident') {
-            return ['minecraft:impaling', 'minecraft:loyalty', 'minecraft:riptide', 'minecraft:channeling', 'minecraft:unbreaking'];
-        }
-        if ($identifier === 'minecraft:fishing_rod') {
-            return ['minecraft:luck_of_the_sea', 'minecraft:lure', 'minecraft:unbreaking'];
-        }
-        if ($identifier === 'minecraft:mace') {
-            return ['minecraft:density', 'minecraft:breach', 'minecraft:unbreaking'];
-        }
-        return [];
-    }
-
-    private static function maximumLevel(string $identifier): int
-    {
-        return match ($identifier) {
-            'minecraft:unbreaking', 'minecraft:looting', 'minecraft:fortune', 'minecraft:thorns',
-            'minecraft:respiration', 'minecraft:depth_strider', 'minecraft:quick_charge',
-            'minecraft:loyalty', 'minecraft:riptide', 'minecraft:luck_of_the_sea', 'minecraft:lure',
-            'minecraft:density', 'minecraft:breach' => 3,
-            'minecraft:punch', 'minecraft:fire_aspect', 'minecraft:knockback' => 2,
-            'minecraft:silk_touch', 'minecraft:aqua_affinity', 'minecraft:multishot',
-            'minecraft:channeling' => 1,
-            default => 5,
-        };
+        $type = $this->items->type($identifier);
+        return array_values(array_filter(
+            $this->enchantments->all(),
+            static fn(EnchantmentDefinition $definition): bool => $definition->discoverable
+                && !$definition->treasure && !$definition->curse
+                && EnchantmentApplicability::accepts($definition, $type),
+        ));
     }
 
     /** @param list<string> $selected */
-    private static function compatible(string $candidate, array $selected): bool
+    private function compatible(EnchantmentDefinition $candidate, array $selected): bool
     {
-        $groups = [
-            ['minecraft:sharpness', 'minecraft:smite', 'minecraft:bane_of_arthropods'],
-            ['minecraft:protection', 'minecraft:fire_protection', 'minecraft:blast_protection', 'minecraft:projectile_protection'],
-            ['minecraft:silk_touch', 'minecraft:fortune'],
-            ['minecraft:multishot', 'minecraft:piercing'],
-            ['minecraft:loyalty', 'minecraft:riptide'],
-            ['minecraft:density', 'minecraft:breach'],
-        ];
-        foreach ($groups as $group) {
-            if (!in_array($candidate, $group, true)) {
-                continue;
-            }
-            foreach ($selected as $identifier) {
-                if (in_array($identifier, $group, true)) {
-                    return false;
-                }
+        foreach ($selected as $identifier) {
+            $other = $this->enchantments->find($identifier);
+            if ($candidate->conflictsWith($identifier) || $other?->conflictsWith($candidate->identifier) === true) {
+                return false;
             }
         }
         return true;
+    }
+
+    private static function levelForPower(EnchantmentDefinition $definition, int $power): int
+    {
+        for ($level = $definition->maximumLevel; $level >= 1; --$level) {
+            if ($power >= $definition->minimumCostForLevel($level)) {
+                return $level;
+            }
+        }
+        return 1;
     }
 
     private static function entropy(int $seed, string $identifier, int $slot): int

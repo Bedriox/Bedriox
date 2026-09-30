@@ -252,6 +252,7 @@ final class ItemCatalog
             'shovel' => ToolType::Shovel,
             'hoe' => ToolType::Hoe,
             'sword' => ToolType::Sword,
+            'spear' => ToolType::Spear,
         ];
     }
 }

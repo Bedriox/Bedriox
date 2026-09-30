@@ -28,5 +28,6 @@ enum ToolType
     case Shovel;
     case Hoe;
     case Sword;
+    case Spear;
     case Shears;
 }

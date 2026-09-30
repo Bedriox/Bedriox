@@ -29,10 +29,13 @@ final readonly class BlockBreakContext
         public bool $airborne = false,
         public bool $underwater = false,
         public bool $aquaAffinity = false,
+        public int $efficiencyLevel = 0,
         public int $hasteLevel = 0,
         public int $miningFatigueLevel = 0,
     ) {
-        if ($hasteLevel < 0 || $hasteLevel > 255 || $miningFatigueLevel < 0 || $miningFatigueLevel > 255) {
+        if ($efficiencyLevel < 0 || $efficiencyLevel > 255
+            || $hasteLevel < 0 || $hasteLevel > 255
+            || $miningFatigueLevel < 0 || $miningFatigueLevel > 255) {
             throw new InvalidArgumentException('Mining effect levels must be between zero and 255.');
         }
     }

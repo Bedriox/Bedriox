@@ -51,7 +51,7 @@ final readonly class ToolDefinition
             $tier->miningEfficiency(),
             $type === ToolType::Sword ? 2 : 1,
             match ($type) {
-                ToolType::Sword, ToolType::Hoe => 1,
+                ToolType::Sword, ToolType::Spear, ToolType::Hoe => 1,
                 default => 2,
             },
         );
@@ -80,6 +80,7 @@ final readonly class ToolDefinition
             ToolType::Pickaxe => 2.0,
             ToolType::Shovel => 3.0,
             ToolType::Hoe => 4.0,
+            ToolType::Spear => 3.0,
             ToolType::Shears => $this->tier->baseAttackDamage() - 1.0,
         });
     }

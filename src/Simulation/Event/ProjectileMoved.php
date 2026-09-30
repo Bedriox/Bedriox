@@ -20,10 +20,12 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Simulation\Event;
 
-final readonly class PotionProjectileRemoved implements WorldEvent
+use Bedriox\Server\Gameplay\Projectile\Projectile;
+
+final readonly class ProjectileMoved implements WorldEvent
 {
     /** @param list<string> $recipientSessionIds */
-    public function __construct(public int $runtimeEntityId, public array $recipientSessionIds) {}
+    public function __construct(public Projectile $projectile, public array $recipientSessionIds) {}
     public function recipients(): array
     {
         return $this->recipientSessionIds;

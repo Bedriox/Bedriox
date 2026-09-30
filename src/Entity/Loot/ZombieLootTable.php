@@ -27,12 +27,12 @@ final readonly class ZombieLootTable implements LootTable
     public function roll(LootContext $context, LootRandomSource $random): array
     {
         $drops = [];
-        $flesh = $random->nextInt(0, 2);
+        $flesh = $random->nextInt(0, 2 + $context->lootingLevel);
         if ($flesh > 0) {
             $drops[] = new ItemStack('minecraft:rotten_flesh', $flesh);
         }
 
-        if ($random->nextInt(0, 199) < 5) {
+        if ($random->nextInt(0, 199) < 5 + (2 * $context->lootingLevel)) {
             $rareItem = match ($random->nextInt(0, 2)) {
                 0 => 'minecraft:iron_ingot',
                 1 => 'minecraft:carrot',

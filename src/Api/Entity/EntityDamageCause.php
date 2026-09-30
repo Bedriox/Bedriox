@@ -28,5 +28,6 @@ enum EntityDamageCause: string
     case FIRE_TICK = 'fire_tick';
     case KILL = 'kill';
     case MAGIC = 'magic';
+    case PROJECTILE = 'projectile';
     case PLUGIN = 'plugin';
 }

@@ -18,22 +18,20 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Server\Simulation\Event;
+namespace Bedriox\Api\Event\Player;
 
-use Bedriox\Api\Potion\PotionType;
-use Bedriox\Server\Simulation\Position;
+use Bedriox\Api\Event\Event;
+use Bedriox\Api\Event\PostEvent;
+use Bedriox\Api\Inventory\ItemStack;
+use Bedriox\Api\Player\Player;
 
-final readonly class PotionProjectileImpacted implements WorldEvent
+final class PlayerFishedEvent extends Event implements PostEvent
 {
-    /** @param list<string> $recipientSessionIds */
     public function __construct(
-        public Position $position,
-        public PotionType $potionType,
-        public array $recipientSessionIds,
+        public readonly Player $player,
+        public readonly int $hookRuntimeEntityId,
+        public readonly PlayerFishState $state,
+        public readonly ?ItemStack $caughtItem = null,
+        public readonly int $experience = 0,
     ) {}
-
-    public function recipients(): array
-    {
-        return $this->recipientSessionIds;
-    }
 }

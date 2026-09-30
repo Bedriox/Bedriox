@@ -25,6 +25,8 @@ use Bedriox\Api\Nbt\Tag;
 use Bedriox\Api\Nbt\TagType;
 use Bedriox\Api\Processing\CartographyOperation;
 use Bedriox\Api\Processing\CauldronContentType;
+use Bedriox\Data\BedrockDataSet;
+use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Gameplay\Processing\AnvilProcessor;
 use Bedriox\Server\Gameplay\Processing\CartographyProcessor;
 use Bedriox\Server\Gameplay\Processing\CauldronProcessor;
@@ -106,7 +108,7 @@ final class TransientWorkstationProcessorTest extends TestCase
 
     public function testEnchantingOffersAreDeterministicAndCostsAreAuthoritative(): void
     {
-        $processor = new EnchantingProcessor();
+        $processor = new EnchantingProcessor(self::items());
         $item = new ContainerItemStack('minecraft:iron_sword', 1);
         $first = $processor->options($item, 15, 12345);
         $second = $processor->options($item, 15, 12345);
@@ -164,7 +166,7 @@ final class TransientWorkstationProcessorTest extends TestCase
             nbt: WorkstationItemData::withEnchantments(null, ['minecraft:sharpness' => 1]),
         );
 
-        self::assertSame([], (new EnchantingProcessor())->options($item, 15, 12345));
+        self::assertSame([], (new EnchantingProcessor(self::items()))->options($item, 15, 12345));
     }
 
     public function testLoomAppendsOneBoundedPattern(): void
@@ -241,5 +243,16 @@ final class TransientWorkstationProcessorTest extends TestCase
     {
         $this->expectException(InvalidArgumentException::class);
         new WorkstationEvaluationContext(bookshelves: 16);
+    }
+
+    private static function items(): ItemCatalog
+    {
+        $data = BedrockDataSet::bundled();
+
+        return ItemCatalog::vanilla(
+            $data->itemNetworkRegistry(),
+            creative: $data->creativeInventoryRegistry(),
+            blockItems: $data->blockItemMappingRegistry(),
+        );
     }
 }

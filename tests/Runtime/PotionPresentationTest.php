@@ -26,7 +26,7 @@ use Bedriox\Protocol\Packet\LevelSoundEventName;
 use Bedriox\Protocol\Packet\LevelSoundEventPacket;
 use Bedriox\Server\Runtime\BedrockWorldEventPacketEncoder;
 use Bedriox\Server\Simulation\Event\BrewingCompleted;
-use Bedriox\Server\Simulation\Event\PotionProjectileImpacted;
+use Bedriox\Server\Simulation\Event\PotionSplashImpacted;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\BlockPosition;
 use PHPUnit\Framework\Attributes\CoversClass;
@@ -37,7 +37,7 @@ final class PotionPresentationTest extends TestCase
 {
     public function testPotionImpactProjectsColoredSplashAndGlassSound(): void
     {
-        $packets = (new BedrockWorldEventPacketEncoder())->encode(new PotionProjectileImpacted(
+        $packets = (new BedrockWorldEventPacketEncoder())->encode(new PotionSplashImpacted(
             new Position(1.0, 65.0, 2.0),
             PotionType::TURTLE_MASTER,
             ['viewer'],

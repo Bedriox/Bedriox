@@ -271,6 +271,8 @@ final class PlayerCombatTest extends TestCase
 
         self::assertCount(4, $events);
         self::assertInstanceOf(PlayerKnockedBack::class, $events[1]);
+        self::assertEqualsWithDelta(0.6, hypot($events[1]->motionX, $events[1]->motionZ), 0.000_001);
+        self::assertSame(0.4, $events[1]->motionY);
         self::assertInstanceOf(PlayerMotionChanged::class, $events[2]);
         self::assertEqualsWithDelta(0.04, $events[2]->motionX, 0.000_001);
         self::assertFalse($events[2]->player->sprinting);

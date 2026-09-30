@@ -18,14 +18,14 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Server\Gameplay\Potion;
+namespace Bedriox\Server\Gameplay\Projectile;
 
 /** Observable potion-projectile changes from one bounded registry advance. */
-final readonly class PotionProjectileTickResult
+final readonly class ProjectileTickResult
 {
     /**
-     * @param list<PotionProjectile> $updated
-     * @param list<PotionProjectile> $expired
+     * @param list<Projectile> $updated
+     * @param list<Projectile> $expired
      */
     public function __construct(public array $updated, public array $expired) {}
 }

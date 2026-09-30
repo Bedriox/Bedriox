@@ -136,11 +136,13 @@ final class ItemCatalogTest extends TestCase
         $woodenSword = $catalog->type('minecraft:wooden_sword');
         $goldenPickaxe = $catalog->type('minecraft:golden_pickaxe');
         $copperAxe = $catalog->type('minecraft:copper_axe');
+        $diamondSpear = $catalog->type('minecraft:diamond_spear');
         $netheriteShovel = $catalog->type('minecraft:netherite_shovel');
         $shears = $catalog->type('minecraft:shears');
         self::assertNotNull($woodenSword->tool);
         self::assertNotNull($goldenPickaxe->tool);
         self::assertNotNull($copperAxe->tool);
+        self::assertNotNull($diamondSpear->tool);
         self::assertNotNull($netheriteShovel->tool);
         self::assertNotNull($shears->tool);
 
@@ -151,6 +153,8 @@ final class ItemCatalogTest extends TestCase
         self::assertSame(1, $woodenSword->tool->durabilityDamagePerAttack);
         self::assertSame(12.0, $goldenPickaxe->tool->miningEfficiency);
         self::assertSame(191, $copperAxe->tool->durability);
+        self::assertSame(ToolType::Spear, $diamondSpear->tool->type);
+        self::assertSame(5.0, $diamondSpear->tool->attackDamage());
         self::assertSame(2_032, $netheriteShovel->tool->durability);
         self::assertSame(ToolType::Shears, $shears->tool->type);
         self::assertNull($shears->tool->tier);
