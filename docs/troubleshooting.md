@@ -22,9 +22,20 @@ If Windows reports unusable opcode handlers due to ASLR, start Bedriox through
 `bedriox.cmd`. It creates the ignored `cache/runtime/opcache` directory and
 provides the packaged Runtime's required file-cache fallback environment.
 
-## The executable says pre-alpha
+## The executable reports an unknown invocation
 
-That is expected during M0. There is no playable server until the transport, login, and flat-world milestones pass their acceptance gates.
+Start the packaged server without arguments by running `bedriox.cmd` on Windows
+or `./bedriox` on Linux and macOS. The explicit `serve` command remains
+available for scripts, and `--version` prints the installed build identity.
+
+## Bedriox reports that the UDP port is already in use
+
+Only one server process may bind the configured address and UDP port. Stop the
+other server or choose a different `server-port` in `server.properties`. The
+first-run wizard calls this the network port to bind. Bedriox performs this
+check before loading the world so a conflict is reported immediately. An
+interactive Windows launch keeps the message visible until Enter is pressed;
+automated launches return a failure immediately and never wait for input.
 
 ## The server appears online but the client never connects
 

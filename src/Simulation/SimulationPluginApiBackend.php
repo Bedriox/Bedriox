@@ -21,6 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Simulation;
 
 use Bedriox\Api\Server;
+use Bedriox\Api\Whitelist\Whitelist;
 use Bedriox\Api\World\WorldManager as ApiWorldManager;
 use Bedriox\Server\Gameplay\Item\ItemBehaviorRegistry;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
@@ -39,6 +40,7 @@ final readonly class SimulationPluginApiBackend
         private ?BlockStateRegistry $blockStateRegistry = null,
         private ?WorldRuntimeManager $worldRuntimes = null,
         private ?ApiWorldManager $worldManager = null,
+        private ?Whitelist $whitelist = null,
     ) {}
 
     /** @internal Plugin item definitions enter the simulation through this bounded registry. */
@@ -64,6 +66,7 @@ final readonly class SimulationPluginApiBackend
             $this->pluginPlayers(...),
             $this->pluginPlayer(...),
             worldManager: $this->worldManager,
+            whitelist: $this->whitelist,
         );
     }
 

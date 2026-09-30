@@ -21,6 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Server;
 
 use Bedriox\Api\Plugin\PluginContext;
+use Bedriox\Server\Access\WhitelistManager;
 use Bedriox\Server\Command\BuiltinCommandRegistrar;
 use Bedriox\Server\Command\Default\GarbageCollectionStatus;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
@@ -59,11 +60,14 @@ use Bedriox\Server\Plugin\PluginRecipeRegistrar;
 use Bedriox\Server\Plugin\Scheduler\Worker\ManagedPluginAsyncTaskExecutor;
 use Bedriox\Server\Plugin\ServerPluginLogger;
 use Bedriox\Server\Runtime\PersistentWorldFactory;
+use Bedriox\Server\Runtime\PortUnavailableException;
 use Bedriox\Server\Runtime\ProcessMemoryLimit;
 use Bedriox\Server\Runtime\RuntimeDiagnostics;
 use Bedriox\Server\Runtime\RuntimeRunner;
 use Bedriox\Server\Runtime\ServerBootstrap;
 use Bedriox\Server\Runtime\ServerConfig;
+use Bedriox\Server\Runtime\SetupWizard;
+use Bedriox\Server\Runtime\UdpBindPreflight;
 use Bedriox\Server\Simulation\PluginGameplayEventBridge;
 use Bedriox\Server\Worker\CoreWorkerTaskCatalog;
 use Bedriox\Server\Worker\ManagedWorkerDispatcher;
@@ -99,11 +103,21 @@ final class Bedriox
 
             return 0;
         }
-        if (($arguments[0] ?? null) !== 'serve') {
-            $error('Bedriox is in pre-alpha development. Use --version or serve with explicit options.' . PHP_EOL);
+        $output($this->banner() . PHP_EOL);
+        if ($arguments !== [] && $arguments[0] === 'serve') {
+            array_shift($arguments);
+        }
+        $skipWizard = false;
+        if (($index = array_search('--skip-wizard', $arguments, true)) !== false) {
+            $skipWizard = true;
+            array_splice($arguments, $index, 1);
+        }
+        if (array_filter($arguments, static fn(string $argument): bool => !str_starts_with($argument, '--') || !str_contains($argument, '=')) !== []) {
+            $error('Unknown invocation. Start Bedriox without arguments, use serve with explicit options, or use --version.' . PHP_EOL);
 
             return 1;
         }
+        $configurationArguments = $arguments;
         $diagnostics = RuntimeDiagnostics::disabled();
         $logger = null;
         $backgroundLog = null;
@@ -115,12 +129,36 @@ final class Bedriox
             if (!is_string($workingDirectory)) {
                 throw new \RuntimeException('Unable to resolve the server working directory.');
             }
+            $propertiesPath = $workingDirectory . DIRECTORY_SEPARATOR . 'server.properties';
+            $wizardCompleted = false;
+            if (!file_exists($propertiesPath)) {
+                if ($skipWizard) {
+                    SetupWizard::installDefaults($propertiesPath);
+                } else {
+                    if (!defined('STDIN') || !is_resource(STDIN)
+                        || (function_exists('stream_isatty') && !stream_isatty(STDIN))) {
+                        throw new \RuntimeException('First-run setup requires an interactive terminal. Use --skip-wizard to install defaults.');
+                    }
+                    (new SetupWizard(
+                        $output,
+                        static function (): ?string {
+                            $line = fgets(STDIN);
+                            return is_string($line) ? $line : null;
+                        },
+                    ))->run($propertiesPath, $workingDirectory . DIRECTORY_SEPARATOR . 'whitelist.json');
+                    $wizardCompleted = true;
+                }
+            }
+            if (!$wizardCompleted) {
+                $output('Preparing Bedriox, please wait...' . PHP_EOL);
+            }
             $config = ServerConfig::fromConfigurationFiles(
-                $workingDirectory . DIRECTORY_SEPARATOR . 'server.properties',
+                $propertiesPath,
                 $workingDirectory . DIRECTORY_SEPARATOR . 'bedriox.settings',
-                array_slice($arguments, 1),
+                $configurationArguments,
             );
             $this->processMemoryLimit->apply($config->memoryLimitBytes);
+            (new UdpBindPreflight())->assertAvailable($config->bindAddress, $config->port);
             $colors = match ($config->loggingConsoleColors) {
                 'true' => true,
                 'false' => false,
@@ -177,6 +215,7 @@ final class Bedriox
             }
             $logger->info('Starting ' . $this->displayName());
             $logger->info(sprintf('Loading world "%s" using %s generator', $config->levelName, $config->levelGenerator));
+            $logger->info('Preparing spawn terrain; the first start may take a moment');
             $composition = new PluginComposition();
             $performance = new PerformanceMonitor($config->ticksPerSecond);
             $stop = false;
@@ -285,6 +324,19 @@ final class Bedriox
             $definitionBridge = new PluginEntityDefinitionBridge($entityDefinitions, $pluginHost->entities());
             $pluginHost->entities()->bindDefinitionBridge($definitionBridge);
             $composition->entityLifecycle = new PluginEntityLifecycleBridge($pluginHost->entities());
+            $pluginEvents = new PluginGameplayEventBridge($pluginHost->events());
+            $whitelist = new WhitelistManager(
+                $workingDirectory . DIRECTORY_SEPARATOR . 'whitelist.json',
+                $config->whitelistEnabled,
+                static function (bool $enabled) use ($workingDirectory): void {
+                    self::updateServerProperty(
+                        $workingDirectory . DIRECTORY_SEPARATOR . 'server.properties',
+                        'white-list',
+                        $enabled ? 'true' : 'false',
+                    );
+                },
+                $pluginEvents->dispatch(...),
+            );
             $playerStore = ProcessPlayerDataStore::start(
                 self::VERSION,
                 $workingDirectory . DIRECTORY_SEPARATOR . 'player_data',
@@ -414,6 +466,10 @@ final class Bedriox
                     ?int $durationSeconds,
                 ): ?\Bedriox\Api\World\WeatherState =>
                     $composition->server?->runtime->setWeather($world, $type, $durationSeconds),
+                whitelist: $whitelist,
+                enforceWhitelist: static function () use ($composition): void {
+                    $composition->server?->runtime->enforceWhitelist();
+                },
             ))->register();
             $server = (new ServerBootstrap(
                 new PersistentWorldFactory(
@@ -428,7 +484,7 @@ final class Bedriox
                 null,
                 $diagnostics,
                 $this->crashContextProvider instanceof CrashContextPublisher ? $this->crashContextProvider : null,
-                new PluginGameplayEventBridge($pluginHost->events()),
+                $pluginEvents,
                 $pluginHost->commands(),
                 $permissionStore,
                 $itemCatalog,
@@ -438,6 +494,7 @@ final class Bedriox
                 entityDefinitions: $entityDefinitions,
                 pluginEntityLifecycle: $composition->entityLifecycle,
                 pluginActions: $pluginHost->actions(),
+                whitelist: $whitelist,
             );
             $composition->server = $server;
             $composition->itemBehaviors = new PluginItemBehaviorRegistrar(
@@ -459,7 +516,7 @@ final class Bedriox
             if ($server->securityWarning !== null) {
                 $logger->warning($server->securityWarning);
             }
-            $logger->info(sprintf('Listening on %s:%d', $server->localAddress, $server->localPort));
+            $logger->info(sprintf('Bedriox is listening on %s:%d', $server->localAddress, $server->localPort));
             if (function_exists('pcntl_async_signals') && function_exists('pcntl_signal')) {
                 pcntl_async_signals(true);
                 foreach (['SIGINT', 'SIGTERM'] as $name) {
@@ -528,6 +585,12 @@ final class Bedriox
             }
 
             return $result;
+        } catch (PortUnavailableException $exception) {
+            $error($exception->getMessage() . PHP_EOL);
+            $error('Stop the other server or change server-port in server.properties, then start Bedriox again.' . PHP_EOL);
+            $this->waitForInteractiveExit($output);
+
+            return 1;
         } catch (Throwable $exception) {
             $diagnostics->record('application.startup_failed', ['exception' => $exception::class]);
             $message = 'Bedriox startup failed closed. Check configuration, required data, authentication discovery, and port availability.';
@@ -547,6 +610,65 @@ final class Bedriox
                 $error('Player storage shutdown could not be confirmed.' . PHP_EOL);
             }
             $backgroundLog?->shutdown();
+        }
+    }
+
+    private function banner(): string
+    {
+        return <<<'BANNER'
+ ____           _      _
+| __ )  ___  __| |_ __(_) _____  __
+|  _ \ / _ \/ _` | '__| |/ _ \ \/ /
+| |_) |  __/ (_| | |  | | (_) >  <
+|____/ \___|\__,_|_|  |_|\___/_/\_\
+
+BANNER
+            . $this->displayName() . "\n"
+            . "Minecraft: Bedrock Edition Server Software\n"
+            . "Website: https://bedriox.com\n"
+            . "Copyright (C) 2026 Veno Ninja LLC\n";
+    }
+
+    /** Keeps a double-clicked Windows launcher open long enough to read a bind failure. */
+    private function waitForInteractiveExit(Closure $output): void
+    {
+        if (!defined('STDIN') || !is_resource(STDIN)
+            || !function_exists('stream_isatty') || !stream_isatty(STDIN)) {
+            return;
+        }
+        $output('Press Enter to close Bedriox.' . PHP_EOL);
+        fgets(STDIN);
+    }
+
+    private static function updateServerProperty(string $path, string $key, string $value): void
+    {
+        if (is_link($path) || !is_file($path)) {
+            throw new \RuntimeException('Server properties must be a regular file.');
+        }
+        $contents = file_get_contents($path);
+        if (!is_string($contents)) {
+            throw new \RuntimeException('Unable to read server properties.');
+        }
+        $replacement = $key . '=' . $value;
+        $updated = preg_replace('/^' . preg_quote($key, '/') . '=.*$/m', $replacement, $contents, 1, $count);
+        if (!is_string($updated)) {
+            throw new \RuntimeException('Unable to update server properties.');
+        }
+        if ($count !== 1) {
+            $updated = rtrim($updated, "\r\n") . PHP_EOL . $replacement . PHP_EOL;
+        }
+        $temporary = tempnam(dirname($path), '.properties-');
+        if (!is_string($temporary)) {
+            throw new \RuntimeException('Unable to create a temporary server properties file.');
+        }
+        try {
+            if (file_put_contents($temporary, $updated, LOCK_EX) !== strlen($updated) || !rename($temporary, $path)) {
+                throw new \RuntimeException('Unable to publish server properties.');
+            }
+        } finally {
+            if (is_file($temporary)) {
+                @unlink($temporary);
+            }
         }
     }
 }

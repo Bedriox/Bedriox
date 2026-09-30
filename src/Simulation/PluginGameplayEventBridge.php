@@ -468,9 +468,9 @@ final readonly class PluginGameplayEventBridge
     }
 
     /** @return null|array{string, ?string, ?string} */
-    public function kick(ApiPlayer $player, string $reason, ?string $quitMessage, ?string $screenMessage): ?array
+    public function kick(ApiPlayer $player, \Bedriox\Api\Event\Player\PlayerKickCause $cause, string $reason, ?string $quitMessage, ?string $screenMessage): ?array
     {
-        $event = new PlayerKickEvent($player, $reason, $quitMessage, $screenMessage);
+        $event = new PlayerKickEvent($player, $cause, $reason, $quitMessage, $screenMessage);
         $this->events->dispatch($event);
 
         return $event->isCancelled() ? null : [$event->reason(), $event->quitMessage(), $event->disconnectScreenMessage()];

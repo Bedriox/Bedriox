@@ -18,22 +18,9 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api;
+namespace Bedriox\Api\Whitelist;
 
-use Bedriox\Api\Player\Player;
-use Bedriox\Api\Whitelist\Whitelist;
-use Bedriox\Api\World\WorldManager;
-
-interface Server
+final readonly class WhitelistEntry
 {
-    public function getWorldManager(): WorldManager;
-
-    public function getWhitelist(): Whitelist;
-
-    /** @return list<Player> */
-    public function getOnlinePlayers(): array;
-
-    public function getPlayerByUuid(string $uuid): ?Player;
-
-    public function getPlayerByName(string $name): ?Player;
+    public function __construct(public ?string $uuid, public string $lastKnownName) {}
 }

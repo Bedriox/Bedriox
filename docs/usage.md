@@ -13,10 +13,19 @@ archive and inner manifest hashes, probes the packaged PHP, and restores the
 previous `bin/` if activation fails.
 
 Inspect the packaged server with `bedriox.cmd --version` on Windows or
-`./bedriox --version` on Linux and macOS. Start it with `bedriox.cmd serve` or
-`./bedriox serve`. These launchers use only the adjacent `bin/php(.exe)` and
+`./bedriox --version` on Linux and macOS. Start it with `bedriox.cmd` on
+Windows or `./bedriox` on Linux and macOS. The explicit `serve` command remains
+supported for scripts. These launchers use only the adjacent `bin/php(.exe)` and
 `bin/php.ini`; there is no `PATH` or system-PHP fallback. They preserve the
 operator's working directory.
+
+On the first interactive start, Bedriox displays its identity banner and opens
+the setup wizard. The wizard explains the GPL license, notes that Enter accepts
+each displayed default, validates the common server and world choices, shows a
+summary, and atomically publishes `server.properties`. Use
+`bedriox.cmd --skip-wizard` (or
+`./bedriox --skip-wizard`) for unattended installation with defaults. Existing
+configuration is never replaced by either path.
 
 For source development only, inspect the current build with:
 
@@ -27,7 +36,7 @@ php bin/bedriox --version
 Start the bounded protocol-2193 development server (Minecraft 1.26.50 wire authority; 1.26.51 qualified client) with FULL authentication:
 
 ```shell
-php bin/bedriox serve
+php bin/bedriox
 ```
 
 The first successful configuration load creates two local files in the current working directory. `server.properties` contains the common identity, network, authentication, world, and feature switches most operators need. `bedriox.settings` contains advanced runtime, worker, chunk-orchestration, persistence, plugin-limit, logging, and crash-report controls. Both files are ignored by Git. Existing files are parsed as written; Bedriox does not migrate or rewrite values between them.
@@ -57,6 +66,7 @@ Both files use one `key=value` entry per line. Blank lines and lines beginning w
 | `xbox-auth` | `true` | Exactly `true` for FULL authentication or `false` for explicit development-only self-signed authentication |
 | `enable-console` | `true` | Exactly `true` or `false` |
 | `enable-plugins` | `true` | Exactly `true` or `false` |
+| `white-list` | `false` | Exactly `true` or `false`; operators bypass whitelist admission |
 | `level-name` | `world` | 1–64 bytes of UTF-8 without control characters |
 | `level-type` | `default` | `default` for seeded terrain or `flat` for the fixed classic profile |
 | `level-seed` | `0` | Signed 32-bit decimal integer |
@@ -102,7 +112,7 @@ The protected `--spawn-x`, `--spawn-y`, and `--spawn-z` CLI overrides remain ava
 
 The generator, generator algorithm version, and seed recorded in an existing world's `level.dat` remain authoritative when it is reopened. Changing `level-type` or `level-seed` does not silently convert stored chunks. Unsupported future generator versions fail before missing terrain can be created. New worlds use the configured values and create the native `level.dat`, `levelname.txt`, and `db/` layout. `default` currently selects the pre-release version-one three-dimensional overworld; `flat` retains its fixed bedrock, dirt, and grass profile. The version-one output is still allowed to change during alpha development, so delete development worlds before testing a changed generator build rather than mixing old and new chunks.
 
-Settings for independent query ports, resource packs, whitelists, and other unfinished features are deliberately not accepted yet. This prevents apparently valid options from silently doing nothing.
+Settings for independent query ports, resource packs, and other unfinished features are deliberately not accepted yet. This prevents apparently valid options from silently doing nothing.
 
 `level.autosave-interval-ticks` controls how often the runtime schedules dirty-world work. At the default 20 ticks per second, `6000` ticks is five minutes. `chunk-saving.per-tick` bounds each autosave step so a large dirty queue is drained over multiple ticks rather than written all at once. Dirty chunks are still saved before eviction, and graceful shutdown performs a complete durability flush rather than applying the per-tick limit.
 
@@ -114,7 +124,9 @@ The qualified protocol family remains alpha software. Unknown commands fail with
 
 ## Commands and permissions
 
-The console and Bedrock slash-command input share one bounded dispatcher. Built-in commands include `version`, `help`, `list`, `stop`, `op`, `deop`, `permission`, `gamemode`, `give`, `effect`, `particle`, `gc`, `kill` (alias `suicide`), `summon`, `time`, `weather`, and `tp` (alias `teleport`). The console always has administrative authority. Players receive only the commands currently available to their UUID when joining.
+The console and Bedrock slash-command input share one bounded dispatcher. Built-in commands include `version`, `help`, `list`, `stop`, `op`, `deop`, `permission`, `whitelist`, `gamemode`, `give`, `effect`, `particle`, `gc`, `kill` (alias `suicide`), `summon`, `time`, `weather`, and `tp` (alias `teleport`). The console always has administrative authority. Players receive only the commands currently available to their UUID when joining.
+
+`whitelist status|on|off|list|add <player>|remove <player>|reload` manages admission through the atomic `whitelist.json` store. Enabling or reloading an enabled whitelist removes connected non-operators who are no longer admitted. Name-only entries are upgraded to the authenticated UUID on a successful login. The base permission is `bedriox.command.whitelist`; each action also requires its matching `bedriox.command.whitelist.<action>` node. Plugins may use `Server::getWhitelist()` and observe `WhitelistChangedEvent`.
 
 `gamemode <mode> [player]` accepts the canonical names and numeric aliases for survival, creative, adventure, and spectator. `give <player> <item> [amount]` resolves canonical `minecraft:*` identifiers through the active gameplay catalog. Both commands enqueue normal authoritative simulation work; they do not mutate network sessions directly.
 

@@ -18,22 +18,12 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api;
+namespace Bedriox\Api\Event\Server;
 
-use Bedriox\Api\Player\Player;
-use Bedriox\Api\Whitelist\Whitelist;
-use Bedriox\Api\World\WorldManager;
+use Bedriox\Api\Event\Event;
+use Bedriox\Api\Whitelist\WhitelistEntry;
 
-interface Server
+final class WhitelistChangedEvent extends Event
 {
-    public function getWorldManager(): WorldManager;
-
-    public function getWhitelist(): Whitelist;
-
-    /** @return list<Player> */
-    public function getOnlinePlayers(): array;
-
-    public function getPlayerByUuid(string $uuid): ?Player;
-
-    public function getPlayerByName(string $name): ?Player;
+    public function __construct(public readonly WhitelistChangeType $type, public readonly ?WhitelistEntry $entry = null) {}
 }

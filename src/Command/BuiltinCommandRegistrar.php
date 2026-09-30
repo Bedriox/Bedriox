@@ -22,6 +22,7 @@ namespace Bedriox\Server\Command;
 
 use Bedriox\Api\Command\CommandSoftEnum;
 use Bedriox\Api\Player\Player;
+use Bedriox\Api\Whitelist\Whitelist;
 use Bedriox\Api\World\Position;
 use Bedriox\Server\Command\Default\BuiltinCommand;
 use Bedriox\Server\Command\Default\DeopCommand;
@@ -45,6 +46,7 @@ use Bedriox\Server\Command\Default\TeleportCommand;
 use Bedriox\Server\Command\Default\TimeCommand;
 use Bedriox\Server\Command\Default\VersionCommand;
 use Bedriox\Server\Command\Default\WeatherCommand;
+use Bedriox\Server\Command\Default\WhitelistCommand;
 use Bedriox\Server\Observability\Memory\GarbageCollectionReport;
 use Bedriox\Server\Observability\PerformanceSnapshot;
 use Bedriox\Server\Permission\PermissionStore;
@@ -101,6 +103,8 @@ final readonly class BuiltinCommandRegistrar
         private ?Closure $killTarget = null,
         private ?Closure $currentWeather = null,
         private ?Closure $setWeather = null,
+        private ?Whitelist $whitelist = null,
+        private ?Closure $enforceWhitelist = null,
     ) {}
 
     public function register(): CommandSoftEnum
@@ -164,6 +168,9 @@ final readonly class BuiltinCommandRegistrar
         }
         if ($this->status !== null) {
             $commands[] = new StatusCommand($this->status);
+        }
+        if ($this->whitelist !== null) {
+            $commands[] = new WhitelistCommand($this->whitelist, $this->enforceWhitelist);
         }
         if ($this->garbageCollectionStatus !== null && $this->collectGarbage !== null && $this->unloadChunks !== null) {
             $commands[] = new GarbageCollectorCommand(

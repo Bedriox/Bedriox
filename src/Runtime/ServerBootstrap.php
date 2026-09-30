@@ -30,6 +30,7 @@ use Bedriox\Protocol\Security\EphemeralKeyFactory;
 use Bedriox\Protocol\Security\OpenSslEphemeralKeyFactory;
 use Bedriox\RakNet\DiscoveryStatus;
 use Bedriox\RakNet\TransportConfig;
+use Bedriox\Server\Access\WhitelistManager;
 use Bedriox\Server\Authentication\Discovery\CurlHttpsJsonTransport;
 use Bedriox\Server\Authentication\Discovery\MinecraftDiscoveryJwkProvider;
 use Bedriox\Server\Authentication\FullTokenAuthenticator;
@@ -124,6 +125,7 @@ final class ServerBootstrap
         ?EntityDefinitionRegistry $entityDefinitions = null,
         ?PluginEntityLifecycleBridge $pluginEntityLifecycle = null,
         ?PluginActionBuffer $pluginActions = null,
+        ?WhitelistManager $whitelist = null,
     ): BootstrappedServer {
         $diagnostics ??= RuntimeDiagnostics::disabled();
         $authenticationClock = new SystemAuthenticationClock();
@@ -617,6 +619,7 @@ final class ServerBootstrap
                 itemCatalog: $itemCatalog,
                 blockStateRegistry: $internalStates,
                 pluginActions: $pluginActions,
+                whitelist: $whitelist,
             );
         } catch (Throwable $exception) {
             $discovery?->close();
@@ -639,6 +642,7 @@ final class ServerBootstrap
                 $internalStates,
                 $worldRuntimes,
                 $publicWorldManager,
+                $whitelist,
             ),
             $flatWorld,
             $craftingCatalog,

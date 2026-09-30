@@ -22,6 +22,7 @@ namespace Bedriox\Server\Simulation;
 
 use Bedriox\Api\Player\Player;
 use Bedriox\Api\Server;
+use Bedriox\Api\Whitelist\Whitelist;
 use Bedriox\Api\World\WorldManager;
 use Bedriox\Server\Plugin\PluginException;
 use Bedriox\Server\Plugin\PluginRuntimeControl;
@@ -40,6 +41,7 @@ final readonly class SimulationPluginServer implements Server
         private Closure $players,
         private Closure $player,
         private ?WorldManager $worldManager = null,
+        private ?Whitelist $whitelist = null,
     ) {}
 
     public function getOnlinePlayers(): array
@@ -55,6 +57,12 @@ final readonly class SimulationPluginServer implements Server
 
         return $this->worldManager
             ?? throw new \LogicException('The world-management capability is unavailable.');
+    }
+
+    public function getWhitelist(): Whitelist
+    {
+        $this->assertEnabled();
+        return $this->whitelist ?? throw new \LogicException('The whitelist capability is unavailable.');
     }
 
     public function getPlayerByUuid(string $uuid): ?Player

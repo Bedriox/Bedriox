@@ -43,6 +43,7 @@ use Bedriox\Api\Event\Player\PlayerEquipmentChangeEvent;
 use Bedriox\Api\Event\Player\PlayerFoodLevelChangedEvent;
 use Bedriox\Api\Event\Player\PlayerFoodLevelChangeEvent;
 use Bedriox\Api\Event\Player\PlayerJoinEvent;
+use Bedriox\Api\Event\Player\PlayerKickCause;
 use Bedriox\Api\Event\Player\PlayerKickEvent;
 use Bedriox\Api\Event\Player\PlayerLoginEvent;
 use Bedriox\Api\Event\Player\PlayerMissSwingEvent;
@@ -170,20 +171,21 @@ final class PluginGameplayEventBridgeTest extends TestCase
     {
         [$dispatcher, $bridge] = self::bridge();
         $dispatcher->register('Example', PlayerKickEvent::class, static function (PlayerKickEvent $event): void {
+            self::assertSame(PlayerKickCause::SERVER_POLICY, $event->cause);
             $event->setReason('Changed reason');
             $event->setQuitMessage('Changed quit');
             $event->setDisconnectScreenMessage('Changed screen');
         });
         self::assertSame(
             ['Changed reason', 'Changed quit', 'Changed screen'],
-            $bridge->kick(self::loginPlayerView(), 'Original', null, null),
+            $bridge->kick(self::loginPlayerView(), PlayerKickCause::SERVER_POLICY, 'Original', null, null),
         );
 
         [$dispatcher, $bridge] = self::bridge();
         $dispatcher->register('Example', PlayerKickEvent::class, static function (PlayerKickEvent $event): void {
             $event->cancel();
         });
-        self::assertNull($bridge->kick(self::loginPlayerView(), 'Original', null, null));
+        self::assertNull($bridge->kick(self::loginPlayerView(), PlayerKickCause::PLUGIN, 'Original', null, null));
     }
 
     public function testLoginEventReturnsTheFinalSynchronousBootstrapDestination(): void

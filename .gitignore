@@ -17,6 +17,7 @@ composer.phar
 /plugin_data/
 /player_data/
 /permissions.json
+/whitelist.json
 /worlds/
 /bin/*
 !/bin/bedriox

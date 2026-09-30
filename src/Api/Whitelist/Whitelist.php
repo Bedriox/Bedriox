@@ -18,22 +18,16 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api;
+namespace Bedriox\Api\Whitelist;
 
-use Bedriox\Api\Player\Player;
-use Bedriox\Api\Whitelist\Whitelist;
-use Bedriox\Api\World\WorldManager;
-
-interface Server
+interface Whitelist
 {
-    public function getWorldManager(): WorldManager;
-
-    public function getWhitelist(): Whitelist;
-
-    /** @return list<Player> */
-    public function getOnlinePlayers(): array;
-
-    public function getPlayerByUuid(string $uuid): ?Player;
-
-    public function getPlayerByName(string $name): ?Player;
+    public function isEnabled(): bool;
+    public function setEnabled(bool $enabled): bool;
+    public function contains(string $name, ?string $uuid = null): bool;
+    public function add(string $name, ?string $uuid = null): bool;
+    public function remove(string $name): bool;
+    /** @return list<WhitelistEntry> */
+    public function entries(): array;
+    public function reload(): void;
 }

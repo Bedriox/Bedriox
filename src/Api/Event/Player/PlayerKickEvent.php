@@ -29,6 +29,7 @@ final class PlayerKickEvent extends CancellableEvent
 {
     public function __construct(
         public readonly Player $player,
+        public readonly PlayerKickCause $cause,
         private string $reason,
         private ?string $quitMessage,
         private ?string $disconnectScreenMessage,

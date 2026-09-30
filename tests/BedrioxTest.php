@@ -22,6 +22,7 @@ namespace Bedriox\Server\Tests;
 
 use Bedriox\Server\Bedriox;
 use Bedriox\Server\Runtime\ProcessMemoryLimit;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class BedrioxTest extends TestCase
@@ -46,7 +47,7 @@ final class BedrioxTest extends TestCase
         try {
             self::assertTrue(chdir($directory));
             $exitCode = (new Bedriox())->run(
-                ['serve', '--auth=secret-value'],
+                ['serve', '--skip-wizard', '--auth=secret-value'],
                 static function (string $message) use (&$stdout): void {
                     $stdout .= $message;
                 },
@@ -62,12 +63,14 @@ final class BedrioxTest extends TestCase
         }
 
         self::assertSame(1, $exitCode);
-        self::assertSame('', $stdout);
+        self::assertStringContainsString('Minecraft: Bedrock Edition Server Software', $stdout);
         self::assertStringContainsString('startup failed closed', $stderr);
         self::assertStringNotContainsString('secret-value', $stderr);
     }
 
-    public function testServeAppliesDefaultMemoryLimitBeforeStartingServices(): void
+    /** @param list<string> $arguments */
+    #[DataProvider('serverInvocationProvider')]
+    public function testServerInvocationAppliesDefaultMemoryLimitBeforeStartingServices(array $arguments): void
     {
         $originalDirectory = getcwd();
         self::assertIsString($originalDirectory);
@@ -85,7 +88,7 @@ final class BedrioxTest extends TestCase
         try {
             self::assertTrue(chdir($directory));
             $exitCode = (new Bedriox(processMemoryLimit: $memoryLimit))->run(
-                ['serve'],
+                $arguments,
                 static function (string $message): void {},
                 static function (string $message): void {},
             );
@@ -98,5 +101,12 @@ final class BedrioxTest extends TestCase
 
         self::assertSame(1, $exitCode);
         self::assertSame([['memory_limit', '500000000']], $applied);
+    }
+
+    /** @return iterable<string, array{list<string>}> */
+    public static function serverInvocationProvider(): iterable
+    {
+        yield 'default invocation' => [['--skip-wizard']];
+        yield 'explicit serve command' => [['serve', '--skip-wizard']];
     }
 }

@@ -45,6 +45,7 @@ final class SimulationPluginServerTest extends TestCase
             'getOnlinePlayers',
             'getPlayerByName',
             'getPlayerByUuid',
+            'getWhitelist',
             'getWorldManager',
         ], $methods);
     }

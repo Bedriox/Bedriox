@@ -29,6 +29,7 @@ use Bedriox\Api\Entity\Entity as ApiEntity;
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\VanillaEntityIdentifier;
 use Bedriox\Api\Entity\VanillaEntityType;
+use Bedriox\Api\Event\Player\PlayerKickCause;
 use Bedriox\Api\Event\World\WeatherChangeCause;
 use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Inventory\ItemStack as ApiItemStack;
@@ -62,6 +63,7 @@ use Bedriox\RakNet\Protocol\Reliability;
 use Bedriox\RakNet\ReceivedPayload;
 use Bedriox\RakNet\SessionInfo;
 use Bedriox\RakNet\SessionOpenedEvent;
+use Bedriox\Server\Access\WhitelistManager;
 use Bedriox\Server\Entity\AbstractLivingEntity;
 use Bedriox\Server\Entity\Ai\AiSchedulerMetrics;
 use Bedriox\Server\Entity\EntityRuntimeMetrics;
@@ -320,6 +322,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         private readonly ?ItemCatalog $itemCatalog = null,
         private readonly ?BlockStateRegistry $blockStateRegistry = null,
         private readonly ?PluginActionBuffer $pluginActions = null,
+        private readonly ?WhitelistManager $whitelist = null,
     ) {
         if ($this->autosaveIntervalTicks < 1 || $this->autosaveChunkBudget < 1
             || $this->playerAutosaveIntervalTicks < 1 || $this->playerAutosaveBudget < 1
@@ -351,6 +354,24 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
 
         return array_map($this->playerConnections->attach(...), $players);
+    }
+
+    public function enforceWhitelist(): void
+    {
+        if ($this->whitelist?->isEnabled() !== true) {
+            return;
+        }
+        foreach ($this->sessions as $key => $session) {
+            if (!$session->joined || $session->play === null) {
+                continue;
+            }
+            $login = $session->play->login();
+            if (($this->permissionStore?->isOperator($login->identity) ?? false)
+                || $this->whitelist->contains($login->displayName, $login->identity)) {
+                continue;
+            }
+            $this->kickPlayer($key, $session, 'You are not whitelisted on this server.', null, null, PlayerKickCause::WHITELIST);
+        }
     }
 
     /** @return list<\Bedriox\Api\Entity\Entity> */
@@ -2536,6 +2557,13 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
         try {
             $bootstrap = null;
+            if ($this->whitelist?->isEnabled() === true
+                && !($this->permissionStore?->isOperator($ready->login->identity) ?? false)
+                && !$this->whitelist->admit($ready->login->displayName, $ready->login->identity)) {
+                $this->diagnostics->record('play.whitelist_rejected');
+                $this->rejectReadySession($key, $session, $ready, 'You are not whitelisted on this server.');
+                return;
+            }
             if ($this->playerPersistence !== null) {
                 $loaded = $this->playerPersistence->load($ready->login);
                 foreach ($this->sessions as $other) {
@@ -2610,6 +2638,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     $reason,
                     $quitMessage,
                     $screenMessage,
+                    PlayerKickCause::PLUGIN,
                 ),
                 fn(): bool => $this->simulationForSession($session)->enqueuePluginArmSwing($identity),
                 fn(ApiPosition $position): bool => $this->acceptPluginAction(
@@ -2803,7 +2832,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         $this->removeRuntimeSession($key);
     }
 
-    private function kickPlayer(string $key, RuntimeSession $session, string $reason, ?string $quitMessage, ?string $screenMessage): bool
+    private function kickPlayer(string $key, RuntimeSession $session, string $reason, ?string $quitMessage, ?string $screenMessage, PlayerKickCause $cause = PlayerKickCause::SERVER_POLICY): bool
     {
         if (($this->sessions[$key] ?? null) !== $session || $session->play === null) {
             return false;
@@ -2811,7 +2840,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         $identity = $session->bootstrap?->identity->uuid ?? $session->play->login()->identity;
         $player = $this->simulationForSession($session)->pluginPlayer($identity);
         if ($player !== null && $this->pluginEvents !== null) {
-            $decision = $this->pluginEvents->kick($player, $reason, $quitMessage, $screenMessage);
+            $decision = $this->pluginEvents->kick($player, $cause, $reason, $quitMessage, $screenMessage);
             if ($decision === null) {
                 return false;
             }

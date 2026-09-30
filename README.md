@@ -28,6 +28,7 @@ Bedriox gives server owners a performance-focused foundation for creating Minecr
 - **Focused Bedrock support** — one qualified modern protocol family instead of years of legacy protocol code.
 - **Modern PHP development** — strict types, Composer packages, automated tests, static analysis, and clear component boundaries.
 - **Plugin development support** — run validated PHAR plugins, develop from source with PluginTools, and extend the server through typed events, commands, lifecycle hooks, and safe player/world APIs.
+- **Straightforward administration** — a first-run setup wizard, operator permissions, whitelist controls, clear console output, and persistent configuration make a new server approachable.
 
 ## Where Bedriox is headed
 
@@ -63,10 +64,11 @@ Then install and verify the server:
 composer install
 composer check
 php bin/bedriox --version
-php bin/bedriox serve
+php bin/bedriox
 ```
 
-The commands above are the explicit development path. For a packaged server,
+The commands above are the development path. The explicit `serve` command
+remains available for scripts. For a packaged server,
 install the exact local Runtime archive recorded in
 [`bedriox.lock.json`](bedriox.lock.json), then run `bedriox.cmd` on Windows or
 `./bedriox` on Linux and macOS. See the [usage guide](docs/usage.md).

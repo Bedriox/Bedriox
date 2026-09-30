@@ -39,6 +39,7 @@ memory-limit=500MB
 xbox-auth=true
 enable-console=true
 enable-plugins=true
+white-list=false
 
 # World and gameplay
 level-name=world

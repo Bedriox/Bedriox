@@ -18,22 +18,13 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api;
+namespace Bedriox\Api\Event\Server;
 
-use Bedriox\Api\Player\Player;
-use Bedriox\Api\Whitelist\Whitelist;
-use Bedriox\Api\World\WorldManager;
-
-interface Server
+enum WhitelistChangeType: string
 {
-    public function getWorldManager(): WorldManager;
-
-    public function getWhitelist(): Whitelist;
-
-    /** @return list<Player> */
-    public function getOnlinePlayers(): array;
-
-    public function getPlayerByUuid(string $uuid): ?Player;
-
-    public function getPlayerByName(string $name): ?Player;
+    case ENABLED = 'enabled';
+    case DISABLED = 'disabled';
+    case ENTRY_ADDED = 'entry_added';
+    case ENTRY_REMOVED = 'entry_removed';
+    case RELOADED = 'reloaded';
 }

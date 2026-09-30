@@ -35,19 +35,18 @@ final class CliTest extends TestCase
     }
 
     #[DataProvider('unsupportedArgumentProvider')]
-    public function testUnsupportedInvocationFailsClearly(?string $argument): void
+    public function testUnsupportedInvocationFailsClearly(string $argument): void
     {
         $result = $this->runCli($argument);
 
         self::assertSame(1, $result['exitCode']);
-        self::assertSame('', $result['stdout']);
-        self::assertStringContainsString('pre-alpha development', $result['stderr']);
+        self::assertStringContainsString('Minecraft: Bedrock Edition Server Software', $result['stdout']);
+        self::assertStringContainsString('Unknown invocation', $result['stderr']);
     }
 
-    /** @return iterable<string, array{?string}> */
+    /** @return iterable<string, array{string}> */
     public static function unsupportedArgumentProvider(): iterable
     {
-        yield 'no argument' => [null];
         yield 'unknown argument' => ['--unknown'];
     }
 
