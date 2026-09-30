@@ -1,7 +1,27 @@
 # Usage
 
-Install the qualified archive for this machine from a local file. The archive
-name and digest must exactly match `bedriox.lock.json`:
+Release installations use this layout:
+
+```text
+server/
+|-- Bedriox.phar
+|-- bedriox.cmd
+|-- bedriox
+`-- bin/
+```
+
+Download the PHAR, checksum, and launcher from the matching Bedriox release.
+Verify the SHA-256 checksum, then extract the qualified Runtime archive for the
+machine as the adjacent `bin/` directory. Composer and a source checkout are
+not required. Run `bedriox.cmd` on Windows or `./bedriox` on Linux and macOS
+from the directory where server data should be stored.
+
+`Bedriox.phar` deliberately keeps the same filename for every release. Routine
+server upgrades replace that file without requiring changes to either launcher.
+Replace `bin/` only when the release requires a different Runtime build.
+
+Source installations can install a qualified Runtime archive from a local
+file. Its name and digest must exactly match `bedriox.lock.json`:
 
 ```shell
 php tools/install-runtime.php path/to/bedriox-runtime-windows-x86_64.zip
@@ -12,7 +32,7 @@ URLs, extracts into a bounded same-volume staging directory, verifies the
 archive and inner manifest hashes, probes the packaged PHP, and restores the
 previous `bin/` if activation fails.
 
-Inspect the packaged server with `bedriox.cmd --version` on Windows or
+Inspect either packaged layout with `bedriox.cmd --version` on Windows or
 `./bedriox --version` on Linux and macOS. Start it with `bedriox.cmd` on
 Windows or `./bedriox` on Linux and macOS. The explicit `serve` command remains
 supported for scripts. These launchers use only the adjacent `bin/php(.exe)` and

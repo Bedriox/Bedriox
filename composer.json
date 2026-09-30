@@ -75,6 +75,7 @@
         "validate:licenses": "@php tools/validate-licenses.php",
         "format:check": "php-cs-fixer fix --dry-run --diff",
         "format": "php-cs-fixer fix",
+        "build:phar": "@php -d phar.readonly=0 tools/build-phar.php",
         "check:ci": [
             "@verify:composer",
             "@verify:audit",

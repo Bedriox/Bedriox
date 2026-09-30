@@ -68,10 +68,11 @@ php bin/bedriox
 ```
 
 The commands above are the development path. The explicit `serve` command
-remains available for scripts. For a packaged server,
-install the exact local Runtime archive recorded in
-[`bedriox.lock.json`](bedriox.lock.json), then run `bedriox.cmd` on Windows or
-`./bedriox` on Linux and macOS. See the [usage guide](docs/usage.md).
+remains available for scripts. For a packaged server, download `Bedriox.phar`
+and the launchers plus the matching Runtime archive. Extract Runtime as
+the adjacent `bin/` directory, then run `bedriox.cmd` on Windows or `./bedriox`
+on Linux and macOS. Composer is not required to run a release. See the
+[usage guide](docs/usage.md).
 
 The exact component revisions are recorded in [`bedriox.lock.json`](bedriox.lock.json). See the [development guide](docs/development.md), [usage and configuration guide](docs/usage.md), [plugin guide](docs/plugins.md), [architecture](docs/architecture.md), and [testing guide](docs/testing.md) for contributor details.
 

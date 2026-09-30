@@ -52,6 +52,23 @@ final class RuntimeEnvironmentValidatorTest extends TestCase
         self::assertMatchesRegularExpression('/^[0-9a-f]{64}$/D', $manifest->sha256);
     }
 
+    public function testExtractedApplicationLockMayValidateAdjacentDistributionRuntime(): void
+    {
+        $process = $this->writeFixture();
+        $lock = $this->root . DIRECTORY_SEPARATOR . 'cache' . DIRECTORY_SEPARATOR . 'application' . DIRECTORY_SEPARATOR . 'bedriox.lock.json';
+        self::assertTrue(mkdir(dirname($lock), 0700, true));
+        self::assertTrue(rename($this->root . DIRECTORY_SEPARATOR . 'bedriox.lock.json', $lock));
+
+        $manifest = RuntimeEnvironmentValidator::validate(
+            $this->root,
+            $this->root . DIRECTORY_SEPARATOR . 'bin',
+            $process,
+            $lock,
+        );
+
+        self::assertSame(self::QUALIFIED_PHP_VERSION, $manifest->phpVersion);
+    }
+
     public function testManifestMustMatchExternalLockHash(): void
     {
         $process = $this->writeFixture();

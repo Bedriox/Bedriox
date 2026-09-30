@@ -33,6 +33,7 @@ final class RuntimeEnvironmentValidator
         string $projectRoot,
         string|false $configuredRuntimeRoot,
         ?RuntimeProcessIdentity $process = null,
+        ?string $lockFile = null,
     ): RuntimeManifest {
         $process ??= RuntimeProcessIdentity::current();
         $project = realpath($projectRoot);
@@ -62,7 +63,7 @@ final class RuntimeEnvironmentValidator
 
         $manifest = RuntimeManifest::load($runtime . DIRECTORY_SEPARATOR . 'runtime-manifest.json');
         $expected = RuntimeArtifactExpectation::fromLockFile(
-            $project . DIRECTORY_SEPARATOR . 'bedriox.lock.json',
+            $lockFile ?? $project . DIRECTORY_SEPARATOR . 'bedriox.lock.json',
             $manifest->target,
         );
         if ($expected->manifestSchema !== 2 || !hash_equals($expected->manifestSha256, $manifest->sha256)) {

@@ -19,6 +19,21 @@ Run focused tests while developing. Before handoff or commit, run `composer chec
 
 The complete procedure and protected compatibility surfaces are defined in [`change-safety.md`](change-safety.md). Cross-component work follows [`cross-repository-changes.md`](cross-repository-changes.md). The cumulative user-visible acceptance baseline is [`client-journey-contract.md`](client-journey-contract.md).
 
+## Release archive
+
+Build the standalone production PHAR with:
+
+```shell
+composer build:phar
+```
+
+The build installs only locked production dependencies in an isolated staging
+directory and writes `Bedriox.phar`, its SHA-256 checksum, and platform
+launchers to `build/`. The archive embeds application code and production
+vendor packages, but not tests, development tools, worlds, configuration, or
+the PHP runtime. A release deployment places the matching Runtime `bin/`
+directory beside these files.
+
 ## Private component resolution
 
 During private alpha development, Composer resolves the Protocol, RakNet, and Data packages from explicit sibling checkouts. Their package versions and immutable commit IDs are recorded in `bedriox.lock.json` and checked against `composer.lock`; when sibling Git repositories are present, the manifest validator also verifies their checked-out commits. CI derives every private checkout ref directly from that manifest through `tools/export-component-pins.php`; never duplicate component commit hashes in the workflow.
