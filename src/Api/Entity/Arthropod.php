@@ -18,18 +18,7 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Server\Simulation;
+namespace Bedriox\Api\Entity;
 
-enum DamageCause: string
-{
-    case Attack = 'attack';
-    case Fall = 'fall';
-    case Kill = 'kill';
-    case Plugin = 'plugin';
-    case Magic = 'magic';
-    case Projectile = 'projectile';
-    case Drowning = 'drowning';
-    case Fire = 'fire';
-    case Explosion = 'explosion';
-    case Thorns = 'thorns';
-}
+/** Marker for spiders, cave spiders, silverfish, endermites, and bees. */
+interface Arthropod extends LivingEntity {}

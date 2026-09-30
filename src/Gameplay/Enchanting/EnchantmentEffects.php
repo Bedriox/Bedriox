@@ -62,6 +62,8 @@ final class EnchantmentEffects
                 $factor += self::protectionContribution($enchantments[VanillaEnchantments::FEATHER_FALLING] ?? 0, 2.5);
             } elseif ($cause === DamageCause::Projectile) {
                 $factor += self::protectionContribution($enchantments[VanillaEnchantments::PROJECTILE_PROTECTION] ?? 0, 1.5);
+            } elseif ($cause === DamageCause::Explosion) {
+                $factor += self::protectionContribution($enchantments[VanillaEnchantments::BLAST_PROTECTION] ?? 0, 1.5);
             }
         }
 

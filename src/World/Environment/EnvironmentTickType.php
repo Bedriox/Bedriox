@@ -25,4 +25,5 @@ enum EnvironmentTickType: string
     case FLUID = 'fluid';
     case FIRE = 'fire';
     case RANDOM_BLOCK = 'random_block';
+    case FROSTED_ICE = 'frosted_ice';
 }

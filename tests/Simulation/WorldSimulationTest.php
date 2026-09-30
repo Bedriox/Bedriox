@@ -30,6 +30,7 @@ use Bedriox\Server\Gameplay\Block\BlockCatalog;
 use Bedriox\Server\Gameplay\Crafting\ComplexCraftingRecipeEvaluator;
 use Bedriox\Server\Gameplay\Crafting\CraftingCatalog;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
+use Bedriox\Server\Gameplay\Projectile\ProjectileState;
 use Bedriox\Server\Player\InventoryContainer;
 use Bedriox\Server\Player\InventoryResponseMode;
 use Bedriox\Server\Player\InventorySlotReference;
@@ -67,6 +68,8 @@ use Bedriox\Server\Simulation\Event\PlayerDisconnected;
 use Bedriox\Server\Simulation\Event\PlayerExperienceChanged;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
+use Bedriox\Server\Simulation\Event\ProjectileMoved;
+use Bedriox\Server\Simulation\Event\ProjectileSpawned;
 use Bedriox\Server\Simulation\MovementMode;
 use Bedriox\Server\Simulation\NutritionChangeReason;
 use Bedriox\Server\Simulation\Position;
@@ -93,6 +96,91 @@ use PHPUnit\Framework\TestCase;
 
 final class WorldSimulationTest extends TestCase
 {
+    public function testArrowEmbedsIntoTheActualCollisionBlockAndRemainsStationary(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $states = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $flat = FixedFlatBlockPalette::fromRegistry($states);
+        $generation = GenerationBlockPalette::fromRegistry($states);
+        $blocks = new World(
+            new WorldMetadata('arrow-impact-test', 17),
+            new FlatWorldGenerator($flat),
+            new ChunkRepository(4),
+        );
+        $blocks->chunk(new ChunkPosition(0, 0));
+        $blocks->setBlockState(0, 65, 3, $generation->state('minecraft:stone'));
+        $simulation = new WorldSimulation(
+            blockWorld: $blocks,
+            blockPalette: $flat,
+            blockStateRegistry: $states,
+            blockCollisionRegistry: BlockCollisionRegistry::forGenerationPalette($states, $generation),
+        );
+        $commands = new SimulationCommandFactory();
+        $bootstrap = new PlayerBootstrap(
+            new PlayerIdentity('identity-one', 'One'),
+            'arrow-impact-test',
+            new Position(0.5, 64.0, 2.0),
+            0.0,
+            0.0,
+            new PlayerInventoryState([
+                new PlayerInventoryEntry(0, new PlayerInventoryStackState('minecraft:bow', 1)),
+                new PlayerInventoryEntry(1, new PlayerInventoryStackState('minecraft:arrow', 2)),
+            ], 0),
+            1,
+            2,
+        );
+        self::assertTrue($simulation->enqueue($commands->join(
+            'one',
+            'identity-one',
+            'One',
+            bootstrap: $bootstrap,
+        )));
+        $simulation->tick();
+
+        self::assertTrue($simulation->enqueue($commands->useItem('one', 0)));
+        $simulation->tick();
+        for ($tick = 0; $tick < 20; ++$tick) {
+            $simulation->tick();
+        }
+        self::assertTrue($simulation->enqueue($commands->releaseItem('one', 0)));
+        $launchEvents = $simulation->tick()->events;
+        self::assertCount(1, array_filter(
+            $launchEvents,
+            static fn(object $event): bool => $event instanceof ProjectileSpawned,
+        ));
+
+        $embedded = null;
+        foreach ($launchEvents as $event) {
+            if ($event instanceof ProjectileMoved && $event->projectile->state === ProjectileState::EMBEDDED) {
+                $embedded = $event->projectile;
+                break;
+            }
+        }
+        for ($tick = 0; $tick < 3 && $embedded === null; ++$tick) {
+            foreach ($simulation->tick()->events as $event) {
+                if ($event instanceof ProjectileMoved && $event->projectile->state === ProjectileState::EMBEDDED) {
+                    $embedded = $event->projectile;
+                    break;
+                }
+            }
+        }
+        self::assertNotNull($embedded);
+        self::assertSame([0, 65, 3], [
+            $embedded->embeddedBlock?->x,
+            $embedded->embeddedBlock?->y,
+            $embedded->embeddedBlock?->z,
+        ]);
+        self::assertSame(\Bedriox\Api\World\BlockFace::NORTH, $embedded->embeddedFace);
+        self::assertEqualsWithDelta(2.999, $embedded->position->z, 0.000_001);
+
+        $settledEvents = $simulation->tick()->events;
+        self::assertCount(0, array_filter(
+            $settledEvents,
+            static fn(object $event): bool => $event instanceof ProjectileMoved
+                && $event->projectile->runtimeEntityId === $embedded->runtimeEntityId,
+        ));
+    }
+
     public function testPlayerExperienceCommandsPassTheWorldAdmissionBoundary(): void
     {
         $world = new WorldSimulation();

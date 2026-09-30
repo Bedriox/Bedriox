@@ -27,5 +27,6 @@ enum ItemDamageCause: string
     case ENTITY_ATTACK = 'entity_attack';
     case DAMAGE_ABSORPTION = 'damage_absorption';
     case ITEM_USE = 'item_use';
+    case ENCHANTMENT = 'enchantment';
     case CUSTOM = 'custom';
 }

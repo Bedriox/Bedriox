@@ -21,11 +21,14 @@ declare(strict_types=1);
 namespace Bedriox\Server\Tests\Gameplay\Projectile;
 
 use Bedriox\Api\Potion\PotionType;
+use Bedriox\Api\World\BlockFace;
 use Bedriox\Server\Gameplay\Projectile\Projectile;
 use Bedriox\Server\Gameplay\Projectile\ProjectileRegistry;
+use Bedriox\Server\Gameplay\Projectile\ProjectileState;
 use Bedriox\Server\Gameplay\Projectile\ProjectileType;
 use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Simulation\Position;
+use Bedriox\Server\World\BlockPosition;
 use OverflowException;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
@@ -113,6 +116,59 @@ final class ProjectileRegistryTest extends TestCase
         self::assertFalse($normal->tippedArrow);
         self::assertTrue($tipped->tippedArrow);
         self::assertSame(PotionType::POISON, $tipped->potionType);
+    }
+
+    public function testArrowRemainsStationaryAndKeepsItsImpactRotationWhenEmbedded(): void
+    {
+        $spawnRegistry = new ProjectileRegistry(firstEntityId: 1_750);
+        $arrow = $spawnRegistry->spawnArrow(
+            'owner',
+            new Position(0.0, 64.0, 0.0),
+            35.0,
+            -12.0,
+            3.0,
+        )->embeddedAt(
+            new Position(1.25, 64.4, 2.5),
+            new BlockPosition(1, 64, 2),
+            BlockFace::NORTH,
+        );
+        $registry = new ProjectileRegistry(firstEntityId: 1);
+        $registry->restore($arrow);
+
+        $result = $registry->tick();
+        self::assertCount(1, $result->updated);
+        $updated = $result->updated[0];
+        self::assertSame(ProjectileState::EMBEDDED, $updated->state);
+        self::assertSame(1, $updated->embeddedTicks);
+        self::assertSame(0.0, $updated->motion->x);
+        self::assertSame(0.0, $updated->motion->y);
+        self::assertSame(0.0, $updated->motion->z);
+        self::assertSame($arrow->position, $updated->position);
+        self::assertSame($arrow->yaw, $updated->yaw);
+        self::assertSame($arrow->pitch, $updated->pitch);
+    }
+
+    public function testLoyaltyTridentUsesBoundedReturningMotion(): void
+    {
+        $registry = new ProjectileRegistry(firstEntityId: 1_900);
+        $trident = $registry->spawnTrident(
+            'owner',
+            PotionType::WATER,
+            new Position(0.0, 64.0, 0.0),
+            0.0,
+            0.0,
+            2.4,
+            0.0,
+            3,
+            false,
+            true,
+            new InventoryStack('minecraft:trident', 1, 1),
+        )->beginReturning()->returnToward(new Position(6.0, 64.0, 0.0));
+
+        self::assertSame(ProjectileState::RETURNING, $trident->state);
+        self::assertEqualsWithDelta(0.9, $trident->motion->x, 0.000001);
+        self::assertEqualsWithDelta(0.0, $trident->motion->y, 0.000001);
+        self::assertEqualsWithDelta(0.0, $trident->motion->z, 0.000001);
     }
 
     public function testTridentAndFishingHookUseTheirOwnPhysicsAndState(): void

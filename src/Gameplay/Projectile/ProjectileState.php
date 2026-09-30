@@ -18,18 +18,11 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Server\Simulation;
+namespace Bedriox\Server\Gameplay\Projectile;
 
-enum DamageCause: string
+enum ProjectileState: string
 {
-    case Attack = 'attack';
-    case Fall = 'fall';
-    case Kill = 'kill';
-    case Plugin = 'plugin';
-    case Magic = 'magic';
-    case Projectile = 'projectile';
-    case Drowning = 'drowning';
-    case Fire = 'fire';
-    case Explosion = 'explosion';
-    case Thorns = 'thorns';
+    case FLYING = 'flying';
+    case EMBEDDED = 'embedded';
+    case RETURNING = 'returning';
 }

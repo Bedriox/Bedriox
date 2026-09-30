@@ -21,12 +21,15 @@ declare(strict_types=1);
 namespace Bedriox\Server\Tests\Gameplay\Projectile;
 
 use Bedriox\Api\Potion\PotionType;
+use Bedriox\Api\World\BlockFace;
 use Bedriox\Server\Gameplay\Potion\AreaEffectCloudRegistry;
 use Bedriox\Server\Gameplay\Projectile\ProjectilePersistenceCodec;
 use Bedriox\Server\Gameplay\Projectile\ProjectileRegistry;
+use Bedriox\Server\Gameplay\Projectile\ProjectileState;
 use Bedriox\Server\Gameplay\Projectile\ProjectileType;
 use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Simulation\Position;
+use Bedriox\Server\World\BlockPosition;
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
@@ -44,7 +47,7 @@ final class ProjectilePersistenceCodecTest extends TestCase
             37.0,
             -18.0,
             2.25,
-            false,
+            \Bedriox\Server\Gameplay\Projectile\ArrowPickupMode::NONE,
         );
         $projectiles->tick(7);
 
@@ -87,6 +90,59 @@ final class ProjectilePersistenceCodecTest extends TestCase
         $restoredClouds->restore($decodedClouds[0]);
         $nextCloud = $restoredClouds->spawn('next-owner', PotionType::WATER, new Position(0.0, 64.0, 0.0));
         self::assertGreaterThan($decodedClouds[0]->runtimeEntityId, $nextCloud->runtimeEntityId);
+    }
+
+    public function testEmbeddedArrowStateSurvivesPersistence(): void
+    {
+        $registry = new ProjectileRegistry(firstEntityId: 5_000);
+        $arrow = $registry->spawnArrow(
+            'owner',
+            new Position(0.0, 64.0, 0.0),
+            25.0,
+            -8.0,
+            2.0,
+        )->embeddedAt(
+            new Position(2.0, 65.0, 3.0),
+            new BlockPosition(2, 65, 3),
+            BlockFace::WEST,
+        );
+        $registry = new ProjectileRegistry(firstEntityId: 1);
+        $registry->restore($arrow);
+
+        $codec = new ProjectilePersistenceCodec();
+        [$decoded] = $codec->decode('world', $codec->encode('world', $registry->all(), []));
+
+        self::assertCount(1, $decoded);
+        self::assertSame(ProjectileState::EMBEDDED, $decoded[0]->state);
+        self::assertSame(BlockFace::WEST, $decoded[0]->embeddedFace);
+        self::assertEquals($arrow->embeddedBlock, $decoded[0]->embeddedBlock);
+        self::assertSame($arrow->yaw, $decoded[0]->yaw);
+        self::assertSame($arrow->pitch, $decoded[0]->pitch);
+    }
+
+    public function testVersionOneProjectileSnapshotMigratesToFlyingState(): void
+    {
+        $registry = new ProjectileRegistry(firstEntityId: 6_000);
+        $registry->spawnArrow('owner', new Position(1.0, 65.0, 2.0), 35.0, -10.0, 2.0);
+        $codec = new ProjectilePersistenceCodec();
+        $document = json_decode($codec->encode('world', $registry->all(), []), true, 32, JSON_THROW_ON_ERROR);
+        if (!is_array($document) || !isset($document['projectiles']) || !is_array($document['projectiles'])
+            || !isset($document['projectiles'][0]) || !is_array($document['projectiles'][0])) {
+            self::fail('Encoded projectile persistence document has an invalid test shape.');
+        }
+        $document['version'] = 1;
+        foreach (['state', 'yaw', 'pitch', 'embeddedBlock', 'embeddedFace', 'embeddedTicks', 'pickupMode'] as $key) {
+            unset($document['projectiles'][0][$key]);
+        }
+
+        [$decoded] = $codec->decode('world', json_encode($document, JSON_THROW_ON_ERROR));
+
+        self::assertCount(1, $decoded);
+        self::assertSame(ProjectileState::FLYING, $decoded[0]->state);
+        self::assertSame(\Bedriox\Server\Gameplay\Projectile\ArrowPickupMode::ANY, $decoded[0]->pickupMode);
+        self::assertNull($decoded[0]->embeddedBlock);
+        self::assertTrue(is_finite($decoded[0]->yaw));
+        self::assertTrue(is_finite($decoded[0]->pitch));
     }
 
     public function testRejectsMalformedOversizedAndCrossWorldSnapshots(): void

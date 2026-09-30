@@ -92,6 +92,7 @@ use Bedriox\Protocol\Packet\MobEffectPacket;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
 use Bedriox\Protocol\Packet\MoveActorAbsoluteFlag;
 use Bedriox\Protocol\Packet\MoveActorAbsolutePacket;
+use Bedriox\Protocol\Packet\MoveActorDeltaPacket;
 use Bedriox\Protocol\Packet\MovePlayerMode;
 use Bedriox\Protocol\Packet\MovePlayerPacket;
 use Bedriox\Protocol\Packet\Packet;
@@ -425,16 +426,19 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
     /** @return list<DirectedPacket> */
     private function playerKnockedBack(PlayerKnockedBack $event): array
     {
-        $packet = new SetActorMotionPacket(
-            UnsignedLong::fromInt($event->player->runtimeActorId),
-            $event->motionX,
-            $event->motionY,
-            $event->motionZ,
-            new UnsignedLong($event->clientTick->high, $event->clientTick->low),
-        );
-
         return array_map(
-            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
+            static fn(string $recipient): DirectedPacket => new DirectedPacket(
+                $recipient,
+                new SetActorMotionPacket(
+                    UnsignedLong::fromInt($event->player->runtimeActorId),
+                    $event->motionX,
+                    $event->motionY,
+                    $event->motionZ,
+                    $recipient === $event->player->sessionId
+                        ? new UnsignedLong($event->clientTick->high, $event->clientTick->low)
+                        : UnsignedLong::fromInt(0),
+                ),
+            ),
             $event->recipientSessionIds,
         );
     }
@@ -805,13 +809,6 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
     /** @return list<DirectedPacket> */
     private function motionChanged(PlayerMotionChanged $event): array
     {
-        $motion = new SetActorMotionPacket(
-            UnsignedLong::fromInt($event->player->runtimeActorId),
-            $event->motionX,
-            $event->motionY,
-            $event->motionZ,
-            new UnsignedLong($event->clientTick->high, $event->clientTick->low),
-        );
         $posture = $event->postureChanged
             ? SetActorDataPacket::playerPosture(
                 UnsignedLong::fromInt($event->player->runtimeActorId),
@@ -822,7 +819,15 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             : null;
         $packets = [];
         foreach ($event->recipientSessionIds as $recipient) {
-            $packets[] = new DirectedPacket($recipient, $motion);
+            $packets[] = new DirectedPacket($recipient, new SetActorMotionPacket(
+                UnsignedLong::fromInt($event->player->runtimeActorId),
+                $event->motionX,
+                $event->motionY,
+                $event->motionZ,
+                $recipient === $event->player->sessionId
+                    ? new UnsignedLong($event->clientTick->high, $event->clientTick->low)
+                    : UnsignedLong::fromInt(0),
+            ));
             if ($posture !== null) {
                 $packets[] = new DirectedPacket($recipient, $posture);
             }
@@ -885,6 +890,11 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
                 $player->verticalState === VerticalState::GROUNDED,
                 UnsignedLong::fromInt(0),
                 UnsignedLong::fromInt(max(0, $player->movementSequence)),
+            )),
+            new DirectedPacket($player->sessionId, new SetActorDataPacket(
+                UnsignedLong::fromInt($player->runtimeActorId),
+                UnsignedLong::fromInt(max(0, $player->movementSequence)),
+                $this->playerMetadata($player),
             )),
         ];
         $animation = new ActorEventPacket(UnsignedLong::fromInt($player->runtimeActorId), ActorEventType::Respawn);
@@ -1489,7 +1499,9 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
     private function projectileSpawned(ProjectileSpawned $event): array
     {
         $projectile = $event->projectile;
-        [$pitch, $yaw] = self::projectileRotation($projectile->motion);
+        [$pitch, $yaw] = $projectile->state === \Bedriox\Server\Gameplay\Projectile\ProjectileState::EMBEDDED
+            ? [$projectile->pitch, $projectile->yaw]
+            : self::projectileRotation($projectile->motion);
         $packet = new AddActorPacket(
             $projectile->uniqueEntityId,
             UnsignedLong::fromInt($projectile->runtimeEntityId),
@@ -1529,21 +1541,61 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
     private function projectileMoved(ProjectileMoved $event): array
     {
         $projectile = $event->projectile;
-        [$pitch, $yaw] = self::projectileRotation($projectile->motion);
-        $packet = new MoveActorAbsolutePacket(
+        [$pitch, $yaw] = $projectile->state === \Bedriox\Server\Gameplay\Projectile\ProjectileState::EMBEDDED
+            ? [$projectile->pitch, $projectile->yaw]
+            : self::projectileRotation($projectile->motion);
+        $position = $projectile->state === \Bedriox\Server\Gameplay\Projectile\ProjectileState::EMBEDDED
+            ? new MoveActorAbsolutePacket(
+                UnsignedLong::fromInt($projectile->runtimeEntityId),
+                $projectile->position->x,
+                $projectile->position->y,
+                $projectile->position->z,
+                $pitch,
+                $yaw,
+                $yaw,
+                [\Bedriox\Protocol\Packet\MoveActorAbsoluteFlag::OnGround],
+            )
+            : new MoveActorDeltaPacket(
+                UnsignedLong::fromInt($projectile->runtimeEntityId),
+                $projectile->position->x,
+                $projectile->position->y,
+                $projectile->position->z,
+                $pitch,
+                $yaw,
+                $yaw,
+                false,
+                false,
+                false,
+                false,
+                UnsignedLong::fromInt(1),
+            );
+        $motion = $event->motionChanged ? new SetActorMotionPacket(
             UnsignedLong::fromInt($projectile->runtimeEntityId),
-            $projectile->position->x,
-            $projectile->position->y,
-            $projectile->position->z,
-            $pitch,
-            $yaw,
-            $yaw,
-        );
+            $projectile->motion->x,
+            $projectile->motion->y,
+            $projectile->motion->z,
+            UnsignedLong::fromInt(0),
+        ) : null;
+        $shake = $event->embedded && $projectile->type === ProjectileType::ARROW
+            ? new ActorEventPacket(
+                UnsignedLong::fromInt($projectile->runtimeEntityId),
+                ActorEventType::ArrowShake,
+                7,
+            )
+            : null;
 
-        return array_map(
-            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
-            $event->recipientSessionIds,
-        );
+        $packets = [];
+        foreach ($event->recipientSessionIds as $recipient) {
+            $packets[] = new DirectedPacket($recipient, $position);
+            if ($motion !== null) {
+                $packets[] = new DirectedPacket($recipient, $motion);
+            }
+            if ($shake !== null) {
+                $packets[] = new DirectedPacket($recipient, $shake);
+            }
+        }
+
+        return $packets;
     }
 
     /** @return array{float, float} Pitch and yaw in Bedrock degrees. */
@@ -1555,8 +1607,8 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
         }
 
         return [
-            rad2deg(atan2(-$motion->y, $horizontal)),
-            rad2deg(atan2(-$motion->x, $motion->z)),
+            rad2deg(atan2($motion->y, $horizontal)),
+            rad2deg(atan2($motion->x, $motion->z)),
         ];
     }
 

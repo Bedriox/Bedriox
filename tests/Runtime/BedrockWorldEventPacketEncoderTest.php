@@ -595,7 +595,8 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         self::assertSame(0.4, $packets[0]->packet->motionZ);
         self::assertSame(0x80000000, $packets[0]->packet->tick->high);
         self::assertSame(42, $packets[0]->packet->tick->low);
-        self::assertSame($packets[0]->packet, $packets[1]->packet);
+        self::assertInstanceOf(SetActorMotionPacket::class, $packets[1]->packet);
+        self::assertTrue($packets[1]->packet->tick->equals(UnsignedLong::fromInt(0)));
         self::assertSame('1600000000cdcccc3ecdcccc3eaa808080808080808001', bin2hex($packets[0]->packet->encode()));
     }
 
@@ -636,7 +637,9 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         ));
         self::assertInstanceOf(SetActorMotionPacket::class, $packets[0]->packet);
         self::assertInstanceOf(SetActorDataPacket::class, $packets[1]->packet);
-        self::assertSame($packets[0]->packet, $packets[2]->packet);
+        self::assertInstanceOf(SetActorMotionPacket::class, $packets[2]->packet);
+        self::assertTrue($packets[0]->packet->tick->equals(UnsignedLong::fromInt(42)));
+        self::assertTrue($packets[2]->packet->tick->equals(UnsignedLong::fromInt(0)));
         self::assertSame($packets[1]->packet, $packets[3]->packet);
     }
 

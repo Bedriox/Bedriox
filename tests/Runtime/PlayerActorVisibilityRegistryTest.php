@@ -114,6 +114,27 @@ final class PlayerActorVisibilityRegistryTest extends TestCase
         self::assertSame([], $registry->viewersOf('actor'));
     }
 
+    public function testRespawnRefreshReintroducesOnlyRetainedViewers(): void
+    {
+        $registry = new PlayerActorVisibilityRegistry(3);
+        $registry->upsert($this->player('actor', 1, 0.0));
+        $registry->upsert($this->player('viewer', 2, 0.0));
+        $registry->upsert($this->player('hidden', 3, 0.0));
+        $registry->reconcileActor('actor', static fn(string $viewer): bool => $viewer === 'viewer');
+        $respawned = $this->player('actor', 1, 8.0);
+        $registry->upsert($respawned);
+
+        $events = $registry->refreshActor($respawned, ['viewer', 'hidden', 'viewer']);
+
+        self::assertCount(2, $events);
+        self::assertInstanceOf(PlayerBecameHidden::class, $events[0]);
+        self::assertInstanceOf(PlayerBecameVisible::class, $events[1]);
+        self::assertSame('viewer', $events[0]->recipientSessionId);
+        self::assertSame('viewer', $events[1]->recipientSessionId);
+        self::assertSame(8.0, $events[1]->player->position->x);
+        self::assertSame(['viewer'], $registry->viewersOf('actor'));
+    }
+
     public function testCapacityIsBounded(): void
     {
         $registry = new PlayerActorVisibilityRegistry(1);

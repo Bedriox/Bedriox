@@ -1,6 +1,7 @@
 # Changelog
 
 - Centralize current enchantment definitions and apply authoritative combat, armor, mining, durability, breathing, movement, loot, Mending, mace, bow, and crossbow behavior from canonical item state.
+- Stream flying projectile positions with one-tick interpolation, keep embedded arrows visible at their impact point, preserve local-player input ticks only for their own knockback, and fully reintroduce extinguished players to nearby viewers after respawn.
 - Resolve melee and projectile knockback once, expose cancellable typed knockback and projectile lifecycle events, and preserve server-owned damage, inventory, ammunition, and drop authority.
 - Let block-break listeners replace the computed Silk Touch and Fortune drop list before commit, with the final list available to post-event observers.
 - Preserve unchanged workstation stack network identities across live processing updates so furnace input, fuel, and output remain removable while cooking.

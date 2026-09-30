@@ -24,6 +24,7 @@ use Bedriox\Api\TranslatableMessage;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Packet\ActorEventPacket;
 use Bedriox\Protocol\Packet\ActorEventType;
+use Bedriox\Protocol\Packet\ActorFlag;
 use Bedriox\Protocol\Packet\DeathInfoPacket;
 use Bedriox\Protocol\Packet\InventoryContainerId;
 use Bedriox\Protocol\Packet\InventoryContentPacket;
@@ -32,6 +33,7 @@ use Bedriox\Protocol\Packet\MoveActorAbsolutePacket;
 use Bedriox\Protocol\Packet\MovePlayerPacket;
 use Bedriox\Protocol\Packet\RespawnPacket;
 use Bedriox\Protocol\Packet\RespawnState;
+use Bedriox\Protocol\Packet\SetActorDataPacket;
 use Bedriox\Protocol\Packet\SystemTextPacket;
 use Bedriox\Protocol\Packet\TranslatedTextPacket;
 use Bedriox\Protocol\Packet\UpdateAttributesPacket;
@@ -121,32 +123,36 @@ final class PlayerLifecyclePacketProjectionTest extends TestCase
             $offhand,
         ), []);
 
-        self::assertCount(13, $packets);
+        self::assertCount(14, $packets);
         self::assertInstanceOf(UpdateAttributesPacket::class, $packets[0]->packet);
         self::assertInstanceOf(UpdateAttributesPacket::class, $packets[1]->packet);
         self::assertInstanceOf(MovePlayerPacket::class, $packets[2]->packet);
-        self::assertInstanceOf(ActorEventPacket::class, $packets[3]->packet);
-        self::assertSame(ActorEventType::Respawn, $packets[3]->packet->event);
+        self::assertInstanceOf(SetActorDataPacket::class, $packets[3]->packet);
+        $flags = $packets[3]->packet->metadata[0]->value;
+        self::assertIsInt($flags);
+        self::assertSame(0, $flags & ActorFlag::OnFire->mask());
         self::assertInstanceOf(ActorEventPacket::class, $packets[4]->packet);
-        self::assertInstanceOf(MoveActorAbsolutePacket::class, $packets[5]->packet);
-        self::assertInstanceOf(InventoryContentPacket::class, $packets[6]->packet);
-        self::assertCount(36, $packets[6]->packet->items);
-        self::assertSame(0, $packets[6]->packet->items[0]->count);
+        self::assertSame(ActorEventType::Respawn, $packets[4]->packet->event);
+        self::assertInstanceOf(ActorEventPacket::class, $packets[5]->packet);
+        self::assertInstanceOf(MoveActorAbsolutePacket::class, $packets[6]->packet);
         self::assertInstanceOf(InventoryContentPacket::class, $packets[7]->packet);
-        self::assertSame(64, $packets[7]->packet->items[0]->count);
+        self::assertCount(36, $packets[7]->packet->items);
+        self::assertSame(0, $packets[7]->packet->items[0]->count);
         self::assertInstanceOf(InventoryContentPacket::class, $packets[8]->packet);
-        self::assertSame(InventoryContainerId::ARMOR, $packets[8]->packet->windowId);
-        self::assertSame(0, $packets[8]->packet->items[0]->count);
+        self::assertSame(64, $packets[8]->packet->items[0]->count);
         self::assertInstanceOf(InventoryContentPacket::class, $packets[9]->packet);
         self::assertSame(InventoryContainerId::ARMOR, $packets[9]->packet->windowId);
-        self::assertSame(1, $packets[9]->packet->items[0]->count);
+        self::assertSame(0, $packets[9]->packet->items[0]->count);
         self::assertInstanceOf(InventoryContentPacket::class, $packets[10]->packet);
-        self::assertSame(InventoryContainerId::OFFHAND, $packets[10]->packet->windowId);
-        self::assertSame(0, $packets[10]->packet->items[0]->count);
+        self::assertSame(InventoryContainerId::ARMOR, $packets[10]->packet->windowId);
+        self::assertSame(1, $packets[10]->packet->items[0]->count);
         self::assertInstanceOf(InventoryContentPacket::class, $packets[11]->packet);
         self::assertSame(InventoryContainerId::OFFHAND, $packets[11]->packet->windowId);
-        self::assertSame(1, $packets[11]->packet->items[0]->count);
-        self::assertInstanceOf(MobEquipmentPacket::class, $packets[12]->packet);
+        self::assertSame(0, $packets[11]->packet->items[0]->count);
+        self::assertInstanceOf(InventoryContentPacket::class, $packets[12]->packet);
+        self::assertSame(InventoryContainerId::OFFHAND, $packets[12]->packet->windowId);
+        self::assertSame(1, $packets[12]->packet->items[0]->count);
+        self::assertInstanceOf(MobEquipmentPacket::class, $packets[13]->packet);
     }
 
     public function testDeathChatAndScreenCanBeCustomizedOrSuppressedIndependently(): void

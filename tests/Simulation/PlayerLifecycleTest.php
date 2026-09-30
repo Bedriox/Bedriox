@@ -20,6 +20,9 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Simulation;
 
+use Bedriox\Server\Player\PlayerBootstrap;
+use Bedriox\Server\Player\PlayerIdentity;
+use Bedriox\Server\Player\PlayerInventoryState;
 use Bedriox\Server\Simulation\DamageCause;
 use Bedriox\Server\Simulation\Event\CommandRejected;
 use Bedriox\Server\Simulation\Event\MovementCorrected;
@@ -108,5 +111,39 @@ final class PlayerLifecycleTest extends TestCase
         self::assertInstanceOf(CommandRejected::class, $protected);
         self::assertSame('damage_cooldown', $protected->reason);
         self::assertSame(20.0, $world->snapshot()->players[0]->health);
+    }
+
+    public function testRespawnClearsAuthoritativeFireState(): void
+    {
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation();
+        $bootstrap = new PlayerBootstrap(
+            new PlayerIdentity('12345678-1234-5678-9abc-123456789abc', 'Player'),
+            'world',
+            new Position(0.0, 64.0, 0.0),
+            0.0,
+            0.0,
+            new PlayerInventoryState([], 0),
+            1,
+            1,
+            health: 1.0,
+            fireTicks: 100,
+        );
+        $world->enqueue($factory->join(
+            'session',
+            $bootstrap->identity->uuid,
+            $bootstrap->identity->displayName,
+            bootstrap: $bootstrap,
+        ));
+        $world->tick();
+        $world->enqueue($factory->damage('session', 1.0, DamageCause::Fire));
+        $world->tick();
+        self::assertGreaterThan(0, $world->snapshot()->players[0]->fireTicks);
+
+        $world->enqueue($factory->acknowledgeRespawn('session'));
+        $world->tick();
+
+        self::assertTrue($world->snapshot()->players[0]->alive);
+        self::assertSame(0, $world->snapshot()->players[0]->fireTicks);
     }
 }

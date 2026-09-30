@@ -117,6 +117,30 @@ final class PlayerActorVisibilityRegistry
         return $viewers;
     }
 
+    /**
+     * Reintroduces an actor to retained viewers after a client lifecycle reset such as respawn.
+     *
+     * @param list<string> $viewerSessionIds
+     * @return list<WorldEvent>
+     */
+    public function refreshActor(PlayerSnapshot $player, array $viewerSessionIds): array
+    {
+        if (!isset($this->players[$player->sessionId])) {
+            return [];
+        }
+        $this->players[$player->sessionId] = $player;
+        $events = [];
+        foreach (array_values(array_unique($viewerSessionIds)) as $viewerSessionId) {
+            if (!isset($this->viewers[$player->sessionId][$viewerSessionId])) {
+                continue;
+            }
+            $events[] = new PlayerBecameHidden($player->sessionId, $player->runtimeActorId, $viewerSessionId);
+            $events[] = new PlayerBecameVisible($player, $viewerSessionId);
+        }
+
+        return $events;
+    }
+
     /** @return list<string> */
     public function sessionIds(): array
     {

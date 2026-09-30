@@ -18,18 +18,11 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Server\Simulation;
+namespace Bedriox\Server\Gameplay\Projectile;
 
-enum DamageCause: string
+enum ArrowPickupMode: string
 {
-    case Attack = 'attack';
-    case Fall = 'fall';
-    case Kill = 'kill';
-    case Plugin = 'plugin';
-    case Magic = 'magic';
-    case Projectile = 'projectile';
-    case Drowning = 'drowning';
-    case Fire = 'fire';
-    case Explosion = 'explosion';
-    case Thorns = 'thorns';
+    case NONE = 'none';
+    case ANY = 'any';
+    case CREATIVE_ONLY = 'creative_only';
 }

@@ -22,6 +22,7 @@ namespace Bedriox\Server\Gameplay\Projectile;
 
 use Bedriox\Api\Inventory\ItemNbt;
 use Bedriox\Api\Potion\PotionType;
+use Bedriox\Api\World\BlockFace;
 use Bedriox\Server\Entity\EntityMotion;
 use Bedriox\Server\Gameplay\Potion\AreaEffectCloud;
 use Bedriox\Server\Gameplay\Potion\AreaEffectCloudRegistry;
@@ -34,7 +35,7 @@ use JsonException;
 final class ProjectilePersistenceCodec
 {
     public const int MAXIMUM_BYTES = 1_048_576;
-    private const int VERSION = 1;
+    private const int VERSION = 2;
 
     /**
      * @param list<Projectile> $projectiles
@@ -80,6 +81,17 @@ final class ProjectilePersistenceCodec
                 'fishingBite' => $entity->fishingBiteTicks,
                 'fishingLuck' => $entity->fishingLuckLevel,
                 'fishingLure' => $entity->fishingLureLevel,
+                'state' => $entity->state->value,
+                'yaw' => $entity->yaw,
+                'pitch' => $entity->pitch,
+                'embeddedBlock' => $entity->embeddedBlock === null ? null : [
+                    $entity->embeddedBlock->x,
+                    $entity->embeddedBlock->y,
+                    $entity->embeddedBlock->z,
+                ],
+                'embeddedFace' => $entity->embeddedFace?->value,
+                'embeddedTicks' => $entity->embeddedTicks,
+                'pickupMode' => $entity->pickupMode->value,
             ], $persistedProjectiles),
             'clouds' => array_map(static fn(AreaEffectCloud $entity): array => [
                 'unique' => $entity->uniqueEntityId,
@@ -116,7 +128,7 @@ final class ProjectilePersistenceCodec
         } catch (JsonException $error) {
             throw new InvalidArgumentException('Potion entity snapshot is malformed.', previous: $error);
         }
-        if (!is_array($document) || ($document['version'] ?? null) !== self::VERSION
+        if (!is_array($document) || !in_array(($document['version'] ?? null), [1, self::VERSION], true)
             || ($document['world'] ?? null) !== $worldId
             || !isset($document['projectiles'], $document['clouds'])
             || !is_array($document['projectiles']) || !array_is_list($document['projectiles'])
@@ -159,6 +171,13 @@ final class ProjectilePersistenceCodec
                 self::optionalInteger($record, 'fishingBite', 0),
                 self::optionalInteger($record, 'fishingLuck', 0),
                 self::optionalInteger($record, 'fishingLure', 0),
+                self::projectileState($record),
+                self::optionalNumber($record, 'yaw', self::motionYaw(self::motion($record))),
+                self::optionalNumber($record, 'pitch', self::motionPitch(self::motion($record))),
+                self::optionalBlockPosition($record, 'embeddedBlock'),
+                self::optionalBlockFace($record, 'embeddedFace'),
+                self::optionalInteger($record, 'embeddedTicks', 0),
+                self::arrowPickupMode($record),
             );
         }
         $clouds = [];
@@ -292,6 +311,60 @@ final class ProjectilePersistenceCodec
             ?? throw new InvalidArgumentException('Projectile entity type is invalid.');
     }
 
+    /** @param array<mixed> $record */
+    private static function projectileState(array $record): ProjectileState
+    {
+        if (!array_key_exists('state', $record)) {
+            return ProjectileState::FLYING;
+        }
+
+        return ProjectileState::tryFrom(self::string($record, 'state'))
+            ?? throw new InvalidArgumentException('Projectile state is invalid.');
+    }
+
+    /** @param array<mixed> $record */
+    private static function arrowPickupMode(array $record): ArrowPickupMode
+    {
+        if (!array_key_exists('pickupMode', $record)) {
+            return self::optionalBoolean($record, 'pickup', true)
+                ? ArrowPickupMode::ANY
+                : ArrowPickupMode::NONE;
+        }
+
+        return ArrowPickupMode::tryFrom(self::string($record, 'pickupMode'))
+            ?? throw new InvalidArgumentException('Arrow pickup mode is invalid.');
+    }
+
+    /** @param array<mixed> $record */
+    private static function optionalBlockPosition(array $record, string $key): ?\Bedriox\Server\World\BlockPosition
+    {
+        $value = $record[$key] ?? null;
+        if ($value === null) {
+            return null;
+        }
+        if (!is_array($value) || !array_is_list($value) || count($value) !== 3
+            || !is_int($value[0]) || !is_int($value[1]) || !is_int($value[2])) {
+            throw new InvalidArgumentException('Embedded projectile block position is invalid.');
+        }
+
+        return new \Bedriox\Server\World\BlockPosition($value[0], $value[1], $value[2]);
+    }
+
+    /** @param array<mixed> $record */
+    private static function optionalBlockFace(array $record, string $key): ?BlockFace
+    {
+        $value = $record[$key] ?? null;
+        if ($value === null) {
+            return null;
+        }
+        if (!is_string($value)) {
+            throw new InvalidArgumentException('Embedded projectile block face is invalid.');
+        }
+
+        return BlockFace::tryFrom($value)
+            ?? throw new InvalidArgumentException('Embedded projectile block face is invalid.');
+    }
+
     /**
      * @param array<mixed> $record
      * @return list<string>
@@ -365,5 +438,15 @@ final class ProjectilePersistenceCodec
             throw new InvalidArgumentException('Potion entity numeric field is invalid.');
         }
         return (float) $value;
+    }
+
+    private static function motionYaw(EntityMotion $motion): float
+    {
+        return rad2deg(atan2(-$motion->x, $motion->z));
+    }
+
+    private static function motionPitch(EntityMotion $motion): float
+    {
+        return rad2deg(atan2(-$motion->y, hypot($motion->x, $motion->z)));
     }
 }

@@ -41,6 +41,7 @@ use Bedriox\Server\Simulation\Event\ItemUseCancelled;
 use Bedriox\Server\Simulation\Event\ItemUseStarted;
 use Bedriox\Server\Simulation\Event\NutritionChanged;
 use Bedriox\Server\Simulation\Event\PlayerHealed;
+use Bedriox\Server\Simulation\Event\ProjectileSpawned;
 use Bedriox\Server\Simulation\ItemUseCancellationReason;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
@@ -289,6 +290,57 @@ final class ItemUseSimulationTest extends TestCase
         self::assertSame('example:wand', $world->pluginPlayers()[0]->getInventory()->getItem(0)?->identifier);
         $world->enqueue($factory->useItem('session', 0));
         self::assertInstanceOf(CommandRejected::class, $world->tick()->events[0]);
+    }
+
+    public function testCrossbowCompletedUseLoadsOneRegularArrowThenFiresOnItsNextUse(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $palette = FixedFlatBlockPalette::fromRegistry(new BlockStateRegistry(
+            $data->blockStateRegistry()->states(),
+        ));
+        $world = new WorldSimulation(blockPalette: $palette);
+        $factory = new SimulationCommandFactory();
+        $bootstrap = new PlayerBootstrap(
+            new PlayerIdentity('12345678-1234-5678-9abc-123456789abc', 'Player'),
+            'world',
+            new Position(0.0, 64.0, 0.0),
+            0.0,
+            0.0,
+            new PlayerInventoryState([
+                new PlayerInventoryEntry(0, new PlayerInventoryStackState('minecraft:crossbow', 1)),
+                new PlayerInventoryEntry(1, new PlayerInventoryStackState('minecraft:arrow', 4)),
+            ], 0),
+            1,
+            2,
+        );
+        $world->enqueue($factory->join(
+            'session',
+            $bootstrap->identity->uuid,
+            $bootstrap->identity->displayName,
+            bootstrap: $bootstrap,
+        ));
+        $world->tick();
+
+        $world->enqueue($factory->useItem('session', 0));
+        self::assertInstanceOf(ItemUseStarted::class, $world->tick()->events[0]);
+        for ($tick = 0; $tick < 25; ++$tick) {
+            $world->tick();
+        }
+        // Retail Bedrock completes crossbow charging as a completed use rather than a manual bow release.
+        $world->enqueue($factory->useItem('session', 0));
+        $loaded = $world->tick()->events;
+        self::assertInstanceOf(ItemUseCancelled::class, $loaded[0]);
+        self::assertSame(3, $world->pluginPlayers()[0]->getInventory()->getItem(1)?->count);
+        self::assertNotNull($world->pluginPlayers()[0]->getInventory()->getItem(0)?->nbt);
+
+        $world->enqueue($factory->useItem('session', 0));
+        $fired = $world->tick()->events;
+        self::assertInstanceOf(InstantItemUsed::class, $fired[0]);
+        self::assertCount(1, array_filter(
+            $fired,
+            static fn(object $event): bool => $event instanceof ProjectileSpawned,
+        ));
+        self::assertNull($world->pluginPlayers()[0]->getInventory()->getItem(0)->nbt);
     }
 
     /** @return array{WorldSimulation, SimulationCommandFactory} */

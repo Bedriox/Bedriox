@@ -21,9 +21,11 @@ declare(strict_types=1);
 namespace Bedriox\Server\Gameplay\Projectile;
 
 use Bedriox\Api\Potion\PotionType;
+use Bedriox\Api\World\BlockFace;
 use Bedriox\Server\Entity\EntityMotion;
 use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Simulation\Position;
+use Bedriox\Server\World\BlockPosition;
 use InvalidArgumentException;
 
 /** Immutable authoritative projectile snapshot shared by arrows, thrown items, hooks, and potions. */
@@ -58,6 +60,13 @@ final readonly class Projectile
         public int $fishingBiteTicks = 0,
         public int $fishingLuckLevel = 0,
         public int $fishingLureLevel = 0,
+        public ProjectileState $state = ProjectileState::FLYING,
+        public float $yaw = 0.0,
+        public float $pitch = 0.0,
+        public ?BlockPosition $embeddedBlock = null,
+        public ?BlockFace $embeddedFace = null,
+        public int $embeddedTicks = 0,
+        public ArrowPickupMode $pickupMode = ArrowPickupMode::ANY,
     ) {
         if ($uniqueEntityId < 1 || $uniqueEntityId >= PHP_INT_MAX
             || $runtimeEntityId < 1 || $runtimeEntityId >= PHP_INT_MAX || $ownerUuid === ''
@@ -76,6 +85,12 @@ final readonly class Projectile
             || $fishingBiteTicks < 0 || $fishingBiteTicks > 200
             || $fishingLuckLevel < 0 || $fishingLuckLevel > 3
             || $fishingLureLevel < 0 || $fishingLureLevel > 3
+            || !is_finite($yaw) || !is_finite($pitch) || $pitch < -90.0 || $pitch > 90.0
+            || $embeddedTicks < 0 || $embeddedTicks > self::MAXIMUM_LIFETIME_TICKS
+            || (($embeddedBlock === null) !== ($embeddedFace === null))
+            || ($state === ProjectileState::EMBEDDED && $embeddedBlock === null)
+            || ($state !== ProjectileState::EMBEDDED && ($embeddedBlock !== null || $embeddedTicks !== 0))
+            || ($type !== ProjectileType::ARROW && $pickupMode !== ArrowPickupMode::ANY)
             || ($type !== ProjectileType::FISHING_HOOK && ($fishingBobbing || $fishingWaitTicks > 0
                 || $fishingBiteTicks > 0 || $fishingLuckLevel > 0 || $fishingLureLevel > 0))) {
             throw new InvalidArgumentException('Projectile state is outside its supported bounds.');
@@ -89,6 +104,82 @@ final readonly class Projectile
 
     public function tick(): self
     {
+        if ($this->state === ProjectileState::EMBEDDED) {
+            return new self(
+                $this->uniqueEntityId,
+                $this->runtimeEntityId,
+                $this->ownerUuid,
+                $this->potionType,
+                $this->lingering,
+                $this->position,
+                new EntityMotion(0.0, 0.0, 0.0),
+                $this->ageTicks + 1,
+                $this->tippedArrow,
+                $this->pickupAllowed,
+                $this->damageBonus,
+                $this->knockbackStrength,
+                $this->fireTicks,
+                $this->type,
+                $this->piercingRemaining,
+                $this->hitActorKeys,
+                $this->loyaltyLevel,
+                $this->channeling,
+                $this->carriedItem,
+                $this->ownerRuntimeEntityId,
+                $this->fishingBobbing,
+                $this->fishingWaitTicks,
+                $this->fishingBiteTicks,
+                $this->fishingLuckLevel,
+                $this->fishingLureLevel,
+                $this->state,
+                $this->yaw,
+                $this->pitch,
+                $this->embeddedBlock,
+                $this->embeddedFace,
+                $this->embeddedTicks + 1,
+                $this->pickupMode,
+            );
+        }
+        if ($this->state === ProjectileState::RETURNING) {
+            return new self(
+                $this->uniqueEntityId,
+                $this->runtimeEntityId,
+                $this->ownerUuid,
+                $this->potionType,
+                $this->lingering,
+                new Position(
+                    $this->position->x + $this->motion->x,
+                    $this->position->y + $this->motion->y,
+                    $this->position->z + $this->motion->z,
+                ),
+                $this->motion,
+                $this->ageTicks + 1,
+                $this->tippedArrow,
+                $this->pickupAllowed,
+                $this->damageBonus,
+                $this->knockbackStrength,
+                $this->fireTicks,
+                $this->type,
+                $this->piercingRemaining,
+                $this->hitActorKeys,
+                $this->loyaltyLevel,
+                $this->channeling,
+                $this->carriedItem,
+                $this->ownerRuntimeEntityId,
+                false,
+                0,
+                0,
+                0,
+                0,
+                $this->state,
+                self::rotation($this->motion)[1],
+                self::rotation($this->motion)[0],
+                null,
+                null,
+                0,
+                $this->pickupMode,
+            );
+        }
         $friction = 1.0 - $this->type->drag();
         $gravity = $this->type === ProjectileType::FISHING_HOOK && $this->fishingBobbing
             ? 0.0
@@ -144,12 +235,22 @@ final readonly class Projectile
             $biteTicks,
             $this->fishingLuckLevel,
             $this->fishingLureLevel,
+            $this->state,
+            self::rotation($motion)[1],
+            self::rotation($motion)[0],
+            $this->embeddedBlock,
+            $this->embeddedFace,
+            $this->embeddedTicks,
+            $this->pickupMode,
         );
     }
 
     public function expired(): bool
     {
-        return $this->ageTicks >= self::MAXIMUM_LIFETIME_TICKS;
+        return $this->ageTicks >= self::MAXIMUM_LIFETIME_TICKS
+            && !($this->type === ProjectileType::TRIDENT
+                && $this->loyaltyLevel > 0
+                && $this->carriedItem !== null);
     }
 
     public function atPosition(Position $position): self
@@ -180,6 +281,13 @@ final readonly class Projectile
             $this->fishingBiteTicks,
             $this->fishingLuckLevel,
             $this->fishingLureLevel,
+            $this->state,
+            $this->yaw,
+            $this->pitch,
+            $this->embeddedBlock,
+            $this->embeddedFace,
+            $this->embeddedTicks,
+            $this->pickupMode,
         );
     }
 
@@ -211,6 +319,13 @@ final readonly class Projectile
             $this->fishingBiteTicks,
             $this->fishingLuckLevel,
             $this->fishingLureLevel,
+            $this->state,
+            self::rotation($motion)[1],
+            self::rotation($motion)[0],
+            $this->embeddedBlock,
+            $this->embeddedFace,
+            $this->embeddedTicks,
+            $this->pickupMode,
         );
     }
 
@@ -246,6 +361,13 @@ final readonly class Projectile
             $this->fishingBiteTicks,
             $this->fishingLuckLevel,
             $this->fishingLureLevel,
+            $this->state,
+            $this->yaw,
+            $this->pitch,
+            $this->embeddedBlock,
+            $this->embeddedFace,
+            $this->embeddedTicks,
+            $this->pickupMode,
         );
     }
 
@@ -281,6 +403,13 @@ final readonly class Projectile
             0,
             $this->fishingLuckLevel,
             $this->fishingLureLevel,
+            $this->state,
+            $this->yaw,
+            $this->pitch,
+            $this->embeddedBlock,
+            $this->embeddedFace,
+            $this->embeddedTicks,
+            $this->pickupMode,
         );
     }
 
@@ -321,6 +450,158 @@ final readonly class Projectile
             $this->fishingBiteTicks,
             $this->fishingLuckLevel,
             $this->fishingLureLevel,
+            $this->state,
+            $this->yaw,
+            $this->pitch,
+            $this->embeddedBlock,
+            $this->embeddedFace,
+            $this->embeddedTicks,
+            $this->pickupMode,
+        ));
+    }
+
+    public function embeddedAt(Position $position, BlockPosition $block, BlockFace $face): self
+    {
+        if (!in_array($this->type, [ProjectileType::ARROW, ProjectileType::TRIDENT], true)
+            || $this->state !== ProjectileState::FLYING) {
+            throw new InvalidArgumentException('Only a flying arrow or trident can become embedded.');
+        }
+
+        return new self(
+            $this->uniqueEntityId,
+            $this->runtimeEntityId,
+            $this->ownerUuid,
+            $this->potionType,
+            $this->lingering,
+            $position,
+            new EntityMotion(0.0, 0.0, 0.0),
+            $this->ageTicks,
+            $this->tippedArrow,
+            $this->pickupAllowed,
+            $this->damageBonus,
+            $this->knockbackStrength,
+            $this->fireTicks,
+            $this->type,
+            $this->piercingRemaining,
+            $this->hitActorKeys,
+            $this->loyaltyLevel,
+            $this->channeling,
+            $this->carriedItem,
+            $this->ownerRuntimeEntityId,
+            false,
+            0,
+            0,
+            0,
+            0,
+            ProjectileState::EMBEDDED,
+            $this->yaw,
+            $this->pitch,
+            $block,
+            $face,
+            0,
+            $this->pickupMode,
+        );
+    }
+
+    public function dislodge(): self
+    {
+        if ($this->state !== ProjectileState::EMBEDDED) {
+            throw new InvalidArgumentException('Only an embedded projectile can be dislodged.');
+        }
+
+        return new self(
+            $this->uniqueEntityId,
+            $this->runtimeEntityId,
+            $this->ownerUuid,
+            $this->potionType,
+            $this->lingering,
+            $this->position,
+            new EntityMotion(0.0, -0.05, 0.0),
+            $this->ageTicks,
+            $this->tippedArrow,
+            $this->pickupAllowed,
+            $this->damageBonus,
+            $this->knockbackStrength,
+            $this->fireTicks,
+            $this->type,
+            0,
+            $this->hitActorKeys,
+            $this->loyaltyLevel,
+            $this->channeling,
+            $this->carriedItem,
+            $this->ownerRuntimeEntityId,
+            false,
+            0,
+            0,
+            0,
+            0,
+            ProjectileState::FLYING,
+            $this->yaw,
+            $this->pitch,
+            null,
+            null,
+            0,
+            $this->pickupMode,
+        );
+    }
+
+    public function beginReturning(): self
+    {
+        if ($this->type !== ProjectileType::TRIDENT || $this->loyaltyLevel < 1 || $this->carriedItem === null) {
+            throw new InvalidArgumentException('Only a Loyalty trident can begin returning.');
+        }
+
+        return new self(
+            $this->uniqueEntityId,
+            $this->runtimeEntityId,
+            $this->ownerUuid,
+            $this->potionType,
+            $this->lingering,
+            $this->position,
+            new EntityMotion(0.0, 0.0, 0.0),
+            $this->ageTicks,
+            $this->tippedArrow,
+            $this->pickupAllowed,
+            $this->damageBonus,
+            $this->knockbackStrength,
+            $this->fireTicks,
+            $this->type,
+            0,
+            $this->hitActorKeys,
+            $this->loyaltyLevel,
+            $this->channeling,
+            $this->carriedItem,
+            $this->ownerRuntimeEntityId,
+            false,
+            0,
+            0,
+            0,
+            0,
+            ProjectileState::RETURNING,
+            $this->yaw,
+            $this->pitch,
+            null,
+            null,
+            0,
+            ArrowPickupMode::ANY,
+        );
+    }
+
+    public function returnToward(Position $target): self
+    {
+        if ($this->state !== ProjectileState::RETURNING || $this->loyaltyLevel < 1) {
+            throw new InvalidArgumentException('Projectile is not a returning Loyalty trident.');
+        }
+        $dx = $target->x - $this->position->x;
+        $dy = $target->y - $this->position->y;
+        $dz = $target->z - $this->position->z;
+        $distance = max(0.000_001, hypot(hypot($dx, $dz), $dy));
+        $speed = 0.45 + (0.15 * $this->loyaltyLevel);
+
+        return $this->withMotion(new EntityMotion(
+            ($dx / $distance) * $speed,
+            ($dy / $distance) * $speed,
+            ($dz / $distance) * $speed,
         ));
     }
 
@@ -334,5 +615,19 @@ final readonly class Projectile
         $sample = (int) hexdec(substr(hash('sha256', $this->runtimeEntityId . ':' . $salt), 0, 6));
 
         return max(20, 100 + ($sample % 501) - (100 * $this->fishingLureLevel));
+    }
+
+    /** @return array{float, float} Pitch and yaw in degrees. */
+    private static function rotation(EntityMotion $motion): array
+    {
+        $horizontal = hypot($motion->x, $motion->z);
+        if ($horizontal <= 0.000_001 && abs($motion->y) <= 0.000_001) {
+            return [0.0, 0.0];
+        }
+
+        return [
+            rad2deg(atan2(-$motion->y, $horizontal)),
+            rad2deg(atan2(-$motion->x, $motion->z)),
+        ];
     }
 }

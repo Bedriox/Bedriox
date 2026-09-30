@@ -25,7 +25,12 @@ use Bedriox\Server\Gameplay\Projectile\Projectile;
 final readonly class ProjectileMoved implements WorldEvent
 {
     /** @param list<string> $recipientSessionIds */
-    public function __construct(public Projectile $projectile, public array $recipientSessionIds) {}
+    public function __construct(
+        public Projectile $projectile,
+        public array $recipientSessionIds,
+        public bool $motionChanged = false,
+        public bool $embedded = false,
+    ) {}
     public function recipients(): array
     {
         return $this->recipientSessionIds;

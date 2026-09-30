@@ -82,6 +82,8 @@ final class ProjectileRegistry
             $position,
             $motion,
             type: $lingering ? ProjectileType::LINGERING_POTION : ProjectileType::SPLASH_POTION,
+            yaw: $yaw,
+            pitch: $pitch,
         );
         $this->projectiles[$id] = $projectile;
 
@@ -103,7 +105,7 @@ final class ProjectileRegistry
         float $yaw,
         float $pitch,
         float $speed,
-        bool $pickupAllowed = true,
+        ArrowPickupMode $pickupMode = ArrowPickupMode::ANY,
         float $damageBonus = 0.0,
         float $knockbackStrength = 0.4,
         int $fireTicks = 0,
@@ -115,7 +117,7 @@ final class ProjectileRegistry
             $yaw,
             $pitch,
             $speed,
-            $pickupAllowed,
+            $pickupMode,
             $damageBonus,
             $knockbackStrength,
             $fireTicks,
@@ -130,7 +132,7 @@ final class ProjectileRegistry
         float $yaw,
         float $pitch,
         float $speed,
-        bool $pickupAllowed = true,
+        ArrowPickupMode $pickupMode = ArrowPickupMode::ANY,
         float $damageBonus = 0.0,
         float $knockbackStrength = 0.4,
         int $fireTicks = 0,
@@ -160,12 +162,15 @@ final class ProjectileRegistry
                 cos($yawRadians) * $horizontal * $speed,
             ),
             tippedArrow: $potionType !== null,
-            pickupAllowed: $pickupAllowed,
+            pickupAllowed: $pickupMode !== ArrowPickupMode::NONE,
             damageBonus: $damageBonus,
             knockbackStrength: $knockbackStrength,
             fireTicks: $fireTicks,
             type: ProjectileType::ARROW,
             piercingRemaining: $piercingLevel,
+            yaw: $yaw,
+            pitch: $pitch,
+            pickupMode: $pickupMode,
         );
         $this->projectiles[$id] = $projectile;
 
@@ -215,6 +220,8 @@ final class ProjectileRegistry
             loyaltyLevel: $loyaltyLevel,
             channeling: $channeling,
             carriedItem: $carriedItem,
+            yaw: $yaw,
+            pitch: $pitch,
         );
         $this->projectiles[$id] = $projectile;
 
@@ -259,6 +266,8 @@ final class ProjectileRegistry
             ownerRuntimeEntityId: $ownerRuntimeEntityId,
             fishingLuckLevel: $luckLevel,
             fishingLureLevel: $lureLevel,
+            yaw: $yaw,
+            pitch: $pitch,
         );
         $this->projectiles[$id] = $projectile;
 

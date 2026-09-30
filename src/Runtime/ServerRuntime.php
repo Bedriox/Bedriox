@@ -1548,8 +1548,20 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                             continue;
                         }
                         if ($event instanceof PlayerRespawned) {
+                            $previousViewers = $this->actorVisibility->viewersOf($event->player->sessionId);
                             $this->actorVisibility->upsert($event->player);
                             foreach ($this->reconcileActorVisibility($event->player->sessionId) as $visibilityEvent) {
+                                if (!$this->dispatchWorldEvent($visibilityEvent, $directedCount)) {
+                                    return false;
+                                }
+                            }
+                            foreach ($this->actorVisibility->refreshActor(
+                                $event->player,
+                                array_values(array_intersect(
+                                    $previousViewers,
+                                    $this->actorVisibility->viewersOf($event->player->sessionId),
+                                )),
+                            ) as $visibilityEvent) {
                                 if (!$this->dispatchWorldEvent($visibilityEvent, $directedCount)) {
                                     return false;
                                 }
@@ -3371,7 +3383,12 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         if ($event instanceof ProjectileMoved) {
             $continuing = array_keys(array_intersect_key($eligible, $old));
             if ($continuing !== []) {
-                $events[] = new ProjectileMoved($projectile, $continuing);
+                $events[] = new ProjectileMoved(
+                    $projectile,
+                    $continuing,
+                    $event->motionChanged,
+                    $event->embedded,
+                );
             }
         }
 
