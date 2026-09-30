@@ -50,13 +50,13 @@ final readonly class EntityPhysicsResolver
             ($beforeMotion->y - ($entity->isGravityEnabled() ? $definition->gravity : 0.0)) * $friction,
             $beforeMotion->z * $friction,
         );
-        $halfWidth = ($definition->width * $entity->scale()) / 2.0;
+        $halfWidth = $entity->collisionWidth() / 2.0;
         $box = new AxisAlignedBox(
             $beforePosition->x - $halfWidth,
             $beforePosition->y,
             $beforePosition->z - $halfWidth,
             $beforePosition->x + $halfWidth,
-            $beforePosition->y + ($definition->height * $entity->scale()),
+            $beforePosition->y + $entity->collisionHeight(),
             $beforePosition->z + $halfWidth,
         );
         $resolved = $this->resolve($box, $requested);

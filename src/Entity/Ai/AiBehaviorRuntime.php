@@ -109,6 +109,13 @@ final class AiBehaviorRuntime
         return $intent instanceof AiMeleeIntent ? $intent : null;
     }
 
+    public function takeRangedIntent(int $tick): ?AiRangedIntent
+    {
+        $intent = $this->memory->take(VanillaAiMemories::rangedIntent(), $tick);
+
+        return $intent instanceof AiRangedIntent ? $intent : null;
+    }
+
     /** @return list<int> */
     private function conflictingRunningGoals(AiGoal $candidate): array
     {

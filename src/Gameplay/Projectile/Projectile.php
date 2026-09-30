@@ -55,6 +55,7 @@ final readonly class Projectile
         public bool $channeling = false,
         public ?InventoryStack $carriedItem = null,
         public int $ownerRuntimeEntityId = 0,
+        public ProjectileOwnerType $ownerType = ProjectileOwnerType::PLAYER,
         public bool $fishingBobbing = false,
         public int $fishingWaitTicks = 0,
         public int $fishingBiteTicks = 0,
@@ -80,7 +81,7 @@ final readonly class Projectile
             || !is_finite($knockbackStrength) || $knockbackStrength < 0.0 || $knockbackStrength > 16.0
             || $fireTicks < 0 || $fireTicks > 0x7fff || $piercingRemaining < 0 || $piercingRemaining > 5
             || count($hitActorKeys) > 5 || $loyaltyLevel < 0 || $loyaltyLevel > 3
-            || $ownerRuntimeEntityId < 0 || $ownerRuntimeEntityId >= PHP_INT_MAX
+            || $ownerRuntimeEntityId < 1 || $ownerRuntimeEntityId >= PHP_INT_MAX
             || $fishingWaitTicks < 0 || $fishingWaitTicks > 1_200
             || $fishingBiteTicks < 0 || $fishingBiteTicks > 200
             || $fishingLuckLevel < 0 || $fishingLuckLevel > 3
@@ -126,6 +127,7 @@ final readonly class Projectile
                 $this->channeling,
                 $this->carriedItem,
                 $this->ownerRuntimeEntityId,
+                $this->ownerType,
                 $this->fishingBobbing,
                 $this->fishingWaitTicks,
                 $this->fishingBiteTicks,
@@ -166,6 +168,7 @@ final readonly class Projectile
                 $this->channeling,
                 $this->carriedItem,
                 $this->ownerRuntimeEntityId,
+                $this->ownerType,
                 false,
                 0,
                 0,
@@ -230,6 +233,7 @@ final readonly class Projectile
             $this->channeling,
             $this->carriedItem,
             $this->ownerRuntimeEntityId,
+            $this->ownerType,
             $this->fishingBobbing,
             $waitTicks,
             $biteTicks,
@@ -251,6 +255,20 @@ final readonly class Projectile
             && !($this->type === ProjectileType::TRIDENT
                 && $this->loyaltyLevel > 0
                 && $this->carriedItem !== null);
+    }
+
+    public function ownedByPlayer(string $uuid, int $runtimeEntityId): bool
+    {
+        return $this->ownerType === ProjectileOwnerType::PLAYER
+            && $this->ownerUuid === $uuid
+            && $this->ownerRuntimeEntityId === $runtimeEntityId;
+    }
+
+    public function ownedByEntity(string $uuid, int $runtimeEntityId): bool
+    {
+        return $this->ownerType === ProjectileOwnerType::ENTITY
+            && $this->ownerUuid === $uuid
+            && $this->ownerRuntimeEntityId === $runtimeEntityId;
     }
 
     public function atPosition(Position $position): self
@@ -276,6 +294,7 @@ final readonly class Projectile
             $this->channeling,
             $this->carriedItem,
             $this->ownerRuntimeEntityId,
+            $this->ownerType,
             $this->fishingBobbing,
             $this->fishingWaitTicks,
             $this->fishingBiteTicks,
@@ -314,6 +333,7 @@ final readonly class Projectile
             $this->channeling,
             $this->carriedItem,
             $this->ownerRuntimeEntityId,
+            $this->ownerType,
             $this->fishingBobbing,
             $this->fishingWaitTicks,
             $this->fishingBiteTicks,
@@ -356,6 +376,7 @@ final readonly class Projectile
             $this->channeling,
             $this->carriedItem,
             $this->ownerRuntimeEntityId,
+            $this->ownerType,
             $this->fishingBobbing,
             $this->fishingWaitTicks,
             $this->fishingBiteTicks,
@@ -398,6 +419,7 @@ final readonly class Projectile
             $this->channeling,
             $this->carriedItem,
             $this->ownerRuntimeEntityId,
+            $this->ownerType,
             true,
             $this->nextFishingWaitTicks($this->ageTicks),
             0,
@@ -445,6 +467,7 @@ final readonly class Projectile
             $this->channeling,
             $this->carriedItem,
             $this->ownerRuntimeEntityId,
+            $this->ownerType,
             true,
             $this->fishingWaitTicks,
             $this->fishingBiteTicks,
@@ -488,6 +511,7 @@ final readonly class Projectile
             $this->channeling,
             $this->carriedItem,
             $this->ownerRuntimeEntityId,
+            $this->ownerType,
             false,
             0,
             0,
@@ -530,6 +554,7 @@ final readonly class Projectile
             $this->channeling,
             $this->carriedItem,
             $this->ownerRuntimeEntityId,
+            $this->ownerType,
             false,
             0,
             0,
@@ -572,6 +597,7 @@ final readonly class Projectile
             $this->channeling,
             $this->carriedItem,
             $this->ownerRuntimeEntityId,
+            $this->ownerType,
             false,
             0,
             0,

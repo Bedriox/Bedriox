@@ -39,12 +39,78 @@ use Bedriox\Server\Entity\Spawn\Natural\NaturalSpawnLimits;
 use Bedriox\Server\Entity\Spawn\Natural\NaturalSpawnMedium;
 use Bedriox\Server\Entity\Spawn\Natural\NaturalSpawnPlayer;
 use Bedriox\Server\Entity\Spawn\Natural\NaturalSpawnRule;
+use Bedriox\Server\Entity\Spawn\Natural\SheepNaturalSpawnRule;
+use Bedriox\Server\Entity\Spawn\Natural\SkeletonNaturalSpawnRule;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\ChunkPosition;
 use PHPUnit\Framework\TestCase;
 
 final class NaturalSpawningTest extends TestCase
 {
+    public function testSheepNaturalSpawnRuleRequiresLitNonExcludedGround(): void
+    {
+        $rule = new SheepNaturalSpawnRule();
+
+        self::assertTrue($rule->allows(self::contextForRule(
+            VanillaEntityType::SHEEP,
+            EntityCategory::ANIMAL,
+            NaturalSpawnMedium::GROUND,
+            9,
+            'minecraft:plains',
+        )));
+        self::assertFalse($rule->allows(self::contextForRule(
+            VanillaEntityType::SHEEP,
+            EntityCategory::ANIMAL,
+            NaturalSpawnMedium::GROUND,
+            8,
+            'minecraft:plains',
+        )));
+        self::assertFalse($rule->allows(self::contextForRule(
+            VanillaEntityType::SHEEP,
+            EntityCategory::ANIMAL,
+            NaturalSpawnMedium::WATER,
+            15,
+            'minecraft:plains',
+        )));
+
+        foreach (['minecraft:ocean', 'minecraft:frozen_river', 'minecraft:stony_peaks'] as $biome) {
+            self::assertFalse($rule->allows(self::contextForRule(
+                VanillaEntityType::SHEEP,
+                EntityCategory::ANIMAL,
+                NaturalSpawnMedium::GROUND,
+                15,
+                $biome,
+            )));
+        }
+    }
+
+    public function testSkeletonNaturalSpawnRuleRequiresDarkGround(): void
+    {
+        $rule = new SkeletonNaturalSpawnRule();
+
+        self::assertTrue($rule->allows(self::contextForRule(
+            VanillaEntityType::SKELETON,
+            EntityCategory::MONSTER,
+            NaturalSpawnMedium::GROUND,
+            7,
+            'minecraft:plains',
+        )));
+        self::assertFalse($rule->allows(self::contextForRule(
+            VanillaEntityType::SKELETON,
+            EntityCategory::MONSTER,
+            NaturalSpawnMedium::GROUND,
+            8,
+            'minecraft:plains',
+        )));
+        self::assertFalse($rule->allows(self::contextForRule(
+            VanillaEntityType::SKELETON,
+            EntityCategory::MONSTER,
+            NaturalSpawnMedium::WATER,
+            0,
+            'minecraft:plains',
+        )));
+    }
+
     public function testCandidateChunksDeduplicateOverlappingPlayerRegionsDeterministically(): void
     {
         $planner = new NaturalSpawnCandidatePlanner();
@@ -96,6 +162,28 @@ final class NaturalSpawningTest extends TestCase
         }
 
         return false;
+    }
+
+    private static function contextForRule(
+        EntityType $type,
+        EntityCategory $category,
+        NaturalSpawnMedium $medium,
+        int $lightLevel,
+        string $biome,
+    ): NaturalSpawnContext {
+        return new NaturalSpawnContext(
+            'world',
+            new ChunkPosition(0, 0),
+            $type,
+            $category,
+            new Position(0.0, 64.0, 0.0),
+            'minecraft:overworld',
+            $biome,
+            $medium,
+            $lightLevel,
+            576.0,
+            576.0,
+        );
     }
 
     public function testNaturalRequestsUseExistingTransactionShapeAndDeterministicTransforms(): void

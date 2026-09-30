@@ -31,6 +31,7 @@ final readonly class AiPlayerSnapshot
         public string $worldName,
         public Position $position,
         public bool $damageable = true,
+        public ?string $heldItemIdentifier = null,
     ) {
         if ($playerId === '' || strlen($playerId) > 128 || preg_match('//u', $playerId) !== 1) {
             throw new InvalidArgumentException('AI player identity must be valid UTF-8 and bounded.');
@@ -42,6 +43,11 @@ final readonly class AiPlayerSnapshot
             || abs($position->x) > 30_000_000.0 || abs($position->z) > 30_000_000.0
             || abs($position->y) > 2_048.0) {
             throw new InvalidArgumentException('AI player position must be finite and bounded.');
+        }
+        if ($heldItemIdentifier !== null
+            && (strlen($heldItemIdentifier) > 128
+                || preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $heldItemIdentifier) !== 1)) {
+            throw new InvalidArgumentException('AI held-item identifier must be canonical and bounded.');
         }
     }
 

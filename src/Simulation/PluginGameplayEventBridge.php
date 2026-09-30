@@ -29,9 +29,11 @@ use Bedriox\Api\Entity\Entity as ApiEntity;
 use Bedriox\Api\Entity\EntityCombustionCause;
 use Bedriox\Api\Entity\EntityDamageCause;
 use Bedriox\Api\Entity\EntityInteractionType;
+use Bedriox\Api\Entity\EntityTargetReason;
 use Bedriox\Api\Entity\KnockbackCause;
 use Bedriox\Api\Entity\KnockbackVector;
 use Bedriox\Api\Entity\LivingEntity as ApiLivingEntity;
+use Bedriox\Api\Entity\Shearable;
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\Vector3;
 use Bedriox\Api\Event\Block\BlockBreakEvent;
@@ -59,6 +61,11 @@ use Bedriox\Api\Event\Entity\EntityEffectRemoveEvent;
 use Bedriox\Api\Event\Entity\EntityEquipmentChangedEvent;
 use Bedriox\Api\Event\Entity\EntityEquipmentChangeEvent;
 use Bedriox\Api\Event\Entity\EntityInteractEvent;
+use Bedriox\Api\Event\Entity\EntityInteractedEvent;
+use Bedriox\Api\Event\Entity\EntityShearedEvent;
+use Bedriox\Api\Event\Entity\EntityShearEvent;
+use Bedriox\Api\Event\Entity\EntityTargetChangedEvent;
+use Bedriox\Api\Event\Entity\EntityTargetEvent;
 use Bedriox\Api\Event\Entity\EntitySpawnedEvent;
 use Bedriox\Api\Event\Entity\EntitySpawnEvent;
 use Bedriox\Api\Event\Entity\ExperienceOrbSpawnedEvent;
@@ -195,7 +202,11 @@ use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\WeatherState;
 use Bedriox\Server\Entity\AbstractLivingEntity;
+use Bedriox\Server\Entity\AbstractMobEntity;
+use Bedriox\Server\Entity\EntityMotion;
 use Bedriox\Server\Gameplay\Potion\BrewingStandBlockEntity;
+use Bedriox\Server\Gameplay\Projectile\Projectile;
+use Bedriox\Server\Gameplay\Projectile\ProjectileType;
 use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Player\Player;
 use Bedriox\Server\Player\PlayerInventory;
@@ -448,10 +459,104 @@ final readonly class PluginGameplayEventBridge
         ApiEntity $entity,
         EntityInteractionType $interaction,
     ): bool {
-        $event = new EntityInteractEvent($this->playerView($player), $entity, $interaction);
+        $held = $player->inventory->selectedStack();
+        $event = new EntityInteractEvent(
+            $this->playerView($player),
+            $entity,
+            $interaction,
+            $held === null ? null : new ApiItemStack(
+                $held->identifier,
+                $held->count,
+                $held->damage,
+                $held->nbt,
+                $held->auxValue,
+            ),
+        );
         $this->events->dispatch($event);
 
         return !$event->isCancelled();
+    }
+
+    public function entityInteracted(
+        Player $player,
+        ApiEntity $entity,
+        EntityInteractionType $interaction,
+        ?InventoryStack $heldItem,
+    ): void {
+        $this->events->dispatch(new EntityInteractedEvent(
+            $this->playerView($player),
+            $entity,
+            $interaction,
+            $heldItem === null ? null : new ApiItemStack(
+                $heldItem->identifier,
+                $heldItem->count,
+                $heldItem->damage,
+                $heldItem->nbt,
+                $heldItem->auxValue,
+            ),
+        ));
+    }
+
+    public function entityTarget(
+        AbstractMobEntity $entity,
+        ApiEntity|ApiPlayer|null $previousTarget,
+        ApiEntity|ApiPlayer|null $target,
+        EntityTargetReason $reason,
+    ): EntityTargetEvent {
+        $event = new EntityTargetEvent($entity, $previousTarget, $target, $reason);
+        $this->events->dispatch($event);
+
+        return $event;
+    }
+
+    public function entityTargetChanged(
+        AbstractMobEntity $entity,
+        ApiEntity|ApiPlayer|null $previousTarget,
+        ApiEntity|ApiPlayer|null $target,
+        EntityTargetReason $reason,
+    ): void {
+        $this->events->dispatch(new EntityTargetChangedEvent(
+            $entity,
+            $previousTarget,
+            $target,
+            $reason,
+        ));
+    }
+
+    /**
+     * @param list<ApiItemStack> $drops
+     * @return null|list<ApiItemStack>
+     */
+    public function shearEntity(
+        Player $player,
+        Shearable $entity,
+        InventoryStack $tool,
+        array $drops,
+    ): ?array {
+        $event = new EntityShearEvent(
+            $this->playerView($player),
+            $entity,
+            new ApiItemStack($tool->identifier, 1, $tool->damage, $tool->nbt, $tool->auxValue),
+            $drops,
+        );
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->getDrops();
+    }
+
+    /** @param list<ApiItemStack> $drops */
+    public function entitySheared(
+        Player $player,
+        Shearable $entity,
+        InventoryStack $tool,
+        array $drops,
+    ): void {
+        $this->events->dispatch(new EntityShearedEvent(
+            $this->playerView($player),
+            $entity,
+            new ApiItemStack($tool->identifier, 1, $tool->damage, $tool->nbt, $tool->auxValue),
+            $drops,
+        ));
     }
 
     public function allowEntityDespawn(ApiEntity $entity, string $reason): bool
@@ -1799,12 +1904,12 @@ final readonly class PluginGameplayEventBridge
     }
 
     public function projectileLaunch(
-        Player $shooter,
-        \Bedriox\Server\Gameplay\Projectile\Projectile $projectile,
+        Player|AbstractLivingEntity $shooter,
+        Projectile $projectile,
         string $identifier,
-    ): ?\Bedriox\Server\Gameplay\Projectile\Projectile {
+    ): ?Projectile {
         $event = new ProjectileLaunchEvent(
-            $this->playerView($shooter),
+            $shooter instanceof Player ? $this->playerView($shooter) : $shooter,
             $projectile->runtimeEntityId,
             $identifier,
             self::position($projectile->position),
@@ -1816,7 +1921,7 @@ final readonly class PluginGameplayEventBridge
         }
         $motion = $event->motion();
 
-        return $projectile->withMotion(new \Bedriox\Server\Entity\EntityMotion(
+        return $projectile->withMotion(new EntityMotion(
             $motion->x,
             $motion->y,
             $motion->z,
@@ -1824,12 +1929,12 @@ final readonly class PluginGameplayEventBridge
     }
 
     public function projectileLaunched(
-        Player $shooter,
-        \Bedriox\Server\Gameplay\Projectile\Projectile $projectile,
+        Player|AbstractLivingEntity $shooter,
+        Projectile $projectile,
         string $identifier,
     ): void {
         $this->events->dispatch(new ProjectileLaunchedEvent(
-            $this->playerView($shooter),
+            $shooter instanceof Player ? $this->playerView($shooter) : $shooter,
             $projectile->runtimeEntityId,
             $identifier,
             self::position($projectile->position),
@@ -1838,15 +1943,16 @@ final readonly class PluginGameplayEventBridge
     }
 
     public function projectileImpact(
-        \Bedriox\Server\Gameplay\Projectile\Projectile $projectile,
+        Projectile $projectile,
+        Player|AbstractLivingEntity|null $shooter = null,
         ?Player $playerTarget = null,
-        ?\Bedriox\Server\Entity\AbstractLivingEntity $entityTarget = null,
+        ?AbstractLivingEntity $entityTarget = null,
         ?BlockPosition $blockTarget = null,
     ): bool {
         $target = $playerTarget === null ? $entityTarget : $this->playerView($playerTarget);
         $generic = new ProjectileImpactEvent(
             $projectile->runtimeEntityId,
-            $projectile->ownerUuid,
+            $shooter instanceof Player ? $this->playerView($shooter) : $shooter,
             $projectile->type->value,
             self::position($projectile->position),
             $target,
@@ -1857,7 +1963,7 @@ final readonly class PluginGameplayEventBridge
             return false;
         }
         if (!$projectile->type->isPotion()
-            && $projectile->type !== \Bedriox\Server\Gameplay\Projectile\ProjectileType::ARROW) {
+            && $projectile->type !== ProjectileType::ARROW) {
             return true;
         }
         $event = new PotionProjectileImpactEvent(
@@ -1874,22 +1980,23 @@ final readonly class PluginGameplayEventBridge
     }
 
     public function projectileImpacted(
-        \Bedriox\Server\Gameplay\Projectile\Projectile $projectile,
+        Projectile $projectile,
+        Player|AbstractLivingEntity|null $shooter = null,
         ?Player $playerTarget = null,
-        ?\Bedriox\Server\Entity\AbstractLivingEntity $entityTarget = null,
+        ?AbstractLivingEntity $entityTarget = null,
         ?BlockPosition $blockTarget = null,
     ): void {
         $target = $playerTarget === null ? $entityTarget : $this->playerView($playerTarget);
         $this->events->dispatch(new ProjectileImpactedEvent(
             $projectile->runtimeEntityId,
-            $projectile->ownerUuid,
+            $shooter instanceof Player ? $this->playerView($shooter) : $shooter,
             $projectile->type->value,
             self::position($projectile->position),
             $target,
             $blockTarget === null ? null : new ApiBlockPosition($blockTarget->x, $blockTarget->y, $blockTarget->z),
         ));
         if (!$projectile->type->isPotion()
-            && $projectile->type !== \Bedriox\Server\Gameplay\Projectile\ProjectileType::ARROW) {
+            && $projectile->type !== ProjectileType::ARROW) {
             return;
         }
         $this->events->dispatch(new PotionProjectileImpactedEvent(

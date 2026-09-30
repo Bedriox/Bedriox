@@ -70,7 +70,7 @@ final readonly class WorldEntityEnvironment
         $localZ = self::localCoordinate((int) floor($position->z));
         $headY = max(
             Chunk::MIN_Y,
-            min(Chunk::MAX_Y, (int) floor($position->y + $entity->definition()->height - 0.000_001)),
+            min(Chunk::MAX_Y, (int) floor($position->y + $entity->collisionHeight() - 0.000_001)),
         );
         for ($y = $headY; $y <= Chunk::MAX_Y; ++$y) {
             if ($this->blocksSkyLight($chunk->blockStateAt($localX, $y, $localZ))) {
@@ -96,7 +96,7 @@ final readonly class WorldEntityEnvironment
         $feetY = max(Chunk::MIN_Y, min(Chunk::MAX_Y, (int) floor($position->y + 0.001)));
         $headY = max(
             Chunk::MIN_Y,
-            min(Chunk::MAX_Y, (int) floor($position->y + $entity->definition()->height - 0.000_001)),
+            min(Chunk::MAX_Y, (int) floor($position->y + $entity->collisionHeight() - 0.000_001)),
         );
 
         return $this->isWater($chunk->blockStateAt($x, $feetY, $z))

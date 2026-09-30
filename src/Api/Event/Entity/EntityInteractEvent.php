@@ -23,6 +23,7 @@ namespace Bedriox\Api\Event\Entity;
 use Bedriox\Api\Entity\Entity;
 use Bedriox\Api\Entity\EntityInteractionType;
 use Bedriox\Api\Event\CancellableEvent;
+use Bedriox\Api\Inventory\ItemStack;
 use Bedriox\Api\Player\Player;
 
 final class EntityInteractEvent extends CancellableEvent
@@ -31,5 +32,6 @@ final class EntityInteractEvent extends CancellableEvent
         public readonly Player $player,
         public readonly Entity $entity,
         public readonly EntityInteractionType $interaction,
+        public readonly ?ItemStack $heldItem = null,
     ) {}
 }

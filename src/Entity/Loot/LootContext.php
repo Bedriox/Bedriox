@@ -44,6 +44,7 @@ final readonly class LootContext
         public SpawnCause $spawnOrigin,
         public int $difficulty,
         public int $lootingLevel = 0,
+        public ?Entity $subject = null,
     ) {
         if ($difficulty < 0 || $difficulty > 3) {
             throw new InvalidArgumentException('Loot difficulty must be a Bedrock value between zero and three.');

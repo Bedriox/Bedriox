@@ -25,4 +25,10 @@ use Bedriox\Server\Entity\AbstractMobEntity;
 interface TargetAwareAiWorldView extends AiWorldView
 {
     public function nearestPlayer(AbstractMobEntity $entity, float $radius): ?AiPlayerSnapshot;
+
+    public function nearestPlayerHolding(
+        AbstractMobEntity $entity,
+        float $radius,
+        string $itemIdentifier,
+    ): ?AiPlayerSnapshot;
 }

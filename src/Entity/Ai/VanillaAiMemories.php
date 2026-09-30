@@ -30,6 +30,9 @@ final class VanillaAiMemories
     private static ?AiMemoryType $hurt = null;
     private static ?AiMemoryType $meleeCooldown = null;
     private static ?AiMemoryType $meleeIntent = null;
+    private static ?AiMemoryType $rangedCooldown = null;
+    private static ?AiMemoryType $rangedIntent = null;
+    private static ?AiMemoryType $temptingPlayer = null;
 
     public static function wanderUntil(): AiMemoryType
     {
@@ -69,5 +72,20 @@ final class VanillaAiMemories
     public static function meleeIntent(): AiMemoryType
     {
         return self::$meleeIntent ??= new AiMemoryType(7, 'bedriox:melee_intent');
+    }
+
+    public static function rangedCooldown(): AiMemoryType
+    {
+        return self::$rangedCooldown ??= new AiMemoryType(8, 'bedriox:ranged_cooldown');
+    }
+
+    public static function rangedIntent(): AiMemoryType
+    {
+        return self::$rangedIntent ??= new AiMemoryType(9, 'bedriox:ranged_intent');
+    }
+
+    public static function temptingPlayer(): AiMemoryType
+    {
+        return self::$temptingPlayer ??= new AiMemoryType(10, 'bedriox:tempting_player');
     }
 }

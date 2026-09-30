@@ -21,6 +21,10 @@ declare(strict_types=1);
 namespace Bedriox\Server\Runtime;
 
 use Bedriox\Api\Effect\EffectType;
+use Bedriox\Api\Entity\Ageable;
+use Bedriox\Api\Entity\Shearable;
+use Bedriox\Api\Entity\Vanilla\Sheep;
+use Bedriox\Api\Entity\WoolColor;
 use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Inventory\ItemStack;
 use Bedriox\Protocol\Packet\ActorAttribute;
@@ -60,12 +64,10 @@ final class BedrockLivingActorProjector
     /** @return list<ActorMetadata> */
     public function metadata(AbstractLivingEntity $entity, bool $noAi = false): array
     {
-        $definition = $entity->definition();
-
         return [
             $this->flagsMetadata($entity, $noAi),
             ActorMetadata::int(1, (int) ceil($entity->getHealth())),
-            ActorMetadata::byte(3, $entity->isNameTagVisible() ? 1 : 0),
+            ActorMetadata::byte(3, $entity instanceof Sheep ? self::woolColorIndex($entity->getWoolColor()) : 0),
             ActorMetadata::string(4, $entity->nameTag()),
             ActorMetadata::long(5, -1),
             ActorMetadata::long(6, 0),
@@ -73,8 +75,8 @@ final class BedrockLivingActorProjector
             ActorMetadata::long(37, -1),
             ActorMetadata::float(38, $entity->scale()),
             ActorMetadata::short(42, 400),
-            ActorMetadata::float(53, $definition->width * $entity->scale()),
-            ActorMetadata::float(54, $definition->height * $entity->scale()),
+            ActorMetadata::float(53, $entity->collisionWidth()),
+            ActorMetadata::float(54, $entity->collisionHeight()),
             ActorMetadata::byte(81, 0),
             ActorMetadata::long(92, 0),
             ActorMetadata::float(120, 0.0),
@@ -104,8 +106,36 @@ final class BedrockLivingActorProjector
         if ($noAi || $entity->isImmobile()) {
             $flags |= ActorFlag::NoAi->mask();
         }
+        if ($entity instanceof Ageable && $entity->isBaby()) {
+            $flags |= ActorFlag::Baby->mask();
+        }
+        if ($entity instanceof Shearable && $entity->isSheared()) {
+            $flags |= ActorFlag::Sheared->mask();
+        }
 
         return ActorMetadata::long(0, $flags);
+    }
+
+    private static function woolColorIndex(WoolColor $color): int
+    {
+        return match ($color) {
+            WoolColor::WHITE => 0,
+            WoolColor::ORANGE => 1,
+            WoolColor::MAGENTA => 2,
+            WoolColor::LIGHT_BLUE => 3,
+            WoolColor::YELLOW => 4,
+            WoolColor::LIME => 5,
+            WoolColor::PINK => 6,
+            WoolColor::GRAY => 7,
+            WoolColor::LIGHT_GRAY => 8,
+            WoolColor::CYAN => 9,
+            WoolColor::PURPLE => 10,
+            WoolColor::BLUE => 11,
+            WoolColor::BROWN => 12,
+            WoolColor::GREEN => 13,
+            WoolColor::RED => 14,
+            WoolColor::BLACK => 15,
+        };
     }
 
     public function healthAttribute(AbstractLivingEntity $entity): ActorAttribute

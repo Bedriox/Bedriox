@@ -85,15 +85,23 @@ final class EntityDefinitionRegistryTest extends TestCase
         ), true);
     }
 
-    public function testCurrentDataCatalogAdmitsMobSpawnEggsWithoutTreatingArbitraryActorsAsMobs(): void
+    public function testCurrentDataCatalogAdmitsOnlyGameplayQualifiedMobSpawnEggs(): void
     {
         $catalog = BedrockDataSet::bundled()->entityTypeRegistry();
         $registry = EntityDefinitionRegistry::fromData($catalog);
 
-        foreach (['minecraft:cow', 'minecraft:zombie', 'minecraft:pig', 'minecraft:bee'] as $identifier) {
+        foreach (['minecraft:cow', 'minecraft:sheep', 'minecraft:skeleton', 'minecraft:zombie'] as $identifier) {
             self::assertNotNull($registry->get($identifier), $identifier);
         }
-        foreach (['minecraft:arrow', 'minecraft:boat', 'minecraft:agent', 'minecraft:armor_stand', 'minecraft:npc'] as $identifier) {
+        foreach ([
+            'minecraft:arrow',
+            'minecraft:boat',
+            'minecraft:agent',
+            'minecraft:armor_stand',
+            'minecraft:npc',
+            'minecraft:pig',
+            'minecraft:bee',
+        ] as $identifier) {
             self::assertNull($registry->get($identifier), $identifier);
         }
     }

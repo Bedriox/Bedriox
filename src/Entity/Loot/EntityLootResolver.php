@@ -51,6 +51,8 @@ final class EntityLootResolver
             [
                 VanillaEntityType::ZOMBIE->value => new ZombieLootTable(),
                 VanillaEntityType::COW->value => new CowLootTable(),
+                VanillaEntityType::SHEEP->value => new SheepLootTable(),
+                VanillaEntityType::SKELETON->value => new SkeletonLootTable(),
             ],
         );
     }

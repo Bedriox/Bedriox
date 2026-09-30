@@ -204,7 +204,17 @@ abstract class AbstractEntity implements ApiEntity
 
     final public function scale(): float
     {
-        return $this->scale;
+        return $this->sizeMultiplier() * $this->scale;
+    }
+
+    final public function collisionWidth(): float
+    {
+        return $this->definition->width * $this->sizeMultiplier() * $this->scale;
+    }
+
+    final public function collisionHeight(): float
+    {
+        return $this->definition->height * $this->sizeMultiplier() * $this->scale;
     }
 
     final public function presentationRevision(): int
@@ -436,5 +446,10 @@ abstract class AbstractEntity implements ApiEntity
             ++$this->presentationRevision;
         }
         $this->markChanged();
+    }
+
+    protected function sizeMultiplier(): float
+    {
+        return 1.0;
     }
 }

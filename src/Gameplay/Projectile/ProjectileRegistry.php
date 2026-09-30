@@ -51,6 +51,7 @@ final class ProjectileRegistry
 
     public function spawn(
         string $ownerUuid,
+        int $ownerRuntimeEntityId,
         PotionType $type,
         bool $lingering,
         Position $position,
@@ -82,6 +83,7 @@ final class ProjectileRegistry
             $position,
             $motion,
             type: $lingering ? ProjectileType::LINGERING_POTION : ProjectileType::SPLASH_POTION,
+            ownerRuntimeEntityId: $ownerRuntimeEntityId,
             yaw: $yaw,
             pitch: $pitch,
         );
@@ -100,6 +102,7 @@ final class ProjectileRegistry
 
     public function spawnTippedArrow(
         string $ownerUuid,
+        int $ownerRuntimeEntityId,
         PotionType $type,
         Position $position,
         float $yaw,
@@ -113,6 +116,7 @@ final class ProjectileRegistry
     ): Projectile {
         return $this->spawnArrow(
             $ownerUuid,
+            $ownerRuntimeEntityId,
             $position,
             $yaw,
             $pitch,
@@ -128,6 +132,7 @@ final class ProjectileRegistry
 
     public function spawnArrow(
         string $ownerUuid,
+        int $ownerRuntimeEntityId,
         Position $position,
         float $yaw,
         float $pitch,
@@ -138,6 +143,7 @@ final class ProjectileRegistry
         int $fireTicks = 0,
         int $piercingLevel = 0,
         ?PotionType $potionType = null,
+        ProjectileOwnerType $ownerType = ProjectileOwnerType::PLAYER,
     ): Projectile {
         if (!is_finite($speed) || $speed < 0.1 || $speed > 3.2) {
             throw new InvalidArgumentException('Arrow speed is invalid.');
@@ -168,6 +174,8 @@ final class ProjectileRegistry
             fireTicks: $fireTicks,
             type: ProjectileType::ARROW,
             piercingRemaining: $piercingLevel,
+            ownerRuntimeEntityId: $ownerRuntimeEntityId,
+            ownerType: $ownerType,
             yaw: $yaw,
             pitch: $pitch,
             pickupMode: $pickupMode,
@@ -179,6 +187,7 @@ final class ProjectileRegistry
 
     public function spawnTrident(
         string $ownerUuid,
+        int $ownerRuntimeEntityId,
         PotionType $fallbackPotionType,
         Position $position,
         float $yaw,
@@ -220,6 +229,7 @@ final class ProjectileRegistry
             loyaltyLevel: $loyaltyLevel,
             channeling: $channeling,
             carriedItem: $carriedItem,
+            ownerRuntimeEntityId: $ownerRuntimeEntityId,
             yaw: $yaw,
             pitch: $pitch,
         );

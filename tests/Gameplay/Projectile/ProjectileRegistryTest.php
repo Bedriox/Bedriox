@@ -23,12 +23,14 @@ namespace Bedriox\Server\Tests\Gameplay\Projectile;
 use Bedriox\Api\Potion\PotionType;
 use Bedriox\Api\World\BlockFace;
 use Bedriox\Server\Gameplay\Projectile\Projectile;
+use Bedriox\Server\Gameplay\Projectile\ProjectileOwnerType;
 use Bedriox\Server\Gameplay\Projectile\ProjectileRegistry;
 use Bedriox\Server\Gameplay\Projectile\ProjectileState;
 use Bedriox\Server\Gameplay\Projectile\ProjectileType;
 use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\BlockPosition;
+use InvalidArgumentException;
 use OverflowException;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
@@ -40,7 +42,7 @@ final class ProjectileRegistryTest extends TestCase
     public function testSpawnUsesViewRotationAndTickAppliesDragAndGravity(): void
     {
         $registry = new ProjectileRegistry(firstEntityId: 900);
-        $spawned = $registry->spawn('owner', PotionType::SWIFTNESS, false, new Position(1.0, 65.0, 2.0), 0.0, 0.0);
+        $spawned = $registry->spawn('owner', 42, PotionType::SWIFTNESS, false, new Position(1.0, 65.0, 2.0), 0.0, 0.0);
 
         self::assertSame(900, $spawned->runtimeEntityId);
         self::assertEqualsWithDelta(0.0, $spawned->motion->x, 0.000001);
@@ -57,16 +59,16 @@ final class ProjectileRegistryTest extends TestCase
     public function testCapacityAndLifetimeStayBounded(): void
     {
         $registry = new ProjectileRegistry(1);
-        $registry->spawn('owner', PotionType::WATER, true, new Position(0.0, 64.0, 0.0), 0.0, 0.0);
+        $registry->spawn('owner', 42, PotionType::WATER, true, new Position(0.0, 64.0, 0.0), 0.0, 0.0);
 
         $this->expectException(OverflowException::class);
-        $registry->spawn('owner', PotionType::WATER, false, new Position(0.0, 64.0, 0.0), 0.0, 0.0);
+        $registry->spawn('owner', 42, PotionType::WATER, false, new Position(0.0, 64.0, 0.0), 0.0, 0.0);
     }
 
     public function testProjectileExpiresAtMaximumLifetime(): void
     {
         $registry = new ProjectileRegistry();
-        $registry->spawn('owner', PotionType::WATER, false, new Position(0.0, 64.0, 0.0), 0.0, 0.0);
+        $registry->spawn('owner', 42, PotionType::WATER, false, new Position(0.0, 64.0, 0.0), 0.0, 0.0);
 
         $result = $registry->tick(Projectile::MAXIMUM_LIFETIME_TICKS);
         self::assertSame([], $result->updated);
@@ -79,6 +81,7 @@ final class ProjectileRegistryTest extends TestCase
         $registry = new ProjectileRegistry(firstEntityId: 1_000);
         $arrow = $registry->spawnTippedArrow(
             'owner',
+            42,
             PotionType::WATER,
             new Position(0.0, 64.0, 0.0),
             0.0,
@@ -99,6 +102,7 @@ final class ProjectileRegistryTest extends TestCase
         $registry = new ProjectileRegistry(firstEntityId: 1_500);
         $normal = $registry->spawnArrow(
             'owner',
+            42,
             new Position(0.0, 64.0, 0.0),
             0.0,
             0.0,
@@ -106,6 +110,7 @@ final class ProjectileRegistryTest extends TestCase
         );
         $tipped = $registry->spawnTippedArrow(
             'owner',
+            42,
             PotionType::POISON,
             new Position(0.0, 64.0, 0.0),
             0.0,
@@ -123,6 +128,7 @@ final class ProjectileRegistryTest extends TestCase
         $spawnRegistry = new ProjectileRegistry(firstEntityId: 1_750);
         $arrow = $spawnRegistry->spawnArrow(
             'owner',
+            42,
             new Position(0.0, 64.0, 0.0),
             35.0,
             -12.0,
@@ -153,6 +159,7 @@ final class ProjectileRegistryTest extends TestCase
         $registry = new ProjectileRegistry(firstEntityId: 1_900);
         $trident = $registry->spawnTrident(
             'owner',
+            42,
             PotionType::WATER,
             new Position(0.0, 64.0, 0.0),
             0.0,
@@ -176,6 +183,7 @@ final class ProjectileRegistryTest extends TestCase
         $registry = new ProjectileRegistry(firstEntityId: 2_000);
         $trident = $registry->spawnTrident(
             'owner',
+            42,
             PotionType::WATER,
             new Position(0.0, 64.0, 0.0),
             0.0,
@@ -204,5 +212,35 @@ final class ProjectileRegistryTest extends TestCase
         self::assertGreaterThanOrEqual(20, $hook->fishingWaitTicks);
         self::assertLessThanOrEqual(300, $hook->fishingWaitTicks);
         self::assertSame(99, $hook->ownerRuntimeEntityId);
+    }
+
+    public function testEntityOwnedArrowRetainsTypedStableOwnerIdentityAcrossTicks(): void
+    {
+        $registry = new ProjectileRegistry(firstEntityId: 2_100);
+        $arrow = $registry->spawnArrow(
+            '5c8fd1fe-ec31-4bd4-ab14-2c68732d88ea',
+            73,
+            new Position(0.0, 64.0, 0.0),
+            0.0,
+            0.0,
+            1.6,
+            ownerType: ProjectileOwnerType::ENTITY,
+        );
+
+        self::assertSame(ProjectileOwnerType::ENTITY, $arrow->ownerType);
+        self::assertSame(73, $arrow->ownerRuntimeEntityId);
+        self::assertTrue($arrow->ownedByEntity('5c8fd1fe-ec31-4bd4-ab14-2c68732d88ea', 73));
+        self::assertFalse($arrow->ownedByEntity('5c8fd1fe-ec31-4bd4-ab14-2c68732d88ea', 74));
+        self::assertFalse($arrow->ownedByPlayer('5c8fd1fe-ec31-4bd4-ab14-2c68732d88ea', 73));
+        self::assertSame($arrow->ownerType, $arrow->tick()->ownerType);
+        self::assertSame($arrow->ownerUuid, $arrow->tick()->ownerUuid);
+    }
+
+    public function testProjectileOwnerRequiresAPositiveRuntimeIdentity(): void
+    {
+        $registry = new ProjectileRegistry();
+
+        $this->expectException(InvalidArgumentException::class);
+        $registry->spawnArrow('owner', 0, new Position(0.0, 64.0, 0.0), 0.0, 0.0, 1.0);
     }
 }

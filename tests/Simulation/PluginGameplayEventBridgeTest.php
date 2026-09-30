@@ -23,11 +23,16 @@ namespace Bedriox\Server\Tests\Simulation;
 use Bedriox\Api\Effect\EffectCause;
 use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Effect\EffectType;
+use Bedriox\Api\Entity\EntityInteractionType;
+use Bedriox\Api\Entity\EntityTargetReason;
 use Bedriox\Api\Event\Block\BlockBreakEvent;
 use Bedriox\Api\Event\Block\BlockBrokenEvent;
 use Bedriox\Api\Event\Block\BlockPlaceEvent;
 use Bedriox\Api\Event\Entity\EntityEffectAddedEvent;
 use Bedriox\Api\Event\Entity\EntityEffectAddEvent;
+use Bedriox\Api\Event\Entity\EntityInteractedEvent;
+use Bedriox\Api\Event\Entity\EntityTargetChangedEvent;
+use Bedriox\Api\Event\Entity\EntityTargetEvent;
 use Bedriox\Api\Event\EventPriority;
 use Bedriox\Api\Event\Inventory\InventoryChangedEvent;
 use Bedriox\Api\Event\Inventory\InventoryChangeEvent;
@@ -64,9 +69,14 @@ use Bedriox\Api\Player\PlayerInteractionType;
 use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Data\BedrockDataSet;
+use Bedriox\Server\Entity\EntityUuid;
+use Bedriox\Server\Entity\Vanilla\SheepEntity;
+use Bedriox\Server\Entity\Vanilla\SkeletonEntity;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Gameplay\Potion\PotionEffectDose;
 use Bedriox\Server\Player\InventoryStack;
+use Bedriox\Server\Player\Player;
+use Bedriox\Server\Player\PlayerIdentity;
 use Bedriox\Server\Plugin\Event\EventDispatcher;
 use Bedriox\Server\Plugin\PluginActionBuffer;
 use Bedriox\Server\Plugin\PluginExecutionContext;
@@ -106,6 +116,93 @@ use Throwable;
 
 final class PluginGameplayEventBridgeTest extends TestCase
 {
+    public function testEntityInteractedDispatchesCommittedHeldItemSnapshot(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $seen = null;
+        $dispatcher->register(
+            'Example',
+            EntityInteractedEvent::class,
+            static function (EntityInteractedEvent $event) use (&$seen): void {
+                $seen = $event;
+            },
+        );
+        $player = new Player(
+            'session',
+            1,
+            new PlayerIdentity('identity-one', 'One'),
+            new Position(0.0, 64.0, 0.0),
+            4,
+            0,
+            64.0,
+        );
+        $sheep = new SheepEntity(
+            EntityUuid::random(),
+            2,
+            'world',
+            new Position(1.0, 64.0, 0.0),
+        );
+
+        $bridge->entityInteracted(
+            $player,
+            $sheep,
+            EntityInteractionType::ITEM_INTERACT,
+            new InventoryStack('minecraft:red_dye', 3, 9, damage: 7),
+        );
+
+        self::assertInstanceOf(EntityInteractedEvent::class, $seen);
+        self::assertSame($sheep, $seen->entity);
+        self::assertSame(EntityInteractionType::ITEM_INTERACT, $seen->interaction);
+        self::assertNotNull($seen->heldItem);
+        self::assertSame('minecraft:red_dye', $seen->heldItem->identifier);
+        self::assertSame(3, $seen->heldItem->count);
+        self::assertSame(7, $seen->heldItem->damage);
+    }
+
+    public function testEntityTargetBridgeReturnsAdjustedIntentAndDispatchesCommittedTransition(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $replacement = self::loginPlayerView();
+        $committed = null;
+        $dispatcher->register(
+            'Example',
+            EntityTargetEvent::class,
+            static function (EntityTargetEvent $event) use ($replacement): void {
+                $event->setTarget($replacement);
+            },
+        );
+        $dispatcher->register(
+            'Example',
+            EntityTargetChangedEvent::class,
+            static function (EntityTargetChangedEvent $event) use (&$committed): void {
+                $committed = $event;
+            },
+        );
+        $skeleton = new SkeletonEntity(
+            EntityUuid::random(),
+            2,
+            'world',
+            new Position(1.0, 64.0, 0.0),
+        );
+
+        $intent = $bridge->entityTarget(
+            $skeleton,
+            null,
+            null,
+            EntityTargetReason::CLOSEST_PLAYER,
+        );
+        self::assertSame($replacement, $intent->target());
+
+        $bridge->entityTargetChanged(
+            $skeleton,
+            null,
+            $intent->target(),
+            EntityTargetReason::CLOSEST_PLAYER,
+        );
+        self::assertInstanceOf(EntityTargetChangedEvent::class, $committed);
+        self::assertSame($replacement, $committed->target);
+    }
+
     public function testDirectSplashAndLingeringInstantDosesBypassEffectLifecycleAndUseVitalEvents(): void
     {
         [$dispatcher, $bridge] = self::bridge();

@@ -27,6 +27,8 @@ namespace Bedriox\Api\Entity;
 enum VanillaEntityType: string implements VanillaEntityIdentity
 {
     case COW = 'minecraft:cow';
+    case SHEEP = 'minecraft:sheep';
+    case SKELETON = 'minecraft:skeleton';
     case ZOMBIE = 'minecraft:zombie';
 
     public function identifier(): string

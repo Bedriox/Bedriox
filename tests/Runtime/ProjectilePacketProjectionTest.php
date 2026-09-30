@@ -112,6 +112,7 @@ final class ProjectilePacketProjectionTest extends TestCase
             $motion,
             ageTicks: $ageTicks,
             type: ProjectileType::ARROW,
+            ownerRuntimeEntityId: 42,
             state: $state,
             embeddedBlock: $embeddedBlock,
             embeddedFace: $embeddedFace,

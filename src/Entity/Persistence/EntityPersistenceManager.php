@@ -1396,6 +1396,11 @@ final class EntityPersistenceManager
         int $customSchemaVersion,
         string $customData,
     ): EntityPersistenceRecord {
+        if ($entity instanceof IntrinsicEntityPersistence) {
+            $variant = $entity->persistenceVariant();
+            $customSchemaVersion = $entity->persistenceSchemaVersion();
+            $customData = $entity->persistenceData();
+        }
         if ($this->customStateEncoder !== null) {
             $customState = ($this->customStateEncoder)($entity);
             if ($customState !== null) {
@@ -1465,6 +1470,13 @@ final class EntityPersistenceManager
         $entity->restoreSpawnOwnership($record->spawnOrigin, $record->despawnPolicy);
         $entity->setMotion($record->motion);
         $entity->restoreAgeTicks($record->ageTicks);
+        if ($entity instanceof IntrinsicEntityPersistence) {
+            $entity->restorePersistenceState(
+                $record->variant,
+                $record->customSchemaVersion,
+                $record->customData,
+            );
+        }
 
         return $entity;
     }

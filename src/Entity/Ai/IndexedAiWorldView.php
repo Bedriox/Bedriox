@@ -73,6 +73,29 @@ final readonly class IndexedAiWorldView implements TargetAwareAiWorldView
 
     public function nearestPlayer(AbstractMobEntity $entity, float $radius): ?AiPlayerSnapshot
     {
+        return $this->nearestPlayerMatching($entity, $radius);
+    }
+
+    public function nearestPlayerHolding(
+        AbstractMobEntity $entity,
+        float $radius,
+        string $itemIdentifier,
+    ): ?AiPlayerSnapshot {
+        if (strlen($itemIdentifier) > 128
+            || preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $itemIdentifier) !== 1) {
+            throw new InvalidArgumentException('AI held-item query identifier must be canonical and bounded.');
+        }
+
+        return $this->nearestPlayerMatching(
+            $entity,
+            $radius,
+            static fn(AiPlayerSnapshot $player): bool => $player->heldItemIdentifier === $itemIdentifier,
+        );
+    }
+
+    /** @param null|Closure(AiPlayerSnapshot): bool $filter */
+    private function nearestPlayerMatching(AbstractMobEntity $entity, float $radius, ?Closure $filter = null): ?AiPlayerSnapshot
+    {
         if (!is_finite($radius) || $radius <= 0.0 || $radius > 256.0) {
             throw new InvalidArgumentException('AI player query radius is outside its supported bounds.');
         }
@@ -82,6 +105,9 @@ final readonly class IndexedAiWorldView implements TargetAwareAiWorldView
         $nearestDistance = null;
         foreach ($this->players($entity) as $player) {
             if ($player->worldName !== $entity->getWorldName()) {
+                continue;
+            }
+            if ($filter !== null && !$filter($player)) {
                 continue;
             }
             if ($entity->getCategory() === EntityCategory::MONSTER && !$player->damageable) {

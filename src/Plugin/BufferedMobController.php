@@ -40,7 +40,7 @@ use InvalidArgumentException;
 use LogicException;
 
 /** @internal Collects a bounded set of authoritative intents in the active plugin transaction. */
-final class BufferedMobController implements MobController
+class BufferedMobController implements MobController
 {
     private const int MAXIMUM_INTENTS = 16;
     private const float MAXIMUM_STEERING_SPEED = 10.0;
@@ -443,7 +443,7 @@ final class BufferedMobController implements MobController
     }
 
     /** @param callable(): void $intent */
-    private function stage(callable $intent): void
+    final protected function stage(callable $intent): void
     {
         $transactionId = $this->actions?->currentTransactionId();
         if ($transactionId === null) {

@@ -125,6 +125,12 @@ final class WorldNaturalSpawnRuntime
                 new CowNaturalSpawnRule(),
                 8,
             );
+            $entries[] = new NaturalSpawnEntry(
+                VanillaEntityType::SHEEP,
+                EntityCategory::ANIMAL,
+                new SheepNaturalSpawnRule(),
+                12,
+            );
         }
         if ($spawnMonsters && $world->difficulty() > 0) {
             $entries[] = new NaturalSpawnEntry(
@@ -132,6 +138,12 @@ final class WorldNaturalSpawnRuntime
                 EntityCategory::MONSTER,
                 new ZombieNaturalSpawnRule(),
                 12,
+            );
+            $entries[] = new NaturalSpawnEntry(
+                VanillaEntityType::SKELETON,
+                EntityCategory::MONSTER,
+                new SkeletonNaturalSpawnRule(),
+                10,
             );
         }
         $spawner = new NaturalSpawner(

@@ -21,6 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Api\Event\Entity;
 
 use Bedriox\Api\Entity\Entity;
+use Bedriox\Api\Entity\LivingEntity;
 use Bedriox\Api\Event\CancellableEvent;
 use Bedriox\Api\Player\Player;
 use Bedriox\Api\World\BlockPosition;
@@ -31,7 +32,7 @@ final class ProjectileImpactEvent extends CancellableEvent
 {
     public function __construct(
         public readonly int $runtimeEntityId,
-        public readonly string $ownerUuid,
+        public readonly Player|LivingEntity|null $shooter,
         public readonly string $projectileIdentifier,
         public readonly Position $position,
         public readonly Player|Entity|null $target,

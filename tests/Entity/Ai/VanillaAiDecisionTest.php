@@ -29,6 +29,7 @@ use Bedriox\Server\Entity\Ai\TargetAwareAiWorldView;
 use Bedriox\Server\Entity\Ai\VanillaAiMemories;
 use Bedriox\Server\Entity\EntityUuid;
 use Bedriox\Server\Entity\Vanilla\CowEntity;
+use Bedriox\Server\Entity\Vanilla\SheepEntity;
 use Bedriox\Server\Entity\Vanilla\ZombieEntity;
 use Bedriox\Server\Simulation\Position;
 use PHPUnit\Framework\TestCase;
@@ -132,6 +133,30 @@ final class VanillaAiDecisionTest extends TestCase
         $zombie->tickAi(new AiTickContext(20, $world), true);
         self::assertNull($zombie->aiRuntime()->takeMeleeIntent(20));
     }
+
+    public function testSheepFollowsNearestPlayerHoldingWheat(): void
+    {
+        $world = new TargetAiWorldView(new AiPlayerSnapshot(
+            'player-one',
+            'world',
+            new Position(6.0, 64.0, 0.0),
+            true,
+            'minecraft:wheat',
+        ));
+        $sheep = new SheepEntity(
+            EntityUuid::random(),
+            1,
+            'world',
+            new Position(0.0, 64.0, 0.0),
+        );
+
+        for ($tick = 1; $tick <= 3; ++$tick) {
+            $sheep->tickAi(new AiTickContext($tick, $world), true);
+        }
+
+        self::assertEqualsWithDelta(0.10, $sheep->getMotion()->x, 0.000_001);
+        self::assertEqualsWithDelta(0.0, $sheep->getMotion()->z, 0.000_001);
+    }
 }
 
 final class TargetAiWorldView implements TargetAwareAiWorldView
@@ -160,5 +185,15 @@ final class TargetAiWorldView implements TargetAwareAiWorldView
         }
 
         return $this->target;
+    }
+
+    public function nearestPlayerHolding(
+        AbstractMobEntity $entity,
+        float $radius,
+        string $itemIdentifier,
+    ): ?AiPlayerSnapshot {
+        $target = $this->nearestPlayer($entity, $radius);
+
+        return $target?->heldItemIdentifier === $itemIdentifier ? $target : null;
     }
 }

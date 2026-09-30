@@ -21,6 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Api\Event\Entity;
 
 use Bedriox\Api\Entity\Entity;
+use Bedriox\Api\Entity\LivingEntity;
 use Bedriox\Api\Event\Event;
 use Bedriox\Api\Event\PostEvent;
 use Bedriox\Api\Player\Player;
@@ -32,7 +33,7 @@ final class ProjectileImpactedEvent extends Event implements PostEvent
 {
     public function __construct(
         public readonly int $runtimeEntityId,
-        public readonly string $ownerUuid,
+        public readonly Player|LivingEntity|null $shooter,
         public readonly string $projectileIdentifier,
         public readonly Position $position,
         public readonly Player|Entity|null $target,

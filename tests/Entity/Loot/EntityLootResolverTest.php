@@ -20,18 +20,24 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Entity\Loot;
 
+use Bedriox\Api\Entity\Entity;
+use Bedriox\Api\Entity\EntityType;
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\VanillaEntityIdentifier;
 use Bedriox\Api\Entity\VanillaEntityType;
+use Bedriox\Api\Entity\WoolColor;
 use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Inventory\ItemNbt;
 use Bedriox\Api\Inventory\ItemStack;
+use Bedriox\Server\Entity\EntityUuid;
 use Bedriox\Server\Entity\Loot\EntityLootResolver;
 use Bedriox\Server\Entity\Loot\EquippedLootItem;
 use Bedriox\Server\Entity\Loot\LootContext;
 use Bedriox\Server\Entity\Loot\LootItemRegistry;
 use Bedriox\Server\Entity\Loot\LootRandomSource;
 use Bedriox\Server\Entity\Loot\LootTable;
+use Bedriox\Server\Entity\Vanilla\SheepEntity;
+use Bedriox\Server\Simulation\Position;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 
@@ -68,6 +74,36 @@ final class EntityLootResolverTest extends TestCase
         self::assertSame([2, 3], array_column($raw, 'count'));
         self::assertSame(['minecraft:cooked_beef'], array_column($cooked, 'identifier'));
         self::assertSame([1], array_column($cooked, 'count'));
+    }
+
+    public function testSheepDropsMuttonAndOnlyUnshearedWoolOfItsColor(): void
+    {
+        $sheep = new SheepEntity(EntityUuid::random(), 1, 'world', new Position(0.0, 64.0, 0.0));
+        $sheep->setWoolColor(WoolColor::BLUE);
+        $raw = self::resolver(new ScriptedLootRandom([3]))
+            ->prepare(self::context(VanillaEntityType::SHEEP, lootingLevel: 1, subject: $sheep))
+            ->drops();
+
+        self::assertSame(['minecraft:mutton', 'minecraft:blue_wool'], array_column($raw, 'identifier'));
+        self::assertSame([3, 1], array_column($raw, 'count'));
+
+        $sheep->setSheared(true);
+        $cooked = self::resolver(new ScriptedLootRandom([1]))
+            ->prepare(self::context(VanillaEntityType::SHEEP, burning: true, subject: $sheep))
+            ->drops();
+
+        self::assertSame(['minecraft:cooked_mutton'], array_column($cooked, 'identifier'));
+        self::assertSame([1], array_column($cooked, 'count'));
+    }
+
+    public function testSkeletonDropsIndependentBoundedArrowAndBoneCounts(): void
+    {
+        $drops = self::resolver(new ScriptedLootRandom([4, 0]))
+            ->prepare(self::context(VanillaEntityType::SKELETON, lootingLevel: 2))
+            ->drops();
+
+        self::assertSame(['minecraft:arrow'], array_column($drops, 'identifier'));
+        self::assertSame([4], array_column($drops, 'count'));
     }
 
     public function testGenericEntityHasNoImplicitLoot(): void
@@ -138,11 +174,23 @@ final class EntityLootResolverTest extends TestCase
 
     /** @param list<EquippedLootItem> $equipment */
     private static function context(
-        \Bedriox\Api\Entity\EntityType $type,
+        EntityType $type,
         bool $burning = false,
         array $equipment = [],
+        int $lootingLevel = 0,
+        ?Entity $subject = null,
     ): LootContext {
-        return new LootContext($type, null, null, $burning, $equipment, SpawnCause::NATURAL, 2);
+        return new LootContext(
+            $type,
+            null,
+            null,
+            $burning,
+            $equipment,
+            SpawnCause::NATURAL,
+            2,
+            $lootingLevel,
+            $subject,
+        );
     }
 
     private static function resolver(ScriptedLootRandom $random): EntityLootResolver
@@ -155,6 +203,11 @@ final class EntityLootResolverTest extends TestCase
             'minecraft:iron_ingot' => 64,
             'minecraft:iron_sword' => 1,
             'minecraft:leather' => 64,
+            'minecraft:arrow' => 64,
+            'minecraft:blue_wool' => 64,
+            'minecraft:bone' => 64,
+            'minecraft:cooked_mutton' => 64,
+            'minecraft:mutton' => 64,
             'minecraft:potato' => 64,
             'minecraft:rotten_flesh' => 64,
             'minecraft:stick' => 64,

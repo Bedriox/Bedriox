@@ -29,6 +29,7 @@ use Bedriox\Server\Entity\Ai\AiTickContext;
 use Bedriox\Server\Entity\Ai\AiTickResult;
 use Bedriox\Server\Plugin\BufferedMobController;
 use Bedriox\Server\Plugin\PluginActionBuffer;
+use Bedriox\Server\Simulation\Position;
 use InvalidArgumentException;
 
 abstract class AbstractMobEntity extends AbstractLivingEntity implements ApiMob
@@ -50,7 +51,7 @@ abstract class AbstractMobEntity extends AbstractLivingEntity implements ApiMob
         int $runtimeId,
         EntityDefinition $definition,
         string $worldName,
-        \Bedriox\Server\Simulation\Position $position,
+        Position $position,
         AiBehaviorDefinition $behavior,
         EntityMotion $motion = new EntityMotion(),
         float $yaw = 0.0,
@@ -69,10 +70,10 @@ abstract class AbstractMobEntity extends AbstractLivingEntity implements ApiMob
             $health,
         );
         $this->ai = new AiBehaviorRuntime($behavior);
-        $this->controller = new BufferedMobController(null, $this, $this->equipmentState());
+        $this->controller = $this->createController(null);
     }
 
-    final public function getController(): MobController
+    public function getController(): MobController
     {
         return $this->controller;
     }
@@ -80,7 +81,12 @@ abstract class AbstractMobEntity extends AbstractLivingEntity implements ApiMob
     /** @internal Rebinds the controller to the active plugin transaction boundary. */
     final public function attachController(?PluginActionBuffer $actions): void
     {
-        $this->controller = new BufferedMobController($actions, $this, $this->equipmentState());
+        $this->controller = $this->createController($actions);
+    }
+
+    protected function createController(?PluginActionBuffer $actions): MobController
+    {
+        return new BufferedMobController($actions, $this, $this->equipmentState());
     }
 
     final public function getActivationState(): MobActivationState

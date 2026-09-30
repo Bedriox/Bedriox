@@ -23,6 +23,7 @@ namespace Bedriox\Server\Tests\Gameplay\Projectile;
 use Bedriox\Api\Potion\PotionType;
 use Bedriox\Api\World\BlockFace;
 use Bedriox\Server\Gameplay\Potion\AreaEffectCloudRegistry;
+use Bedriox\Server\Gameplay\Projectile\ProjectileOwnerType;
 use Bedriox\Server\Gameplay\Projectile\ProjectilePersistenceCodec;
 use Bedriox\Server\Gameplay\Projectile\ProjectileRegistry;
 use Bedriox\Server\Gameplay\Projectile\ProjectileState;
@@ -42,6 +43,7 @@ final class ProjectilePersistenceCodecTest extends TestCase
         $projectiles = new ProjectileRegistry(firstEntityId: 3_000);
         $arrow = $projectiles->spawnTippedArrow(
             'owner-uuid',
+            42,
             PotionType::LONG_POISON,
             new Position(4.5, 72.25, -9.0),
             37.0,
@@ -78,6 +80,7 @@ final class ProjectilePersistenceCodecTest extends TestCase
         $restoredProjectiles->restore($decodedProjectiles[0]);
         $nextArrow = $restoredProjectiles->spawnTippedArrow(
             'next-owner',
+            43,
             PotionType::WATER,
             new Position(0.0, 64.0, 0.0),
             0.0,
@@ -97,6 +100,7 @@ final class ProjectilePersistenceCodecTest extends TestCase
         $registry = new ProjectileRegistry(firstEntityId: 5_000);
         $arrow = $registry->spawnArrow(
             'owner',
+            42,
             new Position(0.0, 64.0, 0.0),
             25.0,
             -8.0,
@@ -120,29 +124,25 @@ final class ProjectilePersistenceCodecTest extends TestCase
         self::assertSame($arrow->pitch, $decoded[0]->pitch);
     }
 
-    public function testVersionOneProjectileSnapshotMigratesToFlyingState(): void
+    public function testEntityOwnerTypeAndIdentitySurvivePersistence(): void
     {
         $registry = new ProjectileRegistry(firstEntityId: 6_000);
-        $registry->spawnArrow('owner', new Position(1.0, 65.0, 2.0), 35.0, -10.0, 2.0);
+        $registry->spawnArrow(
+            '5c8fd1fe-ec31-4bd4-ab14-2c68732d88ea',
+            91,
+            new Position(1.0, 65.0, 2.0),
+            35.0,
+            -10.0,
+            2.0,
+            ownerType: ProjectileOwnerType::ENTITY,
+        );
         $codec = new ProjectilePersistenceCodec();
-        $document = json_decode($codec->encode('world', $registry->all(), []), true, 32, JSON_THROW_ON_ERROR);
-        if (!is_array($document) || !isset($document['projectiles']) || !is_array($document['projectiles'])
-            || !isset($document['projectiles'][0]) || !is_array($document['projectiles'][0])) {
-            self::fail('Encoded projectile persistence document has an invalid test shape.');
-        }
-        $document['version'] = 1;
-        foreach (['state', 'yaw', 'pitch', 'embeddedBlock', 'embeddedFace', 'embeddedTicks', 'pickupMode'] as $key) {
-            unset($document['projectiles'][0][$key]);
-        }
-
-        [$decoded] = $codec->decode('world', json_encode($document, JSON_THROW_ON_ERROR));
+        [$decoded] = $codec->decode('world', $codec->encode('world', $registry->all(), []));
 
         self::assertCount(1, $decoded);
-        self::assertSame(ProjectileState::FLYING, $decoded[0]->state);
-        self::assertSame(\Bedriox\Server\Gameplay\Projectile\ArrowPickupMode::ANY, $decoded[0]->pickupMode);
-        self::assertNull($decoded[0]->embeddedBlock);
-        self::assertTrue(is_finite($decoded[0]->yaw));
-        self::assertTrue(is_finite($decoded[0]->pitch));
+        self::assertSame(ProjectileOwnerType::ENTITY, $decoded[0]->ownerType);
+        self::assertSame('5c8fd1fe-ec31-4bd4-ab14-2c68732d88ea', $decoded[0]->ownerUuid);
+        self::assertSame(91, $decoded[0]->ownerRuntimeEntityId);
     }
 
     public function testRejectsMalformedOversizedAndCrossWorldSnapshots(): void
@@ -164,11 +164,29 @@ final class ProjectilePersistenceCodecTest extends TestCase
         }
     }
 
+    public function testRejectsUnknownPersistedProjectileOwnerType(): void
+    {
+        $registry = new ProjectileRegistry();
+        $registry->spawnArrow('owner', 42, new Position(0.0, 64.0, 0.0), 0.0, 0.0, 1.0);
+        $codec = new ProjectilePersistenceCodec();
+        $document = json_decode($codec->encode('world', $registry->all(), []), true, 32, JSON_THROW_ON_ERROR);
+        if (!is_array($document) || !isset($document['projectiles']) || !is_array($document['projectiles'])
+            || !isset($document['projectiles'][0])
+            || !is_array($document['projectiles'][0])) {
+            self::fail('Encoded projectile persistence document has an invalid test shape.');
+        }
+        $document['projectiles'][0]['ownerType'] = 'unknown';
+
+        $this->expectException(InvalidArgumentException::class);
+        $codec->decode('world', json_encode($document, JSON_THROW_ON_ERROR));
+    }
+
     public function testThrownTridentPersistsButFishingHookDoesNot(): void
     {
         $projectiles = new ProjectileRegistry(firstEntityId: 5_000);
         $projectiles->spawnTrident(
             'owner',
+            42,
             PotionType::WATER,
             new Position(1.0, 70.0, 1.0),
             0.0,

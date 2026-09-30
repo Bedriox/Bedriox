@@ -35,7 +35,7 @@ use JsonException;
 final class ProjectilePersistenceCodec
 {
     public const int MAXIMUM_BYTES = 1_048_576;
-    private const int VERSION = 2;
+    private const int VERSION = 3;
 
     /**
      * @param list<Projectile> $projectiles
@@ -76,6 +76,7 @@ final class ProjectilePersistenceCodec
                 'channeling' => $entity->channeling,
                 'carriedItem' => self::encodedStack($entity->carriedItem),
                 'ownerRuntime' => $entity->ownerRuntimeEntityId,
+                'ownerType' => $entity->ownerType->value,
                 'fishingBobbing' => $entity->fishingBobbing,
                 'fishingWait' => $entity->fishingWaitTicks,
                 'fishingBite' => $entity->fishingBiteTicks,
@@ -128,7 +129,7 @@ final class ProjectilePersistenceCodec
         } catch (JsonException $error) {
             throw new InvalidArgumentException('Potion entity snapshot is malformed.', previous: $error);
         }
-        if (!is_array($document) || !in_array(($document['version'] ?? null), [1, self::VERSION], true)
+        if (!is_array($document) || ($document['version'] ?? null) !== self::VERSION
             || ($document['world'] ?? null) !== $worldId
             || !isset($document['projectiles'], $document['clouds'])
             || !is_array($document['projectiles']) || !array_is_list($document['projectiles'])
@@ -165,7 +166,8 @@ final class ProjectilePersistenceCodec
                 self::optionalInteger($record, 'loyalty', 0),
                 self::optionalBoolean($record, 'channeling', false),
                 self::optionalStack($record, 'carriedItem'),
-                self::optionalInteger($record, 'ownerRuntime', 0),
+                self::integer($record, 'ownerRuntime'),
+                self::projectileOwnerType($record),
                 self::optionalBoolean($record, 'fishingBobbing', false),
                 self::optionalInteger($record, 'fishingWait', 0),
                 self::optionalInteger($record, 'fishingBite', 0),
@@ -309,6 +311,13 @@ final class ProjectilePersistenceCodec
 
         return ProjectileType::tryFrom(self::string($record, 'type'))
             ?? throw new InvalidArgumentException('Projectile entity type is invalid.');
+    }
+
+    /** @param array<mixed> $record */
+    private static function projectileOwnerType(array $record): ProjectileOwnerType
+    {
+        return ProjectileOwnerType::tryFrom(self::string($record, 'ownerType'))
+            ?? throw new InvalidArgumentException('Projectile owner type is invalid.');
     }
 
     /** @param array<mixed> $record */
