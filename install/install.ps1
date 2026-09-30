@@ -38,11 +38,11 @@ try {
     }
 
     foreach ($url in @($manifest.phar_url, $manifest.launcher_url, $manifest.runtime_url)) {
-        if (-not $url.StartsWith("https://github.com/", [StringComparison]::Ordinal)) {
+        if (-not $url.StartsWith("https://bedriox.com/downloads/", [StringComparison]::Ordinal)) {
             throw "Bedriox installer: the release manifest contains an untrusted download URL."
         }
     }
-    foreach ($digest in @($manifest.phar_sha256, $manifest.runtime_sha256)) {
+    foreach ($digest in @($manifest.phar_sha256, $manifest.launcher_sha256, $manifest.runtime_sha256)) {
         if ($digest -notmatch "^[0-9a-f]{64}$") {
             throw "Bedriox installer: the release manifest contains an invalid checksum."
         }
@@ -56,9 +56,13 @@ try {
     Invoke-WebRequest -Uri $manifest.runtime_url -OutFile $runtimeArchive
 
     $pharHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $payload "Bedriox.phar")).Hash.ToLowerInvariant()
+    $launcherHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $payload "bedriox.cmd")).Hash.ToLowerInvariant()
     $runtimeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $runtimeArchive).Hash.ToLowerInvariant()
     if ($pharHash -ne $manifest.phar_sha256) {
         throw "Bedriox installer: Bedriox.phar checksum verification failed."
+    }
+    if ($launcherHash -ne $manifest.launcher_sha256) {
+        throw "Bedriox installer: launcher checksum verification failed."
     }
     if ($runtimeHash -ne $manifest.runtime_sha256) {
         throw "Bedriox installer: Runtime checksum verification failed."

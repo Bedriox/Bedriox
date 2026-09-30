@@ -83,17 +83,18 @@ VERSION=$(json_value bedriox_version)
 PHAR_URL=$(json_value phar_url)
 PHAR_SHA256=$(json_value phar_sha256)
 LAUNCHER_URL=$(json_value launcher_url)
+LAUNCHER_SHA256=$(json_value launcher_sha256)
 RUNTIME_URL=$(json_value runtime_url)
 RUNTIME_SHA256=$(json_value runtime_sha256)
 
-for DIGEST in "$PHAR_SHA256" "$RUNTIME_SHA256"; do
+for DIGEST in "$PHAR_SHA256" "$LAUNCHER_SHA256" "$RUNTIME_SHA256"; do
     case "$DIGEST" in
         ''|*[!0-9a-f]*) echo "Bedriox installer: release manifest contains an invalid checksum." >&2; exit 65 ;;
     esac
     [ "${#DIGEST}" -eq 64 ] || { echo "Bedriox installer: release manifest contains an invalid checksum." >&2; exit 65; }
 done
 case "$PHAR_URL:$LAUNCHER_URL:$RUNTIME_URL" in
-    https://github.com/*:https://github.com/*:https://github.com/*) ;;
+    https://bedriox.com/downloads/*:https://bedriox.com/downloads/*:https://bedriox.com/downloads/*) ;;
     *) echo "Bedriox installer: release manifest contains an untrusted download URL." >&2; exit 65 ;;
 esac
 
@@ -112,6 +113,7 @@ checksum() {
 }
 
 [ "$(checksum "$PAYLOAD/Bedriox.phar")" = "$PHAR_SHA256" ] || { echo "Bedriox installer: Bedriox.phar checksum verification failed." >&2; exit 65; }
+[ "$(checksum "$PAYLOAD/bedriox")" = "$LAUNCHER_SHA256" ] || { echo "Bedriox installer: launcher checksum verification failed." >&2; exit 65; }
 [ "$(checksum "$TEMPORARY_DIRECTORY/runtime.tar.gz")" = "$RUNTIME_SHA256" ] || { echo "Bedriox installer: Runtime checksum verification failed." >&2; exit 65; }
 
 tar -xzf "$TEMPORARY_DIRECTORY/runtime.tar.gz" -C "$PAYLOAD"

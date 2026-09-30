@@ -43,6 +43,9 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Fixed
 
+- Fetch public installation artifacts from the Bedriox website while keeping
+  source repositories private, and verify launcher checksums alongside the PHAR
+  and Runtime before activation.
 - Stage same-dimension world transfers behind destination terrain preparation and an ordered source-output fence, then synchronize destination metadata, teleport the owner, publish the new center, and stream only destination chunks without invoking a dimension loading screen.
 - Keep the global plugin scheduler on a server-owned monotonic tick timeline when additional worlds are loaded, preventing independent world tick counters from crashing the runtime.
 - Keep natural spawning bounded and fair through the full 1,024-player server limit, account candidate preparation against its elapsed budget, and preserve natural-distance despawn ownership across entity save, unload, and restart without affecting command, spawn-egg, or plugin entities.

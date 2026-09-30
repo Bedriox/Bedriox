@@ -31,6 +31,8 @@ final class InstallerScriptTest extends TestCase
         self::assertStringContainsString('Bedriox.phar', $script);
         self::assertStringContainsString('phar_sha256', $script);
         self::assertStringContainsString('runtime_sha256', $script);
+        self::assertStringContainsString('launcher_sha256', $script);
+        self::assertStringContainsString('https://bedriox.com/downloads/', $script);
         self::assertStringContainsString('mktemp -d', $script);
         self::assertStringContainsString('already exists', $script);
         self::assertStringContainsString('--no-start', $script);
@@ -44,6 +46,8 @@ final class InstallerScriptTest extends TestCase
         self::assertStringContainsString('Bedriox.phar', $script);
         self::assertStringContainsString('Get-FileHash', $script);
         self::assertStringContainsString('runtime_sha256', $script);
+        self::assertStringContainsString('launcher_sha256', $script);
+        self::assertStringContainsString('https://bedriox.com/downloads/', $script);
         self::assertStringContainsString('NewGuid', $script);
         self::assertStringContainsString('already exists', $script);
         self::assertStringContainsString('NoStart', $script);
