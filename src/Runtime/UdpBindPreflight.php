@@ -28,8 +28,8 @@ final class UdpBindPreflight
         if (function_exists('socket_create') && function_exists('socket_bind')) {
             $socket = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
             if ($socket !== false) {
-                if (defined('SO_EXCLUSIVEADDRUSE')) {
-                    $exclusiveAddressUse = constant('SO_EXCLUSIVEADDRUSE');
+                $exclusiveAddressUse = self::integerConstant('SO_EXCLUSIVEADDRUSE');
+                if ($exclusiveAddressUse !== null) {
                     @socket_set_option($socket, SOL_SOCKET, $exclusiveAddressUse, 1);
                 }
                 $bound = @socket_bind($socket, $address, $port);
@@ -49,6 +49,13 @@ final class UdpBindPreflight
             throw self::unavailable($address, $port);
         }
         fclose($socket);
+    }
+
+    private static function integerConstant(string $name): ?int
+    {
+        $value = get_defined_constants()[$name] ?? null;
+
+        return is_int($value) ? $value : null;
     }
 
     private static function unavailable(string $address, int $port): PortUnavailableException

@@ -31,7 +31,10 @@ final class UdpBindPreflightTest extends TestCase
         $socket = socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
         self::assertNotFalse($socket);
         if (defined('SO_EXCLUSIVEADDRUSE')) {
-            $exclusiveAddressUse = constant('SO_EXCLUSIVEADDRUSE');
+            $exclusiveAddressUse = get_defined_constants()['SO_EXCLUSIVEADDRUSE'] ?? null;
+            if (!is_int($exclusiveAddressUse)) {
+                self::fail('SO_EXCLUSIVEADDRUSE must be an integer socket option.');
+            }
             self::assertTrue(socket_set_option($socket, SOL_SOCKET, $exclusiveAddressUse, 1));
         }
         self::assertTrue(socket_bind($socket, '127.0.0.1', 0));
