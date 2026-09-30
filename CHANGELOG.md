@@ -59,6 +59,10 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 - Add reproducible standalone PHAR packaging with locked production vendors, verified extraction, adjacent Runtime validation, release launchers, and SHA-256 checksums.
 - Add an atomic first-run setup wizard, persistent whitelist admission, operator controls, a public whitelist API, typed whitelist changes, and explicit kick causes.
+- Add cross-platform public installer scripts for the released `Bedriox.phar`
+  and qualified PHP Runtime, with platform detection, SHA-256 verification,
+  staged activation, existing-directory protection, and optional deferred
+  startup.
 - Add authoritative furnace, blast-furnace, smoker, campfire, stonecutter, smithing, anvil, grindstone, enchanting, loom, cartography, composter, and cauldron processing with persistent station state, bounded active scheduling, experience rewards and costs, typed plugin events, and atomic inventory reconciliation.
 - Add authoritative persisted player experience, derived level and progress projection, typed plugin events and API mutations, and the operator-only `/experience` command with `/xp` alias.
 - Add bounded loaded-chunk water and lava flow, source decay and renewal, fluid hardening, authoritative bucket fill/empty behavior, and flowing-fluid immersion.

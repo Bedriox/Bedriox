@@ -20,6 +20,30 @@ from the directory where server data should be stored.
 server upgrades replace that file without requiring changes to either launcher.
 Replace `bin/` only when the release requires a different Runtime build.
 
+## Public PHAR installation
+
+Normal server installations use the released `Bedriox.phar`; they do not need
+the source tree or Composer. On Linux and macOS, run:
+
+```shell
+curl -fsSL https://bedriox.com/install.sh | sh
+```
+
+On Windows PowerShell, run:
+
+```powershell
+irm https://bedriox.com/install.ps1 | iex
+```
+
+The installer detects the platform, downloads the released PHAR and matching
+qualified PHP Runtime, verifies both SHA-256 values, performs a startup probe in
+a staging directory, and then starts the server. Pass `--no-start` to the Unix
+script or `-NoStart` to the downloaded PowerShell script to prepare the server
+without starting it. The installer refuses to replace an existing directory.
+
+Composer is used to build the release PHAR, not to run it. Source-development
+instructions below remain separate from the public PHAR installation.
+
 Source installations can install a qualified Runtime archive from a local
 file. Its name and digest must exactly match `bedriox.lock.json`:
 
