@@ -130,5 +130,10 @@ if [ "$START_SERVER" = no ]; then
 fi
 
 cd -- "$INSTALL_DIRECTORY"
-echo "Bedriox installer: starting the server..."
-exec ./bedriox serve
+if ( : </dev/tty ) 2>/dev/null; then
+    echo "Bedriox installer: starting the server..."
+    exec ./bedriox serve </dev/tty
+fi
+
+echo "Bedriox installer: no interactive terminal is available, so first-run setup was not started."
+echo "Start it with: cd '$INSTALL_DIRECTORY' && ./bedriox serve"

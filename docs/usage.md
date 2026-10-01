@@ -37,9 +37,18 @@ irm https://bedriox.com/install.ps1 | iex
 
 The installer detects the platform, downloads the released PHAR and matching
 qualified PHP Runtime, verifies both SHA-256 values, performs a startup probe in
-a staging directory, and then starts the server. Pass `--no-start` to the Unix
-script or `-NoStart` to the downloaded PowerShell script to prepare the server
-without starting it. The installer refuses to replace an existing directory.
+a staging directory, and then starts the server. A Unix installation piped to
+`sh` reconnects the first-run setup wizard to the controlling terminal; when no
+interactive terminal exists, installation completes without starting and
+prints the exact manual start command. Pass `--no-start` to the Unix script or
+`-NoStart` to the downloaded PowerShell script to prepare the server without
+starting it. The installer refuses to replace an existing directory.
+
+The default destination is a new `bedriox-server` directory beneath the
+directory where the installer was invoked. This keeps the PHAR, Runtime,
+configuration, worlds, plugins, and logs together without overwriting unrelated
+files in the current directory. The first-run server process runs from inside
+that destination, so its data is created there.
 
 Composer is used to build the release PHAR, not to run it. Source-development
 instructions below remain separate from the public PHAR installation.

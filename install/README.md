@@ -13,3 +13,7 @@ staged installation is activated.
 The Unix installer supports Linux and macOS on x86-64 and ARM64. The PowerShell
 installer currently supports Windows x86-64. Both refuse to overwrite an
 existing destination and accept a no-start option for unattended provisioning.
+When the Unix installer is piped to `sh`, automatic startup reads the first-run
+wizard from `/dev/tty` instead of the exhausted script pipe. A host without a
+controlling terminal completes installation and prints the manual start command
+instead of invoking an inevitably non-interactive first run.

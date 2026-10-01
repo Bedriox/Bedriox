@@ -21,8 +21,15 @@ if (-not [Environment]::Is64BitOperatingSystem) {
     throw "Bedriox installer: a 64-bit operating system is required."
 }
 
-$architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
-if ($architecture -ne "X64") {
+$architecture = if ($env:PROCESSOR_ARCHITEW6432) {
+    $env:PROCESSOR_ARCHITEW6432
+} else {
+    $env:PROCESSOR_ARCHITECTURE
+}
+if ([string]::IsNullOrWhiteSpace($architecture)) {
+    throw "Bedriox installer: unable to determine the Windows CPU architecture."
+}
+if ($architecture -notin @("AMD64", "x86_64")) {
     throw "Bedriox installer: Windows $architecture is not currently supported."
 }
 
@@ -38,7 +45,7 @@ try {
     }
 
     foreach ($url in @($manifest.phar_url, $manifest.launcher_url, $manifest.runtime_url)) {
-        if (-not $url.StartsWith("https://bedriox.com/downloads/", [StringComparison]::Ordinal)) {
+        if ([string]::IsNullOrWhiteSpace($url) -or -not $url.StartsWith("https://bedriox.com/downloads/", [StringComparison]::Ordinal)) {
             throw "Bedriox installer: the release manifest contains an untrusted download URL."
         }
     }

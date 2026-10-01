@@ -62,6 +62,11 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Fixed
 
+- Reconnect Unix installer auto-start to the controlling terminal so the
+  first-run wizard works after `curl | sh`, while leaving non-interactive
+  installations ready for an explicit later start.
+- Detect x64 through Windows-native environment values so the public installer
+  works in Windows PowerShell 5.1 when .NET's OS architecture property is null.
 - Fetch public installation artifacts from the Bedriox website while keeping
   source repositories private, and verify launcher checksums alongside the PHAR
   and Runtime before activation.

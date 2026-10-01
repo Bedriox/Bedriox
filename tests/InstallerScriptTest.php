@@ -36,6 +36,9 @@ final class InstallerScriptTest extends TestCase
         self::assertStringContainsString('mktemp -d', $script);
         self::assertStringContainsString('already exists', $script);
         self::assertStringContainsString('--no-start', $script);
+        self::assertStringContainsString('exec ./bedriox serve </dev/tty', $script);
+        self::assertStringContainsString('no interactive terminal is available', $script);
+        self::assertStringContainsString('cd -- "$INSTALL_DIRECTORY"', $script);
         self::assertStringNotContainsString('composer', strtolower($script));
     }
 
@@ -51,6 +54,10 @@ final class InstallerScriptTest extends TestCase
         self::assertStringContainsString('NewGuid', $script);
         self::assertStringContainsString('already exists', $script);
         self::assertStringContainsString('NoStart', $script);
+        self::assertStringContainsString('PROCESSOR_ARCHITEW6432', $script);
+        self::assertStringContainsString('PROCESSOR_ARCHITECTURE', $script);
+        self::assertStringContainsString('IsNullOrWhiteSpace($architecture)', $script);
+        self::assertStringNotContainsString('RuntimeInformation]::OSArchitecture.ToString()', $script);
         self::assertStringNotContainsString('composer', strtolower($script));
     }
 }
