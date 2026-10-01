@@ -20,17 +20,21 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Runtime;
 
+use Bedriox\Api\Entity\Value\CatVariant;
 use Bedriox\Api\Entity\Value\SlimeSize;
+use Bedriox\Api\Entity\Value\WolfVariant;
 use Bedriox\Api\Entity\Value\WoolColor;
 use Bedriox\Protocol\Packet\ActorFlag;
 use Bedriox\Protocol\Packet\ActorMetadata;
 use Bedriox\Server\Entity\EntityUuid;
+use Bedriox\Server\Entity\Vanilla\CatEntity;
 use Bedriox\Server\Entity\Vanilla\CreeperEntity;
 use Bedriox\Server\Entity\Vanilla\MagmaCubeEntity;
 use Bedriox\Server\Entity\Vanilla\SheepEntity;
 use Bedriox\Server\Entity\Vanilla\SkeletonEntity;
 use Bedriox\Server\Entity\Vanilla\SlimeEntity;
 use Bedriox\Server\Entity\Vanilla\SpiderEntity;
+use Bedriox\Server\Entity\Vanilla\WolfEntity;
 use Bedriox\Server\Runtime\BedrockLivingActorProjector;
 use Bedriox\Server\Simulation\Position;
 use PHPUnit\Framework\TestCase;
@@ -96,6 +100,47 @@ final class LandMobActorMetadataTest extends TestCase
 
         $magma = new MagmaCubeEntity(EntityUuid::random(), 6, 'world', new Position(0.0, 64.0, 0.0));
         self::assertNotSame(0, self::integer($projector->metadata($magma), 0) & ActorFlag::FireImmune->mask());
+    }
+
+    public function testTamedSittingAndAngryStateProjectsWithCollarAndVariant(): void
+    {
+        $wolf = new WolfEntity(
+            EntityUuid::random(),
+            7,
+            'world',
+            new Position(0.0, 64.0, 0.0),
+            variant: WolfVariant::SNOWY,
+            collarColor: WoolColor::BLUE,
+            ownerUniqueId: EntityUuid::random(),
+            sitting: true,
+            angerTargetUniqueId: EntityUuid::random(),
+            angerTicks: 200,
+        );
+        $metadata = (new BedrockLivingActorProjector())->metadata($wolf);
+        $flags = self::integer($metadata, 0);
+
+        self::assertNotSame(0, $flags & ActorFlag::Tamed->mask());
+        self::assertNotSame(0, $flags & ActorFlag::Sitting->mask());
+        self::assertNotSame(0, $flags & ActorFlag::Angry->mask());
+        self::assertSame(5, self::integer($metadata, 2));
+        self::assertSame(11, self::integer($metadata, 3));
+    }
+
+    public function testCatVariantsUseCurrentBedrockValues(): void
+    {
+        self::assertSame(0, CatVariant::WHITE->value);
+        self::assertSame(8, CatVariant::TABBY->value);
+        self::assertSame(9, CatVariant::ALL_BLACK->value);
+        self::assertSame(10, CatVariant::JELLIE->value);
+
+        $cat = new CatEntity(
+            EntityUuid::random(),
+            8,
+            'world',
+            new Position(0.0, 64.0, 0.0),
+            variant: CatVariant::TABBY,
+        );
+        self::assertSame(8, self::integer((new BedrockLivingActorProjector())->metadata($cat), 2));
     }
 
     /** @param list<ActorMetadata> $metadata */

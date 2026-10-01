@@ -27,6 +27,7 @@ use Bedriox\Api\Effect\EffectCause;
 use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Entity\Capability\Breedable;
 use Bedriox\Api\Entity\Capability\Shearable;
+use Bedriox\Api\Entity\Capability\Tameable;
 use Bedriox\Api\Entity\Entity as ApiEntity;
 use Bedriox\Api\Entity\EntityCombustionCause;
 use Bedriox\Api\Entity\EntityDamageCause;
@@ -83,6 +84,8 @@ use Bedriox\Api\Event\Entity\EntityShearEvent;
 use Bedriox\Api\Event\Entity\EntitySpawnedEvent;
 use Bedriox\Api\Event\Entity\EntitySpawnEvent;
 use Bedriox\Api\Event\Entity\EntitySplitEvent;
+use Bedriox\Api\Event\Entity\EntityTamedEvent;
+use Bedriox\Api\Event\Entity\EntityTameEvent;
 use Bedriox\Api\Event\Entity\EntityTargetChangedEvent;
 use Bedriox\Api\Event\Entity\EntityTargetEvent;
 use Bedriox\Api\Event\Entity\EntityTransformedEvent;
@@ -273,6 +276,19 @@ final readonly class PluginGameplayEventBridge
     public function entitiesBred(Breedable $first, Breedable $second, Breedable $child, int $experience): void
     {
         $this->events->dispatch(new EntityBredEvent($first, $second, $child, $experience));
+    }
+
+    public function allowTame(Tameable $entity, Player $player): bool
+    {
+        $event = new EntityTameEvent($entity, $this->playerView($player));
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function entityTamed(Tameable $entity, Player $player): void
+    {
+        $this->events->dispatch(new EntityTamedEvent($entity, $this->playerView($player)));
     }
 
     /** @param Closure(string): PlayerConnection $playerConnections */

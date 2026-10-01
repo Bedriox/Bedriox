@@ -30,6 +30,8 @@ use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Entity\Capability\Arthropod;
 use Bedriox\Api\Entity\Capability\Breedable;
+use Bedriox\Api\Entity\Capability\Rideable;
+use Bedriox\Api\Entity\Capability\Tameable;
 use Bedriox\Api\Entity\Capability\Undead;
 use Bedriox\Api\Entity\Entity as ApiEntity;
 use Bedriox\Api\Entity\EntityCategory;
@@ -94,6 +96,7 @@ use Bedriox\Server\Entity\Ai\VanillaAiMemories;
 use Bedriox\Server\Entity\AquaticBucketRegistry;
 use Bedriox\Server\Entity\AquaticRuntimeState;
 use Bedriox\Server\Entity\BreedableAnimalEntity;
+use Bedriox\Server\Entity\Concern\MutableAngerState;
 use Bedriox\Server\Entity\EntityDefinition;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\EntityDespawnPolicy;
@@ -114,8 +117,10 @@ use Bedriox\Server\Entity\Loot\EntityLootResolver;
 use Bedriox\Server\Entity\Loot\EquippedLootItem;
 use Bedriox\Server\Entity\Loot\GameplayLootItemRegistry;
 use Bedriox\Server\Entity\Loot\LootContext;
+use Bedriox\Server\Entity\Mount\HorseFamilyEntity;
 use Bedriox\Server\Entity\Mount\MountLink;
 use Bedriox\Server\Entity\Mount\MountRegistry;
+use Bedriox\Server\Entity\Mount\UndeadHorseEntity;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceFlushResult;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceManager;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
@@ -125,22 +130,36 @@ use Bedriox\Server\Entity\Spawn\EntitySpawnRequest;
 use Bedriox\Server\Entity\Spawn\EntitySpawnService;
 use Bedriox\Server\Entity\Spawn\Natural\NaturalSpawnPlayer;
 use Bedriox\Server\Entity\Spawn\Natural\WorldNaturalSpawnRuntime;
+use Bedriox\Server\Entity\TameableAnimalEntity;
+use Bedriox\Server\Entity\Vanilla\ArmadilloEntity;
 use Bedriox\Server\Entity\Vanilla\AxolotlEntity;
 use Bedriox\Server\Entity\Vanilla\BoggedEntity;
+use Bedriox\Server\Entity\Vanilla\CamelEntity;
+use Bedriox\Server\Entity\Vanilla\CatEntity;
 use Bedriox\Server\Entity\Vanilla\CaveSpiderEntity;
 use Bedriox\Server\Entity\Vanilla\ChickenEntity;
 use Bedriox\Server\Entity\Vanilla\CowEntity;
 use Bedriox\Server\Entity\Vanilla\CreeperEntity;
 use Bedriox\Server\Entity\Vanilla\EndermanEntity;
+use Bedriox\Server\Entity\Vanilla\FoxEntity;
+use Bedriox\Server\Entity\Vanilla\GoatEntity;
+use Bedriox\Server\Entity\Vanilla\LlamaEntity;
 use Bedriox\Server\Entity\Vanilla\MagmaCubeEntity;
+use Bedriox\Server\Entity\Vanilla\MooshroomEntity;
+use Bedriox\Server\Entity\Vanilla\OcelotEntity;
+use Bedriox\Server\Entity\Vanilla\PandaEntity;
 use Bedriox\Server\Entity\Vanilla\PigEntity;
 use Bedriox\Server\Entity\Vanilla\RabbitEntity;
 use Bedriox\Server\Entity\Vanilla\SheepEntity;
+use Bedriox\Server\Entity\Vanilla\SkeletonHorseEntity;
 use Bedriox\Server\Entity\Vanilla\SlimeEntity;
+use Bedriox\Server\Entity\Vanilla\SnifferEntity;
 use Bedriox\Server\Entity\Vanilla\StrayEntity;
+use Bedriox\Server\Entity\Vanilla\TraderLlamaEntity;
 use Bedriox\Server\Entity\Vanilla\TurtleEntity;
 use Bedriox\Server\Entity\Vanilla\WitchEntity;
 use Bedriox\Server\Entity\Vanilla\WitherSkeletonEntity;
+use Bedriox\Server\Entity\Vanilla\WolfEntity;
 use Bedriox\Server\Entity\Vanilla\ZombieFamilyEntity;
 use Bedriox\Server\Entity\WorldEntityEnvironment;
 use Bedriox\Server\Gameplay\Block\BlockBreakContext;
@@ -345,6 +364,7 @@ use Bedriox\Server\Simulation\Event\ProjectileMoved;
 use Bedriox\Server\Simulation\Event\ProjectileRemoved;
 use Bedriox\Server\Simulation\Event\ProjectileSpawned;
 use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
+use Bedriox\Server\Simulation\Event\TameAttemptPresented;
 use Bedriox\Server\Simulation\Event\WeatherChanged;
 use Bedriox\Server\Simulation\Event\WorldEvent;
 use Bedriox\Server\World\Block\BlockStateRegistry;
@@ -1903,6 +1923,10 @@ final class WorldSimulation
                         // Capacity pressure defers the next bounded egg cycle instead of failing the world tick.
                     }
                 }
+            }
+            if ($entity instanceof MutableAngerState && $entity->isAlive()
+                && ($this->tick + $entity->getRuntimeId()) % 20 === 0) {
+                $entity->advanceAngerState(20);
             }
         }
         $entityRuntimeStartedNanoseconds = hrtime(true);
@@ -4356,30 +4380,58 @@ final class WorldSimulation
 
             return new MovementCorrected($player->snapshot(), 'vehicle_unavailable', clientTick: $command->clientTick);
         }
+        if ($command->predictedVehicleActorId !== null
+            && $command->predictedVehicleActorId !== $vehicle->getRuntimeId()) {
+            return new MovementCorrected(
+                $player->snapshot(),
+                'vehicle_identity',
+                clientTick: $command->clientTick,
+            );
+        }
         $player->movement->yaw = $command->yaw;
         $player->movement->headYaw = $command->headYaw ?? $command->yaw;
         $player->movement->pitch = $command->pitch;
         $player->movement->sneaking = $command->sneaking ?? false;
         $player->movement->sprinting = $command->sprinting ?? false;
         $player->movement->lastTick = $this->tick;
+        $vehicleYaw = $command->vehicleYaw ?? $command->yaw;
+        $vehicleControlYaw = $command->vehicleControlYaw ?? $vehicleYaw;
         if ($vehicle instanceof PigEntity && $link->seat->controlsVehicle()) {
             $vehicle->suppressAiMovementUntil($this->tick + 2);
             $held = $player->inventory->selectedStack();
             if ($held?->identifier === 'minecraft:carrot_on_a_stick') {
                 $forward = max(-1.0, min(1.0, $command->moveZ));
                 $strafe = max(-1.0, min(1.0, $command->moveX));
-                $radians = deg2rad($command->yaw);
+                $radians = deg2rad($vehicleControlYaw);
                 $speed = $command->sprinting === true ? 0.24 : 0.18;
                 $vehicle->applyControlledMotion(new EntityMotion(
                     (-sin($radians) * $forward + cos($radians) * $strafe) * $speed,
                     $vehicle->getMotion()->y,
                     (cos($radians) * $forward + sin($radians) * $strafe) * $speed,
                 ), $this->tick);
-                $vehicle->moveTo($vehicle->getWorldName(), $vehicle->internalPosition(), $command->yaw, 0.0);
+                $vehicle->moveTo($vehicle->getWorldName(), $vehicle->internalPosition(), $vehicleYaw, 0.0);
             } else {
                 $motion = $vehicle->getMotion();
                 $vehicle->setMotion(new EntityMotion(0.0, $motion->y, 0.0));
             }
+        } elseif ($vehicle instanceof Rideable && $vehicle instanceof Tameable && $vehicle instanceof AbstractMobEntity
+            && ($vehicle->isSaddled() || $vehicle instanceof SkeletonHorseEntity)
+            && $vehicle->isTamed() && $link->seat->controlsVehicle()) {
+            $vehicle->suppressAiMovementUntil($this->tick + 2);
+            $forward = max(-1.0, min(1.0, $command->moveZ));
+            $strafe = max(-1.0, min(1.0, $command->moveX));
+            $radians = deg2rad($vehicleControlYaw);
+            $speed = $command->sprinting === true ? 0.30 : 0.22;
+            $verticalMotion = $vehicle->getMotion()->y;
+            if ($command->jumpRequested && $vehicle->isOnGround()) {
+                $verticalMotion = 0.42;
+            }
+            $vehicle->applyControlledMotion(new EntityMotion(
+                (-sin($radians) * $forward + cos($radians) * $strafe) * $speed,
+                $verticalMotion,
+                (cos($radians) * $forward + sin($radians) * $strafe) * $speed,
+            ), $this->tick);
+            $vehicle->moveTo($vehicle->getWorldName(), $vehicle->internalPosition(), $vehicleYaw, 0.0);
         }
         $this->syncMountedPlayer($player, $link);
 
@@ -4886,6 +4938,10 @@ final class WorldSimulation
         if ($damageEvent !== null) {
             $this->entityLastDamageEvents[$target->getRuntimeId()] = $damageEvent;
         }
+        if ($target instanceof MutableAngerState
+            && (!($target instanceof Tameable) || $target->getOwnerUniqueId() !== $attacker->identity->uuid)) {
+            $target->setAngerTargetUniqueId($attacker->identity->uuid, $this->dropRandom->integer(400, 800));
+        }
         $this->entityInvulnerableUntilTicks[$target->getRuntimeId()] =
             $this->tick + CombatRules::DAMAGE_IMMUNITY_TICKS;
         if (!$result->died) {
@@ -5014,6 +5070,17 @@ final class WorldSimulation
             && !$this->interactWithSheep($player, $target)) {
             return new CommandRejected($command->session, 'plugin_cancelled');
         }
+        if ($target instanceof WolfEntity || $target instanceof CatEntity) {
+            $taming = $this->interactWithTameableAnimal($player, $target);
+            if ($taming === false) {
+                return new CommandRejected($command->session, 'plugin_cancelled');
+            }
+            if ($taming === true) {
+                $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
+
+                return new EntityInteracted($command->session, $target->getRuntimeId(), $command->interaction);
+            }
+        }
         if ($target instanceof BreedableAnimalEntity
             && !$this->interactWithBreedableAnimal($player, $target)) {
             return new CommandRejected($command->session, 'plugin_cancelled');
@@ -5033,6 +5100,19 @@ final class WorldSimulation
             }
 
             return $result;
+        }
+        if ($target instanceof Rideable
+            && ($heldBefore === null
+                || !($target instanceof BreedableAnimalEntity)
+                || !in_array($heldBefore->identifier, $this->breedingFoods($target), true))) {
+            $result = $this->interactWithRideable($player, $target);
+            if ($result !== null) {
+                if ($result instanceof ActorMounted) {
+                    $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
+                }
+
+                return $result;
+            }
         }
         $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
 
@@ -5055,6 +5135,9 @@ final class WorldSimulation
             || $vehicle->getWorldName() !== $this->worldId
             || $this->mounts->playerLink($player->sessionId) !== null) {
             return new CommandRejected($command->session, 'vehicle_unavailable');
+        }
+        if ($vehicle instanceof Rideable && $command->seat->value >= $vehicle->getSeatCapacity()) {
+            return new CommandRejected($command->session, 'seat_unavailable');
         }
         if ($this->pluginEvents !== null && !$this->pluginEvents->allowMount(
             $this->pluginEvents->playerView($player),
@@ -5310,8 +5393,13 @@ final class WorldSimulation
         if ($held === null) {
             return true;
         }
-        if ($animal instanceof CowEntity && !$animal->isBaby() && $held->identifier === 'minecraft:bucket') {
+        if (($animal instanceof CowEntity || $animal instanceof GoatEntity || $animal instanceof MooshroomEntity)
+            && !$animal->isBaby() && $held->identifier === 'minecraft:bucket') {
             $this->replaceConsumedContainer($player, 'minecraft:milk_bucket');
+            return true;
+        }
+        if ($animal instanceof MooshroomEntity && !$animal->isBaby() && $held->identifier === 'minecraft:bowl') {
+            $this->replaceConsumedContainer($player, 'minecraft:mushroom_stew');
             return true;
         }
         if ($animal instanceof PigEntity && !$animal->isBaby() && !$animal->isSaddled()
@@ -5321,6 +5409,9 @@ final class WorldSimulation
             return true;
         }
         if (!in_array($held->identifier, $this->breedingFoods($animal), true)) {
+            return true;
+        }
+        if ($animal instanceof Tameable && !$animal->isTamed()) {
             return true;
         }
         if ($animal->isBaby()) {
@@ -5370,6 +5461,12 @@ final class WorldSimulation
         if ($child instanceof RabbitEntity && $animal instanceof RabbitEntity && $partner instanceof RabbitEntity) {
             $child->setVariant($this->dropRandom->integer(0, 1) === 0 ? $animal->getVariant() : $partner->getVariant());
         }
+        if ($child instanceof TameableAnimalEntity && $animal instanceof TameableAnimalEntity
+            && $partner instanceof TameableAnimalEntity
+            && $animal->getOwnerUniqueId() !== null
+            && $animal->getOwnerUniqueId() === $partner->getOwnerUniqueId()) {
+            $child->setOwnerUniqueId($animal->getOwnerUniqueId());
+        }
         $animal->beginBreedingCooldown();
         $partner->beginBreedingCooldown();
         array_push($this->deferredEvents, ...$this->spawnExperienceOrbs($experience, $position));
@@ -5377,14 +5474,141 @@ final class WorldSimulation
         return true;
     }
 
+    /** True means the interaction was consumed, false means a plugin cancelled it, and null means continue. */
+    private function interactWithTameableAnimal(Player $player, TameableAnimalEntity $animal): ?bool
+    {
+        $held = $player->inventory->selectedStack();
+        if ($animal->isTamed()) {
+            $heldIsBreedingFood = $held !== null
+                && in_array($held->identifier, $this->breedingFoods($animal), true);
+            if ($animal->getOwnerUniqueId() === $player->identity->uuid
+                && ($held === null || $animal->isSitting() || !$heldIsBreedingFood)) {
+                $animal->setSitting(!$animal->isSitting());
+
+                return true;
+            }
+
+            return null;
+        }
+        $tamingItem = match (true) {
+            $animal instanceof WolfEntity => 'minecraft:bone',
+            $animal instanceof CatEntity && $held !== null
+                => in_array($held->identifier, ['minecraft:cod', 'minecraft:salmon'], true)
+                ? $held->identifier
+                : null,
+            default => null,
+        };
+        if ($tamingItem === null || $held?->identifier !== $tamingItem) {
+            return null;
+        }
+        $this->consumeSelectedItem($player);
+        if ($this->dropRandom->integer(1, 3) !== 1) {
+            $this->deferredEvents[] = new TameAttemptPresented(
+                $animal,
+                false,
+                $this->players->recipients(),
+            );
+            return true;
+        }
+        if ($this->pluginEvents !== null && !$this->pluginEvents->allowTame($animal, $player)) {
+            return false;
+        }
+        $animal->setOwnerUniqueId($player->identity->uuid);
+        $animal->setSitting(true);
+        $animal->heal($animal->getMaximumHealth() - $animal->getHealth());
+        $this->deferredEvents[] = new TameAttemptPresented(
+            $animal,
+            true,
+            $this->players->recipients(),
+        );
+        $this->pluginEvents?->entityTamed($animal, $player);
+
+        return true;
+    }
+
+    private function interactWithRideable(Player $player, Rideable $rideable): ?WorldEvent
+    {
+        if (!$rideable instanceof AbstractLivingEntity || !$rideable instanceof Tameable) {
+            return null;
+        }
+        $held = $player->inventory->selectedStack();
+        $mount = match (true) {
+            $rideable instanceof HorseFamilyEntity => $rideable,
+            $rideable instanceof UndeadHorseEntity => $rideable,
+            default => null,
+        };
+        if ($mount === null) {
+            return null;
+        }
+        if (!$mount->isTamed()) {
+            $temper = min(HorseFamilyEntity::MAXIMUM_TEMPER, $mount->getTemper() + 20);
+            $mount->setTemper($temper);
+            $tamed = $mount instanceof CamelEntity
+                || $this->dropRandom->integer(1, HorseFamilyEntity::MAXIMUM_TEMPER) <= $temper;
+            if ($tamed) {
+                if ($this->pluginEvents !== null && !$this->pluginEvents->allowTame($mount, $player)) {
+                    return new CommandRejected($player->sessionId, 'plugin_cancelled');
+                }
+                $mount->setOwnerUniqueId($player->identity->uuid);
+                $this->deferredEvents[] = new TameAttemptPresented(
+                    $mount,
+                    true,
+                    $this->players->recipients(),
+                );
+                $this->pluginEvents?->entityTamed($mount, $player);
+            } else {
+                $this->deferredEvents[] = new TameAttemptPresented(
+                    $mount,
+                    false,
+                    $this->players->recipients(),
+                );
+            }
+        }
+        if ($held?->identifier === 'minecraft:saddle') {
+            if (!$mount instanceof LlamaEntity && !$mount instanceof TraderLlamaEntity
+                && $mount->isTamed() && !$mount->isSaddled()) {
+                $mount->setSaddled(true);
+                $this->consumeSelectedItem($player);
+            }
+
+            return null;
+        }
+        $requiresSaddle = !$mount instanceof LlamaEntity
+            && !$mount instanceof TraderLlamaEntity
+            && !$mount instanceof SkeletonHorseEntity;
+        if (!$mount->isTamed() || ($requiresSaddle && !$mount->isSaddled())) {
+            return null;
+        }
+        $occupied = count($this->mounts->linksForVehicle($mount->getRuntimeId()));
+        if ($occupied >= $mount->getSeatCapacity()) {
+            return new CommandRejected($player->sessionId, 'seat_unavailable');
+        }
+        $seat = $occupied === 0 ? MountSeat::DRIVER : MountSeat::PASSENGER_1;
+
+        return $this->mountPlayer(new MountPlayer(
+            $player->sessionId,
+            $mount->getRuntimeId(),
+            $mount->getUniqueId(),
+            $seat,
+        ));
+    }
+
     /** @return list<string> */
     private function breedingFoods(BreedableAnimalEntity $animal): array
     {
         return match (true) {
             $animal instanceof CowEntity, $animal instanceof SheepEntity => ['minecraft:wheat'],
+            $animal instanceof MooshroomEntity, $animal instanceof GoatEntity => ['minecraft:wheat'],
             $animal instanceof PigEntity => ['minecraft:carrot', 'minecraft:potato', 'minecraft:beetroot'],
             $animal instanceof ChickenEntity => ['minecraft:wheat_seeds', 'minecraft:beetroot_seeds', 'minecraft:melon_seeds', 'minecraft:pumpkin_seeds', 'minecraft:torchflower_seeds', 'minecraft:pitcher_pod'],
             $animal instanceof RabbitEntity => ['minecraft:carrot', 'minecraft:golden_carrot', 'minecraft:dandelion'],
+            $animal instanceof WolfEntity => ['minecraft:beef', 'minecraft:cooked_beef', 'minecraft:chicken', 'minecraft:cooked_chicken', 'minecraft:mutton', 'minecraft:cooked_mutton', 'minecraft:porkchop', 'minecraft:cooked_porkchop', 'minecraft:rabbit', 'minecraft:cooked_rabbit'],
+            $animal instanceof CatEntity, $animal instanceof OcelotEntity => ['minecraft:cod', 'minecraft:salmon'],
+            $animal instanceof FoxEntity => ['minecraft:sweet_berries', 'minecraft:glow_berries'],
+            $animal instanceof PandaEntity => ['minecraft:bamboo'],
+            $animal instanceof ArmadilloEntity => ['minecraft:spider_eye'],
+            $animal instanceof SnifferEntity => ['minecraft:torchflower_seeds'],
+            $animal instanceof HorseFamilyEntity => ['minecraft:golden_carrot', 'minecraft:golden_apple'],
             $animal instanceof TurtleEntity => ['minecraft:seagrass'],
             $animal instanceof AxolotlEntity => ['minecraft:tropical_fish_bucket'],
             default => [],
@@ -6397,6 +6621,13 @@ final class WorldSimulation
                 $command->sprinting,
                 $command->clientTick,
                 $command->flying,
+                $command->verticalCollision,
+                $command->moveX,
+                $command->moveZ,
+                $command->vehiclePitch,
+                $command->vehicleYaw,
+                $command->vehicleControlYaw,
+                $command->predictedVehicleActorId,
             );
             $bytes = $command->estimatedBytes();
         }

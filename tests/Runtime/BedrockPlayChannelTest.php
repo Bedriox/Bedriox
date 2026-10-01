@@ -388,6 +388,38 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertSame(1, $commands[0]->clientTick->low);
     }
 
+    public function testMountedRetailInputPreservesVehicleRotationAndIdentity(): void
+    {
+        [$channel, $client, , $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([
+                new SetLocalPlayerAsInitializedPacket($entityId),
+                $this->movementPacket(
+                    UnsignedLong::fromInt(9),
+                    yaw: 15.0,
+                    inputFlags: [PlayerAuthInputFlag::IsInClientPredictedVehicle->value],
+                    moveZ: 1.0,
+                    interactYaw: 135.0,
+                    vehiclePitch: -5.0,
+                    vehicleYaw: -90.0,
+                    predictedVehicleActorId: 1234,
+                ),
+            ])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(MovePlayer::class, $commands[0]);
+        self::assertSame(15.0, $commands[0]->yaw);
+        self::assertSame(-5.0, $commands[0]->vehiclePitch);
+        self::assertSame(270.0, $commands[0]->vehicleYaw);
+        self::assertSame(15.0, $commands[0]->vehicleControlYaw);
+        self::assertSame(1234, $commands[0]->predictedVehicleActorId);
+        self::assertSame(1.0, $commands[0]->moveZ);
+    }
+
     public function testEncryptedMovementCorrectionReturnsTheExactRetailInputTick(): void
     {
         [$channel, $client, $server, $entityId] = $this->channel();
@@ -3740,6 +3772,12 @@ final class BedrockPlayChannelTest extends TestCase
         float $y = 64.0,
         float $z = 0.0,
         array $inputFlags = [],
+        float $moveX = 0.0,
+        float $moveZ = 0.0,
+        float $interactYaw = 0.0,
+        ?float $vehiclePitch = null,
+        ?float $vehicleYaw = null,
+        ?int $predictedVehicleActorId = null,
     ): PlayerAuthInputPacket {
         return new PlayerAuthInputPacket(
             pitch: $pitch,
@@ -3747,15 +3785,15 @@ final class BedrockPlayChannelTest extends TestCase
             wireX: $x,
             wireY: PlayerPositionProjection::feetToWireY($y),
             wireZ: $z,
-            moveX: 0.0,
-            moveZ: 0.0,
+            moveX: $moveX,
+            moveZ: $moveZ,
             headYaw: $yaw,
             inputFlags: $inputFlags,
             inputMode: 1,
             playMode: 0,
             interactionMode: 0,
             interactPitch: 0.0,
-            interactYaw: 0.0,
+            interactYaw: $interactYaw,
             tick: $tick,
             deltaX: 0.0,
             deltaY: 0.0,
@@ -3767,6 +3805,9 @@ final class BedrockPlayChannelTest extends TestCase
             cameraZ: 0.0,
             rawMoveX: 0.0,
             rawMoveZ: 0.0,
+            vehicleRotationPitch: $vehiclePitch,
+            vehicleRotationYaw: $vehicleYaw,
+            predictedVehicleActorId: $predictedVehicleActorId,
         );
     }
 

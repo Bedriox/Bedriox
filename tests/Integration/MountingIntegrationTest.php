@@ -29,11 +29,16 @@ use Bedriox\Protocol\Packet\ActorMetadataVector3;
 use Bedriox\Protocol\Packet\PlayerActorMetadata;
 use Bedriox\Protocol\Packet\SetActorDataPacket;
 use Bedriox\Protocol\Packet\SetActorLinkPacket;
+use Bedriox\Server\Entity\EntityUuid;
 use Bedriox\Server\Entity\Spawn\EntitySpawnRequest;
+use Bedriox\Server\Entity\Vanilla\HorseEntity;
 use Bedriox\Server\Entity\Vanilla\PigEntity;
+use Bedriox\Server\Entity\Vanilla\SkeletonHorseEntity;
 use Bedriox\Server\Runtime\BedrockWorldEventPacketEncoder;
 use Bedriox\Server\Simulation\Event\ActorDismounted;
 use Bedriox\Server\Simulation\Event\ActorMounted;
+use Bedriox\Server\Simulation\Event\MovementCorrected;
+use Bedriox\Server\Simulation\MovementMode;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
 use Bedriox\Server\Simulation\WorldSimulation;
@@ -130,6 +135,124 @@ final class MountingIntegrationTest extends TestCase
         $passenger->getController()->dismount();
         self::assertNull($passenger->getVehicle());
         self::assertFalse($vehicle->hasPassengers());
+    }
+
+    public function testTamedSaddledHorseUsesTheExistingAuthoritativeMountPath(): void
+    {
+        $identity = EntityUuid::random();
+        $simulation = new WorldSimulation(entityAiEnabled: false);
+        $commands = new SimulationCommandFactory();
+        self::assertTrue($simulation->enqueue($commands->join('rider', $identity, 'Rider')));
+        $simulation->tick();
+
+        $spawn = $simulation->spawnEntity(new EntitySpawnRequest(
+            VanillaEntityType::HORSE,
+            SpawnCause::COMMAND,
+            'world',
+            new Position(1.5, 64.0, 0.5),
+        ));
+        self::assertInstanceOf(HorseEntity::class, $spawn->entity);
+        $spawn->entity->setOwnerUniqueId($identity);
+        $spawn->entity->setSaddled(true);
+
+        self::assertTrue($simulation->enqueue($commands->interactEntity(
+            'rider',
+            $spawn->entity->getRuntimeId(),
+            0,
+            EntityInteractionType::INTERACT,
+        )));
+        self::assertInstanceOf(ActorMounted::class, self::event($simulation->tick()->events, ActorMounted::class));
+        self::assertSame($spawn->entity, $simulation->mountedVehicle($identity));
+    }
+
+    public function testMountedHorseUsesTheValidatedVehicleRotationInsteadOfRiderView(): void
+    {
+        $identity = EntityUuid::random();
+        $simulation = new WorldSimulation(entityAiEnabled: false);
+        $commands = new SimulationCommandFactory();
+        self::assertTrue($simulation->enqueue($commands->join('rider', $identity, 'Rider')));
+        $simulation->tick();
+
+        $spawn = $simulation->spawnEntity(new EntitySpawnRequest(
+            VanillaEntityType::HORSE,
+            SpawnCause::COMMAND,
+            'world',
+            new Position(1.5, 64.0, 0.5),
+        ));
+        self::assertInstanceOf(HorseEntity::class, $spawn->entity);
+        $spawn->entity->setOwnerUniqueId($identity);
+        $spawn->entity->setSaddled(true);
+        self::assertTrue($simulation->enqueueMount($identity, $spawn->entity));
+        $simulation->tick();
+
+        self::assertTrue($simulation->enqueue($commands->move(
+            'rider',
+            1,
+            0.0,
+            64.0,
+            0.0,
+            0.0,
+            0.0,
+            MovementMode::WALKING,
+            moveZ: 1.0,
+            vehiclePitch: 0.0,
+            vehicleYaw: 90.0,
+            vehicleControlYaw: 0.0,
+            predictedVehicleActorId: $spawn->entity->getRuntimeId(),
+        )));
+        $simulation->tick();
+
+        self::assertSame(90.0, $spawn->entity->getYaw());
+        self::assertEqualsWithDelta(0.0, $spawn->entity->getMotion()->x, 0.000_001);
+        self::assertGreaterThan(0.1, $spawn->entity->getMotion()->z);
+
+        self::assertTrue($simulation->enqueue($commands->move(
+            'rider',
+            2,
+            0.0,
+            64.0,
+            0.0,
+            30.0,
+            0.0,
+            MovementMode::WALKING,
+            moveZ: 1.0,
+            vehiclePitch: 0.0,
+            vehicleYaw: 180.0,
+            vehicleControlYaw: 180.0,
+            predictedVehicleActorId: $spawn->entity->getRuntimeId() + 1,
+        )));
+        $events = $simulation->tick()->events;
+
+        self::assertInstanceOf(MovementCorrected::class, self::event($events, MovementCorrected::class));
+        self::assertSame(90.0, $spawn->entity->getYaw());
+    }
+
+    public function testSkeletonHorseIsIntrinsicallyTamedAndMountsWithoutSaddle(): void
+    {
+        $identity = EntityUuid::random();
+        $simulation = new WorldSimulation(entityAiEnabled: false);
+        $commands = new SimulationCommandFactory();
+        self::assertTrue($simulation->enqueue($commands->join('rider', $identity, 'Rider')));
+        $simulation->tick();
+
+        $spawn = $simulation->spawnEntity(new EntitySpawnRequest(
+            VanillaEntityType::SKELETON_HORSE,
+            SpawnCause::COMMAND,
+            'world',
+            new Position(1.5, 64.0, 0.5),
+        ));
+        self::assertInstanceOf(SkeletonHorseEntity::class, $spawn->entity);
+        self::assertTrue($spawn->entity->isTamed());
+        self::assertFalse($spawn->entity->isSaddled());
+
+        self::assertTrue($simulation->enqueue($commands->interactEntity(
+            'rider',
+            $spawn->entity->getRuntimeId(),
+            0,
+            EntityInteractionType::INTERACT,
+        )));
+        self::assertInstanceOf(ActorMounted::class, self::event($simulation->tick()->events, ActorMounted::class));
+        self::assertSame($spawn->entity, $simulation->mountedVehicle($identity));
     }
 
     /**

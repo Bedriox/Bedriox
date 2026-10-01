@@ -1787,6 +1787,15 @@ final class BedrockPlayChannel
                 };
                 $yaw = self::normalizeYaw($packet->yaw);
                 $pitch = fmod($packet->pitch, 360.0);
+                $vehiclePitch = $packet->vehicleRotationPitch === null
+                    ? null
+                    : fmod($packet->vehicleRotationPitch, 360.0);
+                $vehicleYaw = $packet->vehicleRotationYaw === null
+                    ? null
+                    : self::normalizeYaw($packet->vehicleRotationYaw);
+                $vehicleControlYaw = $vehicleYaw === null
+                    ? null
+                    : $yaw;
                 $this->enqueueMovementCommand($this->commandFactory->move(
                     $this->sessionId,
                     $this->movementSequence,
@@ -1808,6 +1817,10 @@ final class BedrockPlayChannel
                     $packet->hasInput(PlayerAuthInputFlag::VerticalCollision),
                     $packet->moveX,
                     $packet->moveZ,
+                    $vehiclePitch,
+                    $vehicleYaw,
+                    $vehicleControlYaw,
+                    $packet->predictedVehicleActorId,
                 ));
                 if ($packet->hasInput(PlayerAuthInputFlag::MissedSwing)) {
                     $this->commands->enqueue($this->commandFactory->swingArm(
@@ -1900,6 +1913,10 @@ final class BedrockPlayChannel
                 $command->verticalCollision,
                 $command->moveX,
                 $command->moveZ,
+                $command->vehiclePitch,
+                $command->vehicleYaw,
+                $command->vehicleControlYaw,
+                $command->predictedVehicleActorId,
             );
         }
         $this->commands->offsetSet($index, $command);

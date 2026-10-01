@@ -46,7 +46,7 @@ $approvedProduction = [
     ],
     'bedriox/protocol' => [
         'version' => '0.1.0-alpha.1',
-        'reference' => 'fe333391d45a87d0747c687d5aa97b1523fad784',
+        'reference' => '032642f539ad3e0558856ae3ac69fe5e34c152af',
         'license' => 'GPL-3.0-only',
     ],
     'bedriox/data' => [

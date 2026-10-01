@@ -59,6 +59,24 @@ enum VanillaEntityType: string implements VanillaEntityIdentity
     case AXOLOTL = 'minecraft:axolotl';
     case DROWNED = 'minecraft:drowned';
     case GUARDIAN = 'minecraft:guardian';
+    case WOLF = 'minecraft:wolf';
+    case CAT = 'minecraft:cat';
+    case OCELOT = 'minecraft:ocelot';
+    case HORSE = 'minecraft:horse';
+    case DONKEY = 'minecraft:donkey';
+    case MULE = 'minecraft:mule';
+    case CAMEL = 'minecraft:camel';
+    case LLAMA = 'minecraft:llama';
+    case TRADER_LLAMA = 'minecraft:trader_llama';
+    case SKELETON_HORSE = 'minecraft:skeleton_horse';
+    case ZOMBIE_HORSE = 'minecraft:zombie_horse';
+    case FOX = 'minecraft:fox';
+    case GOAT = 'minecraft:goat';
+    case PANDA = 'minecraft:panda';
+    case POLAR_BEAR = 'minecraft:polar_bear';
+    case ARMADILLO = 'minecraft:armadillo';
+    case MOOSHROOM = 'minecraft:mooshroom';
+    case SNIFFER = 'minecraft:sniffer';
 
     public function identifier(): string
     {

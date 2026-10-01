@@ -36,6 +36,7 @@ use Bedriox\Server\Entity\Vanilla\DolphinEntity;
 use Bedriox\Server\Entity\Vanilla\DrownedEntity;
 use Bedriox\Server\Entity\Vanilla\EndermanEntity;
 use Bedriox\Server\Entity\Vanilla\EndermiteEntity;
+use Bedriox\Server\Entity\Vanilla\ExpandedLandEntityRegistrations;
 use Bedriox\Server\Entity\Vanilla\GlowSquidEntity;
 use Bedriox\Server\Entity\Vanilla\GuardianEntity;
 use Bedriox\Server\Entity\Vanilla\HuskEntity;
@@ -387,6 +388,7 @@ final class VanillaEntityDefinitions
             new RegisteredEntityDefinition(self::axolotl(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): AxolotlEntity => new AxolotlEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
             new RegisteredEntityDefinition(self::drowned(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): DrownedEntity => new DrownedEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
             new RegisteredEntityDefinition(self::guardian(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): GuardianEntity => new GuardianEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
+            ...ExpandedLandEntityRegistrations::all(),
         ];
     }
 

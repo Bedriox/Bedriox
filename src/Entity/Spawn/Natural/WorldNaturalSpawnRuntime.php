@@ -148,6 +148,23 @@ final class WorldNaturalSpawnRuntime
                 $entries[] = new NaturalSpawnEntry(VanillaEntityType::RABBIT, EntityCategory::ANIMAL, new RabbitNaturalSpawnRule(), 6);
             }
             foreach ([
+                [VanillaEntityType::WOLF, new LandAnimalNaturalSpawnRule(['forest', 'taiga', 'grove']), 4],
+                [VanillaEntityType::OCELOT, new LandAnimalNaturalSpawnRule(['jungle']), 2],
+                [VanillaEntityType::HORSE, new LandAnimalNaturalSpawnRule(['plains', 'savanna']), 5],
+                [VanillaEntityType::DONKEY, new LandAnimalNaturalSpawnRule(['plains', 'savanna']), 1],
+                [VanillaEntityType::LLAMA, new LandAnimalNaturalSpawnRule(['mountain', 'peak', 'slope', 'windswept']), 3],
+                [VanillaEntityType::FOX, new LandAnimalNaturalSpawnRule(['taiga', 'grove']), 3],
+                [VanillaEntityType::GOAT, new LandAnimalNaturalSpawnRule(['mountain', 'peak', 'slope', 'grove']), 3],
+                [VanillaEntityType::PANDA, new LandAnimalNaturalSpawnRule(['jungle']), 1],
+                [VanillaEntityType::POLAR_BEAR, new LandAnimalNaturalSpawnRule(['frozen', 'ice', 'snow']), 2],
+                [VanillaEntityType::ARMADILLO, new LandAnimalNaturalSpawnRule(['savanna', 'badlands']), 3],
+                [VanillaEntityType::MOOSHROOM, new LandAnimalNaturalSpawnRule(['mushroom']), 2],
+            ] as [$type, $rule, $weight]) {
+                if ($definitions->get($type) !== null) {
+                    $entries[] = new NaturalSpawnEntry($type, EntityCategory::ANIMAL, $rule, $weight);
+                }
+            }
+            foreach ([
                 [VanillaEntityType::COD, 12],
                 [VanillaEntityType::SALMON, 10],
                 [VanillaEntityType::TROPICAL_FISH, 10],

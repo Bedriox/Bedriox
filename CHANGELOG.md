@@ -1,5 +1,14 @@
 # Changelog
 
+- Add dedicated tameable, neutral, and mount families with durable ownership,
+  sitting, anger, taming events, owner following, finite mount seats, steering,
+  jumping, natural spawning, loot, metadata, and species persistence.
+- Present vanilla tame success and failure feedback, let owners release seated
+  pets while still holding a consumed taming item, use current Bedrock cat-skin
+  values, and admit mounted vehicle input without disconnecting the rider.
+- Preserve rider steering, interaction aim, and validated vehicle rotation as
+  distinct inputs for controlled horses, and treat skeleton horses as
+  intrinsically tamed mounts that do not accept or require saddles.
 - Add authoritative aquatic entities with three-dimensional water movement,
   bounded natural populations, air and dry survival, bucket capture and
   release, breeding, persistence, normalized drops, and plugin-visible state.

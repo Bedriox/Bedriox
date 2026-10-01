@@ -30,7 +30,7 @@ use Closure;
 use InvalidArgumentException;
 
 /** Spatial-index-backed AI view with a compact player-position supplier. */
-final readonly class IndexedAiWorldView implements AquaticAiWorldView
+final readonly class IndexedAiWorldView implements AquaticAiWorldView, PlayerIdentityAiWorldView
 {
     /** @param Closure(): array<array-key, mixed> $playerPositions */
     public function __construct(
@@ -88,6 +88,20 @@ final readonly class IndexedAiWorldView implements AquaticAiWorldView
     public function nearestPlayer(AbstractMobEntity $entity, float $radius): ?AiPlayerSnapshot
     {
         return $this->nearestPlayerMatching($entity, $radius);
+    }
+
+    public function playerByIdentity(string $playerId): ?AiPlayerSnapshot
+    {
+        if ($playerId === '' || strlen($playerId) > 128 || preg_match('//u', $playerId) !== 1) {
+            throw new InvalidArgumentException('AI player identity must be valid UTF-8 and bounded.');
+        }
+        foreach ($this->playersWithoutEntityContext() as $player) {
+            if ($player->playerId === $playerId) {
+                return $player;
+            }
+        }
+
+        return null;
     }
 
     /** @param array<mixed> $itemIdentifiers */
@@ -164,6 +178,29 @@ final readonly class IndexedAiWorldView implements AquaticAiWorldView
             $players[] = match (true) {
                 $value instanceof AiPlayerSnapshot => $value,
                 $value instanceof Position => new AiPlayerSnapshot((string) $identifier, $entity->getWorldName(), $value),
+                default => throw new InvalidArgumentException(
+                    'AI player-position snapshot contains an invalid value.',
+                ),
+            };
+        }
+
+        return $players;
+    }
+
+    /** @return list<AiPlayerSnapshot> */
+    private function playersWithoutEntityContext(): array
+    {
+        $values = ($this->playerPositions)();
+        if (count($values) > 1_024) {
+            throw new InvalidArgumentException('AI player-position snapshot exceeds its supported bound.');
+        }
+        $players = [];
+        foreach ($values as $identifier => $value) {
+            $players[] = match (true) {
+                $value instanceof AiPlayerSnapshot => $value,
+                $value instanceof Position => throw new InvalidArgumentException(
+                    'Identity lookup requires complete AI player snapshots.',
+                ),
                 default => throw new InvalidArgumentException(
                     'AI player-position snapshot contains an invalid value.',
                 ),

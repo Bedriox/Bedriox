@@ -15,7 +15,10 @@ EntityController
         `-- BreedableAnimalController
             |-- SheepController
             |-- PigController
-            `-- RabbitController
+            |-- RabbitController
+            |-- TameableAnimalController
+            |   `-- WolfController
+            `-- MountController
 ```
 
 `EntityController` supports availability checks, teleportation, rotation, velocity, name tags, name-tag visibility, immobility, invisibility, glowing, scale, gravity, fire, extinguishing, mounting, dismounting, and despawning. `LivingEntityController` adds damage, healing, direct bounded health changes, and equipment. `MobController` adds AI enablement, movement toward or away from a position, stopping, looking, targeting, and clearing the current target intent.
@@ -85,7 +88,45 @@ Every world owns one transient mount registry. A passenger has at most one vehic
 
 Players can inspect and control a live relationship through `Player::getVehicle()`, `isRiding()`, `mount()`, and `dismount()`. Entities expose `getVehicle()`, `isRiding()`, `getPassengers()`, and `hasPassengers()` without exposing packet actor-link values. `EntityMountEvent` and `EntityDismountEvent` run before ordinary player or plugin transitions; `EntityMountedEvent` and `EntityDismountedEvent` observe committed state. Lifecycle-forced dismounts cannot be cancelled.
 
-Adult saddled pigs are the first built-in rideable vehicle. Interact to mount, use the client's ordinary exit-vehicle control to dismount, and hold a carrot on a stick to steer. Vehicle physics and collisions remain authoritative, while actor links and late-join reconstruction keep every viewer synchronized.
+Adult saddled pigs, horses, donkeys, mules, camels, llamas, trader llamas,
+skeleton horses, and zombie horses use the same authoritative passenger
+registry. Horse-family mounts retain owner, temper, saddle, age, and breeding
+state when applicable. Camels provide two finite seats. Llamas can be ridden
+after taming but are not rider-steered and accept carpets rather than saddles.
+Skeleton horses are intrinsically tamed and rider-controlled without saddles;
+other steerable horse-family mounts require their supported saddle state.
+Interact to mount and use the client's ordinary exit-vehicle control to
+dismount. Vehicle physics, jumping, collision, seat ownership, actor links,
+and late-join reconstruction remain server-owned.
+
+## Tameable and neutral land animals
+
+Wolf and cat ownership uses canonical player UUIDs and survives entity unload,
+reload, and restart. Bones tame wolves; raw cod or salmon tame cats. A
+successful tame passes through cancellable `EntityTameEvent` and committed
+`EntityTamedEvent` and presents the current client's success hearts; failed
+attempts present the ordinary failure response. Owners may toggle sitting with
+an empty hand or an item that has no applicable feeding action. A seated pet
+can always be released by its owner, including immediately after taming while
+the taming item remains selected. Sitting stops decision and movement work.
+Standing companions follow their online owner through the bounded AI view.
+Wolves remember and attack a player who damages them, except their owner, and
+expose that state through `Angerable` and `WolfController`.
+
+The dedicated neutral and passive roster also includes ocelots, foxes, goats,
+pandas, polar bears, armadillos, mooshrooms, and sniffers. Each has an exact
+type, implementation, dimensions, health, variant or species state where
+applicable, persistence, spawn-egg path, actor projection, and loot policy.
+Eligible species participate in bounded natural spawning; village-, trader-,
+structure-, and event-owned species remain explicit spawns until their owning
+world systems exist. Goats and mooshrooms can be milked, and mooshrooms fill a
+bowl with stew.
+
+Species-specific advanced actions such as fox item carrying and pouncing, goat
+ramming, panda activities, armadillo scute production, mooshroom shearing,
+sniffer digging, and complete horse inventory and jump-charge screens remain
+separate gameplay increments. Their typed state does not imply those actions
+are already implemented.
 
 ## Common hostile mobs
 

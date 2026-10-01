@@ -22,15 +22,22 @@ namespace Bedriox\Server\Runtime;
 
 use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Entity\Capability\Ageable;
+use Bedriox\Api\Entity\Capability\Angerable;
 use Bedriox\Api\Entity\Capability\Climbing;
+use Bedriox\Api\Entity\Capability\Rideable;
 use Bedriox\Api\Entity\Capability\Shearable;
+use Bedriox\Api\Entity\Capability\Sittable;
+use Bedriox\Api\Entity\Capability\Tameable;
 use Bedriox\Api\Entity\Value\WoolColor;
+use Bedriox\Api\Entity\Vanilla\Cat;
 use Bedriox\Api\Entity\Vanilla\Creeper;
+use Bedriox\Api\Entity\Vanilla\Fox;
 use Bedriox\Api\Entity\Vanilla\MagmaCube;
 use Bedriox\Api\Entity\Vanilla\Pig;
 use Bedriox\Api\Entity\Vanilla\Rabbit;
 use Bedriox\Api\Entity\Vanilla\Sheep;
 use Bedriox\Api\Entity\Vanilla\Slime;
+use Bedriox\Api\Entity\Vanilla\Wolf;
 use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Inventory\ItemStack;
 use Bedriox\Protocol\Packet\ActorAttribute;
@@ -73,11 +80,20 @@ final class BedrockLivingActorProjector
         return [
             $this->flagsMetadata($entity, $noAi),
             ActorMetadata::int(1, (int) ceil($entity->getHealth())),
-            ...($entity instanceof Rabbit || $entity instanceof Slime ? [ActorMetadata::int(
-                2,
-                $entity instanceof Rabbit ? $entity->getVariant()->value : $entity->getSize()->value,
-            )] : []),
-            ActorMetadata::byte(3, $entity instanceof Sheep ? self::woolColorIndex($entity->getWoolColor()) : 0),
+            ...($entity instanceof Rabbit || $entity instanceof Slime || $entity instanceof Cat
+                || $entity instanceof Wolf || $entity instanceof Fox ? [ActorMetadata::int(
+                    2,
+                    match (true) {
+                        $entity instanceof Rabbit, $entity instanceof Cat,
+                        $entity instanceof Wolf, $entity instanceof Fox => $entity->getVariant()->value,
+                        default => $entity->getSize()->value,
+                    },
+                )] : []),
+            ActorMetadata::byte(3, match (true) {
+                $entity instanceof Sheep => self::woolColorIndex($entity->getWoolColor()),
+                $entity instanceof Cat, $entity instanceof Wolf => self::woolColorIndex($entity->getCollarColor()),
+                default => 0,
+            }),
             ActorMetadata::string(4, $entity->nameTag()),
             ActorMetadata::long(5, -1),
             ActorMetadata::long(6, 0),
@@ -134,6 +150,18 @@ final class BedrockLivingActorProjector
         }
         if ($entity instanceof Pig && $entity->isSaddled()) {
             $flags |= ActorFlag::Saddled->mask();
+        }
+        if ($entity instanceof Rideable && $entity->isSaddled()) {
+            $flags |= ActorFlag::Saddled->mask();
+        }
+        if ($entity instanceof Tameable && $entity->isTamed()) {
+            $flags |= ActorFlag::Tamed->mask();
+        }
+        if ($entity instanceof Sittable && $entity->isSitting()) {
+            $flags |= ActorFlag::Sitting->mask();
+        }
+        if ($entity instanceof Angerable && $entity->getRemainingAngerTicks() > 0) {
+            $flags |= ActorFlag::Angry->mask();
         }
         if ($entity instanceof Shearable && $entity->isSheared()) {
             $flags |= ActorFlag::Sheared->mask();

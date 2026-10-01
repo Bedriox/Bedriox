@@ -131,12 +131,16 @@ final readonly class SimulationCommandFactory
         bool $verticalCollision = false,
         float $moveX = 0.0,
         float $moveZ = 0.0,
+        ?float $vehiclePitch = null,
+        ?float $vehicleYaw = null,
+        ?float $vehicleControlYaw = null,
+        ?int $predictedVehicleActorId = null,
     ): MovePlayer {
         $this->assertOpaqueId($session, 128, 'session');
         if ($sequence < 0) {
             throw new CommandValidationException('Movement sequence cannot be negative.');
         }
-        foreach (['x' => $x, 'y' => $y, 'z' => $z, 'yaw' => $yaw, 'pitch' => $pitch, 'head yaw' => $headYaw ?? $yaw, 'delta x' => $deltaX, 'delta y' => $deltaY, 'delta z' => $deltaZ, 'move x' => $moveX, 'move z' => $moveZ] as $name => $value) {
+        foreach (['x' => $x, 'y' => $y, 'z' => $z, 'yaw' => $yaw, 'pitch' => $pitch, 'head yaw' => $headYaw ?? $yaw, 'delta x' => $deltaX, 'delta y' => $deltaY, 'delta z' => $deltaZ, 'move x' => $moveX, 'move z' => $moveZ, 'vehicle pitch' => $vehiclePitch ?? 0.0, 'vehicle yaw' => $vehicleYaw ?? 0.0, 'vehicle control yaw' => $vehicleControlYaw ?? 0.0] as $name => $value) {
             if (!is_finite($value)) {
                 throw new CommandValidationException(sprintf('%s must be finite.', $name));
             }
@@ -155,6 +159,19 @@ final readonly class SimulationCommandFactory
         }
         if (hypot($moveX, $moveZ) > 1.5) {
             throw new CommandValidationException('Movement input exceeds its accepted range.');
+        }
+        if (($vehiclePitch === null) !== ($vehicleYaw === null)
+            || ($vehicleYaw === null) !== ($vehicleControlYaw === null)
+            || ($vehicleControlYaw === null) !== ($predictedVehicleActorId === null)) {
+            throw new CommandValidationException('Predicted vehicle input must be complete.');
+        }
+        if ($vehiclePitch !== null && (abs($vehiclePitch) > 360.0
+            || $vehicleYaw < 0.0 || $vehicleYaw >= 360.0
+            || $vehicleControlYaw < 0.0 || $vehicleControlYaw >= 360.0)) {
+            throw new CommandValidationException('Predicted vehicle rotation exceeds its accepted range.');
+        }
+        if ($predictedVehicleActorId !== null && $predictedVehicleActorId < 1) {
+            throw new CommandValidationException('Predicted vehicle actor identifier must be positive.');
         }
 
         return new MovePlayer(
@@ -176,6 +193,10 @@ final readonly class SimulationCommandFactory
             $verticalCollision,
             $moveX,
             $moveZ,
+            $vehiclePitch,
+            $vehicleYaw,
+            $vehicleControlYaw,
+            $predictedVehicleActorId,
         );
     }
 

@@ -80,6 +80,17 @@ final class EntityLootResolver
                 VanillaEntityType::AXOLOTL->value => new AquaticLootTable(null, 0, 0),
                 VanillaEntityType::DROWNED->value => new AquaticLootTable('minecraft:rotten_flesh', 0, 2),
                 VanillaEntityType::GUARDIAN->value => new AquaticLootTable('minecraft:prismarine_shard', 0, 2),
+                VanillaEntityType::HORSE->value => new AquaticLootTable('minecraft:leather', 0, 2),
+                VanillaEntityType::DONKEY->value => new AquaticLootTable('minecraft:leather', 0, 2),
+                VanillaEntityType::MULE->value => new AquaticLootTable('minecraft:leather', 0, 2),
+                VanillaEntityType::CAMEL->value => new AquaticLootTable('minecraft:leather', 0, 2),
+                VanillaEntityType::LLAMA->value => new AquaticLootTable('minecraft:leather', 0, 2),
+                VanillaEntityType::TRADER_LLAMA->value => new AquaticLootTable('minecraft:leather', 0, 2),
+                VanillaEntityType::SKELETON_HORSE->value => new AquaticLootTable('minecraft:bone', 0, 2),
+                VanillaEntityType::ZOMBIE_HORSE->value => new AquaticLootTable('minecraft:rotten_flesh', 0, 2),
+                VanillaEntityType::PANDA->value => new AquaticLootTable('minecraft:bamboo', 0, 2),
+                VanillaEntityType::POLAR_BEAR->value => new AquaticLootTable('minecraft:cod', 0, 2, 'minecraft:cooked_cod'),
+                VanillaEntityType::MOOSHROOM->value => new CowLootTable(),
             ],
         );
     }

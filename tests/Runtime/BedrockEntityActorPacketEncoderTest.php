@@ -62,6 +62,7 @@ use Bedriox\Server\Simulation\Event\EntityActorMetadataChanged;
 use Bedriox\Server\Simulation\Event\EntityActorMoved;
 use Bedriox\Server\Simulation\Event\EntityActorRemoved;
 use Bedriox\Server\Simulation\Event\EntityActorSpawned;
+use Bedriox\Server\Simulation\Event\TameAttemptPresented;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Block\BlockStateRegistry;
@@ -179,6 +180,25 @@ final class BedrockEntityActorPacketEncoderTest extends TestCase
             self::assertSame(ActorEventType::AttackStart, $entry->packet->event);
         }
         self::assertSame($packets[0]->packet, $packets[1]->packet);
+    }
+
+    public function testTameAttemptUsesVanillaSuccessAndFailureActorEvents(): void
+    {
+        $cow = new CowEntity(
+            '00000000-0000-4000-8000-000000000204',
+            204,
+            'world',
+            new Position(0.0, 64.0, 0.0),
+        );
+        $encoder = new BedrockWorldEventPacketEncoder();
+
+        foreach ([[true, ActorEventType::TameSucceeded], [false, ActorEventType::TameFailed]] as [$succeeded, $type]) {
+            $packets = $encoder->encode(new TameAttemptPresented($cow, $succeeded, ['viewer']), []);
+            self::assertCount(1, $packets);
+            self::assertInstanceOf(ActorEventPacket::class, $packets[0]->packet);
+            self::assertSame($type, $packets[0]->packet->event);
+            self::assertTrue($packets[0]->packet->runtimeEntityId->equals(UnsignedLong::fromInt(204)));
+        }
     }
 
     public function testEntityMovementPacketsPreserveRecipientOrderAndShareProjectionObjects(): void

@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity;
 
+use Bedriox\Api\Entity\Capability\Sittable;
 use Bedriox\Api\Entity\Controller\MobController;
 use Bedriox\Api\Entity\Mob as ApiMob;
 use Bedriox\Api\Entity\MobActivationState;
@@ -105,6 +106,7 @@ abstract class AbstractMobEntity extends AbstractLivingEntity implements ApiMob
     final public function tickAi(AiTickContext $context, bool $enabled): AiTickResult
     {
         if (!$enabled || !$this->aiEnabled || $this->isImmobile()
+            || ($this instanceof Sittable && $this->isSitting())
             || $this->activationState === MobActivationState::SLEEPING) {
             $this->ai->stopAll($this, $context);
 

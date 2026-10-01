@@ -42,6 +42,7 @@ use Bedriox\Server\Entity\Persistence\IntrinsicEntityPersistence;
 use Bedriox\Server\Entity\Spawn\Natural\AquaticNaturalSpawnRule;
 use Bedriox\Server\Entity\Spawn\Natural\NaturalSpawnContext;
 use Bedriox\Server\Entity\Spawn\Natural\NaturalSpawnMedium;
+use Bedriox\Server\Entity\Vanilla\TurtleEntity;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\ChunkPosition;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -122,6 +123,8 @@ final class AquaticEntitySystemTest extends TestCase
         $registration = EntityDefinitionRegistry::baseline()->require(VanillaEntityType::TURTLE);
         $original = ($registration->factory)('00000000-0000-4000-8000-000000000052', 52, 'world', new Position(0.5, 62.0, 0.5), 0.0, 0.0);
         $restored = ($registration->factory)('00000000-0000-4000-8000-000000000053', 53, 'world', new Position(0.5, 62.0, 0.5), 0.0, 0.0);
+        self::assertInstanceOf(TurtleEntity::class, $original);
+        self::assertInstanceOf(TurtleEntity::class, $restored);
         self::assertInstanceOf(IntrinsicEntityPersistence::class, $original);
         self::assertInstanceOf(IntrinsicEntityPersistence::class, $restored);
         $original->setBaby(true);
@@ -138,7 +141,7 @@ final class AquaticEntitySystemTest extends TestCase
         $registration = EntityDefinitionRegistry::baseline()->require(VanillaEntityType::SALMON);
         $entities = [];
         for ($index = 0; $index < 256; ++$index) {
-            $entities[] = ($registration->factory)(
+            $entity = ($registration->factory)(
                 sprintf('00000000-0000-4000-8000-%012d', 100 + $index),
                 100 + $index,
                 'world',
@@ -146,10 +149,9 @@ final class AquaticEntitySystemTest extends TestCase
                 0.0,
                 0.0,
             );
-        }
-        foreach ($entities as $entity) {
             self::assertInstanceOf(AquaticRuntimeState::class, $entity);
             $entity->advanceAquaticState(false);
+            $entities[] = $entity;
         }
         self::assertSame(1, $entities[0]->getDryTicks());
         self::assertSame(1, $entities[255]->getDryTicks());

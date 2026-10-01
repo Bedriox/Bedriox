@@ -205,6 +205,7 @@ use Bedriox\Server\Simulation\Event\ProjectileMoved;
 use Bedriox\Server\Simulation\Event\ProjectileRemoved;
 use Bedriox\Server\Simulation\Event\ProjectileSpawned;
 use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
+use Bedriox\Server\Simulation\Event\TameAttemptPresented;
 use Bedriox\Server\Simulation\Event\WeatherChanged;
 use Bedriox\Server\Simulation\Event\WorldEvent;
 use Bedriox\Server\Simulation\PlayerSnapshot;
@@ -346,6 +347,7 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             $event instanceof EntityActorEquipmentChanged => $this->entityActorEquipmentChanged($event),
             $event instanceof EntityActorHealthChanged => $this->entityActorHealthChanged($event),
             $event instanceof EntityActorMetadataChanged => $this->entityActorMetadataChanged($event),
+            $event instanceof TameAttemptPresented => $this->tameAttempt($event),
             $event instanceof EntityActorMoved => $this->entityActorMoved($event),
             $event instanceof EntityActorAttackStarted => $this->entityActorAttackStarted($event),
             $event instanceof EntityActorDamaged => $this->entityActorDamaged($event),
@@ -2472,6 +2474,20 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             UnsignedLong::fromInt($event->entity->getRuntimeId()),
             UnsignedLong::fromInt(max(0, $event->tick)),
             $this->livingActors->metadata($event->entity, $event->noAi),
+        );
+
+        return array_map(
+            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
+            $event->recipientSessionIds,
+        );
+    }
+
+    /** @return list<DirectedPacket> */
+    private function tameAttempt(TameAttemptPresented $event): array
+    {
+        $packet = new ActorEventPacket(
+            UnsignedLong::fromInt($event->entity->getRuntimeId()),
+            $event->succeeded ? ActorEventType::TameSucceeded : ActorEventType::TameFailed,
         );
 
         return array_map(
