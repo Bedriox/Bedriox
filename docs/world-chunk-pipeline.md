@@ -56,7 +56,7 @@ Translation happens only at this boundary. The generator must not import network
 
 The version-one `default` pipeline derives independent seed channels for coordinate warping, continentalness, erosion, temperature, humidity, ridges, uplift, rivers, local detail, density, caves, aquifers, ores, vegetation, and structures. Regional coordinate sampling is cached under a fixed bound, while every feature anchor is derived from world coordinates and replayed into every intersecting chunk so generation order cannot change or clip the result.
 
-`level.dat` stores the generator name and `BedrioxGeneratorVersion`. Missing version metadata is interpreted as version one for native compatibility. A stored version that the selected generator cannot reproduce is rejected before any missing chunk can be generated. During the current alpha, the version-one algorithm may be replaced in place and development worlds must be deleted before testing the replacement. Once the terrain contract is declared stable, later incompatible upgrades require a new explicit stored version rather than silently creating seams beside established terrain.
+`level.dat` stores the generator name and `BedrioxGeneratorVersion`. Missing version metadata is interpreted as version one for native compatibility. A stored version that the selected generator cannot reproduce is rejected before any missing chunk can be generated. During the current beta, the version-one algorithm may be replaced in place and development worlds must be deleted before testing the replacement. Once the terrain contract is declared stable, later incompatible upgrades require a new explicit stored version rather than silently creating seams beside established terrain.
 
 ## Deferred streaming performance milestone
 

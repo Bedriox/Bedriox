@@ -43,7 +43,7 @@ After bind, the runtime polls bounded amounts of socket, session, packet, comman
 Normal server activity is rendered in a consistent operator format and is mirrored without terminal color codes to `logs/server.log`:
 
 ```text
-[17-Sep-2026 21:42:10] Bedriox INFO > Starting Bedriox 0.3.0-alpha.1
+[17-Sep-2026 21:42:10] Bedriox INFO > Starting Bedriox 1.0.0-beta.1
 ```
 
 `logging.level` accepts `DEBUG`, `INFO`, `NOTICE`, `WARNING`, `ERROR`, or `CRITICAL`. Console and file output may be enabled independently. `logging.console-colors` accepts `auto`, `true`, or `false`; `auto` colors only an interactive terminal. The file rotates into `logs/archive/` at `logging.file-max-size` and retains at most `logging.file-history` archives. Logging failures are contained and never alter simulation state.
@@ -104,7 +104,7 @@ Before replacing a running development instance, identify the exact Bedriox proc
 
 ## Qualification and deployment
 
-This private-alpha path uses exact sibling component checkouts and exact
+This development path uses exact sibling component checkouts and exact
 qualified Runtime archives. Operate only from a clean, verified workspace. Do
 not deploy from a dirty tree, patched `vendor/`, failed CI revision, modified
 runtime files, or an unqualified component combination.

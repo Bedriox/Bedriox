@@ -34,10 +34,10 @@ vendor packages, but not tests, development tools, worlds, configuration, or
 the PHP runtime. A release deployment places the matching Runtime `bin/`
 directory beside these files.
 
-## Private component resolution
+## Component resolution
 
-During private alpha development, Composer resolves the Protocol, RakNet, and Data packages from explicit sibling checkouts. Their package versions and immutable commit IDs are recorded in `bedriox.lock.json` and checked against `composer.lock`; when sibling Git repositories are present, the manifest validator also verifies their checked-out commits. CI derives every private checkout ref directly from that manifest through `tools/export-component-pins.php`; never duplicate component commit hashes in the workflow.
+During development, Composer resolves the Protocol, RakNet, and Data packages from explicit sibling checkouts. Their package versions and immutable commit IDs are recorded in `bedriox.lock.json` and checked against `composer.lock`; when sibling Git repositories are present, the manifest validator also verifies their checked-out commits. CI derives every public checkout ref directly from that manifest through `tools/export-component-pins.php`; never duplicate component commit hashes in the workflow.
 
-The private-dependency CI job runs only for pushes to `main` and explicit trusted manual dispatches of that branch. It does not expose the private component token to pull-request code, and it must never be converted to `pull_request_target`. `BEDRIOX_COMPONENTS_TOKEN` must remain an Actions secret with repository-read access to Protocol, RakNet, and Data. Untrusted pull requests require a secret-free review path until these packages are public or served by a suitably scoped private Composer registry.
+Protocol, RakNet, and Data are public repositories. CI checks out their exact manifest commits without a private token and runs for pushes, pull requests, and trusted manual dispatches. Never convert the workflow to `pull_request_target` or add repository credentials to untrusted pull-request execution.
 
-Composer Dependabot updates are disabled while sibling path repositories are required because Dependabot cannot safely resolve that workspace layout. GitHub Actions update checks remain enabled. Re-enable Composer updates only after an authenticated registry or public package source replaces the private paths.
+Composer Dependabot updates remain disabled while sibling path repositories are required because Dependabot cannot resolve that workspace layout directly. GitHub Actions update checks remain enabled. Re-enable Composer updates only after a compatible public package source replaces the path repositories.

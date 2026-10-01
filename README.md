@@ -8,47 +8,67 @@
 
 <p align="center">
   A powerful, open-source Minecraft: Bedrock Edition server written in modern PHP.<br>
-  Built with performance, customization, and community servers in mind.
+  Build familiar survival worlds, custom multiplayer experiences, minigames, hubs, and more.
 </p>
 
 <p align="center">
   <a href="https://github.com/Bedriox/Bedriox/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Bedriox/Bedriox/actions/workflows/ci.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="License: GPL-3.0" src="https://img.shields.io/badge/license-GPL--3.0-blue.svg"></a>
+  <img alt="Bedriox Beta" src="https://img.shields.io/badge/status-beta-orange.svg">
   <img alt="PHP 8.4+" src="https://img.shields.io/badge/PHP-8.4%2B-777BB4.svg">
 </p>
 
-Bedriox gives server owners a performance-focused foundation for creating Minecraft: Bedrock Edition experiences. The current playable foundation supports core multiplayer survival interactions and an experimental PHP plugin API for building custom experiences.
+<p align="center">
+  <a href="https://bedriox.com">Website</a> &bull;
+  <a href="https://github.com/Bedriox/Docs">Documentation</a> &bull;
+  <a href="https://marketplace.bedriox.com">Marketplace</a> &bull;
+  <a href="https://github.com/Bedriox/Bedriox/releases">Downloads</a>
+</p>
 
-## What Bedriox offers today
+Bedriox gives server owners a modern foundation for Minecraft: Bedrock Edition. It is built to deliver the complete vanilla experience while giving communities the freedom to go far beyond it through plugins, custom worlds, and original game modes.
 
-- **Playable multiplayer foundations** — synchronized players, movement, chat, survival and creative inventories, personal and crafting-table recipes, ordinary food and nutrition, armor and offhand equipment, game modes, tool-aware block interaction, dropped-item pickup, player-versus-player combat, health, death, respawning, persistent streamed worlds, and server-owned mobs with spawn eggs, summoning, persistent equipment, bounded behavior, and customizable death loot.
-- **Worlds to explore and shape** — seeded continents, mountain ranges, valleys, rivers, climate-driven forests and deserts, oceans, caves, ore veins, snowy highlands, and the classic flat-world option.
-- **Responsive exploration** — bounded generation and streaming keep nearby terrain moving smoothly as players travel.
-- **Persistent terrain** — Mojang-compatible LevelDB storage preserves generated chunks and authoritative block changes across clean restarts.
-- **Focused Bedrock support** — one qualified modern protocol family instead of years of legacy protocol code.
-- **Modern PHP development** — strict types, Composer packages, automated tests, static analysis, and clear component boundaries.
-- **Plugin development support** — run validated PHAR plugins, develop from source with PluginTools, and extend the server through typed events, commands, lifecycle hooks, and safe player/world APIs.
-- **Straightforward administration** — a first-run setup wizard, operator permissions, whitelist controls, clear console output, and persistent configuration make a new server approachable.
+> [!IMPORTANT]
+> Bedriox is currently in beta. Core multiplayer gameplay is available, but vanilla coverage is still expanding and APIs may change before the first stable release. Back up important worlds before updating.
 
-## Where Bedriox is headed
+## Install Bedriox
 
-Bedriox is being designed for vanilla-style survival, custom game modes, minigames, hubs, and modded experiences. The experimental plugin API already provides lifecycle hooks, typed gameplay events, player/world/entity views, custom mob definitions, messages, teleports, block changes, bounded inventory changes, and commands shared by the console and players. UUID-based operators and permission nodes control player access. Economies, deeper species-specific behavior, and richer NPC mechanics remain planned expansions.
+The official installer downloads the latest `Bedriox.phar`, selects the bundled PHP Runtime for your platform, verifies every downloaded component, creates a `bedriox-server` directory, and starts the first-run setup wizard. Composer and a system PHP installation are not required.
 
-Bedriox is under active development. These expansion features are roadmap direction, not finished APIs, and behavior may change before the first stable release.
+### Linux and macOS
 
-## Supported platforms
+```sh
+curl -fsSL https://bedriox.com/install.sh | sh
+```
 
-Bedriox publishes its own qualified PHP 8.4 runtime with LevelDB, SQLite,
-OpenSSL, cURL, ZIP, sodium, GMP, and the other required extensions. Qualified
-targets are Windows x86-64, Linux x86-64 and ARM64, and macOS x86-64 and
-ARM64. Production startup never falls back to a system PHP installation.
+### Windows PowerShell
 
-Composer 2 and a local PHP 8.4 installation are needed only for source
-development.
+```powershell
+irm https://bedriox.com/install.ps1 | iex
+```
 
-## Development quick start
+The installers support Windows x86-64, Linux x86-64 and ARM64, and macOS x86-64 and ARM64. Manual packages are also available from [GitHub Releases](https://github.com/Bedriox/Bedriox/releases). See the [usage and configuration guide](docs/usage.md) for manual installation, startup options, and server configuration.
 
-During private alpha development, clone the component repositories beside this repository:
+## Create your server
+
+- **Vanilla-style gameplay** — build survival or creative communities with persistent worlds, inventories, crafting, containers, processing stations, experience, enchantments, effects, combat, weather, fluids, mobs, breeding, taming, mounts, and more.
+- **Multiplayer from the start** — synchronized players, movement, chat, commands, permissions, operators, whitelists, player-versus-player combat, death, respawning, and world transfers are server-owned and multiplayer-aware.
+- **Worlds worth exploring** — generate seeded continents, mountains, valleys, rivers, forests, deserts, oceans, caves, ores, and snowy highlands, or choose a classic flat world.
+- **Durable worlds and players** — Mojang-compatible LevelDB world storage preserves terrain, block changes, containers, entities, and world state, while player profiles retain their authoritative progress.
+- **Modern Bedrock support** — Bedriox focuses on one qualified current protocol family instead of carrying years of legacy protocol behavior.
+- **Built for customization** — typed events, commands, schedulers, custom entities, custom items and recipes, player and world APIs, source development, and PHAR plugins give creators a structured way to build new experiences.
+- **Performance-conscious architecture** — bounded workloads, asynchronous world work, prepared chunk delivery, controlled entity AI, and runtime diagnostics keep the main simulation responsive as servers grow.
+
+Bedriox is continuing toward broader vanilla coverage, richer entities and NPCs, automation, deeper world generation, and an increasingly capable plugin ecosystem.
+
+## Plugins and Marketplace
+
+Discover plugins for your server through the [Bedriox Marketplace](https://marketplace.bedriox.com). Plugin developers can also submit their work to the Marketplace so server owners can find and install it.
+
+Bedriox loads validated PHAR plugins. [PluginTools](https://github.com/Bedriox/PluginTools) adds source-plugin loading for development and packages finished plugins into PHAR files. Start with the [plugin documentation](docs/plugins.md) or the [ExamplePlugin](https://github.com/Bedriox/ExamplePlugin).
+
+## Source development
+
+Composer 2 and PHP 8.4 are needed only when developing Bedriox from source. Clone the component repositories beside one another:
 
 ```text
 workspace/
@@ -58,23 +78,43 @@ workspace/
 `-- Data/
 ```
 
-Then install and verify the server:
+Install the Composer dependencies and the matching qualified Runtime described in the [development guide](docs/development.md):
 
 ```shell
 composer install
 composer check
-php bin/bedriox --version
-php bin/bedriox
 ```
 
-The commands above are the development path. The explicit `serve` command
-remains available for scripts. For a packaged server, download `Bedriox.phar`
-and the launchers plus the matching Runtime archive. Extract Runtime as
-the adjacent `bin/` directory, then run `bedriox.cmd` on Windows or `./bedriox`
-on Linux and macOS. Composer is not required to run a release. See the
-[usage guide](docs/usage.md).
+Then verify and start the checkout with the platform launcher.
 
-The exact component revisions are recorded in [`bedriox.lock.json`](bedriox.lock.json). See the [development guide](docs/development.md), [usage and configuration guide](docs/usage.md), [plugin guide](docs/plugins.md), [architecture](docs/architecture.md), and [testing guide](docs/testing.md) for contributor details.
+Windows:
+
+```powershell
+.\bedriox.cmd --version
+.\bedriox.cmd
+```
+
+Linux and macOS:
+
+```shell
+./bedriox --version
+./bedriox
+```
+
+The launchers use the adjacent qualified Runtime rather than whichever PHP happens to be available through `PATH`. Exact component and Runtime revisions are recorded in [`bedriox.lock.json`](bedriox.lock.json). See the [architecture](docs/architecture.md) and [testing guide](docs/testing.md) before changing the server.
+
+## Reporting problems
+
+Found a reproducible bug? [Open a bug report](https://github.com/Bedriox/Bedriox/issues/new?template=bug_report.yml) and include:
+
+- what you were trying to do;
+- exact steps another person can follow;
+- what you expected to happen;
+- what actually happened;
+- your Bedriox and Bedrock client versions, operating system, and installed plugins; and
+- relevant logs or a crash report after reviewing and removing credentials or unrelated personal information.
+
+Search existing reports before opening a duplicate. Security vulnerabilities must not be posted publicly; follow [SECURITY.md](SECURITY.md) instead.
 
 ## Project family
 
@@ -89,7 +129,7 @@ The exact component revisions are recorded in [`bedriox.lock.json`](bedriox.lock
 
 ## Contributing
 
-Bedriox is currently developed in private while its foundations settle. Contribution guidance is available in [CONTRIBUTING.md](CONTRIBUTING.md).
+Bedriox welcomes focused improvements as the beta evolves. Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 
 ## License
 

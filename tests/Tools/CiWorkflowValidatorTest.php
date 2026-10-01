@@ -48,7 +48,7 @@ final class CiWorkflowValidatorTest extends TestCase
         self::assertStringContainsString('literal commit hashes', implode("\n", $errors));
     }
 
-    public function testPinExportMustPrecedePrivateCheckouts(): void
+    public function testPinExportMustPrecedePublicCheckouts(): void
     {
         $workflow = self::workflow();
         $workflow = str_replace(
@@ -59,21 +59,21 @@ final class CiWorkflowValidatorTest extends TestCase
         $workflow .= "\n      - run: php tools/export-component-pins.php\n        id: component-pins\n";
 
         self::assertStringContainsString(
-            'before checking out private components',
+            'before checking out public components',
             implode("\n", CiWorkflowValidator::validate($workflow)),
         );
     }
 
-    public function testEveryPrivateCheckoutRequiresTheComponentToken(): void
+    public function testPublicCheckoutsRejectPrivateComponentTokens(): void
     {
         $workflow = str_replace(
-            'token: ${{ secrets.BEDRIOX_COMPONENTS_TOKEN }}',
-            'token: ${{ github.token }}',
+            'ref: ${{ steps.component-pins.outputs.protocol_commit }}',
+            "ref: \${{ steps.component-pins.outputs.protocol_commit }}\n          token: \${{ secrets.BEDRIOX_COMPONENTS_TOKEN }}",
             self::workflow(),
         );
 
         self::assertStringContainsString(
-            'private component token',
+            'private token',
             implode("\n", CiWorkflowValidator::validate($workflow)),
         );
     }
@@ -88,17 +88,14 @@ steps:
         with:
           repository: Bedriox/Protocol
           ref: ${{ steps.component-pins.outputs.protocol_commit }}
-          token: ${{ secrets.BEDRIOX_COMPONENTS_TOKEN }}
       - uses: actions/checkout@example
         with:
           repository: Bedriox/RakNet
           ref: ${{ steps.component-pins.outputs.raknet_commit }}
-          token: ${{ secrets.BEDRIOX_COMPONENTS_TOKEN }}
       - uses: actions/checkout@example
         with:
           repository: Bedriox/Data
           ref: ${{ steps.component-pins.outputs.data_commit }}
-          token: ${{ secrets.BEDRIOX_COMPONENTS_TOKEN }}
 YAML;
     }
 }

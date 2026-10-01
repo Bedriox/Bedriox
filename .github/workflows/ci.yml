@@ -3,6 +3,8 @@ name: CI
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -14,7 +16,6 @@ permissions:
 
 jobs:
   quality:
-    if: github.ref == 'refs/heads/main'
     timeout-minutes: 5
     runs-on: ubuntu-latest
     steps:
@@ -37,21 +38,18 @@ jobs:
           repository: Bedriox/Protocol
           ref: ${{ steps.component-pins.outputs.protocol_commit }}
           path: Protocol
-          token: ${{ secrets.BEDRIOX_COMPONENTS_TOKEN }}
           persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: Bedriox/RakNet
           ref: ${{ steps.component-pins.outputs.raknet_commit }}
           path: RakNet
-          token: ${{ secrets.BEDRIOX_COMPONENTS_TOKEN }}
           persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: Bedriox/Data
           ref: ${{ steps.component-pins.outputs.data_commit }}
           path: Data
-          token: ${{ secrets.BEDRIOX_COMPONENTS_TOKEN }}
           persist-credentials: false
       # Routine CI uses stock PHP for static and metadata checks. Native LevelDB interoperability is qualified by Runtime.
       - run: composer install --no-interaction --prefer-dist --no-progress --ignore-platform-req=ext-leveldb

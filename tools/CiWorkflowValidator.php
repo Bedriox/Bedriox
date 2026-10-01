@@ -41,9 +41,11 @@ final class CiWorkflowValidator
             }
         }
 
-        $privateToken = 'token: ${{ secrets.BEDRIOX_COMPONENTS_TOKEN }}';
-        if (substr_count($workflow, $privateToken) !== 3) {
-            $errors[] = 'CI must use the private component token for all three component checkouts.';
+        if (str_contains($workflow, 'BEDRIOX_COMPONENTS_TOKEN')) {
+            $errors[] = 'CI must not require a private token for public component checkouts.';
+        }
+        if (preg_match('/^\s*token:/mi', $workflow) === 1) {
+            $errors[] = 'CI component checkouts must not override public checkout authentication.';
         }
         if (preg_match('/^\s*ssh-key:/mi', $workflow) === 1) {
             $errors[] = 'CI must not depend on deploy keys because the organization disables them.';
@@ -56,7 +58,7 @@ final class CiWorkflowValidator
         $exportPosition = strpos($workflow, $exportCommand);
         $firstComponentPosition = strpos($workflow, 'repository: Bedriox/Protocol');
         if ($exportPosition !== false && $firstComponentPosition !== false && $exportPosition > $firstComponentPosition) {
-            $errors[] = 'CI must export component pins before checking out private components.';
+            $errors[] = 'CI must export component pins before checking out public components.';
         }
 
         return $errors;

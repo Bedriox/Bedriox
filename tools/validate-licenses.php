@@ -46,7 +46,7 @@ $approvedProduction = [
     ],
     'bedriox/protocol' => [
         'version' => '0.1.0-alpha.1',
-        'reference' => '032642f539ad3e0558856ae3ac69fe5e34c152af',
+        'reference' => 'adb04206459ca7080c2e3373b65744d84080c4c3',
         'license' => 'GPL-3.0-only',
     ],
     'bedriox/data' => [
@@ -56,7 +56,7 @@ $approvedProduction = [
     ],
     'bedriox/raknet' => [
         'version' => '0.1.0-alpha.1',
-        'reference' => '6fc5c7b48cc5f84aa9159e1eb20e76b966069fa6',
+        'reference' => '6a9059994182335c431a75a77e5f5da08d8f58c1',
         'license' => 'GPL-3.0-only',
     ],
 ];

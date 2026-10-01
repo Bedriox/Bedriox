@@ -30,7 +30,7 @@ final class CliTest extends TestCase
         $result = $this->runCli('--version');
 
         self::assertSame(0, $result['exitCode']);
-        self::assertStringContainsString('Bedriox 0.3.0-alpha.1', $result['stdout']);
+        self::assertStringContainsString('Bedriox 1.0.0-beta.1', $result['stdout']);
         self::assertSame('', $result['stderr']);
     }
 

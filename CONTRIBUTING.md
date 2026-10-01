@@ -1,6 +1,6 @@
 # Contributing
 
-Bedriox is currently in private incubation. Authorized contributors should open focused pull requests with tests, documentation, and appropriate attribution for externally informed protocol behavior.
+Bedriox is in beta development. Contributors should open focused pull requests with tests, documentation, and appropriate attribution for externally informed protocol behavior.
 
 Before changing code, identify the owning repository, intended file areas, observable outcome, and established behavior that must remain unchanged. Add a characterization test first when touching a working compatibility surface. Do not bundle opportunistic cleanup, protocol changes, defaults, dependency updates, or cross-repository edits into an unrelated feature.
 
