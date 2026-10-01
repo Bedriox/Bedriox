@@ -1438,14 +1438,16 @@ final class EntityPersistenceManager
         EntityRegistry $registry,
     ): AbstractEntity {
         $entity = $registry->spawn(
-            static fn(string $uuid, int $runtimeId): AbstractEntity => ($registration->factory)(
-                $uuid,
-                $runtimeId,
-                $record->worldName(),
-                $record->position,
-                $record->yaw,
-                $record->pitch,
-            ),
+            static fn(string $uuid, int $runtimeId): AbstractEntity => $registration->persistenceFactory !== null
+                ? ($registration->persistenceFactory)($uuid, $runtimeId, $record)
+                : ($registration->factory)(
+                    $uuid,
+                    $runtimeId,
+                    $record->worldName(),
+                    $record->position,
+                    $record->yaw,
+                    $record->pitch,
+                ),
             $record->uuid(),
         );
         if (!$record->persistent || !$entity->isPersistent()) {

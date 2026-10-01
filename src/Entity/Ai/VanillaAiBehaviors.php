@@ -30,6 +30,7 @@ use Bedriox\Server\Entity\Ai\Goal\WanderGoal;
 use Bedriox\Server\Entity\Ai\Sensor\HurtSensor;
 use Bedriox\Server\Entity\Ai\Sensor\NearestPlayerSensor;
 use Bedriox\Server\Entity\Ai\Sensor\TemptingPlayerSensor;
+use InvalidArgumentException;
 
 final class VanillaAiBehaviors
 {
@@ -40,6 +41,9 @@ final class VanillaAiBehaviors
     private static ?AiBehaviorDefinition $sheep = null;
     private static ?AiBehaviorDefinition $skeleton = null;
     private static ?AiBehaviorDefinition $zombie = null;
+
+    /** @var array<string, AiBehaviorDefinition> */
+    private static array $hostiles = [];
 
     public static function cow(): AiBehaviorDefinition
     {
@@ -153,6 +157,79 @@ final class VanillaAiBehaviors
                     0.1,
                 ),
                 new WanderGoal('bedriox:skeleton_wander', 10, 30, 40, 0.08),
+            ],
+        );
+    }
+
+    public static function spider(): AiBehaviorDefinition
+    {
+        return self::$hostiles['spider'] ??= self::meleeHostile('spider', 16.0, 2.0, 0.14);
+    }
+
+    public static function caveSpider(): AiBehaviorDefinition
+    {
+        return self::$hostiles['cave_spider'] ??= self::meleeHostile('cave_spider', 16.0, 2.0, 0.16);
+    }
+
+    public static function creeper(): AiBehaviorDefinition
+    {
+        return self::$hostiles['creeper'] ??= new AiBehaviorDefinition(
+            sensors: [new NearestPlayerSensor('bedriox:creeper_nearest_player', 5, 24.0, 20)],
+            goals: [
+                new ChasePlayerGoal('bedriox:creeper_chase', 80, 2.5, 0.10),
+                new WanderGoal('bedriox:creeper_wander', 10, 30, 40, 0.075),
+            ],
+        );
+    }
+
+    public static function slime(): AiBehaviorDefinition
+    {
+        return self::$hostiles['slime'] ??= self::meleeHostile('slime', 16.0, 4.0, 0.10);
+    }
+
+    public static function magmaCube(): AiBehaviorDefinition
+    {
+        return self::$hostiles['magma_cube'] ??= self::meleeHostile('magma_cube', 16.0, 6.0, 0.10);
+    }
+
+    public static function enderman(): AiBehaviorDefinition
+    {
+        return self::$hostiles['enderman'] ??= self::meleeHostile('enderman', 32.0, 7.0, 0.15);
+    }
+
+    public static function witherSkeleton(): AiBehaviorDefinition
+    {
+        return self::$hostiles['wither_skeleton'] ??= self::meleeHostile('wither_skeleton', 32.0, 8.0, 0.12);
+    }
+
+    public static function witch(): AiBehaviorDefinition
+    {
+        return self::$hostiles['witch'] ??= new AiBehaviorDefinition(
+            sensors: [new NearestPlayerSensor('bedriox:witch_nearest_player', 10, 16.0, 30)],
+            goals: [
+                new RangedAttackIntentGoal('bedriox:witch_ranged_attack', 100, 3.0, 10.0, 60, 1.0, 0.12),
+                new WanderGoal('bedriox:witch_wander', 10, 30, 40, 0.075),
+            ],
+        );
+    }
+
+    public static function smallHostile(string $species): AiBehaviorDefinition
+    {
+        if (!in_array($species, ['endermite', 'silverfish'], true)) {
+            throw new InvalidArgumentException('Small hostile species is unsupported.');
+        }
+
+        return self::$hostiles[$species] ??= self::meleeHostile($species, 16.0, $species === 'endermite' ? 2.0 : 1.0, 0.13);
+    }
+
+    private static function meleeHostile(string $species, float $range, float $damage, float $speed): AiBehaviorDefinition
+    {
+        return new AiBehaviorDefinition(
+            sensors: [new NearestPlayerSensor("bedriox:{$species}_nearest_player", 10, $range, 30)],
+            goals: [
+                new MeleeAttackIntentGoal("bedriox:{$species}_melee", 100, 1.8, 20, $damage),
+                new ChasePlayerGoal("bedriox:{$species}_chase", 80, 1.8, $speed),
+                new WanderGoal("bedriox:{$species}_wander", 10, 30, 40, $speed * 0.75),
             ],
         );
     }

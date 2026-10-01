@@ -276,9 +276,10 @@ final class BedrockEntityActorPacketEncoderTest extends TestCase
         self::assertSame(0.9, self::metadataFloat($packet->metadata, 53));
         self::assertSame(1.4, self::metadataFloat($packet->metadata, 54));
         $flags = self::metadataInteger($packet->metadata, 0);
-        foreach ([ActorFlag::CanClimb, ActorFlag::Breathing, ActorFlag::HasCollision, ActorFlag::HasGravity, ActorFlag::NoAi] as $flag) {
+        foreach ([ActorFlag::Breathing, ActorFlag::HasCollision, ActorFlag::HasGravity, ActorFlag::NoAi] as $flag) {
             self::assertNotSame(0, $flags & $flag->mask());
         }
+        self::assertSame(0, $flags & ActorFlag::CanClimb->mask());
         self::assertNotContains(130, array_map(static fn(ActorMetadata $metadata): int => $metadata->id, $packet->metadata));
     }
 

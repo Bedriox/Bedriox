@@ -20,22 +20,22 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Vanilla;
 
-use Bedriox\Api\Entity\EntityCategory;
-use Bedriox\Server\Entity\AbstractMobEntity;
+use Bedriox\Api\Entity\Vanilla\WitherSkeleton;
+use Bedriox\Server\Entity\Ai\AiBehaviorDefinition;
 use Bedriox\Server\Entity\Ai\VanillaAiBehaviors;
-use Bedriox\Server\Entity\EntityDefinition;
 use Bedriox\Server\Entity\EntityMotion;
+use Bedriox\Server\Entity\MonsterEntity;
+use Bedriox\Server\Entity\VanillaEntityDefinitions;
 use Bedriox\Server\Simulation\Position;
 
-/** Shared implementation for catalog-admitted vanilla mobs without specialized server state yet. */
-final class CatalogMobEntity extends AbstractMobEntity
+final class WitherSkeletonEntity extends MonsterEntity implements WitherSkeleton
 {
     public function __construct(
         string $uniqueId,
         int $runtimeId,
-        EntityDefinition $definition,
         string $worldName,
         Position $position,
+        ?AiBehaviorDefinition $behavior = null,
         EntityMotion $motion = new EntityMotion(),
         float $yaw = 0.0,
         float $pitch = 0.0,
@@ -44,12 +44,10 @@ final class CatalogMobEntity extends AbstractMobEntity
         parent::__construct(
             $uniqueId,
             $runtimeId,
-            $definition,
+            VanillaEntityDefinitions::witherSkeleton(),
             $worldName,
             $position,
-            $definition->category === EntityCategory::MONSTER
-                ? VanillaAiBehaviors::zombie()
-                : VanillaAiBehaviors::cow(),
+            $behavior ?? VanillaAiBehaviors::witherSkeleton(),
             $motion,
             $yaw,
             $pitch,

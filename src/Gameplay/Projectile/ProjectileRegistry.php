@@ -57,6 +57,7 @@ final class ProjectileRegistry
         Position $position,
         float $yaw,
         float $pitch,
+        ProjectileOwnerType $ownerType = ProjectileOwnerType::PLAYER,
     ): Projectile {
         if (count($this->projectiles) >= $this->capacity || $this->nextEntityId >= PHP_INT_MAX) {
             throw new OverflowException('Projectile registry is exhausted.');
@@ -86,6 +87,7 @@ final class ProjectileRegistry
             ownerRuntimeEntityId: $ownerRuntimeEntityId,
             yaw: $yaw,
             pitch: $pitch,
+            ownerType: $ownerType,
         );
         $this->projectiles[$id] = $projectile;
 
@@ -113,6 +115,7 @@ final class ProjectileRegistry
         float $knockbackStrength = 0.4,
         int $fireTicks = 0,
         int $piercingLevel = 0,
+        ProjectileOwnerType $ownerType = ProjectileOwnerType::PLAYER,
     ): Projectile {
         return $this->spawnArrow(
             $ownerUuid,
@@ -127,6 +130,7 @@ final class ProjectileRegistry
             $fireTicks,
             $piercingLevel,
             $type,
+            $ownerType,
         );
     }
 

@@ -28,11 +28,13 @@ final readonly class RegisteredEntityDefinition
 {
     /**
      * @param Closure(string, int, string, \Bedriox\Server\Simulation\Position, float, float): AbstractEntity $factory
+     * @param null|Closure(string, int, \Bedriox\Server\Entity\Persistence\EntityPersistenceRecord): AbstractEntity $persistenceFactory
      */
     public function __construct(
         public EntityDefinition $definition,
         public Closure $factory,
         public ?string $owner = null,
+        public ?Closure $persistenceFactory = null,
     ) {
         if ($owner !== null && ($owner === '' || strlen($owner) > 128 || preg_match('//u', $owner) !== 1)) {
             throw new InvalidArgumentException('Entity-definition owner must be valid UTF-8 and bounded.');

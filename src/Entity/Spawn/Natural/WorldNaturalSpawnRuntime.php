@@ -154,6 +154,22 @@ final class WorldNaturalSpawnRuntime
                 new SkeletonNaturalSpawnRule(),
                 10,
             );
+            foreach ([
+                [VanillaEntityType::HUSK, new HuskNaturalSpawnRule(), 5],
+                [VanillaEntityType::STRAY, new StrayNaturalSpawnRule(), 4],
+                [VanillaEntityType::BOGGED, new BoggedNaturalSpawnRule(), 3],
+                [VanillaEntityType::PARCHED, new ParchedNaturalSpawnRule(), 3],
+                [VanillaEntityType::SPIDER, new SpiderNaturalSpawnRule(), 10],
+                [VanillaEntityType::CREEPER, new CreeperNaturalSpawnRule(), 10],
+                [VanillaEntityType::SLIME, new SlimeNaturalSpawnRule(), 3],
+                [VanillaEntityType::MAGMA_CUBE, new MagmaCubeNaturalSpawnRule(), 4],
+                [VanillaEntityType::ENDERMAN, new EndermanNaturalSpawnRule(), 1],
+                [VanillaEntityType::WITCH, new WitchNaturalSpawnRule(), 1],
+            ] as [$type, $rule, $weight]) {
+                if ($definitions->get($type) !== null) {
+                    $entries[] = new NaturalSpawnEntry($type, EntityCategory::MONSTER, $rule, $weight);
+                }
+            }
         }
         $spawner = new NaturalSpawner(
             new NaturalSpawnCandidatePlanner(),

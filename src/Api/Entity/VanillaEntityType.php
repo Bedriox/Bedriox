@@ -33,6 +33,21 @@ enum VanillaEntityType: string implements VanillaEntityIdentity
     case SHEEP = 'minecraft:sheep';
     case SKELETON = 'minecraft:skeleton';
     case ZOMBIE = 'minecraft:zombie';
+    case HUSK = 'minecraft:husk';
+    case ZOMBIE_VILLAGER = 'minecraft:zombie_villager_v2';
+    case STRAY = 'minecraft:stray';
+    case BOGGED = 'minecraft:bogged';
+    case PARCHED = 'minecraft:parched';
+    case WITHER_SKELETON = 'minecraft:wither_skeleton';
+    case SPIDER = 'minecraft:spider';
+    case CAVE_SPIDER = 'minecraft:cave_spider';
+    case CREEPER = 'minecraft:creeper';
+    case SLIME = 'minecraft:slime';
+    case MAGMA_CUBE = 'minecraft:magma_cube';
+    case ENDERMAN = 'minecraft:enderman';
+    case ENDERMITE = 'minecraft:endermite';
+    case SILVERFISH = 'minecraft:silverfish';
+    case WITCH = 'minecraft:witch';
 
     public function identifier(): string
     {

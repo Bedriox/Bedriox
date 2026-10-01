@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity;
 
+use Bedriox\Api\Entity\Capability\Climbing;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\Collision\AxisAlignedBox;
 use Bedriox\Server\World\Collision\LoadedCollisionBoxQuery;
@@ -68,6 +69,16 @@ final readonly class EntityPhysicsResolver
             return new EntityPhysicsResult(false, $motion != $beforeMotion, false);
         }
         [$x, $y, $z] = $resolved;
+        if ($entity instanceof Climbing
+            && ($requested->x !== 0.0 || $requested->z !== 0.0)
+            && ($x !== $requested->x || $z !== $requested->z)) {
+            $climb = new EntityMotion($requested->x, max(0.2, $requested->y), $requested->z);
+            $climbResolved = $this->resolve($box, $climb);
+            if ($climbResolved !== null) {
+                $requested = $climb;
+                [$x, $y, $z] = $climbResolved;
+            }
+        }
         if ($this->shouldJump($entity, $tick, $box, $requested, $x, $z)) {
             $jump = new EntityMotion($requested->x, self::MOB_JUMP_VELOCITY, $requested->z);
             $jumpResolved = $this->resolve($box, $jump);

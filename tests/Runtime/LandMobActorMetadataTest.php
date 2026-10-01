@@ -20,12 +20,17 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Runtime;
 
+use Bedriox\Api\Entity\Value\SlimeSize;
 use Bedriox\Api\Entity\Value\WoolColor;
 use Bedriox\Protocol\Packet\ActorFlag;
 use Bedriox\Protocol\Packet\ActorMetadata;
 use Bedriox\Server\Entity\EntityUuid;
+use Bedriox\Server\Entity\Vanilla\CreeperEntity;
+use Bedriox\Server\Entity\Vanilla\MagmaCubeEntity;
 use Bedriox\Server\Entity\Vanilla\SheepEntity;
 use Bedriox\Server\Entity\Vanilla\SkeletonEntity;
+use Bedriox\Server\Entity\Vanilla\SlimeEntity;
+use Bedriox\Server\Entity\Vanilla\SpiderEntity;
 use Bedriox\Server\Runtime\BedrockLivingActorProjector;
 use Bedriox\Server\Simulation\Position;
 use PHPUnit\Framework\TestCase;
@@ -70,6 +75,27 @@ final class LandMobActorMetadataTest extends TestCase
         self::assertSame(0, $flags & ActorFlag::Sheared->mask());
         self::assertSame(0.6, self::float($metadata, 53));
         self::assertSame(1.99, self::float($metadata, 54));
+    }
+
+    public function testSpecialHostilesProjectTheirBoundedSpeciesState(): void
+    {
+        $projector = new BedrockLivingActorProjector();
+        $spider = new SpiderEntity(EntityUuid::random(), 3, 'world', new Position(0.0, 64.0, 0.0));
+        self::assertNotSame(0, self::integer($projector->metadata($spider), 0) & ActorFlag::CanClimb->mask());
+
+        $slime = new SlimeEntity(EntityUuid::random(), 4, 'world', new Position(0.0, 64.0, 0.0), SlimeSize::MEDIUM);
+        self::assertSame(2, self::integer($projector->metadata($slime), 2));
+
+        $creeper = new CreeperEntity(EntityUuid::random(), 5, 'world', new Position(0.0, 64.0, 0.0));
+        $creeper->setCharged(true);
+        $creeper->setIgnited(true);
+        $flags = self::integer($projector->metadata($creeper), 0);
+        self::assertNotSame(0, $flags & ActorFlag::Powered->mask());
+        self::assertSame(0, $flags & ActorFlag::Charged->mask());
+        self::assertNotSame(0, $flags & ActorFlag::Ignited->mask());
+
+        $magma = new MagmaCubeEntity(EntityUuid::random(), 6, 'world', new Position(0.0, 64.0, 0.0));
+        self::assertNotSame(0, self::integer($projector->metadata($magma), 0) & ActorFlag::FireImmune->mask());
     }
 
     /** @param list<ActorMetadata> $metadata */

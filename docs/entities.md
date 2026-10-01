@@ -54,6 +54,20 @@ Cow, sheep, pig, chicken, and rabbit share one bounded authoritative age and bre
 
 Cows support bucket milking. Pigs persist saddle state. Chickens fall slowly and lay eggs on a durable bounded timer. Rabbits persist a typed variant and use hopping ground movement. Every species has an exact spawn-egg definition, natural-spawn entry, durable state, multiplayer projection, and adult loot table; babies do not produce ordinary adult drops.
 
+## Common hostile mobs
+
+The specialized hostile roster now includes husks, zombie villagers, strays, bogged, parched, wither skeletons, spiders, cave spiders, creepers, slimes, magma cubes, endermen, endermites, silverfish, and witches in addition to zombies and skeletons. Each admitted species has its own public `Vanilla` contract and internal implementation rather than sharing a generic catalog actor. Exact dimensions, health, daylight sensitivity, equipment, loot, persistence, spawn-egg identity, metadata, and natural-spawn eligibility remain definition-owned.
+
+Spider movement uses the reusable `Climbing` capability and only climbing species project the climb actor flag. `SlimeSize` expresses the finite small, medium, and large forms used by slimes and magma cubes; size controls dimensions and health, survives unload and restart, and a non-small death may produce a bounded number of next-smaller children. Magma cubes are fire-immune. Endermen take authoritative water damage.
+
+`CreeperController` extends ordinary mob control with bounded charged and ignited state changes while retaining the ordinary availability-checked, owner-attributed mutation boundary. Enderman carried-block mutation is intentionally withheld until the canonical block state can be projected exactly to the current client.
+
+Hostile ranged behavior remains projectile-owned. Strays and bogged launch their supported tipped arrows, witches launch bounded splash potions, and cave-spider melee applies its difficulty-sensitive poison through the ordinary effect and damage paths. Creepers retain charged, ignition, and fuse state, cancel a proximity fuse when the target escapes, and commit a bounded server-owned explosion after `EntityExplosionPrimeEvent`. Explosion radius is capped at 16 blocks, the planner reads only loaded terrain, the result is capped at 4,096 unique blocks and 256 unique actors, bedrock is never destroyed, and `EntityExplodedEvent` follows commit.
+
+The public hostile event foundation also includes cancellable `EntitySplitEvent`, adjustable `EntityTransformEvent`, and adjustable `EntityBlockChangeEvent`, with immutable `EntityTransformedEvent` and `EntityBlockChangedEvent` observations. Slime and magma-cube splitting is connected to `EntitySplitEvent`. Transformation and entity-owned block-change events define the bounded API boundary for mechanics that use them; the current common-hostile runtime does not claim zombie curing, enderman block pickup or placement, or other transformations merely because those event classes exist.
+
+Natural hostile work remains inside the shared regional cap, local-density limit, spawn cadence, elapsed-time budget, loaded-terrain checks, and distance-despawn policy. Overworld natural selection currently includes the qualified environment-appropriate subset; Nether-only, structure-only, infestation-only, and transformation-created species remain available through their admitted explicit spawn paths until their owning world or structure system can provide the required context.
+
 ## Transaction and lifecycle boundary
 
 Controller mutations requested during a plugin listener or custom-mob lifecycle callback join that callback's owner-attributed action transaction. They commit only after the callback returns successfully. An exception discards staged work, disables the failing plugin through the normal isolation path, and leaves unrelated entities and players running. `MONITOR` listeners cannot stage controller actions.

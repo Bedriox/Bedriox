@@ -32,10 +32,13 @@ use Bedriox\Api\Entity\EntityCombustionCause;
 use Bedriox\Api\Entity\EntityDamageCause;
 use Bedriox\Api\Entity\EntityInteractionType;
 use Bedriox\Api\Entity\EntityTargetReason;
+use Bedriox\Api\Entity\EntityType;
 use Bedriox\Api\Entity\KnockbackCause;
 use Bedriox\Api\Entity\KnockbackVector;
 use Bedriox\Api\Entity\LivingEntity as ApiLivingEntity;
 use Bedriox\Api\Entity\SpawnCause;
+use Bedriox\Api\Entity\Value\EntityBlockChangeReason;
+use Bedriox\Api\Entity\Value\EntityTransformReason;
 use Bedriox\Api\Entity\Vector3;
 use Bedriox\Api\Event\Block\BlockBreakEvent;
 use Bedriox\Api\Event\Block\BlockBrokenEvent;
@@ -49,6 +52,8 @@ use Bedriox\Api\Event\Block\ChestPairedEvent;
 use Bedriox\Api\Event\Block\ChestPairEvent;
 use Bedriox\Api\Event\Entity\ActorKnockbackEvent;
 use Bedriox\Api\Event\Entity\ActorKnockedBackEvent;
+use Bedriox\Api\Event\Entity\EntityBlockChangedEvent;
+use Bedriox\Api\Event\Entity\EntityBlockChangeEvent;
 use Bedriox\Api\Event\Entity\EntityBredEvent;
 use Bedriox\Api\Event\Entity\EntityBreedEvent;
 use Bedriox\Api\Event\Entity\EntityCombustEvent;
@@ -63,14 +68,19 @@ use Bedriox\Api\Event\Entity\EntityEffectRemovedEvent;
 use Bedriox\Api\Event\Entity\EntityEffectRemoveEvent;
 use Bedriox\Api\Event\Entity\EntityEquipmentChangedEvent;
 use Bedriox\Api\Event\Entity\EntityEquipmentChangeEvent;
+use Bedriox\Api\Event\Entity\EntityExplodedEvent;
+use Bedriox\Api\Event\Entity\EntityExplosionPrimeEvent;
 use Bedriox\Api\Event\Entity\EntityInteractedEvent;
 use Bedriox\Api\Event\Entity\EntityInteractEvent;
 use Bedriox\Api\Event\Entity\EntityShearedEvent;
 use Bedriox\Api\Event\Entity\EntityShearEvent;
 use Bedriox\Api\Event\Entity\EntitySpawnedEvent;
 use Bedriox\Api\Event\Entity\EntitySpawnEvent;
+use Bedriox\Api\Event\Entity\EntitySplitEvent;
 use Bedriox\Api\Event\Entity\EntityTargetChangedEvent;
 use Bedriox\Api\Event\Entity\EntityTargetEvent;
+use Bedriox\Api\Event\Entity\EntityTransformedEvent;
+use Bedriox\Api\Event\Entity\EntityTransformEvent;
 use Bedriox\Api\Event\Entity\ExperienceOrbSpawnedEvent;
 use Bedriox\Api\Event\Entity\ExperienceOrbSpawnEvent;
 use Bedriox\Api\Event\Entity\PotionProjectileImpactedEvent;
@@ -370,6 +380,91 @@ final readonly class PluginGameplayEventBridge
     public function entitySpawned(ApiEntity $entity, SpawnCause $cause): void
     {
         $this->events->dispatch(new EntitySpawnedEvent($entity, $cause));
+    }
+
+    public function primeExplosion(
+        ApiEntity $entity,
+        ApiPosition $position,
+        float $radius,
+        bool $breaksBlocks,
+        float $fireChance,
+    ): ?EntityExplosionPrimeEvent {
+        $event = new EntityExplosionPrimeEvent($entity, $position, $radius, $breaksBlocks, $fireChance);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event;
+    }
+
+    /**
+     * @param list<ApiBlockPosition> $affectedBlocks
+     * @param list<ApiEntity|ApiPlayer> $affectedEntities
+     */
+    public function entityExploded(
+        ApiEntity $entity,
+        ApiPosition $position,
+        float $radius,
+        bool $brokeBlocks,
+        float $fireChance,
+        array $affectedBlocks,
+        array $affectedEntities,
+    ): void {
+        $this->events->dispatch(new EntityExplodedEvent(
+            $entity,
+            $position,
+            $radius,
+            $brokeBlocks,
+            $fireChance,
+            $affectedBlocks,
+            $affectedEntities,
+        ));
+    }
+
+    public function transformEntity(
+        ApiLivingEntity $entity,
+        EntityType $targetType,
+        EntityTransformReason $reason,
+    ): ?EntityType {
+        $event = new EntityTransformEvent($entity, $targetType, $reason);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->targetType();
+    }
+
+    public function entityTransformed(
+        ApiLivingEntity $original,
+        ApiLivingEntity $transformed,
+        EntityTransformReason $reason,
+    ): void {
+        $this->events->dispatch(new EntityTransformedEvent($original, $transformed, $reason));
+    }
+
+    public function entityBlockChange(
+        ApiEntity $entity,
+        ApiBlock $from,
+        ApiBlock $to,
+        EntityBlockChangeReason $reason,
+    ): ?ApiBlock {
+        $event = new EntityBlockChangeEvent($entity, $from, $to, $reason);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->to();
+    }
+
+    public function entityBlockChanged(
+        ApiEntity $entity,
+        ApiBlock $from,
+        ApiBlock $to,
+        EntityBlockChangeReason $reason,
+    ): void {
+        $this->events->dispatch(new EntityBlockChangedEvent($entity, $from, $to, $reason));
+    }
+
+    public function splitEntity(ApiLivingEntity $entity, EntityType $childType, int $childCount): ?int
+    {
+        $event = new EntitySplitEvent($entity, $childType, $childCount);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->childCount();
     }
 
     public function entityDamage(

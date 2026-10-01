@@ -70,6 +70,7 @@ use Bedriox\Protocol\Packet\ItemStackResponseContainer;
 use Bedriox\Protocol\Packet\ItemStackResponsePacket;
 use Bedriox\Protocol\Packet\ItemStackResponseSlot;
 use Bedriox\Protocol\Packet\LevelEventPacket;
+use Bedriox\Protocol\Packet\LevelEventParticleType;
 use Bedriox\Protocol\Packet\LevelEventType;
 use Bedriox\Protocol\Packet\LevelSoundEventPacket;
 use Bedriox\Protocol\Packet\MobArmorEquipmentPacket;
@@ -120,6 +121,7 @@ use Bedriox\Server\Simulation\Event\ChatBroadcast;
 use Bedriox\Server\Simulation\Event\CraftingTableOpened;
 use Bedriox\Server\Simulation\Event\EmotePerformed;
 use Bedriox\Server\Simulation\Event\EnchantingOptionsUpdated;
+use Bedriox\Server\Simulation\Event\EntityExplosionPresented;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
 use Bedriox\Server\Simulation\Event\ItemConsumed;
@@ -383,6 +385,29 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         self::assertSame(DimensionId::Nether, $packets[0]->packet->dimension);
         self::assertSame(ParticleType::SPLASH_SPELL->value, $packets[0]->packet->identifier);
         self::assertSame('{"variable.tint_r":1}', $packets[0]->packet->molangVariablesJson);
+    }
+
+    public function testExplosionPresentationRequiresDeliveredChunkAndIncludesParticleAndSound(): void
+    {
+        $visible = $this->authenticatedSession('visible', 10, 'identity-visible', 'Visible', '10');
+        $hidden = $this->authenticatedSession('hidden', 11, 'identity-hidden', 'Hidden', '11');
+        $view = new ChunkViewManager(1);
+        $view->centerOnChunk(0, 0);
+        $view->markPrepared(0, 0);
+        $view->markSent(0, 0);
+        (new ReflectionProperty(BedrockPlayChannel::class, 'chunkView'))->setValue($visible->play, $view);
+
+        $packets = (new BedrockWorldEventPacketEncoder())->encode(
+            new EntityExplosionPresented(new Position(1.5, 65.0, 2.5), ['visible', 'hidden']),
+            ['visible' => $visible, 'hidden' => $hidden],
+        );
+
+        self::assertCount(2, $packets);
+        self::assertSame(['visible', 'visible'], array_column($packets, 'sessionId'));
+        self::assertInstanceOf(LevelEventPacket::class, $packets[0]->packet);
+        self::assertSame(0x4000 | LevelEventParticleType::HugeExplode->value, $packets[0]->packet->eventId);
+        self::assertInstanceOf(LevelSoundEventPacket::class, $packets[1]->packet);
+        self::assertSame('explode', $packets[1]->packet->sound->value);
     }
 
     public function testEveryDataBackedParticleFamilyProjectsWithoutRawIds(): void

@@ -40,7 +40,10 @@ use Bedriox\Api\Entity\KnockbackCause as ApiKnockbackCause;
 use Bedriox\Api\Entity\KnockbackVector as ApiKnockbackVector;
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\Value\RabbitVariant;
+use Bedriox\Api\Entity\Value\SlimeSize;
 use Bedriox\Api\Entity\Value\WoolColor;
+use Bedriox\Api\Entity\Vanilla\Skeleton as ApiSkeleton;
+use Bedriox\Api\Entity\Vanilla\Zombie as ApiZombie;
 use Bedriox\Api\Entity\VanillaEntityIdentifier;
 use Bedriox\Api\Entity\VanillaEntityType;
 use Bedriox\Api\Event\Entity\EntityDamageByEntityEvent;
@@ -65,11 +68,13 @@ use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\Player\HealthRegainCause as ApiHealthRegainCause;
 use Bedriox\Api\Player\Nutrition as ApiNutrition;
 use Bedriox\Api\Player\Player as ApiPlayer;
+use Bedriox\Api\Potion\PotionType;
 use Bedriox\Api\Processing\CartographyOperation;
 use Bedriox\Api\Processing\SmithingRecipeType;
 use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\BlockFace as ApiBlockFace;
 use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
+use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\WeatherState;
 use Bedriox\Data\BlockPropertyRegistry;
 use Bedriox\Data\CanonicalBlockState;
@@ -87,6 +92,7 @@ use Bedriox\Server\Entity\Ai\VanillaAiMemories;
 use Bedriox\Server\Entity\BreedableAnimalEntity;
 use Bedriox\Server\Entity\EntityDefinition;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
+use Bedriox\Server\Entity\EntityDespawnPolicy;
 use Bedriox\Server\Entity\EntityMotion;
 use Bedriox\Server\Entity\EntityPhysicsResolver;
 use Bedriox\Server\Entity\EntityRegistry;
@@ -113,11 +119,21 @@ use Bedriox\Server\Entity\Spawn\EntitySpawnRequest;
 use Bedriox\Server\Entity\Spawn\EntitySpawnService;
 use Bedriox\Server\Entity\Spawn\Natural\NaturalSpawnPlayer;
 use Bedriox\Server\Entity\Spawn\Natural\WorldNaturalSpawnRuntime;
+use Bedriox\Server\Entity\Vanilla\BoggedEntity;
+use Bedriox\Server\Entity\Vanilla\CaveSpiderEntity;
 use Bedriox\Server\Entity\Vanilla\ChickenEntity;
 use Bedriox\Server\Entity\Vanilla\CowEntity;
+use Bedriox\Server\Entity\Vanilla\CreeperEntity;
+use Bedriox\Server\Entity\Vanilla\EndermanEntity;
+use Bedriox\Server\Entity\Vanilla\MagmaCubeEntity;
 use Bedriox\Server\Entity\Vanilla\PigEntity;
 use Bedriox\Server\Entity\Vanilla\RabbitEntity;
 use Bedriox\Server\Entity\Vanilla\SheepEntity;
+use Bedriox\Server\Entity\Vanilla\SlimeEntity;
+use Bedriox\Server\Entity\Vanilla\StrayEntity;
+use Bedriox\Server\Entity\Vanilla\WitchEntity;
+use Bedriox\Server\Entity\Vanilla\WitherSkeletonEntity;
+use Bedriox\Server\Entity\Vanilla\ZombieFamilyEntity;
 use Bedriox\Server\Entity\WorldEntityEnvironment;
 use Bedriox\Server\Gameplay\Block\BlockBreakContext;
 use Bedriox\Server\Gameplay\Block\BlockBreakRules;
@@ -140,6 +156,9 @@ use Bedriox\Server\Gameplay\Crafting\ShapedRecipe;
 use Bedriox\Server\Gameplay\Crafting\ShapelessRecipe;
 use Bedriox\Server\Gameplay\Enchanting\EnchantmentEffects;
 use Bedriox\Server\Gameplay\Enchanting\VanillaEnchantments;
+use Bedriox\Server\Gameplay\Explosion\Planning\ExplosionPlanningService;
+use Bedriox\Server\Gameplay\Explosion\Planning\LoadedWorldExplosionView;
+use Bedriox\Server\Gameplay\Explosion\Value\ExplosionRequest;
 use Bedriox\Server\Gameplay\Item\ArmorSlot;
 use Bedriox\Server\Gameplay\Item\ConsumableEffectDefinition;
 use Bedriox\Server\Gameplay\Item\ItemBehaviorRegistry;
@@ -274,6 +293,7 @@ use Bedriox\Server\Simulation\Event\EntityActorMetadataChanged;
 use Bedriox\Server\Simulation\Event\EntityActorMoved;
 use Bedriox\Server\Simulation\Event\EntityActorRemoved;
 use Bedriox\Server\Simulation\Event\EntityActorSpawned;
+use Bedriox\Server\Simulation\Event\EntityExplosionPresented;
 use Bedriox\Server\Simulation\Event\EntityInteracted;
 use Bedriox\Server\Simulation\Event\ExperienceOrbMoved;
 use Bedriox\Server\Simulation\Event\ExperienceOrbPickedUp;
@@ -1548,10 +1568,14 @@ final class WorldSimulation
             $variants = RabbitVariant::cases();
             $entity->setVariant($variants[$this->dropRandom->integer(0, count($variants) - 2)]);
         }
+        if ($entity instanceof ZombieFamilyEntity && $entity->spawnOrigin() === SpawnCause::NATURAL
+            && $this->dropRandom->integer(1, 20) === 1) {
+            $entity->setBaby(true);
+        }
         if ($entity->equipmentState()->getContents() !== []) {
             return;
         }
-        if ($entity->getType()->identifier() === 'minecraft:skeleton') {
+        if ($entity instanceof ApiSkeleton) {
             if ($this->itemCatalog?->has('minecraft:bow')) {
                 $entity->equipmentState()->restoreItem(
                     ApiEquipmentSlot::MAIN_HAND,
@@ -1562,8 +1586,19 @@ final class WorldSimulation
 
             return;
         }
+        if ($entity instanceof WitherSkeletonEntity) {
+            if ($this->itemCatalog?->has('minecraft:stone_sword')) {
+                $entity->equipmentState()->restoreItem(
+                    ApiEquipmentSlot::MAIN_HAND,
+                    new ApiItemStack('minecraft:stone_sword', 1),
+                    0.085,
+                );
+            }
+
+            return;
+        }
         if ($entity->spawnOrigin() !== SpawnCause::NATURAL
-            || $entity->getType()->identifier() !== 'minecraft:zombie') {
+            || !$entity instanceof ApiZombie) {
             return;
         }
         $difficulty = $this->blockWorld?->difficulty() ?? 2;
@@ -1812,6 +1847,7 @@ final class WorldSimulation
         }
         array_push($events, ...$this->advanceEntityEffects());
         array_push($events, ...$this->advanceEntityFire());
+        array_push($events, ...$this->advanceCreepers());
         foreach ($this->entityRuntime->registry()->all() as $entity) {
             if ($entity instanceof BreedableAnimalEntity && $entity->isAlive()
                 && ($this->tick + $entity->getRuntimeId()) % 20 === 0) {
@@ -1964,6 +2000,7 @@ final class WorldSimulation
             if ($this->pluginEvents !== null) {
                 $drops = $this->pluginEvents->entityDied($entity, $lastDamage, $drops);
             }
+            $this->splitSlime($entity);
             $events[] = new EntityActorDied($entity, $recipients);
             array_push(
                 $events,
@@ -1995,6 +2032,37 @@ final class WorldSimulation
         $this->lastEntityPersistenceNanoseconds = hrtime(true) - $entityPersistenceStartedNanoseconds;
 
         return $events;
+    }
+
+    private function splitSlime(AbstractLivingEntity $entity): void
+    {
+        if ((!$entity instanceof SlimeEntity && !$entity instanceof MagmaCubeEntity)
+            || $entity->getSize() === SlimeSize::SMALL) {
+            return;
+        }
+        $childSize = $entity->getSize() === SlimeSize::LARGE ? SlimeSize::MEDIUM : SlimeSize::SMALL;
+        $childCount = $this->dropRandom->integer(2, 4);
+        $childCount = $this->pluginEvents?->splitEntity($entity, $entity->getType(), $childCount)
+            ?? ($this->pluginEvents === null ? $childCount : 0);
+        $childCount = min($childCount, $this->entityRuntime->registry()->remainingCapacity());
+        for ($index = 0; $index < $childCount; ++$index) {
+            $offsetX = (($index % 2) - 0.5) * $childSize->value * 0.52;
+            $offsetZ = ((int) floor($index / 2) - 0.5) * $childSize->value * 0.52;
+            $position = $entity->internalPosition();
+            $child = $this->entityRuntime->registry()->spawn(
+                fn(string $uuid, int $runtimeId): AbstractLivingEntity => $entity instanceof SlimeEntity
+                    ? new SlimeEntity($uuid, $runtimeId, $entity->getWorldName(), new Position($position->x + $offsetX, $position->y, $position->z + $offsetZ), $childSize)
+                    : new MagmaCubeEntity($uuid, $runtimeId, $entity->getWorldName(), new Position($position->x + $offsetX, $position->y, $position->z + $offsetZ), $childSize),
+            );
+            $child->restoreSpawnOwnership(SpawnCause::EFFECT, EntityDespawnPolicy::forSpawnCause(SpawnCause::EFFECT));
+            $this->prepareLivingEntity($child, true);
+            if (!($this->pluginEvents?->allowEntitySpawn($child, SpawnCause::EFFECT) ?? true)) {
+                $this->entityRuntime->remove($child->getRuntimeId());
+                continue;
+            }
+            $this->entityPersistence?->registerSpawned($child);
+            $this->pluginEvents?->entitySpawned($child, SpawnCause::EFFECT);
+        }
     }
 
     /** @return list<ApiItemStack> */
@@ -2068,6 +2136,127 @@ final class WorldSimulation
                 // Invalid plugin-modified drops are isolated from the world tick.
             }
         }
+
+        return $events;
+    }
+
+    /** @return list<WorldEvent> */
+    private function advanceCreepers(): array
+    {
+        $events = [];
+        foreach ($this->entityRuntime->registry()->all() as $entity) {
+            if (!$entity instanceof CreeperEntity || !$entity->isAlive()) {
+                continue;
+            }
+            $position = $entity->internalPosition();
+            $nearestDistance = INF;
+            foreach ($this->players->players() as $player) {
+                if (!$player->vitals->isAlive() || !$player->gameMode()->takesDamage()) {
+                    continue;
+                }
+                $target = $player->movement->position;
+                $distance = hypot(hypot($target->x - $position->x, $target->z - $position->z), $target->y - $position->y);
+                $nearestDistance = min($nearestDistance, $distance);
+            }
+            if (!$entity->isIgnited() && $nearestDistance <= 2.5) {
+                $entity->beginProximityFuse();
+            } elseif ($nearestDistance > 6.0 && $entity->getFuseTicks() < 30) {
+                $entity->cancelProximityFuse();
+            }
+            if (!$entity->isIgnited() || !$entity->advanceFuse()) {
+                continue;
+            }
+            array_push($events, ...$this->explodeCreeper($entity));
+        }
+
+        return $events;
+    }
+
+    /** @return list<WorldEvent> */
+    private function explodeCreeper(CreeperEntity $creeper): array
+    {
+        $position = $creeper->internalPosition();
+        $radius = $creeper->isCharged() ? 6.0 : 3.0;
+        $apiPosition = new ApiPosition($position->x, $position->y, $position->z);
+        $prime = $this->pluginEvents?->primeExplosion($creeper, $apiPosition, $radius, true, 0.0);
+        if ($this->pluginEvents !== null && $prime === null) {
+            $creeper->setIgnited(false);
+            return [];
+        }
+        $radius = $prime?->radius() ?? $radius;
+        $breaksBlocks = $prime?->breaksBlocks() ?? true;
+        $fireChance = $prime?->fireChance() ?? 0.0;
+        $events = [];
+        $affectedActors = [];
+        foreach ($this->players->players() as $player) {
+            if (!$player->vitals->isAlive() || !$player->gameMode()->takesDamage()) {
+                continue;
+            }
+            $target = $player->movement->position;
+            $distance = hypot(hypot($target->x - $position->x, $target->z - $position->z), $target->y - $position->y);
+            if ($distance > $radius * 2.0) {
+                continue;
+            }
+            $exposure = max(0.0, 1.0 - ($distance / ($radius * 2.0)));
+            $event = $this->damage(new DamagePlayer(
+                $player->sessionId,
+                max(1.0, (($exposure * $exposure + $exposure) / 2.0) * 42.0 * $radius / 3.0 + 1.0),
+                DamageCause::Explosion,
+            ));
+            $events[] = $event;
+            if ($event instanceof PlayerDamaged && $event->damage > 0.0 && $this->pluginEvents !== null) {
+                $affectedActors[] = $this->pluginEvents->playerView($player);
+            }
+        }
+        foreach ($this->entityRuntime->registry()->nearby($creeper->getWorldName(), $position, $radius * 2.0, 256) as $entity) {
+            if (!$entity instanceof AbstractLivingEntity || $entity === $creeper || !$entity->isAlive()) {
+                continue;
+            }
+            $distance = hypot(hypot($entity->internalPosition()->x - $position->x, $entity->internalPosition()->z - $position->z), $entity->internalPosition()->y - $position->y);
+            $exposure = max(0.0, 1.0 - ($distance / ($radius * 2.0)));
+            $damage = max(1.0, (($exposure * $exposure + $exposure) / 2.0) * 42.0 * $radius / 3.0 + 1.0);
+            $damageEvent = $this->pluginEvents?->entityDamage($entity, ApiEntityDamageCause::EXPLOSION, $damage, $creeper);
+            if ($this->pluginEvents !== null && $damageEvent === null) {
+                continue;
+            }
+            $result = $this->entityRuntime->damage($entity->getRuntimeId(), $damageEvent?->damage() ?? $damage);
+            if ($result !== null && $result->appliedDamage > 0.0) {
+                $affectedActors[] = $entity;
+            }
+        }
+
+        $affectedBlocks = [];
+        if ($breaksBlocks && $this->blockWorld !== null && $this->blockStateRegistry !== null && $this->blockPalette !== null) {
+            $plan = (new ExplosionPlanningService())->plan(
+                new ExplosionRequest($position, $radius, true, $fireChance),
+                new LoadedWorldExplosionView($this->blockWorld, $this->blockStateRegistry),
+            );
+            foreach ($plan->affectedBlocks as $blockPosition) {
+                $previous = $this->blockWorld->loadedBlockStateAt($blockPosition->x, $blockPosition->y, $blockPosition->z);
+                if ($previous === null || $previous->value === $this->blockPalette->air->value
+                    || $this->blockIdentifier($previous->value) === 'minecraft:bedrock') {
+                    continue;
+                }
+                $this->setBlockStateAndSchedule($blockPosition, $this->blockPalette->air);
+                $affectedBlocks[] = new ApiBlockPosition($blockPosition->x, $blockPosition->y, $blockPosition->z);
+                $events[] = new BlockChanged('server', $blockPosition, $this->blockPalette->air, $this->players->recipients(), destroyedState: $previous);
+            }
+        }
+        $this->entityPersistence?->forgetEntity($creeper->getUniqueId());
+        $this->entityRuntime->remove($creeper->getRuntimeId());
+        $runtimeId = $creeper->getRuntimeId();
+        unset(
+            $this->announcedEntities[$runtimeId],
+            $this->publishedEntityHealth[$runtimeId],
+            $this->publishedEntityPresentationRevisions[$runtimeId],
+            $this->entityTargets[$runtimeId],
+            $this->entityInvulnerableUntilTicks[$runtimeId],
+            $this->entityLastDamageEvents[$runtimeId],
+            $this->entityDeathRemovalTicks[$runtimeId],
+        );
+        $events[] = new EntityExplosionPresented($position, $this->players->recipients());
+        $events[] = new EntityActorRemoved($creeper, $this->players->recipients());
+        $this->pluginEvents?->entityExploded($creeper, $apiPosition, $radius, $affectedBlocks !== [], $fireChance, $affectedBlocks, $affectedActors);
 
         return $events;
     }
@@ -2163,6 +2352,9 @@ final class WorldSimulation
                 continue;
             }
             $wasOnFire = $entity->isOnFire();
+            if ($entity instanceof MagmaCubeEntity) {
+                $entity->extinguish();
+            }
             if (VanillaEffectBehavior::hasFireResistance($entity->effectState()->snapshot())) {
                 $entity->extinguish();
             }
@@ -2218,6 +2410,17 @@ final class WorldSimulation
                     $recipients,
                     !$this->entityAiEnabled,
                 );
+            }
+            if ($entity instanceof EndermanEntity
+                && ($this->tick + $entity->getRuntimeId()) % 20 === 0
+                && $this->entityEnvironment->isTouchingWater($entity)) {
+                $damageEvent = $this->pluginEvents?->entityDamage($entity, ApiEntityDamageCause::DROWNING, 1.0);
+                if ($this->pluginEvents === null || $damageEvent !== null) {
+                    $result = $this->entityRuntime->damage($entity->getRuntimeId(), $damageEvent?->damage() ?? 1.0);
+                    if ($result !== null && $result->appliedDamage > 0.0) {
+                        $events[] = new EntityActorDamaged($entity, $this->tick, $recipients);
+                    }
+                }
             }
         }
 
@@ -2410,6 +2613,24 @@ final class WorldSimulation
         }
         $this->pluginEvents?->damaged($target, DamageCause::Attack, $applied);
 
+        if ($applied > 0.0 && $target->vitals->isAlive() && $attacker instanceof CaveSpiderEntity) {
+            $duration = match ($this->blockWorld?->difficulty() ?? 2) {
+                1 => 0,
+                3 => 300,
+                default => 140,
+            };
+            if ($duration > 0) {
+                $effectEvent = $this->addPlayerEffect(new AddPlayerEffect(
+                    $target->sessionId,
+                    new EffectInstance(EffectType::POISON, $duration),
+                    EffectCause::ENTITY_ATTACK,
+                ));
+                if ($effectEvent !== null) {
+                    $this->deferredEvents[] = $effectEvent;
+                }
+            }
+        }
+
         $recipients = $this->players->recipients();
         $events = [
             new PlayerDamaged(
@@ -2448,7 +2669,7 @@ final class WorldSimulation
             return [];
         }
         $held = $shooter->equipmentState()->getItem(ApiEquipmentSlot::MAIN_HAND);
-        if ($held?->identifier !== 'minecraft:bow') {
+        if (!$shooter instanceof WitchEntity && $held?->identifier !== 'minecraft:bow') {
             return [];
         }
         $from = $shooter->internalPosition();
@@ -2471,17 +2692,44 @@ final class WorldSimulation
             $yaw,
             max(-90.0, min(90.0, $pitch)),
         );
-        $projectile = $this->projectiles->spawnArrow(
-            $shooter->getUniqueId(),
-            $shooter->getRuntimeId(),
-            $spawn,
-            $yaw,
-            max(-90.0, min(90.0, $pitch)),
-            $intent->projectileSpeed,
-            ArrowPickupMode::NONE,
-            ownerType: ProjectileOwnerType::ENTITY,
-        );
-        $admitted = $this->pluginEvents?->projectileLaunch($shooter, $projectile, 'minecraft:arrow')
+        $arrowPotion = match (true) {
+            $shooter instanceof BoggedEntity => PotionType::POISON,
+            $shooter instanceof StrayEntity => PotionType::SLOWNESS,
+            default => null,
+        };
+        $projectile = $shooter instanceof WitchEntity
+            ? $this->projectiles->spawn(
+                $shooter->getUniqueId(),
+                $shooter->getRuntimeId(),
+                $distance <= 3.0 ? PotionType::HARMING : PotionType::POISON,
+                false,
+                $spawn,
+                $yaw,
+                max(-90.0, min(90.0, $pitch)),
+                ProjectileOwnerType::ENTITY,
+            )
+            : ($arrowPotion !== null ? $this->projectiles->spawnTippedArrow(
+                $shooter->getUniqueId(),
+                $shooter->getRuntimeId(),
+                $arrowPotion,
+                $spawn,
+                $yaw,
+                max(-90.0, min(90.0, $pitch)),
+                $intent->projectileSpeed,
+                ArrowPickupMode::NONE,
+                ownerType: ProjectileOwnerType::ENTITY,
+            ) : $this->projectiles->spawnArrow(
+                $shooter->getUniqueId(),
+                $shooter->getRuntimeId(),
+                $spawn,
+                $yaw,
+                max(-90.0, min(90.0, $pitch)),
+                $intent->projectileSpeed,
+                ArrowPickupMode::NONE,
+                ownerType: ProjectileOwnerType::ENTITY,
+            ));
+        $projectileIdentifier = $shooter instanceof WitchEntity ? 'minecraft:splash_potion' : 'minecraft:arrow';
+        $admitted = $this->pluginEvents?->projectileLaunch($shooter, $projectile, $projectileIdentifier)
             ?? ($this->pluginEvents === null ? $projectile : null);
         if ($admitted === null) {
             $this->projectiles->remove($projectile->runtimeEntityId);
@@ -2489,7 +2737,7 @@ final class WorldSimulation
             return [];
         }
         $this->projectiles->replace($admitted);
-        $this->pluginEvents?->projectileLaunched($shooter, $admitted, 'minecraft:arrow');
+        $this->pluginEvents?->projectileLaunched($shooter, $admitted, $projectileIdentifier);
 
         $recipients = $this->players->recipients();
 

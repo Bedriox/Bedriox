@@ -136,7 +136,11 @@ final class WorldNaturalSpawnRuntimeTest extends TestCase
         self::assertNotEmpty($nightSpawned);
         foreach ($nightSpawned as $entity) {
             self::assertContains($entity->getType(), [
+                VanillaEntityType::CREEPER,
+                VanillaEntityType::ENDERMAN,
                 VanillaEntityType::SKELETON,
+                VanillaEntityType::SPIDER,
+                VanillaEntityType::WITCH,
                 VanillaEntityType::ZOMBIE,
             ]);
         }

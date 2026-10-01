@@ -22,11 +22,15 @@ namespace Bedriox\Server\Runtime;
 
 use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Entity\Capability\Ageable;
+use Bedriox\Api\Entity\Capability\Climbing;
 use Bedriox\Api\Entity\Capability\Shearable;
 use Bedriox\Api\Entity\Value\WoolColor;
+use Bedriox\Api\Entity\Vanilla\Creeper;
+use Bedriox\Api\Entity\Vanilla\MagmaCube;
 use Bedriox\Api\Entity\Vanilla\Pig;
 use Bedriox\Api\Entity\Vanilla\Rabbit;
 use Bedriox\Api\Entity\Vanilla\Sheep;
+use Bedriox\Api\Entity\Vanilla\Slime;
 use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Inventory\ItemStack;
 use Bedriox\Protocol\Packet\ActorAttribute;
@@ -69,17 +73,25 @@ final class BedrockLivingActorProjector
         return [
             $this->flagsMetadata($entity, $noAi),
             ActorMetadata::int(1, (int) ceil($entity->getHealth())),
-            ActorMetadata::int(2, $entity instanceof Rabbit ? $entity->getVariant()->value : 0),
+            ...($entity instanceof Rabbit || $entity instanceof Slime ? [ActorMetadata::int(
+                2,
+                $entity instanceof Rabbit ? $entity->getVariant()->value : $entity->getSize()->value,
+            )] : []),
             ActorMetadata::byte(3, $entity instanceof Sheep ? self::woolColorIndex($entity->getWoolColor()) : 0),
             ActorMetadata::string(4, $entity->nameTag()),
             ActorMetadata::long(5, -1),
             ActorMetadata::long(6, 0),
             ActorMetadata::short(7, 400),
+            ...($entity instanceof Creeper ? [
+                ActorMetadata::int(20, $entity->getFuseTicks()),
+                ActorMetadata::int(21, $entity->isIgnited() ? 1 : -1),
+            ] : []),
             ActorMetadata::long(37, -1),
             ActorMetadata::float(38, $entity->scale()),
             ActorMetadata::short(42, 400),
             ActorMetadata::float(53, $entity->collisionWidth()),
             ActorMetadata::float(54, $entity->collisionHeight()),
+            ...($entity instanceof Creeper ? [ActorMetadata::int(55, 30)] : []),
             ActorMetadata::byte(81, 0),
             ActorMetadata::long(92, 0),
             ActorMetadata::float(120, 0.0),
@@ -89,11 +101,19 @@ final class BedrockLivingActorProjector
 
     public function flagsMetadata(AbstractLivingEntity $entity, bool $noAi = false): ActorMetadata
     {
-        $flags = ActorFlag::combine(
-            ActorFlag::CanClimb,
-            ActorFlag::Breathing,
-            ActorFlag::HasCollision,
-        );
+        $flags = ActorFlag::combine(ActorFlag::Breathing, ActorFlag::HasCollision);
+        if ($entity instanceof Climbing) {
+            $flags |= ActorFlag::CanClimb->mask();
+        }
+        if ($entity instanceof Creeper && $entity->isCharged()) {
+            $flags |= ActorFlag::Powered->mask();
+        }
+        if ($entity instanceof Creeper && $entity->isIgnited()) {
+            $flags |= ActorFlag::Ignited->mask();
+        }
+        if ($entity instanceof MagmaCube) {
+            $flags |= ActorFlag::FireImmune->mask();
+        }
         if ($entity->isGravityEnabled()) {
             $flags |= ActorFlag::HasGravity->mask();
         }

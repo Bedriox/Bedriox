@@ -161,6 +161,7 @@ use Bedriox\Server\Simulation\Event\EntityActorMetadataChanged;
 use Bedriox\Server\Simulation\Event\EntityActorMoved;
 use Bedriox\Server\Simulation\Event\EntityActorRemoved;
 use Bedriox\Server\Simulation\Event\EntityActorSpawned;
+use Bedriox\Server\Simulation\Event\EntityExplosionPresented;
 use Bedriox\Server\Simulation\Event\ExperienceOrbMoved;
 use Bedriox\Server\Simulation\Event\ExperienceOrbPickedUp;
 use Bedriox\Server\Simulation\Event\ExperienceOrbRemoved;
@@ -228,6 +229,7 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
     public function encode(WorldEvent $event, array $sessions): array
     {
         return match (true) {
+            $event instanceof EntityExplosionPresented => $this->explosion($event, $sessions),
             $event instanceof ParticleSpawned => $this->particle($event, $sessions),
             $event instanceof PlayerJoined => $this->joined($event, $sessions),
             $event instanceof WeatherChanged => $this->weatherChanged($event),
@@ -355,6 +357,32 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             )],
             default => [],
         };
+    }
+
+    /**
+     * @param array<string, RuntimeSession> $sessions
+     * @return list<DirectedPacket>
+     */
+    private function explosion(EntityExplosionPresented $event, array $sessions): array
+    {
+        $position = new LevelEventPosition($event->position->x, $event->position->y, $event->position->z);
+        $packets = [];
+        foreach ($event->recipientSessionIds as $recipient) {
+            $session = $sessions[$recipient] ?? null;
+            if ($session?->play?->hasSentChunkAt($event->position->x, $event->position->z) !== true) {
+                continue;
+            }
+            $packets[] = new DirectedPacket(
+                $recipient,
+                LevelEventPacket::particle($position, LevelEventParticleType::HugeExplode),
+            );
+            $packets[] = new DirectedPacket(
+                $recipient,
+                new LevelSoundEventPacket(LevelSoundEventName::explode(), $position),
+            );
+        }
+
+        return $packets;
     }
 
     /** @return list<ProtocolEnchantOption> */
