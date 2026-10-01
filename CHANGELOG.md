@@ -61,6 +61,7 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Added
 
+- Add authoritative vehicle and passenger relationships, adult saddled-pig riding and carrot-on-a-stick steering, safe lifecycle dismounts, multiplayer actor-link synchronization, and typed plugin APIs and events.
 - Add authoritative cow, sheep, pig, chicken, and rabbit age, temptation,
   breeding, baby growth, interaction, loot, natural spawning, persistence,
   metadata, controllers, and typed breeding events with organized entity API

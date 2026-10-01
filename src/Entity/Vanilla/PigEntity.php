@@ -21,6 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Entity\Vanilla;
 
 use Bedriox\Api\Entity\Controller\PigController;
+use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\Entity\Vanilla\Pig;
 use Bedriox\Server\Entity\Ai\AiBehaviorDefinition;
 use Bedriox\Server\Entity\Ai\VanillaAiBehaviors;
@@ -37,6 +38,8 @@ use LogicException;
 
 final class PigEntity extends BreedableAnimalEntity implements Pig, IntrinsicEntityPersistence
 {
+    private const float RIDER_SEAT_Y = 0.63;
+
     public function __construct(
         string $uniqueId,
         int $runtimeId,
@@ -77,6 +80,11 @@ final class PigEntity extends BreedableAnimalEntity implements Pig, IntrinsicEnt
             $this->saddled = $saddled;
             $this->markPresentationChanged();
         }
+    }
+
+    public function mountedPassengerOffsetY(MountSeat $seat, float $passengerHeight, bool $playerPassenger): float
+    {
+        return parent::mountedPassengerOffsetY($seat, $passengerHeight, $playerPassenger) + self::RIDER_SEAT_Y;
     }
     public function getController(): PigController
     {

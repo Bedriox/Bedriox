@@ -30,6 +30,7 @@ use Bedriox\Api\Entity\Entity;
 use Bedriox\Api\Entity\EntityCombustionCause;
 use Bedriox\Api\Entity\EntityDamageCause;
 use Bedriox\Api\Entity\EntityEquipment;
+use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Server\Entity\AbstractMobEntity;
 use Bedriox\Server\Entity\Ai\HorizontalSteering;
@@ -168,6 +169,24 @@ class BufferedMobController implements MobController
         $this->stage(function () use ($motion): void {
             if (!$this->entity->isRemoved()) {
                 $this->entity->setMotion($motion);
+            }
+        });
+    }
+
+    public function mount(Entity $vehicle, MountSeat $seat = MountSeat::DRIVER): void
+    {
+        $this->stage(function () use ($vehicle, $seat): void {
+            if (!$this->entity->isRemoved()) {
+                $this->entity->requestControllerMount($vehicle, $seat);
+            }
+        });
+    }
+
+    public function dismount(): void
+    {
+        $this->stage(function (): void {
+            if (!$this->entity->isRemoved()) {
+                $this->entity->requestControllerDismount();
             }
         });
     }

@@ -43,6 +43,8 @@ final readonly class MovePlayer implements WorldCommand
         public ClientInputTick $clientTick = new ClientInputTick(0, 0),
         public bool $flying = false,
         public bool $verticalCollision = false,
+        public float $moveX = 0.0,
+        public float $moveZ = 0.0,
     ) {}
 
     public function sessionId(): string

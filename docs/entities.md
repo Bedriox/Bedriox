@@ -18,7 +18,7 @@ EntityController
             `-- RabbitController
 ```
 
-`EntityController` supports availability checks, teleportation, rotation, velocity, name tags, name-tag visibility, immobility, invisibility, glowing, scale, gravity, fire, extinguishing, and despawning. `LivingEntityController` adds damage, healing, direct bounded health changes, and equipment. `MobController` adds AI enablement, movement toward or away from a position, stopping, looking, targeting, and clearing the current target intent.
+`EntityController` supports availability checks, teleportation, rotation, velocity, name tags, name-tag visibility, immobility, invisibility, glowing, scale, gravity, fire, extinguishing, mounting, dismounting, and despawning. `LivingEntityController` adds damage, healing, direct bounded health changes, and equipment. `MobController` adds AI enablement, movement toward or away from a position, stopping, looking, targeting, and clearing the current target intent.
 
 Always retain the entity view rather than a controller indefinitely, and check `isAvailable()` before a delayed mutation. Once the entity leaves its world, the old controller cannot mutate it.
 
@@ -53,6 +53,14 @@ Capabilities such as `Ageable`, `Breedable`, `Shearable`, `Undead`, and `RangedM
 Cow, sheep, pig, chicken, and rabbit share one bounded authoritative age and breeding lifecycle. Species-specific foods drive temptation, baby growth, and adult breeding. `EntityBreedEvent` can cancel the child or adjust bounded experience before spawn; `EntityBredEvent` observes the committed parents and child. Parents enter cooldown only after the child commits.
 
 Cows support bucket milking. Pigs persist saddle state. Chickens fall slowly and lay eggs on a durable bounded timer. Rabbits persist a typed variant and use hopping ground movement. Every species has an exact spawn-egg definition, natural-spawn entry, durable state, multiplayer projection, and adult loot table; babies do not produce ordinary adult drops.
+
+## Vehicles and passengers
+
+Every world owns one transient mount registry. A passenger has at most one vehicle, each finite `MountSeat` can hold at most one passenger, cyclic relationships are rejected, and links are removed when either side dies, despawns, disconnects, teleports, or changes world. Mount relationships are intentionally not restored after a restart.
+
+Players can inspect and control a live relationship through `Player::getVehicle()`, `isRiding()`, `mount()`, and `dismount()`. Entities expose `getVehicle()`, `isRiding()`, `getPassengers()`, and `hasPassengers()` without exposing packet actor-link values. `EntityMountEvent` and `EntityDismountEvent` run before ordinary player or plugin transitions; `EntityMountedEvent` and `EntityDismountedEvent` observe committed state. Lifecycle-forced dismounts cannot be cancelled.
+
+Adult saddled pigs are the first built-in rideable vehicle. Interact to mount, use the client's ordinary exit-vehicle control to dismount, and hold a carrot on a stick to steer. Vehicle physics and collisions remain authoritative, while actor links and late-join reconstruction keep every viewer synchronized.
 
 ## Common hostile mobs
 

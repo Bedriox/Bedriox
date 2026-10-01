@@ -27,6 +27,7 @@ use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Entity\CustomEntityType;
 use Bedriox\Api\Entity\Entity as ApiEntity;
 use Bedriox\Api\Entity\SpawnCause;
+use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\Entity\VanillaEntityIdentifier;
 use Bedriox\Api\Entity\VanillaEntityType;
 use Bedriox\Api\Event\Player\PlayerKickCause;
@@ -484,6 +485,21 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     public function damagePlayer(string $uuid, float $amount): bool
     {
         return $this->simulationForIdentity($uuid)?->enqueuePluginDamage($uuid, $amount) ?? false;
+    }
+
+    public function mountedVehicle(string $uuid): ?ApiEntity
+    {
+        return $this->simulationForIdentity($uuid)?->mountedVehicle($uuid);
+    }
+
+    public function mountPlayer(string $uuid, ApiEntity $vehicle, MountSeat $seat): bool
+    {
+        return $this->simulationForIdentity($uuid)?->enqueueMount($uuid, $vehicle, $seat) ?? false;
+    }
+
+    public function dismountPlayer(string $uuid): bool
+    {
+        return $this->simulationForIdentity($uuid)?->enqueueDismount($uuid) ?? false;
     }
 
     public function addPlayerEffect(string $uuid, EffectInstance $effect, EffectCause $cause): bool
@@ -2683,6 +2699,13 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 ),
                 fn(int $totalPoints, ExperienceChangeCause $cause): bool => $this->acceptPluginAction(
                     fn(): bool => $this->setPlayerExperience($identity, $totalPoints, $cause),
+                ),
+                fn(): ?ApiEntity => $this->mountedVehicle($identity),
+                fn(ApiEntity $vehicle, MountSeat $seat): bool => $this->acceptPluginAction(
+                    fn(): bool => $this->mountPlayer($identity, $vehicle, $seat),
+                ),
+                fn(): bool => $this->acceptPluginAction(
+                    fn(): bool => $this->dismountPlayer($identity),
                 ),
             );
             $this->flush($key, $session);

@@ -23,11 +23,14 @@ namespace Bedriox\Server\Entity;
 use Bedriox\Api\Entity\Entity as ApiEntity;
 use Bedriox\Api\Entity\EntityCategory;
 use Bedriox\Api\Entity\EntityType;
+use Bedriox\Api\Entity\MountedPassenger;
 use Bedriox\Api\Entity\SpawnCause;
+use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Server\Simulation\Position;
 use Closure;
 use InvalidArgumentException;
+use LogicException;
 
 abstract class AbstractEntity implements ApiEntity
 {
@@ -62,6 +65,16 @@ abstract class AbstractEntity implements ApiEntity
     private float $scale = 1.0;
 
     private int $presentationRevision = 0;
+
+    /** @var null|Closure(): ?ApiEntity */
+    private ?Closure $vehicleResolver = null;
+
+    /** @var null|Closure(): list<MountedPassenger> */
+    private ?Closure $passengerResolver = null;
+
+    private ?Closure $controllerMountHandler = null;
+
+    private ?Closure $controllerDismountHandler = null;
 
     /** @var null|Closure(string, Position, float, float): void */
     private ?Closure $controllerTransformHandler = null;
@@ -147,6 +160,62 @@ abstract class AbstractEntity implements ApiEntity
         return $this->definition->persistent;
     }
 
+    final public function getVehicle(): ?ApiEntity
+    {
+        return $this->vehicleResolver === null ? null : ($this->vehicleResolver)();
+    }
+
+    final public function isRiding(): bool
+    {
+        return $this->getVehicle() !== null;
+    }
+
+    public function getPassengers(): array
+    {
+        return $this->passengerResolver === null ? [] : ($this->passengerResolver)();
+    }
+
+    final public function hasPassengers(): bool
+    {
+        return $this->getPassengers() !== [];
+    }
+
+    /**
+     * @internal MountRegistry remains the single relationship owner.
+     * @param Closure(): ?ApiEntity $vehicle
+     * @param Closure(): list<MountedPassenger> $passengers
+     */
+    final public function bindMountView(Closure $vehicle, Closure $passengers): void
+    {
+        $this->vehicleResolver = $vehicle;
+        $this->passengerResolver = $passengers;
+    }
+
+    /** @param null|Closure(ApiEntity, MountSeat): void $mount */
+    final public function configureControllerMountHandlers(?Closure $mount, ?Closure $dismount): void
+    {
+        $this->controllerMountHandler = $mount;
+        $this->controllerDismountHandler = $dismount;
+    }
+
+    /** @internal */
+    final public function requestControllerMount(ApiEntity $vehicle, MountSeat $seat): void
+    {
+        if ($this->controllerMountHandler === null) {
+            throw new LogicException('Entity mounting is unavailable outside an authoritative world.');
+        }
+        ($this->controllerMountHandler)($vehicle, $seat);
+    }
+
+    /** @internal */
+    final public function requestControllerDismount(): void
+    {
+        if ($this->controllerDismountHandler === null) {
+            throw new LogicException('Entity dismounting is unavailable outside an authoritative world.');
+        }
+        ($this->controllerDismountHandler)();
+    }
+
     final public function isOnGround(): bool
     {
         return $this->onGround;
@@ -215,6 +284,14 @@ abstract class AbstractEntity implements ApiEntity
     final public function collisionHeight(): float
     {
         return $this->definition->height * $this->sizeMultiplier() * $this->scale;
+    }
+
+    /** @internal Resolves the Bedrock seat offset carried by passenger actor metadata. */
+    public function mountedPassengerOffsetY(MountSeat $seat, float $passengerHeight, bool $playerPassenger): float
+    {
+        return $playerPassenger
+            ? ($passengerHeight * 0.9) * 0.753_086_42
+            : -$passengerHeight * 0.246_913_58;
     }
 
     final public function presentationRevision(): int

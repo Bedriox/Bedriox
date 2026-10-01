@@ -45,5 +45,14 @@ interface Entity
 
     public function isPersistent(): bool;
 
+    public function getVehicle(): ?Entity;
+
+    public function isRiding(): bool;
+
+    /** @return list<MountedPassenger> */
+    public function getPassengers(): array;
+
+    public function hasPassengers(): bool;
+
     public function getController(): EntityController;
 }

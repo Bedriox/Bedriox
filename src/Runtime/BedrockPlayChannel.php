@@ -1312,6 +1312,14 @@ final class BedrockPlayChannel
                 && strtolower($packet->uuid) === strtolower($this->login->identity);
         }
         if ($packet instanceof InteractPacket) {
+            if ($packet->action === InteractPacket::VEHICLE_EXIT && $this->initialized) {
+                if ($this->commands->count() >= $this->limits->maximumCommandsPerPayload) {
+                    return false;
+                }
+                $this->commands->enqueue($this->commandFactory->dismountPlayer($this->sessionId));
+
+                return true;
+            }
             if ($packet->action !== InteractPacket::OPEN_INVENTORY || !$this->initialized) {
                 return true;
             }
@@ -1798,6 +1806,8 @@ final class BedrockPlayChannel
                     new ClientInputTick($packet->tick->high, $packet->tick->low),
                     $this->lastRequestedFlyingState === true,
                     $packet->hasInput(PlayerAuthInputFlag::VerticalCollision),
+                    $packet->moveX,
+                    $packet->moveZ,
                 ));
                 if ($packet->hasInput(PlayerAuthInputFlag::MissedSwing)) {
                     $this->commands->enqueue($this->commandFactory->swingArm(
@@ -1888,6 +1898,8 @@ final class BedrockPlayChannel
                 $command->clientTick,
                 $command->flying,
                 $command->verticalCollision,
+                $command->moveX,
+                $command->moveZ,
             );
         }
         $this->commands->offsetSet($index, $command);

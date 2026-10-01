@@ -23,6 +23,8 @@ namespace Bedriox\Api\Player;
 use Bedriox\Api\Effect\EffectActions;
 use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Effect\EffectManager;
+use Bedriox\Api\Entity\Entity;
+use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\Inventory\ArmorInventory;
 use Bedriox\Api\Inventory\Container;
 use Bedriox\Api\Inventory\Inventory;
@@ -156,6 +158,26 @@ final readonly class Player
             throw new InvalidArgumentException('Damage must be finite, positive, and bounded.');
         }
         ($this->playerActions ?? PlayerActions::unavailable())->damage($amount);
+    }
+
+    public function getVehicle(): ?Entity
+    {
+        return ($this->playerActions ?? PlayerActions::unavailable())->vehicle();
+    }
+
+    public function isRiding(): bool
+    {
+        return $this->getVehicle() !== null;
+    }
+
+    public function mount(Entity $vehicle, MountSeat $seat = MountSeat::DRIVER): void
+    {
+        ($this->playerActions ?? PlayerActions::unavailable())->mount($vehicle, $seat);
+    }
+
+    public function dismount(): void
+    {
+        ($this->playerActions ?? PlayerActions::unavailable())->dismount();
     }
 
     /** @internal Rebinds a snapshot without exposing the authoritative action implementation. */

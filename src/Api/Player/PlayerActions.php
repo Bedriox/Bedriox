@@ -20,6 +20,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\Player;
 
+use Bedriox\Api\Entity\Entity;
+use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\World\Position;
 use Closure;
 use LogicException;
@@ -30,12 +32,18 @@ final readonly class PlayerActions
     /**
      * @param Closure(Position): void            $teleport
      * @param Closure(GameMode): void            $setGameMode
-     * @param Closure(float): void    $damage
+     * @param Closure(float): void             $damage
+     * @param Closure(): ?Entity               $vehicle
+     * @param Closure(Entity, MountSeat): void $mount
+     * @param Closure(): void                  $dismount
      */
     public function __construct(
         private Closure $teleport,
         private Closure $setGameMode,
         private Closure $damage,
+        private ?Closure $vehicle = null,
+        private ?Closure $mount = null,
+        private ?Closure $dismount = null,
     ) {}
 
     public static function unavailable(): self
@@ -44,7 +52,7 @@ final readonly class PlayerActions
             throw new LogicException('This player snapshot is not attached to an authoritative runtime.');
         };
 
-        return new self($unavailable, $unavailable, $unavailable);
+        return new self($unavailable, $unavailable, $unavailable, $unavailable, $unavailable, $unavailable);
     }
 
     public function teleport(Position $position): void
@@ -60,5 +68,27 @@ final readonly class PlayerActions
     public function damage(float $amount): void
     {
         ($this->damage)($amount);
+    }
+
+    public function vehicle(): ?Entity
+    {
+        return $this->vehicle === null ? null : ($this->vehicle)();
+    }
+
+    public function mount(Entity $vehicle, MountSeat $seat): void
+    {
+        ($this->mount ?? self::unavailableAction())($vehicle, $seat);
+    }
+
+    public function dismount(): void
+    {
+        ($this->dismount ?? self::unavailableAction())();
+    }
+
+    private static function unavailableAction(): Closure
+    {
+        return static function (): never {
+            throw new LogicException('This player snapshot is not attached to an authoritative runtime.');
+        };
     }
 }

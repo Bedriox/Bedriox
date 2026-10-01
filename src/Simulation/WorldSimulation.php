@@ -39,6 +39,8 @@ use Bedriox\Api\Entity\EntityTargetReason;
 use Bedriox\Api\Entity\KnockbackCause as ApiKnockbackCause;
 use Bedriox\Api\Entity\KnockbackVector as ApiKnockbackVector;
 use Bedriox\Api\Entity\SpawnCause;
+use Bedriox\Api\Entity\Value\MountReason;
+use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\Entity\Value\RabbitVariant;
 use Bedriox\Api\Entity\Value\SlimeSize;
 use Bedriox\Api\Entity\Value\WoolColor;
@@ -110,6 +112,8 @@ use Bedriox\Server\Entity\Loot\EntityLootResolver;
 use Bedriox\Server\Entity\Loot\EquippedLootItem;
 use Bedriox\Server\Entity\Loot\GameplayLootItemRegistry;
 use Bedriox\Server\Entity\Loot\LootContext;
+use Bedriox\Server\Entity\Mount\MountLink;
+use Bedriox\Server\Entity\Mount\MountRegistry;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceFlushResult;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceManager;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
@@ -233,10 +237,12 @@ use Bedriox\Server\Simulation\Command\CloseCraftingGrid;
 use Bedriox\Server\Simulation\Command\DamageEntity;
 use Bedriox\Server\Simulation\Command\DamagePlayer;
 use Bedriox\Server\Simulation\Command\DisconnectPlayer;
+use Bedriox\Server\Simulation\Command\DismountPlayer;
 use Bedriox\Server\Simulation\Command\DropItem;
 use Bedriox\Server\Simulation\Command\GiveItem;
 use Bedriox\Server\Simulation\Command\InteractEntity;
 use Bedriox\Server\Simulation\Command\JoinPlayer;
+use Bedriox\Server\Simulation\Command\MountPlayer;
 use Bedriox\Server\Simulation\Command\MovePlayer;
 use Bedriox\Server\Simulation\Command\PerformEmote;
 use Bedriox\Server\Simulation\Command\PlaceBlock;
@@ -261,6 +267,8 @@ use Bedriox\Server\Simulation\Command\TeleportPlayer;
 use Bedriox\Server\Simulation\Command\UseItem;
 use Bedriox\Server\Simulation\Command\WorkstationRequest;
 use Bedriox\Server\Simulation\Command\WorldCommand;
+use Bedriox\Server\Simulation\Event\ActorDismounted;
+use Bedriox\Server\Simulation\Event\ActorMounted;
 use Bedriox\Server\Simulation\Event\AreaEffectCloudRemoved;
 use Bedriox\Server\Simulation\Event\AreaEffectCloudSpawned;
 use Bedriox\Server\Simulation\Event\AreaEffectCloudUpdated;
@@ -571,6 +579,8 @@ final class WorldSimulation
 
     private readonly string $worldId;
 
+    private readonly MountRegistry $mounts;
+
     /** @var array<string, array{position: BlockPosition, state: int, sequence: int, face: int, lastParticleTick: int, lastSwingTick: int}> */
     private array $breakingBlocks = [];
 
@@ -609,6 +619,7 @@ final class WorldSimulation
         ?FurnaceRecipeCatalog $furnaceRecipes = null,
         private readonly WorldDimension $dimension = WorldDimension::OVERWORLD,
         private readonly ?TransientWorkstationProcessor $transientWorkstations = null,
+        ?MountRegistry $mounts = null,
     ) {
         $this->worldId = $worldId ?? $blockWorld?->metadata->name ?? 'world';
         if ($this->worldId === '' || strlen($this->worldId) > 64) {
@@ -619,6 +630,7 @@ final class WorldSimulation
         $this->movementOrder = new SplQueue();
         $this->validator = new SimulationCommandFactory($this->limits);
         $this->players = new PlayerRegistry($this->limits->maximumPlayers);
+        $this->mounts = $mounts ?? new MountRegistry();
         $this->knockbackResolver = new KnockbackResolver();
         $this->dropRandom = $dropRandom ?? new SystemDropRandom();
         $this->itemEntities = $itemEntities ?? new ItemEntityRegistry(firstEntityId: 1_000_000_000);
@@ -1164,6 +1176,7 @@ final class WorldSimulation
             $this->playerAutosaveQueue[$sessionId],
         );
         $deferredOffset = count($this->deferredEvents);
+        $this->forceDismountPlayer($player, MountReason::WORLD_CHANGE);
         $this->deferItemUseCancellation($player, ItemUseCancellationReason::TELEPORT);
         $closed = $this->closeContainer($player, ApiInventoryCloseReason::TELEPORT, true);
         if ($closed !== null) {
@@ -1400,6 +1413,18 @@ final class WorldSimulation
 
     private function prepareLivingEntity(AbstractEntity $entity, bool $initialSpawn): void
     {
+        $entity->bindMountView(
+            fn(): ?ApiEntity => $this->mounts->entityLink($entity->getRuntimeId())?->vehicle,
+            fn(): array => $this->mounts->passengerViews($entity->getRuntimeId()),
+        );
+        $entity->configureControllerMountHandlers(
+            function (ApiEntity $vehicle, MountSeat $seat) use ($entity): void {
+                $this->mountEntityFromController($entity, $vehicle, $seat);
+            },
+            function () use ($entity): void {
+                $this->dismountEntityFromController($entity);
+            },
+        );
         if (!$entity instanceof AbstractLivingEntity) {
             return;
         }
@@ -1878,6 +1903,61 @@ final class WorldSimulation
             $this->entityAiEnabled,
         );
         $this->lastEntityRuntimeNanoseconds = hrtime(true) - $entityRuntimeStartedNanoseconds;
+        foreach ($this->mounts->links() as $link) {
+            $passenger = $link->passengerEntity;
+            if ($passenger === null) {
+                continue;
+            }
+            if ($passenger->isRemoved() || $link->vehicle->isRemoved()
+                || ($passenger instanceof AbstractLivingEntity && !$passenger->isAlive())
+                || ($link->vehicle instanceof AbstractLivingEntity && !$link->vehicle->isAlive())
+                || $this->entityRuntime->registry()->getByRuntimeId($passenger->getRuntimeId()) !== $passenger
+                || $this->entityRuntime->registry()->getByRuntimeId($link->vehicle->getRuntimeId()) !== $link->vehicle) {
+                $this->mounts->dismountEntity($passenger->getRuntimeId());
+                $events[] = new ActorDismounted(
+                    $link->vehicle->getRuntimeId(),
+                    $passenger->getRuntimeId(),
+                    null,
+                    $this->players->recipients(),
+                );
+                continue;
+            }
+            if ($passenger instanceof AbstractMobEntity) {
+                $passenger->suppressAiMovementUntil($this->tick + 2);
+            }
+            $vehiclePosition = $link->vehicle->internalPosition();
+            $passenger->setMotion(new EntityMotion());
+            $passenger->moveTo(
+                $link->vehicle->getWorldName(),
+                new Position(
+                    $vehiclePosition->x,
+                    $vehiclePosition->y + $link->vehicle->collisionHeight(),
+                    $vehiclePosition->z,
+                ),
+                $link->vehicle->getYaw(),
+                $passenger->getPitch(),
+            );
+        }
+        foreach ($this->players->players() as $mountedPlayer) {
+            $link = $this->mounts->playerLink($mountedPlayer->sessionId);
+            if ($link === null) {
+                continue;
+            }
+            if ($link->vehicle->isRemoved()
+                || ($link->vehicle instanceof AbstractLivingEntity && !$link->vehicle->isAlive())
+                || $this->entityRuntime->registry()->getByRuntimeId($link->vehicle->getRuntimeId()) !== $link->vehicle) {
+                $this->forceDismountPlayer($mountedPlayer, MountReason::VEHICLE_REMOVED);
+                continue;
+            }
+            $before = $mountedPlayer->movement->position;
+            $this->syncMountedPlayer($mountedPlayer, $link);
+            if ($before != $mountedPlayer->movement->position) {
+                $events[] = new PlayerMoved(
+                    $mountedPlayer->snapshot(),
+                    $this->players->recipients($mountedPlayer->sessionId),
+                );
+            }
+        }
         foreach ($this->entityRuntime->registry()->all() as $entity) {
             if (!$entity instanceof PluginMobEntity || ($this->pluginEntityLifecycle?->isAvailable($entity) ?? false)) {
                 continue;
@@ -3207,6 +3287,38 @@ final class WorldSimulation
             && $this->enqueue($this->validator->changeGameMode($player->sessionId, $gameMode));
     }
 
+    public function mountedVehicle(string $identity): ?ApiEntity
+    {
+        $player = $this->players->playerByIdentity($identity);
+
+        return $player === null ? null : $this->mounts->playerLink($player->sessionId)?->vehicle;
+    }
+
+    public function enqueueMount(string $identity, ApiEntity $vehicle, MountSeat $seat = MountSeat::DRIVER): bool
+    {
+        $player = $this->players->playerByIdentity($identity);
+        if ($player === null || !$vehicle instanceof AbstractEntity
+            || $this->entityRuntime->registry()->getByRuntimeId($vehicle->getRuntimeId()) !== $vehicle) {
+            return false;
+        }
+
+        return $this->enqueue($this->validator->mountPlayer(
+            $player->sessionId,
+            $vehicle->getRuntimeId(),
+            $vehicle->getUniqueId(),
+            $seat,
+            MountReason::PLUGIN,
+        ));
+    }
+
+    public function enqueueDismount(string $identity): bool
+    {
+        $player = $this->players->playerByIdentity($identity);
+
+        return $player !== null
+            && $this->enqueue($this->validator->dismountPlayer($player->sessionId, MountReason::PLUGIN));
+    }
+
     public function enqueueGiveItem(
         string $identity,
         string $identifier,
@@ -3268,6 +3380,8 @@ final class WorldSimulation
             $command instanceof DropItem => $this->dropItem($command),
             $command instanceof AttackPlayer => $this->attack($command),
             $command instanceof InteractEntity => $this->interactEntity($command),
+            $command instanceof MountPlayer => $this->mountPlayer($command),
+            $command instanceof DismountPlayer => $this->dismountPlayer($command),
             $command instanceof ChangeGameMode => $this->changeGameMode($command),
             $command instanceof GiveItem => $this->giveItem($command),
             $command instanceof SyncInventory => $this->syncInventory($command),
@@ -3929,6 +4043,26 @@ final class WorldSimulation
                 );
             }
         }
+        foreach ($this->announcedEntities as $vehicle) {
+            foreach ($this->mounts->linksForVehicle($vehicle->getRuntimeId()) as $link) {
+                $mountedPlayer = $link->playerSessionId === null
+                    ? null
+                    : $this->players->player($link->playerSessionId);
+                $this->deferredEvents[] = new ActorMounted(
+                    $vehicle->getRuntimeId(),
+                    $link->passenger->runtimeId,
+                    $link->seat,
+                    $vehicle->mountedPassengerOffsetY(
+                        $link->seat,
+                        $mountedPlayer === null ? $link->passengerEntity?->collisionHeight() ?? 0.0 : PlayerCollisionShape::HEIGHT,
+                        $mountedPlayer !== null,
+                    ),
+                    false,
+                    $mountedPlayer?->snapshot(),
+                    [$player->sessionId],
+                );
+            }
+        }
         if ($runtimeActorId >= $this->nextRuntimeActorId && $runtimeActorId < PHP_INT_MAX) {
             $this->nextRuntimeActorId = $runtimeActorId + 1;
         }
@@ -3957,6 +4091,10 @@ final class WorldSimulation
         }
         $movement->sequence = $command->sequence;
         $movement->clientTick = $command->clientTick;
+        $mount = $this->mounts->playerLink($player->sessionId);
+        if ($mount !== null) {
+            return $this->acceptMountedMovement($player, $mount, $command);
+        }
         $previousPosition = $movement->position;
         if ($movement->budgetTick !== $this->tick) {
             $movement->budgetTick = $this->tick;
@@ -4142,6 +4280,44 @@ final class WorldSimulation
         $this->movementRecipientNanoseconds += hrtime(true) - $recipientStartedNanoseconds;
 
         return new PlayerMoved($snapshot, $recipients, $postureChanged);
+    }
+
+    private function acceptMountedMovement(Player $player, MountLink $link, MovePlayer $command): WorldEvent
+    {
+        $vehicle = $link->vehicle;
+        if ($vehicle->isRemoved() || !$vehicle instanceof AbstractLivingEntity || !$vehicle->isAlive()) {
+            $this->forceDismountPlayer($player, MountReason::VEHICLE_REMOVED);
+
+            return new MovementCorrected($player->snapshot(), 'vehicle_unavailable', clientTick: $command->clientTick);
+        }
+        $player->movement->yaw = $command->yaw;
+        $player->movement->headYaw = $command->headYaw ?? $command->yaw;
+        $player->movement->pitch = $command->pitch;
+        $player->movement->sneaking = $command->sneaking ?? false;
+        $player->movement->sprinting = $command->sprinting ?? false;
+        $player->movement->lastTick = $this->tick;
+        if ($vehicle instanceof PigEntity && $link->seat->controlsVehicle()) {
+            $vehicle->suppressAiMovementUntil($this->tick + 2);
+            $held = $player->inventory->selectedStack();
+            if ($held?->identifier === 'minecraft:carrot_on_a_stick') {
+                $forward = max(-1.0, min(1.0, $command->moveZ));
+                $strafe = max(-1.0, min(1.0, $command->moveX));
+                $radians = deg2rad($command->yaw);
+                $speed = $command->sprinting === true ? 0.24 : 0.18;
+                $vehicle->applyControlledMotion(new EntityMotion(
+                    (-sin($radians) * $forward + cos($radians) * $strafe) * $speed,
+                    $vehicle->getMotion()->y,
+                    (cos($radians) * $forward + sin($radians) * $strafe) * $speed,
+                ), $this->tick);
+                $vehicle->moveTo($vehicle->getWorldName(), $vehicle->internalPosition(), $command->yaw, 0.0);
+            } else {
+                $motion = $vehicle->getMotion();
+                $vehicle->setMotion(new EntityMotion(0.0, $motion->y, 0.0));
+            }
+        }
+        $this->syncMountedPlayer($player, $link);
+
+        return new PlayerMoved($player->snapshot(), $this->players->recipients($player->sessionId));
     }
 
     /** Returns the previous state only when a client-visible nutrition attribute changed. */
@@ -4763,6 +4939,22 @@ final class WorldSimulation
             && !$this->interactWithBreedableAnimal($player, $target)) {
             return new CommandRejected($command->session, 'plugin_cancelled');
         }
+        if ($target instanceof PigEntity && !$target->isBaby() && $target->isSaddled()
+            && $this->mounts->playerLink($player->sessionId) === null
+            && ($heldBefore === null || ($heldBefore->identifier !== 'minecraft:saddle'
+                && !in_array($heldBefore->identifier, $this->breedingFoods($target), true)))) {
+            $result = $this->mountPlayer(new MountPlayer(
+                $player->sessionId,
+                $target->getRuntimeId(),
+                $target->getUniqueId(),
+                MountSeat::DRIVER,
+            ));
+            if ($result instanceof ActorMounted) {
+                $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
+            }
+
+            return $result;
+        }
         $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
 
         return new EntityInteracted(
@@ -4770,6 +4962,205 @@ final class WorldSimulation
             $target->getRuntimeId(),
             $command->interaction,
         );
+    }
+
+    private function mountPlayer(MountPlayer $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        $vehicle = $this->entityRuntime->registry()->getByRuntimeId($command->vehicleRuntimeId);
+        if ($player === null) {
+            return new CommandRejected($command->session, 'not_joined');
+        }
+        if (!$vehicle instanceof AbstractLivingEntity || !$vehicle->isAlive()
+            || $vehicle->getUniqueId() !== $command->vehicleUniqueId
+            || $vehicle->getWorldName() !== $this->worldId
+            || $this->mounts->playerLink($player->sessionId) !== null) {
+            return new CommandRejected($command->session, 'vehicle_unavailable');
+        }
+        if ($this->pluginEvents !== null && !$this->pluginEvents->allowMount(
+            $this->pluginEvents->playerView($player),
+            $vehicle,
+            $command->seat,
+            $command->reason,
+        )) {
+            return new CommandRejected($command->session, 'plugin_cancelled');
+        }
+        $link = $this->mounts->mountPlayer($player, $vehicle, $command->seat);
+        if ($link === null) {
+            return new CommandRejected($command->session, 'seat_unavailable');
+        }
+        if ($vehicle instanceof AbstractMobEntity) {
+            $vehicle->suppressAiMovementUntil($this->tick + 1);
+        }
+        $this->syncMountedPlayer($player, $link);
+        $this->pluginEvents?->mounted(
+            $this->pluginEvents->playerView($player),
+            $vehicle,
+            $command->seat,
+            $command->reason,
+        );
+
+        return new ActorMounted(
+            $vehicle->getRuntimeId(),
+            $player->runtimeActorId,
+            $command->seat,
+            $vehicle->mountedPassengerOffsetY($command->seat, PlayerCollisionShape::HEIGHT, true),
+            true,
+            $player->snapshot(),
+            $this->players->recipients(),
+        );
+    }
+
+    private function dismountPlayer(DismountPlayer $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        $link = $player === null ? null : $this->mounts->playerLink($player->sessionId);
+        if ($player === null || $link === null) {
+            return new CommandRejected($command->session, 'not_mounted');
+        }
+        if ($this->pluginEvents !== null && !$this->pluginEvents->allowDismount(
+            $this->pluginEvents->playerView($player),
+            $link->vehicle,
+            $link->seat,
+            $command->reason,
+        )) {
+            return new CommandRejected($command->session, 'plugin_cancelled');
+        }
+        $this->mounts->dismountPlayer($player->sessionId);
+        $this->placeDismountedPlayer($player, $link);
+        $this->pluginEvents?->dismounted(
+            $this->pluginEvents->playerView($player),
+            $link->vehicle,
+            $link->seat,
+            $command->reason,
+        );
+
+        return new ActorDismounted(
+            $link->vehicle->getRuntimeId(),
+            $player->runtimeActorId,
+            $player->snapshot(),
+            $this->players->recipients(),
+        );
+    }
+
+    private function forceDismountPlayer(Player $player, MountReason $reason): void
+    {
+        $link = $this->mounts->playerLink($player->sessionId);
+        if ($link === null) {
+            return;
+        }
+        $this->mounts->dismountPlayer($player->sessionId);
+        $this->placeDismountedPlayer($player, $link);
+        $this->pluginEvents?->dismounted(
+            $this->pluginEvents->playerView($player),
+            $link->vehicle,
+            $link->seat,
+            $reason,
+        );
+        $this->deferredEvents[] = new ActorDismounted(
+            $link->vehicle->getRuntimeId(),
+            $player->runtimeActorId,
+            $player->snapshot(),
+            $this->players->recipients(),
+        );
+    }
+
+    private function mountEntityFromController(AbstractEntity $passenger, ApiEntity $vehicle, MountSeat $seat): void
+    {
+        if (!$vehicle instanceof AbstractEntity || $passenger->isRemoved() || $vehicle->isRemoved()
+            || $passenger->getWorldName() !== $vehicle->getWorldName()
+            || $this->entityRuntime->registry()->getByRuntimeId($passenger->getRuntimeId()) !== $passenger
+            || $this->entityRuntime->registry()->getByRuntimeId($vehicle->getRuntimeId()) !== $vehicle) {
+            throw new InvalidArgumentException('Passenger and vehicle must be live entities in the same authoritative world.');
+        }
+        if ($this->pluginEvents !== null && !$this->pluginEvents->allowMount(
+            $passenger,
+            $vehicle,
+            $seat,
+            MountReason::PLUGIN,
+        )) {
+            throw new \LogicException('The entity mount was cancelled.');
+        }
+        if ($this->mounts->mountEntity($passenger, $vehicle, $seat) === null) {
+            throw new \LogicException('The requested vehicle seat is unavailable.');
+        }
+        $this->pluginEvents?->mounted($passenger, $vehicle, $seat, MountReason::PLUGIN);
+        $this->deferredEvents[] = new ActorMounted(
+            $vehicle->getRuntimeId(),
+            $passenger->getRuntimeId(),
+            $seat,
+            $vehicle->mountedPassengerOffsetY($seat, $passenger->collisionHeight(), false),
+            false,
+            null,
+            $this->players->recipients(),
+        );
+    }
+
+    private function dismountEntityFromController(AbstractEntity $passenger): void
+    {
+        $link = $this->mounts->entityLink($passenger->getRuntimeId());
+        if ($link === null) {
+            return;
+        }
+        if ($this->pluginEvents !== null && !$this->pluginEvents->allowDismount(
+            $passenger,
+            $link->vehicle,
+            $link->seat,
+            MountReason::PLUGIN,
+        )) {
+            throw new \LogicException('The entity dismount was cancelled.');
+        }
+        $this->mounts->dismountEntity($passenger->getRuntimeId());
+        $this->pluginEvents?->dismounted($passenger, $link->vehicle, $link->seat, MountReason::PLUGIN);
+        $this->deferredEvents[] = new ActorDismounted(
+            $link->vehicle->getRuntimeId(),
+            $passenger->getRuntimeId(),
+            null,
+            $this->players->recipients(),
+        );
+    }
+
+    private function syncMountedPlayer(Player $player, MountLink $link): void
+    {
+        $vehiclePosition = $link->vehicle->internalPosition();
+        $player->movement->position = new Position(
+            $vehiclePosition->x,
+            $vehiclePosition->y + $link->vehicle->collisionHeight(),
+            $vehiclePosition->z,
+        );
+        $player->movement->verticalVelocity = 0.0;
+        $player->movement->fallDistance = 0.0;
+        $player->markDirty();
+    }
+
+    private function placeDismountedPlayer(Player $player, MountLink $link): void
+    {
+        $vehicle = $link->vehicle->internalPosition();
+        $origin = $player->movement->position;
+        $candidates = [
+            new Position($vehicle->x + 1.0, $vehicle->y, $vehicle->z),
+            new Position($vehicle->x - 1.0, $vehicle->y, $vehicle->z),
+            new Position($vehicle->x, $vehicle->y, $vehicle->z + 1.0),
+            new Position($vehicle->x, $vehicle->y, $vehicle->z - 1.0),
+            new Position($vehicle->x, $vehicle->y + $link->vehicle->collisionHeight(), $vehicle->z),
+        ];
+        $destination = $candidates[0];
+        if ($this->collisionResolver !== null) {
+            foreach ($candidates as $candidate) {
+                $resolved = $this->collisionResolver->resolve($origin, $candidate, false, false);
+                if ($resolved->terrainLoaded && $resolved->position->distanceTo($candidate) < 0.1) {
+                    $destination = $resolved->position;
+                    break;
+                }
+            }
+        }
+        $player->movement->position = $destination;
+        $player->movement->velocityX = 0.0;
+        $player->movement->verticalVelocity = 0.0;
+        $player->movement->velocityZ = 0.0;
+        $player->movement->fallDistance = 0.0;
+        $player->markDirty();
+        $this->deferredEvents[] = new MovementCorrected($player->snapshot(), 'dismounted');
     }
 
     private function interactWithSheep(
@@ -5182,6 +5573,7 @@ final class WorldSimulation
         float $damage,
         Player|AbstractLivingEntity|null $attacker = null,
     ): PlayerDied {
+        $this->forceDismountPlayer($player, MountReason::DEATH);
         $this->removeVanishingItems($player);
         $this->triggerDeathEffectConsequences(
             $player->movement->position,
@@ -5573,6 +5965,7 @@ final class WorldSimulation
         if ($player === null) {
             return new CommandRejected($command->session, 'not_joined');
         }
+        $this->forceDismountPlayer($player, MountReason::DISCONNECT);
         $this->deferItemUseCancellation($player, ItemUseCancellationReason::DISCONNECTED);
         $closed = $this->closeContainer($player, ApiInventoryCloseReason::DISCONNECT, false);
         if ($closed !== null) {
@@ -5643,7 +6036,14 @@ final class WorldSimulation
                     $command->deltaY,
                     $command->deltaZ,
                     $command->jumpRequested,
+                    headYaw: $command->headYaw,
+                    sneaking: $command->sneaking,
+                    sprinting: $command->sprinting,
+                    clientTick: $command->clientTick,
                     flying: $command->flying,
+                    verticalCollision: $command->verticalCollision,
+                    moveX: $command->moveX,
+                    moveZ: $command->moveZ,
                 ),
                 $command instanceof SendChat => $this->validator->chat(
                     $command->session,
@@ -5704,6 +6104,17 @@ final class WorldSimulation
                     $command->targetRuntimeActorId,
                     $command->hotbarSlot,
                     $command->interaction,
+                ),
+                $command instanceof MountPlayer => $this->validator->mountPlayer(
+                    $command->session,
+                    $command->vehicleRuntimeId,
+                    $command->vehicleUniqueId,
+                    $command->seat,
+                    $command->reason,
+                ),
+                $command instanceof DismountPlayer => $this->validator->dismountPlayer(
+                    $command->session,
+                    $command->reason,
                 ),
                 $command instanceof ChangeGameMode => $this->validator->changeGameMode(
                     $command->session,
@@ -13978,6 +14389,7 @@ final class WorldSimulation
             $yaw = $decision->yaw;
             $pitch = $decision->pitch;
         }
+        $this->forceDismountPlayer($player, MountReason::TELEPORT);
         $this->deferItemUseCancellation($player, ItemUseCancellationReason::TELEPORT);
         $closed = $this->closeContainer($player, ApiInventoryCloseReason::TELEPORT, true);
         if ($closed !== null) {

@@ -39,6 +39,8 @@ use Bedriox\Api\Entity\LivingEntity as ApiLivingEntity;
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\Value\EntityBlockChangeReason;
 use Bedriox\Api\Entity\Value\EntityTransformReason;
+use Bedriox\Api\Entity\Value\MountReason;
+use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\Entity\Vector3;
 use Bedriox\Api\Event\Block\BlockBreakEvent;
 use Bedriox\Api\Event\Block\BlockBrokenEvent;
@@ -62,6 +64,8 @@ use Bedriox\Api\Event\Entity\EntityDamageEvent;
 use Bedriox\Api\Event\Entity\EntityDeathEvent;
 use Bedriox\Api\Event\Entity\EntityDespawnedEvent;
 use Bedriox\Api\Event\Entity\EntityDespawnEvent;
+use Bedriox\Api\Event\Entity\EntityDismountedEvent;
+use Bedriox\Api\Event\Entity\EntityDismountEvent;
 use Bedriox\Api\Event\Entity\EntityEffectAddedEvent;
 use Bedriox\Api\Event\Entity\EntityEffectAddEvent;
 use Bedriox\Api\Event\Entity\EntityEffectRemovedEvent;
@@ -72,6 +76,8 @@ use Bedriox\Api\Event\Entity\EntityExplodedEvent;
 use Bedriox\Api\Event\Entity\EntityExplosionPrimeEvent;
 use Bedriox\Api\Event\Entity\EntityInteractedEvent;
 use Bedriox\Api\Event\Entity\EntityInteractEvent;
+use Bedriox\Api\Event\Entity\EntityMountedEvent;
+use Bedriox\Api\Event\Entity\EntityMountEvent;
 use Bedriox\Api\Event\Entity\EntityShearedEvent;
 use Bedriox\Api\Event\Entity\EntityShearEvent;
 use Bedriox\Api\Event\Entity\EntitySpawnedEvent;
@@ -380,6 +386,48 @@ final readonly class PluginGameplayEventBridge
     public function entitySpawned(ApiEntity $entity, SpawnCause $cause): void
     {
         $this->events->dispatch(new EntitySpawnedEvent($entity, $cause));
+    }
+
+    public function allowMount(
+        ApiEntity|ApiPlayer $passenger,
+        ApiEntity $vehicle,
+        MountSeat $seat,
+        MountReason $reason,
+    ): bool {
+        $event = new EntityMountEvent($passenger, $vehicle, $seat, $reason);
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function mounted(
+        ApiEntity|ApiPlayer $passenger,
+        ApiEntity $vehicle,
+        MountSeat $seat,
+        MountReason $reason,
+    ): void {
+        $this->events->dispatch(new EntityMountedEvent($passenger, $vehicle, $seat, $reason));
+    }
+
+    public function allowDismount(
+        ApiEntity|ApiPlayer $passenger,
+        ApiEntity $vehicle,
+        MountSeat $seat,
+        MountReason $reason,
+    ): bool {
+        $event = new EntityDismountEvent($passenger, $vehicle, $seat, $reason);
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function dismounted(
+        ApiEntity|ApiPlayer $passenger,
+        ApiEntity $vehicle,
+        MountSeat $seat,
+        MountReason $reason,
+    ): void {
+        $this->events->dispatch(new EntityDismountedEvent($passenger, $vehicle, $seat, $reason));
     }
 
     public function primeExplosion(

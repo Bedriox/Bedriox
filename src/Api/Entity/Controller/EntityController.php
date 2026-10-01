@@ -20,7 +20,9 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\Entity\Controller;
 
+use Bedriox\Api\Entity\Entity;
 use Bedriox\Api\Entity\EntityCombustionCause;
+use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\World\Position;
 
 /**
@@ -60,6 +62,10 @@ interface EntityController
     ): void;
 
     public function extinguish(): void;
+
+    public function mount(Entity $vehicle, MountSeat $seat = MountSeat::DRIVER): void;
+
+    public function dismount(): void;
 
     public function despawn(): void;
 }

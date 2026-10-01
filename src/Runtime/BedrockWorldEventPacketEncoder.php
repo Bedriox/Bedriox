@@ -44,6 +44,8 @@ use Bedriox\Protocol\Packet\AbilityLayer;
 use Bedriox\Protocol\Packet\ActorEventPacket;
 use Bedriox\Protocol\Packet\ActorEventType;
 use Bedriox\Protocol\Packet\ActorFlag;
+use Bedriox\Protocol\Packet\ActorLink;
+use Bedriox\Protocol\Packet\ActorLinkType;
 use Bedriox\Protocol\Packet\ActorMetadata;
 use Bedriox\Protocol\Packet\ActorProperties;
 use Bedriox\Protocol\Packet\AddActorPacket;
@@ -113,6 +115,7 @@ use Bedriox\Protocol\Packet\RemoveActorPacket;
 use Bedriox\Protocol\Packet\RespawnPacket;
 use Bedriox\Protocol\Packet\RespawnState;
 use Bedriox\Protocol\Packet\SetActorDataPacket;
+use Bedriox\Protocol\Packet\SetActorLinkPacket;
 use Bedriox\Protocol\Packet\SetActorMotionPacket;
 use Bedriox\Protocol\Packet\SetPlayerGameTypePacket;
 use Bedriox\Protocol\Packet\SpawnParticleEffectPacket;
@@ -131,6 +134,8 @@ use Bedriox\Server\Gameplay\Potion\PotionColorMixer;
 use Bedriox\Server\Gameplay\Projectile\ProjectileType;
 use Bedriox\Server\Player\InventoryContainer;
 use Bedriox\Server\Player\InventoryResponseMode;
+use Bedriox\Server\Simulation\Event\ActorDismounted;
+use Bedriox\Server\Simulation\Event\ActorMounted;
 use Bedriox\Server\Simulation\Event\AreaEffectCloudRemoved;
 use Bedriox\Server\Simulation\Event\AreaEffectCloudSpawned;
 use Bedriox\Server\Simulation\Event\AreaEffectCloudUpdated;
@@ -238,6 +243,11 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
                 new DirectedPacket($event->recipientSessionId, new RemoveActorPacket($event->runtimeActorId)),
             ],
             $event instanceof PlayerMoved => $this->peerMovement($event),
+            $event instanceof ActorMounted => $this->actorLink(
+                $event,
+                $event->seat->controlsVehicle() ? ActorLinkType::Rider : ActorLinkType::Passenger,
+            ),
+            $event instanceof ActorDismounted => $this->actorLink($event, ActorLinkType::Remove),
             $event instanceof MovementCorrected => [
                 ...$this->movementCorrection(
                     $event,
@@ -357,6 +367,51 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             )],
             default => [],
         };
+    }
+
+    /** @return list<DirectedPacket> */
+    private function actorLink(ActorMounted|ActorDismounted $event, ActorLinkType $type): array
+    {
+        $link = new SetActorLinkPacket(new ActorLink(
+            $event->vehicleRuntimeId,
+            $event->passengerRuntimeId,
+            $type,
+            false,
+            $event instanceof ActorMounted && $event->riderInitiated,
+        ));
+        $actorData = null;
+        if ($event->passenger !== null) {
+            $metadata = $this->playerMetadata($event->passenger);
+            $metadata[] = ActorMetadata::vector3(
+                56,
+                0.0,
+                $event instanceof ActorMounted ? $event->seatOffsetY : 0.0,
+                0.0,
+            );
+            usort($metadata, static fn(ActorMetadata $left, ActorMetadata $right): int => $left->id <=> $right->id);
+            $actorData = new SetActorDataPacket(
+                UnsignedLong::fromInt($event->passengerRuntimeId),
+                UnsignedLong::fromInt(max(0, $event->passenger->movementSequence)),
+                $metadata,
+            );
+        }
+
+        $packets = [];
+        foreach ($event->recipientSessionIds as $recipient) {
+            if ($event instanceof ActorMounted) {
+                if ($actorData !== null) {
+                    $packets[] = new DirectedPacket($recipient, $actorData);
+                }
+                $packets[] = new DirectedPacket($recipient, $link);
+            } else {
+                $packets[] = new DirectedPacket($recipient, $link);
+                if ($actorData !== null) {
+                    $packets[] = new DirectedPacket($recipient, $actorData);
+                }
+            }
+        }
+
+        return $packets;
     }
 
     /**

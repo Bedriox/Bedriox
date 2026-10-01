@@ -27,6 +27,7 @@ use Bedriox\Server\Entity\AbstractMobEntity;
 use Bedriox\Server\Entity\Ai\AiWorldView;
 use Bedriox\Server\Entity\Ai\HorizontalSteering;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
+use Bedriox\Server\Entity\EntityMotion;
 use Bedriox\Server\Entity\EntityPhysicsResolver;
 use Bedriox\Server\Entity\EntityRegistry;
 use Bedriox\Server\Entity\EntityWorkBudget;
@@ -371,6 +372,21 @@ final class EntityWorldRuntimeTest extends TestCase
         }
         self::assertEqualsWithDelta(64.0, $blocked->getPosition()->y, 0.001);
         self::assertLessThan(1.0, $blocked->getPosition()->x);
+    }
+
+    public function testRiderControlledMobUsesTheSameObstacleAwareJumpPath(): void
+    {
+        [$runtime, $pig] = self::obstacleRuntime(new AxisAlignedBox(1.0, 64.0, -1.0, 10.0, 65.0, 1.0));
+        $highestY = $pig->getPosition()->y;
+        for ($tick = 1; $tick <= 30; ++$tick) {
+            $pig->suppressAiMovementUntil($tick + 2);
+            $pig->applyControlledMotion(new EntityMotion(0.2, $pig->getMotion()->y, 0.0), $tick);
+            $runtime->tick($tick, self::emptyAiWorld(), false);
+            $highestY = max($highestY, $pig->getPosition()->y);
+        }
+
+        self::assertGreaterThan(64.5, $highestY);
+        self::assertGreaterThan(1.0, $pig->getPosition()->x);
     }
 
     /** @return array{EntityWorldRuntime, AbstractMobEntity} */

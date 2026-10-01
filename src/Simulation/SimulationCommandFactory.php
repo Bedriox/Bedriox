@@ -25,6 +25,8 @@ use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Entity\EntityDamageCause;
 use Bedriox\Api\Entity\EntityInteractionType;
+use Bedriox\Api\Entity\Value\MountReason;
+use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Player\ExperienceChangeCause;
 use Bedriox\Api\Player\ExperienceSnapshot;
@@ -50,10 +52,12 @@ use Bedriox\Server\Simulation\Command\CraftingRequest;
 use Bedriox\Server\Simulation\Command\DamageEntity;
 use Bedriox\Server\Simulation\Command\DamagePlayer;
 use Bedriox\Server\Simulation\Command\DisconnectPlayer;
+use Bedriox\Server\Simulation\Command\DismountPlayer;
 use Bedriox\Server\Simulation\Command\DropItem;
 use Bedriox\Server\Simulation\Command\GiveItem;
 use Bedriox\Server\Simulation\Command\InteractEntity;
 use Bedriox\Server\Simulation\Command\JoinPlayer;
+use Bedriox\Server\Simulation\Command\MountPlayer;
 use Bedriox\Server\Simulation\Command\MovePlayer;
 use Bedriox\Server\Simulation\Command\PerformEmote;
 use Bedriox\Server\Simulation\Command\PlaceBlock;
@@ -125,12 +129,14 @@ final readonly class SimulationCommandFactory
         ?ClientInputTick $clientTick = null,
         bool $flying = false,
         bool $verticalCollision = false,
+        float $moveX = 0.0,
+        float $moveZ = 0.0,
     ): MovePlayer {
         $this->assertOpaqueId($session, 128, 'session');
         if ($sequence < 0) {
             throw new CommandValidationException('Movement sequence cannot be negative.');
         }
-        foreach (['x' => $x, 'y' => $y, 'z' => $z, 'yaw' => $yaw, 'pitch' => $pitch, 'head yaw' => $headYaw ?? $yaw, 'delta x' => $deltaX, 'delta y' => $deltaY, 'delta z' => $deltaZ] as $name => $value) {
+        foreach (['x' => $x, 'y' => $y, 'z' => $z, 'yaw' => $yaw, 'pitch' => $pitch, 'head yaw' => $headYaw ?? $yaw, 'delta x' => $deltaX, 'delta y' => $deltaY, 'delta z' => $deltaZ, 'move x' => $moveX, 'move z' => $moveZ] as $name => $value) {
             if (!is_finite($value)) {
                 throw new CommandValidationException(sprintf('%s must be finite.', $name));
             }
@@ -146,6 +152,9 @@ final readonly class SimulationCommandFactory
         }
         if (hypot(hypot($deltaX, $deltaZ), $deltaY) > $this->limits->maximumMovementPerTick) {
             throw new CommandValidationException('Predicted movement delta exceeds its per-tick range.');
+        }
+        if (hypot($moveX, $moveZ) > 1.5) {
+            throw new CommandValidationException('Movement input exceeds its accepted range.');
         }
 
         return new MovePlayer(
@@ -165,7 +174,32 @@ final readonly class SimulationCommandFactory
             $clientTick ?? ClientInputTick::fromInt($sequence),
             $flying,
             $verticalCollision,
+            $moveX,
+            $moveZ,
         );
+    }
+
+    public function mountPlayer(
+        string $session,
+        int $vehicleRuntimeId,
+        string $vehicleUniqueId,
+        MountSeat $seat = MountSeat::DRIVER,
+        MountReason $reason = MountReason::INTERACTION,
+    ): MountPlayer {
+        $this->assertOpaqueId($session, 128, 'session');
+        if ($vehicleRuntimeId < 1) {
+            throw new CommandValidationException('Vehicle runtime actor identifier must be positive.');
+        }
+        $this->assertOpaqueId($vehicleUniqueId, 128, 'vehicle unique identifier');
+
+        return new MountPlayer($session, $vehicleRuntimeId, $vehicleUniqueId, $seat, $reason);
+    }
+
+    public function dismountPlayer(string $session, MountReason $reason = MountReason::DISMOUNT_INPUT): DismountPlayer
+    {
+        $this->assertOpaqueId($session, 128, 'session');
+
+        return new DismountPlayer($session, $reason);
     }
 
     public function chat(string $session, int $sequence, string $message): SendChat

@@ -160,6 +160,16 @@ abstract class AbstractMobEntity extends AbstractLivingEntity implements ApiMob
         return true;
     }
 
+    /** Applies rider-controlled motion while retaining obstacle-aware mob jumping. */
+    final public function applyControlledMotion(EntityMotion $motion, int $tick): void
+    {
+        if ($tick < 0) {
+            throw new InvalidArgumentException('Controlled movement intent tick cannot be negative.');
+        }
+        $this->lastAiMovementIntentTick = $tick;
+        $this->setMotion($motion);
+    }
+
     final public function hasAiMovementIntentAt(int $tick): bool
     {
         return $tick >= 0 && $this->lastAiMovementIntentTick === $tick;
