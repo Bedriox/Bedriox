@@ -30,7 +30,7 @@ use Closure;
 use InvalidArgumentException;
 
 /** Spatial-index-backed AI view with a compact player-position supplier. */
-final readonly class IndexedAiWorldView implements TargetAwareAiWorldView
+final readonly class IndexedAiWorldView implements AquaticAiWorldView
 {
     /** @param Closure(): array<array-key, mixed> $playerPositions */
     public function __construct(
@@ -38,7 +38,21 @@ final readonly class IndexedAiWorldView implements TargetAwareAiWorldView
         private Closure $playerPositions,
         /** @var null|Closure(AbstractMobEntity, AiPlayerSnapshot): bool */
         private ?Closure $hostileLineOfSight = null,
+        /** @var null|Closure(string, Position): bool */
+        private ?Closure $waterAt = null,
+        /** @var null|Closure(AbstractMobEntity): bool */
+        private ?Closure $touchingWater = null,
     ) {}
+
+    public function isTouchingWater(AbstractMobEntity $entity): bool
+    {
+        return $this->touchingWater !== null && ($this->touchingWater)($entity);
+    }
+
+    public function isWaterAt(string $worldName, Position $position): bool
+    {
+        return $this->waterAt !== null && ($this->waterAt)($worldName, $position);
+    }
 
     public function nearbyEntities(AbstractMobEntity $entity, float $radius, int $limit): array
     {

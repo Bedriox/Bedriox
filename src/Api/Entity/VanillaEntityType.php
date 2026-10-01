@@ -48,6 +48,17 @@ enum VanillaEntityType: string implements VanillaEntityIdentity
     case ENDERMITE = 'minecraft:endermite';
     case SILVERFISH = 'minecraft:silverfish';
     case WITCH = 'minecraft:witch';
+    case COD = 'minecraft:cod';
+    case SALMON = 'minecraft:salmon';
+    case TROPICAL_FISH = 'minecraft:tropicalfish';
+    case PUFFERFISH = 'minecraft:pufferfish';
+    case SQUID = 'minecraft:squid';
+    case GLOW_SQUID = 'minecraft:glow_squid';
+    case DOLPHIN = 'minecraft:dolphin';
+    case TURTLE = 'minecraft:turtle';
+    case AXOLOTL = 'minecraft:axolotl';
+    case DROWNED = 'minecraft:drowned';
+    case GUARDIAN = 'minecraft:guardian';
 
     public function identifier(): string
     {

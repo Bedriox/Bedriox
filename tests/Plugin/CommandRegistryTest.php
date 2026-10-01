@@ -49,6 +49,18 @@ use Throwable;
 
 final class CommandRegistryTest extends TestCase
 {
+    public function testUnknownCommandDirectsSenderToHelp(): void
+    {
+        [$registry] = $this->registry();
+        $sender = new RecordingCommandSender(CommandSenderType::CONSOLE);
+
+        $result = $registry->dispatch($sender, '/missing-command');
+
+        self::assertFalse($result->isSuccess());
+        self::assertSame('Command not found. Use /help for a list of commands.', $result->message());
+        self::assertSame([$result->message()], $sender->messages);
+    }
+
     public function testDispatchUsesTypedValuesAliasesNamespacesDefaultsAndResultMessages(): void
     {
         [$registry] = $this->registry();

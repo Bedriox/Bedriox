@@ -66,3 +66,11 @@ powershell.exe -NoProfile -File tools/verify-workspace.ps1 -SkipClean
 Do not use `-SkipClean` for a release gate.
 
 After a gameplay-visible milestone passes automated checks, record the exact server and component commits, client build, settings, journey steps, outcome, and known limitations. Do not retain credentials, account identifiers, raw authentication payloads, or personal packet captures. A successful join alone does not qualify the journey. Dropped-item regressions must verify both server-side settling and the encrypted actor-movement packets seen by a client; a physics-only test cannot detect an incorrect movement interpolation field.
+
+Aquatic retail qualification must cover each registered species, submerged and
+dry movement, air loss and recovery, drowning and stranding, natural water
+populations, spawn eggs, bucket capture and release, breeding, drops, chunk
+unload/reload, restart persistence, multiplayer visibility, and a dense-water
+population status sample. Automated tests separately enforce registered
+identity, bounded air state, water-only spawn admission, normalized loot, and
+the absence of pairwise school scans.

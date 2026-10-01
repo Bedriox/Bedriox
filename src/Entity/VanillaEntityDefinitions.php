@@ -25,24 +25,35 @@ use Bedriox\Api\Entity\Value\SlimeSize;
 use Bedriox\Api\Entity\VanillaEntityType;
 use Bedriox\Data\EntityTypeRegistry;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceRecord;
+use Bedriox\Server\Entity\Vanilla\AxolotlEntity;
 use Bedriox\Server\Entity\Vanilla\BoggedEntity;
 use Bedriox\Server\Entity\Vanilla\CaveSpiderEntity;
 use Bedriox\Server\Entity\Vanilla\ChickenEntity;
+use Bedriox\Server\Entity\Vanilla\CodEntity;
 use Bedriox\Server\Entity\Vanilla\CowEntity;
 use Bedriox\Server\Entity\Vanilla\CreeperEntity;
+use Bedriox\Server\Entity\Vanilla\DolphinEntity;
+use Bedriox\Server\Entity\Vanilla\DrownedEntity;
 use Bedriox\Server\Entity\Vanilla\EndermanEntity;
 use Bedriox\Server\Entity\Vanilla\EndermiteEntity;
+use Bedriox\Server\Entity\Vanilla\GlowSquidEntity;
+use Bedriox\Server\Entity\Vanilla\GuardianEntity;
 use Bedriox\Server\Entity\Vanilla\HuskEntity;
 use Bedriox\Server\Entity\Vanilla\MagmaCubeEntity;
 use Bedriox\Server\Entity\Vanilla\ParchedEntity;
 use Bedriox\Server\Entity\Vanilla\PigEntity;
+use Bedriox\Server\Entity\Vanilla\PufferfishEntity;
 use Bedriox\Server\Entity\Vanilla\RabbitEntity;
+use Bedriox\Server\Entity\Vanilla\SalmonEntity;
 use Bedriox\Server\Entity\Vanilla\SheepEntity;
 use Bedriox\Server\Entity\Vanilla\SilverfishEntity;
 use Bedriox\Server\Entity\Vanilla\SkeletonEntity;
 use Bedriox\Server\Entity\Vanilla\SlimeEntity;
 use Bedriox\Server\Entity\Vanilla\SpiderEntity;
+use Bedriox\Server\Entity\Vanilla\SquidEntity;
 use Bedriox\Server\Entity\Vanilla\StrayEntity;
+use Bedriox\Server\Entity\Vanilla\TropicalFishEntity;
+use Bedriox\Server\Entity\Vanilla\TurtleEntity;
 use Bedriox\Server\Entity\Vanilla\WitchEntity;
 use Bedriox\Server\Entity\Vanilla\WitherSkeletonEntity;
 use Bedriox\Server\Entity\Vanilla\ZombieEntity;
@@ -61,6 +72,9 @@ final class VanillaEntityDefinitions
 
     /** @var array<string, EntityDefinition> */
     private static array $hostiles = [];
+
+    /** @var array<string, EntityDefinition> */
+    private static array $aquatic = [];
 
     public static function cow(): EntityDefinition
     {
@@ -219,6 +233,65 @@ final class VanillaEntityDefinitions
         return self::hostile(VanillaEntityType::MAGMA_CUBE, $width, $height, (float) $health, key: 'magma_cube:' . $size->value);
     }
 
+    public static function cod(): EntityDefinition
+    {
+        return self::aquatic(VanillaEntityType::COD, 0.5, 0.3, 3.0);
+    }
+    public static function salmon(): EntityDefinition
+    {
+        return self::aquatic(VanillaEntityType::SALMON, 0.7, 0.4, 3.0);
+    }
+    public static function tropicalFish(): EntityDefinition
+    {
+        return self::aquatic(VanillaEntityType::TROPICAL_FISH, 0.5, 0.4, 3.0);
+    }
+    public static function pufferfish(): EntityDefinition
+    {
+        return self::aquatic(VanillaEntityType::PUFFERFISH, 0.7, 0.7, 3.0);
+    }
+    public static function squid(): EntityDefinition
+    {
+        return self::aquatic(VanillaEntityType::SQUID, 0.8, 0.8, 10.0);
+    }
+    public static function glowSquid(): EntityDefinition
+    {
+        return self::aquatic(VanillaEntityType::GLOW_SQUID, 0.8, 0.8, 10.0);
+    }
+    public static function dolphin(): EntityDefinition
+    {
+        return self::aquatic(VanillaEntityType::DOLPHIN, 0.9, 0.6, 10.0);
+    }
+    public static function turtle(): EntityDefinition
+    {
+        return self::aquatic(VanillaEntityType::TURTLE, 1.2, 0.4, 30.0);
+    }
+    public static function axolotl(): EntityDefinition
+    {
+        return self::aquatic(VanillaEntityType::AXOLOTL, 0.75, 0.42, 14.0);
+    }
+    public static function drowned(): EntityDefinition
+    {
+        return self::hostile(VanillaEntityType::DROWNED, 0.6, 1.95, 20.0);
+    }
+    public static function guardian(): EntityDefinition
+    {
+        return self::hostile(VanillaEntityType::GUARDIAN, 0.85, 0.85, 30.0);
+    }
+
+    private static function aquatic(VanillaEntityType $type, float $width, float $height, float $health): EntityDefinition
+    {
+        return self::$aquatic[$type->value] ??= new EntityDefinition(
+            $type,
+            EntityCategory::WATER,
+            $type->value,
+            $width,
+            $height,
+            $health,
+            gravity: 0.02,
+            drag: 0.1,
+        );
+    }
+
     private static function hostile(VanillaEntityType $type, float $width, float $height, float $health, bool $burnsInDaylight = false, ?string $key = null): EntityDefinition
     {
         $key ??= $type->value;
@@ -303,6 +376,17 @@ final class VanillaEntityDefinitions
             new RegisteredEntityDefinition(self::endermite(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): EndermiteEntity => new EndermiteEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
             new RegisteredEntityDefinition(self::silverfish(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): SilverfishEntity => new SilverfishEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
             new RegisteredEntityDefinition(self::witch(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): WitchEntity => new WitchEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
+            new RegisteredEntityDefinition(self::cod(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): CodEntity => new CodEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
+            new RegisteredEntityDefinition(self::salmon(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): SalmonEntity => new SalmonEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
+            new RegisteredEntityDefinition(self::tropicalFish(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): TropicalFishEntity => new TropicalFishEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
+            new RegisteredEntityDefinition(self::pufferfish(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): PufferfishEntity => new PufferfishEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
+            new RegisteredEntityDefinition(self::squid(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): SquidEntity => new SquidEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
+            new RegisteredEntityDefinition(self::glowSquid(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): GlowSquidEntity => new GlowSquidEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
+            new RegisteredEntityDefinition(self::dolphin(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): DolphinEntity => new DolphinEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
+            new RegisteredEntityDefinition(self::turtle(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): TurtleEntity => new TurtleEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
+            new RegisteredEntityDefinition(self::axolotl(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): AxolotlEntity => new AxolotlEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
+            new RegisteredEntityDefinition(self::drowned(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): DrownedEntity => new DrownedEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
+            new RegisteredEntityDefinition(self::guardian(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): GuardianEntity => new GuardianEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
         ];
     }
 

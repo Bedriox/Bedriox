@@ -18,18 +18,16 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api\Entity;
+namespace Bedriox\Server\Entity\Spawn\Natural;
 
-enum SpawnCause: string
+final readonly class AquaticNaturalSpawnRule implements NaturalSpawnRule
 {
-    case SPAWN_EGG = 'spawn_egg';
-    case COMMAND = 'command';
-    case PLUGIN = 'plugin';
-    case NATURAL = 'natural';
-    case SPAWNER = 'spawner';
-    case BREEDING = 'breeding';
-    case STRUCTURE = 'structure';
-    case CHUNK_LOAD = 'chunk_load';
-    case EFFECT = 'effect';
-    case BUCKET = 'bucket';
+    public function __construct(private int $maximumLight = 15) {}
+
+    public function allows(NaturalSpawnContext $context): bool
+    {
+        return $context->dimension === 'minecraft:overworld'
+            && $context->medium === NaturalSpawnMedium::WATER
+            && $context->lightLevel <= $this->maximumLight;
+    }
 }

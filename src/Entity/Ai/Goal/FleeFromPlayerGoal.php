@@ -92,7 +92,7 @@ final readonly class FleeFromPlayerGoal implements AiGoal
     {
         $target = $this->target($entity, $memory, $context);
         if ($target !== null) {
-            HorizontalSteering::away($entity, $target->position, $this->speed, $context->tick);
+            HorizontalSteering::away($entity, $target->position, $this->speed, $context->tick, $context->world);
         }
     }
 

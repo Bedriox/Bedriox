@@ -43,6 +43,8 @@ final class WorldNaturalSpawnRuntime
     public const int DEFAULT_MONSTER_WORLD_CAP = 24;
     public const int DEFAULT_MONSTER_LOCAL_DENSITY_CAP = 2;
     public const int DEFAULT_MAXIMUM_SPAWNS_PER_CYCLE = 2;
+    public const int DEFAULT_WATER_WORLD_CAP = 20;
+    public const int DEFAULT_WATER_LOCAL_DENSITY_CAP = 6;
     public const int DEFAULT_MAXIMUM_EXCESS_DESPAWNS_PER_CYCLE = 2;
 
     /** @var array<int, true> Runtime IDs created specifically by this natural-spawn owner. */
@@ -111,6 +113,11 @@ final class WorldNaturalSpawnRuntime
             categories: [
                 new NaturalSpawnCategoryLimit(EntityCategory::ANIMAL, 10, 4),
                 new NaturalSpawnCategoryLimit(
+                    EntityCategory::WATER,
+                    self::DEFAULT_WATER_WORLD_CAP,
+                    self::DEFAULT_WATER_LOCAL_DENSITY_CAP,
+                ),
+                new NaturalSpawnCategoryLimit(
                     EntityCategory::MONSTER,
                     self::DEFAULT_MONSTER_WORLD_CAP,
                     self::DEFAULT_MONSTER_LOCAL_DENSITY_CAP,
@@ -140,6 +147,21 @@ final class WorldNaturalSpawnRuntime
             if ($definitions->get(VanillaEntityType::RABBIT) !== null) {
                 $entries[] = new NaturalSpawnEntry(VanillaEntityType::RABBIT, EntityCategory::ANIMAL, new RabbitNaturalSpawnRule(), 6);
             }
+            foreach ([
+                [VanillaEntityType::COD, 12],
+                [VanillaEntityType::SALMON, 10],
+                [VanillaEntityType::TROPICAL_FISH, 10],
+                [VanillaEntityType::PUFFERFISH, 4],
+                [VanillaEntityType::SQUID, 6],
+                [VanillaEntityType::GLOW_SQUID, 3],
+                [VanillaEntityType::DOLPHIN, 2],
+                [VanillaEntityType::TURTLE, 2],
+                [VanillaEntityType::AXOLOTL, 2],
+            ] as [$type, $weight]) {
+                if ($definitions->get($type) !== null) {
+                    $entries[] = new NaturalSpawnEntry($type, EntityCategory::WATER, new AquaticNaturalSpawnRule(), $weight);
+                }
+            }
         }
         if ($spawnMonsters && $world->difficulty() > 0) {
             $entries[] = new NaturalSpawnEntry(
@@ -155,6 +177,8 @@ final class WorldNaturalSpawnRuntime
                 10,
             );
             foreach ([
+                [VanillaEntityType::DROWNED, new AquaticNaturalSpawnRule(7), 6],
+                [VanillaEntityType::GUARDIAN, new AquaticNaturalSpawnRule(), 2],
                 [VanillaEntityType::HUSK, new HuskNaturalSpawnRule(), 5],
                 [VanillaEntityType::STRAY, new StrayNaturalSpawnRule(), 4],
                 [VanillaEntityType::BOGGED, new BoggedNaturalSpawnRule(), 3],
@@ -185,6 +209,7 @@ final class WorldNaturalSpawnRuntime
             $spawner,
             new NaturalDespawnPolicy(600, [
                 EntityCategory::ANIMAL->value => 128.0,
+                EntityCategory::WATER->value => 96.0,
                 EntityCategory::MONSTER->value => 128.0,
             ], [
                 EntityCategory::MONSTER->value => 32.0,
@@ -225,6 +250,10 @@ final class WorldNaturalSpawnRuntime
             $monsterCap = $this->spawner->effectiveCategoryCap(EntityCategory::MONSTER, $batch->candidateCount);
             if ($monsterCap !== null) {
                 $removed = $this->trimExcessNaturalCategory(EntityCategory::MONSTER, $monsterCap, $players);
+            }
+            $waterCap = $this->spawner->effectiveCategoryCap(EntityCategory::WATER, $batch->candidateCount);
+            if ($waterCap !== null) {
+                array_push($removed, ...$this->trimExcessNaturalCategory(EntityCategory::WATER, $waterCap, $players));
             }
         }
 

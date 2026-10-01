@@ -101,7 +101,7 @@ final readonly class TemptedByItemGoal implements AiGoal
 
             return;
         }
-        HorizontalSteering::toward($entity, $target->position, $this->speed, $context->tick);
+        HorizontalSteering::toward($entity, $target->position, $this->speed, $context->tick, $context->world);
     }
 
     private function target(

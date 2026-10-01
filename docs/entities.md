@@ -48,6 +48,31 @@ Movement helpers express bounded steering, not a persistent pathfinding script. 
 
 Capabilities such as `Ageable`, `Breedable`, `Shearable`, `Undead`, and `RangedMob` live under `Api\Entity\Capability`; mutation gateways live under `Api\Entity\Controller`; read-only built-in species contracts live under `Api\Entity\Vanilla`. Concrete built-in entity implementations remain internal under `Server\Entity\Vanilla`.
 
+`Aquatic` exposes immutable water-survival state through
+`canBreatheUnderwater()`, `requiresWater()`, `getAirSupplyTicks()`, and
+`getMaximumAirSupplyTicks()`. Cod, salmon, tropical fish, pufferfish, squid,
+glow squid, dolphins, turtles, axolotls, drowned, and guardians use that
+capability. They retain ordinary entity controllers, damage events,
+persistence, loot, spawn events, visibility, and collision rather than a
+separate water-only runtime.
+
+Aquatic navigation retains a bounded three-dimensional heading instead of
+choosing a new direction every tick. Velocity and actor rotation are derived
+from the same vector, prospective swim headings remain in loaded water, and
+stranded water-only mobs do not glide across land. Drowned, turtles, and
+axolotls use horizontal obstacle-aware movement when they are out of water.
+Drowned and guardians retain idle swim motion even when no player is available
+as a target. Ordinary land-mob steering treats nearby water as undesirable
+terrain instead of walking into it as though it were dry ground. Water remains
+physically enterable through external forces; submerged living entities without
+underwater breathing lose their bounded air supply and then receive ordinary
+cancellable drowning damage.
+
+Supported fish and axolotls can be captured with a water bucket and released
+from their filled bucket. Capture uses the existing cancellable interaction
+event; release uses `SpawnCause::BUCKET`. Passive water mobs have a distinct
+bounded `WATER` population cap, while drowned and guardians remain monsters.
+
 ## Common passive animals
 
 Cow, sheep, pig, chicken, and rabbit share one bounded authoritative age and breeding lifecycle. Species-specific foods drive temptation, baby growth, and adult breeding. `EntityBreedEvent` can cancel the child or adjust bounded experience before spawn; `EntityBredEvent` observes the committed parents and child. Parents enter cooldown only after the child commits.

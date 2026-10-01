@@ -59,6 +59,15 @@ Player attacks arrive as bounded intent containing only the authenticated attack
 
 Non-player physics queries only immutable snapshots already present in the world repository. Every chunk touched by the complete swept collision box is preflighted before block inspection; a missing chunk blocks the movement without loading or generating terrain. Hostile target selection excludes creative, spectator, dead and otherwise non-damageable players. Loaded-only block collision supplies line of sight both when selecting a target and immediately before melee commits, so a wall or missing chunk fails closed. Accepted hostile melee retains the existing damage, armor, cooldown and plugin authority, then applies normalized authoritative knockback and publishes the attacker's visible attack state. External knockback temporarily owns mob movement, so a chase or stop goal cannot replace the impulse during the same damage window. Grounded AI steering which meets a clear one-block rise produces a physical jump; insufficient headroom and taller walls remain blocking collisions.
 
+Aquatic mobs retain that same loaded-only collision boundary while using
+three-dimensional steering and water drag without ordinary downward gravity
+when submerged. Air-breathing species consume bounded air underwater;
+water-dependent species accumulate bounded dry time outside water. Drowning
+and stranding damage use the ordinary entity-damage and death pipelines.
+Passive water populations have separate world and local caps, and natural
+water candidates remain bounded by the existing attempt and elapsed-time
+budgets.
+
 Living non-player equipment is part of authoritative entity state. Armor and hand slots are catalog validated, persist with their drop chances, and are included with spawn projection before later live changes are broadcast. Armor reduces applicable incoming damage and takes durability wear; held registered tools contribute attack damage. Controller mutations and equipment transitions enter the same plugin isolation and event boundaries described in [entities, controllers, equipment, and loot](entities.md).
 
 Entity activation also controls expensive physics cadence. Active and forced mobs receive normal physics, reduced mobs are checked every five ticks, and sleeping grounded mobs are checked every twenty ticks. Falling or moving entities always receive continuous physics even when the ordinary per-tick entity work budget is exhausted. Deferred safe work rotates fairly, age still advances exactly once per simulation tick, and runtime metrics distinguish cadence skips, budget deferrals, safety-critical overruns, movement, and motion changes.

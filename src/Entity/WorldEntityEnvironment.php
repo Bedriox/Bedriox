@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity;
 
+use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\InternalBlockStateId;
 use Bedriox\Server\World\Chunk;
@@ -101,6 +102,49 @@ final readonly class WorldEntityEnvironment
 
         return $this->isWater($chunk->blockStateAt($x, $feetY, $z))
             || ($headY !== $feetY && $this->isWater($chunk->blockStateAt($x, $headY, $z)));
+    }
+
+    public function isWaterAt(string $worldName, Position $position): bool
+    {
+        if ($worldName !== $this->world->metadata->name) {
+            return false;
+        }
+        $y = (int) floor($position->y);
+        if ($y < Chunk::MIN_Y || $y > Chunk::MAX_Y) {
+            return false;
+        }
+        $chunk = $this->loadedChunkAt($position->x, $position->z);
+        if ($chunk === null) {
+            return false;
+        }
+
+        return $this->isWater($chunk->blockStateAt(
+            self::localCoordinate((int) floor($position->x)),
+            $y,
+            self::localCoordinate((int) floor($position->z)),
+        ));
+    }
+
+    public function isSubmerged(AbstractLivingEntity $entity): bool
+    {
+        if ($entity->getWorldName() !== $this->world->metadata->name) {
+            return false;
+        }
+        $position = $entity->internalPosition();
+        $headY = (int) floor($position->y + ($entity->collisionHeight() * 0.85));
+        if ($headY < Chunk::MIN_Y || $headY > Chunk::MAX_Y) {
+            return false;
+        }
+        $chunk = $this->loadedChunkAt($position->x, $position->z);
+        if ($chunk === null) {
+            return false;
+        }
+
+        return $this->isWater($chunk->blockStateAt(
+            self::localCoordinate((int) floor($position->x)),
+            $headY,
+            self::localCoordinate((int) floor($position->z)),
+        ));
     }
 
     private function isDaylight(): bool

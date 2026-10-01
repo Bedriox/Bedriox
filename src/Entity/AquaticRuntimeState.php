@@ -18,18 +18,16 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api\Entity;
+namespace Bedriox\Server\Entity;
 
-enum SpawnCause: string
+use Bedriox\Api\Entity\Capability\Aquatic;
+
+/** @internal Mutable simulation contract behind the public aquatic view. */
+interface AquaticRuntimeState extends Aquatic
 {
-    case SPAWN_EGG = 'spawn_egg';
-    case COMMAND = 'command';
-    case PLUGIN = 'plugin';
-    case NATURAL = 'natural';
-    case SPAWNER = 'spawner';
-    case BREEDING = 'breeding';
-    case STRUCTURE = 'structure';
-    case CHUNK_LOAD = 'chunk_load';
-    case EFFECT = 'effect';
-    case BUCKET = 'bucket';
+    public function getDryTicks(): int;
+
+    public function canNavigateOnLand(): bool;
+
+    public function advanceAquaticState(bool $submerged): void;
 }

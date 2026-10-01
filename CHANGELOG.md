@@ -1,5 +1,14 @@
 # Changelog
 
+- Add authoritative aquatic entities with three-dimensional water movement,
+  bounded natural populations, air and dry survival, bucket capture and
+  release, breeding, persistence, normalized drops, and plugin-visible state.
+- Align aquatic actor rotation with authoritative velocity, retain smooth
+  water-valid swim headings, and give amphibious mobs distinct land steering.
+- Keep aquatic hostiles roaming when idle, make ordinary land-mob AI avoid
+  entering water, and apply air depletion and drowning damage after submersion.
+- Improve unknown-command feedback with a direct `/help` hint.
+
 - Add dedicated common hostile families with exact public species contracts, bounded climbing, ranged attacks, creeper explosions, slime sizes and splitting, special effects, natural spawning, loot, metadata, and durable species state.
 - Centralize current enchantment definitions and apply authoritative combat, armor, mining, durability, breathing, movement, loot, Mending, mace, bow, and crossbow behavior from canonical item state.
 - Stream flying projectile positions with one-tick interpolation, keep embedded arrows visible at their impact point, preserve local-player input ticks only for their own knockback, and fully reintroduce extinguished players to nearby viewers after respawn.

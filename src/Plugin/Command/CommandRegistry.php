@@ -307,9 +307,10 @@ final class CommandRegistry
         $label = strtolower($rawLabel);
         $command = isset($this->labels[$label]) ? ($this->commands[$this->labels[$label]] ?? null) : null;
         if (!$command instanceof RegisteredCommand || ($command->pluginOwned && !$this->plugins->isEnabled($command->owner))) {
-            $sender->sendMessage('Unknown command.');
+            $message = 'Command not found. Use /help for a list of commands.';
+            $sender->sendMessage($message);
 
-            return CommandResult::failure('Unknown command.');
+            return CommandResult::failure($message);
         }
         $commandName = $command->definition->name;
         $commandOwner = $command->owner;

@@ -33,6 +33,7 @@ final class VanillaAiMemories
     private static ?AiMemoryType $rangedCooldown = null;
     private static ?AiMemoryType $rangedIntent = null;
     private static ?AiMemoryType $temptingPlayer = null;
+    private static ?AiMemoryType $aquaticWanderMotionY = null;
 
     public static function wanderUntil(): AiMemoryType
     {
@@ -87,5 +88,10 @@ final class VanillaAiMemories
     public static function temptingPlayer(): AiMemoryType
     {
         return self::$temptingPlayer ??= new AiMemoryType(10, 'bedriox:tempting_player');
+    }
+
+    public static function aquaticWanderMotionY(): AiMemoryType
+    {
+        return self::$aquaticWanderMotionY ??= new AiMemoryType(11, 'bedriox:aquatic_wander_motion_y');
     }
 }

@@ -41,10 +41,13 @@ use InvalidArgumentException;
 abstract class AbstractLivingEntity extends AbstractEntity implements ApiLivingEntity
 {
     public const int MAXIMUM_FIRE_TICKS = 0x7fff;
+    public const int MAXIMUM_AIR_SUPPLY_TICKS = 300;
 
     private float $health;
 
     private int $fireTicks = 0;
+
+    private int $breathingAirSupplyTicks = self::MAXIMUM_AIR_SUPPLY_TICKS;
 
     private float $absorption = 0.0;
 
@@ -104,6 +107,25 @@ abstract class AbstractLivingEntity extends AbstractEntity implements ApiLivingE
         }
 
         return $controller->effects();
+    }
+
+    /** @internal Air supply used by living entities without a specialized aquatic state. */
+    final public function getBreathingAirSupplyTicks(): int
+    {
+        return $this->breathingAirSupplyTicks;
+    }
+
+    /** @internal Advances ordinary lung-based breathing. */
+    final public function advanceBreathingState(bool $submerged, bool $canBreatheUnderwater): void
+    {
+        if ($submerged && !$canBreatheUnderwater) {
+            $this->breathingAirSupplyTicks = max(0, $this->breathingAirSupplyTicks - 1);
+            return;
+        }
+        $this->breathingAirSupplyTicks = min(
+            self::MAXIMUM_AIR_SUPPLY_TICKS,
+            $this->breathingAirSupplyTicks + 4,
+        );
     }
 
     /** @internal Applies an effect through authoritative staged controller work. */

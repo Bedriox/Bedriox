@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity;
 
+use Bedriox\Api\Entity\Capability\Aquatic;
 use Bedriox\Api\Entity\Capability\Climbing;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\Collision\AxisAlignedBox;
@@ -31,7 +32,10 @@ final readonly class EntityPhysicsResolver
     private const float MOB_JUMP_VELOCITY = 0.42;
     private const float MOB_CLIMB_HEIGHT = 1.0;
 
-    public function __construct(private LoadedCollisionBoxQuery $collisions) {}
+    public function __construct(
+        private LoadedCollisionBoxQuery $collisions,
+        private ?WorldEntityEnvironment $environment = null,
+    ) {}
 
     public function tick(AbstractEntity $entity, int $tick): EntityPhysicsResult
     {
@@ -45,10 +49,14 @@ final readonly class EntityPhysicsResolver
         $definition = $entity->definition();
         $beforePosition = $entity->internalPosition();
         $beforeMotion = $entity->getMotion();
-        $friction = 1.0 - $definition->drag;
+        $inWater = $entity instanceof AbstractLivingEntity
+            && $entity instanceof Aquatic
+            && $this->environment?->isTouchingWater($entity) === true;
+        $friction = $inWater ? 0.90 : 1.0 - $definition->drag;
+        $gravity = $inWater ? 0.0 : ($entity->isGravityEnabled() ? $definition->gravity : 0.0);
         $requested = new EntityMotion(
             $beforeMotion->x * $friction,
-            max(-$entity->maximumDownwardVelocity(), ($beforeMotion->y - ($entity->isGravityEnabled() ? $definition->gravity : 0.0)) * $friction),
+            max(-$entity->maximumDownwardVelocity(), ($beforeMotion->y - $gravity) * $friction),
             $beforeMotion->z * $friction,
         );
         $halfWidth = $entity->collisionWidth() / 2.0;

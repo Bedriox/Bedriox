@@ -18,18 +18,12 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api\Entity;
+namespace Bedriox\Server\Entity;
 
-enum SpawnCause: string
+use Bedriox\Api\Entity\Capability\Aquatic;
+use Bedriox\Server\Entity\Concern\AquaticStateTrait;
+
+abstract class AquaticMonsterEntity extends MonsterEntity implements Aquatic, AquaticRuntimeState
 {
-    case SPAWN_EGG = 'spawn_egg';
-    case COMMAND = 'command';
-    case PLUGIN = 'plugin';
-    case NATURAL = 'natural';
-    case SPAWNER = 'spawner';
-    case BREEDING = 'breeding';
-    case STRUCTURE = 'structure';
-    case CHUNK_LOAD = 'chunk_load';
-    case EFFECT = 'effect';
-    case BUCKET = 'bucket';
+    use AquaticStateTrait;
 }

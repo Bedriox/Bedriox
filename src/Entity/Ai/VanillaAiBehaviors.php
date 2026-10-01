@@ -20,6 +20,9 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Ai;
 
+use Bedriox\Server\Entity\Ai\Goal\AquaticChasePlayerGoal;
+use Bedriox\Server\Entity\Ai\Goal\AquaticMeleeAttackIntentGoal;
+use Bedriox\Server\Entity\Ai\Goal\AquaticWanderGoal;
 use Bedriox\Server\Entity\Ai\Goal\ChasePlayerGoal;
 use Bedriox\Server\Entity\Ai\Goal\FleeFromPlayerGoal;
 use Bedriox\Server\Entity\Ai\Goal\MeleeAttackIntentGoal;
@@ -44,6 +47,9 @@ final class VanillaAiBehaviors
 
     /** @var array<string, AiBehaviorDefinition> */
     private static array $hostiles = [];
+
+    /** @var array<string, AiBehaviorDefinition> */
+    private static array $aquatic = [];
 
     public static function cow(): AiBehaviorDefinition
     {
@@ -220,6 +226,26 @@ final class VanillaAiBehaviors
         }
 
         return self::$hostiles[$species] ??= self::meleeHostile($species, 16.0, $species === 'endermite' ? 2.0 : 1.0, 0.13);
+    }
+
+    public static function aquaticPassive(string $species, float $speed = 0.08): AiBehaviorDefinition
+    {
+        return self::$aquatic['passive:' . $species] ??= new AiBehaviorDefinition(
+            sensors: [new HurtSensor("bedriox:{$species}_hurt", 60)],
+            goals: [new AquaticWanderGoal("bedriox:{$species}_swim", 10, $speed)],
+        );
+    }
+
+    public static function aquaticHostile(string $species, float $damage, float $speed): AiBehaviorDefinition
+    {
+        return self::$aquatic['hostile:' . $species] ??= new AiBehaviorDefinition(
+            sensors: [new NearestPlayerSensor("bedriox:{$species}_nearest_player", 10, 16.0, 30)],
+            goals: [
+                new AquaticMeleeAttackIntentGoal("bedriox:{$species}_melee", 100, 2.0, 20, $damage),
+                new AquaticChasePlayerGoal("bedriox:{$species}_chase", 80, 2.0, $speed),
+                new AquaticWanderGoal("bedriox:{$species}_swim", 10, $speed * 0.75),
+            ],
+        );
     }
 
     private static function meleeHostile(string $species, float $range, float $damage, float $speed): AiBehaviorDefinition

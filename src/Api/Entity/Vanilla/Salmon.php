@@ -18,18 +18,9 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api\Entity;
+namespace Bedriox\Api\Entity\Vanilla;
 
-enum SpawnCause: string
-{
-    case SPAWN_EGG = 'spawn_egg';
-    case COMMAND = 'command';
-    case PLUGIN = 'plugin';
-    case NATURAL = 'natural';
-    case SPAWNER = 'spawner';
-    case BREEDING = 'breeding';
-    case STRUCTURE = 'structure';
-    case CHUNK_LOAD = 'chunk_load';
-    case EFFECT = 'effect';
-    case BUCKET = 'bucket';
-}
+use Bedriox\Api\Entity\Capability\Animal;
+use Bedriox\Api\Entity\Capability\Aquatic;
+
+interface Salmon extends Animal, Aquatic {}

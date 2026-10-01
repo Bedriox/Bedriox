@@ -105,9 +105,21 @@ final readonly class RangedAttackIntentGoal implements AiGoal
         }
         $distanceSquared = $target->distanceSquaredTo($entity->internalPosition());
         if ($distanceSquared < $this->minimumRange ** 2) {
-            HorizontalSteering::away($entity, $target->position, $this->movementSpeed, $context->tick);
+            HorizontalSteering::away(
+                $entity,
+                $target->position,
+                $this->movementSpeed,
+                $context->tick,
+                $context->world,
+            );
         } elseif ($distanceSquared > ($this->maximumRange * 0.75) ** 2) {
-            HorizontalSteering::toward($entity, $target->position, $this->movementSpeed, $context->tick);
+            HorizontalSteering::toward(
+                $entity,
+                $target->position,
+                $this->movementSpeed,
+                $context->tick,
+                $context->world,
+            );
         } else {
             HorizontalSteering::stop($entity, $context->tick);
         }

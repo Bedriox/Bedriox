@@ -18,18 +18,15 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api\Entity;
+namespace Bedriox\Api\Entity\Capability;
 
-enum SpawnCause: string
+interface Aquatic
 {
-    case SPAWN_EGG = 'spawn_egg';
-    case COMMAND = 'command';
-    case PLUGIN = 'plugin';
-    case NATURAL = 'natural';
-    case SPAWNER = 'spawner';
-    case BREEDING = 'breeding';
-    case STRUCTURE = 'structure';
-    case CHUNK_LOAD = 'chunk_load';
-    case EFFECT = 'effect';
-    case BUCKET = 'bucket';
+    public function canBreatheUnderwater(): bool;
+
+    public function requiresWater(): bool;
+
+    public function getAirSupplyTicks(): int;
+
+    public function getMaximumAirSupplyTicks(): int;
 }

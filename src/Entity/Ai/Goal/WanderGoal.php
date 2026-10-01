@@ -90,7 +90,7 @@ final readonly class WanderGoal implements AiGoal
         $x = $memory->get(VanillaAiMemories::wanderMotionX(), $context->tick);
         $z = $memory->get(VanillaAiMemories::wanderMotionZ(), $context->tick);
         if (is_float($x) && is_float($z)) {
-            HorizontalSteering::motion($entity, $x, $z, $context->tick);
+            HorizontalSteering::motion($entity, $x, $z, $context->tick, $context->world);
         }
     }
 

@@ -91,6 +91,8 @@ use Bedriox\Server\Entity\Ai\AiRangedIntent;
 use Bedriox\Server\Entity\Ai\AiSchedulerMetrics;
 use Bedriox\Server\Entity\Ai\IndexedAiWorldView;
 use Bedriox\Server\Entity\Ai\VanillaAiMemories;
+use Bedriox\Server\Entity\AquaticBucketRegistry;
+use Bedriox\Server\Entity\AquaticRuntimeState;
 use Bedriox\Server\Entity\BreedableAnimalEntity;
 use Bedriox\Server\Entity\EntityDefinition;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
@@ -123,6 +125,7 @@ use Bedriox\Server\Entity\Spawn\EntitySpawnRequest;
 use Bedriox\Server\Entity\Spawn\EntitySpawnService;
 use Bedriox\Server\Entity\Spawn\Natural\NaturalSpawnPlayer;
 use Bedriox\Server\Entity\Spawn\Natural\WorldNaturalSpawnRuntime;
+use Bedriox\Server\Entity\Vanilla\AxolotlEntity;
 use Bedriox\Server\Entity\Vanilla\BoggedEntity;
 use Bedriox\Server\Entity\Vanilla\CaveSpiderEntity;
 use Bedriox\Server\Entity\Vanilla\ChickenEntity;
@@ -135,6 +138,7 @@ use Bedriox\Server\Entity\Vanilla\RabbitEntity;
 use Bedriox\Server\Entity\Vanilla\SheepEntity;
 use Bedriox\Server\Entity\Vanilla\SlimeEntity;
 use Bedriox\Server\Entity\Vanilla\StrayEntity;
+use Bedriox\Server\Entity\Vanilla\TurtleEntity;
 use Bedriox\Server\Entity\Vanilla\WitchEntity;
 use Bedriox\Server\Entity\Vanilla\WitherSkeletonEntity;
 use Bedriox\Server\Entity\Vanilla\ZombieFamilyEntity;
@@ -743,7 +747,7 @@ final class WorldSimulation
             $entityRuntime = new EntityWorldRuntime(
                 $entityRegistry,
                 $spawnService,
-                $collisionQuery === null ? null : new EntityPhysicsResolver($collisionQuery),
+                $collisionQuery === null ? null : new EntityPhysicsResolver($collisionQuery, $this->entityEnvironment),
                 scheduledAiTick: static function (AbstractMobEntity $entity, int $currentTick) use (
                     $pluginEntityLifecycle,
                 ): void {
@@ -761,6 +765,10 @@ final class WorldSimulation
                 ? null
                 : fn(AbstractMobEntity $entity, AiPlayerSnapshot $player): bool =>
                     $this->hostileEntityHasLineOfSight($entity, $player->position),
+            fn(string $worldName, Position $position): bool =>
+                $this->entityEnvironment?->isWaterAt($worldName, $position) === true,
+            fn(AbstractMobEntity $entity): bool =>
+                $this->entityEnvironment?->isTouchingWater($entity) === true,
         );
         $this->naturalSpawns = $blockWorld !== null
             && $blockPalette !== null
@@ -1872,6 +1880,7 @@ final class WorldSimulation
         }
         array_push($events, ...$this->advanceEntityEffects());
         array_push($events, ...$this->advanceEntityFire());
+        array_push($events, ...$this->advanceLivingEntityBreathing());
         array_push($events, ...$this->advanceCreepers());
         foreach ($this->entityRuntime->registry()->all() as $entity) {
             if ($entity instanceof BreedableAnimalEntity && $entity->isAlive()
@@ -2414,6 +2423,63 @@ final class WorldSimulation
             $events[] = $entity->getHealth() < $healthBefore
                 ? new EntityActorDamaged($entity, $this->tick, $recipients)
                 : new EntityActorHealthChanged($entity, $this->tick, $recipients);
+        }
+
+        return $events;
+    }
+
+    /** @return list<WorldEvent> */
+    private function advanceLivingEntityBreathing(): array
+    {
+        if ($this->entityEnvironment === null) {
+            return [];
+        }
+        $events = [];
+        $recipients = $this->players->recipients();
+        foreach ($this->entityRuntime->registry()->all() as $entity) {
+            if (!$entity instanceof AbstractLivingEntity || !$entity->isAlive()) {
+                continue;
+            }
+            $submerged = $this->entityEnvironment->isSubmerged($entity);
+            if ($entity instanceof AquaticRuntimeState) {
+                $entity->advanceAquaticState($submerged);
+                $dryGraceTicks = match ($entity->getType()->identifier()) {
+                    VanillaEntityType::DOLPHIN->value => 240,
+                    VanillaEntityType::AXOLOTL->value => 6_000,
+                    default => 100,
+                };
+                $drowning = !$entity->canBreatheUnderwater() && $entity->getAirSupplyTicks() === 0;
+                $stranded = $entity->requiresWater() && !$submerged && $entity->getDryTicks() > $dryGraceTicks;
+            } else {
+                $entity->advanceBreathingState(
+                    $submerged,
+                    VanillaEffectBehavior::canBreatheUnderwater($entity->effectState()->snapshot()),
+                );
+                $drowning = $submerged && $entity->getBreathingAirSupplyTicks() === 0;
+                $stranded = false;
+            }
+            if ((!$drowning && !$stranded) || ($this->tick + $entity->getRuntimeId()) % 20 !== 0) {
+                continue;
+            }
+            $damageEvent = $this->pluginEvents?->entityDamage(
+                $entity,
+                ApiEntityDamageCause::DROWNING,
+                self::DROWNING_DAMAGE,
+            );
+            if ($this->pluginEvents !== null && $damageEvent === null) {
+                continue;
+            }
+            $result = $this->entityRuntime->damage(
+                $entity->getRuntimeId(),
+                $damageEvent?->damage() ?? self::DROWNING_DAMAGE,
+            );
+            if ($result !== null && $result->appliedDamage > 0.0) {
+                if ($damageEvent !== null) {
+                    $this->entityLastDamageEvents[$entity->getRuntimeId()] = $damageEvent;
+                }
+                $this->publishedEntityHealth[$entity->getRuntimeId()] = $entity->getHealth();
+                $events[] = new EntityActorDamaged($entity, $this->tick, $recipients);
+            }
         }
 
         return $events;
@@ -4931,6 +4997,19 @@ final class WorldSimulation
             return new CommandRejected($command->session, 'plugin_cancelled');
         }
         $heldBefore = $player->inventory->selectedStack();
+        $bucketResult = $heldBefore?->identifier === 'minecraft:water_bucket'
+            ? AquaticBucketRegistry::bucketForType($target->getType())
+        : null;
+        if ($bucketResult !== null) {
+            $this->replaceConsumedContainer($player, $bucketResult);
+            $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
+            $this->entityPersistence?->forgetEntity($target->getUniqueId());
+            $this->entityRuntime->remove($target->getRuntimeId());
+            $this->pluginEvents?->entityDespawned($target, 'bucket');
+            $this->deferredEvents[] = new EntityActorRemoved($target, $this->players->recipients());
+
+            return new EntityInteracted($command->session, $target->getRuntimeId(), $command->interaction);
+        }
         if ($target instanceof SheepEntity
             && !$this->interactWithSheep($player, $target)) {
             return new CommandRejected($command->session, 'plugin_cancelled');
@@ -5246,12 +5325,12 @@ final class WorldSimulation
         }
         if ($animal->isBaby()) {
             $animal->accelerateGrowth(2_400);
-            $this->consumeSelectedItem($player);
+            $this->consumeBreedingFood($player, $held->identifier);
             return true;
         }
         if ($animal->getLoveTicks() === 0) {
             $animal->setLoveTicks(BreedableAnimalEntity::MAXIMUM_LOVE_TICKS);
-            $this->consumeSelectedItem($player);
+            $this->consumeBreedingFood($player, $held->identifier);
         }
         if (!$animal->isReadyToBreed()) {
             return true;
@@ -5306,6 +5385,8 @@ final class WorldSimulation
             $animal instanceof PigEntity => ['minecraft:carrot', 'minecraft:potato', 'minecraft:beetroot'],
             $animal instanceof ChickenEntity => ['minecraft:wheat_seeds', 'minecraft:beetroot_seeds', 'minecraft:melon_seeds', 'minecraft:pumpkin_seeds', 'minecraft:torchflower_seeds', 'minecraft:pitcher_pod'],
             $animal instanceof RabbitEntity => ['minecraft:carrot', 'minecraft:golden_carrot', 'minecraft:dandelion'],
+            $animal instanceof TurtleEntity => ['minecraft:seagrass'],
+            $animal instanceof AxolotlEntity => ['minecraft:tropical_fish_bucket'],
             default => [],
         };
     }
@@ -5340,6 +5421,16 @@ final class WorldSimulation
             $this->players->recipients($player->sessionId),
             ownerSlotCorrection: true,
         );
+    }
+
+    private function consumeBreedingFood(Player $player, string $identifier): void
+    {
+        if ($identifier === 'minecraft:tropical_fish_bucket') {
+            $this->replaceConsumedContainer($player, 'minecraft:water_bucket');
+
+            return;
+        }
+        $this->consumeSelectedItem($player);
     }
 
     private function woolColorFromDye(string $identifier): ?WoolColor
@@ -12971,10 +13062,11 @@ final class WorldSimulation
         $heldType = $held !== null && $this->itemCatalog?->has($held->identifier) === true
             ? $this->itemCatalog->type($held->identifier)
             : null;
+        $aquaticBucketType = $held === null ? null : AquaticBucketRegistry::typeForBucket($held->identifier);
         $bucketFluid = match ($held?->identifier) {
             'minecraft:water_bucket' => FluidType::WATER,
             'minecraft:lava_bucket' => FluidType::LAVA,
-            default => null,
+            default => $aquaticBucketType === null ? null : FluidType::WATER,
         };
         $heldPlacesBlock = $heldType?->placedBlockState !== null || $held?->placedBlockState !== null;
         if ($bucketFluid === null && $heldPlacesBlock && $this->fluidState($clickedState) !== null) {
@@ -13086,6 +13178,15 @@ final class WorldSimulation
                 $activeBreak['position'] ?? null,
                 'capacity',
             );
+        }
+        if ($aquaticBucketType !== null) {
+            $this->spawnEntity(new EntitySpawnRequest(
+                $aquaticBucketType,
+                SpawnCause::BUCKET,
+                $this->worldId,
+                new Position($placedPosition->x + 0.5, $placedPosition->y, $placedPosition->z + 0.5),
+                $player->movement->yaw,
+            ));
         }
         $placedIdentifier = $bucketFluid === null
             ? $heldType?->placedBlockState?->identifier() ?? $held->identifier

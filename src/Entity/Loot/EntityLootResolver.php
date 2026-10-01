@@ -69,6 +69,17 @@ final class EntityLootResolver
                 VanillaEntityType::MAGMA_CUBE->value => new MagmaCubeLootTable(),
                 VanillaEntityType::ENDERMAN->value => new EndermanLootTable(),
                 VanillaEntityType::WITCH->value => new WitchLootTable(),
+                VanillaEntityType::COD->value => new AquaticLootTable('minecraft:cod', 1, 1, 'minecraft:cooked_cod'),
+                VanillaEntityType::SALMON->value => new AquaticLootTable('minecraft:salmon', 1, 1, 'minecraft:cooked_salmon'),
+                VanillaEntityType::TROPICAL_FISH->value => new AquaticLootTable('minecraft:tropical_fish', 1, 1),
+                VanillaEntityType::PUFFERFISH->value => new AquaticLootTable('minecraft:pufferfish', 1, 1),
+                VanillaEntityType::SQUID->value => new AquaticLootTable('minecraft:ink_sac', 1, 3),
+                VanillaEntityType::GLOW_SQUID->value => new AquaticLootTable('minecraft:glow_ink_sac', 1, 3),
+                VanillaEntityType::DOLPHIN->value => new AquaticLootTable('minecraft:cod', 0, 1),
+                VanillaEntityType::TURTLE->value => new AquaticLootTable('minecraft:seagrass', 0, 2),
+                VanillaEntityType::AXOLOTL->value => new AquaticLootTable(null, 0, 0),
+                VanillaEntityType::DROWNED->value => new AquaticLootTable('minecraft:rotten_flesh', 0, 2),
+                VanillaEntityType::GUARDIAN->value => new AquaticLootTable('minecraft:prismarine_shard', 0, 2),
             ],
         );
     }

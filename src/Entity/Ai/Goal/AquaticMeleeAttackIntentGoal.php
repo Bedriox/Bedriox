@@ -23,24 +23,27 @@ namespace Bedriox\Server\Entity\Ai\Goal;
 use Bedriox\Server\Entity\AbstractMobEntity;
 use Bedriox\Server\Entity\Ai\AiControl;
 use Bedriox\Server\Entity\Ai\AiGoal;
+use Bedriox\Server\Entity\Ai\AiMeleeIntent;
 use Bedriox\Server\Entity\Ai\AiMemoryStore;
 use Bedriox\Server\Entity\Ai\AiPlayerSnapshot;
 use Bedriox\Server\Entity\Ai\AiTickContext;
-use Bedriox\Server\Entity\Ai\HorizontalSteering;
 use Bedriox\Server\Entity\Ai\VanillaAiMemories;
 use InvalidArgumentException;
 
-final readonly class ChasePlayerGoal implements AiGoal
+/** Emits close-range attacks without freezing concurrent aquatic steering. */
+final readonly class AquaticMeleeAttackIntentGoal implements AiGoal
 {
     public function __construct(
         private string $identifier,
         private int $priority,
-        private float $stoppingDistance,
-        private float $speed,
+        private float $reach,
+        private int $cooldownTicks,
+        private float $damage,
     ) {
-        if (!is_finite($stoppingDistance) || $stoppingDistance <= 0.0 || $stoppingDistance > 16.0
-            || !is_finite($speed) || $speed <= 0.0 || $speed > 1.0) {
-            throw new InvalidArgumentException('Chase goal bounds are invalid.');
+        if (!is_finite($reach) || $reach <= 0.0 || $reach > 16.0
+            || $cooldownTicks < 1 || $cooldownTicks > 1_200
+            || !is_finite($damage) || $damage <= 0.0 || $damage > 1_000.0) {
+            throw new InvalidArgumentException('Aquatic melee attack bounds are invalid.');
         }
     }
 
@@ -61,15 +64,12 @@ final readonly class ChasePlayerGoal implements AiGoal
 
     public function controls(): array
     {
-        return [AiControl::MOVE, AiControl::LOOK, AiControl::TARGET];
+        return [AiControl::ATTACK];
     }
 
     public function canStart(AbstractMobEntity $entity, AiMemoryStore $memory, AiTickContext $context): bool
     {
-        $target = $this->target($entity, $memory, $context);
-
-        return $target !== null
-            && $target->distanceSquaredTo($entity->internalPosition()) > $this->stoppingDistance ** 2;
+        return $this->targetInReach($entity, $memory, $context) !== null;
     }
 
     public function shouldContinue(AbstractMobEntity $entity, AiMemoryStore $memory, AiTickContext $context): bool
@@ -79,34 +79,44 @@ final readonly class ChasePlayerGoal implements AiGoal
 
     public function start(AbstractMobEntity $entity, AiMemoryStore $memory, AiTickContext $context): void
     {
-        $this->steer($entity, $memory, $context);
+        $this->emitIntent($entity, $memory, $context);
     }
 
     public function tick(AbstractMobEntity $entity, AiMemoryStore $memory, AiTickContext $context): void
     {
-        $this->steer($entity, $memory, $context);
+        $this->emitIntent($entity, $memory, $context);
     }
 
-    public function stop(AbstractMobEntity $entity, AiMemoryStore $memory, AiTickContext $context): void
-    {
-        HorizontalSteering::stop($entity, $context->tick);
-    }
+    public function stop(AbstractMobEntity $entity, AiMemoryStore $memory, AiTickContext $context): void {}
 
-    private function steer(AbstractMobEntity $entity, AiMemoryStore $memory, AiTickContext $context): void
+    private function emitIntent(AbstractMobEntity $entity, AiMemoryStore $memory, AiTickContext $context): void
     {
-        $target = $this->target($entity, $memory, $context);
-        if ($target !== null) {
-            HorizontalSteering::toward($entity, $target->position, $this->speed, $context->tick, $context->world);
+        if ($memory->contains(VanillaAiMemories::meleeCooldown(), $context->tick)) {
+            return;
         }
+        $target = $this->targetInReach($entity, $memory, $context);
+        if ($target === null) {
+            return;
+        }
+        $memory->put(
+            VanillaAiMemories::meleeIntent(),
+            new AiMeleeIntent($target->playerId, $context->tick, $this->reach, $this->damage),
+            $context->tick + 2,
+        );
+        $memory->put(VanillaAiMemories::meleeCooldown(), true, $context->tick + $this->cooldownTicks);
     }
 
-    private function target(
+    private function targetInReach(
         AbstractMobEntity $entity,
         AiMemoryStore $memory,
         AiTickContext $context,
     ): ?AiPlayerSnapshot {
         $target = $memory->get(VanillaAiMemories::nearestPlayer(), $context->tick);
+        if (!$entity->isAlive() || !$target instanceof AiPlayerSnapshot
+            || $target->distanceSquaredTo($entity->internalPosition()) > $this->reach ** 2) {
+            return null;
+        }
 
-        return $entity->isAlive() && $target instanceof AiPlayerSnapshot ? $target : null;
+        return $target;
     }
 }

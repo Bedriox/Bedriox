@@ -18,18 +18,15 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api\Entity;
+namespace Bedriox\Server\Entity\Ai;
 
-enum SpawnCause: string
+use Bedriox\Server\Entity\AbstractMobEntity;
+use Bedriox\Server\Simulation\Position;
+
+/** Read-only environmental queries needed by aquatic navigation. */
+interface AquaticAiWorldView extends TargetAwareAiWorldView
 {
-    case SPAWN_EGG = 'spawn_egg';
-    case COMMAND = 'command';
-    case PLUGIN = 'plugin';
-    case NATURAL = 'natural';
-    case SPAWNER = 'spawner';
-    case BREEDING = 'breeding';
-    case STRUCTURE = 'structure';
-    case CHUNK_LOAD = 'chunk_load';
-    case EFFECT = 'effect';
-    case BUCKET = 'bucket';
+    public function isTouchingWater(AbstractMobEntity $entity): bool;
+
+    public function isWaterAt(string $worldName, Position $position): bool;
 }
