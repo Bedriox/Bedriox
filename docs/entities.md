@@ -12,6 +12,10 @@ Controllers are the mutation side of the same hierarchy:
 EntityController
 `-- LivingEntityController
     `-- MobController
+        `-- BreedableAnimalController
+            |-- SheepController
+            |-- PigController
+            `-- RabbitController
 ```
 
 `EntityController` supports availability checks, teleportation, rotation, velocity, name tags, name-tag visibility, immobility, invisibility, glowing, scale, gravity, fire, extinguishing, and despawning. `LivingEntityController` adds damage, healing, direct bounded health changes, and equipment. `MobController` adds AI enablement, movement toward or away from a position, stopping, looking, targeting, and clearing the current target intent.
@@ -20,7 +24,7 @@ Always retain the entity view rather than a controller indefinitely, and check `
 
 ```php
 use Bedriox\Api\Entity\Mob;
-use Bedriox\Api\Entity\MobController;
+use Bedriox\Api\Entity\Controller\MobController;
 use Bedriox\Api\World\Position;
 
 function makeGuard(Mob $mob): void
@@ -41,6 +45,14 @@ function makeGuard(Mob $mob): void
 Controller input is validated before it reaches world state. Positions, rotations, velocities, names, scale, health, fire duration, steering speed, and target worlds remain bounded. Damage and combustion use their typed causes and enter the ordinary cancellable entity event path. A cross-world teleport succeeds only when the target world is already available.
 
 Movement helpers express bounded steering, not a persistent pathfinding script. `target()` uses the target entity's authoritative snapshot for that control operation. `clearTarget()` stops the current horizontal steering intent; enabled built-in AI may select another target on a later AI tick. Disable AI when a plugin needs exclusive movement control.
+
+Capabilities such as `Ageable`, `Breedable`, `Shearable`, `Undead`, and `RangedMob` live under `Api\Entity\Capability`; mutation gateways live under `Api\Entity\Controller`; read-only built-in species contracts live under `Api\Entity\Vanilla`. Concrete built-in entity implementations remain internal under `Server\Entity\Vanilla`.
+
+## Common passive animals
+
+Cow, sheep, pig, chicken, and rabbit share one bounded authoritative age and breeding lifecycle. Species-specific foods drive temptation, baby growth, and adult breeding. `EntityBreedEvent` can cancel the child or adjust bounded experience before spawn; `EntityBredEvent` observes the committed parents and child. Parents enter cooldown only after the child commits.
+
+Cows support bucket milking. Pigs persist saddle state. Chickens fall slowly and lay eggs on a durable bounded timer. Rabbits persist a typed variant and use hopping ground movement. Every species has an exact spawn-egg definition, natural-spawn entry, durable state, multiplayer projection, and adult loot table; babies do not produce ordinary adult drops.
 
 ## Transaction and lifecycle boundary
 
@@ -66,6 +78,6 @@ Entity loot is evaluated exactly once after lethal health commits. The stable re
 
 The event accepts at most 128 immutable `ItemStack` values. The built-in resolver validates catalog membership, respects each item's maximum stack size, coalesces equivalent state, and caps its own output at 64 stacks and 4,096 items. Final item creation is also subject to the world's bounded item-entity capacity; an invalid or excess plugin-supplied stack is skipped without terminating the server tick.
 
-Current species-specific tables cover zombies and cows. Zombies drop zero to two rotten flesh and have a 2.5 percent chance of one iron ingot, carrot, or potato. Cows drop zero to two leather and one to three beef; burning cows produce cooked beef. Equipped items are evaluated independently using their stored per-slot chance, preserving identifier, count, damage, auxiliary value, and NBT.
+Species-specific tables cover zombies, cows, sheep, pigs, chickens, rabbits, and skeletons. Burning animals produce the applicable cooked meat. Pig saddles, sheep wool, feathers, hides, and bounded rare rabbit feet use the same normalized item-entity path. Equipped items are evaluated independently using their stored per-slot chance, preserving identifier, count, damage, auxiliary value, and NBT.
 
-Custom entities and other admitted species currently have an empty base table. Plugins can supply their drops through `EntityDeathEvent`; a public loot-table registrar is not yet available. Experience orbs, looting-enchantment modifiers, fake-human entities, and a general NPC controller are separate milestones.
+Custom entities and other admitted species currently have an empty base table. Plugins can supply their drops through `EntityDeathEvent`; a public loot-table registrar is not yet available. Fake-human entities and a general NPC controller are separate milestones.

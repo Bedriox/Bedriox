@@ -20,12 +20,12 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Vanilla;
 
-use Bedriox\Api\Entity\SheepController;
+use Bedriox\Api\Entity\Controller\SheepController;
+use Bedriox\Api\Entity\Value\WoolColor;
 use Bedriox\Api\Entity\Vanilla\Sheep;
-use Bedriox\Api\Entity\WoolColor;
 use Bedriox\Server\Entity\Ai\AiBehaviorDefinition;
 use Bedriox\Server\Entity\Ai\VanillaAiBehaviors;
-use Bedriox\Server\Entity\AnimalEntity;
+use Bedriox\Server\Entity\BreedableAnimalEntity;
 use Bedriox\Server\Entity\EntityMotion;
 use Bedriox\Server\Entity\Persistence\IntrinsicEntityPersistence;
 use Bedriox\Server\Entity\VanillaEntityDefinitions;
@@ -36,12 +36,8 @@ use InvalidArgumentException;
 use JsonException;
 use LogicException;
 
-final class SheepEntity extends AnimalEntity implements Sheep, IntrinsicEntityPersistence
+final class SheepEntity extends BreedableAnimalEntity implements Sheep, IntrinsicEntityPersistence
 {
-    public const int MAXIMUM_LOVE_TICKS = 600;
-    public const int BABY_GROWTH_TICKS = 24_000;
-    public const int BREEDING_COOLDOWN_TICKS = 6_000;
-
     public function __construct(
         string $uniqueId,
         int $runtimeId,
@@ -52,18 +48,13 @@ final class SheepEntity extends AnimalEntity implements Sheep, IntrinsicEntityPe
         float $yaw = 0.0,
         float $pitch = 0.0,
         ?float $health = null,
-        private bool $baby = false,
+        bool $baby = false,
         private WoolColor $woolColor = WoolColor::WHITE,
         private bool $sheared = false,
-        private int $loveTicks = 0,
-        private int $babyGrowthTicks = 0,
-        private int $breedingCooldownTicks = 0,
+        int $loveTicks = 0,
+        int $babyGrowthTicks = 0,
+        int $breedingCooldownTicks = 0,
     ) {
-        if ($baby && $babyGrowthTicks === 0) {
-            $babyGrowthTicks = self::BABY_GROWTH_TICKS;
-        }
-        self::validateState($baby, $sheared, $loveTicks, $babyGrowthTicks, $breedingCooldownTicks);
-        $this->babyGrowthTicks = $babyGrowthTicks;
         parent::__construct(
             $uniqueId,
             $runtimeId,
@@ -76,11 +67,10 @@ final class SheepEntity extends AnimalEntity implements Sheep, IntrinsicEntityPe
             $pitch,
             $health,
         );
-    }
-
-    public function isBaby(): bool
-    {
-        return $this->baby;
+        $this->initializeBreedableState($baby, $loveTicks, $babyGrowthTicks, $breedingCooldownTicks);
+        if ($baby && $sheared) {
+            throw new InvalidArgumentException('A baby sheep cannot be sheared.');
+        }
     }
 
     public function isSheared(): bool
@@ -91,16 +81,6 @@ final class SheepEntity extends AnimalEntity implements Sheep, IntrinsicEntityPe
     public function getWoolColor(): WoolColor
     {
         return $this->woolColor;
-    }
-
-    public function getLoveTicks(): int
-    {
-        return $this->loveTicks;
-    }
-
-    public function isReadyToBreed(): bool
-    {
-        return !$this->baby && $this->loveTicks > 0 && $this->breedingCooldownTicks === 0;
     }
 
     public function getController(): SheepController
@@ -114,35 +94,11 @@ final class SheepEntity extends AnimalEntity implements Sheep, IntrinsicEntityPe
     }
 
     /** @internal Authoritative species-state mutation. */
-    public function setBaby(bool $baby): void
-    {
-        self::validateState(
-            $baby,
-            $this->sheared,
-            $baby ? 0 : $this->loveTicks,
-            $baby ? self::BABY_GROWTH_TICKS : 0,
-            $this->breedingCooldownTicks,
-        );
-        if ($this->baby !== $baby) {
-            $this->baby = $baby;
-            $this->babyGrowthTicks = $baby ? self::BABY_GROWTH_TICKS : 0;
-            if ($baby) {
-                $this->loveTicks = 0;
-            }
-            $this->markPresentationChanged();
-        }
-    }
-
-    /** @internal Authoritative species-state mutation. */
     public function setSheared(bool $sheared): void
     {
-        self::validateState(
-            $this->baby,
-            $sheared,
-            $this->loveTicks,
-            $this->babyGrowthTicks,
-            $this->breedingCooldownTicks,
-        );
+        if ($this->isBaby() && $sheared) {
+            throw new InvalidArgumentException('A baby sheep cannot be sheared.');
+        }
         if ($this->sheared !== $sheared) {
             $this->sheared = $sheared;
             $this->markPresentationChanged();
@@ -158,76 +114,6 @@ final class SheepEntity extends AnimalEntity implements Sheep, IntrinsicEntityPe
         }
     }
 
-    /** @internal Authoritative breeding-state mutation. */
-    public function setLoveTicks(int $ticks): void
-    {
-        self::validateState(
-            $this->baby,
-            $this->sheared,
-            $ticks,
-            $this->babyGrowthTicks,
-            $this->breedingCooldownTicks,
-        );
-        if ($this->loveTicks !== $ticks) {
-            $this->loveTicks = $ticks;
-            $this->markChanged();
-        }
-    }
-
-    /** @internal Advances bounded species timers once per simulation tick. */
-    public function advanceSpeciesState(int $ticks = 1): void
-    {
-        if ($ticks < 1 || $ticks > 20) {
-            throw new InvalidArgumentException('Sheep species-state advance is outside its supported bound.');
-        }
-        $changed = false;
-        if ($this->loveTicks > 0) {
-            $this->loveTicks = max(0, $this->loveTicks - $ticks);
-            $changed = true;
-        }
-        if ($this->breedingCooldownTicks > 0) {
-            $this->breedingCooldownTicks = max(0, $this->breedingCooldownTicks - $ticks);
-            $changed = true;
-        }
-        if ($this->babyGrowthTicks > 0) {
-            $this->babyGrowthTicks = max(0, $this->babyGrowthTicks - $ticks);
-            $changed = true;
-            if ($this->babyGrowthTicks === 0) {
-                $this->baby = false;
-                $this->markPresentationChanged();
-
-                return;
-            }
-        }
-        if ($changed) {
-            $this->markChanged();
-        }
-    }
-
-    /** @internal Commits a completed breeding cycle. */
-    public function beginBreedingCooldown(): void
-    {
-        $this->loveTicks = 0;
-        $this->breedingCooldownTicks = self::BREEDING_COOLDOWN_TICKS;
-        $this->markChanged();
-    }
-
-    /** @internal Applies a bounded growth boost from authoritative feeding. */
-    public function accelerateGrowth(int $ticks): void
-    {
-        if (!$this->baby || $ticks < 1 || $ticks > self::BABY_GROWTH_TICKS) {
-            throw new InvalidArgumentException('Sheep growth acceleration is outside its supported bounds.');
-        }
-        $this->babyGrowthTicks = max(0, $this->babyGrowthTicks - $ticks);
-        if ($this->babyGrowthTicks === 0) {
-            $this->baby = false;
-            $this->markPresentationChanged();
-
-            return;
-        }
-        $this->markChanged();
-    }
-
     public function persistenceVariant(): string
     {
         return $this->woolColor->value;
@@ -241,10 +127,7 @@ final class SheepEntity extends AnimalEntity implements Sheep, IntrinsicEntityPe
     public function persistenceData(): string
     {
         return json_encode([
-            'baby' => $this->baby,
-            'babyGrowthTicks' => $this->babyGrowthTicks,
-            'breedingCooldownTicks' => $this->breedingCooldownTicks,
-            'loveTicks' => $this->loveTicks,
+            ...$this->breedablePersistenceData(),
             'sheared' => $this->sheared,
         ], JSON_THROW_ON_ERROR);
     }
@@ -267,37 +150,12 @@ final class SheepEntity extends AnimalEntity implements Sheep, IntrinsicEntityPe
             || !is_bool($decoded['sheared'])) {
             throw new InvalidArgumentException('Persisted sheep state is malformed.');
         }
-        self::validateState(
-            $decoded['baby'],
-            $decoded['sheared'],
-            $decoded['loveTicks'],
-            $decoded['babyGrowthTicks'],
-            $decoded['breedingCooldownTicks'],
-        );
-        $this->baby = $decoded['baby'];
-        $this->babyGrowthTicks = $decoded['babyGrowthTicks'];
-        $this->breedingCooldownTicks = $decoded['breedingCooldownTicks'];
-        $this->loveTicks = $decoded['loveTicks'];
+        if ($decoded['baby'] && $decoded['sheared']) {
+            throw new InvalidArgumentException('Persisted sheep state is malformed.');
+        }
+        $this->restoreBreedablePersistenceData($decoded);
         $this->sheared = $decoded['sheared'];
         $this->woolColor = $color;
-    }
-
-    private static function validateState(
-        bool $baby,
-        bool $sheared,
-        int $loveTicks,
-        int $babyGrowthTicks,
-        int $breedingCooldownTicks,
-    ): void {
-        if ($baby && $sheared) {
-            throw new InvalidArgumentException('A baby sheep cannot be sheared.');
-        }
-        if ($loveTicks < 0 || $loveTicks > self::MAXIMUM_LOVE_TICKS || ($baby && $loveTicks !== 0)
-            || $babyGrowthTicks < 0 || $babyGrowthTicks > self::BABY_GROWTH_TICKS
-            || ($baby !== ($babyGrowthTicks > 0))
-            || $breedingCooldownTicks < 0 || $breedingCooldownTicks > self::BREEDING_COOLDOWN_TICKS) {
-            throw new InvalidArgumentException('Sheep love state is outside its supported bounds.');
-        }
     }
 
     protected function createController(?PluginActionBuffer $actions): SheepController
@@ -305,8 +163,4 @@ final class SheepEntity extends AnimalEntity implements Sheep, IntrinsicEntityPe
         return new BufferedSheepController($actions, $this, $this->equipmentState());
     }
 
-    protected function sizeMultiplier(): float
-    {
-        return $this->baby ? 0.5 : 1.0;
-    }
 }

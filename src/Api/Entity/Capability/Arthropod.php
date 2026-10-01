@@ -18,9 +18,9 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api\Entity;
+namespace Bedriox\Api\Entity\Capability;
 
-interface Shearable extends Mob
-{
-    public function isSheared(): bool;
-}
+use Bedriox\Api\Entity\LivingEntity;
+
+/** Marker for spiders, cave spiders, silverfish, endermites, and bees. */
+interface Arthropod extends LivingEntity {}

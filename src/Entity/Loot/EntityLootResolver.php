@@ -51,6 +51,9 @@ final class EntityLootResolver
             [
                 VanillaEntityType::ZOMBIE->value => new ZombieLootTable(),
                 VanillaEntityType::COW->value => new CowLootTable(),
+                VanillaEntityType::CHICKEN->value => new ChickenLootTable(),
+                VanillaEntityType::PIG->value => new PigLootTable(),
+                VanillaEntityType::RABBIT->value => new RabbitLootTable(),
                 VanillaEntityType::SHEEP->value => new SheepLootTable(),
                 VanillaEntityType::SKELETON->value => new SkeletonLootTable(),
             ],

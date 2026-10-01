@@ -18,16 +18,8 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api\Entity;
+namespace Bedriox\Api\Entity\Capability;
 
-/** Bounded species-specific mutations for a live sheep. */
-interface SheepController extends MobController
-{
-    public function setBaby(bool $baby): void;
+use Bedriox\Api\Entity\Mob;
 
-    public function setLoveTicks(int $ticks): void;
-
-    public function setSheared(bool $sheared): void;
-
-    public function setWoolColor(WoolColor $color): void;
-}
+interface Monster extends Mob {}

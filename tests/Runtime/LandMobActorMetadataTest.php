@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Runtime;
 
-use Bedriox\Api\Entity\WoolColor;
+use Bedriox\Api\Entity\Value\WoolColor;
 use Bedriox\Protocol\Packet\ActorFlag;
 use Bedriox\Protocol\Packet\ActorMetadata;
 use Bedriox\Server\Entity\EntityUuid;

@@ -20,8 +20,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\Entity\Vanilla;
 
-use Bedriox\Api\Entity\Monster;
-use Bedriox\Api\Entity\RangedMob;
-use Bedriox\Api\Entity\Undead;
+use Bedriox\Api\Entity\Capability\Monster;
+use Bedriox\Api\Entity\Capability\RangedMob;
+use Bedriox\Api\Entity\Capability\Undead;
 
 interface Skeleton extends Monster, RangedMob, Undead {}

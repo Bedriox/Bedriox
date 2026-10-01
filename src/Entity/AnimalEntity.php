@@ -20,6 +20,6 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity;
 
-use Bedriox\Api\Entity\Animal;
+use Bedriox\Api\Entity\Capability\Animal;
 
 abstract class AnimalEntity extends AbstractMobEntity implements Animal {}

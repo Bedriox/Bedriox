@@ -18,7 +18,18 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api\Entity;
+namespace Bedriox\Api\Event\Entity;
 
-/** Marker for living entities whose instant healing and harming responses are inverted. */
-interface Undead extends LivingEntity {}
+use Bedriox\Api\Entity\Capability\Breedable;
+use Bedriox\Api\Event\Event;
+use Bedriox\Api\Event\PostEvent;
+
+final class EntityBredEvent extends Event implements PostEvent
+{
+    public function __construct(
+        public readonly Breedable $firstParent,
+        public readonly Breedable $secondParent,
+        public readonly Breedable $child,
+        public readonly int $experience,
+    ) {}
+}

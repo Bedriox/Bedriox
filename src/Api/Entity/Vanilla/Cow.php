@@ -20,6 +20,11 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\Entity\Vanilla;
 
-use Bedriox\Api\Entity\Animal;
+use Bedriox\Api\Entity\Capability\Animal;
+use Bedriox\Api\Entity\Capability\Breedable;
+use Bedriox\Api\Entity\Controller\BreedableAnimalController;
 
-interface Cow extends Animal {}
+interface Cow extends Animal, Breedable
+{
+    public function getController(): BreedableAnimalController;
+}

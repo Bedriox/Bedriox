@@ -60,6 +60,10 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Added
 
+- Add authoritative cow, sheep, pig, chicken, and rabbit age, temptation,
+  breeding, baby growth, interaction, loot, natural spawning, persistence,
+  metadata, controllers, and typed breeding events with organized entity API
+  namespaces.
 - Add authoritative sheep and skeleton gameplay with species APIs, natural spawning, persistence, sheep interaction and breeding, ranged skeleton combat, typed target and shear events, and entity-owned projectile attribution.
 - Add reproducible standalone PHAR packaging with locked production vendors, verified extraction, adjacent Runtime validation, release launchers, and SHA-256 checksums.
 - Add an atomic first-run setup wizard, persistent whitelist admission, operator controls, a public whitelist API, typed whitelist changes, and explicit kick causes.

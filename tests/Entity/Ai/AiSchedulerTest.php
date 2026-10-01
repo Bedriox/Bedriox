@@ -191,12 +191,12 @@ final class BudgetTargetAiWorldView implements TargetAwareAiWorldView
     public function nearestPlayerHolding(
         AbstractMobEntity $entity,
         float $radius,
-        string $itemIdentifier,
+        array $itemIdentifiers,
     ): ?AiPlayerSnapshot {
         ++$this->targetQueries;
 
-        return $itemIdentifier === 'minecraft:wheat'
-            ? new AiPlayerSnapshot('player-one', 'world', new Position(1.0, 64.0, 0.0), true, $itemIdentifier)
+        return in_array('minecraft:wheat', $itemIdentifiers, true)
+            ? new AiPlayerSnapshot('player-one', 'world', new Position(1.0, 64.0, 0.0), true, 'minecraft:wheat')
             : null;
     }
 }

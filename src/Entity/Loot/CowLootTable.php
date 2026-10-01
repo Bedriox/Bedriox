@@ -20,12 +20,16 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Loot;
 
+use Bedriox\Api\Entity\Capability\Breedable;
 use Bedriox\Api\Inventory\ItemStack;
 
 final readonly class CowLootTable implements LootTable
 {
     public function roll(LootContext $context, LootRandomSource $random): array
     {
+        if ($context->subject instanceof Breedable && $context->subject->isBaby()) {
+            return [];
+        }
         $drops = [];
         $leather = $random->nextInt(0, 2 + $context->lootingLevel);
         if ($leather > 0) {

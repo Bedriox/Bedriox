@@ -18,9 +18,11 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api\Entity;
+namespace Bedriox\Api\Entity\Capability;
 
-interface Ageable extends Mob
+use Bedriox\Api\Entity\Mob;
+
+interface Shearable extends Mob
 {
-    public function isBaby(): bool;
+    public function isSheared(): bool;
 }

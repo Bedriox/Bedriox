@@ -18,7 +18,8 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api\Entity;
+namespace Bedriox\Api\Entity\Capability;
 
-/** Marker for mobs whose authoritative combat behavior launches projectiles. */
-interface RangedMob extends Mob {}
+use Bedriox\Api\Entity\Mob;
+
+interface Animal extends Mob {}

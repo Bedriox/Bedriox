@@ -131,6 +131,15 @@ final class WorldNaturalSpawnRuntime
                 new SheepNaturalSpawnRule(),
                 12,
             );
+            if ($definitions->get(VanillaEntityType::PIG) !== null) {
+                $entries[] = new NaturalSpawnEntry(VanillaEntityType::PIG, EntityCategory::ANIMAL, new PigNaturalSpawnRule(), 10);
+            }
+            if ($definitions->get(VanillaEntityType::CHICKEN) !== null) {
+                $entries[] = new NaturalSpawnEntry(VanillaEntityType::CHICKEN, EntityCategory::ANIMAL, new ChickenNaturalSpawnRule(), 10);
+            }
+            if ($definitions->get(VanillaEntityType::RABBIT) !== null) {
+                $entries[] = new NaturalSpawnEntry(VanillaEntityType::RABBIT, EntityCategory::ANIMAL, new RabbitNaturalSpawnRule(), 6);
+            }
         }
         if ($spawnMonsters && $world->difficulty() > 0) {
             $entries[] = new NaturalSpawnEntry(

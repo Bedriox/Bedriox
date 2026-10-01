@@ -190,10 +190,10 @@ final class TargetAiWorldView implements TargetAwareAiWorldView
     public function nearestPlayerHolding(
         AbstractMobEntity $entity,
         float $radius,
-        string $itemIdentifier,
+        array $itemIdentifiers,
     ): ?AiPlayerSnapshot {
         $target = $this->nearestPlayer($entity, $radius);
 
-        return $target?->heldItemIdentifier === $itemIdentifier ? $target : null;
+        return $target !== null && in_array($target->heldItemIdentifier, $itemIdentifiers, true) ? $target : null;
     }
 }

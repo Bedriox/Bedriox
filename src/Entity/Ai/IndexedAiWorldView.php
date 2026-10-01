@@ -76,20 +76,26 @@ final readonly class IndexedAiWorldView implements TargetAwareAiWorldView
         return $this->nearestPlayerMatching($entity, $radius);
     }
 
+    /** @param array<mixed> $itemIdentifiers */
     public function nearestPlayerHolding(
         AbstractMobEntity $entity,
         float $radius,
-        string $itemIdentifier,
+        array $itemIdentifiers,
     ): ?AiPlayerSnapshot {
-        if (strlen($itemIdentifier) > 128
-            || preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $itemIdentifier) !== 1) {
-            throw new InvalidArgumentException('AI held-item query identifier must be canonical and bounded.');
+        if (!array_is_list($itemIdentifiers) || $itemIdentifiers === [] || count($itemIdentifiers) > 16) {
+            throw new InvalidArgumentException('AI held-item query identifiers must be a non-empty bounded list.');
+        }
+        foreach ($itemIdentifiers as $itemIdentifier) {
+            if (!is_string($itemIdentifier) || strlen($itemIdentifier) > 128
+                || preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $itemIdentifier) !== 1) {
+                throw new InvalidArgumentException('AI held-item query identifier must be canonical and bounded.');
+            }
         }
 
         return $this->nearestPlayerMatching(
             $entity,
             $radius,
-            static fn(AiPlayerSnapshot $player): bool => $player->heldItemIdentifier === $itemIdentifier,
+            static fn(AiPlayerSnapshot $player): bool => in_array($player->heldItemIdentifier, $itemIdentifiers, true),
         );
     }
 

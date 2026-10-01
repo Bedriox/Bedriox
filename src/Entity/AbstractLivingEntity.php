@@ -24,6 +24,7 @@ use Bedriox\Api\Effect\EffectCause;
 use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Effect\EffectManager;
 use Bedriox\Api\Effect\EffectType;
+use Bedriox\Api\Entity\Controller\LivingEntityController;
 use Bedriox\Api\Entity\Entity as ApiEntity;
 use Bedriox\Api\Entity\EntityCombustionCause;
 use Bedriox\Api\Entity\EntityDamageCause;
@@ -98,7 +99,7 @@ abstract class AbstractLivingEntity extends AbstractEntity implements ApiLivingE
     final public function getEffects(): EffectManager
     {
         $controller = $this->getController();
-        if (!$controller instanceof \Bedriox\Api\Entity\LivingEntityController) {
+        if (!$controller instanceof LivingEntityController) {
             throw new \LogicException('A living entity must expose a living-entity controller.');
         }
 

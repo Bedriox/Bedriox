@@ -20,9 +20,9 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity;
 
+use Bedriox\Api\Entity\Controller\MobController;
 use Bedriox\Api\Entity\Mob as ApiMob;
 use Bedriox\Api\Entity\MobActivationState;
-use Bedriox\Api\Entity\MobController;
 use Bedriox\Server\Entity\Ai\AiBehaviorDefinition;
 use Bedriox\Server\Entity\Ai\AiBehaviorRuntime;
 use Bedriox\Server\Entity\Ai\AiTickContext;

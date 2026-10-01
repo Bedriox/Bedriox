@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\Event\Entity;
 
-use Bedriox\Api\Entity\Shearable;
+use Bedriox\Api\Entity\Capability\Shearable;
 use Bedriox\Api\Event\Event;
 use Bedriox\Api\Event\PostEvent;
 use Bedriox\Api\Inventory\ItemStack;

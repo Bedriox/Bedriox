@@ -28,7 +28,9 @@ use Bedriox\Api\Crafting\ShapelessRecipe as ApiShapelessRecipe;
 use Bedriox\Api\Effect\EffectCause;
 use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Effect\EffectType;
-use Bedriox\Api\Entity\Arthropod;
+use Bedriox\Api\Entity\Capability\Arthropod;
+use Bedriox\Api\Entity\Capability\Breedable;
+use Bedriox\Api\Entity\Capability\Undead;
 use Bedriox\Api\Entity\Entity as ApiEntity;
 use Bedriox\Api\Entity\EntityCategory;
 use Bedriox\Api\Entity\EntityCombustionCause;
@@ -37,10 +39,10 @@ use Bedriox\Api\Entity\EntityTargetReason;
 use Bedriox\Api\Entity\KnockbackCause as ApiKnockbackCause;
 use Bedriox\Api\Entity\KnockbackVector as ApiKnockbackVector;
 use Bedriox\Api\Entity\SpawnCause;
-use Bedriox\Api\Entity\Undead;
+use Bedriox\Api\Entity\Value\RabbitVariant;
+use Bedriox\Api\Entity\Value\WoolColor;
 use Bedriox\Api\Entity\VanillaEntityIdentifier;
 use Bedriox\Api\Entity\VanillaEntityType;
-use Bedriox\Api\Entity\WoolColor;
 use Bedriox\Api\Event\Entity\EntityDamageByEntityEvent;
 use Bedriox\Api\Event\Inventory\InventoryCloseReason as ApiInventoryCloseReason;
 use Bedriox\Api\Event\World\WeatherChangeCause;
@@ -82,6 +84,7 @@ use Bedriox\Server\Entity\Ai\AiRangedIntent;
 use Bedriox\Server\Entity\Ai\AiSchedulerMetrics;
 use Bedriox\Server\Entity\Ai\IndexedAiWorldView;
 use Bedriox\Server\Entity\Ai\VanillaAiMemories;
+use Bedriox\Server\Entity\BreedableAnimalEntity;
 use Bedriox\Server\Entity\EntityDefinition;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\EntityMotion;
@@ -110,6 +113,10 @@ use Bedriox\Server\Entity\Spawn\EntitySpawnRequest;
 use Bedriox\Server\Entity\Spawn\EntitySpawnService;
 use Bedriox\Server\Entity\Spawn\Natural\NaturalSpawnPlayer;
 use Bedriox\Server\Entity\Spawn\Natural\WorldNaturalSpawnRuntime;
+use Bedriox\Server\Entity\Vanilla\ChickenEntity;
+use Bedriox\Server\Entity\Vanilla\CowEntity;
+use Bedriox\Server\Entity\Vanilla\PigEntity;
+use Bedriox\Server\Entity\Vanilla\RabbitEntity;
 use Bedriox\Server\Entity\Vanilla\SheepEntity;
 use Bedriox\Server\Entity\WorldEntityEnvironment;
 use Bedriox\Server\Gameplay\Block\BlockBreakContext;
@@ -1522,6 +1529,10 @@ final class WorldSimulation
 
     private function prepareNaturalEntityEquipment(AbstractLivingEntity $entity): void
     {
+        if ($entity instanceof BreedableAnimalEntity && $entity->spawnOrigin() === SpawnCause::NATURAL
+            && $this->dropRandom->integer(1, 20) === 1) {
+            $entity->setBaby(true);
+        }
         if ($entity instanceof SheepEntity && $entity->spawnOrigin() === SpawnCause::NATURAL) {
             $roll = $this->dropRandom->integer(1, 10_000);
             $entity->setWoolColor(match (true) {
@@ -1532,9 +1543,10 @@ final class WorldSimulation
                 $roll <= 9_984 => WoolColor::BROWN,
                 default => WoolColor::PINK,
             });
-            if ($this->dropRandom->integer(1, 20) === 1) {
-                $entity->setBaby(true);
-            }
+        }
+        if ($entity instanceof RabbitEntity && $entity->spawnOrigin() === SpawnCause::NATURAL) {
+            $variants = RabbitVariant::cases();
+            $entity->setVariant($variants[$this->dropRandom->integer(0, count($variants) - 2)]);
         }
         if ($entity->equipmentState()->getContents() !== []) {
             return;
@@ -1801,11 +1813,25 @@ final class WorldSimulation
         array_push($events, ...$this->advanceEntityEffects());
         array_push($events, ...$this->advanceEntityFire());
         foreach ($this->entityRuntime->registry()->all() as $entity) {
-            if ($entity instanceof SheepEntity && $entity->isAlive()
+            if ($entity instanceof BreedableAnimalEntity && $entity->isAlive()
                 && ($this->tick + $entity->getRuntimeId()) % 20 === 0) {
                 $entity->advanceSpeciesState(20);
-                if (($this->tick + $entity->getRuntimeId()) % 100 === 0) {
+                if ($entity instanceof SheepEntity && ($this->tick + $entity->getRuntimeId()) % 100 === 0) {
                     $this->trySheepEatGrass($entity);
+                }
+                if ($entity instanceof ChickenEntity && $entity->advanceEggLayTimer(20)) {
+                    $entity->resetEggLayTimer($this->dropRandom->integer(6_000, 12_000));
+                    try {
+                        $item = $this->itemEntities->spawn(
+                            new InventoryStack('minecraft:egg', 1, 1),
+                            new Position($entity->internalPosition()->x, $entity->internalPosition()->y + 0.25, $entity->internalPosition()->z),
+                            new ItemEntityMotion(0.0, 0.05, 0.0),
+                            10,
+                        );
+                        $this->deferredEvents[] = new ItemEntitySpawned($item, $this->players->recipients());
+                    } catch (InvalidArgumentException|OverflowException) {
+                        // Capacity pressure defers the next bounded egg cycle instead of failing the world tick.
+                    }
                 }
             }
         }
@@ -4485,6 +4511,10 @@ final class WorldSimulation
             && !$this->interactWithSheep($player, $target)) {
             return new CommandRejected($command->session, 'plugin_cancelled');
         }
+        if ($target instanceof BreedableAnimalEntity
+            && !$this->interactWithBreedableAnimal($player, $target)) {
+            return new CommandRejected($command->session, 'plugin_cancelled');
+        }
         $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
 
         return new EntityInteracted(
@@ -4553,63 +4583,124 @@ final class WorldSimulation
 
             return true;
         }
-        if ($held->identifier !== 'minecraft:wheat') {
-            return true;
-        }
-        if ($sheep->isBaby()) {
-            $sheep->accelerateGrowth(2_400);
-            $this->consumeSelectedItem($player);
+        return true;
+    }
 
+    private function interactWithBreedableAnimal(Player $player, BreedableAnimalEntity $animal): bool
+    {
+        $held = $player->inventory->selectedStack();
+        if ($held === null) {
             return true;
         }
-        if ($sheep->getLoveTicks() === 0) {
-            $sheep->setLoveTicks(SheepEntity::MAXIMUM_LOVE_TICKS);
+        if ($animal instanceof CowEntity && !$animal->isBaby() && $held->identifier === 'minecraft:bucket') {
+            $this->replaceConsumedContainer($player, 'minecraft:milk_bucket');
+            return true;
+        }
+        if ($animal instanceof PigEntity && !$animal->isBaby() && !$animal->isSaddled()
+            && $held->identifier === 'minecraft:saddle') {
+            $animal->setSaddled(true);
             $this->consumeSelectedItem($player);
+            return true;
+        }
+        if (!in_array($held->identifier, $this->breedingFoods($animal), true)) {
+            return true;
+        }
+        if ($animal->isBaby()) {
+            $animal->accelerateGrowth(2_400);
+            $this->consumeSelectedItem($player);
+            return true;
+        }
+        if ($animal->getLoveTicks() === 0) {
+            $animal->setLoveTicks(BreedableAnimalEntity::MAXIMUM_LOVE_TICKS);
+            $this->consumeSelectedItem($player);
+        }
+        if (!$animal->isReadyToBreed()) {
+            return true;
         }
         $partner = null;
-        foreach ($this->entityRuntime->registry()->nearby(
-            $sheep->getWorldName(),
-            $sheep->internalPosition(),
-            8.0,
-            16,
-        ) as $candidate) {
-            if ($candidate !== $sheep
-                && $candidate instanceof SheepEntity
-                && $candidate->isReadyToBreed()) {
+        foreach ($this->entityRuntime->registry()->nearby($animal->getWorldName(), $animal->internalPosition(), 8.0, 16) as $candidate) {
+            if ($candidate !== $animal && $candidate instanceof BreedableAnimalEntity
+                && $candidate->getType() === $animal->getType() && $candidate->isReadyToBreed()) {
                 $partner = $candidate;
                 break;
             }
         }
-        if ($partner === null || !$sheep->isReadyToBreed()) {
+        if ($partner === null) {
             return true;
         }
-        $position = new Position(
-            ($sheep->internalPosition()->x + $partner->internalPosition()->x) / 2.0,
-            min($sheep->internalPosition()->y, $partner->internalPosition()->y),
-            ($sheep->internalPosition()->z + $partner->internalPosition()->z) / 2.0,
-        );
-        $outcome = $this->spawnEntity(new EntitySpawnRequest(
-            VanillaEntityType::SHEEP,
-            SpawnCause::BREEDING,
-            $sheep->getWorldName(),
-            $position,
-        ));
-        if ($outcome->entity instanceof SheepEntity) {
-            $outcome->entity->setBaby(true);
-            $outcome->entity->setWoolColor(
-                $this->dropRandom->integer(0, 1) === 0
-                    ? $sheep->getWoolColor()
-                    : $partner->getWoolColor(),
-            );
-            $sheep->beginBreedingCooldown();
-            $partner->beginBreedingCooldown();
-            array_push($this->deferredEvents, ...$this->spawnExperienceOrbs(
-                $this->dropRandom->integer(1, 7),
-                $position,
-            ));
+        $experience = $this->dropRandom->integer(1, 7);
+        if ($this->pluginEvents !== null) {
+            $experience = $this->pluginEvents->breedEntities($animal, $partner, $experience);
+            if ($experience === null) {
+                return true;
+            }
         }
-
+        $position = new Position(
+            ($animal->internalPosition()->x + $partner->internalPosition()->x) / 2.0,
+            min($animal->internalPosition()->y, $partner->internalPosition()->y),
+            ($animal->internalPosition()->z + $partner->internalPosition()->z) / 2.0,
+        );
+        $outcome = $this->spawnEntity(new EntitySpawnRequest($animal->getType(), SpawnCause::BREEDING, $animal->getWorldName(), $position));
+        if (!$outcome->entity instanceof BreedableAnimalEntity) {
+            return true;
+        }
+        $child = $outcome->entity;
+        $child->setBaby(true);
+        if ($child instanceof SheepEntity && $animal instanceof SheepEntity && $partner instanceof SheepEntity) {
+            $child->setWoolColor($this->dropRandom->integer(0, 1) === 0 ? $animal->getWoolColor() : $partner->getWoolColor());
+        }
+        if ($child instanceof RabbitEntity && $animal instanceof RabbitEntity && $partner instanceof RabbitEntity) {
+            $child->setVariant($this->dropRandom->integer(0, 1) === 0 ? $animal->getVariant() : $partner->getVariant());
+        }
+        $animal->beginBreedingCooldown();
+        $partner->beginBreedingCooldown();
+        array_push($this->deferredEvents, ...$this->spawnExperienceOrbs($experience, $position));
+        $this->pluginEvents?->entitiesBred($animal, $partner, $child, $experience);
         return true;
+    }
+
+    /** @return list<string> */
+    private function breedingFoods(BreedableAnimalEntity $animal): array
+    {
+        return match (true) {
+            $animal instanceof CowEntity, $animal instanceof SheepEntity => ['minecraft:wheat'],
+            $animal instanceof PigEntity => ['minecraft:carrot', 'minecraft:potato', 'minecraft:beetroot'],
+            $animal instanceof ChickenEntity => ['minecraft:wheat_seeds', 'minecraft:beetroot_seeds', 'minecraft:melon_seeds', 'minecraft:pumpkin_seeds', 'minecraft:torchflower_seeds', 'minecraft:pitcher_pod'],
+            $animal instanceof RabbitEntity => ['minecraft:carrot', 'minecraft:golden_carrot', 'minecraft:dandelion'],
+            default => [],
+        };
+    }
+
+    private function replaceConsumedContainer(Player $player, string $resultIdentifier): void
+    {
+        if (!$player->gameMode()->consumesItems()) {
+            return;
+        }
+        $slot = $player->inventory->selectedHotbarSlot();
+        $held = $player->inventory->selectedStack();
+        if ($held === null || $this->itemCatalog === null || !$this->itemCatalog->has($resultIdentifier)) {
+            return;
+        }
+        $result = new InventoryStack($resultIdentifier, 1, 1);
+        if ($held->count === 1) {
+            $player->inventory->replaceSlot($slot, $result);
+        } else {
+            $player->inventory->replaceSlot($slot, $held->decrement());
+            $overflow = $player->inventory->add($result);
+            if ($overflow !== null) {
+                $item = $this->itemEntities->spawn($overflow, $player->movement->position, new ItemEntityMotion(0.0, 0.1, 0.0), 10);
+                $this->deferredEvents[] = new ItemEntitySpawned($item, $this->players->recipients());
+            }
+        }
+        $player->markDirty();
+        $this->deferredEvents[] = new HeldItemChanged(
+            $player->sessionId,
+            $player->runtimeActorId,
+            $slot,
+            $player->inventory->selectedStack(),
+            $this->players->recipients($player->sessionId),
+            ownerSlotCorrection: true,
+        );
     }
 
     private function woolColorFromDye(string $identifier): ?WoolColor

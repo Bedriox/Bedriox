@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Loot;
 
+use Bedriox\Api\Entity\Capability\Breedable;
 use Bedriox\Api\Entity\Vanilla\Sheep;
 use Bedriox\Api\Inventory\ItemStack;
 
@@ -27,6 +28,9 @@ final readonly class SheepLootTable implements LootTable
 {
     public function roll(LootContext $context, LootRandomSource $random): array
     {
+        if ($context->subject instanceof Breedable && $context->subject->isBaby()) {
+            return [];
+        }
         $drops = [new ItemStack(
             $context->burning ? 'minecraft:cooked_mutton' : 'minecraft:mutton',
             $random->nextInt(1, 2 + $context->lootingLevel),

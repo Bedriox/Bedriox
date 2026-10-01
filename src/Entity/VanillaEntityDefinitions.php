@@ -23,7 +23,10 @@ namespace Bedriox\Server\Entity;
 use Bedriox\Api\Entity\EntityCategory;
 use Bedriox\Api\Entity\VanillaEntityType;
 use Bedriox\Data\EntityTypeRegistry;
+use Bedriox\Server\Entity\Vanilla\ChickenEntity;
 use Bedriox\Server\Entity\Vanilla\CowEntity;
+use Bedriox\Server\Entity\Vanilla\PigEntity;
+use Bedriox\Server\Entity\Vanilla\RabbitEntity;
 use Bedriox\Server\Entity\Vanilla\SheepEntity;
 use Bedriox\Server\Entity\Vanilla\SkeletonEntity;
 use Bedriox\Server\Entity\Vanilla\ZombieEntity;
@@ -32,6 +35,9 @@ use Bedriox\Server\Simulation\Position;
 final class VanillaEntityDefinitions
 {
     private static ?EntityDefinition $cow = null;
+    private static ?EntityDefinition $chicken = null;
+    private static ?EntityDefinition $pig = null;
+    private static ?EntityDefinition $rabbit = null;
     private static ?EntityDefinition $sheep = null;
     private static ?EntityDefinition $skeleton = null;
     private static ?EntityDefinition $zombie = null;
@@ -58,6 +64,43 @@ final class VanillaEntityDefinitions
             1.95,
             20.0,
             burnsInDaylight: true,
+        );
+    }
+
+    public static function chicken(): EntityDefinition
+    {
+        return self::$chicken ??= new EntityDefinition(
+            VanillaEntityType::CHICKEN,
+            EntityCategory::ANIMAL,
+            VanillaEntityType::CHICKEN->value,
+            0.6,
+            0.8,
+            4.0,
+            gravity: 0.04,
+        );
+    }
+
+    public static function pig(): EntityDefinition
+    {
+        return self::$pig ??= new EntityDefinition(
+            VanillaEntityType::PIG,
+            EntityCategory::ANIMAL,
+            VanillaEntityType::PIG->value,
+            0.9,
+            0.9,
+            10.0,
+        );
+    }
+
+    public static function rabbit(): EntityDefinition
+    {
+        return self::$rabbit ??= new EntityDefinition(
+            VanillaEntityType::RABBIT,
+            EntityCategory::ANIMAL,
+            VanillaEntityType::RABBIT->value,
+            0.4,
+            0.5,
+            3.0,
         );
     }
 
@@ -94,6 +137,21 @@ final class VanillaEntityDefinitions
                 self::cow(),
                 static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): CowEntity =>
                     new CowEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch),
+            ),
+            new RegisteredEntityDefinition(
+                self::chicken(),
+                static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): ChickenEntity =>
+                    new ChickenEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch),
+            ),
+            new RegisteredEntityDefinition(
+                self::pig(),
+                static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): PigEntity =>
+                    new PigEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch),
+            ),
+            new RegisteredEntityDefinition(
+                self::rabbit(),
+                static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): RabbitEntity =>
+                    new RabbitEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch),
             ),
             new RegisteredEntityDefinition(
                 self::zombie(),

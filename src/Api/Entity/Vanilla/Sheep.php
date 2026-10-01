@@ -20,11 +20,11 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\Entity\Vanilla;
 
-use Bedriox\Api\Entity\Animal;
-use Bedriox\Api\Entity\Breedable;
-use Bedriox\Api\Entity\Shearable;
-use Bedriox\Api\Entity\SheepController;
-use Bedriox\Api\Entity\WoolColor;
+use Bedriox\Api\Entity\Capability\Animal;
+use Bedriox\Api\Entity\Capability\Breedable;
+use Bedriox\Api\Entity\Capability\Shearable;
+use Bedriox\Api\Entity\Controller\SheepController;
+use Bedriox\Api\Entity\Value\WoolColor;
 
 interface Sheep extends Animal, Breedable, Shearable
 {

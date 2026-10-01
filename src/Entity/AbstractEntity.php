@@ -204,7 +204,7 @@ abstract class AbstractEntity implements ApiEntity
 
     final public function scale(): float
     {
-        return $this->sizeMultiplier() * $this->scale;
+        return $this->visualSizeMultiplier() * $this->scale;
     }
 
     final public function collisionWidth(): float
@@ -451,5 +451,16 @@ abstract class AbstractEntity implements ApiEntity
     protected function sizeMultiplier(): float
     {
         return 1.0;
+    }
+
+    protected function visualSizeMultiplier(): float
+    {
+        return $this->sizeMultiplier();
+    }
+
+    /** @internal Species-specific downward velocity cap used by authoritative physics. */
+    public function maximumDownwardVelocity(): float
+    {
+        return PHP_FLOAT_MAX;
     }
 }

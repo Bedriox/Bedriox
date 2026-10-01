@@ -18,9 +18,12 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api\Entity;
+namespace Bedriox\Api\Entity\Controller;
 
 use Bedriox\Api\Effect\EffectManager;
+use Bedriox\Api\Entity\Entity;
+use Bedriox\Api\Entity\EntityDamageCause;
+use Bedriox\Api\Entity\EntityEquipment;
 
 interface LivingEntityController extends EntityController
 {

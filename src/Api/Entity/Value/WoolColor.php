@@ -18,7 +18,7 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api\Entity;
+namespace Bedriox\Api\Entity\Value;
 
 enum WoolColor: string
 {

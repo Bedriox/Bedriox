@@ -23,9 +23,9 @@ namespace Bedriox\Server\Tests\Entity\Loot;
 use Bedriox\Api\Entity\Entity;
 use Bedriox\Api\Entity\EntityType;
 use Bedriox\Api\Entity\SpawnCause;
+use Bedriox\Api\Entity\Value\WoolColor;
 use Bedriox\Api\Entity\VanillaEntityIdentifier;
 use Bedriox\Api\Entity\VanillaEntityType;
-use Bedriox\Api\Entity\WoolColor;
 use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Inventory\ItemNbt;
 use Bedriox\Api\Inventory\ItemStack;
@@ -36,6 +36,10 @@ use Bedriox\Server\Entity\Loot\LootContext;
 use Bedriox\Server\Entity\Loot\LootItemRegistry;
 use Bedriox\Server\Entity\Loot\LootRandomSource;
 use Bedriox\Server\Entity\Loot\LootTable;
+use Bedriox\Server\Entity\Vanilla\ChickenEntity;
+use Bedriox\Server\Entity\Vanilla\CowEntity;
+use Bedriox\Server\Entity\Vanilla\PigEntity;
+use Bedriox\Server\Entity\Vanilla\RabbitEntity;
 use Bedriox\Server\Entity\Vanilla\SheepEntity;
 use Bedriox\Server\Simulation\Position;
 use InvalidArgumentException;
@@ -104,6 +108,28 @@ final class EntityLootResolverTest extends TestCase
 
         self::assertSame(['minecraft:arrow'], array_column($drops, 'identifier'));
         self::assertSame([4], array_column($drops, 'count'));
+    }
+
+    public function testCommonPassiveAnimalsUseSpeciesDropsAndBabiesDropNothing(): void
+    {
+        $pig = new PigEntity(EntityUuid::random(), 2, 'world', new Position(0.0, 64.0, 0.0), saddled: true);
+        $pigDrops = self::resolver(new ScriptedLootRandom([2]))
+            ->prepare(self::context(VanillaEntityType::PIG, subject: $pig))->drops();
+        self::assertSame(['minecraft:porkchop', 'minecraft:saddle'], array_column($pigDrops, 'identifier'));
+
+        $chicken = new ChickenEntity(EntityUuid::random(), 3, 'world', new Position(0.0, 64.0, 0.0));
+        $chickenDrops = self::resolver(new ScriptedLootRandom([2]))
+            ->prepare(self::context(VanillaEntityType::CHICKEN, subject: $chicken))->drops();
+        self::assertSame(['minecraft:chicken', 'minecraft:feather'], array_column($chickenDrops, 'identifier'));
+
+        $rabbit = new RabbitEntity(EntityUuid::random(), 4, 'world', new Position(0.0, 64.0, 0.0));
+        $rabbitDrops = self::resolver(new ScriptedLootRandom([1, 1, 1]))
+            ->prepare(self::context(VanillaEntityType::RABBIT, subject: $rabbit))->drops();
+        self::assertSame(['minecraft:rabbit_hide', 'minecraft:rabbit', 'minecraft:rabbit_foot'], array_column($rabbitDrops, 'identifier'));
+
+        $baby = new CowEntity(EntityUuid::random(), 5, 'world', new Position(0.0, 64.0, 0.0), baby: true);
+        self::assertSame([], self::resolver(new ScriptedLootRandom([]))
+            ->prepare(self::context(VanillaEntityType::COW, subject: $baby))->drops());
     }
 
     public function testGenericEntityHasNoImplicitLoot(): void
@@ -207,6 +233,16 @@ final class EntityLootResolverTest extends TestCase
             'minecraft:blue_wool' => 64,
             'minecraft:bone' => 64,
             'minecraft:cooked_mutton' => 64,
+            'minecraft:chicken' => 64,
+            'minecraft:cooked_chicken' => 64,
+            'minecraft:porkchop' => 64,
+            'minecraft:cooked_porkchop' => 64,
+            'minecraft:rabbit' => 64,
+            'minecraft:cooked_rabbit' => 64,
+            'minecraft:rabbit_foot' => 64,
+            'minecraft:rabbit_hide' => 64,
+            'minecraft:feather' => 64,
+            'minecraft:saddle' => 1,
             'minecraft:mutton' => 64,
             'minecraft:potato' => 64,
             'minecraft:rotten_flesh' => 64,

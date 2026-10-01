@@ -18,8 +18,9 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api\Entity;
+namespace Bedriox\Api\Entity\Controller;
 
+use Bedriox\Api\Entity\EntityCombustionCause;
 use Bedriox\Api\World\Position;
 
 /**

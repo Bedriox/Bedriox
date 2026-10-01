@@ -25,6 +25,8 @@ use Bedriox\Api\Crafting\CraftingRecipe as ApiCraftingRecipe;
 use Bedriox\Api\Effect\EffectActions;
 use Bedriox\Api\Effect\EffectCause;
 use Bedriox\Api\Effect\EffectInstance;
+use Bedriox\Api\Entity\Capability\Breedable;
+use Bedriox\Api\Entity\Capability\Shearable;
 use Bedriox\Api\Entity\Entity as ApiEntity;
 use Bedriox\Api\Entity\EntityCombustionCause;
 use Bedriox\Api\Entity\EntityDamageCause;
@@ -33,7 +35,6 @@ use Bedriox\Api\Entity\EntityTargetReason;
 use Bedriox\Api\Entity\KnockbackCause;
 use Bedriox\Api\Entity\KnockbackVector;
 use Bedriox\Api\Entity\LivingEntity as ApiLivingEntity;
-use Bedriox\Api\Entity\Shearable;
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\Vector3;
 use Bedriox\Api\Event\Block\BlockBreakEvent;
@@ -48,6 +49,8 @@ use Bedriox\Api\Event\Block\ChestPairedEvent;
 use Bedriox\Api\Event\Block\ChestPairEvent;
 use Bedriox\Api\Event\Entity\ActorKnockbackEvent;
 use Bedriox\Api\Event\Entity\ActorKnockedBackEvent;
+use Bedriox\Api\Event\Entity\EntityBredEvent;
+use Bedriox\Api\Event\Entity\EntityBreedEvent;
 use Bedriox\Api\Event\Entity\EntityCombustEvent;
 use Bedriox\Api\Event\Entity\EntityDamageByEntityEvent;
 use Bedriox\Api\Event\Entity\EntityDamageEvent;
@@ -60,14 +63,14 @@ use Bedriox\Api\Event\Entity\EntityEffectRemovedEvent;
 use Bedriox\Api\Event\Entity\EntityEffectRemoveEvent;
 use Bedriox\Api\Event\Entity\EntityEquipmentChangedEvent;
 use Bedriox\Api\Event\Entity\EntityEquipmentChangeEvent;
-use Bedriox\Api\Event\Entity\EntityInteractEvent;
 use Bedriox\Api\Event\Entity\EntityInteractedEvent;
+use Bedriox\Api\Event\Entity\EntityInteractEvent;
 use Bedriox\Api\Event\Entity\EntityShearedEvent;
 use Bedriox\Api\Event\Entity\EntityShearEvent;
-use Bedriox\Api\Event\Entity\EntityTargetChangedEvent;
-use Bedriox\Api\Event\Entity\EntityTargetEvent;
 use Bedriox\Api\Event\Entity\EntitySpawnedEvent;
 use Bedriox\Api\Event\Entity\EntitySpawnEvent;
+use Bedriox\Api\Event\Entity\EntityTargetChangedEvent;
+use Bedriox\Api\Event\Entity\EntityTargetEvent;
 use Bedriox\Api\Event\Entity\ExperienceOrbSpawnedEvent;
 use Bedriox\Api\Event\Entity\ExperienceOrbSpawnEvent;
 use Bedriox\Api\Event\Entity\PotionProjectileImpactedEvent;
@@ -242,6 +245,18 @@ final readonly class PluginGameplayEventBridge
     public function dispatch(Event $event): Event
     {
         return $this->events->dispatch($event);
+    }
+
+    public function breedEntities(Breedable $first, Breedable $second, int $experience): ?int
+    {
+        $event = new EntityBreedEvent($first, $second, $first->getType(), $experience);
+        $this->events->dispatch($event);
+        return $event->isCancelled() ? null : $event->getExperience();
+    }
+
+    public function entitiesBred(Breedable $first, Breedable $second, Breedable $child, int $experience): void
+    {
+        $this->events->dispatch(new EntityBredEvent($first, $second, $child, $experience));
     }
 
     /** @param Closure(string): PlayerConnection $playerConnections */

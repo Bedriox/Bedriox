@@ -20,6 +20,6 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity;
 
-use Bedriox\Api\Entity\Monster;
+use Bedriox\Api\Entity\Capability\Monster;
 
 abstract class MonsterEntity extends AbstractMobEntity implements Monster {}

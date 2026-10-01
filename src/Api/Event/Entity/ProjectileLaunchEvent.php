@@ -20,8 +20,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\Event\Entity;
 
-use Bedriox\Api\Entity\Vector3;
 use Bedriox\Api\Entity\LivingEntity;
+use Bedriox\Api\Entity\Vector3;
 use Bedriox\Api\Event\CancellableEvent;
 use Bedriox\Api\Player\Player;
 use Bedriox\Api\World\Position;

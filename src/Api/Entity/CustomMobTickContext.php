@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\Entity;
 
+use Bedriox\Api\Entity\Controller\MobController;
 use InvalidArgumentException;
 
 final readonly class CustomMobTickContext

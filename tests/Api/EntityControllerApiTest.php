@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Api;
 
-use Bedriox\Api\Entity\EntityController;
+use Bedriox\Api\Entity\Controller\EntityController;
 use Bedriox\Api\Entity\EntityEquipment;
 use Bedriox\Api\Inventory\EquipmentSlot;
 use PHPUnit\Framework\TestCase;

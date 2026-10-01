@@ -18,6 +18,15 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api\Entity;
+namespace Bedriox\Api\Entity\Vanilla;
 
-interface Animal extends Mob {}
+use Bedriox\Api\Entity\Capability\Animal;
+use Bedriox\Api\Entity\Capability\Breedable;
+use Bedriox\Api\Entity\Controller\PigController;
+
+interface Pig extends Animal, Breedable
+{
+    public function isSaddled(): bool;
+
+    public function getController(): PigController;
+}

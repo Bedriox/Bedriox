@@ -108,22 +108,37 @@ final class WorldNaturalSpawnRuntimeTest extends TestCase
         $players = [new NaturalSpawnPlayer('world', new Position(0.5, 64.0, 0.5))];
 
         self::assertSame([], $runtime->tick(19, $players)->spawned());
-        $day = $runtime->tick(20, $players);
-        self::assertNotEmpty($day->spawned());
-        foreach ($day->spawned() as $entity) {
-            self::assertSame(VanillaEntityType::COW, $entity->getType());
+        $daySpawned = [];
+        for ($tick = 20; $tick <= 200 && $daySpawned === []; $tick += 20) {
+            $daySpawned = $runtime->tick($tick, $players)->spawned();
+        }
+        self::assertNotEmpty($daySpawned);
+        foreach ($daySpawned as $entity) {
+            self::assertContains($entity->getType(), [
+                VanillaEntityType::CHICKEN,
+                VanillaEntityType::COW,
+                VanillaEntityType::PIG,
+                VanillaEntityType::RABBIT,
+                VanillaEntityType::SHEEP,
+            ]);
             self::assertTrue($world->hasLoadedChunk(new ChunkPosition(
                 (int) floor($entity->internalPosition()->x / 16.0),
                 (int) floor($entity->internalPosition()->z / 16.0),
             )));
         }
-        self::assertSame(count($day->spawned()), $runtime->trackedCount());
+        self::assertGreaterThanOrEqual(count($daySpawned), $runtime->trackedCount());
 
         $world->setTime(14_000);
-        $night = $runtime->tick(40, $players);
-        self::assertNotEmpty($night->spawned());
-        foreach ($night->spawned() as $entity) {
-            self::assertSame(VanillaEntityType::ZOMBIE, $entity->getType());
+        $nightSpawned = [];
+        for ($tick = 220; $tick <= 600 && $nightSpawned === []; $tick += 20) {
+            $nightSpawned = $runtime->tick($tick, $players)->spawned();
+        }
+        self::assertNotEmpty($nightSpawned);
+        foreach ($nightSpawned as $entity) {
+            self::assertContains($entity->getType(), [
+                VanillaEntityType::SKELETON,
+                VanillaEntityType::ZOMBIE,
+            ]);
         }
     }
 

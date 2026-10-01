@@ -30,20 +30,26 @@ use InvalidArgumentException;
 
 final readonly class TemptingPlayerSensor implements AiSensor
 {
+    /** @param array<mixed> $itemIdentifiers */
     public function __construct(
         private string $identifier,
         private int $intervalTicks,
         private float $radius,
-        private string $itemIdentifier,
+        private array $itemIdentifiers,
         private int $memoryTicks,
     ) {
         if ($identifier === '' || strlen($identifier) > 128
             || $intervalTicks < 1 || $intervalTicks > 1_200
             || !is_finite($radius) || $radius <= 0.0 || $radius > 128.0
             || $memoryTicks < $intervalTicks || $memoryTicks > 1_200
-            || strlen($itemIdentifier) > 128
-            || preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $itemIdentifier) !== 1) {
+            || !array_is_list($itemIdentifiers) || $itemIdentifiers === [] || count($itemIdentifiers) > 16) {
             throw new InvalidArgumentException('Tempting-player sensor bounds are invalid.');
+        }
+        foreach ($itemIdentifiers as $itemIdentifier) {
+            if (!is_string($itemIdentifier) || strlen($itemIdentifier) > 128
+                || preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $itemIdentifier) !== 1) {
+                throw new InvalidArgumentException('Tempting-player sensor item identifier is invalid.');
+            }
         }
     }
 
@@ -64,7 +70,7 @@ final readonly class TemptingPlayerSensor implements AiSensor
 
             return;
         }
-        $target = $context->world->nearestPlayerHolding($entity, $this->radius, $this->itemIdentifier);
+        $target = $context->world->nearestPlayerHolding($entity, $this->radius, $this->itemIdentifiers);
         if ($target === null) {
             $memory->forget(VanillaAiMemories::temptingPlayer());
 

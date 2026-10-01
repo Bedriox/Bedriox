@@ -26,9 +26,10 @@ interface TargetAwareAiWorldView extends AiWorldView
 {
     public function nearestPlayer(AbstractMobEntity $entity, float $radius): ?AiPlayerSnapshot;
 
+    /** @param array<mixed> $itemIdentifiers */
     public function nearestPlayerHolding(
         AbstractMobEntity $entity,
         float $radius,
-        string $itemIdentifier,
+        array $itemIdentifiers,
     ): ?AiPlayerSnapshot;
 }

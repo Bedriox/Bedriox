@@ -18,9 +18,15 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api\Entity;
+namespace Bedriox\Api\Entity\Value;
 
-interface Breedable extends Ageable
+enum RabbitVariant: int
 {
-    public function getLoveTicks(): int;
+    case BROWN = 0;
+    case WHITE = 1;
+    case BLACK = 2;
+    case WHITE_SPLOTCHED = 3;
+    case GOLD = 4;
+    case SALT_AND_PEPPER = 5;
+    case KILLER = 99;
 }

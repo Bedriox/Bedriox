@@ -20,17 +20,17 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Entity;
 
-use Bedriox\Api\Entity\Ageable;
-use Bedriox\Api\Entity\Breedable;
+use Bedriox\Api\Entity\Capability\Ageable;
+use Bedriox\Api\Entity\Capability\Breedable;
+use Bedriox\Api\Entity\Capability\RangedMob;
+use Bedriox\Api\Entity\Capability\Shearable;
+use Bedriox\Api\Entity\Capability\Undead;
+use Bedriox\Api\Entity\Controller\SheepController;
 use Bedriox\Api\Entity\EntityCategory;
-use Bedriox\Api\Entity\RangedMob;
-use Bedriox\Api\Entity\Shearable;
-use Bedriox\Api\Entity\SheepController;
-use Bedriox\Api\Entity\Undead;
+use Bedriox\Api\Entity\Value\WoolColor;
 use Bedriox\Api\Entity\Vanilla\Sheep;
 use Bedriox\Api\Entity\Vanilla\Skeleton;
 use Bedriox\Api\Entity\VanillaEntityType;
-use Bedriox\Api\Entity\WoolColor;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\EntityUuid;
 use Bedriox\Server\Entity\Vanilla\SheepEntity;

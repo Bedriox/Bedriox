@@ -18,6 +18,15 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api\Entity;
+namespace Bedriox\Api\Entity\Vanilla;
 
-interface Monster extends Mob {}
+use Bedriox\Api\Entity\Capability\Animal;
+use Bedriox\Api\Entity\Capability\Breedable;
+use Bedriox\Api\Entity\Controller\BreedableAnimalController;
+
+interface Chicken extends Animal, Breedable
+{
+    public function getEggLayTicks(): int;
+
+    public function getController(): BreedableAnimalController;
+}

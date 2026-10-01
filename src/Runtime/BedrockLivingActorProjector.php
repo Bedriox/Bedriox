@@ -21,10 +21,12 @@ declare(strict_types=1);
 namespace Bedriox\Server\Runtime;
 
 use Bedriox\Api\Effect\EffectType;
-use Bedriox\Api\Entity\Ageable;
-use Bedriox\Api\Entity\Shearable;
+use Bedriox\Api\Entity\Capability\Ageable;
+use Bedriox\Api\Entity\Capability\Shearable;
+use Bedriox\Api\Entity\Value\WoolColor;
+use Bedriox\Api\Entity\Vanilla\Pig;
+use Bedriox\Api\Entity\Vanilla\Rabbit;
 use Bedriox\Api\Entity\Vanilla\Sheep;
-use Bedriox\Api\Entity\WoolColor;
 use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Inventory\ItemStack;
 use Bedriox\Protocol\Packet\ActorAttribute;
@@ -67,6 +69,7 @@ final class BedrockLivingActorProjector
         return [
             $this->flagsMetadata($entity, $noAi),
             ActorMetadata::int(1, (int) ceil($entity->getHealth())),
+            ActorMetadata::int(2, $entity instanceof Rabbit ? $entity->getVariant()->value : 0),
             ActorMetadata::byte(3, $entity instanceof Sheep ? self::woolColorIndex($entity->getWoolColor()) : 0),
             ActorMetadata::string(4, $entity->nameTag()),
             ActorMetadata::long(5, -1),
@@ -108,6 +111,9 @@ final class BedrockLivingActorProjector
         }
         if ($entity instanceof Ageable && $entity->isBaby()) {
             $flags |= ActorFlag::Baby->mask();
+        }
+        if ($entity instanceof Pig && $entity->isSaddled()) {
+            $flags |= ActorFlag::Saddled->mask();
         }
         if ($entity instanceof Shearable && $entity->isSheared()) {
             $flags |= ActorFlag::Sheared->mask();

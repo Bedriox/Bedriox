@@ -21,6 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Tests\Plugin;
 
 use Bedriox\Api\Command\CommandRegistrar;
+use Bedriox\Api\Entity\Controller\MobController;
 use Bedriox\Api\Entity\CustomEntityState;
 use Bedriox\Api\Entity\CustomEntityType;
 use Bedriox\Api\Entity\CustomMobBehavior;
@@ -258,7 +259,7 @@ final class PluginEntityRegistrarTest extends TestCase
             new CustomMobTickContext(
                 $this->createStub(Mob::class),
                 20,
-                $this->createStub(\Bedriox\Api\Entity\MobController::class),
+                $this->createStub(MobController::class),
             ),
         ));
         self::assertFalse($plugins->isEnabled('Example'));

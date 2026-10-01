@@ -47,7 +47,7 @@ final readonly class EntityPhysicsResolver
         $friction = 1.0 - $definition->drag;
         $requested = new EntityMotion(
             $beforeMotion->x * $friction,
-            ($beforeMotion->y - ($entity->isGravityEnabled() ? $definition->gravity : 0.0)) * $friction,
+            max(-$entity->maximumDownwardVelocity(), ($beforeMotion->y - ($entity->isGravityEnabled() ? $definition->gravity : 0.0)) * $friction),
             $beforeMotion->z * $friction,
         );
         $halfWidth = $entity->collisionWidth() / 2.0;

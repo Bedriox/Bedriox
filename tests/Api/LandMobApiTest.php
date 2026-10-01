@@ -22,7 +22,7 @@ namespace Bedriox\Server\Tests\Api;
 
 use Bedriox\Api\Entity\EntityInteractionType;
 use Bedriox\Api\Entity\EntityTargetReason;
-use Bedriox\Api\Entity\WoolColor;
+use Bedriox\Api\Entity\Value\WoolColor;
 use Bedriox\Api\Event\Entity\EntityInteractedEvent;
 use Bedriox\Api\Event\Entity\EntityShearedEvent;
 use Bedriox\Api\Event\Entity\EntityShearEvent;

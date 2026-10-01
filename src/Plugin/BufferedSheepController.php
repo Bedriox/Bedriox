@@ -20,15 +20,14 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Plugin;
 
+use Bedriox\Api\Entity\Controller\MobController;
+use Bedriox\Api\Entity\Controller\SheepController;
 use Bedriox\Api\Entity\EntityEquipment;
-use Bedriox\Api\Entity\MobController;
-use Bedriox\Api\Entity\SheepController;
-use Bedriox\Api\Entity\WoolColor;
+use Bedriox\Api\Entity\Value\WoolColor;
 use Bedriox\Server\Entity\Vanilla\SheepEntity;
-use InvalidArgumentException;
 
 /** @internal Collects sheep-specific mutations in the active plugin transaction. */
-final class BufferedSheepController extends BufferedMobController implements SheepController
+final class BufferedSheepController extends BufferedBreedableAnimalController implements SheepController
 {
     public function __construct(
         ?PluginActionBuffer $actions,
@@ -37,27 +36,6 @@ final class BufferedSheepController extends BufferedMobController implements She
         ?MobController $delegate = null,
     ) {
         parent::__construct($actions, $sheep, $equipment, $delegate);
-    }
-
-    public function setBaby(bool $baby): void
-    {
-        $this->stage(function () use ($baby): void {
-            if (!$this->sheep->isRemoved()) {
-                $this->sheep->setBaby($baby);
-            }
-        });
-    }
-
-    public function setLoveTicks(int $ticks): void
-    {
-        if ($ticks < 0 || $ticks > SheepEntity::MAXIMUM_LOVE_TICKS) {
-            throw new InvalidArgumentException('Sheep love state is outside its supported bounds.');
-        }
-        $this->stage(function () use ($ticks): void {
-            if (!$this->sheep->isRemoved()) {
-                $this->sheep->setLoveTicks($ticks);
-            }
-        });
     }
 
     public function setSheared(bool $sheared): void
