@@ -62,6 +62,11 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Fixed
 
+- Start genuinely new player profiles with an empty inventory instead of the
+  legacy 64-block grass stack.
+- Drop and clear carried survival/adventure inventory on death, including the
+  cursor, armor, and offhand, while preserving Ender Chest contents and letting
+  `PlayerDeathEvent` explicitly retain inventory when a plugin requests it.
 - Reconnect Unix installer auto-start to the controlling terminal so the
   first-run wizard works after `curl | sh`, while leaving non-interactive
   installations ready for an explicit later start.
@@ -83,6 +88,8 @@ All notable changes will be documented here. The project follows Semantic Versio
 - Reject attempts to merge one-slot tools in catalog-free inventories without throwing or changing either slot.
 
 ### Added
+
+- Add plugin-owned resource, YAML and JSON configuration storage through `PluginContext::data()`, named plugin logging levels, global server broadcasts, customizable join announcements, and attributed player admission logging.
 
 - Add authoritative vehicle and passenger relationships, adult saddled-pig riding and carrot-on-a-stick steering, safe lifecycle dismounts, multiplayer actor-link synchronization, and typed plugin APIs and events.
 - Add authoritative cow, sheep, pig, chicken, and rabbit age, temptation,

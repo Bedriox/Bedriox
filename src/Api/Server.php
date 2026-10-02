@@ -26,6 +26,8 @@ use Bedriox\Api\World\WorldManager;
 
 interface Server
 {
+    public function broadcastMessage(string|TranslatableMessage $message): int;
+
     public function getWorldManager(): WorldManager;
 
     public function getWhitelist(): Whitelist;

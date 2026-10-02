@@ -22,6 +22,7 @@ namespace Bedriox\Server\Plugin;
 
 use Bedriox\Api\Plugin\Plugin;
 use Bedriox\Api\Plugin\PluginContext;
+use Bedriox\Server\Plugin\Data\PluginResourceProvider;
 use Closure;
 
 final readonly class PluginPackage
@@ -35,6 +36,7 @@ final readonly class PluginPackage
         public PluginManifest $manifest,
         public Closure $autoloader,
         public Closure $instantiate,
+        public PluginResourceProvider $resources,
         public ?PluginArchiveIdentity $archiveIdentity = null,
     ) {}
 }

@@ -66,6 +66,7 @@ use Bedriox\Api\Player\FoodLevelChangeCause;
 use Bedriox\Api\Player\HealthRegainCause;
 use Bedriox\Api\Player\Player as ApiPlayer;
 use Bedriox\Api\Player\PlayerInteractionType;
+use Bedriox\Api\TextFormat;
 use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Data\BedrockDataSet;
@@ -116,6 +117,34 @@ use Throwable;
 
 final class PluginGameplayEventBridgeTest extends TestCase
 {
+    public function testJoinEventProvidesYellowDefaultAndAllowsReplacementOrSuppression(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $player = new Player(
+            'session',
+            1,
+            new PlayerIdentity('identity-one', 'One'),
+            new Position(0.0, 64.0, 0.0),
+            4,
+            0,
+            64.0,
+        );
+
+        $default = $bridge->joined($player);
+        self::assertSame(TextFormat::YELLOW . 'One joined the game' . TextFormat::RESET, $default);
+
+        $dispatcher->register('Example', PlayerJoinEvent::class, static function (PlayerJoinEvent $event): void {
+            $event->setJoinMessage('One entered the world!');
+        });
+        self::assertSame('One entered the world!', $bridge->joined($player));
+
+        [$suppressingDispatcher, $suppressingBridge] = self::bridge();
+        $suppressingDispatcher->register('Example', PlayerJoinEvent::class, static function (PlayerJoinEvent $event): void {
+            $event->setJoinMessage(null);
+        });
+        self::assertNull($suppressingBridge->joined($player));
+    }
+
     public function testEntityInteractedDispatchesCommittedHeldItemSnapshot(): void
     {
         [$dispatcher, $bridge] = self::bridge();
@@ -497,6 +526,8 @@ final class PluginGameplayEventBridgeTest extends TestCase
         [$simulation, $factory, $world, $palette] = self::simulation($bridge);
         $simulation->enqueue($factory->join('one', 'identity-one', 'One'));
         $simulation->tick();
+        self::assertTrue($simulation->enqueueGiveItem('identity-one', 'minecraft:grass_block', 64));
+        $simulation->tick();
 
         $simulation->enqueue($factory->placeBlock(
             'one',
@@ -582,7 +613,7 @@ final class PluginGameplayEventBridgeTest extends TestCase
         self::assertTrue($simulation->enqueuePluginInventoryContents('identity-one', $contents));
         $set = $simulation->tick()->events[0];
         self::assertInstanceOf(InventoryStackRequestProcessed::class, $set);
-        self::assertSame([0, 3], array_map(static fn($slot): int => $slot->slot, $set->affectedSlots));
+        self::assertSame([3], array_map(static fn($slot): int => $slot->slot, $set->affectedSlots));
         self::assertSame(8, $set->mainInventory[3]?->count);
 
         self::assertTrue($simulation->enqueuePluginInventoryRemoval(
@@ -753,6 +784,8 @@ final class PluginGameplayEventBridgeTest extends TestCase
             $deathCause = $event->cause;
             $deathDamage = $event->damage;
             self::assertNull($event->killer);
+            self::assertFalse($event->keepsInventory());
+            $event->setKeepInventory(true);
             self::assertInstanceOf(TranslatableMessage::class, $event->deathMessage());
             $event->setDeathMessage('One died while testing');
             $event->setDeathScreenMessage(null);
@@ -783,6 +816,34 @@ final class PluginGameplayEventBridgeTest extends TestCase
         self::assertSame(2.0, $event->player->position->x);
         self::assertSame(3.0, $event->player->position->z);
         self::assertSame(20.0, $respawnHealth);
+    }
+
+    public function testDeathListenerMayRetainTheAuthoritativeInventory(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $dispatcher->register('Example', PlayerDeathEvent::class, static function (PlayerDeathEvent $event): void {
+            $event->setKeepInventory(true);
+        });
+        [$simulation, $factory] = self::simulation($bridge);
+        $simulation->enqueue($factory->join('one', 'identity-one', 'One'));
+        $simulation->tick();
+        self::assertTrue($simulation->enqueueGiveItem('identity-one', 'minecraft:apple', 2));
+        $simulation->tick();
+        $simulation->enqueue($factory->damage('one', 20.0));
+        $simulation->tick();
+        $simulation->enqueue($factory->acknowledgeRespawn('one'));
+
+        $events = $simulation->tick()->events;
+        $respawned = array_values(array_filter(
+            $events,
+            static fn(object $event): bool => $event instanceof PlayerRespawned,
+        ));
+
+        self::assertCount(1, $respawned);
+        $stack = $respawned[0]->inventory[0];
+        self::assertNotNull($stack);
+        self::assertSame('minecraft:apple', $stack->identifier);
+        self::assertSame(2, $stack->count);
     }
 
     public function testFaultyDeathListenerRestoresBothMessagesBeforeLaterListeners(): void

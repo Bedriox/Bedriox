@@ -438,8 +438,8 @@ final class WorldSimulationTest extends TestCase
         self::assertInstanceOf(InventoryStackRequestProcessed::class, $event);
         self::assertTrue($event->success);
         self::assertSame(InventoryResponseMode::LegacySlotSync, $event->responseMode);
-        self::assertFalse($event->selectedStackChanged);
-        self::assertSame([1, 2], array_map(
+        self::assertTrue($event->selectedStackChanged);
+        self::assertSame([0, 1], array_map(
             static fn(InventorySlotReference $reference): int => $reference->slot,
             $event->affectedSlots,
         ));

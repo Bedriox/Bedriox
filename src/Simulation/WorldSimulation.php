@@ -75,6 +75,7 @@ use Bedriox\Api\Player\Player as ApiPlayer;
 use Bedriox\Api\Potion\PotionType;
 use Bedriox\Api\Processing\CartographyOperation;
 use Bedriox\Api\Processing\SmithingRecipeType;
+use Bedriox\Api\TextFormat;
 use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\BlockFace as ApiBlockFace;
 use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
@@ -4074,9 +4075,7 @@ final class WorldSimulation
                 $this->itemCatalog,
                 $this->blockStateRegistry,
             )
-            : ($this->blockPalette === null
-                ? PlayerInventory::empty($this->itemCatalog)
-                : PlayerInventory::starter($this->blockPalette, $this->itemCatalog));
+            : PlayerInventory::empty($this->itemCatalog);
         $player = new Player(
             $command->session,
             $runtimeActorId,
@@ -4156,13 +4155,16 @@ final class WorldSimulation
         if ($runtimeActorId >= $this->nextRuntimeActorId && $runtimeActorId < PHP_INT_MAX) {
             $this->nextRuntimeActorId = $runtimeActorId + 1;
         }
-        $this->pluginEvents?->joined($player);
+        $joinMessage = $this->pluginEvents === null
+            ? TextFormat::YELLOW . $player->identity->displayName . ' joined the game' . TextFormat::RESET
+            : $this->pluginEvents->joined($player);
 
         return new PlayerJoined(
             $player->snapshot(),
             $peers,
             $this->players->recipients(),
             $this->blockWorld?->weather()->weather,
+            $joinMessage,
         );
     }
 
@@ -5889,7 +5891,6 @@ final class WorldSimulation
         Player|AbstractLivingEntity|null $attacker = null,
     ): PlayerDied {
         $this->forceDismountPlayer($player, MountReason::DEATH);
-        $this->removeVanishingItems($player);
         $this->triggerDeathEffectConsequences(
             $player->movement->position,
             $player->effects->snapshot(),
@@ -5968,7 +5969,10 @@ final class WorldSimulation
             ),
         };
         $presentation = $this->pluginEvents?->death($player, $cause, $damage, $killer, $message, $message)
-            ?? new DeathPresentation($message, $message);
+            ?? new DeathPresentation($message, $message, false);
+        if (!$presentation->keepInventory) {
+            $this->dropPlayerInventory($player);
+        }
 
         return new PlayerDied(
             $player->snapshot(),
@@ -5981,31 +5985,29 @@ final class WorldSimulation
         );
     }
 
-    private function removeVanishingItems(Player $player): void
+    private function dropPlayerInventory(Player $player): void
     {
-        $slots = $player->inventory->slots();
-        $changed = false;
-        foreach ($slots as $slot => $stack) {
-            if (EnchantmentEffects::level($stack?->nbt, VanillaEnchantments::VANISHING) === 0) {
+        $drops = $player->inventory->extractCarriedContents();
+        $player->markDirty();
+        if (!$player->gameMode()->consumesItems()) {
+            return;
+        }
+        $position = $player->movement->position;
+        foreach ($drops as $stack) {
+            if (EnchantmentEffects::level($stack->nbt, VanillaEnchantments::VANISHING) > 0
+                || !$this->itemEntities->canSpawn()) {
                 continue;
             }
-            $slots[$slot] = null;
-            $changed = true;
+            $spreadX = $this->dropRandom->integer(-10, 10) / 100.0;
+            $spreadZ = $this->dropRandom->integer(-10, 10) / 100.0;
+            $entity = $this->itemEntities->spawn(
+                $stack,
+                new Position($position->x, $position->y + 0.5, $position->z),
+                new ItemEntityMotion($spreadX, 0.15, $spreadZ),
+                10,
+            );
+            $this->deferredEvents[] = new ItemEntitySpawned($entity, $this->players->recipients());
         }
-        if ($changed) {
-            $player->inventory->replaceMainContents($slots);
-        }
-        foreach (ArmorSlot::cases() as $slot) {
-            $stack = $player->inventory->armorStack($slot);
-            if (EnchantmentEffects::level($stack?->nbt, VanillaEnchantments::VANISHING) > 0) {
-                $player->inventory->replaceArmorSlot($slot, null);
-            }
-        }
-        $offhand = $player->inventory->offhandStack();
-        if (EnchantmentEffects::level($offhand?->nbt, VanillaEnchantments::VANISHING) > 0) {
-            $player->inventory->replaceOffhand(null);
-        }
-        $player->markDirty();
     }
 
     private static function deathAttackerName(AbstractLivingEntity $attacker): string

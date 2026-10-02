@@ -276,7 +276,7 @@ final class PluginEntityRegistrarTest extends TestCase
             $this->createStub(CommandRegistrar::class),
             $this->createStub(SourcePluginRegistrar::class),
             $this->createStub(Server::class),
-            sys_get_temp_dir(),
+            new NullPluginData(sys_get_temp_dir()),
         );
 
         $this->expectException(LogicException::class);

@@ -24,6 +24,7 @@ use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Inventory\ItemStack as ApiItemStack;
 use Bedriox\Api\Processing\EnchantingOption;
+use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\BlockFace;
 use Bedriox\Api\World\Particle\BlockParticle;
 use Bedriox\Api\World\Particle\BlockParticleType;
@@ -91,6 +92,8 @@ use Bedriox\Protocol\Packet\RemoveActorPacket;
 use Bedriox\Protocol\Packet\SetActorDataPacket;
 use Bedriox\Protocol\Packet\SetActorMotionPacket;
 use Bedriox\Protocol\Packet\SpawnParticleEffectPacket;
+use Bedriox\Protocol\Packet\SystemTextPacket;
+use Bedriox\Protocol\Packet\TranslatedTextPacket;
 use Bedriox\Protocol\Packet\UpdateAttributesPacket;
 use Bedriox\Protocol\Packet\UpdateBlockPacket;
 use Bedriox\Protocol\Security\OpenSslEphemeralKeyFactory;
@@ -1289,6 +1292,36 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         self::assertSame(9, $packets[1]->packet->entries[0]->uniqueEntityId);
         self::assertSame(BuildPlatform::Unknown, $packets[1]->packet->entries[0]->buildPlatform);
         self::assertInstanceOf(SetActorDataPacket::class, $packets[2]->packet);
+    }
+
+    public function testJoinAnnouncementIsProjectedAfterPlayerInitialization(): void
+    {
+        $joined = $this->authenticatedSession(
+            'joined',
+            7,
+            '00000000-0000-0000-0000-000000000007',
+            'Joined',
+            'joined-xuid',
+        );
+        $player = $this->player('joined', 7, '00000000-0000-0000-0000-000000000007', 'Joined');
+        $encoder = new BedrockWorldEventPacketEncoder();
+
+        $translated = $encoder->encode(new PlayerJoined(
+            $player,
+            [],
+            ['joined'],
+            joinMessage: new TranslatableMessage('multiplayer.player.joined', ['Joined']),
+        ), ['joined' => $joined]);
+        self::assertInstanceOf(SetActorDataPacket::class, $translated[0]->packet);
+        self::assertInstanceOf(TranslatedTextPacket::class, $translated[1]->packet);
+
+        $raw = $encoder->encode(new PlayerJoined(
+            $player,
+            [],
+            ['joined'],
+            joinMessage: 'Joined entered the world!',
+        ), ['joined' => $joined]);
+        self::assertInstanceOf(SystemTextPacket::class, $raw[1]->packet);
     }
 
     public function testJoinSplitsAFullHundredPlayerSkinSnapshotIntoBoundedPackets(): void

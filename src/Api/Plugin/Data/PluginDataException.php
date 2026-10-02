@@ -18,15 +18,8 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Server\Simulation;
+namespace Bedriox\Api\Plugin\Data;
 
-use Bedriox\Api\TranslatableMessage;
+use RuntimeException;
 
-final readonly class DeathPresentation
-{
-    public function __construct(
-        public string|TranslatableMessage|null $deathMessage,
-        public string|TranslatableMessage|null $deathScreenMessage,
-        public bool $keepInventory,
-    ) {}
-}
+final class PluginDataException extends RuntimeException {}

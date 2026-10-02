@@ -1,6 +1,6 @@
 # Plugins
 
-Bedriox API `0.3` is an experimental, in-process PHP plugin API. Plugins are trusted PHP programs. Stable gameplay APIs avoid transport, registry, queue, and mutable simulation objects, while an explicit typed packet escape hatch is available for current-version protocol features. Plugins never receive raw sockets, encryption state, or transport ownership, and the runtime is not an operating-system sandbox.
+Bedriox API `0.4` is an experimental, in-process PHP plugin API. Plugins are trusted PHP programs. Stable gameplay APIs avoid transport, registry, queue, and mutable simulation objects, while an explicit typed packet escape hatch is available for current-version protocol features. Plugins never receive raw sockets, encryption state, or transport ownership, and the runtime is not an operating-system sandbox.
 
 ## Installation and packaging
 
@@ -35,7 +35,7 @@ Every PHAR contains `plugin.json` at its root and namespaced code under `src/`. 
   "schema": 1,
   "name": "ExamplePlugin",
   "version": "1.0.0",
-  "api": "^0.3",
+  "api": "^0.4",
   "main": "Bedriox\\ExamplePlugin\\Main",
   "namespace": "Bedriox\\ExamplePlugin",
   "authors": ["Bedriox Team"],
@@ -45,7 +45,18 @@ Every PHAR contains `plugin.json` at its root and namespaced code under `src/`. 
 }
 ```
 
-Plugin data belongs under the canonical `plugin_data/<PluginName>/` folder supplied by `PluginContext::dataFolder()`. A plugin must not write into its PHAR.
+Plugin data belongs under the canonical `plugin_data/<PluginName>/` folder exposed by `PluginContext::data()`. A plugin must not write into its PHAR. Packaged plugins and PluginTools source projects may ship defaults under `resources/`; both use the same API:
+
+```php
+$data = $this->context()->data();
+$data->saveResource('config.yml');
+$config = $data->config();
+$enabled = $config->getBool('enabled', true);
+$config->set('enabled', false);
+$config->save();
+```
+
+`saveResource()` never overwrites an existing administrator-edited file unless `replace: true` is explicit. `saveResources()` copies all admitted defaults. `config()` supports `.yml`, `.yaml`, and `.json`, dot-separated keys, typed getters, mutation, saving, and reloading. `path()` is available for plugins that need to manage another bounded format themselves. Resource paths and configuration structures are validated and kept inside the plugin's own data directory.
 
 ## Lifecycle
 
@@ -64,9 +75,11 @@ use Bedriox\Api\Event\Player\PlayerJoinEvent;
 #[EventHandler]
 public function onJoin(PlayerJoinEvent $event): void
 {
-    $this->logger()->info($event->player->name . ' joined');
+    $event->setJoinMessage($event->player->name . ' joined this server');
 }
 ```
+
+`PlayerJoinEvent` fires after admission commits. It is not cancellable, but its bounded join announcement may be replaced with a raw string or translated message, or set to `null` to suppress it. World-to-world transfers do not produce another join announcement.
 
 `#[EventHandler]` defaults to `EventPriority::NORMAL`. Dispatch order is `LOWEST`, `LOW`, `NORMAL`, `HIGH`, `HIGHEST`, then `MONITOR`, with registration order as the tie-breaker. Programmatic registration is available through `PluginContext::events()`.
 
@@ -84,11 +97,13 @@ Live non-player entities expose a typed controller rather than mutable runtime s
 
 Natural regeneration enters `PlayerRegainHealthEvent` before health changes. A listener may cancel it or set a bounded amount. `PlayerRegainedHealthEvent` observes the committed result, and `HealthRegainCause::SATURATION` identifies the nutrition-driven path without exposing an internal numeric cause.
 
-`PlayerDeathEvent` runs after lethal health commits but before Bedriox presents the death. It carries immutable victim and optional killer snapshots, the cause and final incoming damage, plus independent chat and death-screen messages. A plugin may set either message to a bounded raw string, a `Bedriox\Api\TranslatableMessage`, or `null` to suppress that presentation. Screen suppression retains the empty protocol handshake required for respawning. The event does not cancel death. Listener failure restores both messages before later listeners run, and `MONITOR` remains read-only.
+`PlayerDeathEvent` runs after lethal health commits but before Bedriox presents the death or commits inventory drops. It carries immutable victim and optional killer snapshots, the cause and final incoming damage, plus independent chat and death-screen messages. A plugin may set either message to a bounded raw string, a `Bedriox\Api\TranslatableMessage`, or `null` to suppress that presentation. Screen suppression retains the empty protocol handshake required for respawning. Death cannot be cancelled, but `setKeepInventory(true)` may retain the player's carried inventory and prevent death drops. Listener failure restores the inventory decision and both messages before later listeners run, and `MONITOR` remains read-only.
 
 ## Public server API
 
-`PluginContext::server()` is the global discovery surface: `getWorldManager()`, `getWhitelist()`, `getOnlinePlayers()`, `getPlayerByUuid()`, and exact case-insensitive `getPlayerByName()`. Authoritative behavior belongs to the object it affects. `Player` sends messages, teleports, takes damage, changes game mode, exposes its authoritative inventory views, and owns a generation-bound effect manager. `World` reads and changes canonical blocks, exposes immutable weather through `getWeather()`, requests typed weather changes through `setWeather()`, and emits bounded typed particles to eligible chunk viewers. These operations enter the same authoritative paths as built-in causes. Mutations requested by an event listener are staged until that listener returns successfully, then enter the authoritative simulation queue for validation and synchronization. Stale player sessions and unloaded-world generations fail closed. See [particles](particles.md) for particle types, audiences, variables, and delivery limits, and [effects, potions, and brewing](effects-and-potions.md) for effect managers and lifecycle events.
+`PluginContext::server()` is the global discovery surface: `broadcastMessage()`, `getWorldManager()`, `getWhitelist()`, `getOnlinePlayers()`, `getPlayerByUuid()`, and exact case-insensitive `getPlayerByName()`. `broadcastMessage()` accepts raw or translated text and returns the number of connected recipients. Authoritative behavior belongs to the object it affects. `Player` sends messages, teleports, takes damage, changes game mode, exposes its authoritative inventory views, and owns a generation-bound effect manager. `World` reads and changes canonical blocks, exposes immutable weather through `getWeather()`, requests typed weather changes through `setWeather()`, and emits bounded typed particles to eligible chunk viewers. These operations enter the same authoritative paths as built-in causes. Mutations requested by an event listener are staged until that listener returns successfully, then enter the authoritative simulation queue for validation and synchronization. Stale player sessions and unloaded-world generations fail closed. See [particles](particles.md) for particle types, audiences, variables, and delivery limits, and [effects, potions, and brewing](effects-and-potions.md) for effect managers and lifecycle events.
+
+The plugin-bound logger prefixes every record with the plugin name and supports `debug()`, `info()`, `notice()`, `warning()`, `error()`, and `critical()`.
 
 The whitelist API exposes enabled state, membership checks, atomic add/remove operations, entries, and reload. `WhitelistChangedEvent` is a post-change notification with `ENABLED`, `DISABLED`, `ENTRY_ADDED`, `ENTRY_REMOVED`, or `RELOADED`; admission still runs before player persistence and simulation startup.
 
@@ -158,7 +173,7 @@ $items->registerBehavior(
 );
 ```
 
-The [ExamplePlugin repository](https://github.com/Bedriox/ExamplePlugin) contains a complete minimal project. API `0.3` is a preview contract and may make documented breaking changes before `1.0`.
+The [ExamplePlugin repository](https://github.com/Bedriox/ExamplePlugin) contains a complete minimal project. API `0.4` is a preview contract and may make documented breaking changes before `1.0`.
 
 ### Player display and packet API
 

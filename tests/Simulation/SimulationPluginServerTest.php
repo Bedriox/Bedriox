@@ -24,6 +24,7 @@ use Bedriox\Api\Inventory\Inventory;
 use Bedriox\Api\Player\Player;
 use Bedriox\Api\Server;
 use Bedriox\Api\World\Position;
+use Bedriox\Server\Plugin\PluginActionBuffer;
 use Bedriox\Server\Plugin\PluginException;
 use Bedriox\Server\Plugin\PluginExecutionFrame;
 use Bedriox\Server\Plugin\PluginRuntimeControl;
@@ -42,6 +43,7 @@ final class SimulationPluginServerTest extends TestCase
         sort($methods);
 
         self::assertSame([
+            'broadcastMessage',
             'getOnlinePlayers',
             'getPlayerByName',
             'getPlayerByUuid',
@@ -79,6 +81,18 @@ final class SimulationPluginServerTest extends TestCase
         self::assertNull($server->getPlayerByName('on'));
     }
 
+    public function testBroadcastCountsUniqueOnlinePlayersAndParticipatesInActionTransactions(): void
+    {
+        $player = self::player();
+        $actions = new PluginActionBuffer();
+        $server = self::server($player, actions: $actions);
+        $actions->begin();
+        self::assertSame(1, $server->broadcastMessage('Hello'));
+        self::assertTrue($actions->isCapturing());
+        $actions->commit();
+        self::assertFalse($actions->isCapturing());
+    }
+
     private static function player(): Player
     {
         return new Player(
@@ -96,12 +110,14 @@ final class SimulationPluginServerTest extends TestCase
     private static function server(
         Player $player,
         ?FacadeRuntimeControl $control = null,
+        ?PluginActionBuffer $actions = null,
     ): SimulationPluginServer {
         $control ??= new FacadeRuntimeControl(true);
 
         return new SimulationPluginServer(
             'Example',
             $control,
+            $actions ?? new PluginActionBuffer(),
             static fn(): array => [$player],
             static fn(string $uuid): ?Player => $uuid === $player->uuid ? $player : null,
         );

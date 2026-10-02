@@ -48,7 +48,7 @@ final class BuildInfoTest extends TestCase
             'Minecraft: Bedrock 1.26.50',
             'Protocol: 2193',
             'PHP: ' . PHP_VERSION,
-            'Plugin API: 0.3.0',
+            'Plugin API: 0.4.0',
         ], BuildInfo::current()->publicSummary());
     }
 }

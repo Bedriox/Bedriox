@@ -59,10 +59,12 @@ final readonly class SimulationPluginApiBackend
     public function serverFor(
         string $plugin,
         PluginRuntimeControl $plugins,
+        PluginActionBuffer $actions,
     ): Server {
         return new SimulationPluginServer(
             $plugin,
             $plugins,
+            $actions,
             $this->pluginPlayers(...),
             $this->pluginPlayer(...),
             worldManager: $this->worldManager,

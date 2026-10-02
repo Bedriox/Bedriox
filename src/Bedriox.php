@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server;
 
+use Bedriox\Api\Plugin\Data\PluginData;
 use Bedriox\Api\Plugin\PluginContext;
 use Bedriox\Server\Access\WhitelistManager;
 use Bedriox\Server\Command\BuiltinCommandRegistrar;
@@ -34,6 +35,7 @@ use Bedriox\Server\Observability\Memory\MemoryPressure;
 use Bedriox\Server\Observability\Memory\PhpMemoryUsageProvider;
 use Bedriox\Server\Observability\MutableCrashContextProvider;
 use Bedriox\Server\Observability\PerformanceMonitor;
+use Bedriox\Server\Observability\PlayerLifecycleLogger;
 use Bedriox\Server\Observability\ServerLogger;
 use Bedriox\Server\Permission\PermissionStore;
 use Bedriox\Server\Persistence\Player\ProcessPlayerDataStore;
@@ -240,7 +242,7 @@ final class Bedriox
                 $logger,
                 static function (
                     PluginManifest $manifest,
-                    string $dataFolder,
+                    PluginData $data,
                     OwnedEventRegistrar $events,
                     OwnedCommandRegistrar $commands,
                     OwnedSourcePluginRegistrar $sourcePlugins,
@@ -265,8 +267,9 @@ final class Bedriox
                         $composition->server->pluginApi->serverFor(
                             $manifest->name,
                             $composition->host->manager(),
+                            $composition->host->actions(),
                         ),
-                        $dataFolder,
+                        $data,
                         new OwnedItemRegistrar(
                             $manifest->name,
                             $itemCatalog,
@@ -495,6 +498,7 @@ final class Bedriox
                 pluginEntityLifecycle: $composition->entityLifecycle,
                 pluginActions: $pluginHost->actions(),
                 whitelist: $whitelist,
+                playerLifecycleLogger: new PlayerLifecycleLogger($logger),
             );
             $composition->server = $server;
             $composition->itemBehaviors = new PluginItemBehaviorRegistrar(

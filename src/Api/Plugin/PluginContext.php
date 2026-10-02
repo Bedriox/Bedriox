@@ -29,6 +29,7 @@ use Bedriox\Api\Event\EventRegistrar;
 use Bedriox\Api\Inventory\ContainerManager;
 use Bedriox\Api\Inventory\ItemRegistrar;
 use Bedriox\Api\Inventory\UnavailableItemRegistrar;
+use Bedriox\Api\Plugin\Data\PluginData;
 use Bedriox\Api\Scheduler\PluginScheduler;
 use Bedriox\Api\Scheduler\UnavailablePluginScheduler;
 use Bedriox\Api\Server;
@@ -44,7 +45,7 @@ final class PluginContext
         private readonly CommandRegistrar $commands,
         private readonly SourcePluginRegistrar $sourcePlugins,
         private readonly Server $server,
-        private readonly string $dataFolder,
+        private readonly PluginData $data,
         private readonly ItemRegistrar $items = new UnavailableItemRegistrar(),
         private readonly PluginScheduler $scheduler = new UnavailablePluginScheduler(),
         private readonly RecipeRegistrar $recipes = new UnavailableRecipeRegistrar(),
@@ -83,9 +84,9 @@ final class PluginContext
         return $this->server;
     }
 
-    public function dataFolder(): string
+    public function data(): PluginData
     {
-        return $this->dataFolder;
+        return $this->data;
     }
 
     public function items(): ItemRegistrar
@@ -129,7 +130,7 @@ final class PluginContext
             $this->commands,
             $this->sourcePlugins,
             $this->server,
-            $this->dataFolder,
+            $this->data,
             $this->items,
             $scheduler,
             $this->recipes,
@@ -149,7 +150,7 @@ final class PluginContext
             $this->commands,
             $this->sourcePlugins,
             $this->server,
-            $this->dataFolder,
+            $this->data,
             $this->items,
             $this->scheduler,
             $this->recipes,

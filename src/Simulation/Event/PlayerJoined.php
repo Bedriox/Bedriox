@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Simulation\Event;
 
+use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\WeatherState;
 use Bedriox\Server\Simulation\PlayerSnapshot;
 
@@ -34,6 +35,7 @@ final readonly class PlayerJoined implements WorldEvent
         public array $existingPeers,
         public array $recipientSessionIds,
         public ?WeatherState $weather = null,
+        public string|TranslatableMessage|null $joinMessage = null,
     ) {}
 
     public function recipients(): array

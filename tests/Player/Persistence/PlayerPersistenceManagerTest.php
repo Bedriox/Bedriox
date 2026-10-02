@@ -47,6 +47,23 @@ use RuntimeException;
 
 final class PlayerPersistenceManagerTest extends TestCase
 {
+    public function testNewProfileStartsWithAnEmptyInventory(): void
+    {
+        $manager = new PlayerPersistenceManager(
+            new MemoryPlayerDataStore(),
+            'world',
+            new Position(0.0, 64.0, 0.0),
+            static fn(): int => 300,
+        );
+
+        $loaded = $manager->load(self::login());
+
+        self::assertSame([], $loaded->inventory->entries);
+        self::assertNull($loaded->inventory->cursor);
+        self::assertSame([], $loaded->inventory->armor);
+        self::assertNull($loaded->inventory->offhand);
+    }
+
     public function testRestoresExactPositionAndRefreshesAuthenticatedIdentityMetadata(): void
     {
         $palette = self::palette();
@@ -64,7 +81,6 @@ final class PlayerPersistenceManagerTest extends TestCase
             $store = new MemoryPlayerDataStore($stored),
             'world',
             new Position(0.0, 64.0, 0.0),
-            $palette,
             static fn(): int => 300,
         );
 
@@ -97,7 +113,6 @@ final class PlayerPersistenceManagerTest extends TestCase
             new MemoryPlayerDataStore($stored),
             'world',
             $spawn = new Position(4.0, 72.0, -3.0),
-            $palette,
             static fn(): int => 300,
         );
 
@@ -130,7 +145,6 @@ final class PlayerPersistenceManagerTest extends TestCase
             new MemoryPlayerDataStore($stored),
             'world',
             $spawn = new Position(4.0, 72.0, -3.0),
-            $palette,
             static fn(): int => 300,
         );
 
@@ -154,7 +168,6 @@ final class PlayerPersistenceManagerTest extends TestCase
             $store,
             'world',
             new Position(0.0, 64.0, 0.0),
-            $palette,
             static fn(): int => 300,
         );
         $player = new Player(
@@ -223,7 +236,6 @@ final class PlayerPersistenceManagerTest extends TestCase
             $store,
             'world',
             new Position(0.0, 64.0, 0.0),
-            $palette,
             static fn(): int => 300,
         );
 
@@ -247,7 +259,6 @@ final class PlayerPersistenceManagerTest extends TestCase
             $store,
             'world',
             new Position(0.0, 64.0, 0.0),
-            $palette,
             static fn(): int => 300,
         );
         $player = self::player($palette);
@@ -283,7 +294,6 @@ final class PlayerPersistenceManagerTest extends TestCase
             $store,
             'world',
             new Position(0.0, 64.0, 0.0),
-            $palette,
             static fn(): int => 300,
         );
         $player = self::player($palette);

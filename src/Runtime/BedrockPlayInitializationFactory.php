@@ -188,7 +188,7 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
         $gameMode = GameMode::from($bootstrap === null ? $this->defaultGamemode : $bootstrap->gamemode);
         $gameModePackets = new GameModePacketProjector();
         $initialInventory = $bootstrap === null
-            ? PlayerInventory::starter($this->fixedFlatBlockPalette, $this->itemCatalog)
+            ? PlayerInventory::empty($this->itemCatalog)
             : PlayerInventory::restore(
                 $bootstrap->inventory,
                 $this->fixedFlatBlockPalette,

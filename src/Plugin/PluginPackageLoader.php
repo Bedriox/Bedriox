@@ -22,6 +22,7 @@ namespace Bedriox\Server\Plugin;
 
 use Bedriox\Api\Plugin\Plugin;
 use Bedriox\Api\Plugin\PluginContext;
+use Bedriox\Server\Plugin\Data\ArchivePluginResourceProvider;
 use Closure;
 use FilesystemIterator;
 use Phar;
@@ -33,7 +34,7 @@ use Throwable;
 /** Discovers validated PHAR plugins without executing plugin code. */
 final class PluginPackageLoader
 {
-    public const string API_VERSION = '0.3.0';
+    public const string API_VERSION = '0.4.0';
     private const int MAXIMUM_ARCHIVE_BYTES = 16_777_216;
     private const int MAXIMUM_ENTRIES = 2_048;
     private const int MAXIMUM_ENTRY_BYTES = 8_388_608;
@@ -120,6 +121,7 @@ final class PluginPackageLoader
         $entries = 0;
         $uncompressedBytes = 0;
         $prefix = 'phar://' . str_replace('\\', '/', $resolved) . '/';
+        $resources = [];
         /** @var PharFileInfo $entry */
         foreach (new RecursiveIteratorIterator($archive) as $entry) {
             ++$entries;
@@ -136,6 +138,13 @@ final class PluginPackageLoader
             $uncompressedBytes += $entrySize;
             if ($entrySize > self::MAXIMUM_ENTRY_BYTES || $uncompressedBytes > self::MAXIMUM_UNCOMPRESSED_BYTES) {
                 throw new PluginException('Plugin archive expands beyond its bounded limits.');
+            }
+            if (str_starts_with($relative, 'resources/') && strlen($relative) > strlen('resources/')) {
+                $resource = substr($relative, strlen('resources/'));
+                if (isset($resources[$resource])) {
+                    throw new PluginException('Plugin archive contains duplicate resource paths.');
+                }
+                $resources[$resource] = $path;
             }
         }
         $manifestPath = $prefix . 'plugin.json';
@@ -183,6 +192,7 @@ final class PluginPackageLoader
             $manifest,
             $autoloader,
             $instantiate,
+            new ArchivePluginResourceProvider($resources),
             new PluginArchiveIdentity(
                 $resolved,
                 $manifest->name,
@@ -197,7 +207,7 @@ final class PluginPackageLoader
     private function supportsApi(string $constraint): bool
     {
         return in_array($constraint, [
-            '0.3', '0.3.0', '^0.3', '^0.3.0', '~0.3', '~0.3.0',
+            '0.4', '0.4.0', '^0.4', '^0.4.0', '~0.4', '~0.4.0',
         ], true);
     }
 

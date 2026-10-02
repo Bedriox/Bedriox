@@ -20,8 +20,12 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Simulation;
 
+use Bedriox\Data\BedrockDataSet;
+use Bedriox\Server\Entity\Item\ItemEntityRegistry;
 use Bedriox\Server\Player\PlayerBootstrap;
 use Bedriox\Server\Player\PlayerIdentity;
+use Bedriox\Server\Player\PlayerInventoryEntry;
+use Bedriox\Server\Player\PlayerInventoryStackState;
 use Bedriox\Server\Player\PlayerInventoryState;
 use Bedriox\Server\Simulation\DamageCause;
 use Bedriox\Server\Simulation\Event\CommandRejected;
@@ -35,10 +39,59 @@ use Bedriox\Server\Simulation\MovementMode;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
 use Bedriox\Server\Simulation\WorldSimulation;
+use Bedriox\Server\World\Block\BlockStateRegistry;
+use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use PHPUnit\Framework\TestCase;
 
 final class PlayerLifecycleTest extends TestCase
 {
+    public function testDeathDropsAndClearsCarriedInventoryBeforeRespawn(): void
+    {
+        $palette = FixedFlatBlockPalette::fromRegistry(new BlockStateRegistry(
+            BedrockDataSet::bundled()->blockStateRegistry()->states(),
+        ));
+        $items = new ItemEntityRegistry(firstEntityId: 1_000_000_000);
+        $world = new WorldSimulation(blockPalette: $palette, itemEntities: $items);
+        $factory = new SimulationCommandFactory();
+        $bootstrap = new PlayerBootstrap(
+            new PlayerIdentity('12345678-1234-5678-9abc-123456789abc', 'Player'),
+            'world',
+            new Position(0.0, 64.0, 0.0),
+            0.0,
+            0.0,
+            new PlayerInventoryState([
+                new PlayerInventoryEntry(0, new PlayerInventoryStackState('minecraft:grass_block', 3)),
+            ], 0),
+            1,
+            1,
+        );
+        self::assertTrue($world->enqueue($factory->join(
+            'session',
+            $bootstrap->identity->uuid,
+            $bootstrap->identity->displayName,
+            bootstrap: $bootstrap,
+        )));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->damage('session', 20.0)));
+
+        $world->tick();
+
+        self::assertSame(1, $items->count());
+        self::assertSame('minecraft:grass_block', $items->all()[0]->stack->identifier);
+        self::assertSame(3, $items->all()[0]->stack->count);
+
+        self::assertTrue($world->enqueue($factory->acknowledgeRespawn('session')));
+        $events = $world->tick()->events;
+        $respawned = array_values(array_filter(
+            $events,
+            static fn(object $event): bool => $event instanceof PlayerRespawned,
+        ));
+        self::assertCount(1, $respawned);
+        self::assertSame(array_fill(0, 36, null), $respawned[0]->inventory);
+        self::assertSame([], $respawned[0]->armor);
+        self::assertNull($respawned[0]->offhand);
+    }
+
     public function testAuthoritativeLandingAppliesPmmpStyleFallDamage(): void
     {
         $factory = new SimulationCommandFactory();

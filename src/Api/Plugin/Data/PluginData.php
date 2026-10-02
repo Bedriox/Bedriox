@@ -18,15 +18,19 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Server\Simulation;
+namespace Bedriox\Api\Plugin\Data;
 
-use Bedriox\Api\TranslatableMessage;
-
-final readonly class DeathPresentation
+interface PluginData
 {
-    public function __construct(
-        public string|TranslatableMessage|null $deathMessage,
-        public string|TranslatableMessage|null $deathScreenMessage,
-        public bool $keepInventory,
-    ) {}
+    public function path(): string;
+
+    public function hasResource(string $name): bool;
+
+    public function readResource(string $name): string;
+
+    public function saveResource(string $name, bool $replace = false): bool;
+
+    public function saveResources(bool $replace = false): int;
+
+    public function config(string $name = 'config.yml'): Configuration;
 }

@@ -35,6 +35,7 @@ final readonly class SourcePluginDefinition
      * @param list<string> $authors
      * @param list<string> $dependencies
      * @param list<string> $softDependencies
+     * @param array<string, string> $resources
      * @param Closure(PluginContext): Plugin $factory
      * @param Closure(): void $cleanup
      */
@@ -49,6 +50,7 @@ final readonly class SourcePluginDefinition
         public array $dependencies,
         public array $softDependencies,
         public string $load,
+        public array $resources,
         private Closure $factory,
         private Closure $cleanup,
     ) {}

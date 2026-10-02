@@ -58,6 +58,7 @@ use Bedriox\Server\Observability\Memory\MemoryManager;
 use Bedriox\Server\Observability\Memory\PhpGarbageCollectorBackend;
 use Bedriox\Server\Observability\Memory\PhpMemoryUsageProvider;
 use Bedriox\Server\Observability\PerformanceMonitor;
+use Bedriox\Server\Observability\PlayerLifecycleLogger;
 use Bedriox\Server\Permission\PermissionStore;
 use Bedriox\Server\Player\Persistence\FilePlayerDataStore;
 use Bedriox\Server\Player\Persistence\PlayerDataStore;
@@ -126,6 +127,7 @@ final class ServerBootstrap
         ?PluginEntityLifecycleBridge $pluginEntityLifecycle = null,
         ?PluginActionBuffer $pluginActions = null,
         ?WhitelistManager $whitelist = null,
+        ?PlayerLifecycleLogger $playerLifecycleLogger = null,
     ): BootstrappedServer {
         $diagnostics ??= RuntimeDiagnostics::disabled();
         $authenticationClock = new SystemAuthenticationClock();
@@ -291,7 +293,6 @@ final class ServerBootstrap
                 $playerStore,
                 $defaultWorldHandle->id(),
                 new Position($spawn->x, $spawn->y, $spawn->z),
-                $flatPalette,
                 defaultGamemode: $config->defaultGamemode,
                 itemCatalog: $itemCatalog,
             );
@@ -620,6 +621,7 @@ final class ServerBootstrap
                 blockStateRegistry: $internalStates,
                 pluginActions: $pluginActions,
                 whitelist: $whitelist,
+                playerLifecycleLogger: $playerLifecycleLogger,
             );
         } catch (Throwable $exception) {
             $discovery?->close();

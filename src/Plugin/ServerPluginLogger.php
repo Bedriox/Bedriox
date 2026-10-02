@@ -40,6 +40,11 @@ final readonly class ServerPluginLogger implements PluginLogger
         $this->logger->info($message, $this->component());
     }
 
+    public function notice(string $message): void
+    {
+        $this->logger->notice($message, $this->component());
+    }
+
     public function warning(string $message): void
     {
         $this->logger->warning($message, $this->component());
@@ -50,8 +55,13 @@ final readonly class ServerPluginLogger implements PluginLogger
         $this->logger->error($message, $this->component());
     }
 
+    public function critical(string $message): void
+    {
+        $this->logger->critical($message, $this->component());
+    }
+
     private function component(): string
     {
-        return 'Plugin/' . $this->plugin;
+        return $this->plugin;
     }
 }

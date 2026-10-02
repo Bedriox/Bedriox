@@ -117,9 +117,12 @@ use Bedriox\Server\Login\HandshakeMaterialFactory;
 use Bedriox\Server\Login\LoginAuthenticator;
 use Bedriox\Server\Login\LoginSession;
 use Bedriox\Server\Login\MonotonicClock;
+use Bedriox\Server\Observability\LogLevel;
 use Bedriox\Server\Observability\MutableCrashContextProvider;
 use Bedriox\Server\Observability\PerformanceMonitor;
 use Bedriox\Server\Observability\PerformanceSubsystem;
+use Bedriox\Server\Observability\PlayerLifecycleLogger;
+use Bedriox\Server\Observability\ServerLogger;
 use Bedriox\Server\Permission\PermissionStore;
 use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Player\Persistence\PlayerDataStore;
@@ -661,7 +664,7 @@ final class ServerRuntimeTest extends TestCase
             $world,
             new FixedRateWorldLoop($world, $clock),
             new RecordingEventEncoder(),
-            playerPersistence: new PlayerPersistenceManager($store, 'world', new Position(0.0, 64.0, 0.0), $palette),
+            playerPersistence: new PlayerPersistenceManager($store, 'world', new Position(0.0, 64.0, 0.0)),
             closeClock: $clock,
         );
         $first = new SessionInfo('127.0.0.1', 20_001, 41, 1_400, 11);
@@ -869,6 +872,7 @@ final class ServerRuntimeTest extends TestCase
         $loginFactory = new RuntimeLoginFactory();
         $events = new RecordingEventEncoder();
         $crashContext = new MutableCrashContextProvider();
+        $logger = new ServerLogger(static function (string $line): void {}, LogLevel::DEBUG, false, false, null);
         $runtime = new ServerRuntime(
             $transport,
             $loginFactory,
@@ -877,10 +881,12 @@ final class ServerRuntimeTest extends TestCase
             new FixedRateWorldLoop($world, $clock),
             $events,
             crashContext: $crashContext,
+            playerLifecycleLogger: new PlayerLifecycleLogger($logger),
         );
         $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
         $clientEncryptor = $this->advanceToInitializing($runtime, $transport, $info, $loginFactory);
         self::assertSame([], $world->snapshot()->players);
+        self::assertStringContainsString('Player[/127.0.0.1:20001] is joining', implode("\n", $logger->recentLines()));
 
         $this->receiveEncrypted($transport, $info, $clientEncryptor, new SetLocalPlayerAsInitializedPacket(UnsignedLong::fromInt(1)));
         self::assertTrue($runtime->poll());
@@ -896,6 +902,7 @@ final class ServerRuntimeTest extends TestCase
         self::assertSame('1', $crashContext->current()->players[0]->xuid);
         self::assertSame('127.0.0.1:20001', $crashContext->current()->players[0]->remoteAddress);
         self::assertSame('SPAWNED', $crashContext->current()->players[0]->sessionPhase);
+        self::assertStringContainsString('Player[/127.0.0.1:20001] joined world at', implode("\n", $logger->recentLines()));
 
         // Regression: consuming the one-shot spawn acknowledgement must not revoke gameplay admission.
         $this->receiveEncrypted($transport, $info, $clientEncryptor, new PlayerAuthInputPacket(

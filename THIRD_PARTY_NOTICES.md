@@ -21,3 +21,19 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 `bedriox/protocol`, `bedriox/raknet`, and `bedriox/data` are Bedriox projects distributed under GPL-3.0-only. Their exact versions and commit pins are recorded in `bedriox.lock.json`; installed packages retain their own `LICENSE`, `NOTICE`, and third-party notice files. Data separately identifies the licenses of admitted registry artifacts.
 
 Development dependencies are locked by Composer and checked against the repository's approved-license allowlist. Release packaging must retain this notice file and generate a complete notice bundle and SBOM.
+
+## Symfony components
+
+Bedriox includes `symfony/yaml` v7.4.12, `symfony/deprecation-contracts` v3.7.1, and `symfony/polyfill-ctype` v1.37.0 under the MIT License.
+
+Copyright (c) 2004-present Fabien Potencier (`symfony/yaml`)
+
+Copyright (c) 2020-present Fabien Potencier (`symfony/deprecation-contracts`)
+
+Copyright (c) 2018-present Fabien Potencier (`symfony/polyfill-ctype`)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

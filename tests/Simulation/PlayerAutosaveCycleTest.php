@@ -48,7 +48,6 @@ final class PlayerAutosaveCycleTest extends TestCase
             $store,
             'world',
             new Position(0.0, 64.0, 0.0),
-            $palette,
         );
         $world = new WorldSimulation(blockPalette: $palette, playerPersistence: $persistence);
         $factory = new SimulationCommandFactory();

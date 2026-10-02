@@ -220,17 +220,13 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
         }
         $mainInventory = $packets[17];
         self::assertInstanceOf(InventoryContentPacket::class, $mainInventory);
-        self::assertSame(2, $mainInventory->items[0]->runtimeId);
-        self::assertSame(64, $mainInventory->items[0]->count);
-        self::assertSame(1, $mainInventory->items[0]->stackNetworkId);
-        self::assertSame(-567_203_660, $mainInventory->items[0]->blockRuntimeId);
-        foreach (array_slice($mainInventory->items, 1) as $empty) {
+        foreach ($mainInventory->items as $empty) {
             self::assertSame(0, $empty->runtimeId);
             self::assertSame(1, $empty->count);
         }
         $equipment = $packets[20];
         self::assertInstanceOf(MobEquipmentPacket::class, $equipment);
-        self::assertEquals($mainInventory->items[0], $equipment->item);
+        self::assertSame(0, $equipment->item->runtimeId);
         self::assertInstanceOf(TrimDataPacket::class, $packets[21]);
         self::assertInstanceOf(CraftingDataPacket::class, $packets[22]);
         self::assertTrue($packets[22]->cleanRecipes);

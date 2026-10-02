@@ -1209,6 +1209,14 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
                 $packets[] = new DirectedPacket($event->player->sessionId, $packet);
             }
         }
+        if ($event->joinMessage !== null) {
+            $message = $event->joinMessage instanceof TranslatableMessage
+                ? new TranslatedTextPacket($event->joinMessage->key, $event->joinMessage->parameters)
+                : new SystemTextPacket($event->joinMessage);
+            foreach ($event->recipientSessionIds as $recipient) {
+                $packets[] = new DirectedPacket($recipient, $message);
+            }
+        }
         return $packets;
     }
 

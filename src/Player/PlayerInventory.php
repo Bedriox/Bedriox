@@ -91,6 +91,7 @@ final class PlayerInventory
         return new self(catalog: $catalog);
     }
 
+    /** Creates the explicit grass-stack fixture used by inventory behavior tests. */
     public static function starter(FixedFlatBlockPalette $palette, ?ItemCatalog $catalog = null): self
     {
         return new self([
@@ -249,6 +250,35 @@ final class PlayerInventory
     public function offhandStack(): ?InventoryStack
     {
         return $this->offhand;
+    }
+
+    /**
+     * Removes every carried stack while leaving private Ender Chest storage untouched.
+     *
+     * @return list<InventoryStack>
+     */
+    public function extractCarriedContents(): array
+    {
+        $contents = array_values($this->stacks);
+        if ($this->cursor !== null) {
+            $contents[] = $this->cursor;
+        }
+        array_push($contents, ...array_values($this->armor));
+        if ($this->offhand !== null) {
+            $contents[] = $this->offhand;
+        }
+
+        $this->stacks = [];
+        $this->selectedHotbarSlot = 0;
+        $this->cursor = null;
+        $this->armor = [];
+        $this->offhand = null;
+        $this->lastRequestIds = [];
+        $this->cursorLastRequestId = null;
+        $this->armorLastRequestIds = [];
+        $this->offhandLastRequestId = null;
+
+        return $contents;
     }
 
     public function enderChestStack(int $slot): ?InventoryStack

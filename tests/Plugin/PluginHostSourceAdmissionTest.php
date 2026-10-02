@@ -75,9 +75,9 @@ use Bedriox\Api\Plugin\SourcePluginDefinition;
 final class Main extends Plugin{
     public function onLoad(): void{
         $this->context()->sourcePlugins()->register([new SourcePluginDefinition(
-            1, 'SourceFixture', '1.0.0', '^0.3',
+            1, 'SourceFixture', '1.0.0', '^0.4',
             'Fixture\\DevelopmentProvider\\Source\\Main',
-            'Fixture\\DevelopmentProvider\\Source', [], [], [], 'WORLD_READY',
+            'Fixture\\DevelopmentProvider\\Source', [], [], [], 'WORLD_READY', ['config.yml' => "enabled: true\n"],
             static fn(PluginContext $context): Plugin => new \Fixture\DevelopmentProvider\Source\Main($context),
             static function (): void { file_put_contents(__CLEANUP__, 'released'); },
         )]);
@@ -96,7 +96,11 @@ PHP;
 declare(strict_types=1);
 namespace Fixture\DevelopmentProvider\Source;
 use Bedriox\Api\Plugin\Plugin;
-final class Main extends Plugin{}
+final class Main extends Plugin{
+    public function onEnable(): void{
+        $this->context()->data()->saveResource('config.yml');
+    }
+}
 PHP;
         $this->buildProviderPhar($providerSource, $sourceMain);
         $logger = new ServerLogger(static function (string $line): void {}, LogLevel::DEBUG, false, false, null);
@@ -106,7 +110,7 @@ PHP;
             $logger,
             function (
                 PluginManifest $manifest,
-                string $dataFolder,
+                \Bedriox\Api\Plugin\Data\PluginData $data,
                 OwnedEventRegistrar $events,
                 OwnedCommandRegistrar $commands,
                 OwnedSourcePluginRegistrar $sourcePlugins,
@@ -119,7 +123,7 @@ PHP;
                     $commands,
                     $sourcePlugins,
                     $this->createStub(Server::class),
-                    $dataFolder,
+                    $data,
                 );
             },
         );
@@ -128,6 +132,10 @@ PHP;
 
         self::assertTrue($host->manager()->isEnabled('DevelopmentProvider'));
         self::assertTrue($host->manager()->isEnabled('SourceFixture'));
+        self::assertSame(
+            "enabled: true\n",
+            file_get_contents($this->root . DIRECTORY_SEPARATOR . 'plugin_data' . DIRECTORY_SEPARATOR . 'SourceFixture' . DIRECTORY_SEPARATOR . 'config.yml'),
+        );
         self::assertStringContainsString('Enabled source plugin SourceFixture 1.0.0', implode("\n", $logger->recentLines()));
         $host->tickScheduler(1);
         self::assertFileExists($scheduledMarker);
@@ -143,7 +151,7 @@ PHP;
             'schema' => 1,
             'name' => 'DevelopmentProvider',
             'version' => '1.0.0',
-            'api' => '^0.3',
+            'api' => '^0.4',
             'main' => 'Fixture\\DevelopmentProvider\\Main',
             'namespace' => 'Fixture\\DevelopmentProvider',
             'authors' => ['Bedriox Team'],

@@ -59,6 +59,21 @@ $approvedProduction = [
         'reference' => '6a9059994182335c431a75a77e5f5da08d8f58c1',
         'license' => 'GPL-3.0-only',
     ],
+    'symfony/deprecation-contracts' => [
+        'version' => 'v3.7.1',
+        'reference' => 'f3202fa1b5097b0af062dc978b32ecf63404e31d',
+        'license' => 'MIT',
+    ],
+    'symfony/polyfill-ctype' => [
+        'version' => 'v1.37.0',
+        'reference' => '141046a8f9477948ff284fa65be2095baafb94f2',
+        'license' => 'MIT',
+    ],
+    'symfony/yaml' => [
+        'version' => 'v7.4.12',
+        'reference' => '8b6952b56ca6417f25f7a65758cadd0ce02edc51',
+        'license' => 'MIT',
+    ],
 ];
 $errors = [];
 $productionNames = [];
@@ -127,6 +142,11 @@ if ($notices === false) {
     foreach (['firebase/php-jwt', 'Copyright (c) 2011, Neuman Vong', 'Redistribution and use in source and binary forms'] as $requiredNotice) {
         if (!str_contains($notices, $requiredNotice)) {
             $errors[] = "Third-party notices lack required firebase/php-jwt text: {$requiredNotice}";
+        }
+    }
+    foreach (['symfony/yaml', 'symfony/deprecation-contracts', 'symfony/polyfill-ctype', 'Copyright (c) 2004-present Fabien Potencier', 'Copyright (c) 2020-present Fabien Potencier', 'Copyright (c) 2018-present Fabien Potencier'] as $requiredNotice) {
+        if (!str_contains($notices, $requiredNotice)) {
+            $errors[] = "Third-party notices lack required Symfony text: {$requiredNotice}";
         }
     }
 }

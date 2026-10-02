@@ -28,7 +28,6 @@ use Bedriox\Server\Player\PlayerBootstrap;
 use Bedriox\Server\Player\PlayerIdentity;
 use Bedriox\Server\Player\PlayerInventory;
 use Bedriox\Server\Simulation\Position;
-use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Closure;
 use Throwable;
 
@@ -43,7 +42,6 @@ final class PlayerPersistenceManager
         private readonly PlayerDataStore $store,
         private readonly string $worldName,
         private readonly Position $defaultSpawn,
-        private readonly FixedFlatBlockPalette $palette,
         ?Closure $clock = null,
         private readonly string $defaultGamemode = 'survival',
         private readonly ?ItemCatalog $itemCatalog = null,
@@ -67,7 +65,7 @@ final class PlayerPersistenceManager
                 $this->defaultSpawn,
                 0.0,
                 0.0,
-                PlayerInventory::starter($this->palette, $this->itemCatalog)->exportState(),
+                PlayerInventory::empty($this->itemCatalog)->exportState(),
                 $now,
                 $now,
                 $this->defaultGamemode,

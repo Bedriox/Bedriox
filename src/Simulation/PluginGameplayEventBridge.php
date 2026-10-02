@@ -218,6 +218,7 @@ use Bedriox\Api\Processing\FurnaceFuelCause;
 use Bedriox\Api\Processing\FurnaceType;
 use Bedriox\Api\Processing\SmithingRecipeType;
 use Bedriox\Api\Processing\StationProcessCause;
+use Bedriox\Api\TextFormat;
 use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\Block as ApiBlock;
 use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
@@ -367,9 +368,16 @@ final readonly class PluginGameplayEventBridge
         return !$event->isCancelled();
     }
 
-    public function joined(Player $player): void
+    public function joined(Player $player): string|TranslatableMessage|null
     {
-        $this->events->dispatch(new PlayerJoinEvent($this->playerView($player)));
+        $view = $this->playerView($player);
+        $event = new PlayerJoinEvent(
+            $view,
+            TextFormat::YELLOW . $view->name . ' joined the game' . TextFormat::RESET,
+        );
+        $this->events->dispatch($event);
+
+        return $event->getJoinMessage();
     }
 
     public function login(ApiPlayer $player): PlayerLoginDecision
@@ -1138,14 +1146,18 @@ final readonly class PluginGameplayEventBridge
             $this->playerView($player),
             $cause->value,
             $damage,
-            true,
+            false,
             $killer === null ? null : $this->playerView($killer),
             $deathMessage,
             $deathScreenMessage,
         );
         $this->events->dispatch($event);
 
-        return new DeathPresentation($event->deathMessage(), $event->deathScreenMessage());
+        return new DeathPresentation(
+            $event->deathMessage(),
+            $event->deathScreenMessage(),
+            $event->keepsInventory(),
+        );
     }
 
     public function respawn(Player $player, Position $position): Position

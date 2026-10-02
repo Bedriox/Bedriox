@@ -104,7 +104,7 @@ final class PluginManagerTest extends TestCase
             new NullCommandRegistrar(),
             new NullSourcePluginRegistrar(),
             $this->createStub(Server::class),
-            sys_get_temp_dir(),
+            new NullPluginData(sys_get_temp_dir()),
         );
     }
 
@@ -118,7 +118,7 @@ final class PluginManagerTest extends TestCase
             1,
             $name,
             '1.0.0',
-            '^0.3',
+            '^0.4',
             $main,
             __NAMESPACE__,
             [],
@@ -166,9 +166,13 @@ final class NullPluginLogger implements PluginLogger
 
     public function info(string $message): void {}
 
+    public function notice(string $message): void {}
+
     public function warning(string $message): void {}
 
     public function error(string $message): void {}
+
+    public function critical(string $message): void {}
 }
 
 final class NullEventRegistrar implements EventRegistrar

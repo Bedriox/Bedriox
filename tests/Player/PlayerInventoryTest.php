@@ -43,6 +43,34 @@ use PHPUnit\Framework\TestCase;
 
 final class PlayerInventoryTest extends TestCase
 {
+    public function testExtractCarriedContentsClearsEquipmentAndPreservesEnderChest(): void
+    {
+        $inventory = PlayerInventory::restore(
+            new PlayerInventoryState(
+                [new PlayerInventoryEntry(0, new PlayerInventoryStackState('minecraft:diamond', 2))],
+                0,
+                new PlayerInventoryStackState('minecraft:coal', 3),
+                [new PlayerInventoryEntry(0, new PlayerInventoryStackState('minecraft:iron_helmet', 1))],
+                new PlayerInventoryStackState('minecraft:shield', 1),
+                [new PlayerInventoryEntry(2, new PlayerInventoryStackState('minecraft:emerald', 4))],
+            ),
+            $this->palette(),
+            ItemCatalog::vanilla(BedrockDataSet::bundled()->itemNetworkRegistry()),
+        );
+
+        $extracted = $inventory->extractCarriedContents();
+
+        self::assertSame(
+            ['minecraft:diamond', 'minecraft:coal', 'minecraft:iron_helmet', 'minecraft:shield'],
+            array_map(static fn(InventoryStack $stack): string => $stack->identifier, $extracted),
+        );
+        self::assertSame(array_fill(0, PlayerInventory::SLOT_COUNT, null), $inventory->slots());
+        self::assertNull($inventory->cursorStack());
+        self::assertSame(array_fill(0, PlayerInventory::ARMOR_SLOT_COUNT, null), $inventory->armorSlots());
+        self::assertNull($inventory->offhandStack());
+        self::assertSame('minecraft:emerald', $inventory->enderChestStack(2)?->identifier);
+    }
+
     public function testRefreshingOpenedContainerPreservesOnlyUnchangedStackIdentities(): void
     {
         $inventory = PlayerInventory::empty();

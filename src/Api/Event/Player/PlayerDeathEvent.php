@@ -28,11 +28,13 @@ use InvalidArgumentException;
 /** Runs after lethal damage commits and before death messages are presented. */
 final class PlayerDeathEvent extends Event
 {
+    private bool $keepInventory;
+
     public function __construct(
         public readonly Player $player,
         public readonly string $cause,
         public readonly float $damage,
-        public readonly bool $keepInventory = true,
+        bool $keepInventory = false,
         public readonly ?Player $killer = null,
         private string|TranslatableMessage|null $deathMessage = null,
         private string|TranslatableMessage|null $deathScreenMessage = null,
@@ -42,6 +44,18 @@ final class PlayerDeathEvent extends Event
         }
         self::validateMessage($deathMessage);
         self::validateMessage($deathScreenMessage);
+        $this->keepInventory = $keepInventory;
+    }
+
+    public function keepsInventory(): bool
+    {
+        return $this->keepInventory;
+    }
+
+    public function setKeepInventory(bool $keepInventory): void
+    {
+        $this->assertMutable();
+        $this->keepInventory = $keepInventory;
     }
 
     public function deathMessage(): string|TranslatableMessage|null
@@ -70,19 +84,23 @@ final class PlayerDeathEvent extends Event
 
     protected function state(): mixed
     {
-        return [$this->deathMessage, $this->deathScreenMessage];
+        return [$this->keepInventory, $this->deathMessage, $this->deathScreenMessage];
     }
 
     protected function replaceState(mixed $state): void
     {
-        if (!is_array($state) || count($state) !== 2) {
+        if (!is_array($state) || count($state) !== 3) {
             throw new InvalidArgumentException('Invalid player death event state.');
         }
-        [$deathMessage, $deathScreenMessage] = $state;
+        [$keepInventory, $deathMessage, $deathScreenMessage] = $state;
+        if (!is_bool($keepInventory)) {
+            throw new InvalidArgumentException('Invalid player death event inventory state.');
+        }
         if ((!is_string($deathMessage) && !$deathMessage instanceof TranslatableMessage && $deathMessage !== null)
             || (!is_string($deathScreenMessage) && !$deathScreenMessage instanceof TranslatableMessage && $deathScreenMessage !== null)) {
             throw new InvalidArgumentException('Invalid player death event message state.');
         }
+        $this->keepInventory = $keepInventory;
         $this->deathMessage = $deathMessage;
         $this->deathScreenMessage = $deathScreenMessage;
     }

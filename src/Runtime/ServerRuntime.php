@@ -83,6 +83,7 @@ use Bedriox\Server\Observability\Memory\MemoryManager;
 use Bedriox\Server\Observability\Memory\MemoryPressure;
 use Bedriox\Server\Observability\PerformanceMonitor;
 use Bedriox\Server\Observability\PerformanceSubsystem;
+use Bedriox\Server\Observability\PlayerLifecycleLogger;
 use Bedriox\Server\Permission\PermissionStore;
 use Bedriox\Server\Persistence\PersistenceQueueSnapshot;
 use Bedriox\Server\Persistence\PersistenceSubmission;
@@ -254,6 +255,12 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
      * }>
      */
     private array $slowRuntimeStages = [];
+    /** @var array<string, true> */
+    private array $joiningLogs = [];
+    /** @var array<string, true> */
+    private array $joinedLogs = [];
+    /** @var array<string, true> */
+    private array $failedJoinLogs = [];
 
     /** @var array<string, array{SessionInfo, int}> */
     private array $pendingTransportCloses = [];
@@ -324,6 +331,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         private readonly ?BlockStateRegistry $blockStateRegistry = null,
         private readonly ?PluginActionBuffer $pluginActions = null,
         private readonly ?WhitelistManager $whitelist = null,
+        private readonly ?PlayerLifecycleLogger $playerLifecycleLogger = null,
     ) {
         if ($this->autosaveIntervalTicks < 1 || $this->autosaveChunkBudget < 1
             || $this->playerAutosaveIntervalTicks < 1 || $this->playerAutosaveBudget < 1
@@ -2708,6 +2716,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     fn(): bool => $this->dismountPlayer($identity),
                 ),
             );
+            $this->logJoining($session, $ready->login->displayName);
             $this->flush($key, $session);
         } catch (Throwable $exception) {
             $this->diagnostics->record('play.channel_creation_failed', [
@@ -2899,6 +2908,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
 
     private function rejectReadySession(string $key, RuntimeSession $session, \Bedriox\Server\Login\LoginChannelReady $ready, string $message): void
     {
+        $this->logFailedJoin($session, $ready->login->displayName, $message);
         try {
             $packet = new DisconnectPacket(DisconnectReason::KICKED, false, $message, $message);
             $batch = new BedrockBatch([
@@ -2968,6 +2978,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $this->deferredWorldPackets[$session->id],
             $this->deferredAuthoritativeMovementFrames[$session->id],
             $this->pendingPlayerWorldTransfers[$session->id],
+            $this->joiningLogs[$session->id],
+            $this->joinedLogs[$session->id],
+            $this->failedJoinLogs[$session->id],
         );
         foreach ($this->itemActorViewers as $worldId => $actors) {
             foreach ($actors as $runtimeId => $viewers) {
@@ -3095,6 +3108,10 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 $session->phase = SessionPhase::SPAWNED;
                 $this->crashContextDirty = true;
             }
+            if ($session !== null && !isset($this->joinedLogs[$session->id])) {
+                $this->joinedLogs[$session->id] = true;
+                $this->playerLifecycleLogger?->joined($event->player, $session->worldId ?? 'world', $session->transport);
+            }
 
             return true;
         }
@@ -3102,6 +3119,15 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             && in_array($event->reason, ['duplicate_session', 'duplicate_identity', 'world_full', 'plugin_cancelled'], true)) {
             $session = $this->sessionById($event->sessionId);
             if ($session?->phase === SessionPhase::ADMISSION_PENDING) {
+                $this->logFailedJoin(
+                    $session,
+                    $session->play?->login()->displayName ?? 'Unknown player',
+                    match ($event->reason) {
+                        'duplicate_session', 'duplicate_identity' => 'This account is already connected to this server.',
+                        'world_full' => 'The destination world is full.',
+                        default => 'A plugin rejected the connection.',
+                    },
+                );
                 $this->disconnect(self::endpointKey($session->transport), 'admission_event_failure');
 
                 return false;
@@ -3109,6 +3135,24 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
 
         return true;
+    }
+
+    private function logJoining(RuntimeSession $session, string $name): void
+    {
+        if (isset($this->joiningLogs[$session->id])) {
+            return;
+        }
+        $this->joiningLogs[$session->id] = true;
+        $this->playerLifecycleLogger?->joining($name, $session->transport);
+    }
+
+    private function logFailedJoin(RuntimeSession $session, string $name, string $reason): void
+    {
+        if (isset($this->failedJoinLogs[$session->id]) || isset($this->joinedLogs[$session->id])) {
+            return;
+        }
+        $this->failedJoinLogs[$session->id] = true;
+        $this->playerLifecycleLogger?->failed($name, $session->transport, $reason);
     }
 
     /**

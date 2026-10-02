@@ -21,12 +21,15 @@ declare(strict_types=1);
 namespace Bedriox\Server\Plugin;
 
 use Bedriox\Api\Entity\Entity;
+use Bedriox\Api\Plugin\Data\PluginData;
 use Bedriox\Api\Plugin\PluginContext;
 use Bedriox\Api\Plugin\SourcePluginDefinition;
 use Bedriox\Server\Observability\CrashContextPublisher;
 use Bedriox\Server\Observability\ServerLogger;
 use Bedriox\Server\Plugin\Command\CommandRegistry;
 use Bedriox\Server\Plugin\Command\OwnedCommandRegistrar;
+use Bedriox\Server\Plugin\Data\ArrayPluginResourceProvider;
+use Bedriox\Server\Plugin\Data\FilePluginData;
 use Bedriox\Server\Plugin\Event\EventDispatcher;
 use Bedriox\Server\Plugin\Event\OwnedEventRegistrar;
 use Bedriox\Server\Plugin\Scheduler\MainThreadPluginScheduler;
@@ -52,7 +55,7 @@ final class PluginHost
     private bool $started = false;
 
     /**
-     * @param Closure(PluginManifest, string, OwnedEventRegistrar, OwnedCommandRegistrar, OwnedSourcePluginRegistrar, ServerPluginLogger): PluginContext $contextFactory
+     * @param Closure(PluginManifest, PluginData, OwnedEventRegistrar, OwnedCommandRegistrar, OwnedSourcePluginRegistrar, ServerPluginLogger): PluginContext $contextFactory
      */
     public function __construct(
         private readonly string $pluginsDirectory,
@@ -169,7 +172,7 @@ final class PluginHost
                 $pluginLogger = new ServerPluginLogger($package->manifest->name, $this->logger);
                 $context = ($this->contextFactory)(
                     $package->manifest,
-                    $dataFolder,
+                    new FilePluginData($dataFolder, $package->resources),
                     $registrar,
                     $commands,
                     $sourcePlugins,
@@ -356,6 +359,7 @@ final class PluginHost
                         $manifest,
                         static function (string $class): void {},
                         $definition->instantiate(...),
+                        new ArrayPluginResourceProvider($definition->resources),
                     );
                     $packages[] = $package;
                     $sources[$sourceKey] = ['definition' => $definition, 'provider' => $batch['provider']];
@@ -400,7 +404,7 @@ final class PluginHost
                 $pluginLogger = new ServerPluginLogger($package->manifest->name, $this->logger);
                 $context = ($this->contextFactory)(
                     $package->manifest,
-                    $dataFolder,
+                    new FilePluginData($dataFolder, $package->resources),
                     $events,
                     $commands,
                     $sourcePlugins,
@@ -461,7 +465,7 @@ final class PluginHost
         ], JSON_THROW_ON_ERROR);
         $manifest = (new PluginManifestParser())->parse($json);
         if (!in_array($manifest->api, [
-            '0.3', '0.3.0', '^0.3', '^0.3.0', '~0.3', '~0.3.0',
+            '0.4', '0.4.0', '^0.4', '^0.4.0', '~0.4', '~0.4.0',
         ], true)) {
             throw new PluginException("Plugin {$manifest->name} requires unsupported API {$manifest->api}.");
         }

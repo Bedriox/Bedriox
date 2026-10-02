@@ -18,15 +18,14 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Server\Simulation;
+namespace Bedriox\Server\Plugin\Data;
 
-use Bedriox\Api\TranslatableMessage;
-
-final readonly class DeathPresentation
+interface PluginResourceProvider
 {
-    public function __construct(
-        public string|TranslatableMessage|null $deathMessage,
-        public string|TranslatableMessage|null $deathScreenMessage,
-        public bool $keepInventory,
-    ) {}
+    /** @return list<string> */
+    public function names(): array;
+
+    public function has(string $name): bool;
+
+    public function read(string $name): string;
 }

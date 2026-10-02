@@ -64,12 +64,14 @@ final class PluginPackageLoaderTest extends TestCase
         self::assertCount(1, $packages);
         self::assertSame('FixturePlugin', $packages[0]->manifest->name);
         self::assertStringEndsWith('valid.phar', $packages[0]->archive);
+        self::assertSame(['config.yml'], $packages[0]->resources->names());
+        self::assertSame("enabled: true\n", $packages[0]->resources->read('config.yml'));
         self::assertFileDoesNotExist($marker);
     }
 
     public function testRejectsUnsupportedApiAndSerializedMetadataIndependently(): void
     {
-        $this->buildPhar('unsupported.phar', str_replace('"^0.3"', '"^2.0"', $this->manifest()), '<?php');
+        $this->buildPhar('unsupported.phar', str_replace('"^0.4"', '"^2.0"', $this->manifest()), '<?php');
         $this->buildPhar('metadata.phar', $this->manifest('MetadataPlugin'), '<?php', true);
         $failures = [];
 
@@ -116,7 +118,7 @@ final class PluginPackageLoaderTest extends TestCase
             'schema' => 1,
             'name' => $name,
             'version' => '1.0.0',
-            'api' => '^0.3',
+            'api' => '^0.4',
             'main' => "Fixture\\{$name}\\Main",
             'namespace' => "Fixture\\{$name}",
             'authors' => ['Bedriox Team'],
@@ -138,6 +140,7 @@ $phar = new Phar($argv[1]);
 $phar->startBuffering();
 $phar['plugin.json'] = $argv[2];
 $phar['src/Main.php'] = $argv[3];
+$phar['resources/config.yml'] = "enabled: true\n";
 if ($argv[4] === 'yes') {
     $phar->setMetadata(['unsafe' => new stdClass()]);
 }
