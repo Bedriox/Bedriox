@@ -43,7 +43,7 @@ use InvalidArgumentException;
 /** Bounded schema-versioned player profile encoding with no session-local identifiers. */
 final readonly class PlayerDataCodec
 {
-    public const int SCHEMA_VERSION = 11;
+    public const int SCHEMA_VERSION = 12;
     public const int MAX_BYTES = 131_072;
 
     private const array REQUIRED_ROOT_TAGS = [
@@ -193,6 +193,13 @@ final readonly class PlayerDataCodec
         if ($player->inventory->offhand !== null) {
             $root['Offhand'] = self::encodedStack($player->inventory->offhand);
         }
+        if ($player->spawnPoint !== null) {
+            $root['SpawnPoint'] = LittleEndianNbtTag::list(LittleEndianNbtTag::DOUBLE, [
+                new LittleEndianNbtTag(LittleEndianNbtTag::DOUBLE, $player->spawnPoint->x),
+                new LittleEndianNbtTag(LittleEndianNbtTag::DOUBLE, $player->spawnPoint->y),
+                new LittleEndianNbtTag(LittleEndianNbtTag::DOUBLE, $player->spawnPoint->z),
+            ]);
+        }
         try {
             $encoded = $this->nbt->encodeRootCompound($root);
         } catch (InvalidArgumentException $error) {
@@ -243,6 +250,7 @@ final readonly class PlayerDataCodec
             ...$required,
             'Cursor',
             ...($schemaVersion >= 6 ? ['Offhand'] : []),
+            ...($schemaVersion >= 12 ? ['SpawnPoint'] : []),
         ], true);
         foreach ($root as $name => $_tag) {
             if (!isset($allowed[$name])) {
@@ -261,6 +269,9 @@ final readonly class PlayerDataCodec
             self::validateIdentity($uuid, $xuid, $name);
             $position = self::numberList($root['Position'], LittleEndianNbtTag::DOUBLE, 3, 'Position');
             $rotation = self::numberList($root['Rotation'], LittleEndianNbtTag::FLOAT, 2, 'Rotation');
+            $spawnPoint = isset($root['SpawnPoint'])
+                ? self::numberList($root['SpawnPoint'], LittleEndianNbtTag::DOUBLE, 3, 'SpawnPoint')
+                : null;
             $inventoryTag = self::tag($root['Inventory'], LittleEndianNbtTag::LIST, 'Inventory');
             if ($inventoryTag->listType !== LittleEndianNbtTag::COMPOUND || !is_array($inventoryTag->value)
                 || count($inventoryTag->value) > PlayerInventory::SLOT_COUNT) {
@@ -475,6 +486,7 @@ final readonly class PlayerDataCodec
                 isset($root['TotalExperience'])
                     ? self::integer($root['TotalExperience'], LittleEndianNbtTag::INT, 'TotalExperience')
                     : 0,
+                $spawnPoint === null ? null : new Position($spawnPoint[0], $spawnPoint[1], $spawnPoint[2]),
             );
         } catch (CorruptPlayerDataException $error) {
             throw $error;

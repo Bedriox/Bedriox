@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Observability;
 
+use Bedriox\Api\Event\Player\PlayerQuitCause;
 use Bedriox\RakNet\SessionInfo;
 use Bedriox\Server\Simulation\PlayerSnapshot;
 
@@ -59,6 +60,34 @@ final readonly class PlayerLifecycleLogger
             $session->remoteAddress,
             $session->remotePort,
             $reason,
+        ), 'Player');
+    }
+
+    public function left(
+        string $name,
+        SessionInfo $session,
+        PlayerQuitCause $cause,
+        string $reason,
+        ?string $actor = null,
+    ): void {
+        $category = match ($cause) {
+            PlayerQuitCause::DISCONNECTED => 'Disconnected',
+            PlayerQuitCause::KICKED => $actor === null ? 'Kicked' : 'Kicked by ' . $actor,
+            PlayerQuitCause::BANNED => $actor === null ? 'Banned' : 'Banned by ' . $actor,
+            PlayerQuitCause::TIMED_OUT => 'Connection timed out',
+            PlayerQuitCause::CONNECTION_LOST => 'Connection lost',
+            PlayerQuitCause::SERVER_SHUTDOWN => 'Server shutting down',
+        };
+        $detail = trim($reason);
+        if ($detail !== '' && strcasecmp($detail, $category) !== 0) {
+            $category .= ' — ' . $detail;
+        }
+        $this->logger->info(sprintf(
+            '%s[/%s:%d] left the server: %s',
+            $name,
+            $session->remoteAddress,
+            $session->remotePort,
+            $category,
         ), 'Player');
     }
 }

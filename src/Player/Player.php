@@ -50,6 +50,7 @@ final class Player
     public string $gamemode;
     private int $stateRevision = 0;
     private int $savedRevision = 0;
+    private ?Position $spawnPoint;
 
     /** @param list<EffectInstance> $effects */
     public function __construct(
@@ -74,6 +75,7 @@ final class Player
         int $fireTicks = 0,
         ?ActiveEffectPersistenceState $effectPersistenceState = null,
         int $totalExperience = 0,
+        ?Position $spawnPoint = null,
     ) {
         $this->chatTokens = $chatTokens;
         $this->lastChatRefillTick = $tick;
@@ -97,6 +99,7 @@ final class Player
         $this->experience = new PlayerExperience($totalExperience, function (): void {
             $this->markDirty();
         });
+        $this->spawnPoint = $spawnPoint;
     }
 
     public function snapshot(): PlayerSnapshot
@@ -168,6 +171,23 @@ final class Player
         $previous = $this->gameMode();
         if ($previous !== $gameMode) {
             $this->gamemode = $gameMode->value;
+            $this->markDirty();
+        }
+
+        return $previous;
+    }
+
+    public function spawnPoint(): ?Position
+    {
+        return $this->spawnPoint;
+    }
+
+    public function setSpawnPoint(Position $position): ?Position
+    {
+        $previous = $this->spawnPoint;
+        if ($previous === null || $previous->x !== $position->x || $previous->y !== $position->y
+            || $previous->z !== $position->z) {
+            $this->spawnPoint = $position;
             $this->markDirty();
         }
 

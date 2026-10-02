@@ -26,6 +26,7 @@ use Bedriox\Api\Command\CommandDefinition;
 use Bedriox\Api\Command\CommandResult;
 use Bedriox\Api\TextFormat;
 use Bedriox\Server\BuildInfo;
+use Bedriox\Server\Command\CommandFeedback;
 
 final readonly class VersionCommand implements BuiltinCommand
 {
@@ -42,12 +43,12 @@ final readonly class VersionCommand implements BuiltinCommand
     public function execute(CommandContext $context): CommandResult
     {
         $build = BuildInfo::current();
-        $context->sender()->sendMessage(CommandMessageStyle::line(
+        $context->sender()->sendMessage(CommandFeedback::line(
             $context->sender(),
             TextFormat::GREEN,
             "This server is running Bedriox version {$build->serverVersion} (protocol {$build->protocolVersion}).",
         ));
-        $context->sender()->sendMessage(CommandMessageStyle::line(
+        $context->sender()->sendMessage(CommandFeedback::line(
             $context->sender(),
             TextFormat::AQUA,
             'Visit https://bedriox.com',

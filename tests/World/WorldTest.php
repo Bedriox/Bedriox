@@ -58,6 +58,17 @@ final class WorldTest extends TestCase
         self::assertSame($override, $this->world($override)->spawn());
     }
 
+    public function testDifficultyAndSpawnCanChangeAuthoritatively(): void
+    {
+        $world = $this->world();
+        $spawn = new SpawnPosition(24, 72, -8);
+
+        self::assertSame(2, $world->setDifficulty(3));
+        self::assertSame(3, $world->difficulty());
+        self::assertEquals(new SpawnPosition(0, 64, 0), $world->setSpawn($spawn));
+        self::assertSame($spawn, $world->spawn());
+    }
+
     public function testBlockReplacementIsAuthoritativeAcrossPositiveAndNegativeChunks(): void
     {
         $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());

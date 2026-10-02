@@ -57,7 +57,7 @@ final readonly class GamemodeCommand implements BuiltinCommand
     public function execute(CommandContext $context): CommandResult
     {
         $values = $context->values();
-        $gameMode = self::parseGameMode($values->string('mode'));
+        $gameMode = self::parse($values->string('mode'));
         if ($gameMode === null) {
             return CommandResult::failure('Unknown game mode.');
         }
@@ -76,7 +76,7 @@ final readonly class GamemodeCommand implements BuiltinCommand
         return CommandResult::success("Set {$target->name}'s game mode to {$gameMode->value}.");
     }
 
-    private static function parseGameMode(string $value): ?GameMode
+    public static function parse(string $value): ?GameMode
     {
         return match (strtolower($value)) {
             '0', 's', 'survival' => GameMode::SURVIVAL,

@@ -20,6 +20,9 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Simulation\Event;
 
+use Bedriox\Api\Event\Player\PlayerQuitCause;
+use Bedriox\Api\TranslatableMessage;
+
 final readonly class PlayerDisconnected implements WorldEvent
 {
     /** @param list<string> $recipientSessionIds */
@@ -28,6 +31,10 @@ final readonly class PlayerDisconnected implements WorldEvent
         public string $identity,
         public int $runtimeActorId,
         public array $recipientSessionIds,
+        public PlayerQuitCause $cause = PlayerQuitCause::DISCONNECTED,
+        public string $reason = 'Disconnected',
+        public ?string $actor = null,
+        public string|TranslatableMessage|null $quitMessage = null,
     ) {}
 
     public function recipients(): array

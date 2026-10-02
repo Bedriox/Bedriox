@@ -26,6 +26,7 @@ use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Entity\Entity;
 use Bedriox\Api\Entity\Value\MountSeat;
+use Bedriox\Api\Event\Player\PlayerKickCause;
 use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Inventory\ItemStack;
 use Bedriox\Api\Inventory\PlayerInventoryActions;
@@ -42,13 +43,13 @@ use LogicException;
 /** @internal Binds immutable public player handles to the current runtime session without exposing it. */
 final class PlayerConnectionDirectory
 {
-    /** @var array<string, array{session: string, connected: Closure(): bool, send: Closure(Packet, bool): bool, kick: Closure(string, ?string, ?string): bool, swing: Closure(): bool, teleport: Closure(Position): bool, gameMode: Closure(GameMode): bool, give: Closure(ItemStack): bool, slot: Closure(int, ?ItemStack): bool, contents: Closure(list<ItemStack|null>): bool, remove: Closure(ItemStack): bool, select: Closure(int): bool, equipment: Closure(EquipmentSlot, ?ItemStack): bool, armor: Closure(array<string, ItemStack|null>): bool, damage: Closure(float): bool, maximumStackSize: Closure(ItemStack): int, effectAdd: Closure(EffectInstance, EffectCause): bool, effectRemove: Closure(EffectType, EffectCause): bool, effectClear: Closure(EffectCause): bool, experience: Closure(int, ExperienceChangeCause): bool, vehicle: Closure(): ?Entity, mount: Closure(Entity, MountSeat): bool, dismount: Closure(): bool}> */
+    /** @var array<string, array{session: string, connected: Closure(): bool, send: Closure(Packet, bool): bool, kick: Closure(string, ?string, ?string, PlayerKickCause, ?string): bool, swing: Closure(): bool, teleport: Closure(Position): bool, gameMode: Closure(GameMode): bool, give: Closure(ItemStack): bool, slot: Closure(int, ?ItemStack): bool, contents: Closure(list<ItemStack|null>): bool, remove: Closure(ItemStack): bool, select: Closure(int): bool, equipment: Closure(EquipmentSlot, ?ItemStack): bool, armor: Closure(array<string, ItemStack|null>): bool, damage: Closure(float): bool, maximumStackSize: Closure(ItemStack): int, effectAdd: Closure(EffectInstance, EffectCause): bool, effectRemove: Closure(EffectType, EffectCause): bool, effectClear: Closure(EffectCause): bool, experience: Closure(int, ExperienceChangeCause): bool, vehicle: Closure(): ?Entity, mount: Closure(Entity, MountSeat): bool, dismount: Closure(): bool}> */
     private array $connections = [];
 
     /**
      * @param Closure(): bool             $connected
      * @param Closure(Packet, bool): bool $send
-     * @param Closure(string, ?string, ?string): bool $kick
+     * @param Closure(string, ?string, ?string, PlayerKickCause, ?string): bool $kick
      * @param Closure(): bool $swingArm
      * @param null|Closure(Position): bool $teleport
      * @param null|Closure(GameMode): bool $setGameMode
@@ -97,7 +98,7 @@ final class PlayerConnectionDirectory
             'session' => $sessionId,
             'connected' => $connected,
             'send' => $send,
-            'kick' => $kick ?? static fn(string $reason, ?string $quitMessage, ?string $screenMessage): bool => false,
+            'kick' => $kick ?? static fn(string $reason, ?string $quitMessage, ?string $screenMessage, PlayerKickCause $cause, ?string $actor): bool => false,
             'swing' => $swingArm ?? static fn(): bool => false,
             'teleport' => $teleport ?? static fn(Position $position): bool => false,
             'gameMode' => $setGameMode ?? static fn(GameMode $gameMode): bool => false,
@@ -138,8 +139,8 @@ final class PlayerConnectionDirectory
                 && ($this->connections[$key]['connected'])(),
             fn(Packet $packet, bool $immediate): bool => $session !== null && ($this->connections[$key]['session'] ?? null) === $session
                 && ($this->connections[$key]['send'])($packet, $immediate),
-            fn(string $reason, ?string $quitMessage, ?string $screenMessage): bool => $session !== null && ($this->connections[$key]['session'] ?? null) === $session
-                && ($this->connections[$key]['kick'])($reason, $quitMessage, $screenMessage),
+            fn(string $reason, ?string $quitMessage, ?string $screenMessage, PlayerKickCause $cause, ?string $actor): bool => $session !== null && ($this->connections[$key]['session'] ?? null) === $session
+                && ($this->connections[$key]['kick'])($reason, $quitMessage, $screenMessage, $cause, $actor),
             fn(): bool => $session !== null && ($this->connections[$key]['session'] ?? null) === $session
                 && ($this->connections[$key]['swing'])(),
         );
@@ -294,7 +295,7 @@ final class PlayerConnectionDirectory
     }
 
     /**
-     * @return array{session: string, connected: Closure(): bool, send: Closure(Packet, bool): bool, kick: Closure(string, ?string, ?string): bool, swing: Closure(): bool, teleport: Closure(Position): bool, gameMode: Closure(GameMode): bool, give: Closure(ItemStack): bool, slot: Closure(int, ?ItemStack): bool, contents: Closure(list<ItemStack|null>): bool, remove: Closure(ItemStack): bool, select: Closure(int): bool, equipment: Closure(EquipmentSlot, ?ItemStack): bool, armor: Closure(array<string, ItemStack|null>): bool, damage: Closure(float): bool, maximumStackSize: Closure(ItemStack): int, effectAdd: Closure(EffectInstance, EffectCause): bool, effectRemove: Closure(EffectType, EffectCause): bool, effectClear: Closure(EffectCause): bool, experience: Closure(int, ExperienceChangeCause): bool, vehicle: Closure(): ?Entity, mount: Closure(Entity, MountSeat): bool, dismount: Closure(): bool}
+     * @return array{session: string, connected: Closure(): bool, send: Closure(Packet, bool): bool, kick: Closure(string, ?string, ?string, PlayerKickCause, ?string): bool, swing: Closure(): bool, teleport: Closure(Position): bool, gameMode: Closure(GameMode): bool, give: Closure(ItemStack): bool, slot: Closure(int, ?ItemStack): bool, contents: Closure(list<ItemStack|null>): bool, remove: Closure(ItemStack): bool, select: Closure(int): bool, equipment: Closure(EquipmentSlot, ?ItemStack): bool, armor: Closure(array<string, ItemStack|null>): bool, damage: Closure(float): bool, maximumStackSize: Closure(ItemStack): int, effectAdd: Closure(EffectInstance, EffectCause): bool, effectRemove: Closure(EffectType, EffectCause): bool, effectClear: Closure(EffectCause): bool, experience: Closure(int, ExperienceChangeCause): bool, vehicle: Closure(): ?Entity, mount: Closure(Entity, MountSeat): bool, dismount: Closure(): bool}
      */
     private function currentConnection(string $key, ?string $session): array
     {

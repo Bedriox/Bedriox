@@ -23,6 +23,8 @@ namespace Bedriox\Api\Event\Player;
 enum PlayerKickCause: string
 {
     case PLUGIN = 'plugin';
+    case OPERATOR = 'operator';
+    case BAN = 'ban';
     case WHITELIST = 'whitelist';
     case SERVER_POLICY = 'server_policy';
 }

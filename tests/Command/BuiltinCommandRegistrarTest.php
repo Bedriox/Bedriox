@@ -22,12 +22,15 @@ namespace Bedriox\Server\Tests\Command;
 
 use Bedriox\Api\Command\CommandSender;
 use Bedriox\Api\Command\CommandSenderType;
+use Bedriox\Api\Event\Player\PlayerKickCause;
 use Bedriox\Api\Inventory\Inventory;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\Player\Player;
 use Bedriox\Api\Player\PlayerConnection;
 use Bedriox\Api\World\Position;
+use Bedriox\Api\World\WorldDifficulty;
 use Bedriox\Protocol\Packet\Packet;
+use Bedriox\Server\Access\BanManager;
 use Bedriox\Server\Command\BuiltinCommandRegistrar;
 use Bedriox\Server\Command\Default\GarbageCollectionStatus;
 use Bedriox\Server\Command\Default\OnlinePlayerResolver;
@@ -91,10 +94,10 @@ final class BuiltinCommandRegistrarTest extends TestCase
             static fn(): array => [],
         ))->register();
 
-        self::assertSame(13, $registry->count());
+        self::assertSame(17, $registry->count());
         $definitions = $registry->availableDefinitions(CommandSenderType::CONSOLE, static fn(string $permission): bool => true);
         self::assertSame(
-            ['version', 'help', 'list', 'stop', 'op', 'deop', 'permission', 'gamemode', 'give', 'tp', 'effect', 'experience'],
+            ['version', 'help', 'list', 'stop', 'op', 'deop', 'permission', 'gamemode', 'give', 'tp', 'effect', 'experience', 'kick', 'clear', 'tell', 'title'],
             array_map(static fn($definition): string => $definition->name, $definitions),
         );
         self::assertSame(['ver'], $definitions[0]->aliases);
@@ -121,7 +124,104 @@ final class BuiltinCommandRegistrarTest extends TestCase
         );
         self::assertSame('Visit https://bedriox.com', $sender->messages[1]);
         self::assertTrue(($registry->dispatch($sender, 'commands'))->isSuccess());
-        self::assertContains('Available commands (12):', $sender->messages);
+        self::assertContains('--------- Commands (1/1) ---------', $sender->messages);
+    }
+
+    public function testExpandedAdministrativeCommandsInvokeAuthoritativeServices(): void
+    {
+        $kick = null;
+        $online = $this->player(
+            'Example',
+            '00000000-0000-0000-0000-000000000001',
+            static function (string $reason, ?string $quitMessage, ?string $screenMessage, PlayerKickCause $cause, ?string $actor) use (&$kick): bool {
+                $kick = [$reason, $quitMessage, $screenMessage, $cause, $actor];
+
+                return true;
+            },
+        );
+        $players = static fn(): array => [$online];
+        [$registry, $permissions] = $this->registry($players);
+        $directory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'bedriox-command-bans-' . bin2hex(random_bytes(8));
+        self::assertTrue(mkdir($directory));
+        $this->temporaryDirectories[] = $directory;
+        $broadcasts = [];
+        $saved = 0;
+        $autosave = null;
+        $defaultMode = GameMode::SURVIVAL;
+        $difficulty = WorldDifficulty::NORMAL;
+        (new BuiltinCommandRegistrar(
+            $registry,
+            $permissions,
+            $players,
+            static function (): void {},
+            static fn(): array => ['minecraft:stone'],
+            broadcast: static function (string $message) use (&$broadcasts): int {
+                $broadcasts[] = $message;
+                return 2;
+            },
+            pluginStates: static fn(): array => ['Example' => true],
+            worldSeed: static fn(): int => 123,
+            setBlock: static fn(): bool => true,
+            enchant: static fn(): bool => true,
+            saveWorlds: static function () use (&$saved): int {
+                ++$saved;
+                return 1;
+            },
+            currentDefaultGameMode: static fn(): GameMode => $defaultMode,
+            setDefaultGameMode: static function (GameMode $mode) use (&$defaultMode): bool {
+                $defaultMode = $mode;
+                return true;
+            },
+            currentDifficulty: static fn(): WorldDifficulty => $difficulty,
+            setDifficulty: static function ($world, WorldDifficulty $value) use (&$difficulty): bool {
+                $difficulty = $value;
+                return true;
+            },
+            setWorldSpawn: static fn(): bool => true,
+            setPlayerSpawnPoint: static fn(): bool => true,
+            setAutosave: static function (bool $enabled) use (&$autosave): bool {
+                $autosave = $enabled;
+                return true;
+            },
+            bans: new BanManager($directory . DIRECTORY_SEPARATOR . 'bans.json'),
+            playerAddress: static fn(): ?string => null,
+            kickAddress: static fn(string $address, string $reason, string $actor): int => 0,
+        ))->register();
+
+        $names = array_map(
+            static fn($command): string => $command->definition->name,
+            $registry->availableCommands(CommandSenderType::CONSOLE, static fn(string $permission): bool => true),
+        );
+        foreach (['say', 'plugins', 'seed', 'setblock', 'enchant', 'save-all', 'defaultgamemode', 'difficulty',
+            'setworldspawn', 'spawnpoint', 'save-on', 'save-off', 'ban', 'ban-ip', 'banlist', 'pardon', 'pardon-ip'] as $name) {
+            self::assertContains($name, $names);
+        }
+
+        $sender = new BuiltinCommandSender();
+        self::assertTrue($registry->dispatch($sender, 'say maintenance soon')->isSuccess());
+        self::assertSame(['[Server] maintenance soon'], $broadcasts);
+        self::assertTrue($registry->dispatch($sender, 'defaultgamemode creative')->isSuccess());
+        self::assertSame(GameMode::CREATIVE, $defaultMode);
+        self::assertTrue($registry->dispatch($sender, 'difficulty hard')->isSuccess());
+        self::assertSame(WorldDifficulty::HARD, $difficulty);
+        self::assertTrue($registry->dispatch($sender, 'save-all')->isSuccess());
+        self::assertSame(1, $saved);
+        self::assertTrue($registry->dispatch($sender, 'save-off')->isSuccess());
+        self::assertFalse($autosave);
+        self::assertTrue($registry->dispatch($sender, 'kick Example griefing')->isSuccess());
+        self::assertSame(['griefing', null, 'griefing', PlayerKickCause::OPERATOR, 'Console'], $kick);
+        self::assertTrue($registry->dispatch($sender, 'ban Example testing')->isSuccess());
+        self::assertSame([
+            'testing',
+            null,
+            "You are banned from this server.\ntesting",
+            PlayerKickCause::BAN,
+            'Console',
+        ], $kick);
+        self::assertTrue($registry->dispatch($sender, 'banlist players')->isSuccess());
+        self::assertTrue($registry->dispatch($sender, 'pardon Example')->isSuccess());
+        self::assertTrue($registry->dispatch($sender, 'ban-ip 127.0.0.1 testing')->isSuccess());
+        self::assertTrue($registry->dispatch($sender, 'pardon-ip 127.0.0.1')->isSuccess());
     }
 
     public function testKillCommandIsRegisteredWithItsParentPermissionWhenRuntimeIsAvailable(): void
@@ -440,7 +540,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
             unloadChunks: static fn(): ChunkUnloadResult => new ChunkUnloadResult(1, 1, 0, false, 0),
         ))->register();
 
-        self::assertSame(14, $registry->count());
+        self::assertSame(18, $registry->count());
         $sender = new BuiltinCommandSender();
         self::assertTrue(($registry->dispatch($sender, 'gc'))->isSuccess());
         self::assertSame(1, $statusCalls);
@@ -564,7 +664,8 @@ final class BuiltinCommandRegistrarTest extends TestCase
         ];
     }
 
-    private function player(string $name, string $uuid): Player
+    /** @param Closure(string, ?string, ?string, \Bedriox\Api\Event\Player\PlayerKickCause, ?string): bool|null $kick */
+    private function player(string $name, string $uuid, ?Closure $kick = null): Player
     {
         return new Player(
             $name,
@@ -578,6 +679,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
             playerConnection: new PlayerConnection(
                 static fn(): bool => true,
                 static fn(Packet $packet, bool $immediate): bool => true,
+                $kick,
             ),
         );
     }

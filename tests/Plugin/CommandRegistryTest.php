@@ -32,6 +32,7 @@ use Bedriox\Api\Command\CommandSenderType;
 use Bedriox\Api\Event\Command\CommandDispatchedEvent;
 use Bedriox\Api\Event\Command\CommandPreDispatchEvent;
 use Bedriox\Api\Event\EventPriority;
+use Bedriox\Api\TextFormat;
 use Bedriox\Api\World\Particle\ParticleType;
 use Bedriox\Server\Plugin\Command\CommandLineParser;
 use Bedriox\Server\Plugin\Command\CommandRegistry;
@@ -138,7 +139,7 @@ final class CommandRegistryTest extends TestCase
         $missingPermission = new RecordingCommandSender(CommandSenderType::CONSOLE);
 
         self::assertFalse($registry->dispatch($wrongSender, 'secure')->isSuccess());
-        self::assertSame(['This command cannot be used by this sender.'], $wrongSender->messages);
+        self::assertSame([TextFormat::RED . 'This command cannot be used by this sender.' . TextFormat::RESET], $wrongSender->messages);
         self::assertFalse($registry->dispatch($missingPermission, 'secure')->isSuccess());
         self::assertSame(['You do not have permission to use this command.'], $missingPermission->messages);
         self::assertSame(0, $calls);

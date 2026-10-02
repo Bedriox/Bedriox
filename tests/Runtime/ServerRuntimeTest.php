@@ -26,6 +26,7 @@ use Bedriox\Api\Command\CommandContext;
 use Bedriox\Api\Command\CommandParameter;
 use Bedriox\Api\Command\CommandResult;
 use Bedriox\Api\Command\CommandSoftEnum;
+use Bedriox\Api\Command\PlayerCommandSender;
 use Bedriox\Api\World\World as PublicWorld;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Batch\BatchLimits;
@@ -2144,14 +2145,7 @@ final class ServerRuntimeTest extends TestCase
             ));
             self::assertTrue($runtime->poll());
             $packets = $this->decodeEncryptedPackets($transport->sent, $decryptor);
-            self::assertCount(1, $packets);
-            self::assertInstanceOf(CommandOutputPacket::class, $packets[0]);
-            self::assertSame('00000000-0000-0000-0000-000000000001', $packets[0]->origin->uuid);
-            self::assertSame('retail-request', $packets[0]->origin->requestId);
-            self::assertSame(0x0102030405060708, $packets[0]->origin->playerId);
-            self::assertSame(1, $packets[0]->successCount);
-            self::assertCount(1, $packets[0]->messages);
-            self::assertSame('Command completed.', $packets[0]->messages[0]->messageId);
+            self::assertSame([], $packets);
 
             $transport->sent = [];
             $this->receiveEncrypted($transport, $info, $client, new CommandRequestPacket(
@@ -2165,13 +2159,14 @@ final class ServerRuntimeTest extends TestCase
             ));
             self::assertTrue($runtime->poll());
             $packets = $this->decodeEncryptedPackets($transport->sent, $decryptor);
-            self::assertCount(1, $packets);
-            self::assertInstanceOf(CommandOutputPacket::class, $packets[0]);
-            self::assertSame('verbose-request', $packets[0]->origin->requestId);
-            self::assertSame(1, $packets[0]->successCount);
-            self::assertCount(70, $packets[0]->messages);
-            self::assertSame('line 0', $packets[0]->messages[0]->messageId);
-            self::assertSame('line 69', $packets[0]->messages[69]->messageId);
+            self::assertCount(70, $packets);
+            self::assertContainsOnlyInstancesOf(TextPacket::class, array_slice($packets, 0, 69));
+            self::assertInstanceOf(TextPacket::class, $packets[0]);
+            self::assertInstanceOf(TextPacket::class, $packets[68]);
+            self::assertSame('line 0', $packets[0]->message);
+            self::assertSame('line 68', $packets[68]->message);
+            self::assertInstanceOf(TextPacket::class, $packets[69]);
+            self::assertSame('line 69', $packets[69]->message);
         } finally {
             $runtime->close();
             foreach (glob($directory . DIRECTORY_SEPARATOR . '*') ?: [] as $file) {
@@ -2236,9 +2231,8 @@ final class ServerRuntimeTest extends TestCase
             self::assertNull($runtime->failure());
             $failed = $this->decodeEncryptedPackets($transport->sent, $decryptor);
             self::assertCount(1, $failed);
-            self::assertInstanceOf(CommandOutputPacket::class, $failed[0]);
-            self::assertSame(0, $failed[0]->successCount);
-            self::assertSame('The command failed internally.', $failed[0]->messages[0]->messageId);
+            self::assertInstanceOf(TextPacket::class, $failed[0]);
+            self::assertStringContainsString('The command failed internally.', $failed[0]->message);
 
             $transport->sent = [];
             $this->receiveEncrypted($transport, $info, $client, new CommandRequestPacket(
@@ -2248,9 +2242,72 @@ final class ServerRuntimeTest extends TestCase
             self::assertTrue($runtime->poll());
             self::assertSame(1, $runtime->sessionCount());
             $following = $this->decodeEncryptedPackets($transport->sent, $decryptor);
-            self::assertCount(1, $following);
-            self::assertInstanceOf(CommandOutputPacket::class, $following[0]);
-            self::assertSame(1, $following[0]->successCount);
+            self::assertSame([], $following);
+        } finally {
+            $runtime->close();
+            foreach (glob($directory . DIRECTORY_SEPARATOR . '*') ?: [] as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
+            if (is_dir($directory)) {
+                rmdir($directory);
+            }
+        }
+    }
+
+    public function testCommandMayKickItsSenderWithoutCrashingResultDelivery(): void
+    {
+        $directory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'bedriox-runtime-command-kick-' . bin2hex(random_bytes(8));
+        $permissions = new PermissionStore($directory . DIRECTORY_SEPARATOR . 'permissions.json');
+        $commands = $this->authorityCommands();
+        $commands->registerServer(new RuntimeAuthorityCommand(
+            'disconnecting-command',
+            'Disconnect its sender',
+            disconnectSender: true,
+        ));
+        $transport = new FakeConnectedTransport();
+        $clock = new RuntimeTestClock();
+        $world = new WorldSimulation();
+        $loginFactory = new RuntimeLoginFactory();
+        $runtime = new ServerRuntime(
+            $transport,
+            $loginFactory,
+            new BedrockPlayChannelFactory(
+                new EmptyInitializationFactory(),
+                commandRegistry: $commands,
+                permissionStore: $permissions,
+            ),
+            $world,
+            new FixedRateWorldLoop($world, $clock),
+            new RecordingEventEncoder(),
+            commandRegistry: $commands,
+            permissionStore: $permissions,
+        );
+        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+
+        try {
+            $client = $this->advanceToInitializing($runtime, $transport, $info, $loginFactory);
+            $decryptor = $loginFactory->clientDecryptor();
+            $this->decodeEncryptedPackets($transport->sent, $decryptor);
+            $transport->sent = [];
+            $this->receiveEncrypted($transport, $info, $client, new SetLocalPlayerAsInitializedPacket(UnsignedLong::fromInt(1)));
+            self::assertTrue($runtime->poll());
+            $clock->advance(50_000_000);
+            self::assertTrue($runtime->poll());
+            $this->decodeEncryptedPackets($transport->sent, $decryptor);
+            $transport->sent = [];
+
+            $this->receiveEncrypted($transport, $info, $client, new CommandRequestPacket(
+                '/disconnecting-command',
+                new CommandOrigin(CommandOriginType::Player, 'ffffffff-ffff-ffff-ffff-ffffffffffff', 'kick-request', 1),
+            ));
+            self::assertTrue($runtime->poll());
+            $packets = $this->decodeEncryptedPackets($transport->sent, $decryptor);
+            $disconnects = array_values(array_filter($packets, static fn(Packet $packet): bool => $packet instanceof DisconnectPacket));
+            self::assertCount(1, $disconnects);
+            self::assertSame('Command-requested disconnect.', $disconnects[0]->kickMessage);
+            self::assertTrue($runtime->poll());
         } finally {
             $runtime->close();
             foreach (glob($directory . DIRECTORY_SEPARATOR . '*') ?: [] as $file) {
@@ -2568,6 +2625,7 @@ final class RuntimeAuthorityCommand extends AbstractCommand
         private readonly ?string $requiredPermission = null,
         private readonly bool $verbose = false,
         private readonly bool $oversizedOutput = false,
+        private readonly bool $disconnectSender = false,
     ) {
         parent::__construct($name, $description);
     }
@@ -2579,6 +2637,15 @@ final class RuntimeAuthorityCommand extends AbstractCommand
 
     public function execute(CommandContext $context): CommandResult
     {
+        if ($this->disconnectSender) {
+            $sender = $context->sender();
+            if (!$sender instanceof PlayerCommandSender) {
+                return CommandResult::failure('This command requires a player.');
+            }
+            $sender->player()->kick('Command-requested disconnect.');
+
+            return CommandResult::success('This result must not be delivered to the disconnected player.');
+        }
         if ($this->oversizedOutput) {
             $context->sender()->sendMessage(str_repeat('x', 4_097));
         }

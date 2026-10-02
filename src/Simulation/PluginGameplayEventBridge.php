@@ -149,6 +149,7 @@ use Bedriox\Api\Event\Player\PlayerMoveEvent;
 use Bedriox\Api\Event\Player\PlayerPickedUpItemEvent;
 use Bedriox\Api\Event\Player\PlayerPickupItemEvent;
 use Bedriox\Api\Event\Player\PlayerPreJoinEvent;
+use Bedriox\Api\Event\Player\PlayerQuitCause;
 use Bedriox\Api\Event\Player\PlayerQuitEvent;
 use Bedriox\Api\Event\Player\PlayerRegainedHealthEvent;
 use Bedriox\Api\Event\Player\PlayerRegainHealthEvent;
@@ -394,9 +395,17 @@ final readonly class PluginGameplayEventBridge
         );
     }
 
-    public function quit(Player $player): void
-    {
-        $this->events->dispatch(new PlayerQuitEvent($this->playerView($player)));
+    public function quit(
+        Player $player,
+        PlayerQuitCause $cause,
+        string $reason,
+        ?string $actor,
+        string|TranslatableMessage|null $quitMessage,
+    ): string|TranslatableMessage|null {
+        $event = new PlayerQuitEvent($this->playerView($player), $cause, $reason, $actor, $quitMessage);
+        $this->events->dispatch($event);
+
+        return $event->getQuitMessage();
     }
 
     public function allowEntitySpawn(ApiEntity $entity, SpawnCause $cause): bool
@@ -755,9 +764,9 @@ final readonly class PluginGameplayEventBridge
     }
 
     /** @return null|array{string, ?string, ?string} */
-    public function kick(ApiPlayer $player, \Bedriox\Api\Event\Player\PlayerKickCause $cause, string $reason, ?string $quitMessage, ?string $screenMessage): ?array
+    public function kick(ApiPlayer $player, \Bedriox\Api\Event\Player\PlayerKickCause $cause, string $reason, ?string $quitMessage, ?string $screenMessage, ?string $actor = null): ?array
     {
-        $event = new PlayerKickEvent($player, $cause, $reason, $quitMessage, $screenMessage);
+        $event = new PlayerKickEvent($player, $cause, $reason, $quitMessage, $screenMessage, $actor);
         $this->events->dispatch($event);
 
         return $event->isCancelled() ? null : [$event->reason(), $event->quitMessage(), $event->disconnectScreenMessage()];

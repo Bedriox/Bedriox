@@ -20,9 +20,18 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Simulation\Command;
 
+use Bedriox\Api\Event\Player\PlayerQuitCause;
+use Bedriox\Api\TranslatableMessage;
+
 final readonly class DisconnectPlayer implements WorldCommand
 {
-    public function __construct(public string $session) {}
+    public function __construct(
+        public string $session,
+        public PlayerQuitCause $cause,
+        public string $reason,
+        public ?string $actor,
+        public string|TranslatableMessage|null $quitMessage,
+    ) {}
 
     public function sessionId(): string
     {
@@ -31,6 +40,7 @@ final readonly class DisconnectPlayer implements WorldCommand
 
     public function estimatedBytes(): int
     {
-        return 16 + strlen($this->session);
+        return 48 + strlen($this->session) + strlen($this->reason) + strlen($this->actor ?? '')
+            + ($this->quitMessage instanceof TranslatableMessage ? 128 : strlen($this->quitMessage ?? ''));
     }
 }

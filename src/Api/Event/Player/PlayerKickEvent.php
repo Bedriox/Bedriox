@@ -33,6 +33,7 @@ final class PlayerKickEvent extends CancellableEvent
         private string $reason,
         private ?string $quitMessage,
         private ?string $disconnectScreenMessage,
+        public readonly ?string $actor = null,
     ) {}
 
     public function reason(): string

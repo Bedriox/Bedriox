@@ -39,6 +39,26 @@ use PHPUnit\Framework\TestCase;
 
 final class PlayerDataCodecTest extends TestCase
 {
+    public function testPersistsPersonalSpawnPoint(): void
+    {
+        $profile = self::profile();
+        $profile = new PlayerBootstrap(
+            $profile->identity,
+            $profile->worldName,
+            $profile->position,
+            $profile->yaw,
+            $profile->pitch,
+            $profile->inventory,
+            $profile->firstPlayedAt,
+            $profile->lastPlayedAt,
+            spawnPoint: new Position(12.5, 70.0, -4.5),
+        );
+
+        $decoded = (new PlayerDataCodec())->decode((new PlayerDataCodec())->encode($profile));
+
+        self::assertEquals(new Position(12.5, 70.0, -4.5), $decoded->spawnPoint);
+    }
+
     public function testPersistsActiveEffectsWithoutWireIdentifiers(): void
     {
         $profile = self::profile();

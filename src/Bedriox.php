@@ -22,6 +22,7 @@ namespace Bedriox\Server;
 
 use Bedriox\Api\Plugin\Data\PluginData;
 use Bedriox\Api\Plugin\PluginContext;
+use Bedriox\Server\Access\BanManager;
 use Bedriox\Server\Access\WhitelistManager;
 use Bedriox\Server\Command\BuiltinCommandRegistrar;
 use Bedriox\Server\Command\Default\GarbageCollectionStatus;
@@ -340,6 +341,10 @@ final class Bedriox
                 },
                 $pluginEvents->dispatch(...),
             );
+            $bans = new BanManager(
+                $workingDirectory . DIRECTORY_SEPARATOR . 'bans.json',
+                $pluginEvents->dispatch(...),
+            );
             $playerStore = ProcessPlayerDataStore::start(
                 self::VERSION,
                 $workingDirectory . DIRECTORY_SEPARATOR . 'player_data',
@@ -473,6 +478,162 @@ final class Bedriox
                 enforceWhitelist: static function () use ($composition): void {
                     $composition->server?->runtime->enforceWhitelist();
                 },
+                broadcast: static function (string $message) use ($composition): int {
+                    $players = $composition->server?->runtime->onlinePlayers() ?? [];
+                    foreach ($players as $player) {
+                        $player->sendMessage($message);
+                    }
+                    return count($players);
+                },
+                pluginStates: static fn(): array => $pluginHost->manager()->pluginStates(),
+                worldSeed: static function (?\Bedriox\Api\World\World $world) use ($composition): ?int {
+                    $manager = $composition->server?->worldManager;
+                    if ($manager === null) {
+                        return null;
+                    }
+                    $handle = $world ?? $manager->getDefault();
+
+                    return $manager->info($handle)->seed;
+                },
+                setBlock: static function (
+                    \Bedriox\Api\World\BlockPosition $position,
+                    string $identifier,
+                    ?\Bedriox\Api\World\World $world,
+                ) use ($composition): bool {
+                    $manager = $composition->server?->worldManager;
+                    $handle = $manager === null ? null : ($world ?? $manager->getDefault());
+                    if ($handle === null) {
+                        return false;
+                    }
+                    try {
+                        $handle->setBlock($position, $identifier);
+                        return true;
+                    } catch (\Throwable) {
+                        return false;
+                    }
+                },
+                enchant: static function (\Bedriox\Api\Player\Player $player, string $identifier, int $level) use ($itemCatalog): bool {
+                    $inventory = $player->getInventory();
+                    $slot = $inventory->getSelectedHotbarSlot();
+                    $stack = $inventory->getHeldItem();
+                    $registry = \Bedriox\Server\Gameplay\Enchanting\VanillaEnchantmentRegistry::create();
+                    $definition = $registry->find($identifier);
+                    if ($stack === null || $definition === null || $level > $definition->maximumLevel
+                        || !\Bedriox\Server\Gameplay\Enchanting\EnchantmentApplicability::accepts(
+                            $definition,
+                            $itemCatalog->type($stack->identifier),
+                        )) {
+                        return false;
+                    }
+                    $enchantments = \Bedriox\Server\Gameplay\Processing\WorkstationItemData::enchantments($stack->nbt);
+                    foreach (array_keys($enchantments) as $existing) {
+                        $existingDefinition = $registry->find($existing);
+                        if ($definition->conflictsWith($existing) || $existingDefinition?->conflictsWith($identifier) === true) {
+                            return false;
+                        }
+                    }
+                    $enchantments[$identifier] = $level;
+                    $inventory->setItem($slot, new \Bedriox\Api\Inventory\ItemStack(
+                        $stack->identifier,
+                        $stack->count,
+                        $stack->damage,
+                        \Bedriox\Server\Gameplay\Processing\WorkstationItemData::withEnchantments($stack->nbt, $enchantments),
+                        $stack->auxValue,
+                    ));
+                    return true;
+                },
+                saveWorlds: static function () use ($composition): int {
+                    $manager = $composition->server?->worldManager;
+                    $worlds = $manager?->getLoaded() ?? [];
+                    foreach ($worlds as $world) {
+                        $manager->save($world);
+                    }
+                    return count($worlds);
+                },
+                currentDefaultGameMode: static fn(): \Bedriox\Api\Player\GameMode =>
+                    $composition->server?->runtime->defaultGameMode() ?? \Bedriox\Api\Player\GameMode::SURVIVAL,
+                setDefaultGameMode: static function (\Bedriox\Api\Player\GameMode $mode) use ($composition, $workingDirectory, $pluginEvents): bool {
+                    $runtime = $composition->server?->runtime;
+                    if ($runtime === null) {
+                        return false;
+                    }
+                    $previous = $runtime->defaultGameMode();
+                    $event = new \Bedriox\Api\Event\Server\DefaultGameModeChangeEvent($previous, $mode);
+                    $pluginEvents->dispatch($event);
+                    if ($event->isCancelled()) {
+                        return false;
+                    }
+                    self::updateServerProperty(
+                        $workingDirectory . DIRECTORY_SEPARATOR . 'server.properties',
+                        'gamemode',
+                        $mode->value,
+                    );
+                    if (!$runtime->setDefaultGameMode($mode)) {
+                        return false;
+                    }
+                    $pluginEvents->dispatch(new \Bedriox\Api\Event\Server\DefaultGameModeChangedEvent($previous, $mode));
+
+                    return true;
+                },
+                currentDifficulty: static fn(?\Bedriox\Api\World\World $world): ?\Bedriox\Api\World\WorldDifficulty =>
+                    $composition->server?->runtime->worldDifficulty($world),
+                setDifficulty: static function (
+                    ?\Bedriox\Api\World\World $world,
+                    \Bedriox\Api\World\WorldDifficulty $difficulty,
+                ) use ($composition, $pluginEvents): bool {
+                    $runtime = $composition->server?->runtime;
+                    $world ??= $composition->server?->worldManager->getDefault();
+                    $previous = $runtime?->worldDifficulty($world);
+                    if ($runtime === null || $world === null || $previous === null) {
+                        return false;
+                    }
+                    $event = new \Bedriox\Api\Event\World\WorldDifficultyChangeEvent($world, $previous, $difficulty);
+                    $pluginEvents->dispatch($event);
+                    if ($event->isCancelled() || !$runtime->setWorldDifficulty($world, $difficulty)) {
+                        return false;
+                    }
+                    $pluginEvents->dispatch(new \Bedriox\Api\Event\World\WorldDifficultyChangedEvent($world, $previous, $difficulty));
+                    return true;
+                },
+                setWorldSpawn: static function (
+                    \Bedriox\Api\World\World $world,
+                    \Bedriox\Api\World\BlockPosition $position,
+                ) use ($composition, $pluginEvents): bool {
+                    $manager = $composition->server?->worldManager;
+                    $runtime = $composition->server?->runtime;
+                    if ($manager === null || $runtime === null) {
+                        return false;
+                    }
+                    $current = $manager->info($world)->spawn;
+                    $previous = new \Bedriox\Api\World\BlockPosition((int) floor($current->x), (int) floor($current->y), (int) floor($current->z));
+                    $event = new \Bedriox\Api\Event\World\WorldSpawnChangeEvent($world, $previous, $position);
+                    $pluginEvents->dispatch($event);
+                    if ($event->isCancelled() || !$runtime->setWorldSpawn($world, $position)) {
+                        return false;
+                    }
+                    $pluginEvents->dispatch(new \Bedriox\Api\Event\World\WorldSpawnChangedEvent($world, $previous, $position));
+                    return true;
+                },
+                setPlayerSpawnPoint: static function (
+                    \Bedriox\Api\Player\Player $player,
+                    \Bedriox\Api\World\Position $position,
+                ) use ($composition, $pluginEvents): bool {
+                    $event = new \Bedriox\Api\Event\Player\PlayerSpawnPointChangeEvent($player, $position);
+                    $pluginEvents->dispatch($event);
+                    if ($event->isCancelled()
+                        || !($composition->server?->runtime->setPlayerSpawnPoint($player->uuid, $position) ?? false)) {
+                        return false;
+                    }
+                    $pluginEvents->dispatch(new \Bedriox\Api\Event\Player\PlayerSpawnPointChangedEvent($player, $position));
+                    return true;
+                },
+                setAutosave: static fn(bool $enabled): bool =>
+                    $composition->server?->runtime->setAutosaveEnabled($enabled) ?? false,
+                bans: $bans,
+                playerAddress: static fn(string $name): ?string =>
+                    $composition->server?->runtime->remoteAddressForPlayer($name),
+                kickAddress: static fn(string $address, string $reason, string $actor): int =>
+                    $composition->server?->runtime->kickAddress($address, $reason, $actor) ?? 0,
             ))->register();
             $server = (new ServerBootstrap(
                 new PersistentWorldFactory(
@@ -498,6 +659,7 @@ final class Bedriox
                 pluginEntityLifecycle: $composition->entityLifecycle,
                 pluginActions: $pluginHost->actions(),
                 whitelist: $whitelist,
+                bans: $bans,
                 playerLifecycleLogger: new PlayerLifecycleLogger($logger),
             );
             $composition->server = $server;

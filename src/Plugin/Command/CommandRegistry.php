@@ -34,6 +34,7 @@ use Bedriox\Api\Command\CommandSubscription;
 use Bedriox\Api\Entity\Entity;
 use Bedriox\Api\Event\Command\CommandDispatchedEvent;
 use Bedriox\Api\Event\Command\CommandPreDispatchEvent;
+use Bedriox\Server\Command\CommandFeedback;
 use Bedriox\Server\Plugin\Event\EventDispatcher;
 use Bedriox\Server\Plugin\PluginActionBuffer;
 use Bedriox\Server\Plugin\PluginException;
@@ -272,7 +273,7 @@ final class CommandRegistry
             $this->reportFailure($failure, $operation, $commandName, $commandOwner);
             $this->sendMessageSafely(
                 $sender,
-                'The command failed internally.',
+                CommandFeedback::error($sender, 'The command failed internally.'),
                 $commandName,
                 $commandOwner,
             );
@@ -295,7 +296,7 @@ final class CommandRegistry
             }
             $tokens = $this->parser->parse($normalized);
         } catch (PluginException $failure) {
-            $sender->sendMessage($failure->getMessage());
+            $sender->sendMessage(CommandFeedback::error($sender, $failure->getMessage()));
 
             return CommandResult::failure($failure->getMessage());
         }
@@ -308,7 +309,7 @@ final class CommandRegistry
         $command = isset($this->labels[$label]) ? ($this->commands[$this->labels[$label]] ?? null) : null;
         if (!$command instanceof RegisteredCommand || ($command->pluginOwned && !$this->plugins->isEnabled($command->owner))) {
             $message = 'Command not found. Use /help for a list of commands.';
-            $sender->sendMessage($message);
+            $sender->sendMessage(CommandFeedback::error($sender, $message));
 
             return CommandResult::failure($message);
         }
@@ -316,12 +317,12 @@ final class CommandRegistry
         $commandOwner = $command->owner;
         $operation = 'command policy';
         if (!$command->definition->allowedSenders->allows($sender->type())) {
-            $sender->sendMessage('This command cannot be used by this sender.');
+            $sender->sendMessage(CommandFeedback::error($sender, 'This command cannot be used by this sender.'));
 
             return CommandResult::failure('This command cannot be used by this sender.');
         }
         if ($command->definition->permission !== null && !$sender->hasPermission($command->definition->permission)) {
-            $sender->sendMessage('You do not have permission to use this command.');
+            $sender->sendMessage(CommandFeedback::error($sender, 'You do not have permission to use this command.'));
 
             return CommandResult::failure('You do not have permission to use this command.');
         }
@@ -329,9 +330,12 @@ final class CommandRegistry
         try {
             $values = $this->binder->bind($command->arguments, $sender, $tokens);
         } catch (CommandBindingException $failure) {
-            $sender->sendMessage($failure->getMessage());
+            $sender->sendMessage(CommandFeedback::error($sender, $failure->getMessage()));
             foreach ($command->arguments->usage($command->definition->name) as $usage) {
-                $sender->sendMessage($this->boundedUsageMessage($usage, $command->definition->name));
+                $sender->sendMessage(CommandFeedback::error(
+                    $sender,
+                    $this->boundedUsageMessage($usage, $command->definition->name),
+                ));
             }
 
             return CommandResult::failure($failure->getMessage());
@@ -373,7 +377,12 @@ final class CommandRegistry
             } else {
                 $this->reportFailure($failure, 'command execution', $commandName, $commandOwner);
             }
-            $this->sendMessageSafely($sender, 'The command failed internally.', $commandName, $commandOwner);
+            $this->sendMessageSafely(
+                $sender,
+                CommandFeedback::error($sender, 'The command failed internally.'),
+                $commandName,
+                $commandOwner,
+            );
 
             return CommandResult::failure('The command failed internally.');
         } finally {
@@ -383,7 +392,9 @@ final class CommandRegistry
         }
         $operation = 'command result delivery';
         if ($result->message() !== null) {
-            $sender->sendMessage($result->message());
+            $sender->sendMessage($result->isSuccess()
+                ? CommandFeedback::normal($sender, $result->message())
+                : CommandFeedback::error($sender, $result->message()));
         }
         $operation = 'post-dispatch event';
         $this->events->dispatch(new CommandDispatchedEvent(

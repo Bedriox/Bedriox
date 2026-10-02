@@ -49,7 +49,7 @@ final class World
 {
     private readonly BlockOverrideStore $overrides;
 
-    private readonly ?SpawnPosition $spawnOverride;
+    private ?SpawnPosition $spawnOverride;
 
     private int $time;
 
@@ -59,7 +59,7 @@ final class World
 
     private bool $weatherCycleEnabled;
 
-    private readonly int $difficulty;
+    private int $difficulty;
 
     private bool $closed = false;
 
@@ -464,6 +464,17 @@ final class World
         return WorldSpawnResolver::resolve($this->generator, $this->spawnOverride);
     }
 
+    public function setSpawn(SpawnPosition $spawn): SpawnPosition
+    {
+        if ($this->closed) {
+            throw new LogicException('Cannot change the spawn of a closed world.');
+        }
+        $previous = $this->spawn();
+        $this->spawnOverride = $spawn;
+
+        return $previous;
+    }
+
     public function generatorName(): string
     {
         return $this->generator->name();
@@ -472,6 +483,20 @@ final class World
     public function difficulty(): int
     {
         return $this->difficulty;
+    }
+
+    public function setDifficulty(int $difficulty): int
+    {
+        if ($difficulty < 0 || $difficulty > 3) {
+            throw new InvalidArgumentException('Difficulty must be a Bedrock value between zero and three.');
+        }
+        if ($this->closed) {
+            throw new LogicException('Cannot change the difficulty of a closed world.');
+        }
+        $previous = $this->difficulty;
+        $this->difficulty = $difficulty;
+
+        return $previous;
     }
 
     public function time(): int

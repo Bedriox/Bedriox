@@ -33,7 +33,7 @@ use Bedriox\Server\Worker\Chunk\PreparedChunkCache;
 use Bedriox\Server\Worker\Network\CompressionWorkerDispatcher;
 use Bedriox\Server\World\World;
 
-final readonly class BedrockPlayChannelFactory implements PlayChannelFactory
+final class BedrockPlayChannelFactory implements PlayChannelFactory
 {
     public function __construct(
         private PlayInitializationFactory $initialization,
@@ -120,5 +120,12 @@ final readonly class BedrockPlayChannelFactory implements PlayChannelFactory
             $this->preparedChunks,
             $this->preparedPlayBatches,
         );
+    }
+
+    public function setDefaultGameMode(GameMode $gameMode): void
+    {
+        if ($this->initialization instanceof BedrockPlayInitializationFactory) {
+            $this->initialization->setDefaultGameMode($gameMode);
+        }
     }
 }

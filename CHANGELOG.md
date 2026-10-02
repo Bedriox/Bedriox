@@ -1,5 +1,6 @@
 # Changelog
 
+- Add attributed player quit events, configurable leave announcements, and detailed console disconnect logging.
 - Move disposable PHAR extraction and Runtime OPcache files into the current
   user's operating-system cache, with an explicit path override and stale
   application-cache cleanup, so server directories contain only operator data.
@@ -64,6 +65,16 @@ All notable changes will be documented here. The project follows Semantic Versio
 ## [Unreleased]
 
 ### Fixed
+
+- Route normal player command feedback through ordinary Bedrock text messages
+  with consistent neutral, success, warning, and error styling instead of
+  presenting every response as an error.
+- Add operator commands for communication, titles, moderation, inventory,
+  world state, saving, blocks, enchantments, plugins, and server defaults,
+  backed by authoritative runtime services and persistent state.
+- Persist personal spawn points, synchronize difficulty and world-spawn
+  changes, enforce atomic player and IPv4 bans during admission, and expose
+  cancellable pre-events plus committed post-events for the new state changes.
 
 - Start genuinely new player profiles with an empty inventory instead of the
   legacy 64-block grass stack.

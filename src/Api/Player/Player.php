@@ -25,6 +25,7 @@ use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Effect\EffectManager;
 use Bedriox\Api\Entity\Entity;
 use Bedriox\Api\Entity\Value\MountSeat;
+use Bedriox\Api\Event\Player\PlayerKickCause;
 use Bedriox\Api\Inventory\ArmorInventory;
 use Bedriox\Api\Inventory\Container;
 use Bedriox\Api\Inventory\Inventory;
@@ -217,9 +218,14 @@ final readonly class Player
     }
 
     /** Requests a cancellable, visible kick. Returns false if the player is offline or a plugin cancels it. */
-    public function kick(string $reason = '', ?string $quitMessage = null, ?string $disconnectScreenMessage = null): bool
-    {
-        return $this->connection()->kick($reason, $quitMessage, $disconnectScreenMessage);
+    public function kick(
+        string $reason = '',
+        ?string $quitMessage = null,
+        ?string $disconnectScreenMessage = null,
+        PlayerKickCause $cause = PlayerKickCause::PLUGIN,
+        ?string $actor = null,
+    ): bool {
+        return $this->connection()->kick($reason, $quitMessage, $disconnectScreenMessage, $cause, $actor);
     }
 
     /** Requests a visibility-scoped arm-swing animation for this player. */

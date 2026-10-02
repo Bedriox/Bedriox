@@ -6,7 +6,7 @@ player names and XUIDs are metadata and never select a path.
 
 Profiles use schema-versioned little-endian NBT and are limited to 128 KiB.
 The current schema stores the authenticated identity metadata, first and last
-played timestamps, world name, exact position and rotation, game mode, the
+played timestamps, world name, exact position and rotation, personal spawn point, game mode, the
 36-slot main inventory, selected hotbar slot, cursor stack, four armor slots,
 offhand slot, nutrition state, and the player's private 27-slot Ender Chest.
 Current health is stored as a bounded float from 0 through 20.
@@ -21,8 +21,8 @@ profile starts at the world's calculated spawn. A saved unavailable world also
 uses that spawn without discarding the saved inventory or identity history.
 A profile saved at zero health is restored alive at full health at the active
 world spawn rather than reopening an incomplete death conversation. Schema-one
-through schema-six profiles migrate in memory with compatible defaults and are
-written as schema seven on the next successful save.
+Older supported profiles migrate in memory with compatible defaults and are
+written using the current schema on the next successful save.
 
 `PlayerLoginEvent` runs after restoration and before StartGame, inventory
 bootstrap, or chunk scheduling. A plugin may cancel admission or choose a

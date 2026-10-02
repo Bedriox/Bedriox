@@ -54,6 +54,8 @@ use Bedriox\Api\Event\Player\PlayerLoginEvent;
 use Bedriox\Api\Event\Player\PlayerMissSwingEvent;
 use Bedriox\Api\Event\Player\PlayerMoveEvent;
 use Bedriox\Api\Event\Player\PlayerPreJoinEvent;
+use Bedriox\Api\Event\Player\PlayerQuitCause;
+use Bedriox\Api\Event\Player\PlayerQuitEvent;
 use Bedriox\Api\Event\Player\PlayerRegainedHealthEvent;
 use Bedriox\Api\Event\Player\PlayerRegainHealthEvent;
 use Bedriox\Api\Event\Player\PlayerRespawnedEvent;
@@ -143,6 +145,46 @@ final class PluginGameplayEventBridgeTest extends TestCase
             $event->setJoinMessage(null);
         });
         self::assertNull($suppressingBridge->joined($player));
+    }
+
+    public function testQuitEventExposesAttributionAndAllowsReplacementOrSuppression(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $player = new Player(
+            'session',
+            1,
+            new PlayerIdentity('identity-one', 'One'),
+            new Position(0.0, 64.0, 0.0),
+            4,
+            0,
+            64.0,
+        );
+        $observed = null;
+        $dispatcher->register('Example', PlayerQuitEvent::class, static function (PlayerQuitEvent $event) use (&$observed): void {
+            $observed = [$event->cause, $event->reason, $event->actor];
+            $event->setQuitMessage('One departed.');
+        });
+
+        self::assertSame('One departed.', $bridge->quit(
+            $player,
+            PlayerQuitCause::KICKED,
+            'Griefing',
+            'Console',
+            TextFormat::YELLOW . 'One left the game' . TextFormat::RESET,
+        ));
+        self::assertSame([PlayerQuitCause::KICKED, 'Griefing', 'Console'], $observed);
+
+        [$suppressingDispatcher, $suppressingBridge] = self::bridge();
+        $suppressingDispatcher->register('Example', PlayerQuitEvent::class, static function (PlayerQuitEvent $event): void {
+            $event->setQuitMessage(null);
+        });
+        self::assertNull($suppressingBridge->quit(
+            $player,
+            PlayerQuitCause::DISCONNECTED,
+            'Disconnected',
+            null,
+            TextFormat::YELLOW . 'One left the game' . TextFormat::RESET,
+        ));
     }
 
     public function testEntityInteractedDispatchesCommittedHeldItemSnapshot(): void

@@ -880,6 +880,7 @@ final class WorldSimulation
             fireTicks: $bootstrap->fireTicks,
             effectPersistenceState: $bootstrap->effectPersistenceState,
             totalExperience: $bootstrap->totalExperience,
+            spawnPoint: $bootstrap->spawnPoint,
         );
         $candidate->movement->yaw = $bootstrap->yaw;
         $candidate->movement->headYaw = $bootstrap->yaw;
@@ -918,6 +919,7 @@ final class WorldSimulation
             $bootstrap->fireTicks,
             $bootstrap->effectPersistenceState,
             $bootstrap->totalExperience,
+            $bootstrap->spawnPoint,
         );
     }
 
@@ -3376,6 +3378,18 @@ final class WorldSimulation
 
         return $player !== null
             && $this->enqueue($this->validator->changeGameMode($player->sessionId, $gameMode));
+    }
+
+    public function setPlayerSpawnPoint(string $identity, Position $position): bool
+    {
+        $player = $this->players->playerByIdentity($identity);
+        if ($player === null || abs($position->x) > 30_000_000.0 || abs($position->z) > 30_000_000.0
+            || $position->y < -64.0 || $position->y > 319.0) {
+            return false;
+        }
+        $player->setSpawnPoint($position);
+
+        return true;
     }
 
     public function mountedVehicle(string $identity): ?ApiEntity
@@ -6070,7 +6084,9 @@ final class WorldSimulation
         }
         $this->pendingRespawns[$key] = [
             'session' => $player->sessionId,
-            'position' => $this->pluginEvents?->respawn($player, $this->spawn) ?? $this->spawn,
+            'position' => $this->pluginEvents?->respawn($player, $player->spawnPoint() ?? $this->spawn)
+                ?? $player->spawnPoint()
+                ?? $this->spawn,
             'acknowledge' => $acknowledge,
         ];
     }
@@ -6290,7 +6306,16 @@ final class WorldSimulation
         }
         unset($this->itemCooldowns[$key], $this->lastItemUseCompletionTicks[$key]);
         $this->evacuateCraftingGrid($player, $this->players->recipients($player->sessionId));
-        $this->pluginEvents?->quit($player);
+        $defaultQuitMessage = TextFormat::YELLOW . $player->identity->displayName . ' left the game' . TextFormat::RESET;
+        $quitMessage = $this->pluginEvents === null
+            ? ($command->quitMessage ?? $defaultQuitMessage)
+            : $this->pluginEvents->quit(
+                $player,
+                $command->cause,
+                $command->reason,
+                $command->actor,
+                $command->quitMessage ?? $defaultQuitMessage,
+            );
         $this->playerPersistence?->save($player);
         $this->players->remove($command->session);
 
@@ -6299,6 +6324,10 @@ final class WorldSimulation
             $player->identity->uuid,
             $player->runtimeActorId,
             $this->players->recipients(),
+            $command->cause,
+            $command->reason,
+            $command->actor,
+            $quitMessage,
         );
     }
 

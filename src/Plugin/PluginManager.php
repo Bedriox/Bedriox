@@ -176,6 +176,17 @@ final class PluginManager implements PluginRuntimeControl
         return $this->failures;
     }
 
+    /** @return array<string, bool> Plugin display name to enabled state. */
+    public function pluginStates(): array
+    {
+        $states = [];
+        foreach ($this->records as $record) {
+            $states[$record->manifest->name] = $record->state === PluginLifecycleState::ENABLED;
+        }
+
+        return $states;
+    }
+
     private function invokeLifecycle(PluginRecord $record, string $operation, callable $callback): bool
     {
         $frame = new PluginExecutionFrame(

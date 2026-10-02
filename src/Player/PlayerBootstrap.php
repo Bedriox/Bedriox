@@ -51,6 +51,7 @@ final readonly class PlayerBootstrap
         public int $fireTicks = 0,
         public ?ActiveEffectPersistenceState $effectPersistenceState = null,
         public int $totalExperience = 0,
+        public ?Position $spawnPoint = null,
     ) {
         if ($this->worldName === '' || strlen($this->worldName) > 64
             || preg_match('//u', $this->worldName) !== 1
@@ -119,6 +120,17 @@ final readonly class PlayerBootstrap
         }
         if ($this->totalExperience < 0 || $this->totalExperience > ExperienceMath::MAXIMUM_TOTAL_POINTS) {
             throw new InvalidArgumentException('Player experience is outside its authoritative range.');
+        }
+        if ($this->spawnPoint !== null && (
+            !is_finite($this->spawnPoint->x)
+            || !is_finite($this->spawnPoint->y)
+            || !is_finite($this->spawnPoint->z)
+            || abs($this->spawnPoint->x) > 30_000_000.0
+            || abs($this->spawnPoint->z) > 30_000_000.0
+            || $this->spawnPoint->y < -64.0
+            || $this->spawnPoint->y > 319.0
+        )) {
+            throw new InvalidArgumentException('Player spawn point exceeds the supported world boundary.');
         }
     }
 }

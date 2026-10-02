@@ -1256,6 +1256,23 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         self::assertSame(['00000000-0000-0000-0000-000000000001'], $packets[0]->packet->uuids);
     }
 
+    public function testDisconnectBroadcastsTheFinalQuitMessageOncePerRecipient(): void
+    {
+        $packets = (new BedrockWorldEventPacketEncoder())->encode(new PlayerDisconnected(
+            'gone',
+            '00000000-0000-0000-0000-000000000001',
+            7,
+            ['one', 'two'],
+            quitMessage: 'Player left the game',
+        ), []);
+
+        self::assertCount(4, $packets);
+        self::assertSame(['one', 'two', 'one', 'two'], array_column($packets, 'sessionId'));
+        self::assertInstanceOf(SystemTextPacket::class, $packets[2]->packet);
+        self::assertSame('Player left the game', $packets[2]->packet->message);
+        self::assertInstanceOf(SystemTextPacket::class, $packets[3]->packet);
+    }
+
     public function testJoinProjectsPlayerListMembershipInBothDirections(): void
     {
         $joined = $this->authenticatedSession(

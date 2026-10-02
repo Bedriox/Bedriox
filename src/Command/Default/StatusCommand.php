@@ -28,6 +28,7 @@ use Bedriox\Api\Command\CommandResult;
 use Bedriox\Api\Command\CommandSender;
 use Bedriox\Api\TextFormat;
 use Bedriox\Server\BuildInfo;
+use Bedriox\Server\Command\CommandFeedback;
 use Bedriox\Server\Observability\BackgroundLogWriterSnapshot;
 use Bedriox\Server\Observability\PerformanceSnapshot;
 use Bedriox\Server\Observability\PerformanceSubsystem;
@@ -455,7 +456,7 @@ final readonly class StatusCommand implements BuiltinCommand
 
     private static function send(CommandSender $sender, string $color, string $message): void
     {
-        $sender->sendMessage(CommandMessageStyle::line($sender, $color, $message));
+        $sender->sendMessage(CommandFeedback::line($sender, $color, $message));
     }
 
     private static function duration(int $seconds): string

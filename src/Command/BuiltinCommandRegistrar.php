@@ -24,26 +24,48 @@ use Bedriox\Api\Command\CommandSoftEnum;
 use Bedriox\Api\Player\Player;
 use Bedriox\Api\Whitelist\Whitelist;
 use Bedriox\Api\World\Position;
+use Bedriox\Server\Access\BanManager;
+use Bedriox\Server\Command\Default\BanCommand;
+use Bedriox\Server\Command\Default\BanIpCommand;
+use Bedriox\Server\Command\Default\BanListCommand;
 use Bedriox\Server\Command\Default\BuiltinCommand;
+use Bedriox\Server\Command\Default\ClearCommand;
+use Bedriox\Server\Command\Default\DefaultGameModeCommand;
 use Bedriox\Server\Command\Default\DeopCommand;
+use Bedriox\Server\Command\Default\DifficultyCommand;
 use Bedriox\Server\Command\Default\EffectCommand;
+use Bedriox\Server\Command\Default\EnchantCommand;
 use Bedriox\Server\Command\Default\ExperienceCommand;
 use Bedriox\Server\Command\Default\GamemodeCommand;
 use Bedriox\Server\Command\Default\GarbageCollectionStatus;
 use Bedriox\Server\Command\Default\GarbageCollectorCommand;
 use Bedriox\Server\Command\Default\GiveCommand;
 use Bedriox\Server\Command\Default\HelpCommand;
+use Bedriox\Server\Command\Default\KickCommand;
 use Bedriox\Server\Command\Default\KillCommand;
 use Bedriox\Server\Command\Default\ListCommand;
+use Bedriox\Server\Command\Default\MeCommand;
 use Bedriox\Server\Command\Default\OnlinePlayerResolver;
 use Bedriox\Server\Command\Default\OpCommand;
+use Bedriox\Server\Command\Default\PardonCommand;
+use Bedriox\Server\Command\Default\PardonIpCommand;
 use Bedriox\Server\Command\Default\ParticleCommand;
 use Bedriox\Server\Command\Default\PermissionCommand;
+use Bedriox\Server\Command\Default\PluginsCommand;
+use Bedriox\Server\Command\Default\SaveCommand;
+use Bedriox\Server\Command\Default\SaveToggleCommand;
+use Bedriox\Server\Command\Default\SayCommand;
+use Bedriox\Server\Command\Default\SeedCommand;
+use Bedriox\Server\Command\Default\SetBlockCommand;
+use Bedriox\Server\Command\Default\SetWorldSpawnCommand;
+use Bedriox\Server\Command\Default\SpawnPointCommand;
 use Bedriox\Server\Command\Default\StatusCommand;
 use Bedriox\Server\Command\Default\StopCommand;
 use Bedriox\Server\Command\Default\SummonCommand;
 use Bedriox\Server\Command\Default\TeleportCommand;
+use Bedriox\Server\Command\Default\TellCommand;
 use Bedriox\Server\Command\Default\TimeCommand;
+use Bedriox\Server\Command\Default\TitleCommand;
 use Bedriox\Server\Command\Default\VersionCommand;
 use Bedriox\Server\Command\Default\WeatherCommand;
 use Bedriox\Server\Command\Default\WhitelistCommand;
@@ -105,6 +127,22 @@ final readonly class BuiltinCommandRegistrar
         private ?Closure $setWeather = null,
         private ?Whitelist $whitelist = null,
         private ?Closure $enforceWhitelist = null,
+        private ?Closure $broadcast = null,
+        private ?Closure $pluginStates = null,
+        private ?Closure $worldSeed = null,
+        private ?Closure $setBlock = null,
+        private ?Closure $enchant = null,
+        private ?Closure $saveWorlds = null,
+        private ?Closure $currentDefaultGameMode = null,
+        private ?Closure $setDefaultGameMode = null,
+        private ?Closure $currentDifficulty = null,
+        private ?Closure $setDifficulty = null,
+        private ?Closure $setWorldSpawn = null,
+        private ?Closure $setPlayerSpawnPoint = null,
+        private ?Closure $setAutosave = null,
+        private ?BanManager $bans = null,
+        private ?Closure $playerAddress = null,
+        private ?Closure $kickAddress = null,
     ) {}
 
     public function register(): CommandSoftEnum
@@ -147,7 +185,53 @@ final readonly class BuiltinCommandRegistrar
             new EffectCommand(),
             new ExperienceCommand(),
             new ParticleCommand(),
+            new KickCommand(),
+            new ClearCommand(),
+            new TellCommand(),
+            new TitleCommand(),
         ];
+        if ($this->broadcast !== null) {
+            $commands[] = new SayCommand($this->broadcast);
+            $commands[] = new MeCommand($this->broadcast);
+        }
+        if ($this->pluginStates !== null) {
+            $commands[] = new PluginsCommand($this->pluginStates);
+        }
+        if ($this->worldSeed !== null) {
+            $commands[] = new SeedCommand($this->worldSeed);
+        }
+        if ($this->setBlock !== null) {
+            $commands[] = new SetBlockCommand($this->setBlock);
+        }
+        if ($this->enchant !== null) {
+            $commands[] = new EnchantCommand($this->enchant);
+        }
+        if ($this->saveWorlds !== null) {
+            $commands[] = new SaveCommand($this->saveWorlds);
+        }
+        if ($this->currentDefaultGameMode !== null && $this->setDefaultGameMode !== null) {
+            $commands[] = new DefaultGameModeCommand($this->currentDefaultGameMode, $this->setDefaultGameMode);
+        }
+        if ($this->currentDifficulty !== null && $this->setDifficulty !== null) {
+            $commands[] = new DifficultyCommand($this->currentDifficulty, $this->setDifficulty);
+        }
+        if ($this->setWorldSpawn !== null) {
+            $commands[] = new SetWorldSpawnCommand($this->setWorldSpawn);
+        }
+        if ($this->setPlayerSpawnPoint !== null) {
+            $commands[] = new SpawnPointCommand($this->setPlayerSpawnPoint);
+        }
+        if ($this->setAutosave !== null) {
+            $commands[] = new SaveToggleCommand(true, $this->setAutosave);
+            $commands[] = new SaveToggleCommand(false, $this->setAutosave);
+        }
+        if ($this->bans !== null && $this->playerAddress !== null && $this->kickAddress !== null) {
+            $commands[] = new BanCommand($this->bans, $this->players);
+            $commands[] = new BanIpCommand($this->bans, $this->playerAddress, $this->kickAddress);
+            $commands[] = new BanListCommand($this->bans);
+            $commands[] = new PardonCommand($this->bans);
+            $commands[] = new PardonIpCommand($this->bans);
+        }
         if ($this->killTarget !== null) {
             $commands[] = new KillCommand($this->killTarget);
         }

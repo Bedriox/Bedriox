@@ -420,11 +420,16 @@ final readonly class SimulationCommandFactory
         return new SwingArm($session, $source);
     }
 
-    public function disconnect(string $session): DisconnectPlayer
-    {
+    public function disconnect(
+        string $session,
+        \Bedriox\Api\Event\Player\PlayerQuitCause $cause = \Bedriox\Api\Event\Player\PlayerQuitCause::DISCONNECTED,
+        string $reason = 'Disconnected',
+        ?string $actor = null,
+        string|\Bedriox\Api\TranslatableMessage|null $quitMessage = null,
+    ): DisconnectPlayer {
         $this->assertOpaqueId($session, 128, 'session');
 
-        return new DisconnectPlayer($session);
+        return new DisconnectPlayer($session, $cause, $reason, $actor, $quitMessage);
     }
 
     public function damage(string $session, float $amount, DamageCause $cause = DamageCause::Plugin): DamagePlayer

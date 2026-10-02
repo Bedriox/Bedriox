@@ -20,7 +20,6 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
-use Bedriox\Api\Command\CommandResult;
 use Bedriox\Api\Effect\EffectCause;
 use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Effect\EffectType;
@@ -31,12 +30,14 @@ use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\Entity\VanillaEntityIdentifier;
 use Bedriox\Api\Entity\VanillaEntityType;
 use Bedriox\Api\Event\Player\PlayerKickCause;
+use Bedriox\Api\Event\Player\PlayerQuitCause;
 use Bedriox\Api\Event\World\WeatherChangeCause;
 use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Inventory\ItemStack as ApiItemStack;
 use Bedriox\Api\Player\ExperienceChangeCause;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\Player\Player as ApiPlayer;
+use Bedriox\Api\TextFormat;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\WeatherState;
 use Bedriox\Api\World\WeatherType;
@@ -46,15 +47,14 @@ use Bedriox\Protocol\Batch\BedrockBatch;
 use Bedriox\Protocol\Batch\BedrockBatchCodec;
 use Bedriox\Protocol\Batch\CompressionMode;
 use Bedriox\Protocol\Packet\BedrockPacketCodec;
-use Bedriox\Protocol\Packet\CommandOutputMessage;
-use Bedriox\Protocol\Packet\CommandOutputPacket;
-use Bedriox\Protocol\Packet\CommandOutputType;
 use Bedriox\Protocol\Packet\DisconnectPacket;
 use Bedriox\Protocol\Packet\DisconnectReason;
 use Bedriox\Protocol\Packet\Packet;
 use Bedriox\Protocol\Packet\PacketFrame;
 use Bedriox\Protocol\Packet\PacketHeader;
 use Bedriox\Protocol\Packet\PlayerListRemovePacket;
+use Bedriox\Protocol\Packet\SetDifficultyPacket;
+use Bedriox\Protocol\Packet\SetSpawnPositionPacket;
 use Bedriox\Protocol\Packet\SetTimePacket;
 use Bedriox\Protocol\Packet\SystemTextPacket;
 use Bedriox\Protocol\Packet\UpdateAdventureSettingsPacket;
@@ -62,9 +62,12 @@ use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\RakNet\Connected\ConnectedPayloadEvent;
 use Bedriox\RakNet\Protocol\Reliability;
 use Bedriox\RakNet\ReceivedPayload;
+use Bedriox\RakNet\SessionCloseReason;
 use Bedriox\RakNet\SessionInfo;
 use Bedriox\RakNet\SessionOpenedEvent;
+use Bedriox\Server\Access\BanManager;
 use Bedriox\Server\Access\WhitelistManager;
+use Bedriox\Server\Command\CommandFeedback;
 use Bedriox\Server\Entity\AbstractLivingEntity;
 use Bedriox\Server\Entity\Ai\AiSchedulerMetrics;
 use Bedriox\Server\Entity\EntityRuntimeMetrics;
@@ -197,6 +200,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private ?string $involvedSessionId = null;
     /** @var array<string, true> */
     private array $autosaveActive = [];
+    private bool $autosaveEnabled = true;
+    private GameMode $defaultGameMode;
     /** @var array<string, true> */
     private array $entityAutosaveActive = [];
     /** @var array<string, true> */
@@ -331,8 +336,10 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         private readonly ?BlockStateRegistry $blockStateRegistry = null,
         private readonly ?PluginActionBuffer $pluginActions = null,
         private readonly ?WhitelistManager $whitelist = null,
+        private readonly ?BanManager $bans = null,
         private readonly ?PlayerLifecycleLogger $playerLifecycleLogger = null,
     ) {
+        $this->defaultGameMode = $this->playerPersistence?->defaultGameMode() ?? GameMode::SURVIVAL;
         if ($this->autosaveIntervalTicks < 1 || $this->autosaveChunkBudget < 1
             || $this->playerAutosaveIntervalTicks < 1 || $this->playerAutosaveBudget < 1
             || $this->chunkUnloadPerTick < 1 || $this->chunkUnloadPerTick > 1_024
@@ -383,6 +390,38 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
     }
 
+    public function remoteAddressForPlayer(string $name): ?string
+    {
+        foreach ($this->sessions as $session) {
+            if ($session->play !== null && strcasecmp($session->play->login()->displayName, $name) === 0) {
+                return $session->transport->remoteAddress;
+            }
+        }
+        return null;
+    }
+
+    public function kickAddress(string $address, string $reason, ?string $actor = null): int
+    {
+        $kicked = 0;
+        foreach ($this->sessions as $key => $session) {
+            if ($session->transport->remoteAddress !== $address || $session->play === null) {
+                continue;
+            }
+            if ($this->kickPlayer(
+                $key,
+                $session,
+                $reason,
+                null,
+                'You are banned from this server.' . "\n" . $reason,
+                PlayerKickCause::BAN,
+                $actor,
+            )) {
+                ++$kicked;
+            }
+        }
+        return $kicked;
+    }
+
     /** @return list<\Bedriox\Api\Entity\Entity> */
     public function entities(): array
     {
@@ -411,6 +450,127 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     public function changePlayerGameMode(string $uuid, GameMode $gameMode): bool
     {
         return $this->simulationForIdentity($uuid)?->enqueueGameMode($uuid, $gameMode) ?? false;
+    }
+
+    public function defaultGameMode(): GameMode
+    {
+        return $this->defaultGameMode;
+    }
+
+    public function setDefaultGameMode(GameMode $gameMode): bool
+    {
+        if ($this->defaultGameMode === $gameMode) {
+            return false;
+        }
+        $this->defaultGameMode = $gameMode;
+        $this->playerPersistence?->setDefaultGameMode($gameMode);
+        if ($this->playChannels instanceof BedrockPlayChannelFactory) {
+            $this->playChannels->setDefaultGameMode($gameMode);
+        }
+
+        return true;
+    }
+
+    public function setPlayerSpawnPoint(string $uuid, ApiPosition $position): bool
+    {
+        $simulation = $this->simulationForIdentity($uuid);
+        if ($simulation === null) {
+            return false;
+        }
+        $player = $simulation->authoritativePlayer($uuid);
+        if ($player === null || $position->world === null || $position->world->id() !== $player->worldName()) {
+            return false;
+        }
+
+        return $simulation->setPlayerSpawnPoint(
+            $uuid,
+            new \Bedriox\Server\Simulation\Position($position->x, $position->y, $position->z),
+        );
+    }
+
+    public function autosaveEnabled(): bool
+    {
+        return $this->autosaveEnabled;
+    }
+
+    public function setAutosaveEnabled(bool $enabled): bool
+    {
+        if ($this->autosaveEnabled === $enabled) {
+            return false;
+        }
+        $this->autosaveEnabled = $enabled;
+        if (!$enabled) {
+            $this->autosaveActive = [];
+            $this->entityAutosaveActive = [];
+            $this->playerAutosaveActive = [];
+        }
+
+        return true;
+    }
+
+    public function worldDifficulty(?\Bedriox\Api\World\World $world = null): ?\Bedriox\Api\World\WorldDifficulty
+    {
+        $runtime = $world === null ? $this->worldRuntimes?->default() : $this->worldRuntimes?->get($world->id());
+        if ($runtime === null || ($world !== null && !$runtime->handle->isSameLoad($world))) {
+            return null;
+        }
+
+        return match ($runtime->opened->world->difficulty()) {
+            0 => \Bedriox\Api\World\WorldDifficulty::PEACEFUL,
+            1 => \Bedriox\Api\World\WorldDifficulty::EASY,
+            2 => \Bedriox\Api\World\WorldDifficulty::NORMAL,
+            3 => \Bedriox\Api\World\WorldDifficulty::HARD,
+            default => throw new \LogicException('Loaded world difficulty is invalid.'),
+        };
+    }
+
+    public function setWorldDifficulty(
+        ?\Bedriox\Api\World\World $world,
+        \Bedriox\Api\World\WorldDifficulty $difficulty,
+    ): bool {
+        $runtime = $world === null ? $this->worldRuntimes?->default() : $this->worldRuntimes?->get($world->id());
+        if ($runtime === null || ($world !== null && !$runtime->handle->isSameLoad($world))) {
+            return false;
+        }
+        $value = match ($difficulty) {
+            \Bedriox\Api\World\WorldDifficulty::PEACEFUL => 0,
+            \Bedriox\Api\World\WorldDifficulty::EASY => 1,
+            \Bedriox\Api\World\WorldDifficulty::NORMAL => 2,
+            \Bedriox\Api\World\WorldDifficulty::HARD => 3,
+        };
+        if ($runtime->opened->world->difficulty() === $value) {
+            return true;
+        }
+        $runtime->opened->world->setDifficulty($value);
+        $runtime->opened->world->scheduleWorldDataSave();
+        $packet = new SetDifficultyPacket($value);
+        foreach ($this->sessions as $key => $session) {
+            if ($session->joined && $session->play !== null && $session->worldId === $runtime->handle->id()
+                && !$this->queueWorldPacket($session, $packet)) {
+                $this->disconnect($key, 'world_difficulty_backlog_exhausted');
+            }
+        }
+
+        return true;
+    }
+
+    public function setWorldSpawn(\Bedriox\Api\World\World $world, \Bedriox\Api\World\BlockPosition $position): bool
+    {
+        $runtime = $this->worldRuntimes?->get($world->id());
+        if ($runtime === null || !$runtime->handle->isSameLoad($world)) {
+            return false;
+        }
+        $runtime->opened->world->setSpawn(new \Bedriox\Server\World\SpawnPosition($position->x, $position->y, $position->z));
+        $runtime->opened->world->scheduleWorldDataSave();
+        $packet = new SetSpawnPositionPacket(0, $position->x, $position->y, $position->z, 0, $position->x, $position->y, $position->z);
+        foreach ($this->sessions as $key => $session) {
+            if ($session->joined && $session->play !== null && $session->worldId === $runtime->handle->id()
+                && !$this->queueWorldPacket($session, $packet)) {
+                $this->disconnect($key, 'world_spawn_backlog_exhausted');
+            }
+        }
+
+        return true;
     }
 
     public function givePlayerItem(string $uuid, string $identifier, int $amount): bool
@@ -1043,7 +1203,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                         'transport_failure' => $event->transportFailure?->value,
                         'transport_failure_detail' => $event->transportFailureDetail,
                     ]);
-                    $this->closeEndpoint($event->session);
+                    [$quitCause, $quitReason] = self::transportQuitReason($event->reason);
+                    $this->closeEndpoint($event->session, $quitCause, $quitReason);
                 }
             }
             $this->expirePendingTransportCloses();
@@ -1789,7 +1950,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                             }
                         }
                     }
-                    if ($activePersistentWorld !== null && $tick->number % $this->autosaveIntervalTicks === 0) {
+                    if ($this->autosaveEnabled && $activePersistentWorld !== null
+                        && $tick->number % $this->autosaveIntervalTicks === 0) {
                         $metadataSubmission = $activePersistentWorld->scheduleWorldDataSave();
                         if ($metadataSubmission === PersistenceSubmission::SATURATED) {
                             $this->diagnostics->record('world.metadata_persistence_saturated', [
@@ -1856,7 +2018,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                             'remaining_dirty_chunks' => $remaining,
                         ]);
                     }
-                    if ($this->playerPersistence !== null && $tick->number % $this->playerAutosaveIntervalTicks === 0) {
+                    if ($this->autosaveEnabled && $this->playerPersistence !== null
+                        && $tick->number % $this->playerAutosaveIntervalTicks === 0) {
                         if ($activeSimulation->beginPlayerAutosave() > 0
                             || $this->playerPersistence->pendingCount() > 0) {
                             $this->playerAutosaveActive[$worldId] = true;
@@ -2330,7 +2493,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $simulation->beginShutdown();
         }
         foreach (array_keys($this->sessions) as $key) {
-            $this->removeRuntimeSession($key);
+            $this->removeRuntimeSession($key, PlayerQuitCause::SERVER_SHUTDOWN, 'Server shutting down');
         }
         $this->pendingTransportCloses = [];
         $this->drainShutdownLifecycle();
@@ -2511,10 +2674,10 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             return true;
         }
         foreach ($session->play->drainPlayerCommands() as $request) {
+            $player = null;
             try {
-                $messages = [];
+                $messageCount = 0;
                 $outputTruncated = false;
-                $result = CommandResult::failure('Commands are not available yet.');
                 $player = $session->phase === SessionPhase::SPAWNED
                     ? $this->simulationForSession($session)->pluginPlayer($session->play->login()->identity)
                     : null;
@@ -2524,47 +2687,59 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 if ($this->commandRegistry !== null && $player !== null) {
                     $sender = new ServerPlayerCommandSender(
                         $player,
-                        static function (string $message) use (&$messages, &$outputTruncated): void {
+                        static function (string $message) use (&$messageCount, &$outputTruncated, $player): void {
                             if ($message === ''
                                 || strlen($message) > self::MAXIMUM_PLAYER_COMMAND_OUTPUT_MESSAGE_BYTES
                                 || preg_match('//u', $message) !== 1
                                 || str_contains($message, "\0")) {
                                 throw new InvalidArgumentException('Command output must be valid, bounded text.');
                             }
-                            if (count($messages) >= self::MAXIMUM_PLAYER_COMMAND_OUTPUT_MESSAGES - 1) {
+                            if ($messageCount >= self::MAXIMUM_PLAYER_COMMAND_OUTPUT_MESSAGES - 1) {
                                 $outputTruncated = true;
 
                                 return;
                             }
-                            $messages[] = $message;
+                            if (!$player->sendMessage($message)) {
+                                if (!$player->isConnected()) {
+                                    return;
+                                }
+                                throw new \RuntimeException('Player command output could not be queued.');
+                            }
+                            ++$messageCount;
                         },
                         fn(string $permission): bool => $this->permissionStore?->hasPermission($player->uuid, $permission) ?? false,
                     );
                     $result = $this->commandRegistry->dispatch($sender, $request->command);
+                    if (!$player->isConnected()) {
+                        continue;
+                    }
+                    if ($messageCount === 0 && $result->message() !== null) {
+                        $sender->sendMessage($result->isSuccess()
+                            ? CommandFeedback::normal($sender, $result->message())
+                            : CommandFeedback::error($sender, $result->message()));
+                    }
                 } else {
-                    $messages[] = 'Commands are not available yet.';
+                    if (!$session->play->queuePacket(new SystemTextPacket(
+                        TextFormat::RED . 'Commands are not available yet.' . TextFormat::RESET,
+                    ))) {
+                        return false;
+                    }
                 }
                 if ($outputTruncated) {
-                    $messages[] = 'Additional command output was truncated.';
+                    $player?->sendMessage(TextFormat::YELLOW . 'Additional command output was truncated.' . TextFormat::RESET);
                 }
-                $outputMessages = array_map(
-                    static fn(string $message): CommandOutputMessage => new CommandOutputMessage($message),
-                    $messages === [] ? [$result->message() ?? ($result->isSuccess() ? 'Command completed.' : 'Command failed.')] : $messages,
-                );
             } catch (Throwable $failure) {
                 $this->diagnostics->record('runtime.player_command_failed.protocol_trace', [
                     'exception' => $failure::class,
                 ]);
-                $result = CommandResult::failure('The command failed internally.');
-                $outputMessages = [new CommandOutputMessage('The command failed internally.')];
-            }
-            if (!$session->play->queuePacket(new CommandOutputPacket(
-                $request->origin,
-                CommandOutputType::AllOutput,
-                $result->isSuccess() ? 1 : 0,
-                $outputMessages,
-            ))) {
-                return false;
+                if ($player !== null && !$player->isConnected()) {
+                    continue;
+                }
+                if (!$session->play->queuePacket(new SystemTextPacket(
+                    TextFormat::RED . 'The command failed internally.' . TextFormat::RESET,
+                ))) {
+                    return false;
+                }
             }
         }
         return true;
@@ -2581,6 +2756,21 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
         try {
             $bootstrap = null;
+            $addressBan = $this->bans?->addressBan($session->transport->remoteAddress);
+            $playerBan = $this->bans?->playerBan($ready->login->displayName, $ready->login->identity);
+            $ban = $addressBan ?? $playerBan;
+            if ($ban !== null) {
+                $this->diagnostics->record('play.ban_rejected', [
+                    'kind' => $addressBan !== null ? 'address' : 'player',
+                ]);
+                $this->rejectReadySession(
+                    $key,
+                    $session,
+                    $ready,
+                    'You are banned from this server.' . "\n" . $ban->reason,
+                );
+                return;
+            }
             if ($this->whitelist?->isEnabled() === true
                 && !($this->permissionStore?->isOperator($ready->login->identity) ?? false)
                 && !$this->whitelist->admit($ready->login->displayName, $ready->login->identity)) {
@@ -2619,6 +2809,13 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                         $loaded->food,
                         $loaded->saturation,
                         $loaded->exhaustion,
+                        $loaded->effects,
+                        $loaded->absorption,
+                        $loaded->airTicks,
+                        $loaded->fireTicks,
+                        $loaded->effectPersistenceState,
+                        $loaded->totalExperience,
+                        $loaded->spawnPoint,
                     );
                 }
                 if ($targetRuntime !== null) {
@@ -2656,13 +2853,14 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     $packet,
                     $immediate,
                 ),
-                fn(string $reason, ?string $quitMessage, ?string $screenMessage): bool => $this->kickPlayer(
+                fn(string $reason, ?string $quitMessage, ?string $screenMessage, PlayerKickCause $cause, ?string $actor): bool => $this->kickPlayer(
                     $key,
                     $session,
                     $reason,
                     $quitMessage,
                     $screenMessage,
-                    PlayerKickCause::PLUGIN,
+                    $cause,
+                    $actor,
                 ),
                 fn(): bool => $this->simulationForSession($session)->enqueuePluginArmSwing($identity),
                 fn(ApiPosition $position): bool => $this->acceptPluginAction(
@@ -2838,6 +3036,25 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         };
     }
 
+    /** @return array{PlayerQuitCause, string} */
+    private static function transportQuitReason(SessionCloseReason $reason): array
+    {
+        return match ($reason) {
+            SessionCloseReason::RemoteDisconnect => [PlayerQuitCause::DISCONNECTED, 'Disconnected'],
+            SessionCloseReason::HandshakeTimeout, SessionCloseReason::IdleTimeout => [PlayerQuitCause::TIMED_OUT, 'Connection timed out'],
+            SessionCloseReason::ServerClosed => [PlayerQuitCause::SERVER_SHUTDOWN, 'Server shutting down'],
+            SessionCloseReason::TransportFailure => [PlayerQuitCause::CONNECTION_LOST, 'Transport failure'],
+            SessionCloseReason::LocalRemoval => [PlayerQuitCause::DISCONNECTED, 'Disconnected by the server'],
+        };
+    }
+
+    private static function readableInternalDisconnectReason(string $reason): string
+    {
+        $readable = trim(str_replace('_', ' ', $reason));
+
+        return $readable === '' ? 'Connection lost' : ucfirst($readable);
+    }
+
     private function disconnect(string $key, string $reason = 'unspecified'): void
     {
         $session = $this->sessions[$key] ?? null;
@@ -2849,10 +3066,10 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             'reason' => $reason,
         ]);
         $this->removeTransportSession($session->transport);
-        $this->removeRuntimeSession($key);
+        $this->removeRuntimeSession($key, PlayerQuitCause::CONNECTION_LOST, self::readableInternalDisconnectReason($reason));
     }
 
-    private function closeEndpoint(SessionInfo $info): void
+    private function closeEndpoint(SessionInfo $info, PlayerQuitCause $cause, string $reason): void
     {
         $key = self::endpointKey($info);
         if (($this->pendingTransportCloses[$key][0] ?? null) === $info) {
@@ -2861,18 +3078,25 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         if (($this->sessions[$key]->transport ?? null) !== $info) {
             return;
         }
-        $this->removeRuntimeSession($key);
+        $this->removeRuntimeSession($key, $cause, $reason);
     }
 
-    private function kickPlayer(string $key, RuntimeSession $session, string $reason, ?string $quitMessage, ?string $screenMessage, PlayerKickCause $cause = PlayerKickCause::SERVER_POLICY): bool
-    {
+    private function kickPlayer(
+        string $key,
+        RuntimeSession $session,
+        string $reason,
+        ?string $quitMessage,
+        ?string $screenMessage,
+        PlayerKickCause $cause = PlayerKickCause::SERVER_POLICY,
+        ?string $actor = null,
+    ): bool {
         if (($this->sessions[$key] ?? null) !== $session || $session->play === null) {
             return false;
         }
         $identity = $session->bootstrap?->identity->uuid ?? $session->play->login()->identity;
         $player = $this->simulationForSession($session)->pluginPlayer($identity);
         if ($player !== null && $this->pluginEvents !== null) {
-            $decision = $this->pluginEvents->kick($player, $cause, $reason, $quitMessage, $screenMessage);
+            $decision = $this->pluginEvents->kick($player, $cause, $reason, $quitMessage, $screenMessage, $actor);
             if ($decision === null) {
                 return false;
             }
@@ -2881,7 +3105,6 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         $message = $screenMessage ?? ($reason !== '' ? $reason : 'Disconnected from server.');
         try {
             $packet = new DisconnectPacket(DisconnectReason::KICKED, false, $message, $message);
-            $quitPacket = $quitMessage !== null && $quitMessage !== '' ? new SystemTextPacket($quitMessage) : null;
         } catch (Throwable) {
             return false;
         }
@@ -2893,15 +3116,11 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         if (($this->sessions[$key] ?? null) !== $session) {
             return false;
         }
-        if ($quitPacket !== null) {
-            foreach ($this->sessions as $otherKey => $other) {
-                if ($otherKey !== $key && $other->joined && $other->play !== null
-                    && $other->play->queuePacket($quitPacket)) {
-                    $this->flush($otherKey, $other);
-                }
-            }
-        }
-        $this->deferTransportClose($key, $session);
+        $quitCause = match ($cause) {
+            PlayerKickCause::BAN => PlayerQuitCause::BANNED,
+            default => PlayerQuitCause::KICKED,
+        };
+        $this->deferTransportClose($key, $session, $quitCause, $reason, $actor, $quitMessage);
 
         return true;
     }
@@ -2931,10 +3150,16 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
     }
 
-    private function deferTransportClose(string $key, RuntimeSession $session): void
-    {
+    private function deferTransportClose(
+        string $key,
+        RuntimeSession $session,
+        PlayerQuitCause $cause = PlayerQuitCause::KICKED,
+        string $reason = 'Disconnected',
+        ?string $actor = null,
+        ?string $quitMessage = null,
+    ): void {
         $this->pendingTransportCloses[$key] = [$session->transport, $this->closeClock->nowNanoseconds() + 10_000_000_000];
-        $this->removeRuntimeSession($key);
+        $this->removeRuntimeSession($key, $cause, $reason, $actor, $quitMessage);
     }
 
     private function expirePendingTransportCloses(): void
@@ -2958,8 +3183,13 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
     }
 
-    private function removeRuntimeSession(string $key): void
-    {
+    private function removeRuntimeSession(
+        string $key,
+        PlayerQuitCause $cause = PlayerQuitCause::DISCONNECTED,
+        string $reason = 'Disconnected',
+        ?string $actor = null,
+        ?string $quitMessage = null,
+    ): void {
         $session = $this->sessions[$key] ?? null;
         if (!$session instanceof RuntimeSession) {
             return;
@@ -2967,6 +3197,15 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         $identity = $session->bootstrap?->identity->uuid ?? $session->play?->login()->identity;
         if ($identity !== null) {
             $this->playerConnections->disconnect($identity, $session->id);
+        }
+        if ($session->joined && $session->play !== null) {
+            $this->playerLifecycleLogger?->left(
+                $session->play->login()->displayName,
+                $session->transport,
+                $cause,
+                $reason,
+                $actor,
+            );
         }
         unset(
             $this->sessions[$key],
@@ -3008,7 +3247,13 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
         $this->crashContextDirty = true;
         if ($session->joined || $session->phase === SessionPhase::ADMISSION_PENDING) {
-            if (!$this->simulationForSession($session)->enqueue($this->commands->disconnect($session->id)) && $this->closed) {
+            if (!$this->simulationForSession($session)->enqueue($this->commands->disconnect(
+                $session->id,
+                $cause,
+                $reason,
+                $actor,
+                $quitMessage,
+            )) && $this->closed) {
                 $this->recordShutdownFailure(
                     'runtime.lifecycle_enqueue_failed',
                     new RuntimeException('Unable to enqueue a player disconnect during shutdown.'),

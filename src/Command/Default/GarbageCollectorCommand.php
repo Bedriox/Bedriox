@@ -27,6 +27,7 @@ use Bedriox\Api\Command\CommandParameter;
 use Bedriox\Api\Command\CommandResult;
 use Bedriox\Api\Command\CommandSender;
 use Bedriox\Api\TextFormat;
+use Bedriox\Server\Command\CommandFeedback;
 use Bedriox\Server\Observability\Memory\GarbageCollectionReport;
 use Bedriox\Server\World\ChunkUnloadResult;
 use Closure;
@@ -158,7 +159,7 @@ final readonly class GarbageCollectorCommand implements BuiltinCommand
 
     private static function send(CommandSender $sender, string $color, string $message): void
     {
-        $sender->sendMessage(CommandMessageStyle::line($sender, $color, $message));
+        $sender->sendMessage(CommandFeedback::line($sender, $color, $message));
     }
 
     private static function bytes(int $bytes): string

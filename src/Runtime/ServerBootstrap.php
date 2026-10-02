@@ -30,6 +30,7 @@ use Bedriox\Protocol\Security\EphemeralKeyFactory;
 use Bedriox\Protocol\Security\OpenSslEphemeralKeyFactory;
 use Bedriox\RakNet\DiscoveryStatus;
 use Bedriox\RakNet\TransportConfig;
+use Bedriox\Server\Access\BanManager;
 use Bedriox\Server\Access\WhitelistManager;
 use Bedriox\Server\Authentication\Discovery\CurlHttpsJsonTransport;
 use Bedriox\Server\Authentication\Discovery\MinecraftDiscoveryJwkProvider;
@@ -127,6 +128,7 @@ final class ServerBootstrap
         ?PluginEntityLifecycleBridge $pluginEntityLifecycle = null,
         ?PluginActionBuffer $pluginActions = null,
         ?WhitelistManager $whitelist = null,
+        ?BanManager $bans = null,
         ?PlayerLifecycleLogger $playerLifecycleLogger = null,
     ): BootstrappedServer {
         $diagnostics ??= RuntimeDiagnostics::disabled();
@@ -621,6 +623,7 @@ final class ServerBootstrap
                 blockStateRegistry: $internalStates,
                 pluginActions: $pluginActions,
                 whitelist: $whitelist,
+                bans: $bans,
                 playerLifecycleLogger: $playerLifecycleLogger,
             );
         } catch (Throwable $exception) {

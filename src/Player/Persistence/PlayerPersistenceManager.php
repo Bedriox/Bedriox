@@ -43,7 +43,7 @@ final class PlayerPersistenceManager
         private readonly string $worldName,
         private readonly Position $defaultSpawn,
         ?Closure $clock = null,
-        private readonly string $defaultGamemode = 'survival',
+        private string $defaultGamemode = 'survival',
         private readonly ?ItemCatalog $itemCatalog = null,
     ) {
         GameMode::from($this->defaultGamemode);
@@ -52,6 +52,16 @@ final class PlayerPersistenceManager
 
     /** @var Closure(): int */
     private readonly Closure $clock;
+
+    public function defaultGameMode(): GameMode
+    {
+        return GameMode::from($this->defaultGamemode);
+    }
+
+    public function setDefaultGameMode(GameMode $gameMode): void
+    {
+        $this->defaultGamemode = $gameMode->value;
+    }
 
     public function load(AuthenticatedLogin $login): PlayerBootstrap
     {
@@ -95,6 +105,7 @@ final class PlayerPersistenceManager
             $savedAlive ? $saved->fireTicks : 0,
             $savedAlive ? $saved->effectPersistenceState : null,
             $savedAlive ? $saved->totalExperience : 0,
+            $saved->spawnPoint,
         );
     }
 
@@ -120,6 +131,7 @@ final class PlayerPersistenceManager
             $player->vitals->fireTicks,
             $player->effects->persistenceState(),
             $player->experience->totalPoints(),
+            $player->spawnPoint(),
         );
     }
 

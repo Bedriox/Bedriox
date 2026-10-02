@@ -65,7 +65,7 @@ use Bedriox\Server\World\WorldTimeRules;
 use Closure;
 
 /** Builds the complete bounded current-Bedrock fixed-flat initialization sequence. */
-final readonly class BedrockPlayInitializationFactory implements PlayInitializationFactory
+final class BedrockPlayInitializationFactory implements PlayInitializationFactory
 {
     /**
      * @var list<array{name: string, id: int, temperature: float, downfall: float, foliage_snow: float,
@@ -316,6 +316,11 @@ final readonly class BedrockPlayInitializationFactory implements PlayInitializat
         ];
 
         return $packets;
+    }
+
+    public function setDefaultGameMode(GameMode $gameMode): void
+    {
+        $this->defaultGamemode = $gameMode->value;
     }
 
     public function fixedFlatRuntimeIds(): array

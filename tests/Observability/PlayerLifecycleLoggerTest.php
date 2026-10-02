@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Observability;
 
+use Bedriox\Api\Event\Player\PlayerQuitCause;
 use Bedriox\RakNet\SessionInfo;
 use Bedriox\Server\Observability\LogLevel;
 use Bedriox\Server\Observability\PlayerLifecycleLogger;
@@ -53,10 +54,15 @@ final class PlayerLifecycleLoggerTest extends TestCase
         $lifecycle->joining('Player', $session);
         $lifecycle->joined($player, 'world', $session);
         $lifecycle->failed('Player', $session, "Rejected\nForged");
+        $lifecycle->left('Player', $session, PlayerQuitCause::KICKED, 'Griefing', 'Console');
         $lines = $logger->recentLines();
 
         self::assertStringContainsString('[Player] Player[/127.0.0.1:19132] is joining', $lines[0]);
         self::assertStringContainsString('[Player] Player\\n Forged[/127.0.0.1:19132] joined world at (1.50, 64.00, -2.25)', $lines[1]);
         self::assertStringContainsString('failed to join: Rejected\\n Forged', $lines[2]);
+        self::assertStringContainsString(
+            '[Player] Player[/127.0.0.1:19132] left the server: Kicked by Console — Griefing',
+            $lines[3],
+        );
     }
 }
