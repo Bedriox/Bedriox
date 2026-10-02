@@ -41,8 +41,11 @@ final class PackagedLauncherTest extends TestCase
 
         self::assertStringContainsString('%~dp0', $launcher);
         self::assertStringContainsString('%BEDRIOX_RUNTIME_ROOT%\\php.exe', $launcher);
-        self::assertStringContainsString('BEDRIOX_RUNTIME_CACHE=%BEDRIOX_ROOT%cache\\runtime', $launcher);
+        self::assertStringContainsString('BEDRIOX_CACHE_ROOT=%LOCALAPPDATA%\\Bedriox\\Cache', $launcher);
+        self::assertStringContainsString('BEDRIOX_CACHE_ROOT=%BEDRIOX_CACHE_DIR%', $launcher);
+        self::assertStringContainsString('BEDRIOX_RUNTIME_CACHE=%BEDRIOX_CACHE_ROOT%\\runtime', $launcher);
         self::assertStringContainsString('mkdir "%BEDRIOX_RUNTIME_CACHE%\\opcache"', $launcher);
+        self::assertStringNotContainsString('%BEDRIOX_ROOT%cache', $launcher);
         self::assertStringContainsString('-c "%BEDRIOX_RUNTIME_ROOT%\\php.ini"', $launcher);
         self::assertStringContainsString('OPENSSL_CONF=%BEDRIOX_RUNTIME_ROOT%\\config\\openssl.cnf', $launcher);
         self::assertStringContainsString('%*', $launcher);
@@ -56,12 +59,27 @@ final class PackagedLauncherTest extends TestCase
 
         self::assertStringContainsString('BEDRIOX_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)', $launcher);
         self::assertStringContainsString('exec "$BEDRIOX_RUNTIME_ROOT/php"', $launcher);
-        self::assertStringContainsString('BEDRIOX_RUNTIME_CACHE="$BEDRIOX_ROOT/cache/runtime"', $launcher);
+        self::assertStringContainsString('BEDRIOX_CACHE_ROOT="$HOME/.cache/bedriox"', $launcher);
+        self::assertStringContainsString('BEDRIOX_CACHE_ROOT="$HOME/Library/Caches/Bedriox"', $launcher);
+        self::assertStringContainsString('BEDRIOX_RUNTIME_CACHE="$BEDRIOX_CACHE_ROOT/runtime"', $launcher);
         self::assertStringContainsString('mkdir -p -- "$BEDRIOX_RUNTIME_CACHE/opcache"', $launcher);
+        self::assertStringNotContainsString('$BEDRIOX_ROOT/cache', $launcher);
         self::assertStringContainsString('OPENSSL_CONF="$BEDRIOX_RUNTIME_ROOT/config/openssl.cnf"', $launcher);
         self::assertStringContainsString('"$@"', $launcher);
         self::assertStringNotContainsString('cd "$BEDRIOX_ROOT"', $launcher);
         self::assertStringNotContainsString('command -v php', $launcher);
+    }
+
+    public function testPharStubUsesTheOperatingSystemCacheInsteadOfTheServerDirectory(): void
+    {
+        $stub = $this->read('tools/phar-stub.php');
+
+        self::assertStringContainsString("getenv('BEDRIOX_CACHE_DIR')", $stub);
+        self::assertStringContainsString("getenv('LOCALAPPDATA')", $stub);
+        self::assertStringContainsString("getenv('XDG_CACHE_HOME')", $stub);
+        self::assertStringContainsString("'Library' . DIRECTORY_SEPARATOR . 'Caches'", $stub);
+        self::assertStringContainsString("\$cacheRoot . DIRECTORY_SEPARATOR . 'application'", $stub);
+        self::assertStringNotContainsString("\$workingDirectory . DIRECTORY_SEPARATOR . 'cache'", $stub);
     }
 
     private function read(string $relative): string

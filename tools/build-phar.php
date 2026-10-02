@@ -166,12 +166,22 @@ function writeLaunchers(string $directory, string $archive): void
     if ($archive !== 'Bedriox.phar') {
         throw new RuntimeException('The PHAR artifact name cannot be represented safely in a launcher.');
     }
-    $windows = str_replace('@BEDRIOX_PHAR@', $archive, <<<'CMD'
+    $windows = str_replace(
+        '@BEDRIOX_PHAR@',
+        $archive,
+        <<<'CMD'
 @echo off
 setlocal
 set "BEDRIOX_ROOT=%~dp0"
 set "BEDRIOX_RUNTIME_ROOT=%BEDRIOX_ROOT%bin"
-set "BEDRIOX_RUNTIME_CACHE=%CD%\cache\runtime"
+if defined BEDRIOX_CACHE_DIR (
+    set "BEDRIOX_CACHE_ROOT=%BEDRIOX_CACHE_DIR%"
+) else if defined LOCALAPPDATA (
+    set "BEDRIOX_CACHE_ROOT=%LOCALAPPDATA%\Bedriox\Cache"
+) else (
+    set "BEDRIOX_CACHE_ROOT=%TEMP%\Bedriox\Cache"
+)
+set "BEDRIOX_RUNTIME_CACHE=%BEDRIOX_CACHE_ROOT%\runtime"
 if not exist "%BEDRIOX_RUNTIME_CACHE%\opcache" mkdir "%BEDRIOX_RUNTIME_CACHE%\opcache" 2>nul
 if not exist "%BEDRIOX_RUNTIME_CACHE%\opcache" (
     echo Bedriox could not create its runtime cache. 1>&2
@@ -186,18 +196,32 @@ set "SSL_CERT_FILE="
 set "CURL_CA_BUNDLE="
 "%BEDRIOX_RUNTIME_ROOT%\php.exe" -c "%BEDRIOX_RUNTIME_ROOT%\php.ini" "%BEDRIOX_ROOT%@BEDRIOX_PHAR@" %*
 exit /b %ERRORLEVEL%
-CMD
+CMD,
     ) . "\r\n";
-    $unix = str_replace('@BEDRIOX_PHAR@', $archive, <<<'SH'
+    $unix = str_replace(
+        '@BEDRIOX_PHAR@',
+        $archive,
+        <<<'SH'
 #!/bin/sh
 
 set -eu
 
 BEDRIOX_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 BEDRIOX_RUNTIME_ROOT="$BEDRIOX_ROOT/bin"
-BEDRIOX_RUNTIME_CACHE="$PWD/cache/runtime"
+if [ -n "${BEDRIOX_CACHE_DIR:-}" ]; then
+    BEDRIOX_CACHE_ROOT=$BEDRIOX_CACHE_DIR
+elif [ "$(uname -s)" = "Darwin" ] && [ -n "${HOME:-}" ]; then
+    BEDRIOX_CACHE_ROOT="$HOME/Library/Caches/Bedriox"
+elif [ -n "${XDG_CACHE_HOME:-}" ]; then
+    BEDRIOX_CACHE_ROOT="$XDG_CACHE_HOME/bedriox"
+elif [ -n "${HOME:-}" ]; then
+    BEDRIOX_CACHE_ROOT="$HOME/.cache/bedriox"
+else
+    BEDRIOX_CACHE_ROOT="${TMPDIR:-/tmp}/bedriox-$(id -u)"
+fi
+BEDRIOX_RUNTIME_CACHE="$BEDRIOX_CACHE_ROOT/runtime"
 mkdir -p -- "$BEDRIOX_RUNTIME_CACHE/opcache"
-export BEDRIOX_RUNTIME_ROOT BEDRIOX_RUNTIME_CACHE
+export BEDRIOX_CACHE_ROOT BEDRIOX_RUNTIME_ROOT BEDRIOX_RUNTIME_CACHE
 
 unset PHPRC OPENSSL_MODULES SSL_CERT_DIR SSL_CERT_FILE CURL_CA_BUNDLE
 PHP_INI_SCAN_DIR=
@@ -210,7 +234,7 @@ DYLD_LIBRARY_PATH="$BEDRIOX_RUNTIME_ROOT/lib"
 export LD_LIBRARY_PATH DYLD_LIBRARY_PATH
 
 exec "$BEDRIOX_RUNTIME_ROOT/php" -c "$BEDRIOX_RUNTIME_ROOT/php.ini" "$BEDRIOX_ROOT/@BEDRIOX_PHAR@" "$@"
-SH
+SH,
     ) . "\n";
     $windowsPath = $directory . DIRECTORY_SEPARATOR . 'bedriox.cmd';
     $unixPath = $directory . DIRECTORY_SEPARATOR . 'bedriox';

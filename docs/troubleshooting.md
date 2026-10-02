@@ -19,8 +19,10 @@ packaged launchers require `bin/config/openssl.cnf`, and startup verifies the
 same P-384 operation used by Bedrock login before binding the server port.
 
 If Windows reports unusable opcode handlers due to ASLR, start Bedriox through
-`bedriox.cmd`. It creates the ignored `cache/runtime/opcache` directory and
-provides the packaged Runtime's required file-cache fallback environment.
+`bedriox.cmd`. It creates the Runtime's file-cache fallback beneath
+`%LOCALAPPDATA%\Bedriox\Cache` rather than in the server directory. Set
+`BEDRIOX_CACHE_DIR` to another absolute writable location before launch when
+the default user cache is unavailable.
 
 ## The executable reports an unknown invocation
 

@@ -36,14 +36,16 @@ try {
     }
     $distributionRoot = dirname($archive);
     $runtimeRoot = $distributionRoot . DIRECTORY_SEPARATOR . 'bin';
-    $runtimeCache = $workingDirectory . DIRECTORY_SEPARATOR . 'cache' . DIRECTORY_SEPARATOR . 'runtime';
+    $cacheRoot = bedrioxCacheRoot();
+    $runtimeCache = $cacheRoot . DIRECTORY_SEPARATOR . 'runtime';
+    putenv('BEDRIOX_CACHE_ROOT=' . $cacheRoot);
     putenv('BEDRIOX_RUNTIME_ROOT=' . $runtimeRoot);
     putenv('BEDRIOX_RUNTIME_CACHE=' . $runtimeCache);
     putenv('OPENSSL_CONF=' . $runtimeRoot . DIRECTORY_SEPARATOR . 'config' . DIRECTORY_SEPARATOR . 'openssl.cnf');
     putenv('SSL_CERT_FILE=' . $runtimeRoot . DIRECTORY_SEPARATOR . 'certs' . DIRECTORY_SEPARATOR . 'cacert.pem');
     putenv('CURL_CA_BUNDLE=' . $runtimeRoot . DIRECTORY_SEPARATOR . 'certs' . DIRECTORY_SEPARATOR . 'cacert.pem');
 
-    $applicationRoot = bedrioxExtractApplication($workingDirectory);
+    $applicationRoot = bedrioxExtractApplication($cacheRoot);
     require_once $applicationRoot . '/src/Environment/RuntimeEnvironmentException.php';
     require_once $applicationRoot . '/src/Environment/RuntimeProcessIdentity.php';
     require_once $applicationRoot . '/src/Environment/RuntimeManifest.php';
@@ -58,15 +60,67 @@ try {
     $application = new \Bedriox\Server\Bedriox();
     exit($application->run(
         array_slice($argv, 1),
-        static function (string $message): void { fwrite(STDOUT, $message); },
-        static function (string $message): void { fwrite(STDERR, $message); },
+        static function (string $message): void {
+            fwrite(STDOUT, $message);
+        },
+        static function (string $message): void {
+            fwrite(STDERR, $message);
+        },
     ));
 } catch (Throwable $failure) {
     fwrite(STDERR, 'Bedriox PHAR startup failed: ' . $failure->getMessage() . PHP_EOL);
     exit(1);
 }
 
-function bedrioxExtractApplication(string $workingDirectory): string
+function bedrioxCacheRoot(): string
+{
+    $configured = getenv('BEDRIOX_CACHE_ROOT');
+    if (!is_string($configured) || $configured === '') {
+        $configured = getenv('BEDRIOX_CACHE_DIR');
+    }
+    if (!is_string($configured) || $configured === '') {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $base = getenv('LOCALAPPDATA');
+            if (!is_string($base) || $base === '') {
+                $base = sys_get_temp_dir();
+            }
+            $configured = $base . DIRECTORY_SEPARATOR . 'Bedriox' . DIRECTORY_SEPARATOR . 'Cache';
+        } elseif (PHP_OS_FAMILY === 'Darwin') {
+            $home = getenv('HOME');
+            $configured = is_string($home) && $home !== ''
+                ? $home . DIRECTORY_SEPARATOR . 'Library' . DIRECTORY_SEPARATOR . 'Caches' . DIRECTORY_SEPARATOR . 'Bedriox'
+                : sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'bedriox-' . getmyuid();
+        } else {
+            $base = getenv('XDG_CACHE_HOME');
+            if (is_string($base) && $base !== '') {
+                $configured = $base . DIRECTORY_SEPARATOR . 'bedriox';
+            } else {
+                $home = getenv('HOME');
+                $configured = is_string($home) && $home !== ''
+                    ? $home . DIRECTORY_SEPARATOR . '.cache' . DIRECTORY_SEPARATOR . 'bedriox'
+                    : sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'bedriox-' . getmyuid();
+            }
+        }
+    }
+    if (strlen($configured) > 4_096 || str_contains($configured, "\0")
+        || (PHP_OS_FAMILY === 'Windows'
+            ? preg_match('#^(?:[A-Za-z]:[\\\\/]|\\\\\\\\)#D', $configured) !== 1
+            : !str_starts_with($configured, DIRECTORY_SEPARATOR))) {
+        throw new RuntimeException('The Bedriox cache path must be an absolute local path.');
+    }
+    if (is_link($configured)
+        || (!is_dir($configured) && !mkdir($configured, 0700, true) && !is_dir($configured))) {
+        throw new RuntimeException('The Bedriox cache directory is unavailable.');
+    }
+    $resolved = realpath($configured);
+    if (!is_string($resolved) || !is_dir($resolved) || is_link($resolved)) {
+        throw new RuntimeException('The Bedriox cache directory could not be resolved safely.');
+    }
+
+    return rtrim($resolved, '\\/');
+}
+
+function bedrioxExtractApplication(string $cacheRoot): string
 {
     $manifestBytes = file_get_contents('phar://bedriox.phar/application-manifest.json');
     if (!is_string($manifestBytes) || strlen($manifestBytes) > 4_194_304) {
@@ -81,16 +135,17 @@ function bedrioxExtractApplication(string $workingDirectory): string
         || count($manifest['files']) > BEDRIOX_PHAR_MAXIMUM_FILES) {
         throw new RuntimeException('The Bedriox application manifest is invalid.');
     }
-    $cache = $workingDirectory . DIRECTORY_SEPARATOR . 'cache';
-    $applications = $cache . DIRECTORY_SEPARATOR . 'application';
-    foreach ([$cache, $applications] as $directory) {
-        if (is_link($directory) || (!is_dir($directory) && !mkdir($directory, 0777, false) && !is_dir($directory))) {
-            throw new RuntimeException('The Bedriox application cache is unavailable.');
-        }
+    $applications = $cacheRoot . DIRECTORY_SEPARATOR . 'application';
+    if (is_link($applications)
+        || (!is_dir($applications) && !mkdir($applications, 0700, false) && !is_dir($applications))) {
+        throw new RuntimeException('The Bedriox application cache is unavailable.');
     }
     $target = $applications . DIRECTORY_SEPARATOR . BEDRIOX_PHAR_VERSION . '-' . substr($manifest['payload_hash'], 0, 16);
     $marker = $target . DIRECTORY_SEPARATOR . '.ready';
     if (is_file($marker) && hash_equals(trim((string) file_get_contents($marker)), $manifest['payload_hash'])) {
+        bedrioxLockApplicationCache($target);
+        bedrioxCleanupApplicationCaches($applications, $target);
+
         return $target;
     }
 
@@ -154,7 +209,78 @@ function bedrioxExtractApplication(string $workingDirectory): string
         flock($lock, LOCK_UN);
         fclose($lock);
     }
+    bedrioxLockApplicationCache($target);
+    bedrioxCleanupApplicationCaches($applications, $target);
+
     return $target;
+}
+
+function bedrioxLockApplicationCache(string $target): void
+{
+    /** @var array<string, resource> $locks */
+    static $locks = [];
+    if (isset($locks[$target])) {
+        return;
+    }
+    $lock = fopen(bedrioxApplicationLockPath($target), 'c+b');
+    if (!is_resource($lock) || !flock($lock, LOCK_SH)) {
+        throw new RuntimeException('Unable to lock the active Bedriox application cache.');
+    }
+    $locks[$target] = $lock;
+}
+
+function bedrioxCleanupApplicationCaches(string $applications, string $active): void
+{
+    foreach (new DirectoryIterator($applications) as $entry) {
+        if ($entry->isDot() || !$entry->isDir() || $entry->isLink()) {
+            continue;
+        }
+        $candidate = $entry->getPathname();
+        if ($candidate === $active || str_starts_with($entry->getFilename(), '.stage-')) {
+            continue;
+        }
+        $lockPath = bedrioxApplicationLockPath($candidate);
+        $lock = fopen($lockPath, 'c+b');
+        if (!is_resource($lock)) {
+            continue;
+        }
+        if (flock($lock, LOCK_EX | LOCK_NB)) {
+            bedrioxRemoveCachedApplication($candidate, $applications);
+            flock($lock, LOCK_UN);
+        }
+        fclose($lock);
+        if (!is_dir($candidate)) {
+            @unlink($lockPath);
+        }
+    }
+}
+
+function bedrioxApplicationLockPath(string $target): string
+{
+    return dirname($target) . DIRECTORY_SEPARATOR . '.active-' . hash('sha256', basename($target)) . '.lock';
+}
+
+function bedrioxRemoveCachedApplication(string $target, string $applications): void
+{
+    if (dirname($target) !== $applications || !is_dir($target) || is_link($target)
+        || preg_match('/^[A-Za-z0-9._-]+-[0-9a-f]{16}$/D', basename($target)) !== 1) {
+        return;
+    }
+    $iterator = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($target, FilesystemIterator::SKIP_DOTS),
+        RecursiveIteratorIterator::CHILD_FIRST,
+    );
+    foreach ($iterator as $entry) {
+        if (!$entry instanceof SplFileInfo) {
+            throw new RuntimeException('Unable to inspect a cached Bedriox application entry.');
+        }
+        if ($entry->isDir() && !$entry->isLink()) {
+            @rmdir($entry->getPathname());
+        } else {
+            @unlink($entry->getPathname());
+        }
+    }
+    @rmdir($target);
 }
 
 function bedrioxRemoveExtractionStage(string $stage, string $applications): void
@@ -171,8 +297,11 @@ function bedrioxRemoveExtractionStage(string $stage, string $applications): void
         if (!$entry instanceof SplFileInfo) {
             throw new RuntimeException('Unable to inspect a Bedriox extraction entry.');
         }
-        if ($entry->isDir() && !$entry->isLink()) { @rmdir($entry->getPathname()); }
-        else { @unlink($entry->getPathname()); }
+        if ($entry->isDir() && !$entry->isLink()) {
+            @rmdir($entry->getPathname());
+        } else {
+            @unlink($entry->getPathname());
+        }
     }
     @rmdir($stage);
 }

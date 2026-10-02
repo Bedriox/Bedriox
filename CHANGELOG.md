@@ -1,5 +1,8 @@
 # Changelog
 
+- Move disposable PHAR extraction and Runtime OPcache files into the current
+  user's operating-system cache, with an explicit path override and stale
+  application-cache cleanup, so server directories contain only operator data.
 - Add dedicated tameable, neutral, and mount families with durable ownership,
   sitting, anger, taming events, owner following, finite mount seats, steering,
   jumping, natural spawning, loot, metadata, and species persistence.

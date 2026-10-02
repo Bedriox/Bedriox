@@ -19,9 +19,15 @@ platform ABI, exact extension set, manifest hash, and complete runtime file
 inventory before Composer autoload executes.
 They set `OPENSSL_CONF` to the adjacent Runtime's `config/openssl.cnf` and do
 not inherit a provider configuration from a system PHP installation.
-They also create `cache/runtime/opcache` and export it through
-`BEDRIOX_RUNTIME_CACHE`, allowing Windows OPcache to fall back safely when ASLR
-prevents shared-memory attachment without changing immutable files in `bin`.
+They keep disposable application extraction and OPcache files outside the
+server directory in the current user's operating-system cache. Windows uses
+`%LOCALAPPDATA%\Bedriox\Cache`, Linux uses `$XDG_CACHE_HOME/bedriox` or
+`~/.cache/bedriox`, and macOS uses `~/Library/Caches/Bedriox`. Set
+`BEDRIOX_CACHE_DIR` before launch to select another absolute location. The
+cache contains no worlds, player data, configuration, plugins, or logs and may
+be deleted while every Bedriox process is stopped. This layout also allows
+Windows OPcache to fall back safely when ASLR prevents shared-memory attachment
+without changing immutable files in `bin` or cluttering the server directory.
 
 The first successful configuration load creates user-facing `server.properties` and advanced `bedriox.settings` in the current working directory. Built-in defaults load first, followed by `server.properties`, `bedriox.settings`, and explicit command-line overrides. The files are never migrated automatically. Invalid, duplicate, unknown, partial, or out-of-range settings fail before the configured main-process memory limit is applied and before socket bind.
 

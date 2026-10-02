@@ -4,9 +4,20 @@ set -eu
 
 BEDRIOX_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 BEDRIOX_RUNTIME_ROOT="$BEDRIOX_ROOT/bin"
-BEDRIOX_RUNTIME_CACHE="$BEDRIOX_ROOT/cache/runtime"
+if [ -n "${BEDRIOX_CACHE_DIR:-}" ]; then
+    BEDRIOX_CACHE_ROOT=$BEDRIOX_CACHE_DIR
+elif [ "$(uname -s)" = "Darwin" ] && [ -n "${HOME:-}" ]; then
+    BEDRIOX_CACHE_ROOT="$HOME/Library/Caches/Bedriox"
+elif [ -n "${XDG_CACHE_HOME:-}" ]; then
+    BEDRIOX_CACHE_ROOT="$XDG_CACHE_HOME/bedriox"
+elif [ -n "${HOME:-}" ]; then
+    BEDRIOX_CACHE_ROOT="$HOME/.cache/bedriox"
+else
+    BEDRIOX_CACHE_ROOT="${TMPDIR:-/tmp}/bedriox-$(id -u)"
+fi
+BEDRIOX_RUNTIME_CACHE="$BEDRIOX_CACHE_ROOT/runtime"
 mkdir -p -- "$BEDRIOX_RUNTIME_CACHE/opcache"
-export BEDRIOX_RUNTIME_ROOT BEDRIOX_RUNTIME_CACHE
+export BEDRIOX_CACHE_ROOT BEDRIOX_RUNTIME_ROOT BEDRIOX_RUNTIME_CACHE
 
 unset PHPRC OPENSSL_MODULES SSL_CERT_DIR SSL_CERT_FILE CURL_CA_BUNDLE
 PHP_INI_SCAN_DIR=
