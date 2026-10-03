@@ -43,10 +43,14 @@ final readonly class ContainerOpened implements WorldEvent
         public ?BlockPosition $pairedPosition = null,
         public ?string $title = null,
         public ?ContainerLayout $layout = null,
+        public ?int $entityRuntimeId = null,
     ) {
+        $entityBacked = $containerType === ContainerType::CHEST_BOAT;
         if ($windowId < 2 || $windowId > 99
-            || ($containerType === ContainerType::VIRTUAL) !== ($position === null)
+            || (($containerType === ContainerType::VIRTUAL || $entityBacked) !== ($position === null))
             || ($containerType === ContainerType::VIRTUAL) !== ($layout !== null)
+            || $entityBacked !== ($entityRuntimeId !== null)
+            || ($entityRuntimeId !== null && $entityRuntimeId < 1)
             || ($title !== null && ($title === '' || strlen($title) > 256 || preg_match('//u', $title) !== 1))) {
             throw new InvalidArgumentException('Storage-container open projection is invalid.');
         }

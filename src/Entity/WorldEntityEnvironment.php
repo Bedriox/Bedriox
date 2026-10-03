@@ -26,6 +26,8 @@ use Bedriox\Server\World\Block\InternalBlockStateId;
 use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\Collision\BlockCollisionRegistry;
+use Bedriox\Server\World\Environment\Fluid\FluidState;
+use Bedriox\Server\World\Environment\Fluid\FluidType;
 use Bedriox\Server\World\World;
 use Bedriox\Server\World\WorldTimeRules;
 
@@ -33,6 +35,7 @@ use Bedriox\Server\World\WorldTimeRules;
 final readonly class WorldEntityEnvironment
 {
     public const int DAYLIGHT_CHECK_INTERVAL_TICKS = 20;
+    private const int MAXIMUM_WATER_COLUMN_SCAN = 8;
 
     public function __construct(
         private World $world,
@@ -123,6 +126,74 @@ final readonly class WorldEntityEnvironment
             $y,
             self::localCoordinate((int) floor($position->z)),
         ));
+    }
+
+    public function isWaterSupporting(AbstractEntity $entity): bool
+    {
+        return $this->waterSurfaceY($entity) !== null;
+    }
+
+    public function waterSurfaceY(AbstractEntity $entity): ?float
+    {
+        if ($entity->getWorldName() !== $this->world->metadata->name) {
+            return null;
+        }
+        $position = $entity->internalPosition();
+        $offset = max(0.0, ($entity->collisionWidth() / 2.0) - 0.05);
+        $minimumY = max(Chunk::MIN_Y, (int) floor($position->y - 0.2));
+        $maximumY = min(Chunk::MAX_Y, (int) floor($position->y + $entity->collisionHeight()));
+        $surface = null;
+        $sampledColumns = [];
+        foreach ([
+            [$position->x, $position->z],
+            [$position->x - $offset, $position->z - $offset],
+            [$position->x - $offset, $position->z + $offset],
+            [$position->x + $offset, $position->z - $offset],
+            [$position->x + $offset, $position->z + $offset],
+        ] as [$x, $z]) {
+            $blockX = (int) floor($x);
+            $blockZ = (int) floor($z);
+            $columnKey = $blockX . ':' . $blockZ;
+            if (isset($sampledColumns[$columnKey])) {
+                continue;
+            }
+            $sampledColumns[$columnKey] = true;
+            for ($y = $minimumY; $y <= $maximumY; ++$y) {
+                $state = $this->world->loadedBlockStateAt($blockX, $y, $blockZ);
+                if ($state === null) {
+                    continue;
+                }
+                $fluid = FluidState::fromCanonical($this->states->state($state));
+                if ($fluid?->type === FluidType::WATER) {
+                    $surface = max(
+                        $surface ?? -INF,
+                        $this->connectedWaterSurfaceY($blockX, $y, $blockZ, $fluid),
+                    );
+                    break;
+                }
+            }
+        }
+
+        return $surface;
+    }
+
+    private function connectedWaterSurfaceY(int $x, int $waterY, int $z, FluidState $water): float
+    {
+        $surface = $waterY + $water->height();
+        $maximumY = min(Chunk::MAX_Y, $waterY + self::MAXIMUM_WATER_COLUMN_SCAN);
+        for ($y = $waterY + 1; $y <= $maximumY; ++$y) {
+            $state = $this->world->loadedBlockStateAt($x, $y, $z);
+            if ($state === null) {
+                break;
+            }
+            $fluid = FluidState::fromCanonical($this->states->state($state));
+            if ($fluid?->type !== FluidType::WATER) {
+                break;
+            }
+            $surface = $y + $fluid->height();
+        }
+
+        return $surface;
     }
 
     public function isSubmerged(AbstractLivingEntity $entity): bool

@@ -59,6 +59,8 @@ use Bedriox\Server\Entity\Vanilla\WitchEntity;
 use Bedriox\Server\Entity\Vanilla\WitherSkeletonEntity;
 use Bedriox\Server\Entity\Vanilla\ZombieEntity;
 use Bedriox\Server\Entity\Vanilla\ZombieVillagerEntity;
+use Bedriox\Server\Entity\Vehicle\BoatEntity;
+use Bedriox\Server\Entity\Vehicle\VehicleEntityDefinitions;
 use Bedriox\Server\Simulation\Position;
 
 final class VanillaEntityDefinitions
@@ -304,6 +306,44 @@ final class VanillaEntityDefinitions
     {
         return [
             new RegisteredEntityDefinition(
+                VehicleEntityDefinitions::boat(),
+                static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): BoatEntity =>
+                    new BoatEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch),
+                persistenceFactory: static fn(string $uuid, int $runtimeId, EntityPersistenceRecord $record): BoatEntity =>
+                    new BoatEntity(
+                        $uuid,
+                        $runtimeId,
+                        $record->worldName(),
+                        $record->position,
+                        \Bedriox\Api\Entity\Value\BoatVariant::tryFrom(is_int($record->variant) ? $record->variant : -1)
+                            ?? \Bedriox\Api\Entity\Value\BoatVariant::OAK,
+                        false,
+                        $record->motion,
+                        $record->yaw,
+                        $record->pitch,
+                        $record->health,
+                    ),
+            ),
+            new RegisteredEntityDefinition(
+                VehicleEntityDefinitions::chestBoat(),
+                static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): BoatEntity =>
+                    new BoatEntity($uuid, $runtimeId, $world, $position, chestBoat: true, yaw: $yaw, pitch: $pitch),
+                persistenceFactory: static fn(string $uuid, int $runtimeId, EntityPersistenceRecord $record): BoatEntity =>
+                    new BoatEntity(
+                        $uuid,
+                        $runtimeId,
+                        $record->worldName(),
+                        $record->position,
+                        \Bedriox\Api\Entity\Value\BoatVariant::tryFrom(is_int($record->variant) ? $record->variant : -1)
+                            ?? \Bedriox\Api\Entity\Value\BoatVariant::OAK,
+                        true,
+                        $record->motion,
+                        $record->yaw,
+                        $record->pitch,
+                        $record->health,
+                    ),
+            ),
+            new RegisteredEntityDefinition(
                 self::cow(),
                 static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): CowEntity =>
                     new CowEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch),
@@ -401,9 +441,6 @@ final class VanillaEntityDefinitions
         }
         $registrations = [];
         foreach ($catalog->definitions() as $network) {
-            if (!$network->hasSpawnEgg()) {
-                continue;
-            }
             $registration = $implemented[$network->identifier()] ?? null;
             if ($registration !== null) {
                 $registrations[] = $registration;

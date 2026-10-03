@@ -32,6 +32,7 @@ enum ContainerType: string
     case BARREL = 'barrel';
     case SHULKER_BOX = 'shulker_box';
     case ENDER_CHEST = 'ender_chest';
+    case CHEST_BOAT = 'chest_boat';
     case BREWING_STAND = 'brewing_stand';
     case FURNACE = 'furnace';
     case BLAST_FURNACE = 'blast_furnace';
@@ -49,7 +50,8 @@ enum ContainerType: string
         return match ($this) {
             self::VIRTUAL => null,
             self::DOUBLE_CHEST, self::DOUBLE_TRAPPED_CHEST => 54,
-            self::CHEST, self::TRAPPED_CHEST, self::BARREL, self::SHULKER_BOX, self::ENDER_CHEST => 27,
+            self::CHEST, self::TRAPPED_CHEST, self::BARREL, self::SHULKER_BOX, self::ENDER_CHEST,
+            self::CHEST_BOAT => 27,
             self::BREWING_STAND => 5,
             self::FURNACE, self::BLAST_FURNACE, self::SMOKER,
             self::ANVIL, self::GRINDSTONE, self::CARTOGRAPHY_TABLE => 3,

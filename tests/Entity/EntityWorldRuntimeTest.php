@@ -34,6 +34,8 @@ use Bedriox\Server\Entity\EntityWorkBudget;
 use Bedriox\Server\Entity\EntityWorldRuntime;
 use Bedriox\Server\Entity\Spawn\EntitySpawnRequest;
 use Bedriox\Server\Entity\Spawn\EntitySpawnService;
+use Bedriox\Server\Entity\Vehicle\BoatEntity;
+use Bedriox\Server\Entity\WorldEntityEnvironment;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
@@ -41,8 +43,10 @@ use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\ChunkRepository;
 use Bedriox\Server\World\Collision\AxisAlignedBox;
 use Bedriox\Server\World\Collision\BlockCollisionQuery;
+use Bedriox\Server\World\Collision\BlockCollisionRegistry;
 use Bedriox\Server\World\Collision\LoadedCollisionBoxQuery;
 use Bedriox\Server\World\FlatWorldGenerator;
+use Bedriox\Server\World\Generation\GenerationBlockPalette;
 use Bedriox\Server\World\World;
 use Bedriox\Server\World\WorldMetadata;
 use PHPUnit\Framework\TestCase;
@@ -389,9 +393,79 @@ final class EntityWorldRuntimeTest extends TestCase
         self::assertGreaterThan(1.0, $pig->getPosition()->x);
     }
 
-    /** @return array{EntityWorldRuntime, AbstractMobEntity} */
-    private static function obstacleRuntime(AxisAlignedBox $obstacle): array
+    public function testControlledBoatCannotUseMobJumpingToClimbAFullBlock(): void
     {
+        [$runtime, $boat] = self::obstacleRuntime(
+            new AxisAlignedBox(2.0, 64.0, -1.0, 10.0, 65.0, 1.0),
+            VanillaEntityType::BOAT,
+        );
+        for ($tick = 1; $tick <= 30; ++$tick) {
+            $boat->suppressAiMovementUntil($tick + 2);
+            $boat->applyControlledMotion(new EntityMotion(0.2, $boat->getMotion()->y, 0.0), $tick);
+            $runtime->tick($tick, self::emptyAiWorld(), false);
+        }
+
+        self::assertEqualsWithDelta(64.0, $boat->getPosition()->y, 0.001);
+        self::assertLessThan(1.31, $boat->getPosition()->x);
+    }
+
+    public function testControlledBoatStaysOnTopOfADeepLoadedWaterColumn(): void
+    {
+        $states = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($states);
+        $generation = GenerationBlockPalette::fromRegistry($states);
+        $water = $generation->state('minecraft:water');
+        $world = new World(
+            new WorldMetadata('boat-water-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+        );
+        $world->chunk(new ChunkPosition(0, 0));
+        for ($z = 0; $z <= 15; ++$z) {
+            for ($x = 0; $x <= 15; ++$x) {
+                for ($y = 61; $y <= 64; ++$y) {
+                    $world->setBlockState($x, $y, $z, $water);
+                }
+            }
+        }
+        $shapes = BlockCollisionRegistry::forGenerationPalette($states, $generation);
+        $environment = new WorldEntityEnvironment($world, $states, $shapes, $palette->air, $water);
+        $registry = new EntityRegistry();
+        $runtime = new EntityWorldRuntime(
+            $registry,
+            new EntitySpawnService($registry, EntityDefinitionRegistry::baseline()),
+            new EntityPhysicsResolver(
+                new BlockCollisionQuery($world, $palette->air, [$water], $shapes),
+                $environment,
+            ),
+        );
+        $spawn = $runtime->spawn(new EntitySpawnRequest(
+            VanillaEntityType::BOAT,
+            SpawnCause::COMMAND,
+            'boat-water-test',
+            new Position(1.5, 62.1, 1.5),
+        ));
+        self::assertInstanceOf(BoatEntity::class, $spawn->entity);
+        $surface = $environment->waterSurfaceY($spawn->entity);
+        self::assertNotNull($surface);
+
+        $expectedY = BoatEntity::floatingPositionY($surface);
+        for ($tick = 1; $tick <= 40; ++$tick) {
+            $spawn->entity->suppressAiMovementUntil($tick + 2);
+            $spawn->entity->applyControlledMotion(new EntityMotion(0.2, -0.4, 0.0), $tick);
+            $runtime->tick($tick, self::emptyAiWorld(), false);
+            self::assertEqualsWithDelta($expectedY, $spawn->entity->internalPosition()->y, 0.000_001);
+        }
+
+        self::assertSame(0.0, $spawn->entity->getMotion()->y);
+        self::assertGreaterThan(5.0, $spawn->entity->internalPosition()->x);
+    }
+
+    /** @return array{EntityWorldRuntime, AbstractMobEntity} */
+    private static function obstacleRuntime(
+        AxisAlignedBox $obstacle,
+        VanillaEntityType $type = VanillaEntityType::ZOMBIE,
+    ): array {
         $registry = new EntityRegistry();
         $runtime = new EntityWorldRuntime(
             $registry,
@@ -426,7 +500,7 @@ final class EntityWorldRuntimeTest extends TestCase
             }),
         );
         $spawn = $runtime->spawn(new EntitySpawnRequest(
-            VanillaEntityType::ZOMBIE,
+            $type,
             SpawnCause::COMMAND,
             'world',
             new Position(0.5, 64.0, 0.0),

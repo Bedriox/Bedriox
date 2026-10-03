@@ -1821,6 +1821,8 @@ final class BedrockPlayChannel
                     $vehicleYaw,
                     $vehicleControlYaw,
                     $packet->predictedVehicleActorId,
+                    $packet->hasInput(PlayerAuthInputFlag::PaddlingLeft),
+                    $packet->hasInput(PlayerAuthInputFlag::PaddlingRight),
                 ));
                 if ($packet->hasInput(PlayerAuthInputFlag::MissedSwing)) {
                     $this->commands->enqueue($this->commandFactory->swingArm(
@@ -1917,6 +1919,8 @@ final class BedrockPlayChannel
                 $command->vehicleYaw,
                 $command->vehicleControlYaw,
                 $command->predictedVehicleActorId,
+                $command->paddlingLeft,
+                $command->paddlingRight,
             );
         }
         $this->commands->offsetSet($index, $command);

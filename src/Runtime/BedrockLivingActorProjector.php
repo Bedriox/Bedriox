@@ -44,6 +44,7 @@ use Bedriox\Protocol\Packet\ActorAttribute;
 use Bedriox\Protocol\Packet\ActorFlag;
 use Bedriox\Protocol\Packet\ActorMetadata;
 use Bedriox\Protocol\Packet\ActorSpawnAttribute;
+use Bedriox\Protocol\Packet\BoatActorMetadata;
 use Bedriox\Protocol\Packet\InventoryContainerId;
 use Bedriox\Protocol\Packet\InventoryItemStack as ProtocolInventoryItemStack;
 use Bedriox\Protocol\Packet\MobArmorEquipmentPacket;
@@ -51,6 +52,7 @@ use Bedriox\Protocol\Packet\MobEquipmentPacket;
 use Bedriox\Protocol\Packet\Packet;
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\Server\Entity\AbstractLivingEntity;
+use Bedriox\Server\Entity\Vehicle\BoatEntity;
 use Bedriox\Server\Player\InventoryStack;
 use LogicException;
 
@@ -77,6 +79,17 @@ final class BedrockLivingActorProjector
     /** @return list<ActorMetadata> */
     public function metadata(AbstractLivingEntity $entity, bool $noAi = false): array
     {
+        if ($entity instanceof BoatEntity) {
+            return BoatActorMetadata::baseline(
+                $entity->getVariant()->value,
+                $entity->getMaximumHealth() - $entity->getHealth(),
+                $entity->hurtTicks(),
+                $entity->hurtDirection(),
+                rowTimeLeft: $entity->paddleTimeLeft(),
+                rowTimeRight: $entity->paddleTimeRight(),
+            );
+        }
+
         return [
             $this->flagsMetadata($entity, $noAi),
             ActorMetadata::int(1, (int) ceil($entity->getHealth())),

@@ -129,6 +129,7 @@ use Bedriox\Protocol\Packet\UpdateBlockPacket;
 use Bedriox\Protocol\Packet\UpdatePlayerGameTypePacket;
 use Bedriox\Protocol\Value\BuildPlatform;
 use Bedriox\Protocol\Value\UnsignedLong;
+use Bedriox\Server\Entity\Vehicle\BoatEntity;
 use Bedriox\Server\Gameplay\Enchanting\VanillaEnchantmentIdMap;
 use Bedriox\Server\Gameplay\Potion\PotionColorMixer;
 use Bedriox\Server\Gameplay\Projectile\ProjectileType;
@@ -534,12 +535,20 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
         $position = $event->position === null
             ? new ProtocolBlockPosition(0, 0, 0)
             : self::protocolBlockPosition($event->position);
-        $packets = [
-            new DirectedPacket($event->ownerSessionId, ContainerOpenPacket::blockInventory(
+        $open = $event->entityRuntimeId === null
+            ? ContainerOpenPacket::blockInventory(
                 $event->windowId,
                 self::protocolContainerType($event->containerType, $event->layout),
                 $position,
-            )),
+            )
+            : new ContainerOpenPacket(
+                $event->windowId,
+                self::protocolContainerType($event->containerType, $event->layout),
+                $position,
+                $event->entityRuntimeId,
+            );
+        $packets = [
+            new DirectedPacket($event->ownerSessionId, $open),
             new DirectedPacket($event->ownerSessionId, new InventoryContentPacket(
                 $event->windowId,
                 array_map($this->requireInventoryProjector()->toProtocol(...), $event->slots),
@@ -737,6 +746,7 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
                 ApiContainerType::ENCHANTING_TABLE => ContainerType::Enchantment,
                 ApiContainerType::LOOM => ContainerType::Loom,
                 ApiContainerType::CARTOGRAPHY_TABLE => ContainerType::Cartography,
+                ApiContainerType::CHEST_BOAT => ContainerType::ChestBoat,
                 default => ContainerType::Container,
             };
         }
@@ -2313,7 +2323,7 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             UnsignedLong::fromInt($runtimeId),
             $entity->definition()->networkIdentifier,
             $position->x,
-            $position->y,
+            $position->y + ($entity instanceof BoatEntity ? $entity->bedrockPositionOffsetY() : 0.0),
             $position->z,
             $motion->x,
             $motion->y,
@@ -2403,12 +2413,13 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
     {
         $entity = $event->entity;
         $position = $entity->internalPosition();
+        $networkY = $position->y + ($entity instanceof BoatEntity ? $entity->bedrockPositionOffsetY() : 0.0);
         $motion = $entity->getMotion();
         $runtimeId = UnsignedLong::fromInt($entity->getRuntimeId());
         $packets = [new MoveActorAbsolutePacket(
             $runtimeId,
             $position->x,
-            $position->y,
+            $networkY,
             $position->z,
             $entity->getPitch(),
             $entity->getYaw(),
@@ -2456,10 +2467,20 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             UnsignedLong::fromInt(max(0, $event->tick)),
         );
         $hurt = new ActorEventPacket($runtimeId, ActorEventType::Hurt);
+        $boatMetadata = $event->entity instanceof BoatEntity
+            ? new SetActorDataPacket(
+                $runtimeId,
+                UnsignedLong::fromInt(max(0, $event->tick)),
+                $this->livingActors->metadata($event->entity),
+            )
+            : null;
         $packets = [];
         foreach ($event->recipientSessionIds as $recipient) {
             $packets[] = new DirectedPacket($recipient, $health);
             $packets[] = new DirectedPacket($recipient, $hurt);
+            if ($boatMetadata !== null) {
+                $packets[] = new DirectedPacket($recipient, $boatMetadata);
+            }
         }
 
         return $packets;

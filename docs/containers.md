@@ -8,9 +8,19 @@ Chest, trapped-chest, barrel, and shulker-box contents are immutable block-entit
 
 Ender Chest contents belong to the authenticated player, not to the physical block. The 27 slots travel with that player's versioned profile and every Ender Chest block opens the same private inventory. Other players never share it.
 
+Chest boats and bamboo chest rafts own a durable 27-slot entity inventory.
+Sneak-interacting opens the inventory instead of mounting the vehicle. The
+window targets the authoritative vehicle identity, follows the same atomic
+transaction and stack-lineage rules as block storage, and persists with the
+boat across unloads and restarts.
+
 Shulker boxes retain their bounded contents and custom block name in portable item NBT when broken in survival. Placing that server-owned item restores its inventory while deriving the new facing from the placement. Shulker items stack to one and cannot be nested inside an open shulker box through a player transaction.
 
-World storage closes when its backing block disappears or the viewer moves out of range, teleports, dies, disconnects, opens another window, or the server closes it. First-viewer and last-viewer transitions drive chest-style animations and the barrel's canonical `open_bit`; one viewer leaving cannot close the presentation for another viewer.
+World and entity storage closes when its backing block or entity disappears, or
+when the viewer moves out of range, teleports, dies, disconnects, opens another
+window, or the server closes it. First-viewer and last-viewer transitions drive
+chest-style animations and the barrel's canonical `open_bit`; one viewer
+leaving cannot close the presentation for another viewer.
 
 ## Plugin API
 

@@ -22,6 +22,7 @@ namespace Bedriox\Server\Entity;
 
 use Bedriox\Api\Entity\Capability\Aquatic;
 use Bedriox\Api\Entity\Capability\Climbing;
+use Bedriox\Server\Entity\Vehicle\BoatEntity;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\Collision\AxisAlignedBox;
 use Bedriox\Server\World\Collision\LoadedCollisionBoxQuery;
@@ -39,6 +40,9 @@ final readonly class EntityPhysicsResolver
 
     public function tick(AbstractEntity $entity, int $tick): EntityPhysicsResult
     {
+        if ($entity instanceof BoatEntity) {
+            $entity->advanceDamageAnimation();
+        }
         if ($entity->isImmobile()) {
             $beforeMotion = $entity->getMotion();
             $entity->setMotion(new EntityMotion());
@@ -52,11 +56,18 @@ final readonly class EntityPhysicsResolver
         $inWater = $entity instanceof AbstractLivingEntity
             && $entity instanceof Aquatic
             && $this->environment?->isTouchingWater($entity) === true;
-        $friction = $inWater ? 0.90 : 1.0 - $definition->drag;
-        $gravity = $inWater ? 0.0 : ($entity->isGravityEnabled() ? $definition->gravity : 0.0);
+        $boatWaterSurface = $entity instanceof BoatEntity
+            ? $this->environment?->waterSurfaceY($entity)
+            : null;
+        $boatOnWater = $boatWaterSurface !== null;
+        $friction = $inWater || $boatOnWater ? 0.90 : 1.0 - $definition->drag;
+        $gravity = $inWater || $boatOnWater ? 0.0 : ($entity->isGravityEnabled() ? $definition->gravity : 0.0);
+        $vertical = $entity instanceof BoatEntity && $boatWaterSurface !== null
+            ? $entity->waterlineCorrection($boatWaterSurface)
+            : ($beforeMotion->y - $gravity) * $friction;
         $requested = new EntityMotion(
             $beforeMotion->x * $friction,
-            max(-$entity->maximumDownwardVelocity(), ($beforeMotion->y - $gravity) * $friction),
+            max(-$entity->maximumDownwardVelocity(), $vertical),
             $beforeMotion->z * $friction,
         );
         $halfWidth = $entity->collisionWidth() / 2.0;
@@ -99,7 +110,7 @@ final readonly class EntityPhysicsResolver
         $landed = $requested->y < 0.0 && $y !== $requested->y;
         $motion = new EntityMotion(
             self::zeroSmall($x === $requested->x ? $x : 0.0),
-            $y === $requested->y ? $y : 0.0,
+            $boatOnWater ? 0.0 : ($y === $requested->y ? $y : 0.0),
             self::zeroSmall($z === $requested->z ? $z : 0.0),
         );
         $position = new Position(
@@ -159,7 +170,7 @@ final readonly class EntityPhysicsResolver
         float $resolvedX,
         float $resolvedZ,
     ): bool {
-        if (!$entity instanceof AbstractMobEntity || !$entity->isOnGround()
+        if (!$entity instanceof AbstractMobEntity || $entity instanceof BoatEntity || !$entity->isOnGround()
             || !$entity->hasAiMovementIntentAt($tick)
             || ($requested->x === 0.0 && $requested->z === 0.0)
             || ($resolvedX === $requested->x && $resolvedZ === $requested->z)) {

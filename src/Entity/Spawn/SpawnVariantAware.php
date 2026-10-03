@@ -18,19 +18,10 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api\Entity;
+namespace Bedriox\Server\Entity\Spawn;
 
-enum SpawnCause: string
+/** Internal pre-publication hydration for a requested built-in variant. */
+interface SpawnVariantAware
 {
-    case SPAWN_EGG = 'spawn_egg';
-    case COMMAND = 'command';
-    case PLUGIN = 'plugin';
-    case NATURAL = 'natural';
-    case SPAWNER = 'spawner';
-    case BREEDING = 'breeding';
-    case STRUCTURE = 'structure';
-    case CHUNK_LOAD = 'chunk_load';
-    case EFFECT = 'effect';
-    case BUCKET = 'bucket';
-    case ITEM = 'item';
+    public function applySpawnVariant(int|string $variant): void;
 }

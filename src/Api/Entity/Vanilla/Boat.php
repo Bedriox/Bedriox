@@ -18,19 +18,14 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api\Entity;
+namespace Bedriox\Api\Entity\Vanilla;
 
-enum SpawnCause: string
+use Bedriox\Api\Entity\Capability\Vehicle;
+use Bedriox\Api\Entity\Value\BoatVariant;
+
+interface Boat extends Vehicle
 {
-    case SPAWN_EGG = 'spawn_egg';
-    case COMMAND = 'command';
-    case PLUGIN = 'plugin';
-    case NATURAL = 'natural';
-    case SPAWNER = 'spawner';
-    case BREEDING = 'breeding';
-    case STRUCTURE = 'structure';
-    case CHUNK_LOAD = 'chunk_load';
-    case EFFECT = 'effect';
-    case BUCKET = 'bucket';
-    case ITEM = 'item';
+    public function getVariant(): BoatVariant;
+
+    public function isChestBoat(): bool;
 }

@@ -41,6 +41,7 @@ use Bedriox\Api\Entity\EntityTargetReason;
 use Bedriox\Api\Entity\KnockbackCause as ApiKnockbackCause;
 use Bedriox\Api\Entity\KnockbackVector as ApiKnockbackVector;
 use Bedriox\Api\Entity\SpawnCause;
+use Bedriox\Api\Entity\Value\BoatVariant;
 use Bedriox\Api\Entity\Value\MountReason;
 use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\Entity\Value\RabbitVariant;
@@ -162,6 +163,7 @@ use Bedriox\Server\Entity\Vanilla\WitchEntity;
 use Bedriox\Server\Entity\Vanilla\WitherSkeletonEntity;
 use Bedriox\Server\Entity\Vanilla\WolfEntity;
 use Bedriox\Server\Entity\Vanilla\ZombieFamilyEntity;
+use Bedriox\Server\Entity\Vehicle\BoatEntity;
 use Bedriox\Server\Entity\WorldEntityEnvironment;
 use Bedriox\Server\Gameplay\Block\BlockBreakContext;
 use Bedriox\Server\Gameplay\Block\BlockBreakRules;
@@ -1096,6 +1098,7 @@ final class WorldSimulation
         $stages['natural_entities'] = $nextStageNanoseconds - $stageCompletedNanoseconds;
         $stageCompletedNanoseconds = $nextStageNanoseconds;
         array_push($events, ...$this->advanceGeneralEntities());
+        array_push($events, ...$this->closeInvalidEntityContainers());
         array_push($events, ...$this->drainDeferredEvents());
         $stages['general_entities'] = hrtime(true) - $stageCompletedNanoseconds;
         $stages['entity_runtime'] = $this->lastEntityRuntimeNanoseconds;
@@ -2186,6 +2189,16 @@ final class WorldSimulation
         AbstractLivingEntity $entity,
         ?\Bedriox\Api\Event\Entity\EntityDamageEvent $lastDamage,
     ): array {
+        if ($entity instanceof BoatEntity) {
+            $drops = [new ApiItemStack($entity->getVariant()->itemIdentifier($entity->isChestBoat()), 1)];
+            foreach ($entity->chestInventory()?->contents() ?? [] as $stack) {
+                if ($stack !== null) {
+                    $drops[] = $stack;
+                }
+            }
+
+            return $drops;
+        }
         if ($this->entityLoot === null) {
             return [];
         }
@@ -4412,7 +4425,53 @@ final class WorldSimulation
         $player->movement->lastTick = $this->tick;
         $vehicleYaw = $command->vehicleYaw ?? $command->yaw;
         $vehicleControlYaw = $command->vehicleControlYaw ?? $vehicleYaw;
-        if ($vehicle instanceof PigEntity && $link->seat->controlsVehicle()) {
+        if ($vehicle instanceof BoatEntity && $link->seat->controlsVehicle()) {
+            $vehicle->suppressAiMovementUntil($this->tick + 2);
+            $forward = max(-1.0, min(1.0, $command->moveZ));
+            $strafe = max(-1.0, min(1.0, $command->moveX));
+            $left = $command->paddlingLeft || $forward !== 0.0 || $strafe > 0.0;
+            $right = $command->paddlingRight || $forward !== 0.0 || $strafe < 0.0;
+            $control = $this->pluginEvents?->vehicleControl(
+                $player,
+                $vehicle,
+                $forward,
+                $strafe,
+                $vehicleControlYaw,
+                $left,
+                $right,
+            );
+            if ($this->pluginEvents !== null && $control === null) {
+                $motion = $vehicle->getMotion();
+                $vehicle->setMotion(new EntityMotion(0.0, $motion->y, 0.0));
+                $vehicle->applyPaddleInput(false, false);
+                $this->syncMountedPlayer($player, $link);
+
+                return new PlayerMoved($player->snapshot(), $this->players->recipients($player->sessionId));
+            }
+            if ($control !== null) {
+                $forward = $control->forward();
+                $strafe = $control->strafe();
+                $vehicleControlYaw = $control->yaw();
+                $left = $control->isPaddlingLeft();
+                $right = $control->isPaddlingRight();
+            }
+            $vehicle->applyPaddleInput($left, $right);
+            $vehicle->advancePaddles();
+            $radians = deg2rad($vehicleControlYaw);
+            $speed = $vehicle->controlledSpeed(
+                $this->entityEnvironment?->isWaterSupporting($vehicle) === true,
+            );
+            $current = $vehicle->getMotion();
+            $vehicle->applyControlledMotion(new EntityMotion(
+                (-sin($radians) * $forward + cos($radians) * $strafe) * $speed,
+                $current->y,
+                (cos($radians) * $forward + sin($radians) * $strafe) * $speed,
+            ), $this->tick);
+            $vehicle->moveTo($vehicle->getWorldName(), $vehicle->internalPosition(), $vehicleControlYaw, 0.0);
+            if ($control !== null) {
+                $this->pluginEvents->vehicleControlled($player, $vehicle, $control);
+            }
+        } elseif ($vehicle instanceof PigEntity && $link->seat->controlsVehicle()) {
             $vehicle->suppressAiMovementUntil($this->tick + 2);
             $held = $player->inventory->selectedStack();
             if ($held?->identifier === 'minecraft:carrot_on_a_stick') {
@@ -4929,11 +4988,13 @@ final class WorldSimulation
             $target instanceof Undead,
             $target instanceof Arthropod,
         ) + $this->maceDensityDamage($attacker, $heldEnchantments);
-        $reducedDamage = $this->entityArmorReducedDamage(
-            $target,
-            $baseDamage,
-            $heldEnchantments[VanillaEnchantments::BREACH] ?? 0,
-        );
+        $reducedDamage = $target instanceof BoatEntity
+            ? $target->structuralDamage($baseDamage, $attacker->gameMode() === GameMode::CREATIVE)
+            : $this->entityArmorReducedDamage(
+                $target,
+                $baseDamage,
+                $heldEnchantments[VanillaEnchantments::BREACH] ?? 0,
+            );
         $damageEvent = $this->pluginEvents?->entityDamage(
             $target,
             ApiEntityDamageCause::ATTACK,
@@ -4950,6 +5011,9 @@ final class WorldSimulation
         $result = $this->entityRuntime->damage($target->getRuntimeId(), $damage);
         if ($result === null || $result->appliedDamage <= 0.0) {
             return new CommandRejected($command->session, 'target_unavailable');
+        }
+        if ($target instanceof BoatEntity) {
+            $target->showDamageAnimation();
         }
         if ($damageEvent !== null) {
             $this->entityLastDamageEvents[$target->getRuntimeId()] = $damageEvent;
@@ -5117,6 +5181,40 @@ final class WorldSimulation
 
             return $result;
         }
+        if ($target instanceof BoatEntity && $target->isChestBoat() && $player->movement->sneaking) {
+            $inventory = $target->chestInventory();
+            if ($inventory === null) {
+                return new CommandRejected($player->sessionId, 'container_unavailable');
+            }
+            $result = $this->openContainerInventory(
+                $player,
+                ApiContainerType::CHEST_BOAT,
+                $inventory,
+                entityRuntimeId: $target->getRuntimeId(),
+            );
+            if ($result instanceof ContainerOpened) {
+                $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
+            }
+
+            return $result;
+        }
+        if ($target instanceof BoatEntity && $this->mounts->playerLink($player->sessionId) === null) {
+            $occupied = count($this->mounts->linksForVehicle($target->getRuntimeId()));
+            if ($occupied >= $target->getSeatCapacity()) {
+                return new CommandRejected($player->sessionId, 'seat_unavailable');
+            }
+            $result = $this->mountPlayer(new MountPlayer(
+                $player->sessionId,
+                $target->getRuntimeId(),
+                $target->getUniqueId(),
+                $occupied === 0 ? MountSeat::DRIVER : MountSeat::PASSENGER_1,
+            ));
+            if ($result instanceof ActorMounted) {
+                $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
+            }
+
+            return $result;
+        }
         if ($target instanceof Rideable
             && ($heldBefore === null
                 || !($target instanceof BreedableAnimalEntity)
@@ -5205,6 +5303,7 @@ final class WorldSimulation
             return new CommandRejected($command->session, 'plugin_cancelled');
         }
         $this->mounts->dismountPlayer($player->sessionId);
+        $this->stopBoatPaddlesWithoutDriver($link->vehicle);
         $this->placeDismountedPlayer($player, $link);
         $this->pluginEvents?->dismounted(
             $this->pluginEvents->playerView($player),
@@ -5228,6 +5327,7 @@ final class WorldSimulation
             return;
         }
         $this->mounts->dismountPlayer($player->sessionId);
+        $this->stopBoatPaddlesWithoutDriver($link->vehicle);
         $this->placeDismountedPlayer($player, $link);
         $this->pluginEvents?->dismounted(
             $this->pluginEvents->playerView($player),
@@ -5241,6 +5341,19 @@ final class WorldSimulation
             $player->snapshot(),
             $this->players->recipients(),
         );
+    }
+
+    private function stopBoatPaddlesWithoutDriver(ApiEntity $vehicle): void
+    {
+        if (!$vehicle instanceof BoatEntity) {
+            return;
+        }
+        foreach ($this->mounts->linksForVehicle($vehicle->getRuntimeId()) as $link) {
+            if ($link->seat->controlsVehicle()) {
+                return;
+            }
+        }
+        $vehicle->applyPaddleInput(false, false);
     }
 
     private function mountEntityFromController(AbstractEntity $passenger, ApiEntity $vehicle, MountSeat $seat): void
@@ -6659,6 +6772,8 @@ final class WorldSimulation
                 $command->vehicleYaw,
                 $command->vehicleControlYaw,
                 $command->predictedVehicleActorId,
+                $command->paddlingLeft,
+                $command->paddlingRight,
             );
             $bytes = $command->estimatedBytes();
         }
@@ -7042,6 +7157,38 @@ final class WorldSimulation
                 $this->deferredEvents[] = $closed;
             }
         }
+    }
+
+    /** @return list<ContainerClosed> */
+    private function closeInvalidEntityContainers(): array
+    {
+        $events = [];
+        foreach ($this->openContainers as $key => $session) {
+            if ($session->entityRuntimeId === null) {
+                continue;
+            }
+            $player = $this->players->player(substr($key, strlen('session:')));
+            if ($player === null) {
+                continue;
+            }
+            $entity = $this->entityRuntime->registry()->getByRuntimeId($session->entityRuntimeId);
+            $reason = null;
+            if (!$entity instanceof BoatEntity || $entity->isRemoved()) {
+                $reason = ApiInventoryCloseReason::ENTITY_REMOVED;
+            } elseif ($entity->getWorldName() !== $this->worldId
+                || $player->movement->position->distanceTo($entity->internalPosition()) > self::MAXIMUM_BLOCK_REACH) {
+                $reason = ApiInventoryCloseReason::OUT_OF_RANGE;
+            }
+            if ($reason === null) {
+                continue;
+            }
+            $closed = $this->closeContainer($player, $reason, true);
+            if ($closed !== null) {
+                $events[] = $closed;
+            }
+        }
+
+        return $events;
     }
 
     private function inventoryStackFromContainerItem(ContainerItemStack $stack): InventoryStack
@@ -13084,6 +13231,12 @@ final class WorldSimulation
             return;
         }
         $session->inventory->replaceContents($contents, $session->canonicalRevision);
+        if ($session->entityRuntimeId !== null) {
+            $entity = $this->entityRuntime->registry()->getByRuntimeId($session->entityRuntimeId);
+            if ($entity instanceof BoatEntity && $entity->chestInventory() === $session->inventory) {
+                $entity->markChestInventoryChanged();
+            }
+        }
     }
 
     /** @param list<InventorySlotReference> $affectedSlots */
@@ -13347,6 +13500,21 @@ final class WorldSimulation
                 $clickedState,
                 $placedState,
                 $held,
+                $activeBreak['position'] ?? null,
+            );
+        }
+        $boatVariant = $held === null ? null : BoatVariant::fromItem($held->identifier, $held->auxValue);
+        if ($boatVariant !== null
+            && $boatVariant->matchesItem($held->identifier, $held->auxValue)) {
+            return $this->useBoatItem(
+                $player,
+                $command,
+                $clickedState,
+                $placedState,
+                $held,
+                $boatVariant,
+                $held->identifier === 'minecraft:chest_boat'
+                    || str_contains($held->identifier, '_chest_'),
                 $activeBreak['position'] ?? null,
             );
         }
@@ -13631,6 +13799,104 @@ final class WorldSimulation
             $remaining,
             $stoppedBreakingPosition,
             'spawn_egg_used',
+        );
+    }
+
+    private function useBoatItem(
+        Player $player,
+        PlaceBlock $command,
+        InternalBlockStateId $clickedState,
+        InternalBlockStateId $placedState,
+        InventoryStack $held,
+        BoatVariant $variant,
+        bool $chestBoat,
+        ?BlockPosition $stoppedBreakingPosition,
+    ): WorldEvent {
+        $clickedWater = $this->fluidState($clickedState)?->type === FluidType::WATER;
+        $spawnBlock = $clickedWater
+            ? $command->clickedPosition
+            : self::adjacentBlock($command->clickedPosition, $command->face);
+        if ($spawnBlock === null) {
+            return new BlockPlacementCorrected(
+                $player->sessionId,
+                $command->clickedPosition,
+                $clickedState,
+                $command->clickedPosition,
+                $placedState,
+                $player->inventory->selectedHotbarSlot(),
+                $held,
+                $stoppedBreakingPosition,
+                'block_position',
+            );
+        }
+        $failure = match (true) {
+            !$player->gameMode()->canBuild() => 'gamemode',
+            $command->sequence <= $player->placementSequence => 'stale_sequence',
+            $command->hotbarSlot !== $player->inventory->selectedHotbarSlot() => 'selected_slot',
+            $clickedState->value === $this->blockPalette?->air->value => 'clicked_air',
+            !$this->blockIsReachable($player->snapshot(), $command->clickedPosition) => 'reach',
+            $this->pluginEvents !== null
+                && !$this->pluginEvents->allowItemUse($player, $held, ApiItemUseKind::VEHICLE_PLACE, 0) => 'plugin_cancelled',
+            default => null,
+        };
+        if ($command->sequence > $player->placementSequence) {
+            $player->placementSequence = $command->sequence;
+        }
+        if ($failure === null) {
+            $spawnY = $clickedWater
+                ? BoatEntity::floatingPositionY(
+                    $command->clickedPosition->y + $this->fluidState($clickedState)->height(),
+                )
+                : (float) $spawnBlock->y;
+            $outcome = $this->spawnEntity(new EntitySpawnRequest(
+                $chestBoat ? VanillaEntityType::CHEST_BOAT : VanillaEntityType::BOAT,
+                SpawnCause::ITEM,
+                $this->worldId,
+                new Position($spawnBlock->x + 0.5, $spawnY, $spawnBlock->z + 0.5),
+                $player->movement->yaw,
+                variant: $variant->value,
+            ));
+            $failure = $outcome->failure;
+        }
+        if ($failure !== null) {
+            return new BlockPlacementCorrected(
+                $player->sessionId,
+                $command->clickedPosition,
+                $clickedState,
+                $spawnBlock,
+                $placedState,
+                $player->inventory->selectedHotbarSlot(),
+                $held,
+                $stoppedBreakingPosition,
+                $failure,
+            );
+        }
+        $remaining = $player->gameMode()->consumesItems()
+            ? $player->inventory->decrementSelectedOne()
+            : $held;
+        if ($player->gameMode()->consumesItems()) {
+            $player->markDirty();
+        }
+        $this->pluginEvents?->itemUsed($player, $held, ApiItemUseKind::VEHICLE_PLACE, 0);
+        $this->deferredEvents[] = new HeldItemChanged(
+            $player->sessionId,
+            $player->runtimeActorId,
+            $player->inventory->selectedHotbarSlot(),
+            $remaining,
+            $this->players->recipients($player->sessionId),
+            ownerSlotCorrection: false,
+        );
+
+        return new BlockPlacementCorrected(
+            $player->sessionId,
+            $command->clickedPosition,
+            $clickedState,
+            $spawnBlock,
+            $placedState,
+            $player->inventory->selectedHotbarSlot(),
+            $remaining,
+            $stoppedBreakingPosition,
+            'boat_used',
         );
     }
 
@@ -14238,6 +14504,7 @@ final class WorldSimulation
         ?ResolvedWorldContainer $worldContainer = null,
         bool $playerOwnedEnderChest = false,
         ?string $owningPlugin = null,
+        ?int $entityRuntimeId = null,
     ): WorldEvent {
         $key = self::sessionKey($player->sessionId);
         if (isset($this->openContainers[$key])) {
@@ -14267,6 +14534,7 @@ final class WorldSimulation
                 worldContainer: $worldContainer,
                 playerOwnedEnderChest: $playerOwnedEnderChest,
                 owningPlugin: $owningPlugin,
+                entityRuntimeId: $entityRuntimeId,
             );
             $view = $this->containerView($session, [$player->identity->uuid]);
             if ($this->pluginEvents !== null && !$this->pluginEvents->allowContainerOpen($player, $view)) {
@@ -14322,6 +14590,7 @@ final class WorldSimulation
                 $session->pairedPosition,
                 $session->title,
                 $session->layout,
+                $session->entityRuntimeId,
             );
         } catch (InvalidArgumentException|OverflowException) {
             return new CommandRejected($player->sessionId, 'container_projection');

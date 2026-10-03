@@ -49,6 +49,8 @@ final readonly class MovePlayer implements WorldCommand
         public ?float $vehicleYaw = null,
         public ?float $vehicleControlYaw = null,
         public ?int $predictedVehicleActorId = null,
+        public bool $paddlingLeft = false,
+        public bool $paddlingRight = false,
     ) {}
 
     public function sessionId(): string

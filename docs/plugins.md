@@ -91,6 +91,12 @@ Combat and item systems add typed boundaries for one-pass actor knockback, mutab
 
 Live non-player entities expose a typed controller rather than mutable runtime state. The `EntityController`, `LivingEntityController`, and `MobController` hierarchy covers transforms, presentation state, health, fire, equipment, AI, and bounded movement control. Controller work requested by a plugin callback is staged with that callback and discarded if it fails. Entity equipment has cancellable adjustable pre-events and immutable committed post-events. `EntityDeathEvent` cannot cancel death, but it receives the once-evaluated stable drop list before item actors spawn and may replace, append, or clear that list. See [entities, controllers, equipment, and loot](entities.md) for the complete contract and current limitations.
 
+Boat steering enters cancellable `VehicleControlEvent` before authoritative
+motion and immutable `VehicleControlledEvent` after commit. Plugins receive the
+typed driver and boat plus normalized movement, yaw, and paddle values. Mount,
+dismount, interaction, damage, death, and inventory behavior continues through
+the shared entity and container events.
+
 `PlayerItemUseEvent` runs after the held stack, game mode, cooldown, and active-use rules have been validated. Cancelling it prevents the use from starting or applying. `PlayerItemUsedEvent` reports a committed instant or completed timed use, while `PlayerItemUseCancelledEvent` records why an active use ended without completing. `PlayerItemConsumeEvent` may cancel consumption or replace its bounded `ConsumptionResult`, including nutrition restoration and residue stacks. `PlayerItemConsumedEvent` reports the committed stack, nutrition, and residue result. `PlayerFoodLevelChangeEvent` may cancel or replace a bounded `Nutrition` snapshot; `PlayerFoodLevelChangedEvent` reports the committed state. `FoodLevelChangeCause::EXHAUSTION` includes accepted survival and adventure sprint movement.
 
 `PlayerEquipmentChangeEvent` covers armor and offhand transitions. A listener may cancel it or replace the proposed immutable stack, which is revalidated for the target `EquipmentSlot` before commit. `PlayerEquipmentChangedEvent` reports the committed result. `PlayerItemDamageEvent` may cancel or adjust bounded durability loss; `PlayerItemBreakEvent` reports an item removed after its durability was exhausted. These APIs use gameplay enums such as `EquipmentSlot`, `ItemUseKind`, and `ItemDamageCause`, never protocol ordinals.

@@ -105,6 +105,26 @@ final class StorageContainerWireProjectionTest extends TestCase
         self::assertCount(5, $packets[1]->packet->items);
     }
 
+    public function testChestBoatOpenTargetsTheAuthoritativeEntity(): void
+    {
+        $packets = $this->encoder()->encode(new ContainerOpened(
+            'owner',
+            9,
+            ApiContainerType::CHEST_BOAT,
+            null,
+            array_fill(0, 27, null),
+            ['owner'],
+            entityRuntimeId: 412,
+        ), []);
+
+        self::assertCount(2, $packets);
+        self::assertInstanceOf(ContainerOpenPacket::class, $packets[0]->packet);
+        self::assertSame(ContainerType::ChestBoat, $packets[0]->packet->containerType);
+        self::assertSame(412, $packets[0]->packet->actorUniqueId);
+        self::assertInstanceOf(InventoryContentPacket::class, $packets[1]->packet);
+        self::assertCount(27, $packets[1]->packet->items);
+    }
+
     public function testContainerChangesUseEachViewersWindowAndStackIdentity(): void
     {
         $owner = array_fill(0, 27, null);

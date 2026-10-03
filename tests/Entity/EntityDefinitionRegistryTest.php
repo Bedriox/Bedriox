@@ -85,17 +85,16 @@ final class EntityDefinitionRegistryTest extends TestCase
         ), true);
     }
 
-    public function testCurrentDataCatalogAdmitsOnlyGameplayQualifiedMobSpawnEggs(): void
+    public function testCurrentDataCatalogAdmitsImplementedGameplayEntities(): void
     {
         $catalog = BedrockDataSet::bundled()->entityTypeRegistry();
         $registry = EntityDefinitionRegistry::fromData($catalog);
 
-        foreach (['minecraft:chicken', 'minecraft:cow', 'minecraft:pig', 'minecraft:rabbit', 'minecraft:sheep', 'minecraft:skeleton', 'minecraft:zombie'] as $identifier) {
+        foreach (['minecraft:boat', 'minecraft:chest_boat', 'minecraft:chicken', 'minecraft:cow', 'minecraft:pig', 'minecraft:rabbit', 'minecraft:sheep', 'minecraft:skeleton', 'minecraft:zombie'] as $identifier) {
             self::assertNotNull($registry->get($identifier), $identifier);
         }
         foreach ([
             'minecraft:arrow',
-            'minecraft:boat',
             'minecraft:agent',
             'minecraft:armor_stand',
             'minecraft:npc',

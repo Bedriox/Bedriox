@@ -135,6 +135,8 @@ final readonly class SimulationCommandFactory
         ?float $vehicleYaw = null,
         ?float $vehicleControlYaw = null,
         ?int $predictedVehicleActorId = null,
+        bool $paddlingLeft = false,
+        bool $paddlingRight = false,
     ): MovePlayer {
         $this->assertOpaqueId($session, 128, 'session');
         if ($sequence < 0) {
@@ -197,6 +199,8 @@ final readonly class SimulationCommandFactory
             $vehicleYaw,
             $vehicleControlYaw,
             $predictedVehicleActorId,
+            $paddlingLeft,
+            $paddlingRight,
         );
     }
 

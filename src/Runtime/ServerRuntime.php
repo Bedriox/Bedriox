@@ -1431,6 +1431,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                             $this->diagnostics->record('world.protocol_trace', [
                                 'kind' => 'block_placement_corrected',
                                 'reason' => $event->reason,
+                                'item' => $event->heldStack?->identifier,
+                                'aux_value' => $event->heldStack?->auxValue,
                             ]);
                         }
                         if ($event instanceof MovementCorrected) {

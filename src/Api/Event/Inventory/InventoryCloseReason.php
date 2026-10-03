@@ -31,6 +31,7 @@ enum InventoryCloseReason: string
     case DISCONNECT = 'disconnect';
     case OUT_OF_RANGE = 'out_of_range';
     case BLOCK_REMOVED = 'block_removed';
+    case ENTITY_REMOVED = 'entity_removed';
     case CHUNK_UNLOAD = 'chunk_unload';
     case WORLD_UNLOAD = 'world_unload';
 }

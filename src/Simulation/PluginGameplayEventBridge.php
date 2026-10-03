@@ -187,6 +187,8 @@ use Bedriox\Api\Event\Processing\SmithingProcessedEvent;
 use Bedriox\Api\Event\Processing\SmithingProcessEvent;
 use Bedriox\Api\Event\Processing\StonecutterProcessedEvent;
 use Bedriox\Api\Event\Processing\StonecutterProcessEvent;
+use Bedriox\Api\Event\Vehicle\VehicleControlEvent;
+use Bedriox\Api\Event\Vehicle\VehicleControlledEvent;
 use Bedriox\Api\Event\World\WeatherChangeCause;
 use Bedriox\Api\Event\World\WeatherChangedEvent;
 use Bedriox\Api\Event\World\WeatherChangeEvent;
@@ -440,6 +442,45 @@ final readonly class PluginGameplayEventBridge
         MountReason $reason,
     ): void {
         $this->events->dispatch(new EntityMountedEvent($passenger, $vehicle, $seat, $reason));
+    }
+
+    public function vehicleControl(
+        Player $driver,
+        \Bedriox\Api\Entity\Vanilla\Boat $vehicle,
+        float $forward,
+        float $strafe,
+        float $yaw,
+        bool $paddlingLeft,
+        bool $paddlingRight,
+    ): ?VehicleControlEvent {
+        $event = new VehicleControlEvent(
+            $this->playerView($driver),
+            $vehicle,
+            $forward,
+            $strafe,
+            $yaw,
+            $paddlingLeft,
+            $paddlingRight,
+        );
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event;
+    }
+
+    public function vehicleControlled(
+        Player $driver,
+        \Bedriox\Api\Entity\Vanilla\Boat $vehicle,
+        VehicleControlEvent $control,
+    ): void {
+        $this->events->dispatch(new VehicleControlledEvent(
+            $this->playerView($driver),
+            $vehicle,
+            $control->forward(),
+            $control->strafe(),
+            $control->yaw(),
+            $control->isPaddlingLeft(),
+            $control->isPaddlingRight(),
+        ));
     }
 
     public function allowDismount(

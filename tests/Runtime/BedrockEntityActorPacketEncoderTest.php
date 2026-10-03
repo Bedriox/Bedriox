@@ -50,6 +50,7 @@ use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\EntityMotion;
 use Bedriox\Server\Entity\Vanilla\CowEntity;
 use Bedriox\Server\Entity\Vanilla\ZombieEntity;
+use Bedriox\Server\Entity\Vehicle\BoatEntity;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Runtime\BedrockInventoryPacketProjector;
 use Bedriox\Server\Runtime\BedrockWorldEventPacketEncoder;
@@ -70,6 +71,48 @@ use PHPUnit\Framework\TestCase;
 
 final class BedrockEntityActorPacketEncoderTest extends TestCase
 {
+    public function testBoatUsesItsBedrockBaseOffsetAndStructuralHitMetadata(): void
+    {
+        $boat = new BoatEntity(
+            '00000000-0000-4000-8000-000000000250',
+            250,
+            'world',
+            new Position(1.0, 63.5, 2.0),
+        );
+        $encoder = new BedrockWorldEventPacketEncoder();
+        $spawned = $encoder->encode(new EntityActorSpawned($boat, ['viewer']), []);
+        $spawn = array_values(array_filter(
+            $spawned,
+            static fn($packet): bool => $packet->packet instanceof AddActorPacket,
+        ))[0]->packet;
+        self::assertInstanceOf(AddActorPacket::class, $spawn);
+        self::assertSame(63.875, $spawn->y);
+        self::assertSame(1, self::metadataInteger($spawn->metadata, 118));
+        $buoyancy = json_decode(self::metadataString($spawn->metadata, 119), true, flags: JSON_THROW_ON_ERROR);
+        self::assertIsArray($buoyancy);
+        self::assertSame(['minecraft:water', 'minecraft:flowing_water'], $buoyancy['liquid_blocks'] ?? null);
+        self::assertSame('waves', $buoyancy['movement_type'] ?? null);
+
+        $boat->moveTo('world', new Position(2.0, 64.0, 3.0), 0.0, 0.0);
+        $movement = $encoder->entityMovementPackets(new EntityActorMoved($boat, 5, ['viewer']));
+        self::assertInstanceOf(MoveActorAbsolutePacket::class, $movement[0]);
+        self::assertSame(64.375, $movement[0]->y);
+
+        self::assertSame(10.0, $boat->damage(10.0));
+        $boat->showDamageAnimation();
+        $damaged = $encoder->encode(new EntityActorDamaged($boat, 6, ['viewer']), []);
+        $metadataPackets = array_values(array_filter(
+            $damaged,
+            static fn($packet): bool => $packet->packet instanceof SetActorDataPacket,
+        ));
+        self::assertCount(1, $metadataPackets);
+        $metadata = $metadataPackets[0]->packet;
+        self::assertInstanceOf(SetActorDataPacket::class, $metadata);
+        self::assertSame(10, self::metadataInteger($metadata->metadata, 1));
+        self::assertSame(9, self::metadataInteger($metadata->metadata, 11));
+        self::assertSame(-1, self::metadataInteger($metadata->metadata, 12));
+    }
+
     public function testLivingActorEffectsReplayOnSpawnAndProjectLiveRemoval(): void
     {
         $zombie = new ZombieEntity(
@@ -417,8 +460,10 @@ final class BedrockEntityActorPacketEncoderTest extends TestCase
         self::assertGreaterThan(2, count($definitions));
         foreach ($definitions as $index => $registration) {
             $source = $catalog->definitionForIdentifier($registration->definition->type->identifier());
+            if ($registration->definition->category === EntityCategory::MISCELLANEOUS) {
+                continue;
+            }
             self::assertTrue($source->hasSpawnEgg(), $source->identifier());
-            self::assertNotSame(EntityCategory::MISCELLANEOUS, $registration->definition->category);
             $entity = ($registration->factory)(
                 sprintf('00000000-0000-4000-8000-%012d', $index + 1),
                 10_000 + $index,
@@ -529,5 +574,17 @@ final class BedrockEntityActorPacketEncoderTest extends TestCase
         }
 
         self::fail("Missing integer actor metadata {$id}.");
+    }
+
+    /** @param list<ActorMetadata> $metadata */
+    private static function metadataString(array $metadata, int $id): string
+    {
+        foreach ($metadata as $entry) {
+            if ($entry->id === $id && is_string($entry->value)) {
+                return $entry->value;
+            }
+        }
+
+        self::fail("Missing string actor metadata {$id}.");
     }
 }

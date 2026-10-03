@@ -50,6 +50,7 @@ final class PlayerContainerSession
         public readonly ?ResolvedWorldContainer $worldContainer = null,
         public readonly bool $playerOwnedEnderChest = false,
         public readonly ?string $owningPlugin = null,
+        public readonly ?int $entityRuntimeId = null,
         public ?WorkstationRequest $workstationRequest = null,
     ) {}
 }

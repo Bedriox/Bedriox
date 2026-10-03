@@ -48,7 +48,8 @@ final readonly class ContainerContentsChanged implements WorldEvent
         $double = $containerType->isPaired();
         $expectedSlots = $containerType === ContainerType::VIRTUAL ? $layout?->size() : $containerType->slotCount();
         if ($windowId < 2 || $windowId > 99
-            || ($containerType === ContainerType::VIRTUAL) !== ($position === null)
+            || (($containerType === ContainerType::VIRTUAL || $containerType === ContainerType::CHEST_BOAT)
+                !== ($position === null))
             || ($containerType === ContainerType::VIRTUAL) !== ($layout !== null)
             || $double !== ($pairedPosition !== null)
             || $expectedSlots === null

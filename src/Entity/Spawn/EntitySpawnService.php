@@ -91,6 +91,14 @@ final readonly class EntitySpawnService
                 throw new LogicException('Entity factory returned an entity which does not match its definition.');
             }
             $entity->restoreSpawnOwnership($request->cause, EntityDespawnPolicy::forSpawnCause($request->cause));
+            if ($request->variant !== null) {
+                if (!$entity instanceof SpawnVariantAware) {
+                    $this->entities->remove($entity->getRuntimeId());
+
+                    return EntitySpawnOutcome::failed('unsupported_variant');
+                }
+                $entity->applySpawnVariant($request->variant);
+            }
             ($this->prepareEntity)?->__invoke($entity);
             $event = new EntitySpawnEvent($entity, $request->cause);
             if ($this->beforeSpawn !== null && !($this->beforeSpawn)($event)) {

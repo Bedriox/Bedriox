@@ -88,6 +88,22 @@ Every world owns one transient mount registry. A passenger has at most one vehic
 
 Players can inspect and control a live relationship through `Player::getVehicle()`, `isRiding()`, `mount()`, and `dismount()`. Entities expose `getVehicle()`, `isRiding()`, `getPassengers()`, and `hasPassengers()` without exposing packet actor-link values. `EntityMountEvent` and `EntityDismountEvent` run before ordinary player or plugin transitions; `EntityMountedEvent` and `EntityDismountedEvent` observe committed state. Lifecycle-forced dismounts cannot be cancelled.
 
+Boats, chest boats, bamboo rafts, and bamboo chest rafts are authoritative
+vehicle entities. Every current wood variant is represented by `BoatVariant`.
+A normal boat has a driver and passenger seat; a chest boat reserves its second
+seat for a durable 27-slot inventory. Item use creates the matching entity and
+only consumes the held item after the spawn commits. Boats float and steer from
+validated player input while their hull remains locked to the top of the loaded
+connected water column. Downward client motion cannot submerge a supported boat.
+Their collision, structural hit feedback, destruction, drops, passengers, and
+storage remain server-owned.
+
+`VehicleControlEvent` runs before driver motion is accepted. Plugins may cancel
+the input or replace its normalized forward, strafe, yaw, and paddle state.
+`VehicleControlledEvent` observes the committed control input. The ordinary
+spawn, interaction, damage, death, mount, dismount, and inventory events also
+apply, so vehicle support does not introduce duplicate lifecycle hooks.
+
 Adult saddled pigs, horses, donkeys, mules, camels, llamas, trader llamas,
 skeleton horses, and zombie horses use the same authoritative passenger
 registry. Horse-family mounts retain owner, temper, saddle, age, and breeding

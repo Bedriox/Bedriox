@@ -35,6 +35,7 @@ final readonly class EntitySpawnRequest
         public float $yaw = 0.0,
         public float $pitch = 0.0,
         public ?string $uniqueId = null,
+        public int|string|null $variant = null,
     ) {
         if ($worldName === '' || strlen($worldName) > 128 || preg_match('//u', $worldName) !== 1) {
             throw new InvalidArgumentException('Spawn world name must be valid UTF-8 and bounded.');
@@ -44,6 +45,9 @@ final readonly class EntitySpawnRequest
             || $position->y < -2_048.0 || $position->y > 2_048.0
             || !is_finite($yaw) || !is_finite($pitch) || $pitch < -90.0 || $pitch > 90.0) {
             throw new InvalidArgumentException('Spawn transform is outside its supported bounds.');
+        }
+        if (is_string($variant) && ($variant === '' || strlen($variant) > 128 || preg_match('//u', $variant) !== 1)) {
+            throw new InvalidArgumentException('Spawn variant must be valid UTF-8 and bounded.');
         }
     }
 }

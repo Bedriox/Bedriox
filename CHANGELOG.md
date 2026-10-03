@@ -1,5 +1,9 @@
 # Changelog
 
+- Add authoritative boats, chest boats, and bamboo rafts with current wood
+  variants, multiplayer seats, paddled steering, authoritative waterline locking,
+  structural damage feedback, durable storage, item placement and drops, and
+  cancellable plugin control events.
 - Add attributed player quit events, configurable leave announcements, and detailed console disconnect logging.
 - Move disposable PHAR extraction and Runtime OPcache files into the current
   user's operating-system cache, with an explicit path override and stale
