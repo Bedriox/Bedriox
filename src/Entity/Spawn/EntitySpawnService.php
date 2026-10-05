@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Spawn;
 
+use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Event\Entity\EntitySpawnedEvent;
 use Bedriox\Api\Event\Entity\EntitySpawnEvent;
 use Bedriox\Server\Entity\EntityDefinition;
@@ -63,7 +64,8 @@ final readonly class EntitySpawnService
         if ($this->chunkLoaded !== null && !($this->chunkLoaded)($request->worldName, $chunkX, $chunkZ)) {
             return EntitySpawnOutcome::failed('chunk_unavailable');
         }
-        if ($this->collisionFree !== null
+        if (self::requiresCollisionClearance($request->cause)
+            && $this->collisionFree !== null
             && !($this->collisionFree)($registration->definition, $request->position)) {
             return EntitySpawnOutcome::failed('collision');
         }
@@ -125,5 +127,23 @@ final readonly class EntitySpawnService
         }
 
         return EntitySpawnOutcome::success($entity);
+    }
+
+    private static function requiresCollisionClearance(SpawnCause $cause): bool
+    {
+        return match ($cause) {
+            SpawnCause::NATURAL,
+            SpawnCause::SPAWNER,
+            SpawnCause::BREEDING,
+            SpawnCause::STRUCTURE,
+            SpawnCause::BUCKET,
+            SpawnCause::EFFECT,
+            SpawnCause::ITEM => true,
+            SpawnCause::SPAWN_EGG,
+            SpawnCause::COMMAND,
+            SpawnCause::PLUGIN,
+            SpawnCause::CHUNK_LOAD,
+            SpawnCause::TRANSFORMATION => false,
+        };
     }
 }

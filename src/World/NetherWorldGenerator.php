@@ -29,7 +29,7 @@ use Bedriox\Server\World\Generation\SeededNoise;
 /** Deterministic bounded cavern terrain and structures for the built-in Nether dimension. */
 final readonly class NetherWorldGenerator implements VersionedWorldGenerator
 {
-    public const int VERSION = 2;
+    public const int VERSION = 3;
     private const int MAXIMUM_Y = 127;
     private const int LAVA_LEVEL = 31;
     private const int SPAWN_SEARCH_CHUNK_RADIUS = 4;
@@ -72,11 +72,12 @@ final readonly class NetherWorldGenerator implements VersionedWorldGenerator
             for ($localZ = 0; $localZ < 16; ++$localZ) {
                 $worldZ = $originZ + $localZ;
                 $columnBiome = $this->biomeAt($worldX, $worldZ);
+                $shelfCenter = 61 + intdiv($this->noise->fractal2d($worldX, $worldZ, 144, 3, 55, 787), 4_096);
                 $biomeColumns[$localX + $localZ * 16] = new Biome($columnBiome);
                 for ($y = 0; $y <= self::MAXIMUM_Y; ++$y) {
                     if ($this->isBedrock($worldX, $y, $worldZ)) {
                         $builder->set($localX, $y, $localZ, $this->blocks->state('minecraft:bedrock'));
-                    } elseif ($this->isNaturalSolid($worldX, $y, $worldZ)) {
+                    } elseif ($this->isNaturalSolid($worldX, $y, $worldZ, $columnBiome, $shelfCenter)) {
                         $builder->set($localX, $y, $localZ, $this->naturalSolidState($worldX, $y, $worldZ));
                     } elseif ($y <= self::LAVA_LEVEL) {
                         $builder->set($localX, $y, $localZ, $this->blocks->state('minecraft:lava'));
@@ -94,6 +95,9 @@ final readonly class NetherWorldGenerator implements VersionedWorldGenerator
         }
 
         $this->decorateVegetation($builder, $position);
+        $this->decorateGroundCover($builder, $position);
+        $this->decorateBasaltColumns($builder, $position);
+        $this->decorateLavaFalls($builder, $position);
         $this->decorateGlowstone($builder, $position);
         $this->decorateStructures($builder, $position);
 
@@ -180,16 +184,34 @@ final readonly class NetherWorldGenerator implements VersionedWorldGenerator
             || ($y > 122 && $this->noise->chance($x, $y, $z, 709, 5) >= self::MAXIMUM_Y - $y);
     }
 
-    private function isNaturalSolid(int $x, int $y, int $z): bool
-    {
+    private function isNaturalSolid(
+        int $x,
+        int $y,
+        int $z,
+        ?string $biome = null,
+        ?int $shelfCenter = null,
+    ): bool {
         if ($y <= 0 || $y >= self::MAXIMUM_Y) {
             return true;
         }
-        $edgePressure = max(0, 25 - min($y, self::MAXIMUM_Y - $y)) * 1_150;
-        $largeCaves = $this->noise->fractal3d($x, $y, $z, 76, 3, 57, 811);
-        $detail = $this->noise->fractal3d($x, $y, $z, 25, 2, 52, 977);
+        $biome ??= $this->biomeAt($x, $z);
+        $shelfCenter ??= 61 + intdiv($this->noise->fractal2d($x, $z, 144, 3, 55, 787), 4_096);
+        $edgePressure = max(0, 27 - min($y, self::MAXIMUM_Y - $y)) * 1_100;
+        $largeCaves = $this->noise->fractal3d($x, $y, $z, 92, 4, 55, 811);
+        $detail = $this->noise->fractal3d($x, $y, $z, 29, 2, 50, 977);
+        $shelfPressure = max(0, 8 - abs($y - $shelfCenter)) * 620;
+        $biomePressure = match ($biome) {
+            'minecraft:basalt_deltas' => 1_350,
+            'minecraft:crimson_forest' => 500,
+            'minecraft:warped_forest' => 150,
+            'minecraft:soulsand_valley' => -1_350,
+            default => 0,
+        };
+        if ($y > 12 && $y < 116 && abs($detail) < 1_150 && $largeCaves < 7_000) {
+            return false;
+        }
 
-        return $largeCaves + intdiv($detail, 3) + $edgePressure > 3_300;
+        return $largeCaves + intdiv($detail, 3) + $edgePressure + $shelfPressure + $biomePressure > 3_100;
     }
 
     private function naturalSolidState(int $x, int $y, int $z): InternalBlockStateId
@@ -216,8 +238,91 @@ final readonly class NetherWorldGenerator implements VersionedWorldGenerator
             ),
             'minecraft:crimson_forest' => $this->blocks->state('minecraft:crimson_nylium'),
             'minecraft:warped_forest' => $this->blocks->state('minecraft:warped_nylium'),
-            default => $this->blocks->state('minecraft:netherrack'),
+            default => $this->blocks->state(match ($this->noise->chance($x, $y, $z, 1_327, 37)) {
+                0 => 'minecraft:magma',
+                1, 2, 3 => 'minecraft:gravel',
+                default => 'minecraft:netherrack',
+            }),
         };
+    }
+
+    private function decorateGroundCover(MutableChunkBuilder $builder, ChunkPosition $position): void
+    {
+        $minimumX = $position->x * 16 - 2;
+        $minimumZ = $position->z * 16 - 2;
+        for ($cellX = self::floorDiv($minimumX, 5); $cellX <= self::floorDiv($minimumX + 19, 5); ++$cellX) {
+            for ($cellZ = self::floorDiv($minimumZ, 5); $cellZ <= self::floorDiv($minimumZ + 19, 5); ++$cellZ) {
+                $x = $cellX * 5 + $this->noise->chance($cellX, 0, $cellZ, 1_371, 5);
+                $z = $cellZ * 5 + $this->noise->chance($cellX, 1, $cellZ, 1_373, 5);
+                $floor = $this->openFloorAt($x, $z);
+                if ($floor === null || $this->noise->chance($x, $floor, $z, 1_379, 3) !== 0) {
+                    continue;
+                }
+                $identifier = match ($this->biomeAt($x, $z)) {
+                    'minecraft:soulsand_valley' => 'minecraft:soul_fire',
+                    'minecraft:crimson_forest' => $this->noise->chance($x, $floor, $z, 1_383, 4) === 0
+                        ? 'minecraft:red_mushroom'
+                        : 'minecraft:crimson_roots',
+                    'minecraft:warped_forest' => $this->noise->chance($x, $floor, $z, 1_389, 4) === 0
+                        ? 'minecraft:brown_mushroom'
+                        : 'minecraft:nether_sprouts',
+                    'minecraft:hell' => 'minecraft:fire',
+                    default => null,
+                };
+                if ($identifier !== null) {
+                    $builder->setWorld($x, $floor + 1, $z, $this->blocks->state($identifier), true);
+                }
+            }
+        }
+    }
+
+    private function decorateBasaltColumns(MutableChunkBuilder $builder, ChunkPosition $position): void
+    {
+        $minimumX = $position->x * 16 - 4;
+        $minimumZ = $position->z * 16 - 4;
+        for ($cellX = self::floorDiv($minimumX, 11); $cellX <= self::floorDiv($minimumX + 23, 11); ++$cellX) {
+            for ($cellZ = self::floorDiv($minimumZ, 11); $cellZ <= self::floorDiv($minimumZ + 23, 11); ++$cellZ) {
+                $x = $cellX * 11 + 2 + $this->noise->chance($cellX, 0, $cellZ, 1_411, 7);
+                $z = $cellZ * 11 + 2 + $this->noise->chance($cellX, 1, $cellZ, 1_419, 7);
+                if ($this->biomeAt($x, $z) !== 'minecraft:basalt_deltas'
+                    || $this->noise->chance($x, 0, $z, 1_421, 3) !== 0) {
+                    continue;
+                }
+                $floor = $this->openFloorAt($x, $z);
+                if ($floor === null) {
+                    continue;
+                }
+                $height = 2 + $this->noise->chance($x, $floor, $z, 1_423, 8);
+                for ($vertical = 1; $vertical <= $height; ++$vertical) {
+                    $builder->setWorld($x, $floor + $vertical, $z, $this->blocks->state('minecraft:basalt'), true);
+                }
+            }
+        }
+    }
+
+    private function decorateLavaFalls(MutableChunkBuilder $builder, ChunkPosition $position): void
+    {
+        if ($this->noise->chance($position->x, 0, $position->z, 1_451, 6) !== 0) {
+            return;
+        }
+        $x = $position->x * 16 + 2 + $this->noise->chance($position->x, 1, $position->z, 1_457, 12);
+        $z = $position->z * 16 + 2 + $this->noise->chance($position->x, 2, $position->z, 1_459, 12);
+        $biome = $this->biomeAt($x, $z);
+        $shelfCenter = 61 + intdiv($this->noise->fractal2d($x, $z, 144, 3, 55, 787), 4_096);
+        for ($y = 116; $y >= 38; --$y) {
+            if ($this->isNaturalSolid($x, $y + 1, $z, $biome, $shelfCenter)
+                && !$this->isNaturalSolid($x, $y, $z, $biome, $shelfCenter)) {
+                $length = 4 + $this->noise->chance($x, $y, $z, 1_463, 10);
+                for ($vertical = 0; $vertical < $length; ++$vertical) {
+                    if ($this->isNaturalSolid($x, $y - $vertical, $z, $biome, $shelfCenter)) {
+                        break;
+                    }
+                    $builder->setWorld($x, $y - $vertical, $z, $this->blocks->state('minecraft:lava'), true);
+                }
+
+                return;
+            }
+        }
     }
 
     private function decorateVegetation(MutableChunkBuilder $builder, ChunkPosition $position): void
@@ -353,8 +458,11 @@ final readonly class NetherWorldGenerator implements VersionedWorldGenerator
 
     private function openFloorAt(int $x, int $z): ?int
     {
+        $biome = $this->biomeAt($x, $z);
+        $shelfCenter = 61 + intdiv($this->noise->fractal2d($x, $z, 144, 3, 55, 787), 4_096);
         for ($y = 112; $y >= 34; --$y) {
-            if ($this->isNaturalSolid($x, $y, $z) && !$this->isNaturalSolid($x, $y + 1, $z)) {
+            if ($this->isNaturalSolid($x, $y, $z, $biome, $shelfCenter)
+                && !$this->isNaturalSolid($x, $y + 1, $z, $biome, $shelfCenter)) {
                 return $y;
             }
         }

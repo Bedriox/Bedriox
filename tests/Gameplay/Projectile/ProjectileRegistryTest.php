@@ -236,6 +236,26 @@ final class ProjectileRegistryTest extends TestCase
         self::assertSame($arrow->ownerUuid, $arrow->tick()->ownerUuid);
     }
 
+    public function testFireballsKeepConstantVelocityAndTypedEntityOwnership(): void
+    {
+        $registry = new ProjectileRegistry(firstEntityId: 2_200);
+        $large = $registry->spawnFireball(
+            '5c8fd1fe-ec31-4bd4-ab14-2c68732d88ea',
+            73,
+            new Position(0.0, 64.0, 0.0),
+            0.0,
+            0.0,
+            1.0,
+            true,
+        );
+
+        self::assertSame(ProjectileType::FIREBALL, $large->type);
+        self::assertSame(ProjectileOwnerType::ENTITY, $large->ownerType);
+        self::assertEquals($large->motion, $large->tick()->motion);
+        self::assertGreaterThan(0.0, $large->damageBonus);
+        self::assertGreaterThan(0, $large->fireTicks);
+    }
+
     public function testProjectileOwnerRequiresAPositiveRuntimeIdentity(): void
     {
         $registry = new ProjectileRegistry();

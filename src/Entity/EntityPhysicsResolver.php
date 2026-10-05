@@ -22,6 +22,9 @@ namespace Bedriox\Server\Entity;
 
 use Bedriox\Api\Entity\Capability\Aquatic;
 use Bedriox\Api\Entity\Capability\Climbing;
+use Bedriox\Server\Entity\Vanilla\Nether\GhastEntity;
+use Bedriox\Server\Entity\Vanilla\Nether\HappyGhastEntity;
+use Bedriox\Server\Entity\Vanilla\Nether\StriderEntity;
 use Bedriox\Server\Entity\Vehicle\BoatEntity;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\Collision\AxisAlignedBox;
@@ -53,23 +56,6 @@ final readonly class EntityPhysicsResolver
         $definition = $entity->definition();
         $beforePosition = $entity->internalPosition();
         $beforeMotion = $entity->getMotion();
-        $inWater = $entity instanceof AbstractLivingEntity
-            && $entity instanceof Aquatic
-            && $this->environment?->isTouchingWater($entity) === true;
-        $boatWaterSurface = $entity instanceof BoatEntity
-            ? $this->environment?->waterSurfaceY($entity)
-            : null;
-        $boatOnWater = $boatWaterSurface !== null;
-        $friction = $inWater || $boatOnWater ? 0.90 : 1.0 - $definition->drag;
-        $gravity = $inWater || $boatOnWater ? 0.0 : ($entity->isGravityEnabled() ? $definition->gravity : 0.0);
-        $vertical = $entity instanceof BoatEntity && $boatWaterSurface !== null
-            ? $entity->waterlineCorrection($boatWaterSurface)
-            : ($beforeMotion->y - $gravity) * $friction;
-        $requested = new EntityMotion(
-            $beforeMotion->x * $friction,
-            max(-$entity->maximumDownwardVelocity(), $vertical),
-            $beforeMotion->z * $friction,
-        );
         $halfWidth = $entity->collisionWidth() / 2.0;
         $box = new AxisAlignedBox(
             $beforePosition->x - $halfWidth,
@@ -78,6 +64,34 @@ final readonly class EntityPhysicsResolver
             $beforePosition->x + $halfWidth,
             $beforePosition->y + $entity->collisionHeight(),
             $beforePosition->z + $halfWidth,
+        );
+        $inWater = $entity instanceof AbstractLivingEntity
+            && $entity instanceof Aquatic
+            && $this->environment?->isTouchingWater($entity) === true;
+        $boatWaterSurface = $entity instanceof BoatEntity
+            ? $this->environment?->waterSurfaceY($entity)
+            : null;
+        $boatOnWater = $boatWaterSurface !== null;
+        $striderLavaSurface = $entity instanceof StriderEntity
+            ? $this->environment?->lavaSurfaceY($entity)
+            : null;
+        $striderOnLava = $striderLavaSurface !== null;
+        $fluidSupported = $inWater || $boatOnWater || $striderOnLava;
+        $friction = $fluidSupported ? 0.90 : 1.0 - $definition->drag;
+        $gravity = $fluidSupported ? 0.0 : ($entity->isGravityEnabled() ? $definition->gravity : 0.0);
+        $vertical = $entity instanceof BoatEntity && $boatWaterSurface !== null
+            ? $entity->waterlineCorrection($boatWaterSurface)
+            : ($striderLavaSurface !== null
+                ? max(-0.08, min(0.08, ($striderLavaSurface - $beforePosition->y) * 0.25))
+                : ($beforeMotion->y - $gravity) * $friction);
+        if (($entity instanceof GhastEntity || $entity instanceof HappyGhastEntity)
+            && $vertical <= 0.0 && $this->hasGroundWithin($box, 5.0)) {
+            $vertical = 0.10;
+        }
+        $requested = new EntityMotion(
+            $beforeMotion->x * $friction,
+            max(-$entity->maximumDownwardVelocity(), $vertical),
+            $beforeMotion->z * $friction,
         );
         $resolved = $this->resolve($box, $requested);
         if ($resolved === null) {
@@ -133,6 +147,21 @@ final readonly class EntityPhysicsResolver
     private static function zeroSmall(float $value): float
     {
         return abs($value) < 0.001 ? 0.0 : $value;
+    }
+
+    private function hasGroundWithin(AxisAlignedBox $box, float $distance): bool
+    {
+        $probe = new AxisAlignedBox(
+            $box->minX,
+            $box->minY - $distance,
+            $box->minZ,
+            $box->maxX,
+            $box->minY,
+            $box->maxZ,
+        );
+        $obstacles = $this->collisions->boxesIntersectingLoaded($probe);
+
+        return $obstacles !== null && $obstacles !== [];
     }
 
     /** @return null|array{float, float, float} */

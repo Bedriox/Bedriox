@@ -32,6 +32,7 @@ final readonly class AiPlayerSnapshot
         public Position $position,
         public bool $damageable = true,
         public ?string $heldItemIdentifier = null,
+        public bool $wearingGoldArmor = false,
     ) {
         if ($playerId === '' || strlen($playerId) > 128 || preg_match('//u', $playerId) !== 1) {
             throw new InvalidArgumentException('AI player identity must be valid UTF-8 and bounded.');

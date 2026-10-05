@@ -22,6 +22,7 @@ namespace Bedriox\Server\Tests\Gameplay\Portal;
 
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Data\CanonicalBlockState;
+use Bedriox\Server\Gameplay\Portal\NetherPortalFrame;
 use Bedriox\Server\Gameplay\Portal\NetherPortalSystem;
 use Bedriox\Server\Gameplay\Portal\PortalAxis;
 use Bedriox\Server\World\Block\BlockStateRegistry;
@@ -130,6 +131,43 @@ final class NetherPortalSystemTest extends TestCase
         }
         self::assertSame('minecraft:air', $states->state($world->blockStateAt(0, 2, 4))->identifier());
         self::assertSame('minecraft:air', $states->state($world->blockStateAt(0, 6, -4))->identifier());
+    }
+
+    public function testNaturalBuildSiteMustConnectToWalkableTerrainBeyondThePortalClearance(): void
+    {
+        [$world, $states, $system] = self::portalWorld();
+        $origin = new BlockPosition(0, 64, 0);
+
+        self::assertTrue($system->isSuitableBuildOrigin($origin, PortalAxis::X));
+
+        $stone = $states->internalId(CanonicalBlockState::from('minecraft:stone'));
+        foreach ([-1, 1] as $direction) {
+            for ($depth = 1; $depth <= 3; ++$depth) {
+                for ($x = 0; $x <= 1; ++$x) {
+                    for ($y = 64; $y <= 66; ++$y) {
+                        $world->setBlockState($x, $y, $depth * $direction, $stone);
+                    }
+                }
+            }
+        }
+
+        self::assertFalse($system->isSuitableBuildOrigin($origin, PortalAxis::X));
+    }
+
+    public function testPortalArrivalChoosesTheOpenSide(): void
+    {
+        [$world, $states, $system] = self::portalWorld();
+        $origin = new BlockPosition(0, 64, 0);
+        $stone = $states->internalId(CanonicalBlockState::from('minecraft:stone'));
+        for ($x = 0; $x <= 1; ++$x) {
+            for ($y = 64; $y <= 66; ++$y) {
+                $world->setBlockState($x, $y, 2, $stone);
+            }
+        }
+
+        self::assertSame(-1, $system->preferredArrivalDirection(
+            new NetherPortalFrame($origin, 2, 3, PortalAxis::X),
+        ));
     }
 
     public function testPortalStatesArePassableSoPlayersCanEnterThePortalPlane(): void

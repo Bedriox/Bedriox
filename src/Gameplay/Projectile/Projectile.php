@@ -349,6 +349,45 @@ final readonly class Projectile
         );
     }
 
+    public function reflectedBy(string $ownerUuid, int $ownerRuntimeEntityId, EntityMotion $motion): self
+    {
+        return new self(
+            $this->uniqueEntityId,
+            $this->runtimeEntityId,
+            $ownerUuid,
+            $this->potionType,
+            $this->lingering,
+            $this->position,
+            $motion,
+            $this->ageTicks,
+            $this->tippedArrow,
+            $this->pickupAllowed,
+            $this->damageBonus,
+            $this->knockbackStrength,
+            $this->fireTicks,
+            $this->type,
+            $this->piercingRemaining,
+            [],
+            $this->loyaltyLevel,
+            $this->channeling,
+            $this->carriedItem,
+            $ownerRuntimeEntityId,
+            ProjectileOwnerType::PLAYER,
+            false,
+            0,
+            0,
+            0,
+            0,
+            ProjectileState::FLYING,
+            self::rotation($motion)[1],
+            self::rotation($motion)[0],
+            null,
+            null,
+            0,
+            $this->pickupMode,
+        );
+    }
+
     public function afterPiercing(string $actorKey): self
     {
         if ($this->piercingRemaining < 1 || in_array($actorKey, $this->hitActorKeys, true)) {

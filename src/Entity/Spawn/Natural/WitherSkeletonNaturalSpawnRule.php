@@ -20,11 +20,14 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Spawn\Natural;
 
-/** Fortress-only spawning remains closed until spawn candidates carry validated structure ownership. */
+use Bedriox\Api\World\WorldDimension;
+
 final readonly class WitherSkeletonNaturalSpawnRule implements NaturalSpawnRule
 {
     public function allows(NaturalSpawnContext $context): bool
     {
-        return false;
+        return $context->dimension === WorldDimension::NETHER
+            && $context->medium === NaturalSpawnMedium::GROUND
+            && $context->supportBlock === 'minecraft:nether_brick';
     }
 }

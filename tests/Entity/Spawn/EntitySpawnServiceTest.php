@@ -134,4 +134,37 @@ final class EntitySpawnServiceTest extends TestCase
         self::assertSame(['lifecycle'], $order);
         self::assertSame(0, $registry->count());
     }
+
+    public function testExplicitSpawnsMayUseAnExactCollidingPositionWhileNaturalSpawnsMayNot(): void
+    {
+        $registry = new EntityRegistry();
+        $service = new EntitySpawnService(
+            $registry,
+            EntityDefinitionRegistry::baseline(),
+            collisionFree: static fn(): bool => false,
+        );
+
+        $command = $service->spawn(new EntitySpawnRequest(
+            VanillaEntityType::COW,
+            SpawnCause::COMMAND,
+            'world',
+            new Position(1.5, 64.0, 1.5),
+        ));
+        $spawnEgg = $service->spawn(new EntitySpawnRequest(
+            VanillaEntityType::COW,
+            SpawnCause::SPAWN_EGG,
+            'world',
+            new Position(1.5, 64.0, 1.5),
+        ));
+        $natural = $service->spawn(new EntitySpawnRequest(
+            VanillaEntityType::COW,
+            SpawnCause::NATURAL,
+            'world',
+            new Position(1.5, 64.0, 1.5),
+        ));
+
+        self::assertTrue($command->succeeded());
+        self::assertTrue($spawnEgg->succeeded());
+        self::assertSame('collision', $natural->failure);
+    }
 }

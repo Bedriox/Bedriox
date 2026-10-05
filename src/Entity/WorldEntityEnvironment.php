@@ -135,6 +135,16 @@ final readonly class WorldEntityEnvironment
 
     public function waterSurfaceY(AbstractEntity $entity): ?float
     {
+        return $this->fluidSurfaceY($entity, FluidType::WATER);
+    }
+
+    public function lavaSurfaceY(AbstractEntity $entity): ?float
+    {
+        return $this->fluidSurfaceY($entity, FluidType::LAVA);
+    }
+
+    private function fluidSurfaceY(AbstractEntity $entity, FluidType $type): ?float
+    {
         if ($entity->getWorldName() !== $this->world->metadata->name) {
             return null;
         }
@@ -164,10 +174,10 @@ final readonly class WorldEntityEnvironment
                     continue;
                 }
                 $fluid = FluidState::fromCanonical($this->states->state($state));
-                if ($fluid?->type === FluidType::WATER) {
+                if ($fluid?->type === $type) {
                     $surface = max(
                         $surface ?? -INF,
-                        $this->connectedWaterSurfaceY($blockX, $y, $blockZ, $fluid),
+                        $this->connectedFluidSurfaceY($blockX, $y, $blockZ, $fluid, $type),
                     );
                     break;
                 }
@@ -177,17 +187,22 @@ final readonly class WorldEntityEnvironment
         return $surface;
     }
 
-    private function connectedWaterSurfaceY(int $x, int $waterY, int $z, FluidState $water): float
-    {
-        $surface = $waterY + $water->height();
-        $maximumY = min(Chunk::MAX_Y, $waterY + self::MAXIMUM_WATER_COLUMN_SCAN);
-        for ($y = $waterY + 1; $y <= $maximumY; ++$y) {
+    private function connectedFluidSurfaceY(
+        int $x,
+        int $fluidY,
+        int $z,
+        FluidState $fluidState,
+        FluidType $type,
+    ): float {
+        $surface = $fluidY + $fluidState->height();
+        $maximumY = min(Chunk::MAX_Y, $fluidY + self::MAXIMUM_WATER_COLUMN_SCAN);
+        for ($y = $fluidY + 1; $y <= $maximumY; ++$y) {
             $state = $this->world->loadedBlockStateAt($x, $y, $z);
             if ($state === null) {
                 break;
             }
             $fluid = FluidState::fromCanonical($this->states->state($state));
-            if ($fluid?->type !== FluidType::WATER) {
+            if ($fluid?->type !== $type) {
                 break;
             }
             $surface = $y + $fluid->height();

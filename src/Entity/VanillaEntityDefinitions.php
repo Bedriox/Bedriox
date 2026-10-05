@@ -41,6 +41,7 @@ use Bedriox\Server\Entity\Vanilla\GlowSquidEntity;
 use Bedriox\Server\Entity\Vanilla\GuardianEntity;
 use Bedriox\Server\Entity\Vanilla\HuskEntity;
 use Bedriox\Server\Entity\Vanilla\MagmaCubeEntity;
+use Bedriox\Server\Entity\Vanilla\Nether\NetherEntityRegistrations;
 use Bedriox\Server\Entity\Vanilla\ParchedEntity;
 use Bedriox\Server\Entity\Vanilla\PigEntity;
 use Bedriox\Server\Entity\Vanilla\PufferfishEntity;
@@ -78,6 +79,9 @@ final class VanillaEntityDefinitions
 
     /** @var array<string, EntityDefinition> */
     private static array $aquatic = [];
+
+    /** @var array<string, EntityDefinition> */
+    private static array $passive = [];
 
     public static function cow(): EntityDefinition
     {
@@ -236,6 +240,51 @@ final class VanillaEntityDefinitions
         return self::hostile(VanillaEntityType::MAGMA_CUBE, $width, $height, (float) $health, key: 'magma_cube:' . $size->value);
     }
 
+    public static function blaze(): EntityDefinition
+    {
+        return self::flyingHostile(VanillaEntityType::BLAZE, 0.6, 1.8, 20.0);
+    }
+
+    public static function ghast(): EntityDefinition
+    {
+        return self::flyingHostile(VanillaEntityType::GHAST, 4.0, 4.0, 10.0);
+    }
+
+    public static function happyGhast(): EntityDefinition
+    {
+        return self::$passive[VanillaEntityType::HAPPY_GHAST->value] ??= new EntityDefinition(VanillaEntityType::HAPPY_GHAST, EntityCategory::ANIMAL, VanillaEntityType::HAPPY_GHAST->value, 4.0, 4.0, 20.0, gravity: 0.0, drag: 0.05);
+    }
+
+    public static function hoglin(): EntityDefinition
+    {
+        return self::hostile(VanillaEntityType::HOGLIN, 1.4, 1.4, 40.0);
+    }
+
+    public static function piglin(): EntityDefinition
+    {
+        return self::hostile(VanillaEntityType::PIGLIN, 0.6, 1.9, 16.0);
+    }
+
+    public static function piglinBrute(): EntityDefinition
+    {
+        return self::hostile(VanillaEntityType::PIGLIN_BRUTE, 0.6, 1.9, 50.0);
+    }
+
+    public static function strider(): EntityDefinition
+    {
+        return self::$passive[VanillaEntityType::STRIDER->value] ??= new EntityDefinition(VanillaEntityType::STRIDER, EntityCategory::ANIMAL, VanillaEntityType::STRIDER->value, 0.9, 1.7, 20.0);
+    }
+
+    public static function zoglin(): EntityDefinition
+    {
+        return self::hostile(VanillaEntityType::ZOGLIN, 1.4, 1.4, 40.0);
+    }
+
+    public static function zombifiedPiglin(): EntityDefinition
+    {
+        return self::hostile(VanillaEntityType::ZOMBIFIED_PIGLIN, 0.6, 1.95, 20.0);
+    }
+
     public static function cod(): EntityDefinition
     {
         return self::aquatic(VanillaEntityType::COD, 0.5, 0.3, 3.0);
@@ -299,6 +348,20 @@ final class VanillaEntityDefinitions
     {
         $key ??= $type->value;
         return self::$hostiles[$key] ??= new EntityDefinition($type, EntityCategory::MONSTER, $type->value, $width, $height, $health, burnsInDaylight: $burnsInDaylight);
+    }
+
+    private static function flyingHostile(VanillaEntityType $type, float $width, float $height, float $health): EntityDefinition
+    {
+        return self::$hostiles[$type->value] ??= new EntityDefinition(
+            $type,
+            EntityCategory::MONSTER,
+            $type->value,
+            $width,
+            $height,
+            $health,
+            gravity: 0.0,
+            drag: 0.05,
+        );
     }
 
     /** @return list<RegisteredEntityDefinition> */
@@ -429,6 +492,7 @@ final class VanillaEntityDefinitions
             new RegisteredEntityDefinition(self::drowned(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): DrownedEntity => new DrownedEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
             new RegisteredEntityDefinition(self::guardian(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): GuardianEntity => new GuardianEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
             ...ExpandedLandEntityRegistrations::all(),
+            ...NetherEntityRegistrations::all(),
         ];
     }
 

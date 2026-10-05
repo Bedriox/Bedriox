@@ -20,4 +20,6 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\Entity\Vanilla;
 
-interface MagmaCube extends Slime {}
+use Bedriox\Api\Entity\Capability\FireImmune;
+
+interface MagmaCube extends FireImmune, Slime {}

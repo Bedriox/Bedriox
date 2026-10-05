@@ -189,6 +189,50 @@ final class ProjectileRegistry
         return $projectile;
     }
 
+    public function spawnFireball(
+        string $ownerUuid,
+        int $ownerRuntimeEntityId,
+        Position $position,
+        float $yaw,
+        float $pitch,
+        float $speed,
+        bool $large,
+    ): Projectile {
+        if (!is_finite($speed) || $speed < 0.1 || $speed > 2.0
+            || count($this->projectiles) >= $this->capacity || $this->nextEntityId >= PHP_INT_MAX) {
+            throw new InvalidArgumentException('Fireball projectile input is invalid or the registry is exhausted.');
+        }
+        $yawRadians = deg2rad($yaw);
+        $pitchRadians = deg2rad($pitch);
+        $horizontal = cos($pitchRadians);
+        $id = $this->nextEntityId++;
+        $projectile = new Projectile(
+            $id,
+            $id,
+            $ownerUuid,
+            PotionType::WATER,
+            false,
+            $position,
+            new EntityMotion(
+                -sin($yawRadians) * $horizontal * $speed,
+                -sin($pitchRadians) * $speed,
+                cos($yawRadians) * $horizontal * $speed,
+            ),
+            pickupAllowed: false,
+            damageBonus: $large ? 6.0 : 5.0,
+            knockbackStrength: $large ? 0.7 : 0.4,
+            fireTicks: $large ? 100 : 60,
+            type: $large ? ProjectileType::FIREBALL : ProjectileType::SMALL_FIREBALL,
+            ownerRuntimeEntityId: $ownerRuntimeEntityId,
+            ownerType: ProjectileOwnerType::ENTITY,
+            yaw: $yaw,
+            pitch: $pitch,
+        );
+        $this->projectiles[$id] = $projectile;
+
+        return $projectile;
+    }
+
     public function spawnTrident(
         string $ownerUuid,
         int $ownerRuntimeEntityId,

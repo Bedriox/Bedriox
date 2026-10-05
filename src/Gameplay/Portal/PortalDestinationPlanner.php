@@ -30,7 +30,6 @@ final class PortalDestinationPlanner
     public const int NETHER_SEARCH_RADIUS = 16;
     public const int OVERWORLD_SEARCH_RADIUS = 128;
     public const int BUILD_HORIZONTAL_RADIUS = 16;
-    public const int BUILD_VERTICAL_RADIUS = 16;
     public const int MAXIMUM_INDEXED_PORTALS = 4_096;
 
     public function plan(
@@ -93,13 +92,19 @@ final class PortalDestinationPlanner
     public function buildOrigin(PortalDestinationPlan $plan, callable $isSuitable): ?BlockPosition
     {
         $centerX = (int) floor($plan->projectedPosition->x);
-        $centerY = max(-62, min(309, (int) floor($plan->projectedPosition->y)));
+        $minimumY = $plan->targetDimension === WorldDimension::NETHER ? 3 : -60;
+        $maximumY = $plan->targetDimension === WorldDimension::NETHER ? 122 : 315;
+        $centerY = max($minimumY, min($maximumY, (int) floor($plan->projectedPosition->y)));
         $centerZ = (int) floor($plan->projectedPosition->z);
         for ($radius = 0; $radius <= self::BUILD_HORIZONTAL_RADIUS; ++$radius) {
             foreach ($this->ring($centerX, $centerZ, $radius) as [$x, $z]) {
-                for ($offset = 0; $offset <= self::BUILD_VERTICAL_RADIUS; ++$offset) {
-                    foreach ($offset === 0 ? [0] : [$offset, -$offset] as $vertical) {
-                        $candidate = new BlockPosition($x, $centerY + $vertical, $z);
+                $maximumOffset = max($maximumY - $centerY, $centerY - $minimumY);
+                for ($offset = 0; $offset <= $maximumOffset; ++$offset) {
+                    foreach ($offset === 0 ? [$centerY] : [$centerY + $offset, $centerY - $offset] as $y) {
+                        if ($y < $minimumY || $y > $maximumY) {
+                            continue;
+                        }
+                        $candidate = new BlockPosition($x, $y, $z);
                         if ($isSuitable($candidate, $plan->preferredAxis)) {
                             return $candidate;
                         }
@@ -115,7 +120,7 @@ final class PortalDestinationPlanner
     public function fallbackBuildOrigin(PortalDestinationPlan $plan): BlockPosition
     {
         $minimumY = $plan->targetDimension === WorldDimension::NETHER ? 3 : -60;
-        $maximumY = $plan->targetDimension === WorldDimension::NETHER ? 123 : 315;
+        $maximumY = $plan->targetDimension === WorldDimension::NETHER ? 122 : 315;
 
         return new BlockPosition(
             (int) floor($plan->projectedPosition->x),

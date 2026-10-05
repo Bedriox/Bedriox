@@ -29,7 +29,7 @@ use Bedriox\Server\World\Generation\SeededNoise;
 /** Deterministic bounded island, landmark, and structure terrain for the built-in End dimension. */
 final readonly class EndWorldGenerator implements VersionedWorldGenerator
 {
-    public const int VERSION = 2;
+    public const int VERSION = 3;
     private const int CITY_REGION = 512;
     private const int CITY_RADIUS = 42;
 

@@ -1,5 +1,11 @@
 # Changelog
 
+- Place Happy Ghast riders in distinct harness seats above the actor, prevent
+  duplicate portal transfers, land players outside destination portal blocks,
+  and prefer portal sites connected to traversable terrain.
+- Expand deterministic Nether terrain with larger cavern shaping, winding
+  tunnels, shelves, biome-specific density, surface patches, ground cover,
+  basalt columns, lava falls, and safer fallback portal exits.
 - Model every named world as one provider-backed Overworld, Nether, and End
   family with dimension-isolated chunks, entities, simulation, streaming, and
   durable player locations.

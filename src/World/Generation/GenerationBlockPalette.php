@@ -131,7 +131,7 @@ final readonly class GenerationBlockPalette
             'minecraft:weeping_vines', 'minecraft:twisting_vines', 'minecraft:end_stone',
             'minecraft:chorus_plant', 'minecraft:chorus_flower', 'minecraft:purpur_block',
             'minecraft:purpur_pillar', 'minecraft:end_portal',
-            'minecraft:rail', 'minecraft:bookshelf', 'minecraft:torch',
+            'minecraft:rail', 'minecraft:bookshelf', 'minecraft:torch', 'minecraft:fire', 'minecraft:soul_fire',
         ];
         $resolved = [];
         $pillarStates = [];

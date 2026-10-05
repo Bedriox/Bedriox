@@ -461,6 +461,47 @@ final class EntityWorldRuntimeTest extends TestCase
         self::assertGreaterThan(5.0, $spawn->entity->internalPosition()->x);
     }
 
+    public function testGhastRecoversAltitudeBeforeReachingNearbyGround(): void
+    {
+        $floor = new AxisAlignedBox(-100.0, 60.0, -100.0, 100.0, 61.0, 100.0);
+        $registry = new EntityRegistry();
+        $runtime = new EntityWorldRuntime(
+            $registry,
+            new EntitySpawnService($registry, EntityDefinitionRegistry::baseline()),
+            new EntityPhysicsResolver(new class ($floor) implements LoadedCollisionBoxQuery {
+                public function __construct(private readonly AxisAlignedBox $floor) {}
+
+                public function boxesIntersecting(AxisAlignedBox $area): array
+                {
+                    return $this->boxesIntersectingLoaded($area);
+                }
+
+                public function hasCollision(AxisAlignedBox $area): bool
+                {
+                    return $this->boxesIntersectingLoaded($area) !== [];
+                }
+
+                public function boxesIntersectingLoaded(AxisAlignedBox $area): array
+                {
+                    return $this->floor->intersects($area) ? [$this->floor] : [];
+                }
+            }),
+        );
+        $spawn = $runtime->spawn(new EntitySpawnRequest(
+            VanillaEntityType::GHAST,
+            SpawnCause::COMMAND,
+            'nether',
+            new Position(0.0, 64.0, 0.0),
+        ));
+        self::assertInstanceOf(AbstractMobEntity::class, $spawn->entity);
+        $spawn->entity->setMotion(new EntityMotion(0.0, -0.2, 0.0));
+
+        $runtime->tick(1, self::emptyAiWorld(), false);
+
+        self::assertGreaterThan(64.0, $spawn->entity->internalPosition()->y);
+        self::assertGreaterThan(0.0, $spawn->entity->getMotion()->y);
+    }
+
     /** @return array{EntityWorldRuntime, AbstractMobEntity} */
     private static function obstacleRuntime(
         AxisAlignedBox $obstacle,

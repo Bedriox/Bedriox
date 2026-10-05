@@ -24,6 +24,7 @@ enum EntityTargetReason: string
 {
     case CLOSEST_PLAYER = 'closest_player';
     case RETALIATION = 'retaliation';
+    case GROUP_PROVOCATION = 'group_provocation';
     case PLUGIN = 'plugin';
     case FORGOT_TARGET = 'forgot_target';
 }

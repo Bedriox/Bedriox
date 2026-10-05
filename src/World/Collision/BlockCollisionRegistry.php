@@ -172,6 +172,8 @@ final readonly class BlockCollisionRegistry
             'minecraft:seagrass',
             'minecraft:rail',
             'minecraft:torch',
+            'minecraft:fire',
+            'minecraft:soul_fire',
             'minecraft:crimson_roots',
             'minecraft:warped_roots',
             'minecraft:nether_sprouts',

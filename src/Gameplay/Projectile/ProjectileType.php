@@ -28,19 +28,26 @@ enum ProjectileType: string
     case ARROW = 'minecraft:arrow';
     case TRIDENT = 'minecraft:thrown_trident';
     case FISHING_HOOK = 'minecraft:fishing_hook';
+    case SMALL_FIREBALL = 'minecraft:small_fireball';
+    case FIREBALL = 'minecraft:fireball';
 
     public function gravity(): float
     {
         return match ($this) {
             self::TRIDENT => 0.1,
             self::FISHING_HOOK => 0.03,
+            self::SMALL_FIREBALL, self::FIREBALL => 0.0,
             default => 0.05,
         };
     }
 
     public function drag(): float
     {
-        return $this === self::FISHING_HOOK ? 0.08 : 0.01;
+        return match ($this) {
+            self::FISHING_HOOK => 0.08,
+            self::SMALL_FIREBALL, self::FIREBALL => 0.0,
+            default => 0.01,
+        };
     }
 
     public function isPotion(): bool

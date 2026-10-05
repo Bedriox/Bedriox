@@ -81,6 +81,8 @@ use Bedriox\Api\Event\Entity\EntityInteractedEvent;
 use Bedriox\Api\Event\Entity\EntityInteractEvent;
 use Bedriox\Api\Event\Entity\EntityMountedEvent;
 use Bedriox\Api\Event\Entity\EntityMountEvent;
+use Bedriox\Api\Event\Entity\EntityPickedUpItemEvent;
+use Bedriox\Api\Event\Entity\EntityPickupItemEvent;
 use Bedriox\Api\Event\Entity\EntityShearedEvent;
 use Bedriox\Api\Event\Entity\EntityShearEvent;
 use Bedriox\Api\Event\Entity\EntitySpawnedEvent;
@@ -94,12 +96,16 @@ use Bedriox\Api\Event\Entity\EntityTransformedEvent;
 use Bedriox\Api\Event\Entity\EntityTransformEvent;
 use Bedriox\Api\Event\Entity\ExperienceOrbSpawnedEvent;
 use Bedriox\Api\Event\Entity\ExperienceOrbSpawnEvent;
+use Bedriox\Api\Event\Entity\PiglinBarteredEvent;
+use Bedriox\Api\Event\Entity\PiglinBarterEvent;
 use Bedriox\Api\Event\Entity\PotionProjectileImpactedEvent;
 use Bedriox\Api\Event\Entity\PotionProjectileImpactEvent;
 use Bedriox\Api\Event\Entity\ProjectileImpactedEvent;
 use Bedriox\Api\Event\Entity\ProjectileImpactEvent;
 use Bedriox\Api\Event\Entity\ProjectileLaunchedEvent;
 use Bedriox\Api\Event\Entity\ProjectileLaunchEvent;
+use Bedriox\Api\Event\Entity\ProjectileReflectedEvent;
+use Bedriox\Api\Event\Entity\ProjectileReflectEvent;
 use Bedriox\Api\Event\Event;
 use Bedriox\Api\Event\Inventory\InventoryChangedEvent;
 use Bedriox\Api\Event\Inventory\InventoryChangeEvent;
@@ -1522,6 +1528,121 @@ final readonly class PluginGameplayEventBridge
         $this->events->dispatch(new PlayerPickedUpItemEvent(
             $this->playerView($player),
             new ApiItemStack($stack->identifier, $stack->count, $stack->damage, $stack->nbt, $stack->auxValue),
+        ));
+    }
+
+    public function projectileReflect(
+        Player $player,
+        int $runtimeId,
+        string $identifier,
+        \Bedriox\Server\Entity\EntityMotion $motion,
+    ): ?\Bedriox\Server\Entity\EntityMotion {
+        $event = new ProjectileReflectEvent(
+            $this->playerView($player),
+            $runtimeId,
+            $identifier,
+            new Vector3($motion->x, $motion->y, $motion->z),
+        );
+        $this->events->dispatch($event);
+        if ($event->isCancelled()) {
+            return null;
+        }
+        $reflected = $event->motion();
+
+        return new \Bedriox\Server\Entity\EntityMotion($reflected->x, $reflected->y, $reflected->z);
+    }
+
+    public function projectileReflected(
+        Player $player,
+        int $runtimeId,
+        string $identifier,
+        \Bedriox\Server\Entity\EntityMotion $motion,
+    ): void {
+        $this->events->dispatch(new ProjectileReflectedEvent(
+            $this->playerView($player),
+            $runtimeId,
+            $identifier,
+            new Vector3($motion->x, $motion->y, $motion->z),
+        ));
+    }
+
+    public function entityPickupItem(ApiLivingEntity $entity, InventoryStack $stack): ?int
+    {
+        $event = new EntityPickupItemEvent(
+            $entity,
+            new ApiItemStack($stack->identifier, $stack->count, $stack->damage, $stack->nbt, $stack->auxValue),
+            $stack->count,
+        );
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->count();
+    }
+
+    public function entityPickedUpItem(ApiLivingEntity $entity, InventoryStack $stack): void
+    {
+        $this->events->dispatch(new EntityPickedUpItemEvent(
+            $entity,
+            new ApiItemStack($stack->identifier, $stack->count, $stack->damage, $stack->nbt, $stack->auxValue),
+        ));
+    }
+
+    /**
+     * @param list<InventoryStack> $outputs
+     * @return null|list<InventoryStack>
+     */
+    public function piglinBarter(\Bedriox\Api\Entity\Vanilla\Piglin $piglin, InventoryStack $payment, array $outputs): ?array
+    {
+        $apiPayment = new ApiItemStack(
+            $payment->identifier,
+            $payment->count,
+            $payment->damage,
+            $payment->nbt,
+            $payment->auxValue,
+        );
+        $event = new PiglinBarterEvent($piglin, $apiPayment, array_map(
+            static fn(InventoryStack $stack): ApiItemStack => new ApiItemStack(
+                $stack->identifier,
+                $stack->count,
+                $stack->damage,
+                $stack->nbt,
+                $stack->auxValue,
+            ),
+            $outputs,
+        ));
+        $this->events->dispatch($event);
+        if ($event->isCancelled()) {
+            return null;
+        }
+
+        return array_map(
+            static fn(ApiItemStack $stack): InventoryStack => new InventoryStack(
+                $stack->identifier,
+                $stack->count,
+                stackNetworkId: 1,
+                damage: $stack->damage,
+                nbt: $stack->nbt,
+                auxValue: $stack->auxValue,
+            ),
+            $event->outputs(),
+        );
+    }
+
+    /** @param list<InventoryStack> $outputs */
+    public function piglinBartered(\Bedriox\Api\Entity\Vanilla\Piglin $piglin, InventoryStack $payment, array $outputs): void
+    {
+        $this->events->dispatch(new PiglinBarteredEvent(
+            $piglin,
+            new ApiItemStack($payment->identifier, $payment->count, $payment->damage, $payment->nbt, $payment->auxValue),
+            array_map(
+                static fn(InventoryStack $stack): ApiItemStack => new ApiItemStack(
+                    $stack->identifier,
+                    $stack->count,
+                    $stack->damage,
+                    $stack->nbt,
+                    $stack->auxValue,
+                ),
+                $outputs,
+            ),
         ));
     }
 

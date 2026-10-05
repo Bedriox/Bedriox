@@ -387,9 +387,9 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             $metadata = $this->playerMetadata($event->passenger);
             $metadata[] = ActorMetadata::vector3(
                 56,
-                0.0,
-                $event instanceof ActorMounted ? $event->seatOffsetY : 0.0,
-                0.0,
+                $event instanceof ActorMounted ? $event->seatOffset->x : 0.0,
+                $event instanceof ActorMounted ? $event->seatOffset->y : 0.0,
+                $event instanceof ActorMounted ? $event->seatOffset->z : 0.0,
             );
             usort($metadata, static fn(ActorMetadata $left, ActorMetadata $right): int => $left->id <=> $right->id);
             $actorData = new SetActorDataPacket(
@@ -2572,11 +2572,13 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
                 $packets[] = new DirectedPacket($recipient, new RemoveActorPacket($event->itemRuntimeActorId));
             }
         }
-        $inventory = $this->requireInventoryProjector();
-        $packets[] = new DirectedPacket($event->collectorSessionId, new InventoryContentPacket(
-            0,
-            array_map($inventory->toProtocol(...), $event->mainInventory),
-        ));
+        if ($event->collectorSessionId !== null) {
+            $inventory = $this->requireInventoryProjector();
+            $packets[] = new DirectedPacket($event->collectorSessionId, new InventoryContentPacket(
+                0,
+                array_map($inventory->toProtocol(...), $event->mainInventory),
+            ));
+        }
 
         return $packets;
     }

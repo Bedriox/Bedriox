@@ -170,6 +170,9 @@ final class NaturalSpawner
                 $this->environment->lightLevel($worldName, $position),
                 $playerDistance,
                 $worldSpawnDistance,
+                $this->environment instanceof WorldNaturalSpawnEnvironment
+                    ? $this->environment->supportBlock($worldName, $position)
+                    : null,
             );
             if (!$entry->rule->allows($context)) {
                 continue;

@@ -46,6 +46,15 @@ enum VanillaEntityType: string implements VanillaEntityIdentity
     case CREEPER = 'minecraft:creeper';
     case SLIME = 'minecraft:slime';
     case MAGMA_CUBE = 'minecraft:magma_cube';
+    case BLAZE = 'minecraft:blaze';
+    case GHAST = 'minecraft:ghast';
+    case HAPPY_GHAST = 'minecraft:happy_ghast';
+    case HOGLIN = 'minecraft:hoglin';
+    case PIGLIN = 'minecraft:piglin';
+    case PIGLIN_BRUTE = 'minecraft:piglin_brute';
+    case STRIDER = 'minecraft:strider';
+    case ZOGLIN = 'minecraft:zoglin';
+    case ZOMBIFIED_PIGLIN = 'minecraft:zombie_pigman';
     case ENDERMAN = 'minecraft:enderman';
     case ENDERMITE = 'minecraft:endermite';
     case SILVERFISH = 'minecraft:silverfish';

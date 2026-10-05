@@ -36,6 +36,9 @@ final class NetherPortalSystem
     private const int BUILD_CLEARANCE_HORIZONTAL_MAXIMUM = 3;
     private const int BUILD_CLEARANCE_DEPTH = 4;
     private const int BUILD_CLEARANCE_HEIGHT = 4;
+    private const int FALLBACK_EXIT_SEARCH_RADIUS = 16;
+    private const int NATURAL_LANDING_DEPTH = 3;
+    private const int FALLBACK_EXIT_VERTICAL_RADIUS = 11;
 
     private readonly InternalBlockStateId $air;
     private readonly InternalBlockStateId $obsidian;
@@ -138,6 +141,38 @@ final class NetherPortalSystem
             }
         }
 
+        $exit = $this->nearestOpenColumn($origin, $axis);
+        if ($exit !== null) {
+            $positiveStart = new BlockPosition(
+                $origin->x + ($perpendicularX * (self::BUILD_CLEARANCE_DEPTH + 1)),
+                $origin->y,
+                $origin->z + ($perpendicularZ * (self::BUILD_CLEARANCE_DEPTH + 1)),
+            );
+            $negativeStart = new BlockPosition(
+                $origin->x - ($perpendicularX * (self::BUILD_CLEARANCE_DEPTH + 1)),
+                $origin->y,
+                $origin->z - ($perpendicularZ * (self::BUILD_CLEARANCE_DEPTH + 1)),
+            );
+            $start = $this->horizontalDistance($positiveStart, $exit)
+                <= $this->horizontalDistance($negativeStart, $exit)
+                ? $positiveStart
+                : $negativeStart;
+            $cursorX = $start->x;
+            $cursorY = $start->y;
+            $cursorZ = $start->z;
+            $this->carveFallbackColumn($mutations, $cursorX, $cursorY, $cursorZ);
+            while ($cursorX !== $exit->x) {
+                $cursorX += $cursorX < $exit->x ? 1 : -1;
+                $cursorY = $this->stepToward($cursorY, $exit->y);
+                $this->carveFallbackColumn($mutations, $cursorX, $cursorY, $cursorZ);
+            }
+            while ($cursorZ !== $exit->z) {
+                $cursorZ += $cursorZ < $exit->z ? 1 : -1;
+                $cursorY = $this->stepToward($cursorY, $exit->y);
+                $this->carveFallbackColumn($mutations, $cursorX, $cursorY, $cursorZ);
+            }
+        }
+
         return $mutations;
     }
 
@@ -147,26 +182,167 @@ final class NetherPortalSystem
         $dz = $axis->stepZ();
         $perpendicularX = $dz;
         $perpendicularZ = $dx;
-        for ($horizontal = self::BUILD_CLEARANCE_HORIZONTAL_MINIMUM;
-            $horizontal <= self::BUILD_CLEARANCE_HORIZONTAL_MAXIMUM;
-            ++$horizontal) {
-            for ($depth = -self::BUILD_CLEARANCE_DEPTH; $depth <= self::BUILD_CLEARANCE_DEPTH; ++$depth) {
-                $floorX = $origin->x + ($dx * $horizontal) + ($perpendicularX * $depth);
-                $floorZ = $origin->z + ($dz * $horizontal) + ($perpendicularZ * $depth);
-                $floor = $this->identifierAt($floorX, $origin->y - 1, $floorZ);
-                if ($floor === 'minecraft:air' || $this->isFluid($floor)) {
+        if (!$this->isReplaceable($this->identifierAt($origin->x, $origin->y, $origin->z))) {
+            return false;
+        }
+        $originFloor = $this->identifierAt($origin->x, $origin->y - 1, $origin->z);
+        if ($originFloor === 'minecraft:air' || $this->isFluid($originFloor)) {
+            return false;
+        }
+
+        for ($horizontal = 0; $horizontal <= 1; ++$horizontal) {
+            $x = $origin->x + ($dx * $horizontal);
+            $z = $origin->z + ($dz * $horizontal);
+            $floor = $this->identifierAt($x, $origin->y - 1, $z);
+            if ($floor === 'minecraft:air' || $this->isFluid($floor)) {
+                return false;
+            }
+            for ($vertical = 0; $vertical <= 2; ++$vertical) {
+                if (!$this->isReplaceable($this->identifierAt($x, $origin->y + $vertical, $z))) {
                     return false;
                 }
-                for ($vertical = 0; $vertical <= self::BUILD_CLEARANCE_HEIGHT; ++$vertical) {
-                    $identifier = $this->identifierAt($floorX, $origin->y + $vertical, $floorZ);
-                    if (!$this->isReplaceable($identifier)) {
-                        return false;
+            }
+        }
+
+        return $this->hasWalkableExit($origin, $axis);
+    }
+
+    private function hasWalkableExit(BlockPosition $origin, PortalAxis $axis): bool
+    {
+        $dx = $axis->stepX();
+        $dz = $axis->stepZ();
+        $perpendicularX = $dz;
+        $perpendicularZ = $dx;
+        foreach ([-1, 1] as $direction) {
+            $walkable = true;
+            for ($depth = 1; $depth <= self::NATURAL_LANDING_DEPTH; ++$depth) {
+                for ($horizontal = 0; $horizontal <= 1; ++$horizontal) {
+                    $x = $origin->x + ($dx * $horizontal) + ($perpendicularX * $depth * $direction);
+                    $z = $origin->z + ($dz * $horizontal) + ($perpendicularZ * $depth * $direction);
+                    if (!$this->isWalkableOpenColumn($x, $origin->y, $z)) {
+                        $walkable = false;
+                        break 2;
+                    }
+                }
+            }
+
+            if ($walkable) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function nearestOpenColumn(BlockPosition $origin, PortalAxis $axis): ?BlockPosition
+    {
+        $dx = $axis->stepX();
+        $dz = $axis->stepZ();
+        $perpendicularX = $dz;
+        $perpendicularZ = $dx;
+        for ($radius = self::BUILD_CLEARANCE_DEPTH + 1; $radius <= self::FALLBACK_EXIT_SEARCH_RADIUS; ++$radius) {
+            for ($offset = -$radius; $offset <= $radius; ++$offset) {
+                foreach ([
+                    [$origin->x + $offset, $origin->z - $radius],
+                    [$origin->x + $offset, $origin->z + $radius],
+                    [$origin->x - $radius, $origin->z + $offset],
+                    [$origin->x + $radius, $origin->z + $offset],
+                ] as [$x, $z]) {
+                    $positiveStart = new BlockPosition(
+                        $origin->x + ($perpendicularX * (self::BUILD_CLEARANCE_DEPTH + 1)),
+                        $origin->y,
+                        $origin->z + ($perpendicularZ * (self::BUILD_CLEARANCE_DEPTH + 1)),
+                    );
+                    $negativeStart = new BlockPosition(
+                        $origin->x - ($perpendicularX * (self::BUILD_CLEARANCE_DEPTH + 1)),
+                        $origin->y,
+                        $origin->z - ($perpendicularZ * (self::BUILD_CLEARANCE_DEPTH + 1)),
+                    );
+                    $horizontalDistance = min(
+                        abs($x - $positiveStart->x) + abs($z - $positiveStart->z),
+                        abs($x - $negativeStart->x) + abs($z - $negativeStart->z),
+                    );
+                    $maximumVerticalOffset = min(self::FALLBACK_EXIT_VERTICAL_RADIUS, $horizontalDistance);
+                    for ($verticalOffset = 0; $verticalOffset <= $maximumVerticalOffset; ++$verticalOffset) {
+                        foreach ($verticalOffset === 0 ? [$origin->y] : [$origin->y + $verticalOffset, $origin->y - $verticalOffset] as $y) {
+                            if ($y < Chunk::MIN_Y + 2 || $y > Chunk::MAX_Y - 3) {
+                                continue;
+                            }
+                            if ($this->isWalkableOpenColumn($x, $y, $z)) {
+                                return new BlockPosition($x, $y, $z);
+                            }
+                        }
                     }
                 }
             }
         }
 
+        return null;
+    }
+
+    private function isWalkableOpenColumn(int $x, int $y, int $z): bool
+    {
+        $floor = $this->identifierAt($x, $y - 1, $z);
+        if ($floor === 'minecraft:air' || $this->isFluid($floor)) {
+            return false;
+        }
+        for ($vertical = 0; $vertical <= 2; ++$vertical) {
+            if (!$this->isReplaceable($this->identifierAt($x, $y + $vertical, $z))) {
+                return false;
+            }
+        }
+
         return true;
+    }
+
+    /** @param list<PortalBlockMutation> $mutations */
+    private function carveFallbackColumn(array &$mutations, int $x, int $y, int $z): void
+    {
+        $floor = new BlockPosition($x, $y - 1, $z);
+        $floorIdentifier = $this->identifierAt($floor->x, $floor->y, $floor->z);
+        if ($floorIdentifier === 'minecraft:air' || $this->isFluid($floorIdentifier)) {
+            $previous = $this->world->setBlockState($floor->x, $floor->y, $floor->z, $this->obsidian);
+            if ($previous->value !== $this->obsidian->value) {
+                $mutations[] = new PortalBlockMutation($floor, $previous, $this->obsidian);
+            }
+        }
+        for ($vertical = 0; $vertical <= 2; ++$vertical) {
+            $position = new BlockPosition($x, $y + $vertical, $z);
+            $previous = $this->world->setBlockState($position->x, $position->y, $position->z, $this->air);
+            if ($previous->value !== $this->air->value) {
+                $mutations[] = new PortalBlockMutation($position, $previous, $this->air);
+            }
+        }
+    }
+
+    private function horizontalDistance(BlockPosition $from, BlockPosition $to): int
+    {
+        return abs($from->x - $to->x) + abs($from->z - $to->z);
+    }
+
+    private function stepToward(int $value, int $target): int
+    {
+        return $value === $target ? $value : $value + ($value < $target ? 1 : -1);
+    }
+
+    /** Chooses a landing side that is open in the current terrain. */
+    public function preferredArrivalDirection(NetherPortalFrame $frame): int
+    {
+        $perpendicularX = $frame->axis->stepZ();
+        $perpendicularZ = $frame->axis->stepX();
+        foreach ([1, -1] as $direction) {
+            $x = $frame->bottomLeft->x
+                + $frame->axis->stepX()
+                + ($perpendicularX * 2 * $direction);
+            $z = $frame->bottomLeft->z
+                + $frame->axis->stepZ()
+                + ($perpendicularZ * 2 * $direction);
+            if ($this->isWalkableOpenColumn($x, $frame->bottomLeft->y, $z)) {
+                return $direction;
+            }
+        }
+
+        return 1;
     }
 
     /** Identifies the landing-platform signature used by Bedriox-created fallback portals. */

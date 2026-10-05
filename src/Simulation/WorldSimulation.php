@@ -30,6 +30,7 @@ use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Entity\Capability\Arthropod;
 use Bedriox\Api\Entity\Capability\Breedable;
+use Bedriox\Api\Entity\Capability\FireImmune;
 use Bedriox\Api\Entity\Capability\Rideable;
 use Bedriox\Api\Entity\Capability\Tameable;
 use Bedriox\Api\Entity\Capability\Undead;
@@ -42,6 +43,7 @@ use Bedriox\Api\Entity\KnockbackCause as ApiKnockbackCause;
 use Bedriox\Api\Entity\KnockbackVector as ApiKnockbackVector;
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\Value\BoatVariant;
+use Bedriox\Api\Entity\Value\EntityTransformReason;
 use Bedriox\Api\Entity\Value\MountReason;
 use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\Entity\Value\RabbitVariant;
@@ -150,6 +152,15 @@ use Bedriox\Server\Entity\Vanilla\GoatEntity;
 use Bedriox\Server\Entity\Vanilla\LlamaEntity;
 use Bedriox\Server\Entity\Vanilla\MagmaCubeEntity;
 use Bedriox\Server\Entity\Vanilla\MooshroomEntity;
+use Bedriox\Server\Entity\Vanilla\Nether\BlazeEntity;
+use Bedriox\Server\Entity\Vanilla\Nether\GhastEntity;
+use Bedriox\Server\Entity\Vanilla\Nether\HappyGhastEntity;
+use Bedriox\Server\Entity\Vanilla\Nether\HoglinEntity;
+use Bedriox\Server\Entity\Vanilla\Nether\NetherAngerableEntity;
+use Bedriox\Server\Entity\Vanilla\Nether\PiglinBruteEntity;
+use Bedriox\Server\Entity\Vanilla\Nether\PiglinEntity;
+use Bedriox\Server\Entity\Vanilla\Nether\StriderEntity;
+use Bedriox\Server\Entity\Vanilla\Nether\ZombifiedPiglinEntity;
 use Bedriox\Server\Entity\Vanilla\OcelotEntity;
 use Bedriox\Server\Entity\Vanilla\PandaEntity;
 use Bedriox\Server\Entity\Vanilla\PigEntity;
@@ -1129,6 +1140,7 @@ final class WorldSimulation
         $stages['players'] = $nextStageNanoseconds - $stageCompletedNanoseconds;
         $stageCompletedNanoseconds = $nextStageNanoseconds;
         array_push($events, ...$this->advanceItemEntities());
+        array_push($events, ...$this->advancePiglinBartering());
         array_push($events, ...$this->advanceExperienceOrbs());
         array_push($events, ...$this->advanceProjectiles());
         $nextStageNanoseconds = hrtime(true);
@@ -1596,6 +1608,9 @@ final class WorldSimulation
             int $durationTicks,
             EntityCombustionCause $cause,
         ) use ($entity): void {
+            if ($entity instanceof FireImmune) {
+                return;
+            }
             $event = $this->pluginEvents?->combust($entity, $cause, $durationTicks);
             if ($this->pluginEvents !== null && $event === null) {
                 return;
@@ -1677,6 +1692,17 @@ final class WorldSimulation
         if ($entity->equipmentState()->getContents() !== []) {
             return;
         }
+        if ($entity instanceof WitherSkeletonEntity) {
+            if ($this->itemCatalog?->has('minecraft:stone_sword')) {
+                $entity->equipmentState()->restoreItem(
+                    ApiEquipmentSlot::MAIN_HAND,
+                    new ApiItemStack('minecraft:stone_sword', 1),
+                    0.085,
+                );
+            }
+
+            return;
+        }
         if ($entity instanceof ApiSkeleton) {
             if ($this->itemCatalog?->has('minecraft:bow')) {
                 $entity->equipmentState()->restoreItem(
@@ -1688,11 +1714,16 @@ final class WorldSimulation
 
             return;
         }
-        if ($entity instanceof WitherSkeletonEntity) {
-            if ($this->itemCatalog?->has('minecraft:stone_sword')) {
+        $netherWeapon = match (true) {
+            $entity instanceof PiglinBruteEntity => 'minecraft:golden_axe',
+            $entity instanceof PiglinEntity, $entity instanceof ZombifiedPiglinEntity => 'minecraft:golden_sword',
+            default => null,
+        };
+        if ($netherWeapon !== null) {
+            if ($this->itemCatalog?->has($netherWeapon)) {
                 $entity->equipmentState()->restoreItem(
                     ApiEquipmentSlot::MAIN_HAND,
-                    new ApiItemStack('minecraft:stone_sword', 1),
+                    new ApiItemStack($netherWeapon, 1),
                     0.085,
                 );
             }
@@ -1909,6 +1940,7 @@ final class WorldSimulation
                 $player->movement->position,
                 $player->vitals->isAlive() && $player->gameMode()->takesDamage(),
                 $player->inventory->selectedStack()?->identifier,
+                self::wearsGoldArmor($player),
             ),
             array_values(array_filter(
                 $this->players->players(),
@@ -1947,6 +1979,7 @@ final class WorldSimulation
                 $this->pluginEvents?->entityDespawned($entity, 'plugin');
             }
         }
+        array_push($events, ...$this->advanceNetherTransformations());
         array_push($events, ...$this->advanceEntityEffects());
         array_push($events, ...$this->advanceEntityFire());
         array_push($events, ...$this->advanceLivingEntityBreathing());
@@ -2194,6 +2227,22 @@ final class WorldSimulation
         $this->lastEntityPersistenceNanoseconds = hrtime(true) - $entityPersistenceStartedNanoseconds;
 
         return $events;
+    }
+
+    private static function wearsGoldArmor(Player $player): bool
+    {
+        foreach ($player->inventory->armorSlots() as $stack) {
+            if ($stack !== null && in_array($stack->identifier, [
+                'minecraft:golden_helmet',
+                'minecraft:golden_chestplate',
+                'minecraft:golden_leggings',
+                'minecraft:golden_boots',
+            ], true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function splitSlime(AbstractLivingEntity $entity): void
@@ -2581,7 +2630,7 @@ final class WorldSimulation
                 continue;
             }
             $wasOnFire = $entity->isOnFire();
-            if ($entity instanceof MagmaCubeEntity) {
+            if ($entity instanceof FireImmune || $entity instanceof MagmaCubeEntity) {
                 $entity->extinguish();
             }
             if (VanillaEffectBehavior::hasFireResistance($entity->effectState()->snapshot())) {
@@ -2640,9 +2689,14 @@ final class WorldSimulation
                     !$this->entityAiEnabled,
                 );
             }
-            if ($entity instanceof EndermanEntity
+            $waterVulnerable = $entity instanceof EndermanEntity
+                || $entity instanceof StriderEntity;
+            $rainVulnerable = $entity instanceof StriderEntity
+                && $this->blockWorld?->weather()->weather->isRaining() === true
+                && $this->entityEnvironment->hasSkyExposure($entity);
+            if ($waterVulnerable
                 && ($this->tick + $entity->getRuntimeId()) % 20 === 0
-                && $this->entityEnvironment->isTouchingWater($entity)) {
+                && ($rainVulnerable || $this->entityEnvironment->isTouchingWater($entity))) {
                 $damageEvent = $this->pluginEvents?->entityDamage($entity, ApiEntityDamageCause::DROWNING, 1.0);
                 if ($this->pluginEvents === null || $damageEvent !== null) {
                     $result = $this->entityRuntime->damage($entity->getRuntimeId(), $damageEvent?->damage() ?? 1.0);
@@ -2654,6 +2708,67 @@ final class WorldSimulation
         }
 
         return $events;
+    }
+
+    /** @return list<WorldEvent> */
+    private function advanceNetherTransformations(): array
+    {
+        if ($this->blockWorld === null) {
+            return [];
+        }
+        $outsideNether = $this->blockWorld->dimension() !== WorldDimension::NETHER;
+        foreach ($this->entityRuntime->registry()->all() as $entity) {
+            $targetType = match (true) {
+                $entity instanceof HoglinEntity && $entity->advanceZombification($outsideNether) => VanillaEntityType::ZOGLIN,
+                ($entity instanceof PiglinEntity || $entity instanceof PiglinBruteEntity)
+                    && $entity->advanceZombification($outsideNether) => VanillaEntityType::ZOMBIFIED_PIGLIN,
+                default => null,
+            };
+            if ($targetType === null) {
+                continue;
+            }
+            if ($this->pluginEvents !== null) {
+                $targetType = $this->pluginEvents->transformEntity(
+                    $entity,
+                    $targetType,
+                    EntityTransformReason::ENVIRONMENT,
+                );
+                if ($targetType === null) {
+                    $entity->advanceZombification(false);
+                    continue;
+                }
+            }
+            $outcome = $this->spawnEntity(new EntitySpawnRequest(
+                $targetType,
+                SpawnCause::TRANSFORMATION,
+                $entity->getWorldName(),
+                $entity->internalPosition(),
+                $entity->getYaw(),
+                $entity->getPitch(),
+            ));
+            if (!$outcome->entity instanceof AbstractLivingEntity) {
+                $entity->advanceZombification(false);
+                continue;
+            }
+            $transformed = $outcome->entity;
+            $healthRatio = $entity->getHealth() / $entity->getMaximumHealth();
+            $transformed->damage(max(0.0, $transformed->getMaximumHealth() * (1.0 - $healthRatio)));
+            foreach (ApiEquipmentSlot::cases() as $slot) {
+                $item = $entity->equipmentState()->getItem($slot);
+                if ($item !== null) {
+                    $transformed->equipmentState()->restoreItem(
+                        $slot,
+                        $item,
+                        $entity->equipmentState()->getDropChance($slot),
+                    );
+                }
+            }
+            $this->entityPersistence?->forgetEntity($entity->getUniqueId());
+            $this->entityRuntime->remove($entity->getRuntimeId());
+            $this->pluginEvents?->entityTransformed($entity, $transformed, EntityTransformReason::ENVIRONMENT);
+        }
+
+        return [];
     }
 
     private function reconcileEntityTarget(AbstractMobEntity $entity): void
@@ -2898,7 +3013,8 @@ final class WorldSimulation
             return [];
         }
         $held = $shooter->equipmentState()->getItem(ApiEquipmentSlot::MAIN_HAND);
-        if (!$shooter instanceof WitchEntity && $held?->identifier !== 'minecraft:bow') {
+        $fireballShooter = $shooter instanceof BlazeEntity || $shooter instanceof GhastEntity;
+        if (!$fireballShooter && !$shooter instanceof WitchEntity && $held?->identifier !== 'minecraft:bow') {
             return [];
         }
         $from = $shooter->internalPosition();
@@ -2926,8 +3042,26 @@ final class WorldSimulation
             $shooter instanceof StrayEntity => PotionType::SLOWNESS,
             default => null,
         };
-        $projectile = $shooter instanceof WitchEntity
-            ? $this->projectiles->spawn(
+        $projectile = match (true) {
+            $shooter instanceof BlazeEntity => $this->projectiles->spawnFireball(
+                $shooter->getUniqueId(),
+                $shooter->getRuntimeId(),
+                $spawn,
+                $yaw,
+                max(-90.0, min(90.0, $pitch)),
+                $intent->projectileSpeed,
+                false,
+            ),
+            $shooter instanceof GhastEntity => $this->projectiles->spawnFireball(
+                $shooter->getUniqueId(),
+                $shooter->getRuntimeId(),
+                $spawn,
+                $yaw,
+                max(-90.0, min(90.0, $pitch)),
+                $intent->projectileSpeed,
+                true,
+            ),
+            $shooter instanceof WitchEntity => $this->projectiles->spawn(
                 $shooter->getUniqueId(),
                 $shooter->getRuntimeId(),
                 $distance <= 3.0 ? PotionType::HARMING : PotionType::POISON,
@@ -2936,8 +3070,8 @@ final class WorldSimulation
                 $yaw,
                 max(-90.0, min(90.0, $pitch)),
                 ProjectileOwnerType::ENTITY,
-            )
-            : ($arrowPotion !== null ? $this->projectiles->spawnTippedArrow(
+            ),
+            $arrowPotion !== null => $this->projectiles->spawnTippedArrow(
                 $shooter->getUniqueId(),
                 $shooter->getRuntimeId(),
                 $arrowPotion,
@@ -2947,7 +3081,8 @@ final class WorldSimulation
                 $intent->projectileSpeed,
                 ArrowPickupMode::NONE,
                 ownerType: ProjectileOwnerType::ENTITY,
-            ) : $this->projectiles->spawnArrow(
+            ),
+            default => $this->projectiles->spawnArrow(
                 $shooter->getUniqueId(),
                 $shooter->getRuntimeId(),
                 $spawn,
@@ -2956,8 +3091,9 @@ final class WorldSimulation
                 $intent->projectileSpeed,
                 ArrowPickupMode::NONE,
                 ownerType: ProjectileOwnerType::ENTITY,
-            ));
-        $projectileIdentifier = $shooter instanceof WitchEntity ? 'minecraft:splash_potion' : 'minecraft:arrow';
+            ),
+        };
+        $projectileIdentifier = $projectile->type->value;
         $admitted = $this->pluginEvents?->projectileLaunch($shooter, $projectile, $projectileIdentifier)
             ?? ($this->pluginEvents === null ? $projectile : null);
         if ($admitted === null) {
@@ -3150,7 +3286,10 @@ final class WorldSimulation
                     }
                 }
 
-                return self::portalFeetPosition($frame);
+                return self::portalArrivalPosition(
+                    $frame,
+                    $this->netherPortals->preferredArrivalDirection($frame),
+                );
             }
             $candidates = array_values(array_filter(
                 $candidates,
@@ -3186,12 +3325,17 @@ final class WorldSimulation
             );
         }
 
-        return self::portalFeetPosition(new NetherPortalFrame(
+        $frame = new NetherPortalFrame(
             $origin,
             2,
             3,
             $plan->preferredAxis,
-        ));
+        );
+
+        return self::portalArrivalPosition(
+            $frame,
+            $this->netherPortals->preferredArrivalDirection($frame),
+        );
     }
 
     /**
@@ -3262,6 +3406,12 @@ final class WorldSimulation
         $this->portalContacts->beginArrivalCooldown($sessionId, $this->tick);
     }
 
+    /** Clears destination-only portal state when a world transfer is rolled back. */
+    public function clearPortalContact(string $sessionId): void
+    {
+        $this->portalContacts->forget($sessionId);
+    }
+
     /** @return list<BlockPosition> */
     private function loadedPortalPositions(PortalDestinationPlan $plan): array
     {
@@ -3329,13 +3479,17 @@ final class WorldSimulation
         return $positions;
     }
 
-    private static function portalFeetPosition(
+    private static function portalArrivalPosition(
         NetherPortalFrame $frame,
+        int $direction,
     ): Position {
+        $perpendicularX = $frame->axis->stepZ();
+        $perpendicularZ = $frame->axis->stepX();
+
         return new Position(
-            $frame->bottomLeft->x + ($frame->axis->stepX() * ($frame->width / 2.0)) + ($frame->axis->stepZ() * 0.5),
+            $frame->bottomLeft->x + ($frame->axis->stepX() * ($frame->width / 2.0)) + ($perpendicularX * 1.5 * $direction),
             (float) $frame->bottomLeft->y,
-            $frame->bottomLeft->z + ($frame->axis->stepZ() * ($frame->width / 2.0)) + ($frame->axis->stepX() * 0.5),
+            $frame->bottomLeft->z + ($frame->axis->stepZ() * ($frame->width / 2.0)) + ($perpendicularZ * 1.5 * $direction),
         );
     }
 
@@ -4475,7 +4629,7 @@ final class WorldSimulation
                     $vehicle->getRuntimeId(),
                     $link->passenger->runtimeId,
                     $link->seat,
-                    $vehicle->mountedPassengerOffsetY(
+                    $vehicle->mountedPassengerOffset(
                         $link->seat,
                         $mountedPlayer === null ? $link->passengerEntity?->collisionHeight() ?? 0.0 : PlayerCollisionShape::HEIGHT,
                         $mountedPlayer !== null,
@@ -4796,6 +4950,33 @@ final class WorldSimulation
                 $motion = $vehicle->getMotion();
                 $vehicle->setMotion(new EntityMotion(0.0, $motion->y, 0.0));
             }
+        } elseif ($vehicle instanceof StriderEntity && $link->seat->controlsVehicle()) {
+            $vehicle->suppressAiMovementUntil($this->tick + 2);
+            $held = $player->inventory->selectedStack();
+            if ($held?->identifier === 'minecraft:warped_fungus_on_a_stick') {
+                $forward = max(-1.0, min(1.0, $command->moveZ));
+                $strafe = max(-1.0, min(1.0, $command->moveX));
+                $radians = deg2rad($vehicleControlYaw);
+                $speed = $command->sprinting === true ? 0.28 : 0.20;
+                $vehicle->applyControlledMotion(new EntityMotion(
+                    (-sin($radians) * $forward + cos($radians) * $strafe) * $speed,
+                    $vehicle->getMotion()->y,
+                    (cos($radians) * $forward + sin($radians) * $strafe) * $speed,
+                ), $this->tick);
+                $vehicle->moveTo($vehicle->getWorldName(), $vehicle->internalPosition(), $vehicleYaw, 0.0);
+            }
+        } elseif ($vehicle instanceof HappyGhastEntity && $link->seat->controlsVehicle()) {
+            $vehicle->suppressAiMovementUntil($this->tick + 2);
+            $forward = max(-1.0, min(1.0, $command->moveZ));
+            $strafe = max(-1.0, min(1.0, $command->moveX));
+            $vertical = $command->jumpRequested ? 0.22 : ($command->sneaking === true ? -0.18 : 0.0);
+            $radians = deg2rad($vehicleControlYaw);
+            $vehicle->applyControlledMotion(new EntityMotion(
+                (-sin($radians) * $forward + cos($radians) * $strafe) * 0.24,
+                $vertical,
+                (cos($radians) * $forward + sin($radians) * $strafe) * 0.24,
+            ), $this->tick);
+            $vehicle->moveTo($vehicle->getWorldName(), $vehicle->internalPosition(), $vehicleYaw, $command->pitch);
         } elseif ($vehicle instanceof Rideable && $vehicle instanceof Tameable && $vehicle instanceof AbstractMobEntity
             && ($vehicle->isSaddled() || $vehicle instanceof SkeletonHorseEntity)
             && $vehicle->isTamed() && $link->seat->controlsVehicle()) {
@@ -5273,6 +5454,61 @@ final class WorldSimulation
 
     private function attackEntity(Player $attacker, AttackPlayer $command): WorldEvent
     {
+        $projectile = $this->projectiles->get($command->targetRuntimeActorId);
+        if ($projectile !== null
+            && in_array($projectile->type, [ProjectileType::SMALL_FIREBALL, ProjectileType::FIREBALL], true)) {
+            $distance = $attacker->movement->position->distanceTo($projectile->position);
+            if ($attacker->gameMode() === GameMode::SPECTATOR
+                || $command->hotbarSlot !== $attacker->inventory->selectedHotbarSlot()
+                || $distance > 5.0) {
+                return new CommandRejected($command->session, 'reach');
+            }
+            $yaw = deg2rad($attacker->movement->yaw);
+            $pitch = deg2rad($attacker->movement->pitch);
+            $horizontal = cos($pitch);
+            $speed = max(0.6, hypot(hypot(
+                $projectile->motion->x,
+                $projectile->motion->z,
+            ), $projectile->motion->y));
+            $motion = new EntityMotion(
+                -sin($yaw) * $horizontal * $speed,
+                -sin($pitch) * $speed,
+                cos($yaw) * $horizontal * $speed,
+            );
+            if ($this->pluginEvents !== null) {
+                $motion = $this->pluginEvents->projectileReflect(
+                    $attacker,
+                    $projectile->runtimeEntityId,
+                    $projectile->type->value,
+                    $motion,
+                );
+                if ($motion === null) {
+                    return new CommandRejected($command->session, 'plugin_cancelled');
+                }
+            }
+            $projectile = $projectile->reflectedBy(
+                $attacker->identity->uuid,
+                $attacker->runtimeActorId,
+                $motion,
+            );
+            $this->projectiles->replace($projectile);
+            $this->pluginEvents?->projectileReflected(
+                $attacker,
+                $projectile->runtimeEntityId,
+                $projectile->type->value,
+                $motion,
+            );
+            $swing = $this->armSwingEvent($attacker, ArmSwingSource::Attack);
+            if ($swing !== null) {
+                $this->deferredEvents[] = $swing;
+            }
+
+            return new ProjectileMoved(
+                $projectile,
+                $this->players->recipients(),
+                motionChanged: true,
+            );
+        }
         $target = $this->entityRuntime->registry()->getByRuntimeId($command->targetRuntimeActorId);
         if (!$target instanceof AbstractLivingEntity) {
             return new CommandRejected($command->session, 'target_unavailable');
@@ -5328,6 +5564,9 @@ final class WorldSimulation
         if ($target instanceof MutableAngerState
             && (!($target instanceof Tameable) || $target->getOwnerUniqueId() !== $attacker->identity->uuid)) {
             $target->setAngerTargetUniqueId($attacker->identity->uuid, $this->dropRandom->integer(400, 800));
+            if ($target instanceof NetherAngerableEntity) {
+                $this->provokeNetherGroup($target, $attacker);
+            }
         }
         $this->entityInvulnerableUntilTicks[$target->getRuntimeId()] =
             $this->tick + CombatRules::DAMAGE_IMMUNITY_TICKS;
@@ -5415,6 +5654,59 @@ final class WorldSimulation
         return new EntityActorDamaged($target, $this->tick, $this->players->recipients());
     }
 
+    private function provokeNetherGroup(NetherAngerableEntity $provoked, Player $attacker): void
+    {
+        foreach ($this->entityRuntime->registry()->nearby(
+            $provoked->getWorldName(),
+            $provoked->internalPosition(),
+            16.0,
+            32,
+        ) as $candidate) {
+            if (!$candidate instanceof NetherAngerableEntity || !$candidate->isAlive()) {
+                continue;
+            }
+            $sameFamily = ($provoked instanceof ZombifiedPiglinEntity) === ($candidate instanceof ZombifiedPiglinEntity);
+            if (!$sameFamily) {
+                continue;
+            }
+            if ($this->pluginEvents !== null) {
+                $attackerView = $this->pluginEvents->playerView($attacker);
+                $previous = $this->entityTargets[$candidate->getRuntimeId()] ?? null;
+                $event = $this->pluginEvents->entityTarget(
+                    $candidate,
+                    $previous,
+                    $attackerView,
+                    EntityTargetReason::GROUP_PROVOCATION,
+                );
+                if ($event->isCancelled() || $event->target() !== $attackerView) {
+                    continue;
+                }
+                $this->entityTargets[$candidate->getRuntimeId()] = $attackerView;
+                $this->pluginEvents->entityTargetChanged(
+                    $candidate,
+                    $previous,
+                    $attackerView,
+                    EntityTargetReason::GROUP_PROVOCATION,
+                );
+            }
+            $candidate->setAngerTargetUniqueId(
+                $attacker->identity->uuid,
+                $this->dropRandom->integer(400, 800),
+            );
+            $candidate->aiRuntime()->memory()->put(
+                VanillaAiMemories::nearestPlayer(),
+                new AiPlayerSnapshot(
+                    $attacker->identity->uuid,
+                    $this->worldId,
+                    $attacker->movement->position,
+                    true,
+                    $attacker->inventory->selectedStack()?->identifier,
+                ),
+                $this->tick + 30,
+            );
+        }
+    }
+
     private function interactEntity(InteractEntity $command): WorldEvent
     {
         $player = $this->players->player($command->session);
@@ -5440,6 +5732,18 @@ final class WorldSimulation
             return new CommandRejected($command->session, 'plugin_cancelled');
         }
         $heldBefore = $player->inventory->selectedStack();
+        if ($target instanceof PiglinEntity && !$target->isAdmiring()
+            && $heldBefore?->identifier === 'minecraft:gold_ingot') {
+            $target->equipmentState()->setItem(
+                ApiEquipmentSlot::OFF_HAND,
+                new ApiItemStack('minecraft:gold_ingot', 1),
+            );
+            $target->beginAdmiring();
+            $this->consumeSelectedItem($player);
+            $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
+
+            return new EntityInteracted($command->session, $target->getRuntimeId(), $command->interaction);
+        }
         $bucketResult = $heldBefore?->identifier === 'minecraft:water_bucket'
             ? AquaticBucketRegistry::bucketForType($target->getType())
         : null;
@@ -5472,6 +5776,14 @@ final class WorldSimulation
             && !$this->interactWithBreedableAnimal($player, $target)) {
             return new CommandRejected($command->session, 'plugin_cancelled');
         }
+        if ($target instanceof HappyGhastEntity && !$target->isBaby() && !$target->isSaddled()
+            && $heldBefore !== null && str_ends_with($heldBefore->identifier, '_harness')) {
+            $target->setHarnessed(true);
+            $this->consumeSelectedItem($player);
+            $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
+
+            return new EntityInteracted($command->session, $target->getRuntimeId(), $command->interaction);
+        }
         if ($target instanceof PigEntity && !$target->isBaby() && $target->isSaddled()
             && $this->mounts->playerLink($player->sessionId) === null
             && ($heldBefore === null || ($heldBefore->identifier !== 'minecraft:saddle'
@@ -5481,6 +5793,27 @@ final class WorldSimulation
                 $target->getRuntimeId(),
                 $target->getUniqueId(),
                 MountSeat::DRIVER,
+            ));
+            if ($result instanceof ActorMounted) {
+                $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
+            }
+
+            return $result;
+        }
+        if (($target instanceof StriderEntity || $target instanceof HappyGhastEntity)
+            && !$target->isBaby() && $target->isSaddled()
+            && $this->mounts->playerLink($player->sessionId) === null
+            && ($heldBefore === null
+                || !in_array($heldBefore->identifier, $this->breedingFoods($target), true))) {
+            $occupied = count($this->mounts->linksForVehicle($target->getRuntimeId()));
+            if ($occupied >= $target->getSeatCapacity()) {
+                return new CommandRejected($player->sessionId, 'seat_unavailable');
+            }
+            $result = $this->mountPlayer(new MountPlayer(
+                $player->sessionId,
+                $target->getRuntimeId(),
+                $target->getUniqueId(),
+                MountSeat::from($occupied),
             ));
             if ($result instanceof ActorMounted) {
                 $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
@@ -5587,7 +5920,7 @@ final class WorldSimulation
             $vehicle->getRuntimeId(),
             $player->runtimeActorId,
             $command->seat,
-            $vehicle->mountedPassengerOffsetY($command->seat, PlayerCollisionShape::HEIGHT, true),
+            $vehicle->mountedPassengerOffset($command->seat, PlayerCollisionShape::HEIGHT, true),
             true,
             $player->snapshot(),
             $this->players->recipients(),
@@ -5687,7 +6020,7 @@ final class WorldSimulation
             $vehicle->getRuntimeId(),
             $passenger->getRuntimeId(),
             $seat,
-            $vehicle->mountedPassengerOffsetY($seat, $passenger->collisionHeight(), false),
+            $vehicle->mountedPassengerOffset($seat, $passenger->collisionHeight(), false),
             false,
             null,
             $this->players->recipients(),
@@ -5721,10 +6054,14 @@ final class WorldSimulation
     private function syncMountedPlayer(Player $player, MountLink $link): void
     {
         $vehiclePosition = $link->vehicle->internalPosition();
+        $offset = $link->vehicle->mountedPassengerOffset($link->seat, PlayerCollisionShape::HEIGHT, true);
+        $yawRadians = deg2rad($link->vehicle->getYaw());
+        $worldX = ($offset->x * cos($yawRadians)) - ($offset->z * sin($yawRadians));
+        $worldZ = ($offset->x * sin($yawRadians)) + ($offset->z * cos($yawRadians));
         $player->movement->position = new Position(
-            $vehiclePosition->x,
-            $vehiclePosition->y + $link->vehicle->collisionHeight(),
-            $vehiclePosition->z,
+            $vehiclePosition->x + $worldX,
+            $vehiclePosition->y + $offset->y,
+            $vehiclePosition->z + $worldZ,
         );
         $player->movement->verticalVelocity = 0.0;
         $player->movement->fallDistance = 0.0;
@@ -5839,6 +6176,12 @@ final class WorldSimulation
             return true;
         }
         if ($animal instanceof PigEntity && !$animal->isBaby() && !$animal->isSaddled()
+            && $held->identifier === 'minecraft:saddle') {
+            $animal->setSaddled(true);
+            $this->consumeSelectedItem($player);
+            return true;
+        }
+        if ($animal instanceof StriderEntity && !$animal->isBaby() && !$animal->isSaddled()
             && $held->identifier === 'minecraft:saddle') {
             $animal->setSaddled(true);
             $this->consumeSelectedItem($player);
@@ -6036,6 +6379,9 @@ final class WorldSimulation
             $animal instanceof CowEntity, $animal instanceof SheepEntity => ['minecraft:wheat'],
             $animal instanceof MooshroomEntity, $animal instanceof GoatEntity => ['minecraft:wheat'],
             $animal instanceof PigEntity => ['minecraft:carrot', 'minecraft:potato', 'minecraft:beetroot'],
+            $animal instanceof HoglinEntity => ['minecraft:crimson_fungus'],
+            $animal instanceof StriderEntity => ['minecraft:warped_fungus'],
+            $animal instanceof HappyGhastEntity => ['minecraft:snowball'],
             $animal instanceof ChickenEntity => ['minecraft:wheat_seeds', 'minecraft:beetroot_seeds', 'minecraft:melon_seeds', 'minecraft:pumpkin_seeds', 'minecraft:torchflower_seeds', 'minecraft:pitcher_pod'],
             $animal instanceof RabbitEntity => ['minecraft:carrot', 'minecraft:golden_carrot', 'minecraft:dandelion'],
             $animal instanceof WolfEntity => ['minecraft:beef', 'minecraft:cooked_beef', 'minecraft:chicken', 'minecraft:cooked_chicken', 'minecraft:mutton', 'minecraft:cooked_mutton', 'minecraft:porkchop', 'minecraft:cooked_porkchop', 'minecraft:rabbit', 'minecraft:cooked_rabbit'],
@@ -9665,6 +10011,61 @@ final class WorldSimulation
                         array_push($events, ...$this->settleThrownTrident($projectile));
                     }
                 }
+            } elseif (in_array($projectile->type, [ProjectileType::SMALL_FIREBALL, ProjectileType::FIREBALL], true)) {
+                $fireballDamage = $projectile->damageBonus;
+                if ($direct !== null) {
+                    $damage = $this->damage(new DamagePlayer(
+                        $direct->sessionId,
+                        $fireballDamage,
+                        DamageCause::Projectile,
+                    ), $shooter instanceof AbstractLivingEntity ? $shooter : null);
+                    if ($damage instanceof PlayerDamaged) {
+                        $direct->vitals->fireTicks = max($direct->vitals->fireTicks, $projectile->fireTicks);
+                        $direct->markDirty();
+                        $events[] = $damage;
+                        $events[] = new PlayerEnvironmentChanged(
+                            $direct->snapshot(),
+                            $this->players->recipients(),
+                            $this->tick,
+                            false,
+                            true,
+                        );
+                    }
+                } elseif ($directEntity !== null) {
+                    $damageEvent = $this->pluginEvents?->entityDamage(
+                        $directEntity,
+                        ApiEntityDamageCause::PROJECTILE,
+                        $fireballDamage,
+                        $apiShooter,
+                    );
+                    $actualDamage = $damageEvent?->damage() ?? ($this->pluginEvents === null ? $fireballDamage : 0.0);
+                    if ($actualDamage > 0.0) {
+                        $this->entityRuntime->damage($directEntity->getRuntimeId(), $actualDamage);
+                        if (!$directEntity instanceof FireImmune) {
+                            $combust = $this->pluginEvents?->combust(
+                                $directEntity,
+                                EntityCombustionCause::PROJECTILE,
+                                $projectile->fireTicks,
+                            );
+                            if ($this->pluginEvents === null || $combust !== null) {
+                                $directEntity->setOnFire($combust?->durationTicks() ?? $projectile->fireTicks);
+                            }
+                        }
+                        $events[] = new EntityActorDamaged(
+                            $directEntity,
+                            $this->tick,
+                            $this->players->recipients(),
+                        );
+                    }
+                }
+                if ($projectile->type === ProjectileType::FIREBALL) {
+                    array_push($events, ...$this->explodeFireball($projectile, $shooter));
+                } elseif ($blockHit) {
+                    $ignited = $this->igniteSmallFireballImpact($impactBlock, $impactFace);
+                    if ($ignited !== null) {
+                        $events[] = $ignited;
+                    }
+                }
             } elseif ($projectile->type === ProjectileType::ARROW) {
                 $arrowDamage = max(1.0, round(hypot(
                     hypot($projectile->motion->x, $projectile->motion->z),
@@ -10024,6 +10425,144 @@ final class WorldSimulation
         }
 
         return $events;
+    }
+
+    /** @return list<WorldEvent> */
+    private function explodeFireball(
+        Projectile $projectile,
+        Player|AbstractLivingEntity|null $shooter,
+    ): array {
+        $position = $projectile->position;
+        $radius = 1.0;
+        $breaksBlocks = true;
+        $fireChance = 0.0;
+        $apiPosition = new ApiPosition($position->x, $position->y, $position->z);
+        if ($shooter instanceof AbstractLivingEntity && $this->pluginEvents !== null) {
+            $prime = $this->pluginEvents->primeExplosion($shooter, $apiPosition, $radius, $breaksBlocks, $fireChance);
+            if ($prime === null) {
+                return [];
+            }
+            $radius = $prime->radius();
+            $breaksBlocks = $prime->breaksBlocks();
+            $fireChance = $prime->fireChance();
+        }
+        $events = [];
+        $affectedActors = [];
+        $apiShooter = $shooter instanceof Player
+            ? $this->pluginEvents?->playerView($shooter)
+            : $shooter;
+        foreach ($this->players->players() as $player) {
+            if (!$player->vitals->isAlive() || !$player->gameMode()->takesDamage()) {
+                continue;
+            }
+            $distance = $player->movement->position->distanceTo($position);
+            if ($distance > $radius * 2.0) {
+                continue;
+            }
+            $exposure = max(0.0, 1.0 - ($distance / ($radius * 2.0)));
+            $event = $this->damage(new DamagePlayer(
+                $player->sessionId,
+                max(1.0, (($exposure * $exposure + $exposure) / 2.0) * 15.0 + 1.0),
+                DamageCause::Explosion,
+                $shooter instanceof Player ? $shooter->sessionId : null,
+            ), $shooter instanceof AbstractLivingEntity ? $shooter : null);
+            $events[] = $event;
+            if ($event instanceof PlayerDamaged && $event->damage > 0.0 && $this->pluginEvents !== null) {
+                $affectedActors[] = $this->pluginEvents->playerView($player);
+            }
+        }
+        foreach ($this->entityRuntime->registry()->nearby($this->worldId, $position, $radius * 2.0, 128) as $entity) {
+            if (!$entity instanceof AbstractLivingEntity || !$entity->isAlive() || $entity === $shooter) {
+                continue;
+            }
+            $distance = $entity->internalPosition()->distanceTo($position);
+            $exposure = max(0.0, 1.0 - ($distance / ($radius * 2.0)));
+            $damage = max(1.0, (($exposure * $exposure + $exposure) / 2.0) * 15.0 + 1.0);
+            $damageEvent = $this->pluginEvents?->entityDamage(
+                $entity,
+                ApiEntityDamageCause::EXPLOSION,
+                $damage,
+                $apiShooter,
+            );
+            if ($this->pluginEvents !== null && $damageEvent === null) {
+                continue;
+            }
+            $result = $this->entityRuntime->damage($entity->getRuntimeId(), $damageEvent?->damage() ?? $damage);
+            if ($result !== null && $result->appliedDamage > 0.0) {
+                $affectedActors[] = $entity;
+                $events[] = new EntityActorDamaged($entity, $this->tick, $this->players->recipients());
+            }
+        }
+        $affectedBlocks = [];
+        if ($breaksBlocks && $this->blockWorld !== null && $this->blockStateRegistry !== null && $this->blockPalette !== null) {
+            $plan = (new ExplosionPlanningService())->plan(
+                new ExplosionRequest($position, $radius, true, $fireChance),
+                new LoadedWorldExplosionView($this->blockWorld, $this->blockStateRegistry),
+            );
+            foreach ($plan->affectedBlocks as $blockPosition) {
+                $previous = $this->blockWorld->loadedBlockStateAt($blockPosition->x, $blockPosition->y, $blockPosition->z);
+                if ($previous === null || $previous->value === $this->blockPalette->air->value
+                    || $this->blockIdentifier($previous->value) === 'minecraft:bedrock') {
+                    continue;
+                }
+                $this->setBlockStateAndSchedule($blockPosition, $this->blockPalette->air);
+                $affectedBlocks[] = new ApiBlockPosition($blockPosition->x, $blockPosition->y, $blockPosition->z);
+                $events[] = new BlockChanged(
+                    'server',
+                    $blockPosition,
+                    $this->blockPalette->air,
+                    $this->players->recipients(),
+                    destroyedState: $previous,
+                );
+            }
+        }
+        $events[] = new EntityExplosionPresented($position, $this->players->recipients());
+        if ($shooter instanceof AbstractLivingEntity) {
+            $this->pluginEvents?->entityExploded(
+                $shooter,
+                $apiPosition,
+                $radius,
+                $affectedBlocks !== [],
+                $fireChance,
+                $affectedBlocks,
+                $affectedActors,
+            );
+        }
+
+        return $events;
+    }
+
+    private function igniteSmallFireballImpact(
+        BlockPosition $impactBlock,
+        ApiBlockFace $impactFace,
+    ): ?BlockChanged {
+        if ($this->blockWorld === null || $this->blockPalette === null || $this->blockCatalog === null
+            || $this->blockStateRegistry === null || !$this->blockCatalog->has('minecraft:fire')) {
+            return null;
+        }
+        $target = match ($impactFace) {
+            ApiBlockFace::DOWN => new BlockPosition($impactBlock->x, $impactBlock->y - 1, $impactBlock->z),
+            ApiBlockFace::UP => new BlockPosition($impactBlock->x, $impactBlock->y + 1, $impactBlock->z),
+            ApiBlockFace::NORTH => new BlockPosition($impactBlock->x, $impactBlock->y, $impactBlock->z - 1),
+            ApiBlockFace::SOUTH => new BlockPosition($impactBlock->x, $impactBlock->y, $impactBlock->z + 1),
+            ApiBlockFace::WEST => new BlockPosition($impactBlock->x - 1, $impactBlock->y, $impactBlock->z),
+            ApiBlockFace::EAST => new BlockPosition($impactBlock->x + 1, $impactBlock->y, $impactBlock->z),
+        };
+        $previous = $this->blockWorld->loadedBlockStateAt($target->x, $target->y, $target->z);
+        if ($previous === null || $previous->value !== $this->blockPalette->air->value) {
+            return null;
+        }
+        $fire = $this->blockStateRegistry->internalId($this->blockCatalog->type('minecraft:fire')->state);
+        $this->setBlockStateAndSchedule($target, $fire);
+
+        return new BlockChanged(
+            'server',
+            $target,
+            $fire,
+            $this->players->recipients(),
+            false,
+            $previous,
+        );
     }
 
     private function projectileShooter(
@@ -16290,6 +16829,7 @@ final class WorldSimulation
             $runtimeId = array_shift($this->pendingItemDespawns);
             $events[] = new ItemEntityDespawned($runtimeId, $recipients);
         }
+        array_push($events, ...$this->collectPiglinBarterPayments());
         foreach ($this->players->players() as $player) {
             if (!$player->vitals->isAlive() || $player->gameMode() === GameMode::SPECTATOR) {
                 continue;
@@ -16348,6 +16888,154 @@ final class WorldSimulation
         }
 
         return $events;
+    }
+
+    /** @return list<WorldEvent> */
+    private function advancePiglinBartering(): array
+    {
+        $events = [];
+        $recipients = $this->players->recipients();
+        foreach ($this->entityRuntime->registry()->all() as $entity) {
+            if (!$entity instanceof PiglinEntity || !$entity->isAlive()) {
+                continue;
+            }
+            if ($entity->advanceAdmiration()) {
+                $payment = new InventoryStack('minecraft:gold_ingot', 1, 1);
+                $outputs = [$this->piglinBarterOutput()];
+                if ($this->pluginEvents !== null) {
+                    $outputs = $this->pluginEvents->piglinBarter($entity, $payment, $outputs);
+                    if ($outputs === null) {
+                        $entity->equipmentState()->clear(ApiEquipmentSlot::OFF_HAND);
+                        if ($this->itemEntities->canSpawn()) {
+                            $returned = $this->itemEntities->spawn(
+                                $payment,
+                                new Position(
+                                    $entity->internalPosition()->x,
+                                    $entity->internalPosition()->y + ($entity->collisionHeight() * 0.7),
+                                    $entity->internalPosition()->z,
+                                ),
+                                new ItemEntityMotion(0.0, 0.12, 0.0),
+                                20,
+                            );
+                            $events[] = new ItemEntitySpawned($returned, $recipients);
+                        }
+                        continue;
+                    }
+                }
+                $entity->equipmentState()->clear(ApiEquipmentSlot::OFF_HAND);
+                foreach ($outputs as $output) {
+                    try {
+                        $drop = $this->itemEntities->spawn(
+                            $output,
+                            new Position(
+                                $entity->internalPosition()->x,
+                                $entity->internalPosition()->y + ($entity->collisionHeight() * 0.7),
+                                $entity->internalPosition()->z,
+                            ),
+                            new ItemEntityMotion(
+                                $this->dropRandom->integer(-8, 8) / 100.0,
+                                0.16,
+                                $this->dropRandom->integer(-8, 8) / 100.0,
+                            ),
+                            20,
+                        );
+                        $events[] = new ItemEntitySpawned($drop, $recipients);
+                    } catch (InvalidArgumentException|OverflowException) {
+                        // Invalid plugin-adjusted outputs are isolated to this barter.
+                    }
+                }
+                $this->pluginEvents?->piglinBartered($entity, $payment, $outputs);
+                continue;
+            }
+        }
+
+        return $events;
+    }
+
+    /**
+     * Gives nearby Piglins first claim on barter payments before player pickup is evaluated.
+     *
+     * @return list<WorldEvent>
+     */
+    private function collectPiglinBarterPayments(): array
+    {
+        $events = [];
+        $recipients = $this->players->recipients();
+        foreach ($this->entityRuntime->registry()->all() as $entity) {
+            if (!$entity instanceof PiglinEntity || !$entity->isAlive() || $entity->isAdmiring()
+                || ($this->tick + $entity->getRuntimeId()) % 10 !== 0) {
+                continue;
+            }
+            foreach ($this->itemEntities->nearbyPickupCandidates($entity->internalPosition(), 2.0, 4) as $item) {
+                if ($item->stack->identifier !== 'minecraft:gold_ingot') {
+                    continue;
+                }
+                $count = $this->pluginEvents === null
+                    ? 1
+                    : $this->pluginEvents->entityPickupItem($entity, $item->stack);
+                if ($count === null) {
+                    continue;
+                }
+                $pickup = $this->itemEntities->pickup($item->runtimeEntityId, min(1, $count));
+                if ($pickup === null) {
+                    continue;
+                }
+                unset($this->itemPublishedMotions[$item->runtimeEntityId]);
+                $replacement = null;
+                if ($pickup->remaining !== null) {
+                    $this->itemEntities->remove($item->runtimeEntityId);
+                    $replacement = $this->itemEntities->spawn(
+                        $pickup->remaining,
+                        $item->position,
+                        $item->motion,
+                        despawnAfterTicks: $item->despawnAfterTicks === null
+                            ? null
+                            : max(1, $item->despawnAfterTicks - $item->ageTicks),
+                    );
+                }
+                $entity->equipmentState()->setItem(
+                    ApiEquipmentSlot::OFF_HAND,
+                    new ApiItemStack('minecraft:gold_ingot', 1),
+                );
+                $entity->beginAdmiring();
+                $this->pluginEvents?->entityPickedUpItem($entity, $pickup->pickedUp);
+                $events[] = new ItemEntityPickedUp(
+                    $item->runtimeEntityId,
+                    $entity->getRuntimeId(),
+                    $pickup->pickedUp,
+                    null,
+                    true,
+                    [],
+                    $recipients,
+                );
+                if ($replacement !== null) {
+                    $events[] = new ItemEntitySpawned($replacement, $recipients);
+                }
+                break;
+            }
+        }
+
+        return $events;
+    }
+
+    private function piglinBarterOutput(): InventoryStack
+    {
+        [$identifier, $minimum, $maximum] = match ($this->dropRandom->integer(0, 7)) {
+            0 => ['minecraft:obsidian', 1, 1],
+            1 => ['minecraft:crying_obsidian', 1, 3],
+            2 => ['minecraft:ender_pearl', 2, 4],
+            3 => ['minecraft:fire_charge', 1, 5],
+            4 => ['minecraft:leather', 2, 4],
+            5 => ['minecraft:string', 3, 9],
+            6 => ['minecraft:gravel', 8, 16],
+            default => ['minecraft:blackstone', 8, 16],
+        };
+
+        return new InventoryStack(
+            $identifier,
+            $this->dropRandom->integer($minimum, $maximum),
+            1,
+        );
     }
 
     private static function adjacentBlock(BlockPosition $position, int $face): ?BlockPosition

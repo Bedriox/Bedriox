@@ -137,7 +137,7 @@ final class PortalDestinationResolutionTest extends TestCase
         $destination = $simulation->resolvePortalDestination($plan);
 
         self::assertNotNull($destination);
-        self::assertSame([2.5, 64.0, 1.0], [$destination->x, $destination->y, $destination->z]);
+        self::assertSame([3.5, 64.0, 1.0], [$destination->x, $destination->y, $destination->z]);
     }
 
     public function testEndPortalContactRequestsAnImmediatePairedDimensionTransfer(): void
@@ -289,7 +289,7 @@ final class PortalDestinationResolutionTest extends TestCase
         $destination = $simulation->resolvePortalDestination($plan);
 
         self::assertNotNull($destination);
-        self::assertSame([11.0, 64.0, 10.5], [$destination->x, $destination->y, $destination->z]);
+        self::assertSame([11.0, 64.0, 11.5], [$destination->x, $destination->y, $destination->z]);
         $state = $states->state($world->blockStateAt(10, 64, 10));
         self::assertSame('minecraft:portal', $state->identifier());
         self::assertSame('x', $state->properties()['portal_axis']);

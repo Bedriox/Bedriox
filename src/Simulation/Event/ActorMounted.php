@@ -21,6 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Simulation\Event;
 
 use Bedriox\Api\Entity\Value\MountSeat;
+use Bedriox\Server\Entity\Mount\MountSeatOffset;
 use Bedriox\Server\Simulation\PlayerSnapshot;
 
 final readonly class ActorMounted implements WorldEvent
@@ -30,7 +31,7 @@ final readonly class ActorMounted implements WorldEvent
         public int $vehicleRuntimeId,
         public int $passengerRuntimeId,
         public MountSeat $seat,
-        public float $seatOffsetY,
+        public MountSeatOffset $seatOffset,
         public bool $riderInitiated,
         public ?PlayerSnapshot $passenger,
         public array $recipientSessionIds,

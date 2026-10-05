@@ -41,10 +41,12 @@ final readonly class NaturalSpawnContext
         public int $lightLevel,
         public float $nearestPlayerDistanceSquared,
         public float $worldSpawnDistanceSquared,
+        public ?string $supportBlock = null,
     ) {
         if ($worldName === '' || strlen($worldName) > 128 || preg_match('//u', $worldName) !== 1
             || preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $biome) !== 1
             || $lightLevel < 0 || $lightLevel > 15
+            || ($supportBlock !== null && preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $supportBlock) !== 1)
             || !is_finite($nearestPlayerDistanceSquared) || $nearestPlayerDistanceSquared < 0.0
             || !is_finite($worldSpawnDistanceSquared) || $worldSpawnDistanceSquared < 0.0) {
             throw new InvalidArgumentException('Natural-spawn context is invalid.');

@@ -25,6 +25,8 @@ use Bedriox\Server\Entity\Ai\Goal\AquaticMeleeAttackIntentGoal;
 use Bedriox\Server\Entity\Ai\Goal\AquaticWanderGoal;
 use Bedriox\Server\Entity\Ai\Goal\ChasePlayerGoal;
 use Bedriox\Server\Entity\Ai\Goal\FleeFromPlayerGoal;
+use Bedriox\Server\Entity\Ai\Goal\FlyingRangedAttackIntentGoal;
+use Bedriox\Server\Entity\Ai\Goal\FlyingWanderGoal;
 use Bedriox\Server\Entity\Ai\Goal\MeleeAttackIntentGoal;
 use Bedriox\Server\Entity\Ai\Goal\RabbitHopGoal;
 use Bedriox\Server\Entity\Ai\Goal\RangedAttackIntentGoal;
@@ -32,6 +34,7 @@ use Bedriox\Server\Entity\Ai\Goal\TemptedByItemGoal;
 use Bedriox\Server\Entity\Ai\Goal\WanderGoal;
 use Bedriox\Server\Entity\Ai\Sensor\HurtSensor;
 use Bedriox\Server\Entity\Ai\Sensor\NearestPlayerSensor;
+use Bedriox\Server\Entity\Ai\Sensor\PiglinNearestPlayerSensor;
 use Bedriox\Server\Entity\Ai\Sensor\TemptingPlayerSensor;
 use InvalidArgumentException;
 
@@ -208,6 +211,65 @@ final class VanillaAiBehaviors
         return self::$hostiles['wither_skeleton'] ??= self::meleeHostile('wither_skeleton', 32.0, 8.0, 0.12);
     }
 
+    public static function blaze(): AiBehaviorDefinition
+    {
+        return self::$hostiles['blaze'] ??= self::flyingRangedHostile('blaze', 24.0, 4.0, 60, 1.0, 0.08);
+    }
+
+    public static function ghast(): AiBehaviorDefinition
+    {
+        return self::$hostiles['ghast'] ??= self::flyingRangedHostile('ghast', 64.0, 8.0, 60, 1.0, 0.06);
+    }
+
+    public static function hoglin(): AiBehaviorDefinition
+    {
+        return self::$hostiles['hoglin'] ??= self::meleeHostile('hoglin', 16.0, 6.0, 0.12);
+    }
+
+    public static function piglin(bool $brute = false): AiBehaviorDefinition
+    {
+        $species = $brute ? 'piglin_brute' : 'piglin';
+        if ($brute) {
+            return self::$hostiles[$species] ??= self::meleeHostile($species, 16.0, 7.0, 0.12);
+        }
+
+        return self::$hostiles[$species] ??= new AiBehaviorDefinition(
+            sensors: [new PiglinNearestPlayerSensor()],
+            goals: [
+                new MeleeAttackIntentGoal('bedriox:piglin_melee', 100, 1.8, 20, 5.0),
+                new ChasePlayerGoal('bedriox:piglin_chase', 80, 1.8, 0.12),
+                new WanderGoal('bedriox:piglin_wander', 10, 30, 40, 0.09),
+            ],
+        );
+    }
+
+    public static function strider(): AiBehaviorDefinition
+    {
+        return self::$hostiles['strider'] ??= self::passiveTempted(
+            'strider',
+            ['minecraft:warped_fungus'],
+            0.09,
+        );
+    }
+
+    public static function zoglin(): AiBehaviorDefinition
+    {
+        return self::$hostiles['zoglin'] ??= self::meleeHostile('zoglin', 16.0, 6.0, 0.13);
+    }
+
+    public static function zombifiedPiglin(): AiBehaviorDefinition
+    {
+        return self::$hostiles['zombified_piglin'] ??= self::meleeHostile('zombified_piglin', 16.0, 5.0, 0.12);
+    }
+
+    public static function happyGhast(): AiBehaviorDefinition
+    {
+        return self::$hostiles['happy_ghast'] ??= new AiBehaviorDefinition(
+            sensors: [new HurtSensor('bedriox:happy_ghast_hurt', 60)],
+            goals: [new FlyingWanderGoal('bedriox:happy_ghast_wander', 10, 0.06)],
+        );
+    }
+
     public static function witch(): AiBehaviorDefinition
     {
         return self::$hostiles['witch'] ??= new AiBehaviorDefinition(
@@ -256,6 +318,31 @@ final class VanillaAiBehaviors
                 new MeleeAttackIntentGoal("bedriox:{$species}_melee", 100, 1.8, 20, $damage),
                 new ChasePlayerGoal("bedriox:{$species}_chase", 80, 1.8, $speed),
                 new WanderGoal("bedriox:{$species}_wander", 10, 30, 40, $speed * 0.75),
+            ],
+        );
+    }
+
+    private static function flyingRangedHostile(
+        string $species,
+        float $range,
+        float $minimumRange,
+        int $cooldownTicks,
+        float $projectileSpeed,
+        float $wanderSpeed,
+    ): AiBehaviorDefinition {
+        return new AiBehaviorDefinition(
+            sensors: [new NearestPlayerSensor("bedriox:{$species}_nearest_player", 10, $range, 30)],
+            goals: [
+                new FlyingRangedAttackIntentGoal(
+                    "bedriox:{$species}_ranged_attack",
+                    100,
+                    $minimumRange,
+                    $range,
+                    $cooldownTicks,
+                    $projectileSpeed,
+                    0.1,
+                ),
+                new FlyingWanderGoal("bedriox:{$species}_wander", 10, $wanderSpeed),
             ],
         );
     }

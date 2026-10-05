@@ -27,6 +27,7 @@ use Bedriox\Api\Entity\MountedPassenger;
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\World\Position as ApiPosition;
+use Bedriox\Server\Entity\Mount\MountSeatOffset;
 use Bedriox\Server\Simulation\Position;
 use Closure;
 use InvalidArgumentException;
@@ -292,6 +293,16 @@ abstract class AbstractEntity implements ApiEntity
         return $playerPassenger
             ? ($passengerHeight * 0.9) * 0.753_086_42
             : -$passengerHeight * 0.246_913_58;
+    }
+
+    /** @internal Resolves the local-space Bedrock seat attachment carried by passenger actor metadata. */
+    public function mountedPassengerOffset(MountSeat $seat, float $passengerHeight, bool $playerPassenger): MountSeatOffset
+    {
+        return new MountSeatOffset(
+            0.0,
+            $this->mountedPassengerOffsetY($seat, $passengerHeight, $playerPassenger),
+            0.0,
+        );
     }
 
     final public function presentationRevision(): int

@@ -25,5 +25,6 @@ enum EntityCombustionCause: string
 {
     case SUNLIGHT = 'sunlight';
     case ENCHANTMENT = 'enchantment';
+    case PROJECTILE = 'projectile';
     case PLUGIN = 'plugin';
 }

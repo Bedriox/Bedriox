@@ -24,6 +24,7 @@ use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Entity\Capability\Ageable;
 use Bedriox\Api\Entity\Capability\Angerable;
 use Bedriox\Api\Entity\Capability\Climbing;
+use Bedriox\Api\Entity\Capability\FireImmune;
 use Bedriox\Api\Entity\Capability\Rideable;
 use Bedriox\Api\Entity\Capability\Shearable;
 use Bedriox\Api\Entity\Capability\Sittable;
@@ -32,7 +33,6 @@ use Bedriox\Api\Entity\Value\WoolColor;
 use Bedriox\Api\Entity\Vanilla\Cat;
 use Bedriox\Api\Entity\Vanilla\Creeper;
 use Bedriox\Api\Entity\Vanilla\Fox;
-use Bedriox\Api\Entity\Vanilla\MagmaCube;
 use Bedriox\Api\Entity\Vanilla\Pig;
 use Bedriox\Api\Entity\Vanilla\Rabbit;
 use Bedriox\Api\Entity\Vanilla\Sheep;
@@ -140,7 +140,7 @@ final class BedrockLivingActorProjector
         if ($entity instanceof Creeper && $entity->isIgnited()) {
             $flags |= ActorFlag::Ignited->mask();
         }
-        if ($entity instanceof MagmaCube) {
+        if ($entity instanceof FireImmune) {
             $flags |= ActorFlag::FireImmune->mask();
         }
         if ($entity->isGravityEnabled()) {

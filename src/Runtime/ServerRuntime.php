@@ -874,6 +874,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 $transfer->decision->yaw,
                 $transfer->decision->pitch,
             );
+            if (isset($this->pendingPortalTravelNotifications[$session->id])) {
+                $target->simulation->beginPortalArrivalCooldown($session->id);
+            }
         } catch (Throwable) {
             $session->worldId = $transfer->sourceWorldId;
             $session->dimension = $transfer->sourceDimension;
@@ -954,7 +957,6 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     $portalTravel['from'],
                     $portalTravel['destination'],
                 );
-                $target->simulation->beginPortalArrivalCooldown($session->id);
             }
             $this->crashContextDirty = true;
             $transferCommitted = true;
@@ -976,6 +978,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     ): void {
         try {
             $rollback = $target->simulation->detachPlayerForTransfer($session->id);
+            $target->simulation->clearPortalContact($session->id);
             $session->worldId = $transfer->sourceWorldId;
             $session->dimension = $transfer->sourceDimension;
             if ($rollback !== null && $source->simulation->authoritativePlayer($transfer->identity) === null) {
@@ -1504,6 +1507,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                             continue;
                         }
                         if ($event instanceof PortalTransferRequested) {
+                            if (isset($this->pendingPlayerWorldTransfers[$event->sessionId])) {
+                                continue;
+                            }
                             if (!$this->beginPortalTransfer($event)) {
                                 $session = $this->sessionById($event->sessionId);
                                 if ($session !== null) {

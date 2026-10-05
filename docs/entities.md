@@ -88,6 +88,11 @@ Every world owns one transient mount registry. A passenger has at most one vehic
 
 Players can inspect and control a live relationship through `Player::getVehicle()`, `isRiding()`, `mount()`, and `dismount()`. Entities expose `getVehicle()`, `isRiding()`, `getPassengers()`, and `hasPassengers()` without exposing packet actor-link values. `EntityMountEvent` and `EntityDismountEvent` run before ordinary player or plugin transitions; `EntityMountedEvent` and `EntityDismountedEvent` observe committed state. Lifecycle-forced dismounts cannot be cancelled.
 
+Vehicle implementations own local three-dimensional seat attachment points.
+The authoritative rider position and Bedrock seat metadata use that same
+attachment, including the Happy Ghast's front pilot seat and three clockwise
+passenger seats above its harness.
+
 Boats, chest boats, bamboo rafts, and bamboo chest rafts are authoritative
 vehicle entities. Every current wood variant is represented by `BoatVariant`.
 A normal boat has a driver and passenger seat; a chest boat reserves its second
@@ -156,7 +161,48 @@ Hostile ranged behavior remains projectile-owned. Strays and bogged launch their
 
 The public hostile event foundation also includes cancellable `EntitySplitEvent`, adjustable `EntityTransformEvent`, and adjustable `EntityBlockChangeEvent`, with immutable `EntityTransformedEvent` and `EntityBlockChangedEvent` observations. Slime and magma-cube splitting is connected to `EntitySplitEvent`. Transformation and entity-owned block-change events define the bounded API boundary for mechanics that use them; the current common-hostile runtime does not claim zombie curing, enderman block pickup or placement, or other transformations merely because those event classes exist.
 
-Natural hostile work remains inside the shared regional cap, local-density limit, spawn cadence, elapsed-time budget, loaded-terrain checks, and distance-despawn policy. Overworld natural selection currently includes the qualified environment-appropriate subset; Nether-only, structure-only, infestation-only, and transformation-created species remain available through their admitted explicit spawn paths until their owning world or structure system can provide the required context.
+Natural hostile work remains inside the shared regional cap, local-density
+limit, spawn cadence, elapsed-time budget, loaded-terrain checks, and
+distance-despawn policy. Overworld and Nether selection use their qualified
+environment-appropriate subsets. Infestation-created and other event-owned
+species remain available through admitted explicit spawn paths until their
+owning gameplay system provides the required context.
+
+## Nether entities
+
+Blazes, Ghasts, Happy Ghasts, Hoglins, Piglins, Piglin Brutes, Striders,
+Zoglins, and Zombified Piglins have canonical public entity contracts and
+dedicated internal implementations. They share the ordinary spawn, damage,
+equipment, death, mount, visibility, persistence, and plugin-controller paths;
+there is no separate Nether-only runtime.
+
+Natural Nether spawning uses loaded dimension, biome, fluid, and support-block
+context. Striders spawn in lava, fortress floors admit Blazes and Wither
+Skeletons, bastion floors admit Piglin Brutes, and the remaining families use
+their eligible Nether biomes. Blaze, Ghast, and Happy Ghast movement is
+three-dimensional. Fire-immune families project the corresponding actor state
+and do not receive combustion damage.
+
+Piglins accept or collect gold ingots and complete bounded barters. Ordinary
+Piglins remain neutral to players wearing gold armor until provoked. Nearby
+members of the appropriate Piglin family share player provocation through the
+normal target events. `EntityPickupItemEvent`, `EntityPickedUpItemEvent`,
+`PiglinBarterEvent`, and `PiglinBarteredEvent` expose the authoritative pickup
+and barter boundaries. A cancelled barter returns the admitted payment.
+
+Hoglins breed with crimson fungus and convert into Zoglins outside the Nether.
+Piglins and Piglin Brutes convert into Zombified Piglins outside the Nether.
+The ordinary transform events run before and after replacement, and committed
+transformations retain health proportion and equipment. Striders breed with
+warped fungus, accept saddles, steer with warped fungus on a stick, float on
+lava, and take water or exposed-rain damage. Harnessed adult Happy Ghasts use
+the shared mount registry with four seats and retain persistent growth,
+breeding, and harness state.
+
+Blazes launch small fireballs; Ghasts launch explosive fireballs. Fireballs
+use authoritative collision, damage, ignition, ownership, and lifetime. A
+player attack may reflect one through `ProjectileReflectEvent`, followed by
+`ProjectileReflectedEvent` after ownership and velocity commit.
 
 ## Transaction and lifecycle boundary
 
@@ -182,6 +228,11 @@ Entity loot is evaluated exactly once after lethal health commits. The stable re
 
 The event accepts at most 128 immutable `ItemStack` values. The built-in resolver validates catalog membership, respects each item's maximum stack size, coalesces equivalent state, and caps its own output at 64 stacks and 4,096 items. Final item creation is also subject to the world's bounded item-entity capacity; an invalid or excess plugin-supplied stack is skipped without terminating the server tick.
 
-Species-specific tables cover zombies, cows, sheep, pigs, chickens, rabbits, and skeletons. Burning animals produce the applicable cooked meat. Pig saddles, sheep wool, feathers, hides, and bounded rare rabbit feet use the same normalized item-entity path. Equipped items are evaluated independently using their stored per-slot chance, preserving identifier, count, damage, auxiliary value, and NBT.
+Species-specific tables cover the common Overworld roster and supported Nether
+families. Burning animals produce the applicable cooked meat. Pig saddles,
+sheep wool, feathers, hides, blaze rods, Ghast drops, Hoglin meat and leather,
+Strider string, and Zombified Piglin drops use the same normalized item-entity
+path. Equipped items are evaluated independently using their stored per-slot
+chance, preserving identifier, count, damage, auxiliary value, and NBT.
 
 Custom entities and other admitted species currently have an empty base table. Plugins can supply their drops through `EntityDeathEvent`; a public loot-table registrar is not yet available. Fake-human entities and a general NPC controller are separate milestones.

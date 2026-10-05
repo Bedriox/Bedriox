@@ -35,6 +35,7 @@ use Bedriox\Server\World\Collision\AxisAlignedBox;
 use Bedriox\Server\World\Collision\BlockCollisionQuery;
 use Bedriox\Server\World\Collision\BlockCollisionRegistry;
 use Bedriox\Server\World\World;
+use Bedriox\Server\World\WorldDimensionBounds;
 use InvalidArgumentException;
 use RuntimeException;
 
@@ -131,20 +132,26 @@ final class WorldNaturalSpawnEnvironment implements NaturalSpawnEnvironment
         }
         $localX = self::localCoordinate((int) floor($x));
         $localZ = self::localCoordinate((int) floor($z));
-        $height = Chunk::MAX_Y - Chunk::MIN_Y + 1;
-        $startY = Chunk::MIN_Y + min($height - 1, (int) floor($verticalSelector * $height));
+        $minimumY = WorldDimensionBounds::minimumY($this->world->dimension());
+        $maximumY = WorldDimensionBounds::maximumY($this->world->dimension());
+        $height = $maximumY - $minimumY + 1;
+        $startY = $minimumY + min($height - 1, (int) floor($verticalSelector * $height));
         for ($offset = 0; $offset < $height; ++$offset) {
-            $y = Chunk::MIN_Y + (($startY - Chunk::MIN_Y - $offset + $height) % $height);
-            if ($medium === NaturalSpawnMedium::WATER) {
+            $y = $minimumY + (($startY - $minimumY - $offset + $height) % $height);
+            if ($medium === NaturalSpawnMedium::WATER || $medium === NaturalSpawnMedium::LAVA) {
                 $state = $chunk->blockStateAt($localX, $y, $localZ);
-                if (($this->water !== null && $state->value === $this->water->value)
-                    || $this->states->state($state)->identifier() === 'minecraft:water') {
+                $expected = $medium === NaturalSpawnMedium::WATER ? $this->water : $this->lava;
+                $identifier = $medium === NaturalSpawnMedium::WATER ? 'minecraft:water' : 'minecraft:lava';
+                if (($expected !== null && $state->value === $expected->value)
+                    || $this->states->state($state)->identifier() === $identifier) {
                     return new Position($x, $y + 0.5, $z);
                 }
                 continue;
             }
             $surface = $this->collisionSurface($chunk->blockStateAt($localX, $y, $localZ));
-            if ($surface !== null && $y < Chunk::MAX_Y) {
+            if ($surface !== null
+                && $y < $maximumY
+                && $this->collisionSurface($chunk->blockStateAt($localX, $y + 1, $localZ)) === null) {
                 return new Position($x, $y + $surface, $z);
             }
         }
@@ -177,6 +184,24 @@ final class WorldNaturalSpawnEnvironment implements NaturalSpawnEnvironment
         return $support !== null && $supportY + $support >= $position->y - 0.000_001
             ? NaturalSpawnMedium::GROUND
             : NaturalSpawnMedium::AIR;
+    }
+
+    public function supportBlock(string $worldName, Position $position): ?string
+    {
+        $chunk = $this->loadedChunkAt($worldName, $position);
+        if ($chunk === null) {
+            return null;
+        }
+        $supportY = (int) floor($position->y - 0.000_001);
+        if ($supportY < Chunk::MIN_Y || $supportY > Chunk::MAX_Y) {
+            return null;
+        }
+
+        return $this->states->state($chunk->blockStateAt(
+            self::localCoordinate((int) floor($position->x)),
+            $supportY,
+            self::localCoordinate((int) floor($position->z)),
+        ))->identifier();
     }
 
     public function lightLevel(string $worldName, Position $position): int

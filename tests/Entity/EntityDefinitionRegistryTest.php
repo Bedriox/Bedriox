@@ -90,7 +90,7 @@ final class EntityDefinitionRegistryTest extends TestCase
         $catalog = BedrockDataSet::bundled()->entityTypeRegistry();
         $registry = EntityDefinitionRegistry::fromData($catalog);
 
-        foreach (['minecraft:boat', 'minecraft:chest_boat', 'minecraft:chicken', 'minecraft:cow', 'minecraft:pig', 'minecraft:rabbit', 'minecraft:sheep', 'minecraft:skeleton', 'minecraft:zombie'] as $identifier) {
+        foreach (['minecraft:blaze', 'minecraft:boat', 'minecraft:chest_boat', 'minecraft:chicken', 'minecraft:cow', 'minecraft:ghast', 'minecraft:happy_ghast', 'minecraft:hoglin', 'minecraft:pig', 'minecraft:piglin', 'minecraft:piglin_brute', 'minecraft:rabbit', 'minecraft:sheep', 'minecraft:skeleton', 'minecraft:strider', 'minecraft:zoglin', 'minecraft:zombie', 'minecraft:zombie_pigman'] as $identifier) {
             self::assertNotNull($registry->get($identifier), $identifier);
         }
         foreach ([

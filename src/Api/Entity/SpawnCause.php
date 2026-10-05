@@ -33,4 +33,5 @@ enum SpawnCause: string
     case EFFECT = 'effect';
     case BUCKET = 'bucket';
     case ITEM = 'item';
+    case TRANSFORMATION = 'transformation';
 }

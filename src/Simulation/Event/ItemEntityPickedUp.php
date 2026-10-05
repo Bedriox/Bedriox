@@ -29,7 +29,7 @@ final readonly class ItemEntityPickedUp implements WorldEvent
         public int $itemRuntimeActorId,
         public int $collectorRuntimeActorId,
         public InventoryStack $stack,
-        public string $collectorSessionId,
+        public ?string $collectorSessionId,
         public bool $removed,
         /** @var list<InventoryStack|null> */
         public array $mainInventory,

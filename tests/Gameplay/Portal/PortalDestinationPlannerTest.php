@@ -79,6 +79,32 @@ final class PortalDestinationPlannerTest extends TestCase
         self::assertEquals(new BlockPosition(10, 72, -5), $origin);
     }
 
+    public function testNetherBuildSearchCanFindAValidCavernOutsideTheOldVerticalWindow(): void
+    {
+        $planner = new PortalDestinationPlanner();
+        $plan = $planner->plan(WorldDimension::OVERWORLD, new Position(80.0, 110.0, -40.0), PortalAxis::X);
+
+        $origin = $planner->buildOrigin(
+            $plan,
+            static fn(BlockPosition $position): bool => $position->x === 10
+                && $position->y === 40
+                && $position->z === -5,
+        );
+
+        self::assertEquals(new BlockPosition(10, 40, -5), $origin);
+    }
+
+    public function testNetherFallbackCannotOverwriteTheBedrockRoof(): void
+    {
+        $plan = (new PortalDestinationPlanner())->plan(
+            WorldDimension::OVERWORLD,
+            new Position(0.0, 319.0, 0.0),
+            PortalAxis::X,
+        );
+
+        self::assertSame(122, (new PortalDestinationPlanner())->fallbackBuildOrigin($plan)->y);
+    }
+
     public function testEndCannotUseNetherPortalPlanner(): void
     {
         $this->expectException(InvalidArgumentException::class);

@@ -22,6 +22,7 @@ namespace Bedriox\Server\Entity\Spawn\Natural;
 
 use Bedriox\Api\Entity\EntityCategory;
 use Bedriox\Api\Entity\VanillaEntityType;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Entity\AbstractLivingEntity;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\EntityDespawnPolicy;
@@ -127,56 +128,68 @@ final class WorldNaturalSpawnRuntime
             ],
         );
         $entries = [];
+        $dimension = $world->dimension();
         if ($spawnAnimals) {
-            $entries[] = new NaturalSpawnEntry(
-                VanillaEntityType::COW,
-                EntityCategory::ANIMAL,
-                new CowNaturalSpawnRule(),
-                8,
-            );
-            $entries[] = new NaturalSpawnEntry(
-                VanillaEntityType::SHEEP,
-                EntityCategory::ANIMAL,
-                new SheepNaturalSpawnRule(),
-                12,
-            );
-            if ($definitions->get(VanillaEntityType::PIG) !== null) {
-                $entries[] = new NaturalSpawnEntry(VanillaEntityType::PIG, EntityCategory::ANIMAL, new PigNaturalSpawnRule(), 10);
-            }
-            if ($definitions->get(VanillaEntityType::CHICKEN) !== null) {
-                $entries[] = new NaturalSpawnEntry(VanillaEntityType::CHICKEN, EntityCategory::ANIMAL, new ChickenNaturalSpawnRule(), 10);
-            }
-            if ($definitions->get(VanillaEntityType::RABBIT) !== null) {
-                $entries[] = new NaturalSpawnEntry(VanillaEntityType::RABBIT, EntityCategory::ANIMAL, new RabbitNaturalSpawnRule(), 6);
-            }
-            foreach ([
-                [VanillaEntityType::WOLF, new LandAnimalNaturalSpawnRule(['forest', 'taiga', 'grove']), 4],
-                [VanillaEntityType::OCELOT, new LandAnimalNaturalSpawnRule(['jungle']), 2],
-                [VanillaEntityType::HORSE, new LandAnimalNaturalSpawnRule(['plains', 'savanna']), 5],
-                [VanillaEntityType::DONKEY, new LandAnimalNaturalSpawnRule(['plains', 'savanna']), 1],
-                [VanillaEntityType::LLAMA, new LandAnimalNaturalSpawnRule(['mountain', 'peak', 'slope', 'windswept']), 3],
-                [VanillaEntityType::FOX, new LandAnimalNaturalSpawnRule(['taiga', 'grove']), 3],
-                [VanillaEntityType::GOAT, new LandAnimalNaturalSpawnRule(['mountain', 'peak', 'slope', 'grove']), 3],
-                [VanillaEntityType::PANDA, new LandAnimalNaturalSpawnRule(['jungle']), 1],
-                [VanillaEntityType::POLAR_BEAR, new LandAnimalNaturalSpawnRule(['frozen', 'ice', 'snow']), 2],
-                [VanillaEntityType::ARMADILLO, new LandAnimalNaturalSpawnRule(['savanna', 'badlands']), 3],
-                [VanillaEntityType::MOOSHROOM, new LandAnimalNaturalSpawnRule(['mushroom']), 2],
-            ] as [$type, $rule, $weight]) {
-                if ($definitions->get($type) !== null) {
-                    $entries[] = new NaturalSpawnEntry($type, EntityCategory::ANIMAL, $rule, $weight);
+            if ($dimension === WorldDimension::NETHER && $definitions->get(VanillaEntityType::STRIDER) !== null) {
+                $entries[] = new NaturalSpawnEntry(
+                    VanillaEntityType::STRIDER,
+                    EntityCategory::ANIMAL,
+                    new NetherNaturalSpawnRule(VanillaEntityType::STRIDER),
+                    8,
+                    NaturalSpawnMedium::LAVA,
+                );
+            } elseif ($dimension === WorldDimension::OVERWORLD) {
+                $entries[] = new NaturalSpawnEntry(
+                    VanillaEntityType::COW,
+                    EntityCategory::ANIMAL,
+                    new CowNaturalSpawnRule(),
+                    8,
+                );
+                $entries[] = new NaturalSpawnEntry(
+                    VanillaEntityType::SHEEP,
+                    EntityCategory::ANIMAL,
+                    new SheepNaturalSpawnRule(),
+                    12,
+                );
+                if ($definitions->get(VanillaEntityType::PIG) !== null) {
+                    $entries[] = new NaturalSpawnEntry(VanillaEntityType::PIG, EntityCategory::ANIMAL, new PigNaturalSpawnRule(), 10);
                 }
-            }
-            foreach ([
-                [VanillaEntityType::COD, 12],
-                [VanillaEntityType::SALMON, 10],
-                [VanillaEntityType::TROPICAL_FISH, 10],
-                [VanillaEntityType::PUFFERFISH, 4],
-                [VanillaEntityType::SQUID, 6],
-                [VanillaEntityType::GLOW_SQUID, 3],
-                [VanillaEntityType::DOLPHIN, 2],
-                [VanillaEntityType::AXOLOTL, 2],
-            ] as [$type, $weight]) {
-                if ($definitions->get($type) !== null) {
+                if ($definitions->get(VanillaEntityType::CHICKEN) !== null) {
+                    $entries[] = new NaturalSpawnEntry(VanillaEntityType::CHICKEN, EntityCategory::ANIMAL, new ChickenNaturalSpawnRule(), 10);
+                }
+                if ($definitions->get(VanillaEntityType::RABBIT) !== null) {
+                    $entries[] = new NaturalSpawnEntry(VanillaEntityType::RABBIT, EntityCategory::ANIMAL, new RabbitNaturalSpawnRule(), 6);
+                }
+                foreach ([
+                    [VanillaEntityType::WOLF, new LandAnimalNaturalSpawnRule(['forest', 'taiga', 'grove']), 4],
+                    [VanillaEntityType::OCELOT, new LandAnimalNaturalSpawnRule(['jungle']), 2],
+                    [VanillaEntityType::HORSE, new LandAnimalNaturalSpawnRule(['plains', 'savanna']), 5],
+                    [VanillaEntityType::DONKEY, new LandAnimalNaturalSpawnRule(['plains', 'savanna']), 1],
+                    [VanillaEntityType::LLAMA, new LandAnimalNaturalSpawnRule(['mountain', 'peak', 'slope', 'windswept']), 3],
+                    [VanillaEntityType::FOX, new LandAnimalNaturalSpawnRule(['taiga', 'grove']), 3],
+                    [VanillaEntityType::GOAT, new LandAnimalNaturalSpawnRule(['mountain', 'peak', 'slope', 'grove']), 3],
+                    [VanillaEntityType::PANDA, new LandAnimalNaturalSpawnRule(['jungle']), 1],
+                    [VanillaEntityType::POLAR_BEAR, new LandAnimalNaturalSpawnRule(['frozen', 'ice', 'snow']), 2],
+                    [VanillaEntityType::ARMADILLO, new LandAnimalNaturalSpawnRule(['savanna', 'badlands']), 3],
+                    [VanillaEntityType::MOOSHROOM, new LandAnimalNaturalSpawnRule(['mushroom']), 2],
+                ] as [$type, $rule, $weight]) {
+                    if ($definitions->get($type) !== null) {
+                        $entries[] = new NaturalSpawnEntry($type, EntityCategory::ANIMAL, $rule, $weight);
+                    }
+                }
+                foreach ([
+                    [VanillaEntityType::COD, 12],
+                    [VanillaEntityType::SALMON, 10],
+                    [VanillaEntityType::TROPICAL_FISH, 10],
+                    [VanillaEntityType::PUFFERFISH, 4],
+                    [VanillaEntityType::SQUID, 6],
+                    [VanillaEntityType::GLOW_SQUID, 3],
+                    [VanillaEntityType::DOLPHIN, 2],
+                    [VanillaEntityType::AXOLOTL, 2],
+                ] as [$type, $weight]) {
+                    if ($definitions->get($type) === null) {
+                        continue;
+                    }
                     $entries[] = new NaturalSpawnEntry(
                         $type,
                         EntityCategory::WATER,
@@ -185,57 +198,101 @@ final class WorldNaturalSpawnRuntime
                         NaturalSpawnMedium::WATER,
                     );
                 }
-            }
-            if ($definitions->get(VanillaEntityType::TURTLE) !== null) {
-                $entries[] = new NaturalSpawnEntry(
-                    VanillaEntityType::TURTLE,
-                    EntityCategory::ANIMAL,
-                    new TurtleNaturalSpawnRule(),
-                    2,
-                );
+                if ($definitions->get(VanillaEntityType::TURTLE) !== null) {
+                    $entries[] = new NaturalSpawnEntry(
+                        VanillaEntityType::TURTLE,
+                        EntityCategory::ANIMAL,
+                        new TurtleNaturalSpawnRule(),
+                        2,
+                    );
+                }
             }
         }
         if ($spawnMonsters && $world->difficulty() > 0) {
-            $entries[] = new NaturalSpawnEntry(
-                VanillaEntityType::ZOMBIE,
-                EntityCategory::MONSTER,
-                new ZombieNaturalSpawnRule(),
-                12,
-            );
-            $entries[] = new NaturalSpawnEntry(
-                VanillaEntityType::SKELETON,
-                EntityCategory::MONSTER,
-                new SkeletonNaturalSpawnRule(),
-                10,
-            );
-            foreach ([
-                [
-                    VanillaEntityType::DROWNED,
-                    new AquaticSpeciesNaturalSpawnRule(VanillaEntityType::DROWNED),
-                    6,
-                    NaturalSpawnMedium::WATER,
-                ],
-                [VanillaEntityType::HUSK, new HuskNaturalSpawnRule(), 5],
-                [VanillaEntityType::STRAY, new StrayNaturalSpawnRule(), 4],
-                [VanillaEntityType::BOGGED, new BoggedNaturalSpawnRule(), 3],
-                [VanillaEntityType::PARCHED, new ParchedNaturalSpawnRule(), 3],
-                [VanillaEntityType::SPIDER, new SpiderNaturalSpawnRule(), 10],
-                [VanillaEntityType::CREEPER, new CreeperNaturalSpawnRule(), 10],
-                [VanillaEntityType::SLIME, new SlimeNaturalSpawnRule(), 3],
-                [VanillaEntityType::MAGMA_CUBE, new MagmaCubeNaturalSpawnRule(), 4],
-                [VanillaEntityType::ENDERMAN, new EndermanNaturalSpawnRule(), 1],
-                [VanillaEntityType::WITCH, new WitchNaturalSpawnRule(), 1],
-            ] as $definition) {
-                [$type, $rule, $weight] = $definition;
-                if ($definitions->get($type) !== null) {
+            if ($dimension === WorldDimension::NETHER) {
+                foreach ([
+                    [VanillaEntityType::BLAZE, 4],
+                    [VanillaEntityType::GHAST, 3],
+                    [VanillaEntityType::HOGLIN, 7],
+                    [VanillaEntityType::PIGLIN, 9],
+                    [VanillaEntityType::PIGLIN_BRUTE, 1],
+                    [VanillaEntityType::ZOMBIFIED_PIGLIN, 8],
+                ] as [$type, $weight]) {
+                    if ($definitions->get($type) !== null) {
+                        $entries[] = new NaturalSpawnEntry(
+                            $type,
+                            EntityCategory::MONSTER,
+                            new NetherNaturalSpawnRule($type),
+                            $weight,
+                        );
+                    }
+                }
+                if ($definitions->get(VanillaEntityType::WITHER_SKELETON) !== null) {
                     $entries[] = new NaturalSpawnEntry(
-                        $type,
+                        VanillaEntityType::WITHER_SKELETON,
                         EntityCategory::MONSTER,
-                        $rule,
-                        $weight,
-                        $definition[3] ?? NaturalSpawnMedium::GROUND,
+                        new WitherSkeletonNaturalSpawnRule(),
+                        5,
                     );
                 }
+                foreach ([
+                    [VanillaEntityType::MAGMA_CUBE, new MagmaCubeNaturalSpawnRule(), 4],
+                    [VanillaEntityType::ENDERMAN, new EndermanNaturalSpawnRule(), 1],
+                    [VanillaEntityType::SKELETON, new SkeletonNaturalSpawnRule(), 2],
+                ] as [$type, $rule, $weight]) {
+                    if ($definitions->get($type) !== null) {
+                        $entries[] = new NaturalSpawnEntry($type, EntityCategory::MONSTER, $rule, $weight);
+                    }
+                }
+            } elseif ($dimension === WorldDimension::OVERWORLD) {
+                $entries[] = new NaturalSpawnEntry(
+                    VanillaEntityType::ZOMBIE,
+                    EntityCategory::MONSTER,
+                    new ZombieNaturalSpawnRule(),
+                    12,
+                );
+                $entries[] = new NaturalSpawnEntry(
+                    VanillaEntityType::SKELETON,
+                    EntityCategory::MONSTER,
+                    new SkeletonNaturalSpawnRule(),
+                    10,
+                );
+                foreach ([
+                    [
+                        VanillaEntityType::DROWNED,
+                        new AquaticSpeciesNaturalSpawnRule(VanillaEntityType::DROWNED),
+                        6,
+                        NaturalSpawnMedium::WATER,
+                    ],
+                    [VanillaEntityType::HUSK, new HuskNaturalSpawnRule(), 5],
+                    [VanillaEntityType::STRAY, new StrayNaturalSpawnRule(), 4],
+                    [VanillaEntityType::BOGGED, new BoggedNaturalSpawnRule(), 3],
+                    [VanillaEntityType::PARCHED, new ParchedNaturalSpawnRule(), 3],
+                    [VanillaEntityType::SPIDER, new SpiderNaturalSpawnRule(), 10],
+                    [VanillaEntityType::CREEPER, new CreeperNaturalSpawnRule(), 10],
+                    [VanillaEntityType::SLIME, new SlimeNaturalSpawnRule(), 3],
+                    [VanillaEntityType::MAGMA_CUBE, new MagmaCubeNaturalSpawnRule(), 4],
+                    [VanillaEntityType::ENDERMAN, new EndermanNaturalSpawnRule(), 1],
+                    [VanillaEntityType::WITCH, new WitchNaturalSpawnRule(), 1],
+                ] as $definition) {
+                    [$type, $rule, $weight] = $definition;
+                    if ($definitions->get($type) !== null) {
+                        $entries[] = new NaturalSpawnEntry(
+                            $type,
+                            EntityCategory::MONSTER,
+                            $rule,
+                            $weight,
+                            $definition[3] ?? NaturalSpawnMedium::GROUND,
+                        );
+                    }
+                }
+            } elseif ($definitions->get(VanillaEntityType::ENDERMAN) !== null) {
+                $entries[] = new NaturalSpawnEntry(
+                    VanillaEntityType::ENDERMAN,
+                    EntityCategory::MONSTER,
+                    new EndermanNaturalSpawnRule(),
+                    10,
+                );
             }
         }
         $spawner = new NaturalSpawner(

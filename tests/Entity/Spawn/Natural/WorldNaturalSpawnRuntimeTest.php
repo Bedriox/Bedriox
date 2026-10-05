@@ -48,6 +48,7 @@ use Bedriox\Server\World\Collision\BlockCollisionQuery;
 use Bedriox\Server\World\Collision\BlockCollisionRegistry;
 use Bedriox\Server\World\FlatWorldGenerator;
 use Bedriox\Server\World\Generation\GenerationBlockPalette;
+use Bedriox\Server\World\NetherWorldGenerator;
 use Bedriox\Server\World\World;
 use Bedriox\Server\World\WorldMetadata;
 use PHPUnit\Framework\TestCase;
@@ -186,6 +187,52 @@ final class WorldNaturalSpawnRuntimeTest extends TestCase
         self::assertSame([], $result->removed());
     }
 
+    public function testGeneratedNetherProducesVisibleNaturalNetherMobs(): void
+    {
+        [$world, $states, $palette, $shapes, $query, $entities, $definitions] = self::dependencies(
+            loadRadius: 4,
+            dimension: WorldDimension::NETHER,
+            useDimensionGenerator: true,
+        );
+        $generation = GenerationBlockPalette::fromRegistry($states);
+        $runtime = WorldNaturalSpawnRuntime::baseline(
+            $world,
+            $entities,
+            $definitions,
+            $states,
+            $shapes,
+            $query,
+            $palette->air,
+            $generation->state('minecraft:water'),
+            $generation->state('minecraft:lava'),
+            new FrozenNaturalSpawnClock(),
+        );
+        $spawn = $world->spawn();
+        $players = [new NaturalSpawnPlayer('world', new Position($spawn->x + 0.5, $spawn->y, $spawn->z + 0.5))];
+        $spawned = [];
+        for ($tick = 20; $tick <= 2_000 && $spawned === []; $tick += 20) {
+            $spawned = $runtime->tick($tick, $players)->spawned();
+        }
+
+        self::assertNotEmpty($spawned);
+        foreach ($spawned as $entity) {
+            self::assertContains($entity->getType(), [
+                VanillaEntityType::BLAZE,
+                VanillaEntityType::ENDERMAN,
+                VanillaEntityType::GHAST,
+                VanillaEntityType::HOGLIN,
+                VanillaEntityType::MAGMA_CUBE,
+                VanillaEntityType::PIGLIN,
+                VanillaEntityType::PIGLIN_BRUTE,
+                VanillaEntityType::SKELETON,
+                VanillaEntityType::STRIDER,
+                VanillaEntityType::WITHER_SKELETON,
+                VanillaEntityType::ZOMBIFIED_PIGLIN,
+            ]);
+            self::assertLessThanOrEqual(127.0, $entity->internalPosition()->y);
+        }
+    }
+
     public function testHardDistanceDespawnCannotRemoveCommandEntities(): void
     {
         [$world, $states, $palette, $shapes, $query, $entities, $definitions] = self::dependencies();
@@ -297,13 +344,17 @@ final class WorldNaturalSpawnRuntimeTest extends TestCase
         int $loadRadius = 7,
         string $metadataName = 'world',
         WorldDimension $dimension = WorldDimension::OVERWORLD,
+        bool $useDimensionGenerator = false,
     ): array {
         $states = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
         $palette = FixedFlatBlockPalette::fromRegistry($states);
         $generation = GenerationBlockPalette::fromRegistry($states);
+        $generator = $useDimensionGenerator && $dimension === WorldDimension::NETHER
+            ? new NetherWorldGenerator(12345, $states)
+            : new FlatWorldGenerator($palette);
         $world = new World(
             new WorldMetadata($metadataName, 12345),
-            new FlatWorldGenerator($palette),
+            $generator,
             new ChunkRepository(($loadRadius * 2 + 1) ** 2 + 1),
             dimension: $dimension,
         );
