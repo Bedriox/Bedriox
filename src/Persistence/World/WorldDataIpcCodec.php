@@ -40,12 +40,13 @@ final class WorldDataIpcCodec
                 'difficulty' => $data->difficulty,
                 'generator' => $data->generatorName,
                 'generator_options' => $data->generatorOptions,
+                'generator_version_declared' => $data->bedrioxGeneratorVersionDeclared,
                 'generator_version' => $data->generatorVersion,
                 'name' => $data->metadata->name,
                 'seed' => $data->metadata->seed,
                 'spawn' => [$data->spawn->x, $data->spawn->y, $data->spawn->z],
                 'time' => $data->time,
-                'version' => 3,
+                'version' => 4,
                 'weather' => [
                     'cycle' => $data->weatherCycleEnabled,
                     'remaining_ticks' => $data->weather->weather->remainingTicks,
@@ -74,9 +75,10 @@ final class WorldDataIpcCodec
             throw new RuntimeException('World data IPC value is malformed.', previous: $error);
         }
         if (!is_array($value) || array_keys($value) !== [
-            'difficulty', 'generator', 'generator_options', 'generator_version', 'name', 'seed', 'spawn', 'time', 'version', 'weather',
-        ] || $value['version'] !== 3 || !is_int($value['difficulty'])
+            'difficulty', 'generator', 'generator_options', 'generator_version_declared', 'generator_version', 'name', 'seed', 'spawn', 'time', 'version', 'weather',
+        ] || $value['version'] !== 4 || !is_int($value['difficulty'])
             || !is_string($value['generator']) || !is_int($value['generator_version'])
+            || !is_bool($value['generator_version_declared'])
             || !is_string($value['generator_options'])
             || !is_string($value['name']) || !is_int($value['seed'])
             || !is_array($value['spawn']) || !array_is_list($value['spawn']) || count($value['spawn']) !== 3
@@ -106,6 +108,7 @@ final class WorldDataIpcCodec
                 $value['weather']['sequence'],
             ),
             $value['weather']['cycle'],
+            $value['generator_version_declared'],
         );
     }
 }

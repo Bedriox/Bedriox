@@ -36,7 +36,7 @@ final class DefaultWorldGeneratorTest extends TestCase
         [$generator] = self::generator(0);
 
         self::assertSame('default', $generator->name());
-        self::assertSame(1, $generator->version());
+        self::assertSame(2, $generator->version());
     }
 
     /** @return iterable<string, array{int}> */

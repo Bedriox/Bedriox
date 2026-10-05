@@ -21,12 +21,14 @@ declare(strict_types=1);
 namespace Bedriox\Server\Runtime;
 
 use Bedriox\Api\Player\GameMode;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Packet\AvailableActorIdentifiersPacket;
 use Bedriox\Protocol\Packet\BiomeDefinitionListPacket;
 use Bedriox\Protocol\Packet\BlockPropertyData;
 use Bedriox\Protocol\Packet\ChunkRadiusUpdatedPacket;
 use Bedriox\Protocol\Packet\CraftingDataPacket;
+use Bedriox\Protocol\Packet\DimensionId;
 use Bedriox\Protocol\Packet\GameRulesChangedPacket;
 use Bedriox\Protocol\Packet\InventoryContainerId;
 use Bedriox\Protocol\Packet\InventoryContentPacket;
@@ -105,6 +107,7 @@ final class BedrockPlayInitializationFactory implements PlayInitializationFactor
         ?ItemCatalog $itemCatalog = null,
         ?CraftingCatalog $craftingCatalog = null,
         ?callable $worldTimeProvider = null,
+        private WorldDimension $dimension = WorldDimension::OVERWORLD,
     ) {
         if ($this->difficulty < 0 || $this->difficulty > 3) {
             throw new \InvalidArgumentException('Difficulty must be a Bedrock value between 0 and 3.');
@@ -164,6 +167,7 @@ final class BedrockPlayInitializationFactory implements PlayInitializationFactor
         ?ItemCatalog $itemCatalog = null,
         ?CraftingCatalog $craftingCatalog = null,
         ?callable $worldTimeProvider = null,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
     ): self {
         return new self(
             $data,
@@ -179,6 +183,7 @@ final class BedrockPlayInitializationFactory implements PlayInitializationFactor
             $itemCatalog,
             $craftingCatalog,
             $worldTimeProvider,
+            $dimension,
         );
     }
 
@@ -242,6 +247,11 @@ final class BedrockPlayInitializationFactory implements PlayInitializationFactor
                 rewindHistorySize: $this->rewindHistorySize,
                 playerGameType: $gameModePackets->gameType($gameMode),
                 levelGameType: $gameModePackets->gameType(GameMode::from($this->defaultGamemode)),
+                dimension: match ($this->dimension) {
+                    WorldDimension::OVERWORLD => DimensionId::Overworld,
+                    WorldDimension::NETHER => DimensionId::Nether,
+                    WorldDimension::END => DimensionId::End,
+                },
             ),
             new ReusablePlayPacket(
                 'initialization.item_registry',
@@ -263,6 +273,11 @@ final class BedrockPlayInitializationFactory implements PlayInitializationFactor
                 x: $this->spawn->x,
                 y: $this->spawn->y,
                 z: $this->spawn->z,
+                dimension: match ($this->dimension) {
+                    WorldDimension::OVERWORLD => DimensionId::Overworld->value,
+                    WorldDimension::NETHER => DimensionId::Nether->value,
+                    WorldDimension::END => DimensionId::End->value,
+                },
                 worldX: $this->spawn->x,
                 worldY: $this->spawn->y,
                 worldZ: $this->spawn->z,

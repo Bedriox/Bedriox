@@ -22,6 +22,7 @@ namespace Bedriox\Server\Runtime;
 
 use Bedriox\Api\World\World;
 use Bedriox\Api\World\WorldActions;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Persistence\PersistenceQueueSnapshot;
 use Bedriox\Server\World\ChunkRepositorySnapshot;
 use InvalidArgumentException;
@@ -48,6 +49,9 @@ final class WorldRuntimeManager
         if ($canonicalDefault !== $default->handle->id()) {
             throw new InvalidArgumentException('Default world runtime does not match the configured default ID.');
         }
+        if ($default->opened->world->dimension() !== WorldDimension::OVERWORLD) {
+            throw new InvalidArgumentException('Default named world runtime must be rooted in its Overworld dimension.');
+        }
         if ($maximumLoadedWorlds < 1 || $maximumLoadedWorlds > 1_024) {
             throw new InvalidArgumentException('Loaded world capacity must be between 1 and 1024.');
         }
@@ -55,20 +59,36 @@ final class WorldRuntimeManager
         $this->loadGenerations[$canonicalDefault] = $default->handle->loadGeneration();
     }
 
-    public function default(): ManagedWorldRuntime
+    public function default(WorldDimension $dimension = WorldDimension::OVERWORLD): ManagedWorldRuntime
     {
-        return $this->loaded[self::canonicalId($this->defaultWorldId)];
+        return $this->get($this->defaultWorldId, $dimension)
+            ?? throw new LogicException('The default world does not expose the requested dimension.');
     }
 
-    public function get(string $worldId): ?ManagedWorldRuntime
-    {
-        return $this->loaded[self::canonicalId($worldId)] ?? null;
+    public function get(
+        string $worldId,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): ?ManagedWorldRuntime {
+        $runtime = $this->loaded[self::canonicalId($worldId)] ?? null;
+
+        return $runtime?->dimension($dimension);
     }
 
     /** @return list<ManagedWorldRuntime> */
     public function loaded(): array
     {
         return array_values($this->loaded);
+    }
+
+    /** @return list<ManagedWorldRuntime> */
+    public function loadedDimensions(): array
+    {
+        $dimensions = [];
+        foreach ($this->loaded as $runtime) {
+            array_push($dimensions, ...$runtime->dimensions());
+        }
+
+        return $dimensions;
     }
 
     public function count(): int
@@ -80,7 +100,7 @@ final class WorldRuntimeManager
     {
         return array_sum(array_map(
             static fn(ManagedWorldRuntime $runtime): int => $runtime->opened->world->loadedChunkCount(),
-            $this->loaded,
+            $this->loadedDimensions(),
         ));
     }
 
@@ -88,7 +108,7 @@ final class WorldRuntimeManager
     {
         return array_sum(array_map(
             static fn(ManagedWorldRuntime $runtime): int => $runtime->opened->world->dirtyChunkCount(),
-            $this->loaded,
+            $this->loadedDimensions(),
         ));
     }
 
@@ -96,14 +116,14 @@ final class WorldRuntimeManager
     {
         return array_sum(array_map(
             static fn(ManagedWorldRuntime $runtime): int => $runtime->opened->world->generatingChunkCount(),
-            $this->loaded,
+            $this->loadedDimensions(),
         ));
     }
 
     public function chunkRepositorySnapshot(): ChunkRepositorySnapshot
     {
         $totals = [0, 0, 0, 0, 0, 0, 0, 0];
-        foreach ($this->loaded as $runtime) {
+        foreach ($this->loadedDimensions() as $runtime) {
             $snapshot = $runtime->opened->world->chunkRepositorySnapshot();
             $totals[0] += $snapshot->capacity;
             $totals[1] += $snapshot->loaded;
@@ -122,7 +142,7 @@ final class WorldRuntimeManager
     {
         $totals = [0, 0, 0, 0, 0, 0, 0];
         $available = false;
-        foreach ($this->loaded as $runtime) {
+        foreach ($this->loadedDimensions() as $runtime) {
             $snapshot = $runtime->opened->world->persistenceQueueSnapshot();
             if ($snapshot === null) {
                 continue;
@@ -228,6 +248,10 @@ final class WorldRuntimeManager
             $runtime->close(false);
             throw new LogicException('World loader returned a runtime for a different identity or generation.');
         }
+        if ($runtime->opened->world->dimension() !== WorldDimension::OVERWORLD) {
+            $runtime->close(false);
+            throw new LogicException('World loader returned a named world without an Overworld root.');
+        }
         if ($runtime->isClosed()) {
             throw new LogicException('World loader returned a closed runtime.');
         }
@@ -264,28 +288,33 @@ final class WorldRuntimeManager
      * World order rotates between polls so no world permanently absorbs the last share of a tick budget.
      *
      * @param null|callable(): void $beforeGlobalTick
+     *
+     * The Overworld retains the named-world key. Other dimensions use a private runtime key
+     * that callers resolve through runtimeForPollKey(), never as a public world identifier.
+     *
      * @return array<string, list<\Bedriox\Server\Simulation\SimulationTick>>
      */
     public function poll(?callable $beforeGlobalTick = null): array
     {
-        $ids = array_keys($this->loaded);
-        $count = count($ids);
+        $runtimes = $this->dimensionRuntimesByPollKey();
+        $keys = array_keys($runtimes);
+        $count = count($keys);
         if ($count === 0) {
             return [];
         }
         $start = $this->pollCursor % $count;
         $ticks = [];
         for ($offset = 0; $offset < $count; ++$offset) {
-            $id = $ids[($start + $offset) % $count];
-            $ticks[$id] = [];
+            $key = $keys[($start + $offset) % $count];
+            $ticks[$key] = [];
         }
         $default = $this->default();
-        $default->loop->pollCadence(function () use (&$ticks, $beforeGlobalTick): void {
+        $default->loop->pollCadence(function () use (&$ticks, $beforeGlobalTick, $runtimes): void {
             if ($beforeGlobalTick !== null) {
                 $beforeGlobalTick();
             }
-            foreach ($ticks as $id => $_) {
-                $ticks[$id][] = $this->loaded[$id]->simulation->tick();
+            foreach ($ticks as $key => $_) {
+                $ticks[$key][] = $runtimes[$key]->simulation->tick();
             }
         });
         $this->pollCursor = ($start + 1) % $count;
@@ -296,6 +325,11 @@ final class WorldRuntimeManager
     public function nanosecondsUntilNextTick(): int
     {
         return $this->default()->nanosecondsUntilNextTick();
+    }
+
+    public function runtimeForPollKey(string $key): ?ManagedWorldRuntime
+    {
+        return $this->dimensionRuntimesByPollKey()[$key] ?? null;
     }
 
     public function closeAll(): void
@@ -341,5 +375,22 @@ final class WorldRuntimeManager
         }
 
         return $runtime;
+    }
+
+    /** @return array<string, ManagedWorldRuntime> */
+    private function dimensionRuntimesByPollKey(): array
+    {
+        $dimensions = [];
+        foreach ($this->loaded as $worldId => $runtime) {
+            foreach ($runtime->dimensions() as $dimensionRuntime) {
+                $dimension = $dimensionRuntime->opened->world->dimension();
+                $key = $dimension === WorldDimension::OVERWORLD
+                    ? $worldId
+                    : $worldId . '@' . ($dimension === WorldDimension::NETHER ? 'nether' : 'end');
+                $dimensions[$key] = $dimensionRuntime;
+            }
+        }
+
+        return $dimensions;
     }
 }

@@ -38,15 +38,18 @@ use Bedriox\Api\Player\ExperienceChangeCause;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\Player\Player as ApiPlayer;
 use Bedriox\Api\TextFormat;
+use Bedriox\Api\World\PortalType;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\WeatherState;
 use Bedriox\Api\World\WeatherType;
 use Bedriox\Api\World\World as ApiWorld;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Protocol\Batch\BatchLimits;
 use Bedriox\Protocol\Batch\BedrockBatch;
 use Bedriox\Protocol\Batch\BedrockBatchCodec;
 use Bedriox\Protocol\Batch\CompressionMode;
 use Bedriox\Protocol\Packet\BedrockPacketCodec;
+use Bedriox\Protocol\Packet\DimensionId;
 use Bedriox\Protocol\Packet\DisconnectPacket;
 use Bedriox\Protocol\Packet\DisconnectReason;
 use Bedriox\Protocol\Packet\Packet;
@@ -108,6 +111,7 @@ use Bedriox\Server\Simulation\Event\BlockPunch;
 use Bedriox\Server\Simulation\Event\ChatBroadcast;
 use Bedriox\Server\Simulation\Event\CommandRejected;
 use Bedriox\Server\Simulation\Event\EmotePerformed;
+use Bedriox\Server\Simulation\Event\EndPortalTransferRequested;
 use Bedriox\Server\Simulation\Event\EntityActorDamaged;
 use Bedriox\Server\Simulation\Event\EntityActorDied;
 use Bedriox\Server\Simulation\Event\EntityActorMoved;
@@ -133,6 +137,7 @@ use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
 use Bedriox\Server\Simulation\Event\PlayerMotionChanged;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
 use Bedriox\Server\Simulation\Event\PlayerRespawned;
+use Bedriox\Server\Simulation\Event\PortalTransferRequested;
 use Bedriox\Server\Simulation\Event\PotionSplashImpacted;
 use Bedriox\Server\Simulation\Event\ProjectileMoved;
 use Bedriox\Server\Simulation\Event\ProjectileRemoved;
@@ -141,6 +146,7 @@ use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
 use Bedriox\Server\Simulation\Event\WorldEvent;
 use Bedriox\Server\Simulation\FixedRateWorldLoop;
 use Bedriox\Server\Simulation\PluginGameplayEventBridge;
+use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\Simulation\SimulationClock;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
 use Bedriox\Server\Simulation\SystemSimulationClock;
@@ -250,6 +256,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private ?string $processingWorldId = null;
     /** @var array<string, PendingPlayerWorldTransfer> Runtime session ID => staged transfer. */
     private array $pendingPlayerWorldTransfers = [];
+    /** @var array<string, array{type: PortalType, from: ApiPosition, destination: ApiPosition}> Runtime session ID => portal event views. */
+    private array $pendingPortalTravelNotifications = [];
     /**
      * @var array<string, array{
      *     count: int,
@@ -556,15 +564,25 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
 
     public function setWorldSpawn(\Bedriox\Api\World\World $world, \Bedriox\Api\World\BlockPosition $position): bool
     {
-        $runtime = $this->worldRuntimes?->get($world->id());
+        $runtime = $this->worldRuntimes?->get($world->id(), $position->dimension);
         if ($runtime === null || !$runtime->handle->isSameLoad($world)) {
             return false;
         }
         $runtime->opened->world->setSpawn(new \Bedriox\Server\World\SpawnPosition($position->x, $position->y, $position->z));
         $runtime->opened->world->scheduleWorldDataSave();
-        $packet = new SetSpawnPositionPacket(0, $position->x, $position->y, $position->z, 0, $position->x, $position->y, $position->z);
+        $packet = new SetSpawnPositionPacket(
+            0,
+            $position->x,
+            $position->y,
+            $position->z,
+            self::protocolDimension($position->dimension)->value,
+            $position->x,
+            $position->y,
+            $position->z,
+        );
         foreach ($this->sessions as $key => $session) {
             if ($session->joined && $session->play !== null && $session->worldId === $runtime->handle->id()
+                && $session->dimension === $position->dimension
                 && !$this->queueWorldPacket($session, $packet)) {
                 $this->disconnect($key, 'world_spawn_backlog_exhausted');
             }
@@ -700,8 +718,17 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         if ($sourceSimulation === null) {
             return false;
         }
-        $targetHandle = $position->world;
-        if ($targetHandle === null || $this->worldRuntimes === null) {
+        $player = $sourceSimulation->authoritativePlayer($uuid);
+        if ($player === null) {
+            return false;
+        }
+        $session = $this->sessionById($player->sessionId);
+        $sourceRuntime = $session === null ? null : $this->runtimeForSession($session);
+        if ($this->worldRuntimes === null || $session?->play === null || $sourceRuntime === null) {
+            if ($position->world !== null || $position->dimension !== null) {
+                return false;
+            }
+
             return $sourceSimulation->enqueueTeleport(
                 $uuid,
                 new \Bedriox\Server\Simulation\Position($position->x, $position->y, $position->z),
@@ -709,17 +736,10 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 $position->pitch ?? $pitch,
             );
         }
-        $targetRuntime = $this->worldRuntimes->get($targetHandle->id());
+        $targetHandle = $position->world ?? $sourceRuntime->handle;
+        $targetDimension = $position->dimension ?? $session->dimension;
+        $targetRuntime = $this->worldRuntimes->get($targetHandle->id(), $targetDimension);
         if ($targetRuntime === null || !$targetRuntime->handle->isSameLoad($targetHandle)) {
-            return false;
-        }
-        $player = $sourceSimulation->authoritativePlayer($uuid);
-        if ($player === null) {
-            return false;
-        }
-        $session = $this->sessionById($player->sessionId);
-        $sourceRuntime = $session === null ? null : $this->runtimeForSession($session);
-        if ($session?->play === null || $sourceRuntime === null) {
             return false;
         }
         if ($sourceRuntime === $targetRuntime) {
@@ -755,6 +775,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 $decision->destination->z,
                 $targetRuntime->opened->world->time(),
                 $targetRuntime->opened->world->difficulty(),
+                $session->dimension === $targetDimension ? null : self::protocolDimension($targetDimension),
             )) {
             return false;
         }
@@ -762,7 +783,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $uuid,
             $player->sessionId,
             $sourceRuntime->handle->id(),
+            $session->dimension,
             $targetRuntime->handle->id(),
+            $targetDimension,
             $decision,
             $from,
             $fromYaw,
@@ -778,18 +801,23 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         $now = hrtime(true);
         foreach ($this->pendingPlayerWorldTransfers as $sessionId => $transfer) {
             $session = $this->sessionById($sessionId);
-            $source = $this->worldRuntimes?->get($transfer->sourceWorldId);
-            $target = $this->worldRuntimes?->get($transfer->targetWorldId);
+            $source = $this->worldRuntimes?->get($transfer->sourceWorldId, $transfer->sourceDimension);
+            $target = $this->worldRuntimes?->get($transfer->targetWorldId, $transfer->targetDimension);
             if ($session?->play === null || $source === null || $target === null
                 || $session->worldId !== $transfer->sourceWorldId
+                || $session->dimension !== $transfer->sourceDimension
                 || $source->simulation->authoritativePlayer($transfer->identity) === null) {
                 $session?->play?->abortWorldSwitch();
+                $source?->simulation->rejectPortalTransfer($sessionId);
                 unset($this->pendingPlayerWorldTransfers[$sessionId]);
+                unset($this->pendingPortalTravelNotifications[$sessionId]);
                 continue;
             }
             if ($now - $transfer->startedNanoseconds >= self::WORLD_TRANSFER_TIMEOUT_NANOSECONDS) {
                 $session->play->abortWorldSwitch();
+                $source->simulation->rejectPortalTransfer($sessionId);
                 unset($this->pendingPlayerWorldTransfers[$sessionId]);
+                unset($this->pendingPortalTravelNotifications[$sessionId]);
                 $this->diagnostics->record('world.player_transfer_timed_out', [
                     'source_world' => $transfer->sourceWorldId,
                     'target_world' => $transfer->targetWorldId,
@@ -811,6 +839,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             }
             unset($this->pendingPlayerWorldTransfers[$sessionId]);
             if (!$completed) {
+                $source->simulation->rejectPortalTransfer($sessionId);
+                unset($this->pendingPortalTravelNotifications[$sessionId]);
                 $session->play->abortWorldSwitch();
                 $key = $this->sessionEndpoints[$sessionId] ?? null;
                 if ($key !== null) {
@@ -836,6 +866,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
         try {
             $session->worldId = $target->handle->id();
+            $session->dimension = $transfer->targetDimension;
             $arrival = $target->simulation->attachTransferredPlayer(
                 $departure->player,
                 $session->worldId,
@@ -845,6 +876,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             );
         } catch (Throwable) {
             $session->worldId = $transfer->sourceWorldId;
+            $session->dimension = $transfer->sourceDimension;
             $source->simulation->attachTransferredPlayer(
                 $departure->player,
                 $transfer->sourceWorldId,
@@ -857,6 +889,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
 
         $directedCount = 0;
+        $transferCommitted = false;
         try {
             if ($departure->previousPeers !== [] && !$session->play?->queuePacket(new PlayerListRemovePacket(array_map(
                 static fn(\Bedriox\Server\Simulation\PlayerSnapshot $peer): string => $peer->identity,
@@ -864,7 +897,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             )))) {
                 return false;
             }
-            $this->processingWorldId = $transfer->sourceWorldId;
+            $this->processingWorldId = self::runtimePollKey($transfer->sourceWorldId, $transfer->sourceDimension);
             foreach ($departure->events as $event) {
                 if ($event instanceof PlayerDisconnected) {
                     foreach ($this->actorVisibility->remove($event->sessionId) as $visibilityEvent) {
@@ -881,7 +914,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 return false;
             }
 
-            $this->processingWorldId = $session->worldId;
+            $this->processingWorldId = $this->runtimePollKeyForSession($session);
             foreach ($arrival->events as $event) {
                 if ($event instanceof PlayerJoined) {
                     $this->actorVisibility->upsert($event->player);
@@ -912,11 +945,54 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             }
             $this->enqueueActorVisibilityReconciliation($session->id, true, true);
             $target->simulation->publishTransferredTeleport($arrival->player, $transfer->from);
+            $portalTravel = $this->pendingPortalTravelNotifications[$session->id] ?? null;
+            unset($this->pendingPortalTravelNotifications[$session->id]);
+            if ($portalTravel !== null) {
+                $this->pluginEvents?->portalTravelled(
+                    $arrival->player,
+                    $portalTravel['type'],
+                    $portalTravel['from'],
+                    $portalTravel['destination'],
+                );
+                $target->simulation->beginPortalArrivalCooldown($session->id);
+            }
             $this->crashContextDirty = true;
+            $transferCommitted = true;
 
             return true;
         } finally {
             $this->processingWorldId = null;
+            if (!$transferCommitted) {
+                $this->rollbackPlayerWorldTransfer($session, $source, $target, $transfer);
+            }
+        }
+    }
+
+    private function rollbackPlayerWorldTransfer(
+        RuntimeSession $session,
+        ManagedWorldRuntime $source,
+        ManagedWorldRuntime $target,
+        PendingPlayerWorldTransfer $transfer,
+    ): void {
+        try {
+            $rollback = $target->simulation->detachPlayerForTransfer($session->id);
+            $session->worldId = $transfer->sourceWorldId;
+            $session->dimension = $transfer->sourceDimension;
+            if ($rollback !== null && $source->simulation->authoritativePlayer($transfer->identity) === null) {
+                $source->simulation->attachTransferredPlayer(
+                    $rollback->player,
+                    $transfer->sourceWorldId,
+                    $transfer->from,
+                    $transfer->fromYaw,
+                    $transfer->fromPitch,
+                );
+            }
+        } catch (Throwable $exception) {
+            $this->diagnostics->record('world.player_transfer_rollback_failed', [
+                'source_world' => $transfer->sourceWorldId,
+                'target_world' => $transfer->targetWorldId,
+                'exception' => $exception::class,
+            ]);
         }
     }
 
@@ -1179,7 +1255,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             if ($this->worldRuntimes === null) {
                 $this->persistentWorld?->requestRetainSpawnChunk();
             } else {
-                foreach ($this->worldRuntimes->loaded() as $runtime) {
+                foreach ($this->worldRuntimes->loadedDimensions() as $runtime) {
                     $runtime->opened->world->requestRetainSpawnChunk();
                 }
             }
@@ -1308,7 +1384,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $this->pruneWorldMaintenanceState();
             $outboundTiming = $this->performance?->startSubsystem(PerformanceSubsystem::NETWORK_OUTBOUND);
             foreach ($worldTicks as $worldId => $ticks) {
-                $managedRuntime = $this->worldRuntimes === null ? null : $this->worldRuntimes->get($worldId);
+                $managedRuntime = $this->worldRuntimes === null ? null : $this->worldRuntimes->runtimeForPollKey($worldId);
                 $activeSimulation = $managedRuntime === null ? $this->world : $managedRuntime->simulation;
                 $activePersistentWorld = $managedRuntime === null ? $this->persistentWorld : $managedRuntime->opened->world;
                 $this->processingWorldId = $worldId;
@@ -1333,7 +1409,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     $admissionStreamingKeys = [];
                     $spawnedStreamingKeys = [];
                     foreach ($this->sessions as $key => $streamingSession) {
-                        if ($streamingSession->play === null || $streamingSession->worldId !== $worldId) {
+                        if ($streamingSession->play === null || $this->runtimePollKeyForSession($streamingSession) !== $worldId) {
                             continue;
                         }
                         if ($this->hasDeferredWorldPackets($streamingSession->id)) {
@@ -1384,7 +1460,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     $this->recordSlowRuntimeStage('chunk_streaming', $chunkStageStartedNanoseconds, $tick->number);
                     $visibilityStartedNanoseconds = hrtime(true);
                     foreach ($this->sessions as $session) {
-                        if ($session->play === null || $session->worldId !== $worldId) {
+                        if ($session->play === null || $this->runtimePollKeyForSession($session) !== $worldId) {
                             continue;
                         }
                         $changedChunkKeys = $session->play->takeChunkVisibilityChanges();
@@ -1425,6 +1501,32 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                             return false;
                         }
                         if (!$this->reconcileAdmission($event)) {
+                            continue;
+                        }
+                        if ($event instanceof PortalTransferRequested) {
+                            if (!$this->beginPortalTransfer($event)) {
+                                $session = $this->sessionById($event->sessionId);
+                                if ($session !== null) {
+                                    $this->simulationForSession($session)?->rejectPortalTransfer($event->sessionId);
+                                }
+                                $this->diagnostics->record('world.portal_transfer_deferred', [
+                                    'source_dimension' => $event->destination->sourceDimension->value,
+                                    'target_dimension' => $event->destination->targetDimension->value,
+                                ]);
+                            }
+                            continue;
+                        }
+                        if ($event instanceof EndPortalTransferRequested) {
+                            if (!$this->beginEndPortalTransfer($event)) {
+                                $session = $this->sessionById($event->sessionId);
+                                if ($session !== null) {
+                                    $this->simulationForSession($session)?->rejectPortalTransfer($event->sessionId);
+                                }
+                                $this->diagnostics->record('world.end_portal_transfer_deferred', [
+                                    'source_dimension' => $event->sourceDimension->value,
+                                    'target_dimension' => $event->targetDimension->value,
+                                ]);
+                            }
                             continue;
                         }
                         if ($event instanceof BlockPlacementCorrected) {
@@ -2325,7 +2427,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
         $totals = [0, 0, 0, 0, 0, 0, 0, 0, 0];
         $available = false;
-        foreach ($this->worldRuntimes->loaded() as $runtime) {
+        foreach ($this->worldRuntimes->loadedDimensions() as $runtime) {
             $snapshot = $runtime->preparedChunks?->snapshot();
             if ($snapshot === null) {
                 continue;
@@ -2465,7 +2567,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         foreach (array_keys($this->sessions) as $key) {
             $session = $this->sessions[$key];
             if (!$session->joined || $session->play === null
-                || ($worldId !== null && $session->worldId !== $worldId)) {
+                || ($worldId !== null && $this->runtimePollKeyForSession($session) !== $worldId)) {
                 continue;
             }
             if (!$this->queueWorldPacket($session, $packet)) {
@@ -2652,8 +2754,14 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 return;
             }
             $commands = $session->play->drainCommands();
+            $simulation = $this->simulationForSession($session);
+            if ($simulation === null) {
+                $this->disconnect($key, 'world_runtime_missing');
+
+                return;
+            }
             foreach ($commands as $command) {
-                if (!$this->simulationForSession($session)->enqueue($command)) {
+                if (!$simulation->enqueue($command)) {
                     $this->disconnect($key, 'world_command_queue_exhausted');
 
                     return;
@@ -2681,7 +2789,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 $messageCount = 0;
                 $outputTruncated = false;
                 $player = $session->phase === SessionPhase::SPAWNED
-                    ? $this->simulationForSession($session)->pluginPlayer($session->play->login()->identity)
+                    ? $this->simulationForSession($session)?->pluginPlayer($session->play->login()->identity)
                     : null;
                 if ($player !== null) {
                     $player = $this->playerConnections->attach($player);
@@ -2790,9 +2898,13 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                         return;
                     }
                 }
-                $targetRuntime = $this->worldRuntimes?->get($loaded->worldName)
+                $targetRuntime = $this->worldRuntimes?->get($loaded->worldName, $loaded->dimension)
+                    ?? $this->worldRuntimes?->default($loaded->dimension)
                     ?? $this->worldRuntimes?->default();
-                if ($targetRuntime !== null && $loaded->worldName !== $targetRuntime->handle->id()) {
+                if ($targetRuntime !== null && (
+                    $loaded->worldName !== $targetRuntime->handle->id()
+                    || $loaded->dimension !== $targetRuntime->opened->world->dimension()
+                )) {
                     $loaded = new \Bedriox\Server\Player\PlayerBootstrap(
                         $loaded->identity,
                         $targetRuntime->handle->id(),
@@ -2818,10 +2930,12 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                         $loaded->effectPersistenceState,
                         $loaded->totalExperience,
                         $loaded->spawnPoint,
+                        $targetRuntime->opened->world->dimension(),
                     );
                 }
                 if ($targetRuntime !== null) {
                     $session->worldId = $targetRuntime->handle->id();
+                    $session->dimension = $targetRuntime->opened->world->dimension();
                 }
                 $bootstrap = ($targetRuntime === null ? $this->world : $targetRuntime->simulation)->prepareLogin(
                     $session->id,
@@ -2864,7 +2978,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     $cause,
                     $actor,
                 ),
-                fn(): bool => $this->simulationForSession($session)->enqueuePluginArmSwing($identity),
+                fn(): bool => $this->simulationForSession($session)?->enqueuePluginArmSwing($identity) ?? false,
                 fn(ApiPosition $position): bool => $this->acceptPluginAction(
                     fn(): bool => $this->teleportPlayer($identity, $position),
                 ),
@@ -2959,7 +3073,13 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
 
             return false;
         }
-        if (!$this->simulationForSession($session)->enqueue($join)) {
+        $simulation = $this->simulationForSession($session);
+        if ($simulation === null) {
+            $this->disconnect($key, 'world_runtime_missing');
+
+            return false;
+        }
+        if (!$simulation->enqueue($join)) {
             $this->disconnect($key, 'lifecycle_queue_exhausted');
 
             return false;
@@ -3096,7 +3216,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             return false;
         }
         $identity = $session->bootstrap?->identity->uuid ?? $session->play->login()->identity;
-        $player = $this->simulationForSession($session)->pluginPlayer($identity);
+        $player = $this->simulationForSession($session)?->pluginPlayer($identity);
         if ($player !== null && $this->pluginEvents !== null) {
             $decision = $this->pluginEvents->kick($player, $cause, $reason, $quitMessage, $screenMessage, $actor);
             if ($decision === null) {
@@ -3219,6 +3339,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $this->deferredWorldPackets[$session->id],
             $this->deferredAuthoritativeMovementFrames[$session->id],
             $this->pendingPlayerWorldTransfers[$session->id],
+            $this->pendingPortalTravelNotifications[$session->id],
             $this->joiningLogs[$session->id],
             $this->joinedLogs[$session->id],
             $this->failedJoinLogs[$session->id],
@@ -3249,7 +3370,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
         $this->crashContextDirty = true;
         if ($session->joined || $session->phase === SessionPhase::ADMISSION_PENDING) {
-            if (!$this->simulationForSession($session)->enqueue($this->commands->disconnect(
+            $simulation = $this->simulationForSession($session);
+            if ($simulation !== null && !$simulation->enqueue($this->commands->disconnect(
                 $session->id,
                 $cause,
                 $reason,
@@ -3557,7 +3679,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         return $this->actorVisibility->reconcileViewer(
             $sessionId,
             fn(\Bedriox\Server\Simulation\PlayerSnapshot $actor): bool => $viewer?->phase === SessionPhase::SPAWNED
-                && $this->sessionById($actor->sessionId)?->phase === SessionPhase::SPAWNED
+                && ($actorSession = $this->sessionById($actor->sessionId))?->phase === SessionPhase::SPAWNED
+                && $viewer->worldId === $actorSession->worldId
+                && $viewer->dimension === $actorSession->dimension
                 && $actor->gameMode->isVisible()
                 && ($viewer->play?->hasSentChunkAt($actor->position->x, $actor->position->z) ?? false),
         );
@@ -3571,6 +3695,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         return $viewer?->phase === SessionPhase::SPAWNED
             && $actorSession?->phase === SessionPhase::SPAWNED
             && $viewer->worldId === $actorSession->worldId
+            && $viewer->dimension === $actorSession->dimension
             && $actor->gameMode->isVisible()
             && ($viewer->play?->hasSentChunkAt($actor->position->x, $actor->position->z) ?? false);
     }
@@ -3836,7 +3961,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         $viewer = $this->sessionById($sessionId);
 
         return $viewer?->phase === SessionPhase::SPAWNED
-            && $viewer->worldId === $worldId
+            && $this->runtimePollKeyForSession($viewer) === $worldId
             && ($viewer->play?->hasSentChunkAt($position->x, $position->z) ?? false);
     }
 
@@ -3945,6 +4070,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         $viewer = $this->sessionById($sessionId);
 
         return $viewer?->phase === SessionPhase::SPAWNED
+            && $this->runtimePollKeyForSession($viewer) === ($this->processingWorldId ?? 'world')
             && ($viewer->play?->hasSentChunkAt(
                 $entity->internalPosition()->x,
                 $entity->internalPosition()->z,
@@ -4008,6 +4134,146 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         };
     }
 
+    private function beginPortalTransfer(PortalTransferRequested $event): bool
+    {
+        $session = $this->sessionById($event->sessionId);
+        $source = $session === null ? null : $this->runtimeForSession($session);
+        if ($session?->play === null || $source === null || $this->worldRuntimes === null
+            || $session->dimension !== $event->destination->sourceDimension
+            || isset($this->pendingPlayerWorldTransfers[$event->sessionId])) {
+            return false;
+        }
+        $target = $this->worldRuntimes->get(
+            $source->handle->id(),
+            $event->destination->targetDimension,
+        );
+        $identity = $session->bootstrap?->identity->uuid;
+        $player = $identity === null ? null : $source->simulation->authoritativePlayer($identity);
+        if ($target === null || $player === null) {
+            return false;
+        }
+        if (!$target->simulation->preparePortalDestination($event->destination)) {
+            return false;
+        }
+        $destination = $target->simulation->resolvePortalDestination($event->destination);
+        if ($destination === null) {
+            return false;
+        }
+        $from = new ApiPosition(
+            $player->movement->position->x,
+            $player->movement->position->y,
+            $player->movement->position->z,
+            $player->movement->yaw,
+            $player->movement->pitch,
+            $source->handle,
+            $session->dimension,
+        );
+        $requested = new ApiPosition(
+            $destination->x,
+            $destination->y,
+            $destination->z,
+            $player->movement->yaw,
+            $player->movement->pitch,
+            $target->handle,
+            $event->destination->targetDimension,
+        );
+        if (!$this->teleportPlayer($identity, $requested)) {
+            return false;
+        }
+        $transfer = $this->pendingPlayerWorldTransfers[$event->sessionId] ?? null;
+        if ($transfer === null) {
+            return false;
+        }
+        $this->pendingPortalTravelNotifications[$event->sessionId] = [
+            'type' => PortalType::NETHER,
+            'from' => $from,
+            'destination' => new ApiPosition(
+                $transfer->decision->destination->x,
+                $transfer->decision->destination->y,
+                $transfer->decision->destination->z,
+                $transfer->decision->yaw,
+                $transfer->decision->pitch,
+                $target->handle,
+                $event->destination->targetDimension,
+            ),
+        ];
+
+        return true;
+    }
+
+    private function beginEndPortalTransfer(EndPortalTransferRequested $event): bool
+    {
+        $session = $this->sessionById($event->sessionId);
+        $source = $session === null ? null : $this->runtimeForSession($session);
+        if ($session?->play === null || $source === null || $this->worldRuntimes === null
+            || $session->dimension !== $event->sourceDimension
+            || isset($this->pendingPlayerWorldTransfers[$event->sessionId])) {
+            return false;
+        }
+        $target = $this->worldRuntimes->get($source->handle->id(), $event->targetDimension);
+        $identity = $session->bootstrap?->identity->uuid;
+        $player = $identity === null ? null : $source->simulation->authoritativePlayer($identity);
+        if ($target === null || $player === null) {
+            return false;
+        }
+        $desired = $event->targetDimension === WorldDimension::OVERWORLD
+            ? $player->spawnPoint() ?? $target->simulation->spawnPosition()
+            : $target->simulation->spawnPosition();
+        $authorized = $source->simulation->authorizePortalTravel(
+            $player,
+            PortalType::END,
+            $event->targetDimension,
+            $desired,
+        );
+        if ($authorized === null) {
+            return false;
+        }
+        $destination = new Position($authorized->x, $authorized->y, $authorized->z);
+        if (!$target->simulation->preparePortalPosition($destination)) {
+            return false;
+        }
+        $from = new ApiPosition(
+            $player->movement->position->x,
+            $player->movement->position->y,
+            $player->movement->position->z,
+            $player->movement->yaw,
+            $player->movement->pitch,
+            $source->handle,
+            $session->dimension,
+        );
+        $requested = new ApiPosition(
+            $destination->x,
+            $destination->y,
+            $destination->z,
+            $authorized->yaw ?? $player->movement->yaw,
+            $authorized->pitch ?? $player->movement->pitch,
+            $target->handle,
+            $event->targetDimension,
+        );
+        if (!$this->teleportPlayer($identity, $requested)) {
+            return false;
+        }
+        $transfer = $this->pendingPlayerWorldTransfers[$event->sessionId] ?? null;
+        if ($transfer === null) {
+            return false;
+        }
+        $this->pendingPortalTravelNotifications[$event->sessionId] = [
+            'type' => PortalType::END,
+            'from' => $from,
+            'destination' => new ApiPosition(
+                $transfer->decision->destination->x,
+                $transfer->decision->destination->y,
+                $transfer->decision->destination->z,
+                $transfer->decision->yaw,
+                $transfer->decision->pitch,
+                $target->handle,
+                $event->targetDimension,
+            ),
+        ];
+
+        return true;
+    }
+
     private function dispatchWorldEvent(WorldEvent $event, int &$directedCount): bool
     {
         try {
@@ -4023,7 +4289,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $directedPackets = array_values(array_filter(
                 $directedPackets,
                 fn(DirectedPacket $directed): bool =>
-                    $this->sessionById($directed->sessionId)?->worldId === $this->processingWorldId,
+                    ($session = $this->sessionById($directed->sessionId)) !== null
+                    && $this->runtimePollKeyForSession($session) === $this->processingWorldId,
             ));
         }
         if (count($directedPackets) > $this->limits->maximumDirectedPacketsPerPoll - $directedCount) {
@@ -4834,8 +5101,11 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             return;
         }
         $loaded = [];
-        foreach ($this->worldRuntimes->loaded() as $runtime) {
-            $loaded[$runtime->handle->id()] = true;
+        foreach ($this->worldRuntimes->loadedDimensions() as $runtime) {
+            $loaded[self::runtimePollKey(
+                $runtime->handle->id(),
+                $runtime->opened->world->dimension(),
+            )] = true;
         }
         $this->autosaveActive = array_intersect_key($this->autosaveActive, $loaded);
         $this->entityAutosaveActive = array_intersect_key($this->entityAutosaveActive, $loaded);
@@ -4851,18 +5121,18 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
 
         return array_map(
             static fn(ManagedWorldRuntime $runtime): WorldSimulation => $runtime->simulation,
-            $this->worldRuntimes->loaded(),
+            $this->worldRuntimes->loadedDimensions(),
         );
     }
 
-    private function simulationForSession(RuntimeSession $session): WorldSimulation
+    private function simulationForSession(RuntimeSession $session): ?WorldSimulation
     {
         if ($this->worldRuntimes === null) {
             return $this->world;
         }
-        $runtime = $this->worldRuntimes->get($session->worldId);
+        $runtime = $this->worldRuntimes->get($session->worldId, $session->dimension);
 
-        return $runtime === null ? $this->world : $runtime->simulation;
+        return $runtime?->simulation;
     }
 
     private function simulationForIdentity(string $identity): ?WorldSimulation
@@ -4915,7 +5185,30 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
 
     private function runtimeForSession(RuntimeSession $session): ?ManagedWorldRuntime
     {
-        return $this->worldRuntimes?->get($session->worldId);
+        return $this->worldRuntimes?->get($session->worldId, $session->dimension);
+    }
+
+    private function runtimePollKeyForSession(RuntimeSession $session): string
+    {
+        return self::runtimePollKey($session->worldId, $session->dimension);
+    }
+
+    private static function runtimePollKey(string $worldId, WorldDimension $dimension): string
+    {
+        return match ($dimension) {
+            WorldDimension::OVERWORLD => $worldId,
+            WorldDimension::NETHER => $worldId . '@nether',
+            WorldDimension::END => $worldId . '@end',
+        };
+    }
+
+    private static function protocolDimension(WorldDimension $dimension): DimensionId
+    {
+        return match ($dimension) {
+            WorldDimension::OVERWORLD => DimensionId::Overworld,
+            WorldDimension::NETHER => DimensionId::Nether,
+            WorldDimension::END => DimensionId::End,
+        };
     }
 
     private function updateAuthoritativeChunkView(\Bedriox\Server\Simulation\PlayerSnapshot $player): bool

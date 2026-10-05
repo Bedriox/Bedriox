@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Persistence\World;
 
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Entity\EntityMotion;
 use Bedriox\Server\Entity\Persistence\CorruptEntityPersistenceException;
@@ -67,6 +68,13 @@ final class ProcessWorldProviderTest extends TestCase
         $data = self::worldData();
         $worldCodec = new WorldDataIpcCodec();
         self::assertEquals($data, $worldCodec->decode($worldCodec->encode($data)));
+        $native = new WorldData(
+            new WorldMetadata('Native', 9),
+            'default',
+            new SpawnPosition(0, 64, 0),
+            bedrioxGeneratorVersionDeclared: false,
+        );
+        self::assertEquals($native, $worldCodec->decode($worldCodec->encode($native)));
 
         $startup = new WorldStorageStartup('create', 'C:\\worlds\\test', $data, 1234);
         $startupCodec = new WorldStorageStartupCodec();
@@ -83,6 +91,9 @@ final class ProcessWorldProviderTest extends TestCase
             entryPoint: self::FIXTURE,
         );
         $chunk = WorldGeneratorFactory::create('flat', 42, $states)->generate(new ChunkPosition(-2, 3));
+        $provider->saveChunk(new ChunkSaveData($chunk), WorldDimension::NETHER);
+        self::assertNull($provider->loadChunk($chunk->position));
+        self::assertNotNull($provider->loadChunk($chunk->position, WorldDimension::NETHER));
         $provider->saveChunk(new ChunkSaveData($chunk));
         $loaded = $provider->loadChunk($chunk->position);
 

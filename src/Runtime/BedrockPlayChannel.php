@@ -37,6 +37,7 @@ use Bedriox\Protocol\Packet\AutoCraftRecipeItemStackRequestAction;
 use Bedriox\Protocol\Packet\BasicInventoryTransaction;
 use Bedriox\Protocol\Packet\BedrockPacketCodec;
 use Bedriox\Protocol\Packet\BlockPosition;
+use Bedriox\Protocol\Packet\ChangeDimensionPacket;
 use Bedriox\Protocol\Packet\ChatPacket;
 use Bedriox\Protocol\Packet\ChunkRadiusUpdatedPacket;
 use Bedriox\Protocol\Packet\ClientCacheStatusPacket;
@@ -56,6 +57,7 @@ use Bedriox\Protocol\Packet\CraftRecipeOptionalItemStackRequestAction;
 use Bedriox\Protocol\Packet\CraftRepairAndDisenchantItemStackRequestAction;
 use Bedriox\Protocol\Packet\CraftResultsItemStackRequestAction;
 use Bedriox\Protocol\Packet\CreateItemStackRequestAction;
+use Bedriox\Protocol\Packet\DimensionId;
 use Bedriox\Protocol\Packet\DropItemStackRequestAction;
 use Bedriox\Protocol\Packet\EmoteListPacket;
 use Bedriox\Protocol\Packet\EmotePacket;
@@ -197,8 +199,6 @@ final class BedrockPlayChannel
     private bool $admissionReleased = false;
     private bool $preferStreamingResponse = true;
     private bool $initialized = false;
-    private bool $loadingScreenStarted = false;
-    private bool $loadingScreenEnded = false;
     private bool $mainInventoryOpen = false;
     private int $mainInventoryId = 0;
     private int $nextMainInventoryId = 1;
@@ -976,6 +976,7 @@ final class BedrockPlayChannel
         float $z,
         ?int $worldTime = null,
         ?int $difficulty = null,
+        ?DimensionId $dimension = null,
     ): bool {
         if ($this->closed || $this->pendingWorldSwitch !== null || $this->worldSwitchInputGated
             || !is_finite($x) || !is_finite($y) || !is_finite($z)) {
@@ -992,6 +993,7 @@ final class BedrockPlayChannel
             $z,
             $worldTime ?? $world->time(),
             $difficulty ?? $world->difficulty(),
+            $dimension,
             $radius,
             $prefetchRadius,
             min($this->spawnRadius, $radius),
@@ -1074,7 +1076,7 @@ final class BedrockPlayChannel
             return false;
         }
         $radius = $transition->view->radius();
-        if (!$this->queuePackets([
+        $packets = [
             new SetTimePacket($transition->worldTime),
             new SetDifficultyPacket($transition->difficulty),
             new MovePlayerPacket(
@@ -1096,7 +1098,24 @@ final class BedrockPlayChannel
                 (int) floor($transition->z),
                 $radius * 16,
             ),
-        ])) {
+        ];
+        if ($transition->dimension !== null) {
+            array_unshift($packets, new ChangeDimensionPacket(
+                $transition->dimension,
+                $transition->x,
+                PlayerPositionProjection::feetToWireY($transition->y),
+                $transition->z,
+                false,
+            ));
+            array_splice($packets, -1, 0, [new PlayerActionPacket(
+                $this->runtimeEntityId,
+                PlayerActionType::DimensionChangeSuccess,
+                new BlockPosition(0, 0, 0),
+                new BlockPosition(0, 0, 0),
+                0,
+            )]);
+        }
+        if (!$this->queuePackets($packets)) {
             return false;
         }
 
@@ -1266,6 +1285,12 @@ final class BedrockPlayChannel
                 || $packet instanceof EmotePacket) {
                 return true;
             }
+        }
+        if ($packet instanceof ServerboundLoadingScreenPacket) {
+            // Current clients may include a screen ID, omit START, repeat a boundary,
+            // or deliver END after the authoritative world-switch gate has opened.
+            // This packet is advisory and never authorizes the dimension transfer.
+            return true;
         }
         if ($packet instanceof CommandRequestPacket) {
             if (!$this->initialized || $packet->internal || $packet->origin->type !== CommandOriginType::Player
@@ -1604,26 +1629,6 @@ final class BedrockPlayChannel
         }
         if ($packet instanceof NetworkStackLatencyPacket) {
             return $this->initialized;
-        }
-        if ($packet instanceof ServerboundLoadingScreenPacket) {
-            if ($packet->type === ServerboundLoadingScreenPacket::START) {
-                if ($this->initialized || $this->loadingScreenStarted || $packet->loadingScreenId !== null) {
-                    return false;
-                }
-                $this->loadingScreenStarted = true;
-
-                return true;
-            }
-            if ($packet->type === ServerboundLoadingScreenPacket::END) {
-                if (!$this->loadingScreenStarted || $this->loadingScreenEnded || $packet->loadingScreenId !== null) {
-                    return false;
-                }
-                $this->loadingScreenEnded = true;
-
-                return true;
-            }
-
-            return false;
         }
         if ($packet instanceof SetLocalPlayerAsInitializedPacket) {
             if (!$packet->runtimeEntityId->equals($this->runtimeEntityId)) {
@@ -3151,7 +3156,7 @@ final class BedrockPlayChannel
                         break;
                     }
                     try {
-                        $packet = $this->chunkSerializer->serialize($chunk);
+                        $packet = $this->chunkSerializer->serialize($chunk, $world->dimension());
                         $frame = new PacketFrame(
                             new PacketHeader(BedrockPacketCodec::packetId($packet)),
                             BedrockPacketCodec::encode($packet, $this->protocolVersion),
@@ -3190,7 +3195,7 @@ final class BedrockPlayChannel
                 $sentBytes += $prepared->bytes();
             } else {
                 try {
-                    $packet = $this->chunkSerializer->serialize($chunk);
+                    $packet = $this->chunkSerializer->serialize($chunk, $world->dimension());
                 } catch (Throwable $exception) {
                     $this->generatedChunks->dequeue();
                     unset($this->queuedChunkKeys[$key]);

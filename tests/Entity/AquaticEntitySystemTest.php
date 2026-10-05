@@ -39,12 +39,8 @@ use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\EntityMotion;
 use Bedriox\Server\Entity\EntityRegistry;
 use Bedriox\Server\Entity\Persistence\IntrinsicEntityPersistence;
-use Bedriox\Server\Entity\Spawn\Natural\AquaticNaturalSpawnRule;
-use Bedriox\Server\Entity\Spawn\Natural\NaturalSpawnContext;
-use Bedriox\Server\Entity\Spawn\Natural\NaturalSpawnMedium;
 use Bedriox\Server\Entity\Vanilla\TurtleEntity;
 use Bedriox\Server\Simulation\Position;
-use Bedriox\Server\World\ChunkPosition;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
@@ -100,14 +96,6 @@ final class AquaticEntitySystemTest extends TestCase
         }
         self::assertSame(0, $entity->getDryTicks());
         self::assertSame($entity->getMaximumAirSupplyTicks(), $entity->getAirSupplyTicks());
-    }
-
-    public function testAquaticNaturalSpawnRuleRequiresWaterAndHonorsLightLimit(): void
-    {
-        $rule = new AquaticNaturalSpawnRule(7);
-        self::assertTrue($rule->allows($this->spawnContext(NaturalSpawnMedium::WATER, 7)));
-        self::assertFalse($rule->allows($this->spawnContext(NaturalSpawnMedium::WATER, 8)));
-        self::assertFalse($rule->allows($this->spawnContext(NaturalSpawnMedium::GROUND, 0)));
     }
 
     public function testAquaticBucketMappingsAreSymmetric(): void
@@ -387,20 +375,4 @@ final class AquaticEntitySystemTest extends TestCase
         self::assertSame(4, $entity->getBreathingAirSupplyTicks());
     }
 
-    private function spawnContext(NaturalSpawnMedium $medium, int $light): NaturalSpawnContext
-    {
-        return new NaturalSpawnContext(
-            'world',
-            new ChunkPosition(0, 0),
-            VanillaEntityType::DROWNED,
-            EntityCategory::MONSTER,
-            new Position(0.5, 62.0, 0.5),
-            'minecraft:overworld',
-            'minecraft:ocean',
-            $medium,
-            $light,
-            1_024.0,
-            1_024.0,
-        );
-    }
 }

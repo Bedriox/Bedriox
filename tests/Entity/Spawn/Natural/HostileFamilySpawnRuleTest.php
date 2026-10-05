@@ -22,6 +22,7 @@ namespace Bedriox\Server\Tests\Entity\Spawn\Natural;
 
 use Bedriox\Api\Entity\EntityCategory;
 use Bedriox\Api\Entity\VanillaEntityIdentifier;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Entity\Spawn\Natural\BoggedNaturalSpawnRule;
 use Bedriox\Server\Entity\Spawn\Natural\HuskNaturalSpawnRule;
 use Bedriox\Server\Entity\Spawn\Natural\NaturalSpawnContext;
@@ -40,11 +41,13 @@ final class HostileFamilySpawnRuleTest extends TestCase
     {
         $husk = new HuskNaturalSpawnRule();
         self::assertTrue($husk->allows(self::context('minecraft:husk', 'minecraft:desert', 7)));
+        self::assertTrue($husk->allows(self::context('minecraft:husk', 'minecraft:desert_hills', 7)));
         self::assertFalse($husk->allows(self::context('minecraft:husk', 'minecraft:plains', 7)));
+        self::assertFalse($husk->allows(self::context('minecraft:husk', 'minecraft:deserted_plains', 7)));
         self::assertFalse($husk->allows(self::context('minecraft:husk', 'minecraft:desert', 8)));
 
         $bogged = new BoggedNaturalSpawnRule();
-        self::assertTrue($bogged->allows(self::context('minecraft:bogged', 'minecraft:swamp', 7)));
+        self::assertTrue($bogged->allows(self::context('minecraft:bogged', 'minecraft:swampland', 7)));
         self::assertTrue($bogged->allows(self::context('minecraft:bogged', 'minecraft:mangrove_swamp', 7)));
         self::assertFalse($bogged->allows(self::context('minecraft:bogged', 'minecraft:desert', 7)));
 
@@ -81,7 +84,7 @@ final class HostileFamilySpawnRuleTest extends TestCase
             new VanillaEntityIdentifier($identifier),
             EntityCategory::MONSTER,
             new Position(0.0, $y, 0.0),
-            'minecraft:overworld',
+            WorldDimension::OVERWORLD,
             $biome,
             $medium,
             $light,

@@ -57,6 +57,48 @@ final class Data3dCodecTest extends TestCase
         self::assertSame(1, $decoded->biomes()[0]->biomeIdAt(3, 2, 5));
     }
 
+    public function testNativeNetworkPaletteFlagDoesNotChangeBiomeDiskPayload(): void
+    {
+        $codec = new Data3dCodec();
+        $encoded = $codec->encode(new Data3dRecord(
+            str_repeat("\x00", Data3dRecord::HEIGHTMAP_BYTES),
+            array_fill(0, Data3dRecord::BIOME_STORAGE_COUNT, PersistentBiomeStorage::uniform(48)),
+        ));
+        for ($offset = Data3dRecord::HEIGHTMAP_BYTES; $offset < strlen($encoded); $offset += 5) {
+            $encoded[$offset] = chr(ord($encoded[$offset]) | 1);
+        }
+
+        $decoded = $codec->decode($encoded);
+
+        self::assertSame(48, $decoded->biomes()[0]->biomeIdAt(0, 0, 0));
+        self::assertSame(48, $decoded->biomes()[23]->biomeIdAt(15, 15, 15));
+    }
+
+    public function testNativeCopyPreviousPaletteMarkerIsDecoded(): void
+    {
+        $codec = new Data3dCodec();
+        $encoded = $codec->encode(new Data3dRecord(
+            str_repeat("\x00", Data3dRecord::HEIGHTMAP_BYTES),
+            array_fill(0, Data3dRecord::BIOME_STORAGE_COUNT, PersistentBiomeStorage::uniform(48)),
+        ));
+        $secondPaletteOffset = Data3dRecord::HEIGHTMAP_BYTES + 5;
+        $encoded = substr($encoded, 0, $secondPaletteOffset)
+            . "\xff"
+            . substr($encoded, $secondPaletteOffset + 5);
+
+        $decoded = $codec->decode($encoded);
+
+        self::assertSame(48, $decoded->biomes()[1]->biomeIdAt(15, 15, 15));
+        self::assertCount(Data3dRecord::BIOME_STORAGE_COUNT, $decoded->biomes());
+    }
+
+    public function testFirstBiomePaletteCannotCopyMissingPredecessor(): void
+    {
+        $this->expectException(LevelDbStorageException::class);
+        $this->expectExceptionMessage('cannot copy');
+        (new Data3dCodec())->decode(str_repeat("\x00", Data3dRecord::HEIGHTMAP_BYTES) . "\xff");
+    }
+
     public function testTruncationAndTrailingBytesFailClosed(): void
     {
         $codec = new Data3dCodec();

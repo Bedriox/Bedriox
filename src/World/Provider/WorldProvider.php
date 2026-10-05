@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World\Provider;
 
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\Provider\Exception\CorruptChunkException;
 use Bedriox\Server\World\Provider\Exception\CorruptWorldDataException;
@@ -38,7 +39,10 @@ interface WorldProvider
      *
      * @throws WorldProviderClosedException|WorldStorageException|UnsupportedWorldFormatException|CorruptChunkException
      */
-    public function loadChunk(ChunkPosition $position): ?LoadedChunkData;
+    public function loadChunk(
+        ChunkPosition $position,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): ?LoadedChunkData;
 
     /**
      * Releases provider resources. Repeated calls must be harmless; every other operation after close must fail.

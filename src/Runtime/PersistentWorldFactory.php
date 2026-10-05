@@ -22,6 +22,7 @@ namespace Bedriox\Server\Runtime;
 
 use Bedriox\Api\World\WorldCreationOptions;
 use Bedriox\Api\World\WorldDifficulty;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Data\PersistentBlockStateRegistry;
 use Bedriox\Server\Persistence\World\ProcessWorldProvider;
@@ -130,6 +131,7 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
         WorldCreationOptions $options,
     ): OpenedWorld {
         $spawn = $options->spawn;
+        $seed = $options->seed ?? random_int(PHP_INT_MIN, PHP_INT_MAX);
         if ($spawn !== null && (
             floor($spawn->x) !== $spawn->x
             || floor($spawn->y) !== $spawn->y
@@ -145,7 +147,7 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
             createIfMissing: true,
             failIfExists: true,
             displayName: $options->displayName ?? $worldId,
-            seed: $options->seed,
+            seed: $seed,
             generatorName: $options->generator,
             difficulty: self::apiDifficulty($options->difficulty),
             initialTime: $options->initialTime,
@@ -162,6 +164,7 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
         WorldCreationOptions $options,
     ): PendingOpenedWorld {
         $spawn = $options->spawn;
+        $seed = $options->seed ?? random_int(PHP_INT_MIN, PHP_INT_MAX);
         if ($spawn !== null && (
             floor($spawn->x) !== $spawn->x
             || floor($spawn->y) !== $spawn->y
@@ -174,8 +177,8 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
             throw new RuntimeException('Asynchronous named-world creation requires process-owned world storage.');
         }
 
-        $directoryName = self::safeDirectoryName($worldId);
         $worldsPath = $this->ensureWorldsDirectory();
+        $directoryName = self::safeDirectoryName($worldId);
         $worldPath = $worldsPath . DIRECTORY_SEPARATOR . $directoryName;
         $this->assertContainedExistingPath($worldsPath, $worldPath);
         if (file_exists($worldPath)) {
@@ -196,7 +199,7 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
                 $options->generator,
                 $identifier,
                 $definition->version,
-                $options->seed,
+                $seed,
                 'minecraft:overworld',
                 $generatorOptions,
                 $definition->workerSource,
@@ -215,7 +218,7 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
             static fn(WorldPreparationResult $prepared): ProcessWorldProvider => $providers->beginCreate(
                 $worldPath,
                 new WorldData(
-                    new WorldMetadata($options->displayName ?? $worldId, $options->seed),
+                    new WorldMetadata($options->displayName ?? $worldId, $seed),
                     $options->generator,
                     $configuredSpawn ?? $prepared->defaultSpawn,
                     time: $options->initialTime,
@@ -238,8 +241,8 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
         if (!$providers instanceof ProcessWorldProviderFactory) {
             throw new RuntimeException('Asynchronous named-world loading requires process-owned world storage.');
         }
-        $directoryName = self::safeDirectoryName($worldId);
         $worldsPath = $this->ensureWorldsDirectory();
+        $directoryName = $this->resolveExistingDirectoryName($worldsPath, self::safeDirectoryName($worldId));
         $worldPath = $worldsPath . DIRECTORY_SEPARATOR . $directoryName;
         $this->assertContainedExistingPath($worldsPath, $worldPath);
         if (!file_exists($worldPath)) {
@@ -282,8 +285,11 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
         ?SpawnPosition $configuredSpawn = null,
         ?GeneratorOptions $generatorOptions = null,
     ): OpenedWorld {
-        $directoryName = self::safeDirectoryName($worldId);
         $worldsPath = $this->ensureWorldsDirectory();
+        $directoryName = self::safeDirectoryName($worldId);
+        if (!$createIfMissing) {
+            $directoryName = $this->resolveExistingDirectoryName($worldsPath, $directoryName);
+        }
         $worldPath = $worldsPath . DIRECTORY_SEPARATOR . $directoryName;
         $this->assertContainedExistingPath($worldsPath, $worldPath);
         $exists = file_exists($worldPath);
@@ -346,6 +352,40 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
         ?SpawnPosition $configuredSpawn,
         ?WorldPreparationResult $prepared = null,
     ): OpenedWorld {
+        $overworld = $this->composeDimension(
+            $config,
+            $provider,
+            $internalStates,
+            WorldDimension::OVERWORLD,
+            $configuredSpawn,
+            $prepared,
+        );
+        $nether = $this->composeDimension(
+            $config,
+            $provider,
+            $internalStates,
+            WorldDimension::NETHER,
+            null,
+        );
+        $end = $this->composeDimension(
+            $config,
+            $provider,
+            $internalStates,
+            WorldDimension::END,
+            null,
+        );
+
+        return new OpenedWorld($overworld->world, $overworld->data, [$nether, $end]);
+    }
+
+    private function composeDimension(
+        ServerConfig $config,
+        WritableWorldProvider $provider,
+        BlockStateRegistry $internalStates,
+        WorldDimension $dimension,
+        ?SpawnPosition $configuredSpawn,
+        ?WorldPreparationResult $prepared = null,
+    ): OpenedWorld {
         $stored = $provider->worldData();
         $generatorOptions = GeneratorOptions::fromJson($stored->generatorOptions);
         try {
@@ -367,6 +407,7 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
                         $stored->metadata->seed,
                         $internalStates,
                         $generatorOptions,
+                        $dimension->value,
                         registry: $this->generators,
                     ),
                 )
@@ -375,6 +416,7 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
                     $stored->metadata->seed,
                     $internalStates,
                     $generatorOptions,
+                    $dimension->value,
                     registry: $this->generators,
                 );
         } catch (InvalidArgumentException $failure) {
@@ -384,14 +426,14 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
             );
         }
         $generatorVersion = $generator->version();
-        if ($prepared !== null && (
+        if ($dimension === WorldDimension::OVERWORLD && $prepared !== null && (
             $prepared->generatorIdentifier !== $identifier
             || $prepared->generatorVersion !== $definition->version
             || $stored->spawn != $prepared->defaultSpawn && $configuredSpawn === null
         )) {
             throw new RuntimeException('Prepared world metadata does not match authoritative storage metadata.');
         }
-        if ($stored->generatorVersion !== $generatorVersion) {
+        if ($stored->bedrioxGeneratorVersionDeclared && $stored->generatorVersion !== $generatorVersion) {
             throw new RuntimeException(
                 "World generator {$stored->generatorName} version {$stored->generatorVersion} is not supported; expected version $generatorVersion.",
             );
@@ -400,10 +442,11 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
             $stored->metadata,
             $generator,
             new ChunkRepository($config->chunkCacheLimit),
-            $configuredSpawn,
+            $configuredSpawn ?? ($dimension === WorldDimension::OVERWORLD ? null : $generator->defaultSpawn()),
             provider: $provider,
             chunkUnloads: new ChunkUnloadManager(self::unloadGraceNanoseconds($config)),
             generatorOptions: $generatorOptions->canonicalJson(),
+            dimension: $dimension,
         );
         $effectiveData = new WorldData(
             $stored->metadata,
@@ -411,7 +454,7 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
             $world->spawn(),
             $stored->time,
             $stored->difficulty,
-            $stored->generatorVersion,
+            $generatorVersion,
             $generatorOptions->canonicalJson(),
         );
 
@@ -444,6 +487,24 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
         if (!is_dir($resolved)) {
             throw new RuntimeException('Configured world path is not a directory.');
         }
+    }
+
+    private function resolveExistingDirectoryName(string $worldsPath, string $requested): string
+    {
+        $matches = [];
+        foreach (scandir($worldsPath) ?: [] as $entry) {
+            if ($entry === '.' || $entry === '..' || strcasecmp($entry, $requested) !== 0) {
+                continue;
+            }
+            if (is_dir($worldsPath . DIRECTORY_SEPARATOR . $entry)) {
+                $matches[] = $entry;
+            }
+        }
+        if (count($matches) > 1) {
+            throw new RuntimeException("World '$requested' is ambiguous on this filesystem.");
+        }
+
+        return $matches[0] ?? $requested;
     }
 
     private static function safeDirectoryName(string $levelName): string

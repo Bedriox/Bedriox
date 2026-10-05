@@ -55,10 +55,17 @@ final class Data3dCodec
         $biomes = [];
         for ($section = 0; $section < Data3dRecord::BIOME_STORAGE_COUNT; ++$section) {
             $header = $reader->byte();
-            if (($header & 1) !== 0) {
-                throw new LevelDbStorageException('Persistent biome palette has the network-palette flag set.');
-            }
+            // Native Bedrock saves may set the non-persistent/network flag here even though
+            // Data3D biome palettes still contain the same little-endian integer IDs.
+            // Unlike block palettes, the flag does not change the biome palette payload.
             $bits = $header >> 1;
+            if ($bits === 127) {
+                if ($biomes === []) {
+                    throw new LevelDbStorageException('First persistent biome palette cannot copy a predecessor.');
+                }
+                $biomes[] = $biomes[array_key_last($biomes)];
+                continue;
+            }
             $indices = PaletteIndexCodec::decodeWords($reader, $bits);
             $paletteSize = $bits === 0 ? 1 : $reader->unsignedLittleEndian32();
             $maximumPaletteSize = $bits === 0 ? 1 : min(PersistentBlockStorage::ENTRY_COUNT, 1 << $bits);

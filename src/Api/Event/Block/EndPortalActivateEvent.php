@@ -18,16 +18,16 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Server\Entity\Spawn\Natural;
+namespace Bedriox\Api\Event\Block;
 
-final readonly class AquaticNaturalSpawnRule implements NaturalSpawnRule
+use Bedriox\Api\Event\CancellableEvent;
+use Bedriox\Api\Player\Player;
+use Bedriox\Api\World\BlockPosition;
+
+final class EndPortalActivateEvent extends CancellableEvent
 {
-    public function __construct(private int $maximumLight = 15) {}
-
-    public function allows(NaturalSpawnContext $context): bool
-    {
-        return $context->dimension === 'minecraft:overworld'
-            && $context->medium === NaturalSpawnMedium::WATER
-            && $context->lightLevel <= $this->maximumLight;
-    }
+    public function __construct(
+        public readonly Player $player,
+        public readonly BlockPosition $center,
+    ) {}
 }

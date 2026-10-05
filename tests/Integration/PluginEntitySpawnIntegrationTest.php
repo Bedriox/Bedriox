@@ -31,6 +31,7 @@ use Bedriox\Api\Entity\VanillaEntityType;
 use Bedriox\Api\Event\Entity\EntityDespawnedEvent;
 use Bedriox\Api\Event\Entity\EntitySpawnedEvent;
 use Bedriox\Api\World\Position as ApiPosition;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\Persistence\EntityChunkSnapshot;
@@ -305,17 +306,17 @@ final class PluginEntityPersistenceStore implements EntityPersistenceStore
     /** @var array<string, EntityChunkSnapshot> */
     private array $snapshots = [];
 
-    public function loadEntityChunk(ChunkPosition $position): ?EntityChunkSnapshot
+    public function loadEntityChunk(ChunkPosition $position, WorldDimension $dimension = WorldDimension::OVERWORLD): ?EntityChunkSnapshot
     {
         return $this->snapshots[$position->key()] ?? null;
     }
 
-    public function saveEntityChunk(EntityChunkSnapshot $snapshot): void
+    public function saveEntityChunk(EntityChunkSnapshot $snapshot, WorldDimension $dimension = WorldDimension::OVERWORLD): void
     {
         $this->snapshots[$snapshot->chunk->key()] = $snapshot;
     }
 
-    public function transferEntityOwnership(EntityOwnershipTransfer $transfer): EntityOwnershipTransferResult
+    public function transferEntityOwnership(EntityOwnershipTransfer $transfer, WorldDimension $dimension = WorldDimension::OVERWORLD): EntityOwnershipTransferResult
     {
         $this->snapshots[$transfer->sourceAfter->chunk->key()] = $transfer->sourceAfter;
         $this->snapshots[$transfer->destinationAfter->chunk->key()] = $transfer->destinationAfter;

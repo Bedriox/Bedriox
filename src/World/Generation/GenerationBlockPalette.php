@@ -122,7 +122,15 @@ final readonly class GenerationBlockPalette
             'minecraft:prismarine_bricks', 'minecraft:dark_prismarine', 'minecraft:sea_lantern',
             'minecraft:sponge', 'minecraft:wet_sponge', 'minecraft:cut_sandstone',
             'minecraft:smooth_sandstone', 'minecraft:chiseled_sandstone', 'minecraft:iron_bars',
-            'minecraft:polished_blackstone_bricks', 'minecraft:basalt', 'minecraft:soul_sand',
+            'minecraft:polished_blackstone_bricks', 'minecraft:nether_brick', 'minecraft:basalt', 'minecraft:soul_sand',
+            'minecraft:soul_soil', 'minecraft:blackstone', 'minecraft:glowstone',
+            'minecraft:quartz_ore', 'minecraft:nether_gold_ore', 'minecraft:nether_wart_block',
+            'minecraft:warped_wart_block', 'minecraft:crimson_nylium', 'minecraft:warped_nylium',
+            'minecraft:shroomlight', 'minecraft:crimson_stem', 'minecraft:warped_stem',
+            'minecraft:crimson_roots', 'minecraft:warped_roots', 'minecraft:nether_sprouts',
+            'minecraft:weeping_vines', 'minecraft:twisting_vines', 'minecraft:end_stone',
+            'minecraft:chorus_plant', 'minecraft:chorus_flower', 'minecraft:purpur_block',
+            'minecraft:purpur_pillar', 'minecraft:end_portal',
             'minecraft:rail', 'minecraft:bookshelf', 'minecraft:torch',
         ];
         $resolved = [];

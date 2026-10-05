@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World\Storage\LevelDb;
 
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Entity\Persistence\CorruptEntityPersistenceException;
 use Bedriox\Server\Entity\Persistence\EntityChunkSnapshot;
 use Bedriox\Server\Entity\Persistence\EntityOwnershipTransfer;
@@ -45,10 +46,12 @@ final readonly class LevelDbEntityPersistenceStore implements EntityPersistenceS
         }
     }
 
-    public function loadEntityChunk(ChunkPosition $position): ?EntityChunkSnapshot
-    {
+    public function loadEntityChunk(
+        ChunkPosition $position,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): ?EntityChunkSnapshot {
         try {
-            $document = $this->database->get(BedrioxEntityKey::chunk($position->x, $position->z));
+            $document = $this->database->get(BedrioxEntityKey::chunk($position->x, $position->z, $dimension));
         } catch (LevelDbIoException $error) {
             throw new WorldStorageException('Unable to read the chunk entity snapshot from LevelDB.', previous: $error);
         }
@@ -59,10 +62,12 @@ final readonly class LevelDbEntityPersistenceStore implements EntityPersistenceS
         return $this->decodeOwned($position, $document);
     }
 
-    public function saveEntityChunk(EntityChunkSnapshot $snapshot): void
-    {
+    public function saveEntityChunk(
+        EntityChunkSnapshot $snapshot,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): void {
         $this->assertWorld($snapshot);
-        $key = BedrioxEntityKey::chunk($snapshot->chunk->x, $snapshot->chunk->z);
+        $key = BedrioxEntityKey::chunk($snapshot->chunk->x, $snapshot->chunk->z, $dimension);
         $encoded = $this->codec->encode($snapshot);
         try {
             $currentBytes = $this->database->get($key);
@@ -81,14 +86,20 @@ final readonly class LevelDbEntityPersistenceStore implements EntityPersistenceS
         }
     }
 
-    public function transferEntityOwnership(EntityOwnershipTransfer $transfer): EntityOwnershipTransferResult
-    {
+    public function transferEntityOwnership(
+        EntityOwnershipTransfer $transfer,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): EntityOwnershipTransferResult {
         $requestedSource = $transfer->sourceAfter;
         $requestedDestination = $transfer->destinationAfter;
         $this->assertWorld($requestedSource);
         $this->assertWorld($requestedDestination);
-        $sourceKey = BedrioxEntityKey::chunk($requestedSource->chunk->x, $requestedSource->chunk->z);
-        $destinationKey = BedrioxEntityKey::chunk($requestedDestination->chunk->x, $requestedDestination->chunk->z);
+        $sourceKey = BedrioxEntityKey::chunk($requestedSource->chunk->x, $requestedSource->chunk->z, $dimension);
+        $destinationKey = BedrioxEntityKey::chunk(
+            $requestedDestination->chunk->x,
+            $requestedDestination->chunk->z,
+            $dimension,
+        );
 
         try {
             $sourceBytes = $this->database->get($sourceKey);

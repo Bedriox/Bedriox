@@ -54,7 +54,7 @@ final readonly class BlockCollisionRegistry
             throw new LogicException('Generation collision definitions are incomplete or duplicated.');
         }
         foreach ($states->states() as $value => $state) {
-            if (in_array($state->identifier(), ['minecraft:water', 'minecraft:lava'], true)) {
+            if (in_array($state->identifier(), ['minecraft:water', 'minecraft:lava', 'minecraft:portal'], true)) {
                 $shapes[$value] = BlockCollisionShape::empty();
             }
         }
@@ -103,6 +103,8 @@ final readonly class BlockCollisionRegistry
             'minecraft:lantern' => self::box(5.0 / 16.0, 0.0, 5.0 / 16.0, 11.0 / 16.0, 0.5, 11.0 / 16.0),
             'minecraft:pointed_dripstone' => self::box(0.25, 0.0, 0.25, 0.75, 1.0, 0.75),
             'minecraft:mud', 'minecraft:soul_sand' => self::box(0.0, 0.0, 0.0, 1.0, 7.0 / 8.0, 1.0),
+            'minecraft:chorus_plant' => self::box(3.0 / 16.0, 0.0, 3.0 / 16.0, 13.0 / 16.0, 1.0, 13.0 / 16.0),
+            'minecraft:chorus_flower' => self::box(2.0 / 16.0, 0.0, 2.0 / 16.0, 14.0 / 16.0, 1.0, 14.0 / 16.0),
             default => self::fullCubeFor($identifier),
         };
     }
@@ -170,6 +172,12 @@ final readonly class BlockCollisionRegistry
             'minecraft:seagrass',
             'minecraft:rail',
             'minecraft:torch',
+            'minecraft:crimson_roots',
+            'minecraft:warped_roots',
+            'minecraft:nether_sprouts',
+            'minecraft:weeping_vines',
+            'minecraft:twisting_vines',
+            'minecraft:end_portal',
         ];
     }
 
@@ -209,7 +217,12 @@ final readonly class BlockCollisionRegistry
             'minecraft:prismarine_bricks', 'minecraft:dark_prismarine', 'minecraft:sea_lantern',
             'minecraft:sponge', 'minecraft:wet_sponge', 'minecraft:cut_sandstone',
             'minecraft:smooth_sandstone', 'minecraft:chiseled_sandstone',
-            'minecraft:polished_blackstone_bricks', 'minecraft:basalt', 'minecraft:bookshelf',
+            'minecraft:polished_blackstone_bricks', 'minecraft:nether_brick', 'minecraft:basalt', 'minecraft:bookshelf',
+            'minecraft:soul_soil', 'minecraft:blackstone', 'minecraft:glowstone',
+            'minecraft:quartz_ore', 'minecraft:nether_gold_ore', 'minecraft:nether_wart_block',
+            'minecraft:warped_wart_block', 'minecraft:crimson_nylium', 'minecraft:warped_nylium',
+            'minecraft:shroomlight', 'minecraft:crimson_stem', 'minecraft:warped_stem',
+            'minecraft:end_stone', 'minecraft:purpur_block', 'minecraft:purpur_pillar',
         ];
     }
 }

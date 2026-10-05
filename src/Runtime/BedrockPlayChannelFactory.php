@@ -32,9 +32,13 @@ use Bedriox\Server\Simulation\SimulationCommandFactory;
 use Bedriox\Server\Worker\Chunk\PreparedChunkCache;
 use Bedriox\Server\Worker\Network\CompressionWorkerDispatcher;
 use Bedriox\Server\World\World;
+use Closure;
 
 final class BedrockPlayChannelFactory implements PlayChannelFactory
 {
+    /**
+     * @param null|Closure(PlayerBootstrap): (?array{initialization: PlayInitializationFactory, world: World, preparedChunks: ?PreparedChunkCache}) $worldBinding
+     */
     public function __construct(
         private PlayInitializationFactory $initialization,
         private SimulationCommandFactory $commands = new SimulationCommandFactory(),
@@ -55,15 +59,27 @@ final class BedrockPlayChannelFactory implements PlayChannelFactory
         private int $compressionTaskTypeId = 0,
         private ?PreparedChunkCache $preparedChunks = null,
         private ?PreparedPlayBatchCache $preparedPlayBatches = null,
+        private ?Closure $worldBinding = null,
     ) {}
 
     public function create(LoginChannelReady $ready, string $sessionId, UnsignedLong $runtimeEntityId, ?PlayerBootstrap $bootstrap = null): BedrockPlayChannel
     {
+        $initialization = $this->initialization;
+        $world = $this->world;
+        $preparedChunks = $this->preparedChunks;
+        if ($bootstrap !== null && $this->worldBinding !== null) {
+            $binding = ($this->worldBinding)($bootstrap);
+            if ($binding !== null) {
+                $initialization = $binding['initialization'];
+                $world = $binding['world'];
+                $preparedChunks = $binding['preparedChunks'];
+            }
+        }
         $spawnX = 0.0;
         $spawnY = 64.0;
         $spawnZ = 0.0;
-        if ($this->world !== null) {
-            $spawn = $this->world->spawn();
+        if ($world !== null) {
+            $spawn = $world->spawn();
             $spawnX = (float) $spawn->x;
             $spawnY = (float) $spawn->y;
             $spawnZ = (float) $spawn->z;
@@ -74,7 +90,7 @@ final class BedrockPlayChannelFactory implements PlayChannelFactory
             $spawnZ = $bootstrap->position->z;
         }
 
-        $initializationPackets = $this->initialization->create($ready->login, $runtimeEntityId, $bootstrap);
+        $initializationPackets = $initialization->create($ready->login, $runtimeEntityId, $bootstrap);
         if ($this->commandRegistry !== null && $this->permissionStore !== null) {
             $projector = new BedrockCommandPacketProjector($this->commandRegistry, $this->permissionStore);
             $initializationPackets = array_values(array_filter(array_map(
@@ -99,11 +115,11 @@ final class BedrockPlayChannelFactory implements PlayChannelFactory
             $sessionId,
             $runtimeEntityId,
             $initializationPackets,
-            $this->initialization->fixedFlatRuntimeIds(),
+            $initialization->fixedFlatRuntimeIds(),
             $this->commands,
             $this->limits,
             $this->diagnostics,
-            $this->world,
+            $world,
             $this->chunkSerializer,
             $this->viewDistance,
             $this->spawnRadius,
@@ -117,7 +133,7 @@ final class BedrockPlayChannelFactory implements PlayChannelFactory
             $this->inventoryProjector,
             $this->compressionWorkers,
             $this->compressionTaskTypeId,
-            $this->preparedChunks,
+            $preparedChunks,
             $this->preparedPlayBatches,
         );
     }

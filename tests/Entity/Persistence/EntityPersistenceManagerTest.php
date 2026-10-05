@@ -23,6 +23,7 @@ namespace Bedriox\Server\Tests\Entity\Persistence;
 use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Inventory\ItemNbt;
 use Bedriox\Api\Inventory\ItemStack;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Entity\AbstractEntity;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\EntityMotion;
@@ -772,7 +773,7 @@ final class TestEntityPersistenceStore implements EntityPersistenceStore
     /** @var array<string, true> */
     public array $failedSaves = [];
 
-    public function loadEntityChunk(ChunkPosition $position): ?EntityChunkSnapshot
+    public function loadEntityChunk(ChunkPosition $position, WorldDimension $dimension = WorldDimension::OVERWORLD): ?EntityChunkSnapshot
     {
         $key = $position->key();
         $this->loadCalls[$key] = ($this->loadCalls[$key] ?? 0) + 1;
@@ -783,7 +784,7 @@ final class TestEntityPersistenceStore implements EntityPersistenceStore
         return $this->snapshots[$key] ?? null;
     }
 
-    public function saveEntityChunk(EntityChunkSnapshot $snapshot): void
+    public function saveEntityChunk(EntityChunkSnapshot $snapshot, WorldDimension $dimension = WorldDimension::OVERWORLD): void
     {
         if (isset($this->failedSaves[$snapshot->chunk->key()])) {
             throw new \RuntimeException('Injected entity persistence write failure.');
@@ -791,7 +792,7 @@ final class TestEntityPersistenceStore implements EntityPersistenceStore
         $this->snapshots[$snapshot->chunk->key()] = $snapshot;
     }
 
-    public function transferEntityOwnership(EntityOwnershipTransfer $transfer): EntityOwnershipTransferResult
+    public function transferEntityOwnership(EntityOwnershipTransfer $transfer, WorldDimension $dimension = WorldDimension::OVERWORLD): EntityOwnershipTransferResult
     {
         $this->transfers[] = $transfer;
         $this->snapshots[$transfer->sourceAfter->chunk->key()] = $transfer->sourceAfter;
@@ -814,17 +815,17 @@ final class TestAsynchronousEntityPersistenceStore implements AsynchronousEntity
 
     private int $nextSaveId = 1;
 
-    public function loadEntityChunk(ChunkPosition $position): ?EntityChunkSnapshot
+    public function loadEntityChunk(ChunkPosition $position, WorldDimension $dimension = WorldDimension::OVERWORLD): ?EntityChunkSnapshot
     {
         return $this->snapshots[$position->key()] ?? null;
     }
 
-    public function saveEntityChunk(EntityChunkSnapshot $snapshot): void
+    public function saveEntityChunk(EntityChunkSnapshot $snapshot, WorldDimension $dimension = WorldDimension::OVERWORLD): void
     {
         $this->snapshots[$snapshot->chunk->key()] = $snapshot;
     }
 
-    public function transferEntityOwnership(EntityOwnershipTransfer $transfer): EntityOwnershipTransferResult
+    public function transferEntityOwnership(EntityOwnershipTransfer $transfer, WorldDimension $dimension = WorldDimension::OVERWORLD): EntityOwnershipTransferResult
     {
         $source = $this->snapshots[$transfer->sourceAfter->chunk->key()] ?? null;
         $destination = $this->snapshots[$transfer->destinationAfter->chunk->key()] ?? null;
@@ -862,7 +863,7 @@ final class TestAsynchronousEntityPersistenceStore implements AsynchronousEntity
         return new EntityOwnershipTransferResult($sourceAfter, $destinationAfter);
     }
 
-    public function enqueueEntityChunkSave(EntityChunkSnapshot $snapshot): PersistenceEnqueueResult
+    public function enqueueEntityChunkSave(EntityChunkSnapshot $snapshot, WorldDimension $dimension = WorldDimension::OVERWORLD): PersistenceEnqueueResult
     {
         $request = new PersistenceWriteRequest(
             $this->nextSaveId,
@@ -877,17 +878,17 @@ final class TestAsynchronousEntityPersistenceStore implements AsynchronousEntity
         return new PersistenceEnqueueResult(PersistenceSubmission::ACCEPTED, $request);
     }
 
-    public function pollEntityChunkSaves(int $maximumCompletions = 256): array
+    public function pollEntityChunkSaves(int $maximumCompletions = 256, ?WorldDimension $dimension = null): array
     {
         return $this->completeSaves($maximumCompletions);
     }
 
-    public function drainEntityChunkSaves(int $timeoutMilliseconds): array
+    public function drainEntityChunkSaves(int $timeoutMilliseconds, ?WorldDimension $dimension = null): array
     {
         return $this->completeSaves(count($this->queuedSaves));
     }
 
-    public function enqueueEntityOwnershipTransfer(EntityOwnershipTransfer $transfer): bool
+    public function enqueueEntityOwnershipTransfer(EntityOwnershipTransfer $transfer, WorldDimension $dimension = WorldDimension::OVERWORLD): bool
     {
         $this->queuedTransfers[] = $transfer;
 
@@ -899,12 +900,12 @@ final class TestAsynchronousEntityPersistenceStore implements AsynchronousEntity
         return count($this->queuedTransfers);
     }
 
-    public function pollEntityOwnershipTransfers(int $maximumCompletions = 256): array
+    public function pollEntityOwnershipTransfers(int $maximumCompletions = 256, ?WorldDimension $dimension = null): array
     {
         return $this->complete($maximumCompletions);
     }
 
-    public function drainEntityOwnershipTransfers(int $timeoutMilliseconds): array
+    public function drainEntityOwnershipTransfers(int $timeoutMilliseconds, ?WorldDimension $dimension = null): array
     {
         return $this->complete(count($this->queuedTransfers));
     }

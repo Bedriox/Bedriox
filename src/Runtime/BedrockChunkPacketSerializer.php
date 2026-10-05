@@ -20,22 +20,25 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\CanonicalBlockState;
 use Bedriox\Protocol\Packet\ChunkColumnData;
 use Bedriox\Protocol\Packet\ChunkSectionData;
 use Bedriox\Protocol\Packet\ChunkSerializer;
+use Bedriox\Protocol\Packet\DimensionId;
 use Bedriox\Protocol\Packet\LevelChunkPacket;
 use Bedriox\Protocol\Packet\PackedPalettedStorage;
 use Bedriox\Server\World\BiomeRuntimeIdMap;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\Storage\LevelDb\PersistentBlockEntityCodec;
+use Bedriox\Server\World\WorldDimensionBounds;
 use InvalidArgumentException;
 
 /** Translates Bedriox-owned world state into the current Bedrock full-column wire model. */
 final class BedrockChunkPacketSerializer
 {
-    /** @var \WeakMap<Chunk, LevelChunkPacket> */
+    /** @var \WeakMap<Chunk, array<string, LevelChunkPacket>> */
     private \WeakMap $cache;
 
     private int $cacheHits = 0;
@@ -60,23 +63,29 @@ final class BedrockChunkPacketSerializer
         $this->cache = new \WeakMap();
     }
 
-    public function serialize(Chunk $chunk): LevelChunkPacket
-    {
-        $cached = $this->cache[$chunk] ?? null;
+    public function serialize(
+        Chunk $chunk,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): LevelChunkPacket {
+        $cached = ($this->cache[$chunk] ?? [])[$dimension->value] ?? null;
         if ($cached instanceof LevelChunkPacket) {
             ++$this->cacheHits;
 
             return $cached;
         }
         ++$this->cacheMisses;
-        $highestSectionY = Chunk::MIN_SECTION_Y;
+        $minimumSectionY = WorldDimensionBounds::minimumSectionY($dimension);
+        $maximumSectionY = WorldDimensionBounds::maximumSectionY($dimension);
+        $highestSectionY = $minimumSectionY;
         foreach ($chunk->populatedSections() as $section) {
-            $highestSectionY = max($highestSectionY, $section->sectionY);
+            if ($section->sectionY >= $minimumSectionY && $section->sectionY <= $maximumSectionY) {
+                $highestSectionY = max($highestSectionY, $section->sectionY);
+            }
         }
 
         $airRuntimeId = $this->blocks->toNetwork($chunk->airState())->signed();
         $sections = [];
-        for ($sectionY = Chunk::MIN_SECTION_Y; $sectionY <= $highestSectionY; ++$sectionY) {
+        for ($sectionY = $minimumSectionY; $sectionY <= $highestSectionY; ++$sectionY) {
             $section = $chunk->section($sectionY);
             if ($section === null) {
                 $sections[] = ChunkSectionData::allAir($sectionY, $airRuntimeId);
@@ -99,7 +108,7 @@ final class BedrockChunkPacketSerializer
         $biomes = [];
         /** @var \WeakMap<\Bedriox\Server\World\BiomeStorage, PackedPalettedStorage> $projectedBiomeStorages */
         $projectedBiomeStorages = new \WeakMap();
-        for ($sectionY = Chunk::MIN_SECTION_Y; $sectionY <= Chunk::MAX_SECTION_Y; ++$sectionY) {
+        for ($sectionY = $minimumSectionY; $sectionY <= $maximumSectionY; ++$sectionY) {
             $storage = $chunk->biomeStorage($sectionY);
             $projected = $projectedBiomeStorages[$storage] ?? null;
             if (!$projected instanceof PackedPalettedStorage) {
@@ -121,9 +130,13 @@ final class BedrockChunkPacketSerializer
         $packet = ChunkSerializer::fullColumn(new ChunkColumnData(
             $chunk->position->x,
             $chunk->position->z,
-            0,
-            Chunk::MIN_SECTION_Y,
-            Chunk::MAX_SECTION_Y,
+            match ($dimension) {
+                WorldDimension::OVERWORLD => DimensionId::Overworld->value,
+                WorldDimension::NETHER => DimensionId::Nether->value,
+                WorldDimension::END => DimensionId::End->value,
+            },
+            $minimumSectionY,
+            $maximumSectionY,
             $sections,
             $biomes,
             $this->blockEntities->encodeNetwork($chunk->blockEntityCollection()),
@@ -131,7 +144,9 @@ final class BedrockChunkPacketSerializer
         if (count($this->cache) >= $this->maximumCachedPackets) {
             $this->cache = new \WeakMap();
         }
-        $this->cache[$chunk] = $packet;
+        $dimensionPackets = $this->cache[$chunk] ?? [];
+        $dimensionPackets[$dimension->value] = $packet;
+        $this->cache[$chunk] = $dimensionPackets;
 
         return $packet;
     }

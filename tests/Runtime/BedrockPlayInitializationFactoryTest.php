@@ -21,6 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Tests\Runtime;
 
 use Bedriox\Api\Inventory\ItemDefinition;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Identity\VerifiedClientData;
 use Bedriox\Protocol\Packet\AvailableActorIdentifiersPacket;
@@ -29,6 +30,7 @@ use Bedriox\Protocol\Packet\ChunkRadiusUpdatedPacket;
 use Bedriox\Protocol\Packet\CraftingDataPacket;
 use Bedriox\Protocol\Packet\CraftingRecipe;
 use Bedriox\Protocol\Packet\CreativeContentPacket;
+use Bedriox\Protocol\Packet\DimensionId;
 use Bedriox\Protocol\Packet\GameRulesChangedPacket;
 use Bedriox\Protocol\Packet\InventoryContainerId;
 use Bedriox\Protocol\Packet\InventoryContentPacket;
@@ -178,6 +180,26 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
 
         self::assertInstanceOf(SetTimePacket::class, $packets[8]);
         self::assertSame(13_000, $packets[8]->time);
+    }
+
+    public function testInitializationProjectsTheActiveWorldDimension(): void
+    {
+        $packets = self::packets(BedrockPlayInitializationFactory::forWorld(
+            BedrockDataSet::bundled(),
+            new RuntimeLimits(),
+            new WorldData(
+                new WorldMetadata('Nether', 1),
+                'default',
+                new SpawnPosition(0, 64, 0),
+                0,
+            ),
+            dimension: WorldDimension::NETHER,
+        )->create($this->login(), UnsignedLong::fromInt(7)));
+
+        self::assertInstanceOf(StartGamePacket::class, $packets[2]);
+        self::assertSame(DimensionId::Nether, $packets[2]->dimension);
+        self::assertInstanceOf(SetSpawnPositionPacket::class, $packets[7]);
+        self::assertSame(DimensionId::Nether->value, $packets[7]->dimension);
     }
 
     public function testExactOrderGoldenRegistryAndDefersTerrainToRuntimeStreamer(): void

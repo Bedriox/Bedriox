@@ -18,12 +18,18 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Server\Simulation;
+namespace Bedriox\Server\Gameplay\Portal;
 
-/** Semantic dimension identity kept independent from current wire IDs. */
-enum WorldDimension: string
+use Bedriox\Api\World\WorldDimension;
+use Bedriox\Server\Simulation\Position;
+
+final readonly class PortalDestinationPlan
 {
-    case OVERWORLD = 'minecraft:overworld';
-    case NETHER = 'minecraft:nether';
-    case END = 'minecraft:the_end';
+    public function __construct(
+        public WorldDimension $sourceDimension,
+        public WorldDimension $targetDimension,
+        public Position $projectedPosition,
+        public int $searchRadius,
+        public PortalAxis $preferredAxis,
+    ) {}
 }

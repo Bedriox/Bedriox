@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Runtime;
 
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Security\EphemeralKeyFactory;
 use Bedriox\Protocol\Security\P384KeyPair;
@@ -299,7 +300,7 @@ final class BootstrapRecordingWorldProvider implements WritableWorldProvider
         return $this->data;
     }
 
-    public function loadChunk(ChunkPosition $position): ?LoadedChunkData
+    public function loadChunk(ChunkPosition $position, WorldDimension $dimension = WorldDimension::OVERWORLD): ?LoadedChunkData
     {
         return null;
     }
@@ -309,7 +310,7 @@ final class BootstrapRecordingWorldProvider implements WritableWorldProvider
         $this->data = $worldData;
     }
 
-    public function saveChunk(ChunkSaveData $chunkData): void {}
+    public function saveChunk(ChunkSaveData $chunkData, WorldDimension $dimension = WorldDimension::OVERWORLD): void {}
 
     public function close(): void
     {

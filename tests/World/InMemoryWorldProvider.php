@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\World;
 
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\Provider\ChunkSaveData;
@@ -60,16 +61,21 @@ final class InMemoryWorldProvider implements WritableWorldProvider
         return $this->data;
     }
 
-    public function loadChunk(ChunkPosition $position): ?LoadedChunkData
-    {
+    public function loadChunk(
+        ChunkPosition $position,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): ?LoadedChunkData {
         $this->ensureOpen();
-        if (isset($this->corruptChunks[$position->key()])) {
+        $key = $dimension === WorldDimension::OVERWORLD
+            ? $position->key()
+            : $dimension->value . ':' . $position->key();
+        if (isset($this->corruptChunks[$key])) {
             throw new CorruptChunkException('Injected corrupt chunk.');
         }
-        $chunk = $this->chunks[$position->key()] ?? null;
+        $chunk = $this->chunks[$key] ?? null;
 
         return $chunk instanceof Chunk
-            ? new LoadedChunkData($chunk, isset($this->upgradedChunks[$position->key()]))
+            ? new LoadedChunkData($chunk, isset($this->upgradedChunks[$key]))
             : null;
     }
 
@@ -79,11 +85,16 @@ final class InMemoryWorldProvider implements WritableWorldProvider
         $this->data = $worldData;
     }
 
-    public function saveChunk(ChunkSaveData $chunkData): void
-    {
+    public function saveChunk(
+        ChunkSaveData $chunkData,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): void {
         $this->ensureWritable();
         $this->savedRevisions[] = $chunkData->revision;
-        $this->chunks[$chunkData->chunk->position->key()] = $chunkData->chunk->withPersistedRevision(
+        $key = $dimension === WorldDimension::OVERWORLD
+            ? $chunkData->chunk->position->key()
+            : $dimension->value . ':' . $chunkData->chunk->position->key();
+        $this->chunks[$key] = $chunkData->chunk->withPersistedRevision(
             $chunkData->revision,
         );
     }

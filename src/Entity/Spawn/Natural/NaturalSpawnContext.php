@@ -22,6 +22,7 @@ namespace Bedriox\Server\Entity\Spawn\Natural;
 
 use Bedriox\Api\Entity\EntityCategory;
 use Bedriox\Api\Entity\EntityType;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\ChunkPosition;
 use InvalidArgumentException;
@@ -34,7 +35,7 @@ final readonly class NaturalSpawnContext
         public EntityType $type,
         public EntityCategory $category,
         public Position $position,
-        public string $dimension,
+        public WorldDimension $dimension,
         public string $biome,
         public NaturalSpawnMedium $medium,
         public int $lightLevel,
@@ -42,7 +43,6 @@ final readonly class NaturalSpawnContext
         public float $worldSpawnDistanceSquared,
     ) {
         if ($worldName === '' || strlen($worldName) > 128 || preg_match('//u', $worldName) !== 1
-            || preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $dimension) !== 1
             || preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $biome) !== 1
             || $lightLevel < 0 || $lightLevel > 15
             || !is_finite($nearestPlayerDistanceSquared) || $nearestPlayerDistanceSquared < 0.0

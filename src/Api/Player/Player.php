@@ -35,6 +35,7 @@ use Bedriox\Api\Inventory\PlayerInventory;
 use Bedriox\Api\Inventory\PlayerInventoryActions;
 use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\Position;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Protocol\Packet\SetTitlePacket;
 use Bedriox\Protocol\Packet\TextPacket;
 use Bedriox\Protocol\Packet\ToastRequestPacket;
@@ -103,6 +104,11 @@ final readonly class Player
     public function getGameMode(): GameMode
     {
         return $this->gameMode;
+    }
+
+    public function getDimension(): WorldDimension
+    {
+        return $this->position->dimension ?? WorldDimension::OVERWORLD;
     }
 
     public function teleport(Position $position): void

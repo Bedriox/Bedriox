@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\World\Storage\LevelDb;
 
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\World\Storage\LevelDb\LevelDbChunkKey;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
@@ -41,5 +42,18 @@ final class LevelDbChunkKeyTest extends TestCase
     {
         $this->expectException(InvalidArgumentException::class);
         LevelDbChunkKey::subChunk(0, 0, 128);
+    }
+
+    public function testNativeDimensionIdIsAppendedOutsideTheOverworld(): void
+    {
+        $coordinates = pack('V', 4) . pack('V', 0xffff_fffd);
+
+        self::assertSame($coordinates, LevelDbChunkKey::prefix(4, -3, WorldDimension::OVERWORLD));
+        self::assertSame($coordinates . pack('V', 1), LevelDbChunkKey::prefix(4, -3, WorldDimension::NETHER));
+        self::assertSame($coordinates . pack('V', 2), LevelDbChunkKey::prefix(4, -3, WorldDimension::END));
+        self::assertSame(
+            $coordinates . pack('V', 1) . LevelDbChunkKey::SUBCHUNK . "\xff",
+            LevelDbChunkKey::subChunk(4, -3, -1, WorldDimension::NETHER),
+        );
     }
 }

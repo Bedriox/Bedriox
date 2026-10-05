@@ -44,7 +44,7 @@ white-list=false
 # World and gameplay
 level-name=world
 level-type=default
-level-seed=0
+level-seed=
 gamemode=survival
 difficulty=normal
 pvp=true

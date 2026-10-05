@@ -20,9 +20,11 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Worker\Chunk;
 
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\CanonicalBlockState;
 use Bedriox\Protocol\Packet\ChunkColumnData;
 use Bedriox\Protocol\Packet\ChunkSectionData;
+use Bedriox\Protocol\Packet\DimensionId;
 use Bedriox\Protocol\Packet\PackedPalettedStorage;
 use Bedriox\Server\World\BiomeRuntimeIdMap;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
@@ -30,22 +32,38 @@ use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\PackedPaletteWords;
 use Bedriox\Server\World\Storage\LevelDb\PersistentBlockEntityCodec;
+use Bedriox\Server\World\SubChunk;
+use Bedriox\Server\World\WorldDimensionBounds;
 
 /** Canonical packed snapshot used only for worker-side Bedrock chunk projection. */
 final class ChunkProjectionTransferCodec
 {
     public const int MAXIMUM_ENCODED_BYTES = 2_097_152;
-    private const string MAGIC = "BXPP\x00\x02";
+    private const string MAGIC = "BXPP\x00\x03";
     private const int CHECKSUM_BYTES = 32;
     private const int MAXIMUM_STATE_BYTES = 65_535;
 
-    public function encode(Chunk $chunk, BlockStateRegistry $states): string
-    {
+    public function encode(
+        Chunk $chunk,
+        BlockStateRegistry $states,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): string {
         $body = pack('N2', $chunk->position->x, $chunk->position->z)
+            . self::encodeByte(match ($dimension) {
+                WorldDimension::OVERWORLD => DimensionId::Overworld->value,
+                WorldDimension::NETHER => DimensionId::Nether->value,
+                WorldDimension::END => DimensionId::End->value,
+            })
             . self::encodeDecimal($chunk->revision)
             . self::encodeState($states->state($chunk->airState()));
 
-        $sections = $chunk->populatedSections();
+        $minimumSectionY = WorldDimensionBounds::minimumSectionY($dimension);
+        $maximumSectionY = WorldDimensionBounds::maximumSectionY($dimension);
+        $sections = array_values(array_filter(
+            $chunk->populatedSections(),
+            static fn(SubChunk $section): bool => $section->sectionY >= $minimumSectionY
+                && $section->sectionY <= $maximumSectionY,
+        ));
         $body .= self::encodeByte(count($sections));
         foreach ($sections as $section) {
             $storage = $section->blockStorageLayer(0);
@@ -56,7 +74,12 @@ final class ChunkProjectionTransferCodec
             self::guardBody($body);
         }
 
-        $biomes = $chunk->biomeStorages();
+        $biomes = array_slice(
+            $chunk->biomeStorages(),
+            $minimumSectionY - Chunk::MIN_SECTION_Y,
+            $maximumSectionY - $minimumSectionY + 1,
+            true,
+        );
         $body .= self::encodeByte(count($biomes));
         $previousPaletteBody = null;
         $previousBits = null;
@@ -109,6 +132,14 @@ final class ChunkProjectionTransferCodec
         try {
             $chunkX = $reader->signedInt();
             $chunkZ = $reader->signedInt();
+            $dimensionId = DimensionId::from($reader->byte());
+            $dimension = match ($dimensionId) {
+                DimensionId::Overworld => WorldDimension::OVERWORLD,
+                DimensionId::Nether => WorldDimension::NETHER,
+                DimensionId::End => WorldDimension::END,
+            };
+            $minimumSectionY = WorldDimensionBounds::minimumSectionY($dimension);
+            $maximumSectionY = WorldDimensionBounds::maximumSectionY($dimension);
             self::decodeDecimal($reader);
             $airRuntimeId = $blocks->toNetwork($states->internalId(self::decodeState($reader)))->signed();
 
@@ -117,10 +148,10 @@ final class ChunkProjectionTransferCodec
                 throw new ChunkTransferException('Chunk projection contains too many block sections.');
             }
             $populated = [];
-            $highestSectionY = Chunk::MIN_SECTION_Y;
+            $highestSectionY = $minimumSectionY;
             for ($sectionIndex = 0; $sectionIndex < $sectionCount; ++$sectionIndex) {
                 $sectionY = $reader->signedByte();
-                if ($sectionY < Chunk::MIN_SECTION_Y || $sectionY > Chunk::MAX_SECTION_Y
+                if ($sectionY < $minimumSectionY || $sectionY > $maximumSectionY
                     || isset($populated[$sectionY])) {
                     throw new ChunkTransferException('Chunk projection contains an invalid block section.');
                 }
@@ -146,13 +177,14 @@ final class ChunkProjectionTransferCodec
             }
 
             $sections = [];
-            for ($sectionY = Chunk::MIN_SECTION_Y; $sectionY <= $highestSectionY; ++$sectionY) {
+            for ($sectionY = $minimumSectionY; $sectionY <= $highestSectionY; ++$sectionY) {
                 $sections[] = $populated[$sectionY]
                     ?? ChunkSectionData::allAir($sectionY, $airRuntimeId);
             }
 
             $biomeCount = $reader->byte();
-            if ($biomeCount !== Chunk::SECTION_COUNT) {
+            $dimensionSectionCount = $maximumSectionY - $minimumSectionY + 1;
+            if ($biomeCount !== $dimensionSectionCount) {
                 throw new ChunkTransferException('Chunk projection must contain every biome section.');
             }
             $biomeStorages = [];
@@ -160,7 +192,7 @@ final class ChunkProjectionTransferCodec
             for ($offset = 0; $offset < $biomeCount; ++$offset) {
                 $sectionY = $reader->signedByte();
                 $kind = $reader->byte();
-                if ($sectionY !== Chunk::MIN_SECTION_Y + $offset || ($kind !== 0 && $kind !== 1)) {
+                if ($sectionY !== $minimumSectionY + $offset || ($kind !== 0 && $kind !== 1)) {
                     throw new ChunkTransferException('Chunk projection biome section ordering is invalid.');
                 }
                 if ($kind === 0) {
@@ -218,9 +250,9 @@ final class ChunkProjectionTransferCodec
             return new ChunkColumnData(
                 $chunkX,
                 $chunkZ,
-                0,
-                Chunk::MIN_SECTION_Y,
-                Chunk::MAX_SECTION_Y,
+                $dimensionId->value,
+                $minimumSectionY,
+                $maximumSectionY,
                 $sections,
                 $biomeStorages,
                 $blockEntities,

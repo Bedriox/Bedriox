@@ -20,16 +20,19 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Spawn\Natural;
 
+use Bedriox\Api\World\WorldDimension;
+
 /** Overworld surface admission for sheep herds. */
 final readonly class SheepNaturalSpawnRule implements NaturalSpawnRule
 {
     public function allows(NaturalSpawnContext $context): bool
     {
-        if ($context->medium !== NaturalSpawnMedium::GROUND || $context->lightLevel < 9) {
+        if ($context->dimension !== WorldDimension::OVERWORLD
+            || $context->medium !== NaturalSpawnMedium::GROUND || $context->lightLevel < 9) {
             return false;
         }
         foreach (['ocean', 'river', 'beach', 'desert', 'badlands', 'peak', 'slope'] as $excluded) {
-            if (str_contains($context->biome, $excluded)) {
+            if (NaturalSpawnBiomes::matchesFamily($context->biome, $excluded)) {
                 return false;
             }
         }

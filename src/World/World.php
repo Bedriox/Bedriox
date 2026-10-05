@@ -21,6 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\World;
 
 use Bedriox\Api\World\WeatherState;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceConflictException;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceManager;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
@@ -92,6 +93,7 @@ final class World
         ?AsyncChunkGenerator $asyncChunks = null,
         ?ChunkUnloadManager $chunkUnloads = null,
         ?string $generatorOptions = null,
+        private readonly WorldDimension $dimension = WorldDimension::OVERWORLD,
     ) {
         $this->asyncChunks = $asyncChunks;
         $this->chunkUnloads = $chunkUnloads ?? new ChunkUnloadManager();
@@ -102,8 +104,11 @@ final class World
         if ($worldData !== null && (
             $worldData->metadata->name !== $metadata->name
             || $worldData->metadata->seed !== $metadata->seed
-            || $worldData->generatorName !== $generator->name()
-            || $worldData->generatorVersion !== ($generator instanceof VersionedWorldGenerator ? $generator->version() : 1)
+            || ($dimension === WorldDimension::OVERWORLD && (
+                $worldData->generatorName !== $generator->name()
+                || ($worldData->bedrioxGeneratorVersionDeclared
+                    && $worldData->generatorVersion !== ($generator instanceof VersionedWorldGenerator ? $generator->version() : 1))
+            ))
         )) {
             throw new InvalidArgumentException('Provider world data does not match the configured world.');
         }
@@ -112,6 +117,11 @@ final class World
         $this->difficulty = $worldData === null ? 2 : $worldData->difficulty;
         $this->weather = $worldData === null ? WeatherCycle::initial($metadata->seed) : $worldData->weather;
         $this->weatherCycleEnabled = $worldData === null || $worldData->weatherCycleEnabled;
+    }
+
+    public function dimension(): WorldDimension
+    {
+        return $this->dimension;
     }
 
     /** Enables worker generation before the world begins serving chunks. */
@@ -200,7 +210,7 @@ final class World
         if ($this->provider instanceof AsynchronousWorldProvider) {
             $completion = $this->completedChunkLoads[$key] ?? null;
             if (!$completion instanceof ChunkLoadCompletion) {
-                $this->provider->requestChunkLoad($position);
+                $this->provider->requestChunkLoad($position, $this->dimension);
                 $this->pendingChunkRetains[$key] = true;
 
                 return false;
@@ -223,7 +233,7 @@ final class World
                 throw new \RuntimeException('Asynchronous chunk storage returned no outcome.');
             }
         } elseif ($this->provider !== null) {
-            $loaded = $this->provider->loadChunk($position);
+            $loaded = $this->provider->loadChunk($position, $this->dimension);
             if ($loaded !== null) {
                 $chunk = $loaded->upgraded ? self::markDirty($loaded->chunk) : $loaded->chunk;
                 $this->chunks->retain($position, static fn(ChunkPosition $_position): Chunk => $chunk, $this->evictionSaver());
@@ -700,7 +710,7 @@ final class World
     }
 
     /** Saves all dirty chunks and current format-independent world metadata. */
-    public function flush(): int
+    public function flush(bool $saveMetadata = true): int
     {
         if (!$this->provider instanceof WritableWorldProvider) {
             if ($this->provider === null) {
@@ -713,7 +723,9 @@ final class World
         $saved = $this->provider instanceof AsynchronousWorldProvider
             ? $this->flushAsynchronousChunks($this->provider)
             : $this->chunks->flush($this->saveChunk(...));
-        $this->saveWorldData();
+        if ($saveMetadata) {
+            $this->saveWorldData();
+        }
 
         return $saved;
     }
@@ -721,6 +733,9 @@ final class World
     /** Persists the current format-independent world metadata without flushing terrain. */
     public function saveWorldData(): void
     {
+        if ($this->dimension !== WorldDimension::OVERWORLD) {
+            return;
+        }
         if (!$this->provider instanceof WritableWorldProvider) {
             if ($this->provider === null) {
                 return;
@@ -734,6 +749,9 @@ final class World
     /** Queues routine metadata autosave without placing storage latency on the simulation thread. */
     public function scheduleWorldDataSave(): PersistenceSubmission
     {
+        if ($this->dimension !== WorldDimension::OVERWORLD) {
+            return PersistenceSubmission::ACCEPTED;
+        }
         if (!$this->provider instanceof WritableWorldProvider) {
             if ($this->provider === null) {
                 return PersistenceSubmission::ACCEPTED;
@@ -753,6 +771,9 @@ final class World
     /** @return list<PersistenceWriteCompletion> */
     public function pollWorldDataSaves(int $maximumCompletions = 16): array
     {
+        if ($this->dimension !== WorldDimension::OVERWORLD) {
+            return [];
+        }
         if (!$this->provider instanceof AsynchronousWorldDataProvider) {
             return [];
         }
@@ -775,8 +796,11 @@ final class World
         );
     }
 
-    public function close(bool $save = true): void
-    {
+    public function close(
+        bool $save = true,
+        bool $closeProvider = true,
+        bool $saveMetadata = true,
+    ): void {
         if ($this->closed) {
             return;
         }
@@ -785,13 +809,15 @@ final class World
         $failure = null;
         try {
             if ($save && $this->provider instanceof WritableWorldProvider) {
-                $this->flush();
+                $this->flush($saveMetadata);
             }
         } catch (Throwable $error) {
             $failure = $error;
         }
         try {
-            $this->provider?->close();
+            if ($closeProvider) {
+                $this->provider?->close();
+            }
         } catch (Throwable $error) {
             $failure ??= $error;
         } finally {
@@ -847,7 +873,7 @@ final class World
     private function loadChunk(ChunkPosition $position): Chunk
     {
         if ($this->provider !== null) {
-            $loaded = $this->provider->loadChunk($position);
+            $loaded = $this->provider->loadChunk($position, $this->dimension);
             if ($loaded !== null) {
                 return $loaded->upgraded ? self::markDirty($loaded->chunk) : $loaded->chunk;
             }
@@ -891,7 +917,7 @@ final class World
             throw new LogicException('This world does not have a writable provider.');
         }
 
-        $this->provider->saveChunk(new ChunkSaveData($chunk));
+        $this->provider->saveChunk(new ChunkSaveData($chunk), $this->dimension);
     }
 
     /** Collects a bounded batch of completed storage work for later non-blocking consumers. */
@@ -903,10 +929,10 @@ final class World
         if (!$this->provider instanceof AsynchronousWorldProvider) {
             return;
         }
-        foreach ($this->provider->pollChunkLoads($maximumLoads) as $completion) {
+        foreach ($this->provider->pollChunkLoads($maximumLoads, $this->dimension) as $completion) {
             $this->completedChunkLoads[$completion->position->key()] = $completion;
         }
-        foreach ($this->provider->pollChunkSaves($maximumSaves) as $completion) {
+        foreach ($this->provider->pollChunkSaves($maximumSaves, $this->dimension) as $completion) {
             $position = self::positionFromPersistenceKey($completion->key);
             $key = $position->key();
             if (($this->pendingChunkSaveRevisions[$key] ?? -1) <= $completion->revision) {
@@ -931,7 +957,7 @@ final class World
             return PersistenceSubmission::STALE;
         }
 
-        $result = $this->provider->enqueueChunkSave(new ChunkSaveData($chunk));
+        $result = $this->provider->enqueueChunkSave(new ChunkSaveData($chunk), $this->dimension);
         if ($result->status !== PersistenceSubmission::SATURATED) {
             $this->pendingChunkSaveRevisions[$key] = $chunk->revision;
         }
@@ -944,12 +970,12 @@ final class World
         $saved = 0;
         while ($this->chunks->dirtyCount() > 0) {
             foreach ($this->chunks->dirtySnapshots(min(256, $this->chunks->dirtyCount())) as $chunk) {
-                $result = $provider->enqueueChunkSave(new ChunkSaveData($chunk));
+                $result = $provider->enqueueChunkSave(new ChunkSaveData($chunk), $this->dimension);
                 if ($result->status === PersistenceSubmission::SATURATED) {
                     break;
                 }
             }
-            $completions = $provider->drainChunkSaves(30_000);
+            $completions = $provider->drainChunkSaves(30_000, $this->dimension);
             if ($completions === []) {
                 throw new \RuntimeException('Asynchronous world persistence made no shutdown progress.');
             }
@@ -970,7 +996,11 @@ final class World
 
     private static function positionFromPersistenceKey(string $key): ChunkPosition
     {
-        if (preg_match('/^chunk:(-?(?:0|[1-9][0-9]*)):(-?(?:0|[1-9][0-9]*))$/D', $key, $matches) !== 1) {
+        if (preg_match(
+            '/^chunk:(?:(?:OVERWORLD|NETHER|END):)?(-?(?:0|[1-9][0-9]*)):(-?(?:0|[1-9][0-9]*))$/D',
+            $key,
+            $matches,
+        ) !== 1) {
             throw new \RuntimeException('Asynchronous world persistence returned an invalid chunk key.');
         }
 

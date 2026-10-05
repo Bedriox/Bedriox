@@ -20,8 +20,10 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Entity\Spawn\Natural;
 
+use Bedriox\Api\Entity\EntityCategory;
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\VanillaEntityType;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Entity\AbstractMobEntity;
 use Bedriox\Server\Entity\Ai\AiWorldView;
@@ -70,7 +72,10 @@ final class WorldNaturalSpawnRuntimeTest extends TestCase
             new NaturalSpawnPlayer('world', new Position(64.0, 64.0, 64.0)),
         ]);
 
-        self::assertSame(64.0, $environment->heightAt('world', 0.5, 0.5));
+        self::assertEquals(
+            new Position(0.5, 64.0, 0.5),
+            $environment->candidatePosition('world', NaturalSpawnMedium::GROUND, 0.5, 0.5, 0.5),
+        );
         self::assertSame('minecraft:plains', $environment->biome('world', new Position(0.5, 64.0, 0.5)));
         self::assertSame(
             NaturalSpawnMedium::GROUND,
@@ -87,7 +92,13 @@ final class WorldNaturalSpawnRuntimeTest extends TestCase
             VanillaEntityType::COW,
             new Position(0.5, 63.0, 0.5),
         ));
-        self::assertNull($environment->heightAt('world', 16.5, 0.5));
+        self::assertNull($environment->candidatePosition(
+            'world',
+            NaturalSpawnMedium::GROUND,
+            16.5,
+            0.5,
+            0.5,
+        ));
     }
 
     public function testBaselineSpawnsOnlyLoadedCowOrZombieCandidatesOnCadence(): void
@@ -144,6 +155,35 @@ final class WorldNaturalSpawnRuntimeTest extends TestCase
                 VanillaEntityType::ZOMBIE,
             ]);
         }
+    }
+
+    public function testRuntimeUsesLogicalWorldIdentityInsteadOfDisplayNameAfterTransfer(): void
+    {
+        [$world, $states, $palette, $shapes, $query, $entities, $definitions] = self::dependencies(
+            metadataName: 'Display Name',
+            dimension: WorldDimension::NETHER,
+        );
+        $generation = GenerationBlockPalette::fromRegistry($states);
+        $runtime = WorldNaturalSpawnRuntime::baseline(
+            $world,
+            $entities,
+            $definitions,
+            $states,
+            $shapes,
+            $query,
+            $palette->air,
+            $generation->state('minecraft:water'),
+            $generation->state('minecraft:lava'),
+            new FrozenNaturalSpawnClock(),
+            worldName: 'world-default',
+        );
+
+        $result = $runtime->tick(20, [
+            new NaturalSpawnPlayer('world-default', new Position(0.5, 64.0, 0.5)),
+        ]);
+
+        self::assertSame(WorldDimension::NETHER, $world->dimension());
+        self::assertSame([], $result->removed());
     }
 
     public function testHardDistanceDespawnCannotRemoveCommandEntities(): void
@@ -253,15 +293,19 @@ final class WorldNaturalSpawnRuntimeTest extends TestCase
      *     EntityDefinitionRegistry
      * }
      */
-    private static function dependencies(int $loadRadius = 7): array
-    {
+    private static function dependencies(
+        int $loadRadius = 7,
+        string $metadataName = 'world',
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): array {
         $states = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
         $palette = FixedFlatBlockPalette::fromRegistry($states);
         $generation = GenerationBlockPalette::fromRegistry($states);
         $world = new World(
-            new WorldMetadata('world', 12345),
+            new WorldMetadata($metadataName, 12345),
             new FlatWorldGenerator($palette),
             new ChunkRepository(($loadRadius * 2 + 1) ** 2 + 1),
+            dimension: $dimension,
         );
         for ($x = -$loadRadius; $x <= $loadRadius; ++$x) {
             for ($z = -$loadRadius; $z <= $loadRadius; ++$z) {

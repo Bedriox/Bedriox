@@ -22,6 +22,7 @@ namespace Bedriox\Server\Player;
 
 use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Player\GameMode;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Effect\ActiveEffectPersistenceState;
 use Bedriox\Server\Effect\VanillaEffectBehavior;
 use Bedriox\Server\Simulation\Position;
@@ -52,6 +53,7 @@ final readonly class PlayerBootstrap
         public ?ActiveEffectPersistenceState $effectPersistenceState = null,
         public int $totalExperience = 0,
         public ?Position $spawnPoint = null,
+        public WorldDimension $dimension = WorldDimension::OVERWORLD,
     ) {
         if ($this->worldName === '' || strlen($this->worldName) > 64
             || preg_match('//u', $this->worldName) !== 1

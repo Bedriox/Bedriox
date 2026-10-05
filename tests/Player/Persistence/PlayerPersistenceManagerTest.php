@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Player\Persistence;
 
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Identity\VerifiedClientData;
 use Bedriox\Protocol\Security\OpenSslEphemeralKeyFactory;
@@ -76,6 +77,7 @@ final class PlayerPersistenceManagerTest extends TestCase
             PlayerInventory::starter($palette)->exportState(),
             100,
             200,
+            dimension: WorldDimension::END,
         );
         $manager = new PlayerPersistenceManager(
             $store = new MemoryPlayerDataStore($stored),
@@ -93,6 +95,7 @@ final class PlayerPersistenceManagerTest extends TestCase
         self::assertSame('22', $loaded->identity->xuid);
         self::assertSame(100, $loaded->firstPlayedAt);
         self::assertSame(300, $loaded->lastPlayedAt);
+        self::assertSame(WorldDimension::END, $loaded->dimension);
         self::assertSame($stored, $store->profile);
     }
 
@@ -238,9 +241,11 @@ final class PlayerPersistenceManagerTest extends TestCase
             new Position(0.0, 64.0, 0.0),
             static fn(): int => 300,
         );
+        $player->changeWorldDimension(WorldDimension::NETHER);
 
         self::assertTrue($manager->save($player));
         self::assertNotNull($store->profile);
+        self::assertSame(WorldDimension::NETHER, $store->profile->dimension);
         self::assertSame([0, 1, 2, 3], array_map(
             static fn(PlayerInventoryEntry $entry): int => $entry->slot,
             $store->profile->inventory->armor,

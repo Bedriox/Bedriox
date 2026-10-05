@@ -84,13 +84,79 @@ final readonly class PersistentBlockEntityCodec
             $roots = $this->nbt->decodeRootCompounds($encoded, BlockEntityCollection::MAXIMUM_ENTITIES);
             $entities = [];
             foreach ($roots as $root) {
+                if (!$this->isSupportedRoot($root)) {
+                    self::position($root, $position);
+                    continue;
+                }
                 $entities[] = $this->decodeEntity($root);
             }
 
             return new BlockEntityCollection($position, $entities);
-        } catch (CorruptWorldDataException|InvalidArgumentException $error) {
+        } catch (CorruptWorldDataException $error) {
+            if ($error->getMessage() === 'NBT string is not valid UTF-8.') {
+                // Some native block actors contain opaque legacy string bytes. The provider
+                // keeps their complete LevelDB value untouched until represented state changes.
+                return new BlockEntityCollection($position);
+            }
+            throw new LevelDbStorageException('Stored block entities contain malformed or unsupported data.', previous: $error);
+        } catch (InvalidArgumentException $error) {
             throw new LevelDbStorageException('Stored block entities contain malformed or unsupported data.', previous: $error);
         }
+    }
+
+    /**
+     * Re-encodes represented block entities while retaining native tags and block-entity
+     * types which Bedriox does not model yet.
+     */
+    public function encodePreserving(BlockEntityCollection $entities, string $original): string
+    {
+        if (strlen($original) > self::MAXIMUM_BYTES) {
+            throw new LevelDbStorageException('Stored block entities exceed their byte limit.');
+        }
+        try {
+            $originalRoots = $original === ''
+                ? []
+                : $this->nbt->decodeRootCompounds($original, BlockEntityCollection::MAXIMUM_ENTITIES);
+            $current = [];
+            foreach ($entities->all() as $entity) {
+                $current[self::positionKey($entity->position)] = $this->encodeEntity($entity);
+            }
+
+            $roots = [];
+            foreach ($originalRoots as $root) {
+                $position = self::position($root, $entities->position);
+                $key = self::positionKey($position);
+                if (!$this->isSupportedRoot($root)) {
+                    if (isset($current[$key])) {
+                        $roots[] = $current[$key];
+                        unset($current[$key]);
+                    } else {
+                        $roots[] = $root;
+                    }
+                    continue;
+                }
+                if (!isset($current[$key])) {
+                    continue;
+                }
+                $replacement = $current[$key];
+                if ($this->sameType($root, $replacement)) {
+                    $replacement = array_replace($root, $replacement);
+                }
+                $roots[] = $replacement;
+                unset($current[$key]);
+            }
+            foreach ($current as $root) {
+                $roots[] = $root;
+            }
+            $encoded = $this->nbt->encodeRootCompounds($roots, BlockEntityCollection::MAXIMUM_ENTITIES);
+        } catch (CorruptWorldDataException|InvalidArgumentException $error) {
+            throw new LevelDbStorageException('Stored block entities contain malformed data.', previous: $error);
+        }
+        if (strlen($encoded) > self::MAXIMUM_BYTES) {
+            throw new LevelDbStorageException('Encoded block entities exceed their byte limit.');
+        }
+
+        return $encoded;
     }
 
     /**
@@ -307,7 +373,9 @@ final readonly class PersistentBlockEntityCodec
         $contents = [];
         $items = $root['Items'] ?? null;
         if ($items !== null) {
-            if ($items->type !== LittleEndianNbtTag::LIST || $items->listType !== LittleEndianNbtTag::COMPOUND
+            if ($items->type !== LittleEndianNbtTag::LIST
+                || ($items->listType !== LittleEndianNbtTag::COMPOUND
+                    && !($items->listType === LittleEndianNbtTag::END && $items->value === []))
                 || !is_array($items->value) || count($items->value) > $slotCount) {
                 throw new InvalidArgumentException('Block-entity Items tag is malformed or exceeds its slot limit.');
             }
@@ -522,5 +590,47 @@ final readonly class PersistentBlockEntityCodec
         }
 
         return $result;
+    }
+
+    /** @param array<string, LittleEndianNbtTag> $root */
+    private function isSupportedRoot(array $root): bool
+    {
+        $id = self::string(self::required($root, 'id'), 'id');
+        try {
+            $this->registry->fromPersistentId($id);
+            return true;
+        } catch (InvalidArgumentException) {
+            return false;
+        }
+    }
+
+    /** @param array<string, LittleEndianNbtTag> $root */
+    private static function position(array $root, ChunkPosition $chunk): BlockPosition
+    {
+        $position = new BlockPosition(
+            self::integer(self::required($root, 'x'), LittleEndianNbtTag::INT, 'x'),
+            self::integer(self::required($root, 'y'), LittleEndianNbtTag::INT, 'y'),
+            self::integer(self::required($root, 'z'), LittleEndianNbtTag::INT, 'z'),
+        );
+        if ((int) floor($position->x / 16) !== $chunk->x || (int) floor($position->z / 16) !== $chunk->z) {
+            throw new InvalidArgumentException('Block entity does not belong to its owning chunk.');
+        }
+
+        return $position;
+    }
+
+    private static function positionKey(BlockPosition $position): string
+    {
+        return $position->x . ':' . $position->y . ':' . $position->z;
+    }
+
+    /**
+     * @param array<string, LittleEndianNbtTag> $left
+     * @param array<string, LittleEndianNbtTag> $right
+     */
+    private function sameType(array $left, array $right): bool
+    {
+        return $this->registry->fromPersistentId(self::string(self::required($left, 'id'), 'id'))
+            === $this->registry->fromPersistentId(self::string(self::required($right, 'id'), 'id'));
     }
 }

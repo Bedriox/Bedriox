@@ -20,7 +20,9 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\World\Provider;
 
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BedrockDataSet;
+use Bedriox\Data\KnownPersistentBlockState;
 use Bedriox\Data\LittleEndianBlockStateNbtCodec;
 use Bedriox\Data\OpaquePersistentBlockState;
 use Bedriox\Server\World\Block\BlockStateRegistry;
@@ -48,6 +50,7 @@ use Bedriox\Server\World\Storage\LevelDb\PersistentBlockStorage;
 use Bedriox\Server\World\Storage\LevelDb\PersistentSubChunkCodec;
 use Bedriox\Server\World\Storage\LevelDb\StoredSubChunk;
 use Bedriox\Server\World\Storage\Nbt\LevelDatMetadata;
+use Bedriox\Server\World\Storage\Nbt\LittleEndianNbtCodec;
 use Bedriox\Server\World\Storage\Nbt\LittleEndianNbtTag;
 use Bedriox\Server\World\WorldMetadata;
 use PHPUnit\Framework\TestCase;
@@ -55,6 +58,34 @@ use RuntimeException;
 
 final class LevelDbWorldProviderTest extends TestCase
 {
+    public function testNativeMetadataDoesNotClaimABedrioxGeneratorVersion(): void
+    {
+        [$provider] = self::provider();
+
+        self::assertFalse($provider->worldData()->bedrioxGeneratorVersionDeclared);
+    }
+
+    public function testOneDatabaseIsolatesTheSameChunkCoordinateAcrossAllDimensions(): void
+    {
+        [$provider, $database, $registry] = self::provider();
+        $position = new ChunkPosition(4, -3);
+        $generator = new FlatWorldGenerator(FixedFlatBlockPalette::fromRegistry($registry));
+        $chunk = $generator->generate($position);
+
+        foreach (WorldDimension::cases() as $dimension) {
+            $provider->saveChunk(new ChunkSaveData($chunk), $dimension);
+            self::assertArrayHasKey(LevelDbChunkKey::version(4, -3, $dimension), $database->records);
+        }
+
+        self::assertCount(3, array_filter(
+            array_keys($database->records),
+            static fn(string $key): bool => str_ends_with($key, LevelDbChunkKey::VERSION),
+        ));
+        foreach (WorldDimension::cases() as $dimension) {
+            self::assertNotNull($provider->loadChunk($position, $dimension));
+        }
+    }
+
     public function testSaveUsesOneAtomicBatchAndRoundTripsCanonicalChunkState(): void
     {
         [$provider, $database, $registry, $persistentRegistry] = self::provider();
@@ -142,6 +173,76 @@ final class LevelDbWorldProviderTest extends TestCase
         $provider->loadChunk($position);
     }
 
+    public function testNativeOpaqueBlockEntitiesSurviveCleanAndDirtyChunkSaves(): void
+    {
+        [$provider, $database, $registry] = self::provider();
+        $position = new ChunkPosition(2, 3);
+        $chunk = (new FlatWorldGenerator(FixedFlatBlockPalette::fromRegistry($registry)))->generate($position);
+        $provider->saveChunk(new ChunkSaveData($chunk));
+        $nbt = new LittleEndianNbtCodec();
+        $opaque = $nbt->encodeRootCompounds([[
+            'id' => LittleEndianNbtTag::string('SporeBlossom'),
+            'isMovable' => LittleEndianNbtTag::byte(1),
+            'x' => LittleEndianNbtTag::int(33),
+            'y' => LittleEndianNbtTag::int(64),
+            'z' => LittleEndianNbtTag::int(49),
+        ]], 1);
+        $key = LevelDbChunkKey::blockEntities(2, 3);
+        $database->records[$key] = $opaque;
+
+        $loaded = $provider->loadChunk($position)?->chunk;
+        self::assertNotNull($loaded);
+        self::assertSame([], $loaded->blockEntities());
+        $provider->saveChunk(new ChunkSaveData($loaded));
+        self::assertSame($opaque, $database->records[$key]);
+
+        $barrel = ContainerBlockEntity::empty(BlockEntityType::Barrel, new BlockPosition(34, 64, 49));
+        $provider->saveChunk(new ChunkSaveData($loaded->withBlockEntity($barrel)));
+        $roots = $nbt->decodeRootCompounds($database->records[$key], 2);
+        self::assertSame('SporeBlossom', $roots[0]['id']->value);
+        self::assertSame('Barrel', $roots[1]['id']->value);
+    }
+
+    public function testNativeOpaqueInvalidUtf8BlockEntityRecordSurvivesCleanSave(): void
+    {
+        [$provider, $database, $registry] = self::provider();
+        $position = new ChunkPosition(2, 3);
+        $chunk = (new FlatWorldGenerator(FixedFlatBlockPalette::fromRegistry($registry)))->generate($position);
+        $provider->saveChunk(new ChunkSaveData($chunk));
+        $opaque = "\x0a\x00\x00\x08\x06\x00legacy\x01\x00\xff\x00";
+        $key = LevelDbChunkKey::blockEntities(2, 3);
+        $database->records[$key] = $opaque;
+
+        $loaded = $provider->loadChunk($position)?->chunk;
+        self::assertNotNull($loaded);
+        self::assertSame([], $loaded->blockEntities());
+        $provider->saveChunk(new ChunkSaveData($loaded));
+
+        self::assertSame($opaque, $database->records[$key]);
+    }
+
+    public function testPreflightNormalizesNativeAutomaticSpawnWithoutChangingFiles(): void
+    {
+        $directory = self::temporaryDirectory();
+        self::assertTrue(mkdir($directory . DIRECTORY_SEPARATOR . 'db'));
+        $levelDat = $directory . DIRECTORY_SEPARATOR . 'level.dat';
+        $metadata = self::metadata();
+        $root = $metadata->root;
+        $root['SpawnY'] = LittleEndianNbtTag::int(32_767);
+        (new LevelDatStore())->save($levelDat, new LevelDatMetadata($metadata->headerVersion, $root));
+        $before = hash_file('sha256', $levelDat);
+        try {
+            $data = LevelDbWorldProvider::preflight($directory);
+
+            self::assertSame(318, $data->spawn->y);
+            self::assertSame($before, hash_file('sha256', $levelDat));
+            self::assertFileDoesNotExist($directory . DIRECTORY_SEPARATOR . 'levelname.txt');
+        } finally {
+            @rmdir($directory . DIRECTORY_SEPARATOR . 'db');
+            self::removeDirectory($directory);
+        }
+    }
+
     public function testMissingChunkIsDistinctFromOrphanedAndMalformedChunkData(): void
     {
         [$provider, $database] = self::provider();
@@ -160,6 +261,34 @@ final class LevelDbWorldProviderTest extends TestCase
         $this->expectException(CorruptChunkException::class);
         $this->expectExceptionMessage('Data3D');
         $provider->loadChunk($position);
+    }
+
+    public function testMissingNativeFinalizationRecordDefaultsToDone(): void
+    {
+        [$provider, $database, $registry] = self::provider();
+        $position = new ChunkPosition(7, -2);
+        $chunk = (new FlatWorldGenerator(FixedFlatBlockPalette::fromRegistry($registry)))->generate($position);
+        $provider->saveChunk(new ChunkSaveData($chunk));
+        unset($database->records[LevelDbChunkKey::finalization(7, -2)]);
+
+        $loaded = $provider->loadChunk($position);
+
+        self::assertNotNull($loaded);
+        self::assertSame(\Bedriox\Server\World\ChunkFinalizationState::Done, $loaded->chunk->finalizationState);
+    }
+
+    public function testNativeFourByteFinalizationRecordIsAccepted(): void
+    {
+        [$provider, $database, $registry] = self::provider();
+        $position = new ChunkPosition(7, -2);
+        $chunk = (new FlatWorldGenerator(FixedFlatBlockPalette::fromRegistry($registry)))->generate($position);
+        $provider->saveChunk(new ChunkSaveData($chunk));
+        $database->records[LevelDbChunkKey::finalization(7, -2)] = pack('V', 2);
+
+        $loaded = $provider->loadChunk($position);
+
+        self::assertNotNull($loaded);
+        self::assertSame(\Bedriox\Server\World\ChunkFinalizationState::Done, $loaded->chunk->finalizationState);
     }
 
     public function testFailedBatchIsReportedAndDoesNotPartiallyPublishRecords(): void
@@ -224,6 +353,65 @@ final class LevelDbWorldProviderTest extends TestCase
         $this->expectException(CorruptChunkException::class);
         $this->expectExceptionMessage('cannot be represented safely');
         $provider->loadChunk($position);
+    }
+
+    public function testOlderPersistentVersionOfAdmittedCanonicalStateLoadsWithoutSubstitution(): void
+    {
+        [$provider, $database, $registry, $persistentRegistry] = self::provider();
+        $position = new ChunkPosition(2, 3);
+        $chunk = (new FlatWorldGenerator(FixedFlatBlockPalette::fromRegistry($registry)))->generate($position);
+        $provider->saveChunk(new ChunkSaveData($chunk));
+        $current = $persistentRegistry->knownState(\Bedriox\Server\World\Block\VanillaBlockStates::stone());
+        $older = KnownPersistentBlockState::from(
+            $current->identifier(),
+            $current->storageVersion() - 1,
+            $current->properties(),
+        );
+        $codec = new LittleEndianBlockStateNbtCodec($persistentRegistry);
+        $opaque = OpaquePersistentBlockState::fromValidatedEncodedRoot($codec->encode($older));
+        $database->records[LevelDbChunkKey::subChunk(2, 3, 3)] = (new PersistentSubChunkCodec($codec))->encode(
+            new StoredSubChunk(3, [PersistentBlockStorage::uniform($opaque)]),
+        );
+
+        $loaded = $provider->loadChunk($position);
+
+        self::assertNotNull($loaded);
+        self::assertSame(
+            \Bedriox\Server\World\Block\VanillaBlockStates::stone()->canonicalKey(),
+            $registry->state($loaded->chunk->blockStateAt(0, 48, 0))->canonicalKey(),
+        );
+    }
+
+    public function testLegacyPersistentStateMissingCurrentDefaultPropertyIsUpgraded(): void
+    {
+        [$provider, $database, $registry, $persistentRegistry] = self::provider();
+        $position = new ChunkPosition(2, 3);
+        $chunk = (new FlatWorldGenerator(FixedFlatBlockPalette::fromRegistry($registry)))->generate($position);
+        $provider->saveChunk(new ChunkSaveData($chunk));
+        $legacy = KnownPersistentBlockState::from(
+            'minecraft:oak_stairs',
+            18_168_865,
+            [
+                \Bedriox\Data\PersistentBlockStateProperty::byte('upside_down_bit', 0),
+                \Bedriox\Data\PersistentBlockStateProperty::int('weirdo_direction', 2),
+            ],
+        );
+        $codec = new LittleEndianBlockStateNbtCodec($persistentRegistry);
+        $opaque = OpaquePersistentBlockState::fromValidatedEncodedRoot($codec->encode($legacy));
+        $database->records[LevelDbChunkKey::subChunk(2, 3, 3)] = (new PersistentSubChunkCodec($codec))->encode(
+            new StoredSubChunk(3, [PersistentBlockStorage::uniform($opaque)]),
+        );
+
+        $loaded = $provider->loadChunk($position);
+
+        self::assertNotNull($loaded);
+        $state = $registry->state($loaded->chunk->blockStateAt(0, 48, 0));
+        self::assertSame('minecraft:oak_stairs', $state->identifier());
+        self::assertSame([
+            'minecraft:corner' => 'none',
+            'upside_down_bit' => 0,
+            'weirdo_direction' => 2,
+        ], $state->properties());
     }
 
     public function testWorldDataSavePreservesOpaqueMetadataAndCloseIsIdempotent(): void

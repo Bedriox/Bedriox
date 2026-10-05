@@ -138,7 +138,14 @@ final class NaturalSpawner
                     + $localPlanned >= $limit->localDensityCap) {
                 continue;
             }
-            $position = $this->candidatePosition($worldName, $worldSeed, $tick, $chunk, $attempts);
+            $position = $this->candidatePosition(
+                $worldName,
+                $entry->candidateMedium,
+                $worldSeed,
+                $tick,
+                $chunk,
+                $attempts,
+            );
             if ($position === null) {
                 continue;
             }
@@ -211,6 +218,7 @@ final class NaturalSpawner
 
     private function candidatePosition(
         string $worldName,
+        NaturalSpawnMedium $medium,
         int $worldSeed,
         int $tick,
         ChunkPosition $chunk,
@@ -218,12 +226,19 @@ final class NaturalSpawner
     ): ?Position {
         $x = ($chunk->x * 16) + (int) floor(self::unit($worldSeed, $tick, $chunk, $attempt, 'x') * 16.0) + 0.5;
         $z = ($chunk->z * 16) + (int) floor(self::unit($worldSeed, $tick, $chunk, $attempt, 'z') * 16.0) + 0.5;
-        $y = $this->environment->heightAt($worldName, $x, $z);
-        if ($y === null || !is_finite($y) || $y < -2_048.0 || $y > 2_048.0) {
-            return null;
+        $position = $this->environment->candidatePosition(
+            $worldName,
+            $medium,
+            $x,
+            $z,
+            self::unit($worldSeed, $tick, $chunk, $attempt, 'y'),
+        );
+        if ($position !== null && (!is_finite($position->x) || !is_finite($position->y) || !is_finite($position->z)
+            || $position->y < -2_048.0 || $position->y > 2_048.0)) {
+            throw new RuntimeException('Natural-spawn environment returned an invalid candidate position.');
         }
 
-        return new Position($x, $y, $z);
+        return $position;
     }
 
     private function boundedCount(int $count): int

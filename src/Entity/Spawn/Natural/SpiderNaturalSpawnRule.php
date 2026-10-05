@@ -20,11 +20,13 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Spawn\Natural;
 
+use Bedriox\Api\World\WorldDimension;
+
 final readonly class SpiderNaturalSpawnRule implements NaturalSpawnRule
 {
     public function allows(NaturalSpawnContext $context): bool
     {
-        return $context->dimension === 'minecraft:overworld'
+        return $context->dimension === WorldDimension::OVERWORLD
             && $context->medium === NaturalSpawnMedium::GROUND
             && $context->lightLevel <= 7;
     }

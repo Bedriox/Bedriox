@@ -21,8 +21,8 @@ declare(strict_types=1);
 namespace Bedriox\Server\Simulation\Event;
 
 use Bedriox\Api\World\Particle\Particle;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Simulation\Position;
-use Bedriox\Server\Simulation\WorldDimension;
 
 final readonly class ParticleSpawned implements WorldEvent
 {

@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Persistence\World\Internal;
 
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Data\PersistentBlockStateRegistry;
 use Bedriox\Server\Entity\Persistence\CorruptEntityPersistenceException;
@@ -49,7 +50,7 @@ use Throwable;
 
 final class WorldStorageProcessProgram
 {
-    public const int SCHEMA_VERSION = 1;
+    public const int SCHEMA_VERSION = 2;
 
     public static function run(
         string $epochHex,
@@ -223,8 +224,9 @@ final class WorldStorageProcessProgram
         EntityPersistenceCodec $entities,
         BlockStateRegistry $states,
     ): array {
-        $position = self::decodePosition($payload);
-        $loaded = $provider->loadChunk($position);
+        [$dimension, $positionPayload] = self::decodeDimensionPayload($payload);
+        $position = self::decodePosition($positionPayload);
+        $loaded = $provider->loadChunk($position, $dimension);
         if ($loaded === null) {
             return [['missing' => true, 'upgraded' => false], ''];
         }
@@ -233,7 +235,7 @@ final class WorldStorageProcessProgram
         $entityPayload = null;
         if ($provider instanceof EntityPersistenceStore) {
             try {
-                $snapshot = $provider->loadEntityChunk($position);
+                $snapshot = $provider->loadEntityChunk($position, $dimension);
                 if ($snapshot !== null) {
                     $entityState = 'loaded';
                     $entityPayload = $entities->encode($snapshot);
@@ -261,8 +263,9 @@ final class WorldStorageProcessProgram
         ChunkTransferCodec $codec,
         BlockStateRegistry $states,
     ): array {
-        $chunk = $codec->decode($payload, $states);
-        $provider->saveChunk(new ChunkSaveData($chunk));
+        [$dimension, $chunkPayload] = self::decodeDimensionPayload($payload);
+        $chunk = $codec->decode($chunkPayload, $states);
+        $provider->saveChunk(new ChunkSaveData($chunk), $dimension);
 
         return [['revision' => $chunk->revision], ''];
     }
@@ -287,8 +290,9 @@ final class WorldStorageProcessProgram
         if (!$provider instanceof EntityPersistenceStore) {
             throw new \RuntimeException('World storage provider does not support entity persistence.');
         }
-        $position = self::decodePosition($payload);
-        $snapshot = $provider->loadEntityChunk($position);
+        [$dimension, $positionPayload] = self::decodeDimensionPayload($payload);
+        $position = self::decodePosition($positionPayload);
+        $snapshot = $provider->loadEntityChunk($position, $dimension);
         if ($snapshot === null) {
             return [['missing' => true], ''];
         }
@@ -305,8 +309,9 @@ final class WorldStorageProcessProgram
         if (!$provider instanceof EntityPersistenceStore) {
             throw new \RuntimeException('World storage provider does not support entity persistence.');
         }
-        $snapshot = $codec->decode($payload);
-        $provider->saveEntityChunk($snapshot);
+        [$dimension, $snapshotPayload] = self::decodeDimensionPayload($payload);
+        $snapshot = $codec->decode($snapshotPayload);
+        $provider->saveEntityChunk($snapshot, $dimension);
 
         return [['revision' => $snapshot->chunkRevision], ''];
     }
@@ -321,8 +326,9 @@ final class WorldStorageProcessProgram
         if (!$provider instanceof EntityPersistenceStore) {
             throw new \RuntimeException('World storage provider does not support entity persistence.');
         }
-        $transfer = $codec->decode($payload);
-        $result = $provider->transferEntityOwnership($transfer);
+        [$dimension, $transferPayload] = self::decodeDimensionPayload($payload);
+        $transfer = $codec->decode($transferPayload);
+        $result = $provider->transferEntityOwnership($transfer, $dimension);
 
         return [[
             'source_revision' => $result->sourceAfter->chunkRevision,
@@ -341,6 +347,22 @@ final class WorldStorageProcessProgram
         }
 
         return new ChunkPosition($value['x'], $value['z']);
+    }
+
+    /** @return array{WorldDimension, string} */
+    private static function decodeDimensionPayload(string $payload): array
+    {
+        if ($payload === '') {
+            throw new \InvalidArgumentException('Dimension-aware world storage payload is empty.');
+        }
+        $dimension = match (ord($payload[0])) {
+            0 => WorldDimension::OVERWORLD,
+            1 => WorldDimension::NETHER,
+            2 => WorldDimension::END,
+            default => throw new \InvalidArgumentException('World storage dimension is invalid.'),
+        };
+
+        return [$dimension, substr($payload, 1)];
     }
 
     private static function failureCode(Throwable $error): string

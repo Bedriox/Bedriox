@@ -20,6 +20,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Persistence;
 
+use Bedriox\Api\World\WorldDimension;
+
 final readonly class EntityOwnershipTransferCompletion
 {
     public function __construct(
@@ -28,6 +30,7 @@ final readonly class EntityOwnershipTransferCompletion
         public ?string $failureCode = null,
         public ?string $failureDetail = null,
         public ?EntityOwnershipTransferResult $result = null,
+        public WorldDimension $dimension = WorldDimension::OVERWORLD,
     ) {
         if ($successful === ($failureCode !== null)
             || ($successful && $failureDetail !== null)

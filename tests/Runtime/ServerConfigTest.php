@@ -218,6 +218,20 @@ final class ServerConfigTest extends TestCase
         }
     }
 
+    public function testWorldSeedUsesFullSignedRangeAndBlankMeansRandom(): void
+    {
+        self::assertSame(PHP_INT_MAX, ServerConfig::fromArguments([
+            '--seed=' . PHP_INT_MAX,
+        ])->levelSeed);
+        self::assertSame(PHP_INT_MIN, ServerConfig::fromArguments([
+            '--seed=' . PHP_INT_MIN,
+        ])->levelSeed);
+
+        $generated = ServerConfig::fromArguments([])->levelSeed;
+        self::assertGreaterThanOrEqual(PHP_INT_MIN, $generated);
+        self::assertLessThanOrEqual(PHP_INT_MAX, $generated);
+    }
+
     public function testMemoryThresholdsMustBeStrictlyIncreasing(): void
     {
         $properties = tempnam(sys_get_temp_dir(), 'bedriox-properties-');

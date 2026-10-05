@@ -1,5 +1,19 @@
 # Changelog
 
+- Model every named world as one provider-backed Overworld, Nether, and End
+  family with dimension-isolated chunks, entities, simulation, streaming, and
+  durable player locations.
+- Add deterministic Nether and End terrain, biome decoration, dimension
+  structures, native dimension-qualified LevelDB keys, and current-client
+  dimension transitions without leaking source terrain or actors.
+- Add authoritative Nether portal frames, ignition, invalidation, contact
+  timing, 8:1 coordinate scaling, bounded destination search and construction,
+  transfer rollback, and cancellable plugin travel events.
+- Add authoritative End Portal frame placement, Eye insertion, exact ring
+  activation, invalidation, paired End travel, return-to-spawn routing, and
+  cancellable activation and travel events.
+- Load supported native Bedrock LevelDB chunks without rewriting unknown block
+  actors, and fail closed on ambiguous legacy block-state upgrades.
 - Add authoritative boats, chest boats, and bamboo rafts with current wood
   variants, multiplayer seats, paddled steering, authoritative waterline locking,
   structural damage feedback, durable storage, item placement and drops, and
@@ -96,6 +110,7 @@ All notable changes will be documented here. The project follows Semantic Versio
 - Stage same-dimension world transfers behind destination terrain preparation and an ordered source-output fence, then synchronize destination metadata, teleport the owner, publish the new center, and stream only destination chunks without invoking a dimension loading screen.
 - Keep the global plugin scheduler on a server-owned monotonic tick timeline when additional worlds are loaded, preventing independent world tick counters from crashing the runtime.
 - Keep natural spawning bounded and fair through the full 1,024-player server limit, account candidate preparation against its elapsed budget, and preserve natural-distance despawn ownership across entity save, unload, and restart without affecting command, spawn-egg, or plugin entities.
+- Make natural-spawn candidates dimension-aware, sample loaded vertical columns for cave and aquatic habitats, and use exact biome eligibility for land, aquatic, Nether, and End species while keeping structure-owned species disabled until their structures can be validated.
 - Encode peer arm swings without an optional source label and report allowlisted RakNet send-overflow categories with bounded payload, reliability, ordering-channel, and session-phase context.
 - Admit every data-mapped creative block to authoritative break handling so crafting tables and other placed blocks no longer revert when mined.
 - Keep the world spawn retained and wait for every chunk touched by the player collision footprint before committing a respawn, preventing persistence backlogs from turning respawn into a blocking storage read and whole-server disconnect.

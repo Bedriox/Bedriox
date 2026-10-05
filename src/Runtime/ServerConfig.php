@@ -41,7 +41,7 @@ final readonly class ServerConfig
         'white-list' => 'false',
         'level-name' => 'world',
         'level-type' => 'default',
-        'level-seed' => '0',
+        'level-seed' => '',
         'gamemode' => 'survival',
         'difficulty' => 'normal',
         'pvp' => 'true',
@@ -250,9 +250,6 @@ final readonly class ServerConfig
         }
         self::validateText($this->motd, 'MOTD', 128);
         self::validateText($this->levelName, 'Level name', 64);
-        if ($this->levelSeed < -2_147_483_648 || $this->levelSeed > 2_147_483_647) {
-            throw new InvalidArgumentException('Level seed must fit a signed 32-bit integer.');
-        }
         if (!in_array($this->levelGenerator, ['default', 'flat'], true)) {
             throw new InvalidArgumentException('Level generator must be exactly default or flat.');
         }
@@ -397,7 +394,7 @@ final readonly class ServerConfig
             motd: $values['motd'],
             levelName: $values['level-name'],
             levelGenerator: $values['level-type'],
-            levelSeed: self::integer($values['level-seed'], 'level-seed', -2_147_483_648, 2_147_483_647, true),
+            levelSeed: self::seed($values['level-seed']),
             defaultGamemode: $values['gamemode'],
             difficulty: $values['difficulty'],
             pvp: self::boolean($values['pvp'], 'pvp'),
@@ -516,6 +513,16 @@ final readonly class ServerConfig
         }
 
         return $parsed;
+    }
+
+    /** Resolves an empty seed once while preserving every explicit signed 64-bit value, including zero. */
+    private static function seed(string $value): int
+    {
+        if ($value === '') {
+            return random_int(PHP_INT_MIN, PHP_INT_MAX);
+        }
+
+        return self::integer($value, 'level-seed', PHP_INT_MIN, PHP_INT_MAX, true);
     }
 
     private static function boolean(string $value, string $name): bool

@@ -20,17 +20,27 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Persistence;
 
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\World\ChunkPosition;
 
 /** Durable chunk ownership boundary for non-player entities. */
 interface EntityPersistenceStore
 {
     /** @throws CorruptEntityPersistenceException */
-    public function loadEntityChunk(ChunkPosition $position): ?EntityChunkSnapshot;
+    public function loadEntityChunk(
+        ChunkPosition $position,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): ?EntityChunkSnapshot;
 
     /** @throws EntityPersistenceConflictException */
-    public function saveEntityChunk(EntityChunkSnapshot $snapshot): void;
+    public function saveEntityChunk(
+        EntityChunkSnapshot $snapshot,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): void;
 
     /** @throws CorruptEntityPersistenceException|EntityPersistenceConflictException */
-    public function transferEntityOwnership(EntityOwnershipTransfer $transfer): EntityOwnershipTransferResult;
+    public function transferEntityOwnership(
+        EntityOwnershipTransfer $transfer,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): EntityOwnershipTransferResult;
 }

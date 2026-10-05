@@ -23,6 +23,7 @@ namespace Bedriox\Server\Player\Persistence;
 use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Inventory\ItemNbt;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Effect\ActiveEffectPersistenceState;
 use Bedriox\Server\Player\Persistence\Exception\CorruptPlayerDataException;
 use Bedriox\Server\Player\Persistence\Exception\PlayerDataWriteException;
@@ -43,7 +44,7 @@ use InvalidArgumentException;
 /** Bounded schema-versioned player profile encoding with no session-local identifiers. */
 final readonly class PlayerDataCodec
 {
-    public const int SCHEMA_VERSION = 12;
+    public const int SCHEMA_VERSION = 13;
     public const int MAX_BYTES = 131_072;
 
     private const array REQUIRED_ROOT_TAGS = [
@@ -54,6 +55,7 @@ final readonly class PlayerDataCodec
         'FirstPlayed',
         'LastPlayed',
         'World',
+        'Dimension',
         'Position',
         'Rotation',
         'GameMode',
@@ -160,6 +162,7 @@ final readonly class PlayerDataCodec
             'FirstPlayed' => LittleEndianNbtTag::long($player->firstPlayedAt),
             'LastPlayed' => LittleEndianNbtTag::long($player->lastPlayedAt),
             'World' => LittleEndianNbtTag::string($player->worldName),
+            'Dimension' => LittleEndianNbtTag::string($player->dimension->value),
             'Position' => LittleEndianNbtTag::list(LittleEndianNbtTag::DOUBLE, [
                 new LittleEndianNbtTag(LittleEndianNbtTag::DOUBLE, $player->position->x),
                 new LittleEndianNbtTag(LittleEndianNbtTag::DOUBLE, $player->position->y),
@@ -244,7 +247,8 @@ final readonly class PlayerDataCodec
                 && !($schemaVersion < 7 && $name === 'EnderChest')
                 && !($schemaVersion < 8 && $name === 'Effects')
                 && !($schemaVersion < 9 && in_array($name, ['Absorption', 'AirTicks', 'FireTicks'], true))
-                && !($schemaVersion < 11 && $name === 'TotalExperience'),
+                && !($schemaVersion < 11 && $name === 'TotalExperience')
+                && !($schemaVersion < 13 && $name === 'Dimension'),
         );
         $allowed = array_fill_keys([
             ...$required,
@@ -267,6 +271,12 @@ final readonly class PlayerDataCodec
             $xuid = self::string($root['Xuid'], 'Xuid');
             $name = self::string($root['LastKnownName'], 'LastKnownName');
             self::validateIdentity($uuid, $xuid, $name);
+            $dimension = isset($root['Dimension'])
+                ? WorldDimension::tryFrom(self::string($root['Dimension'], 'Dimension'))
+                : WorldDimension::OVERWORLD;
+            if ($dimension === null) {
+                throw new CorruptPlayerDataException('Player dimension is unsupported.');
+            }
             $position = self::numberList($root['Position'], LittleEndianNbtTag::DOUBLE, 3, 'Position');
             $rotation = self::numberList($root['Rotation'], LittleEndianNbtTag::FLOAT, 2, 'Rotation');
             $spawnPoint = isset($root['SpawnPoint'])
@@ -487,6 +497,7 @@ final readonly class PlayerDataCodec
                     ? self::integer($root['TotalExperience'], LittleEndianNbtTag::INT, 'TotalExperience')
                     : 0,
                 $spawnPoint === null ? null : new Position($spawnPoint[0], $spawnPoint[1], $spawnPoint[2]),
+                $dimension,
             );
         } catch (CorruptPlayerDataException $error) {
             throw $error;

@@ -31,6 +31,7 @@ final readonly class NaturalSpawnEntry
         public EntityCategory $category,
         public NaturalSpawnRule $rule,
         public int $weight = 1,
+        public NaturalSpawnMedium $candidateMedium = NaturalSpawnMedium::GROUND,
     ) {
         if ($weight < 1 || $weight > 1_000) {
             throw new InvalidArgumentException('Natural-spawn entry weight is outside its supported bounds.');

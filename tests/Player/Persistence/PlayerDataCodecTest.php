@@ -23,6 +23,7 @@ namespace Bedriox\Server\Tests\Player\Persistence;
 use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Inventory\ItemNbt;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Effect\ActiveEffectCollection;
 use Bedriox\Server\Player\Persistence\Exception\CorruptPlayerDataException;
 use Bedriox\Server\Player\Persistence\Exception\UnsupportedPlayerDataException;
@@ -39,6 +40,42 @@ use PHPUnit\Framework\TestCase;
 
 final class PlayerDataCodecTest extends TestCase
 {
+    public function testPersistsDimensionAndDefaultsLegacyProfilesToOverworld(): void
+    {
+        $profile = self::profile();
+        $profile = new PlayerBootstrap(
+            $profile->identity,
+            $profile->worldName,
+            $profile->position,
+            $profile->yaw,
+            $profile->pitch,
+            $profile->inventory,
+            $profile->firstPlayedAt,
+            $profile->lastPlayedAt,
+            dimension: WorldDimension::NETHER,
+        );
+        $codec = new PlayerDataCodec();
+
+        self::assertSame(WorldDimension::NETHER, $codec->decode($codec->encode($profile))->dimension);
+
+        $legacy = self::root();
+        $legacy['SchemaVersion'] = LittleEndianNbtTag::int(12);
+        unset($legacy['Dimension']);
+        self::assertSame(
+            WorldDimension::OVERWORLD,
+            $codec->decode((new LittleEndianNbtCodec())->encodeRootCompound($legacy))->dimension,
+        );
+    }
+
+    public function testRejectsUnsupportedDimension(): void
+    {
+        $root = self::root();
+        $root['Dimension'] = LittleEndianNbtTag::string('minecraft:unknown');
+
+        $this->expectException(CorruptPlayerDataException::class);
+        (new PlayerDataCodec())->decode((new LittleEndianNbtCodec())->encodeRootCompound($root));
+    }
+
     public function testPersistsPersonalSpawnPoint(): void
     {
         $profile = self::profile();
@@ -288,7 +325,7 @@ final class PlayerDataCodecTest extends TestCase
 
         $legacy = self::root();
         $legacy['SchemaVersion'] = LittleEndianNbtTag::int(10);
-        unset($legacy['TotalExperience']);
+        unset($legacy['TotalExperience'], $legacy['Dimension']);
         self::assertSame(
             0,
             $codec->decode((new LittleEndianNbtCodec())->encodeRootCompound($legacy))->totalExperience,
@@ -299,7 +336,7 @@ final class PlayerDataCodecTest extends TestCase
     {
         $legacy = self::root();
         $legacy['SchemaVersion'] = LittleEndianNbtTag::int(6);
-        unset($legacy['EnderChest'], $legacy['Effects'], $legacy['Absorption'], $legacy['AirTicks'], $legacy['FireTicks'], $legacy['TotalExperience']);
+        unset($legacy['EnderChest'], $legacy['Effects'], $legacy['Absorption'], $legacy['AirTicks'], $legacy['FireTicks'], $legacy['TotalExperience'], $legacy['Dimension']);
 
         $decoded = (new PlayerDataCodec())->decode((new LittleEndianNbtCodec())->encodeRootCompound($legacy));
 
@@ -579,6 +616,7 @@ final class PlayerDataCodecTest extends TestCase
             $root['AirTicks'],
             $root['FireTicks'],
             $root['TotalExperience'],
+            $root['Dimension'],
         );
     }
 

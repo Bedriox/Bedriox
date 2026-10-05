@@ -1825,9 +1825,9 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
         $packet = match (true) {
             $particle instanceof SimpleParticle => new SpawnParticleEffectPacket(
                 match ($event->dimension) {
-                    \Bedriox\Server\Simulation\WorldDimension::OVERWORLD => DimensionId::Overworld,
-                    \Bedriox\Server\Simulation\WorldDimension::NETHER => DimensionId::Nether,
-                    \Bedriox\Server\Simulation\WorldDimension::END => DimensionId::End,
+                    \Bedriox\Api\World\WorldDimension::OVERWORLD => DimensionId::Overworld,
+                    \Bedriox\Api\World\WorldDimension::NETHER => DimensionId::Nether,
+                    \Bedriox\Api\World\WorldDimension::END => DimensionId::End,
                 },
                 SpawnParticleEffectPacket::UNATTACHED_ENTITY_ID,
                 $position,

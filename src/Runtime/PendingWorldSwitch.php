@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
+use Bedriox\Protocol\Packet\DimensionId;
 use Bedriox\Server\Worker\Chunk\PreparedChunkCache;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\World;
@@ -48,6 +49,7 @@ final class PendingWorldSwitch
         public readonly float $z,
         public readonly int $worldTime,
         public readonly int $difficulty,
+        public readonly ?DimensionId $dimension,
         int $radius,
         int $prefetchRadius,
         int $prewarmRadius,

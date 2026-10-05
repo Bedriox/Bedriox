@@ -33,10 +33,15 @@ use InvalidArgumentException;
  */
 final readonly class World
 {
+    /** @var list<WorldDimension> */
+    private array $dimensions;
+
+    /** @param list<WorldDimension> $dimensions */
     public function __construct(
         private string $id,
         private int $loadGeneration,
         private ?WorldActions $actions = null,
+        array $dimensions = [WorldDimension::OVERWORLD, WorldDimension::NETHER, WorldDimension::END],
     ) {
         if (preg_match('/^[a-z0-9][a-z0-9._-]{0,63}$/D', $id) !== 1 || $id === '.' || $id === '..') {
             throw new InvalidArgumentException('World ID must be a canonical lowercase identifier of 1-64 characters.');
@@ -44,6 +49,17 @@ final readonly class World
         if ($loadGeneration < 1) {
             throw new InvalidArgumentException('World load generation must be positive.');
         }
+        if ($dimensions === [] || !in_array(WorldDimension::OVERWORLD, $dimensions, true)) {
+            throw new InvalidArgumentException('A world must contain an Overworld dimension.');
+        }
+        $unique = [];
+        foreach ($dimensions as $dimension) {
+            if (isset($unique[$dimension->value])) {
+                throw new InvalidArgumentException('World dimensions must be unique.');
+            }
+            $unique[$dimension->value] = $dimension;
+        }
+        $this->dimensions = array_values($unique);
     }
 
     public function id(): string
@@ -54,6 +70,17 @@ final readonly class World
     public function loadGeneration(): int
     {
         return $this->loadGeneration;
+    }
+
+    /** @return list<WorldDimension> */
+    public function getDimensions(): array
+    {
+        return $this->dimensions;
+    }
+
+    public function hasDimension(WorldDimension $dimension): bool
+    {
+        return in_array($dimension, $this->dimensions, true);
     }
 
     /** True only for the same logical world and the same loaded runtime generation. */

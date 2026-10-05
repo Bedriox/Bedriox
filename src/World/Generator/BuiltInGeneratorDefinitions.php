@@ -23,7 +23,9 @@ namespace Bedriox\Server\World\Generator;
 use Bedriox\Data\CanonicalBlockState;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\DefaultWorldGenerator;
+use Bedriox\Server\World\EndWorldGenerator;
 use Bedriox\Server\World\FlatWorldGenerator;
+use Bedriox\Server\World\NetherWorldGenerator;
 use Bedriox\Server\World\VoidWorldGenerator;
 
 final class BuiltInGeneratorDefinitions
@@ -44,7 +46,12 @@ final class BuiltInGeneratorDefinitions
             static fn(GeneratorContext $context): DefinedWorldGenerator => new DefinedWorldGenerator(
                 self::DEFAULT,
                 DefaultWorldGenerator::VERSION,
-                new DefaultWorldGenerator($context->seed, $context->blockStates),
+                match ($context->dimension) {
+                    'minecraft:overworld' => new DefaultWorldGenerator($context->seed, $context->blockStates),
+                    'minecraft:nether' => new NetherWorldGenerator($context->seed, $context->blockStates),
+                    'minecraft:the_end' => new EndWorldGenerator($context->seed, $context->blockStates),
+                    default => throw new \InvalidArgumentException("Unsupported built-in dimension {$context->dimension}."),
+                },
             ),
         ));
         $registry->register(new GeneratorDefinition(

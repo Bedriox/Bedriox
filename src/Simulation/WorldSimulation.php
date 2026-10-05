@@ -80,8 +80,10 @@ use Bedriox\Api\TextFormat;
 use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\BlockFace as ApiBlockFace;
 use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
+use Bedriox\Api\World\PortalType;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\WeatherState;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BlockPropertyRegistry;
 use Bedriox\Data\CanonicalBlockState;
 use Bedriox\Data\EntityTypeRegistry;
@@ -195,6 +197,13 @@ use Bedriox\Server\Gameplay\Item\ItemBehaviorRegistry;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Gameplay\Item\ItemUseSession;
 use Bedriox\Server\Gameplay\Item\VanillaItemDurability;
+use Bedriox\Server\Gameplay\Portal\EndPortalSystem;
+use Bedriox\Server\Gameplay\Portal\NetherPortalFrame;
+use Bedriox\Server\Gameplay\Portal\NetherPortalSystem;
+use Bedriox\Server\Gameplay\Portal\PortalAxis;
+use Bedriox\Server\Gameplay\Portal\PortalContactTracker;
+use Bedriox\Server\Gameplay\Portal\PortalDestinationPlan;
+use Bedriox\Server\Gameplay\Portal\PortalDestinationPlanner;
 use Bedriox\Server\Gameplay\Potion\AreaEffectCloudRegistry;
 use Bedriox\Server\Gameplay\Potion\BrewingRecipeCatalog;
 use Bedriox\Server\Gameplay\Potion\BrewingStandBlockEntity;
@@ -317,6 +326,7 @@ use Bedriox\Server\Simulation\Event\ContainerViewerProjection;
 use Bedriox\Server\Simulation\Event\CraftingTableOpened;
 use Bedriox\Server\Simulation\Event\EmotePerformed;
 use Bedriox\Server\Simulation\Event\EnchantingOptionsUpdated;
+use Bedriox\Server\Simulation\Event\EndPortalTransferRequested;
 use Bedriox\Server\Simulation\Event\EntityActorAttackStarted;
 use Bedriox\Server\Simulation\Event\EntityActorDamaged;
 use Bedriox\Server\Simulation\Event\EntityActorDied;
@@ -362,6 +372,7 @@ use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
 use Bedriox\Server\Simulation\Event\PlayerMotionChanged;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
 use Bedriox\Server\Simulation\Event\PlayerRespawned;
+use Bedriox\Server\Simulation\Event\PortalTransferRequested;
 use Bedriox\Server\Simulation\Event\PotionSplashImpacted;
 use Bedriox\Server\Simulation\Event\ProjectileMoved;
 use Bedriox\Server\Simulation\Event\ProjectileRemoved;
@@ -390,9 +401,11 @@ use Bedriox\Server\World\Environment\Fluid\FluidFlowPlanner;
 use Bedriox\Server\World\Environment\Fluid\FluidState;
 use Bedriox\Server\World\Environment\Fluid\FluidType;
 use Bedriox\Server\World\Environment\Fluid\LoadedWorldFluidView;
+use Bedriox\Server\World\SubChunk;
 use Bedriox\Server\World\World;
 use InvalidArgumentException;
 use OverflowException;
+use SplPriorityQueue;
 use SplQueue;
 
 final class WorldSimulation
@@ -501,6 +514,14 @@ final class WorldSimulation
     private readonly ?FluidFlowPlanner $fluidFlow;
 
     private readonly ?LoadedWorldFluidView $fluidWorld;
+
+    private readonly ?NetherPortalSystem $netherPortals;
+
+    private readonly ?EndPortalSystem $endPortals;
+
+    private readonly PortalContactTracker $portalContacts;
+
+    private readonly PortalDestinationPlanner $portalDestinations;
 
     /** @var array<int, int> Runtime actor ID to removal tick after its death animation. */
     private array $entityDeathRemovalTicks = [];
@@ -824,6 +845,24 @@ final class WorldSimulation
             $this->fluidFlow = null;
             $this->fluidWorld = null;
         }
+        $portalSystem = null;
+        $endPortalSystem = null;
+        if ($blockWorld !== null && $blockStateRegistry !== null) {
+            try {
+                $portalSystem = new NetherPortalSystem($blockWorld, $blockStateRegistry);
+            } catch (InvalidArgumentException) {
+                // Narrow test registries may intentionally omit portal states.
+            }
+            try {
+                $endPortalSystem = new EndPortalSystem($blockWorld, $blockStateRegistry);
+            } catch (InvalidArgumentException) {
+                // Narrow test registries may intentionally omit portal states.
+            }
+        }
+        $this->netherPortals = $portalSystem;
+        $this->endPortals = $endPortalSystem;
+        $this->portalContacts = new PortalContactTracker();
+        $this->portalDestinations = new PortalDestinationPlanner();
         if ($blockStateRegistry !== null) {
             foreach ($blockStateRegistry->states() as $state) {
                 if ($state->identifier() === 'minecraft:frosted_ice') {
@@ -883,6 +922,7 @@ final class WorldSimulation
             effectPersistenceState: $bootstrap->effectPersistenceState,
             totalExperience: $bootstrap->totalExperience,
             spawnPoint: $bootstrap->spawnPoint,
+            dimension: $this->dimension,
         );
         $candidate->movement->yaw = $bootstrap->yaw;
         $candidate->movement->headYaw = $bootstrap->yaw;
@@ -922,6 +962,7 @@ final class WorldSimulation
             $bootstrap->effectPersistenceState,
             $bootstrap->totalExperience,
             $bootstrap->spawnPoint,
+            $this->dimension,
         );
     }
 
@@ -1272,6 +1313,7 @@ final class WorldSimulation
             ? VerticalState::GROUNDED
             : VerticalState::AIRBORNE;
         $player->changeWorld($worldId);
+        $player->changeWorldDimension($this->dimension);
         $movement = $player->movement;
         $movement->position = $position;
         $movement->yaw = $yaw;
@@ -1402,6 +1444,7 @@ final class WorldSimulation
                 }
                 $this->pluginEvents?->entityDespawned($entity, 'chunk_unload');
             },
+            dimension: $this->dimension,
         );
         $this->blockWorld->attachEntityPersistence($this->entityPersistence);
     }
@@ -3028,10 +3071,272 @@ final class WorldSimulation
             : $this->pluginEvents->teleport($player, $destination, $yaw, $pitch);
     }
 
+    public function spawnPosition(): Position
+    {
+        return $this->spawn;
+    }
+
+    public function authorizePortalTravel(
+        Player $player,
+        PortalType $portalType,
+        WorldDimension $targetDimension,
+        Position $destination,
+    ): ?ApiPosition {
+        if ($this->pluginEvents === null) {
+            return new ApiPosition(
+                $destination->x,
+                $destination->y,
+                $destination->z,
+                $player->movement->yaw,
+                $player->movement->pitch,
+                null,
+                $targetDimension,
+            );
+        }
+
+        return $this->pluginEvents->portalTravel(
+            $player,
+            $portalType,
+            $this->dimension,
+            $targetDimension,
+            $destination,
+        );
+    }
+
     /** Publishes the post-teleport event after destination ownership has committed. */
     public function publishTransferredTeleport(Player $player, Position $from): void
     {
         $this->pluginEvents?->teleported($player, $from);
+    }
+
+    /**
+     * Resolves a target-side Nether portal using loaded palette scans, or builds a bounded standard frame.
+     * The caller must invoke this on the simulation whose dimension matches the plan target.
+     */
+    public function resolvePortalDestination(PortalDestinationPlan $plan): ?Position
+    {
+        if ($this->blockWorld === null || $this->netherPortals === null
+            || $plan->targetDimension !== $this->dimension) {
+            return null;
+        }
+        $candidates = $this->loadedPortalPositions($plan);
+        while ($candidates !== []) {
+            $nearest = $this->portalDestinations->nearest($plan, $candidates);
+            if ($nearest === null) {
+                break;
+            }
+            $frame = $this->netherPortals->detect($nearest);
+            if ($frame !== null) {
+                if ($this->netherPortals->hasGeneratedLandingPlatform($frame)) {
+                    foreach ($this->netherPortals->prepareFallbackBuildSite($frame->bottomLeft, $frame->axis) as $mutation) {
+                        $this->deferredEvents[] = new BlockChanged(
+                            'server',
+                            $mutation->position,
+                            $mutation->state,
+                            $this->players->recipients(),
+                            false,
+                            $mutation->previous,
+                        );
+                    }
+                    foreach ($this->netherPortals->build($frame->bottomLeft, $frame->axis) as $mutation) {
+                        $this->deferredEvents[] = new BlockChanged(
+                            'server',
+                            $mutation->position,
+                            $mutation->state,
+                            $this->players->recipients(),
+                            false,
+                            $mutation->previous,
+                        );
+                    }
+                }
+
+                return self::portalFeetPosition($frame);
+            }
+            $candidates = array_values(array_filter(
+                $candidates,
+                static fn(BlockPosition $candidate): bool => !$candidate->equals($nearest),
+            ));
+        }
+        $origin = $this->portalDestinations->buildOrigin(
+            $plan,
+            fn(BlockPosition $candidate, PortalAxis $axis): bool =>
+                $this->netherPortals->isSuitableBuildOrigin($candidate, $axis),
+        );
+        if ($origin === null) {
+            $origin = $this->portalDestinations->fallbackBuildOrigin($plan);
+            foreach ($this->netherPortals->prepareFallbackBuildSite($origin, $plan->preferredAxis) as $mutation) {
+                $this->deferredEvents[] = new BlockChanged(
+                    'server',
+                    $mutation->position,
+                    $mutation->state,
+                    $this->players->recipients(),
+                    false,
+                    $mutation->previous,
+                );
+            }
+        }
+        foreach ($this->netherPortals->build($origin, $plan->preferredAxis) as $mutation) {
+            $this->deferredEvents[] = new BlockChanged(
+                'server',
+                $mutation->position,
+                $mutation->state,
+                $this->players->recipients(),
+                false,
+                $mutation->previous,
+            );
+        }
+
+        return self::portalFeetPosition(new NetherPortalFrame(
+            $origin,
+            2,
+            3,
+            $plan->preferredAxis,
+        ));
+    }
+
+    /**
+     * Preloads the bounded destination neighborhood before portal lookup or terrain mutation.
+     * Ready leases are released immediately; the subsequent world switch acquires its own leases.
+     */
+    public function preparePortalDestination(PortalDestinationPlan $plan): bool
+    {
+        if ($this->blockWorld === null || $plan->targetDimension !== $this->dimension) {
+            return false;
+        }
+        $centerX = (int) floor($plan->projectedPosition->x / 16.0);
+        $centerZ = (int) floor($plan->projectedPosition->z / 16.0);
+        $ready = [];
+        $complete = true;
+        for ($chunkX = $centerX - 1; $chunkX <= $centerX + 1; ++$chunkX) {
+            for ($chunkZ = $centerZ - 1; $chunkZ <= $centerZ + 1; ++$chunkZ) {
+                $position = new ChunkPosition($chunkX, $chunkZ);
+                if ($this->blockWorld->requestRetainChunk($position)) {
+                    $ready[] = $position;
+                } else {
+                    $complete = false;
+                }
+            }
+        }
+        foreach ($ready as $position) {
+            $this->blockWorld->releaseChunk($position);
+        }
+
+        return $complete;
+    }
+
+    public function preparePortalPosition(Position $position): bool
+    {
+        if ($this->blockWorld === null) {
+            return false;
+        }
+        $centerX = (int) floor($position->x / 16.0);
+        $centerZ = (int) floor($position->z / 16.0);
+        $ready = [];
+        $complete = true;
+        for ($chunkX = $centerX - 1; $chunkX <= $centerX + 1; ++$chunkX) {
+            for ($chunkZ = $centerZ - 1; $chunkZ <= $centerZ + 1; ++$chunkZ) {
+                $chunk = new ChunkPosition($chunkX, $chunkZ);
+                if ($this->blockWorld->requestRetainChunk($chunk)) {
+                    $ready[] = $chunk;
+                } else {
+                    $complete = false;
+                }
+            }
+        }
+        foreach ($ready as $chunk) {
+            $this->blockWorld->releaseChunk($chunk);
+        }
+
+        return $complete;
+    }
+
+    /** Allows a failed runtime transfer to be requested again while the player remains inside the portal. */
+    public function rejectPortalTransfer(string $sessionId): void
+    {
+        $this->portalContacts->retryNextTick($sessionId, $this->tick);
+    }
+
+    /** Prevents an arrival portal from immediately scheduling the reverse dimension transfer. */
+    public function beginPortalArrivalCooldown(string $sessionId): void
+    {
+        $this->portalContacts->beginArrivalCooldown($sessionId, $this->tick);
+    }
+
+    /** @return list<BlockPosition> */
+    private function loadedPortalPositions(PortalDestinationPlan $plan): array
+    {
+        if ($this->blockWorld === null || $this->netherPortals === null) {
+            return [];
+        }
+        $portalStates = $this->netherPortals->portalStateAxes();
+        $centerX = $plan->projectedPosition->x;
+        $centerZ = $plan->projectedPosition->z;
+        $minimumX = (int) floor($centerX) - $plan->searchRadius;
+        $maximumX = (int) floor($centerX) + $plan->searchRadius;
+        $minimumZ = (int) floor($centerZ) - $plan->searchRadius;
+        $maximumZ = (int) floor($centerZ) + $plan->searchRadius;
+        $nearest = new SplPriorityQueue();
+        $nearest->setExtractFlags(SplPriorityQueue::EXTR_DATA);
+        foreach ($this->blockWorld->loadedChunks() as $chunk) {
+            $chunkMinimumX = $chunk->position->x * 16;
+            $chunkMinimumZ = $chunk->position->z * 16;
+            if ($chunkMinimumX > $maximumX || $chunkMinimumX + 15 < $minimumX
+                || $chunkMinimumZ > $maximumZ || $chunkMinimumZ + 15 < $minimumZ) {
+                continue;
+            }
+            foreach ($chunk->populatedSections() as $section) {
+                $storage = $section->blockStorageLayer(0);
+                $portalPaletteIndices = [];
+                foreach ($storage->palette() as $paletteIndex => $state) {
+                    if (isset($portalStates[$state->value])) {
+                        $portalPaletteIndices[$paletteIndex] = true;
+                    }
+                }
+                if ($portalPaletteIndices === []) {
+                    continue;
+                }
+                $indices = $storage->paletteIndices();
+                for ($offset = 0; $offset < SubChunk::BLOCK_COUNT; ++$offset) {
+                    if (!isset($portalPaletteIndices[ord($indices[$offset])])) {
+                        continue;
+                    }
+                    $localX = $offset & 0x0f;
+                    $localZ = intdiv($offset, 16) & 0x0f;
+                    $x = $chunkMinimumX + $localX;
+                    $z = $chunkMinimumZ + $localZ;
+                    if ($x < $minimumX || $x > $maximumX || $z < $minimumZ || $z > $maximumZ) {
+                        continue;
+                    }
+                    $y = ($section->sectionY * 16) + intdiv($offset, 256);
+                    $position = new BlockPosition($x, $y, $z);
+                    $distance = (($x - $centerX) ** 2) + (($z - $centerZ) ** 2);
+                    $nearest->insert($position, [$distance, $y, $x, $z]);
+                    if ($nearest->count() > PortalDestinationPlanner::MAXIMUM_INDEXED_PORTALS) {
+                        $nearest->extract();
+                    }
+                }
+            }
+        }
+        $positions = [];
+        while (!$nearest->isEmpty()) {
+            $position = $nearest->extract();
+            if (!$position instanceof BlockPosition) {
+                throw new \LogicException('Portal destination queue returned an invalid position.');
+            }
+            $positions[] = $position;
+        }
+
+        return $positions;
+    }
+
+    private static function portalFeetPosition(
+        NetherPortalFrame $frame,
+    ): Position {
+        return new Position(
+            $frame->bottomLeft->x + ($frame->axis->stepX() * ($frame->width / 2.0)) + ($frame->axis->stepZ() * 0.5),
+            (float) $frame->bottomLeft->y,
+            $frame->bottomLeft->z + ($frame->axis->stepZ() * ($frame->width / 2.0)) + ($frame->axis->stepX() * 0.5),
+        );
     }
 
     public function pluginWorldContainerView(BlockPosition $position): ?ApiContainerView
@@ -4125,6 +4430,8 @@ final class WorldSimulation
             $bootstrap === null ? 0 : $bootstrap->fireTicks,
             $bootstrap === null ? null : $bootstrap->effectPersistenceState,
             $bootstrap === null ? 0 : $bootstrap->totalExperience,
+            $bootstrap?->spawnPoint,
+            $this->dimension,
         );
         if ($bootstrap !== null) {
             $player->movement->yaw = $bootstrap->yaw;
@@ -6407,6 +6714,7 @@ final class WorldSimulation
     {
         $key = self::sessionKey($command->session);
         unset($this->breakingBlocks[$key], $this->pendingRespawns[$key]);
+        $this->portalContacts->forget($command->session);
         $player = $this->players->player($command->session);
         if ($player === null) {
             return new CommandRejected($command->session, 'not_joined');
@@ -7223,6 +7531,9 @@ final class WorldSimulation
             || $identifier === 'minecraft:water'
             || $identifier === 'minecraft:lava') {
             return false;
+        }
+        if ($identifier === 'minecraft:portal') {
+            return $player->gameMode()->instantlyBreaksBlocks();
         }
         if ($blockType !== null) {
             return $blockType->isBreakable()
@@ -10887,6 +11198,33 @@ final class WorldSimulation
         $previous = $this->blockWorld->setBlockState($position->x, $position->y, $position->z, $state);
         if ($previous->value !== $state->value) {
             $this->scheduleFluidNeighborhood($position, $prioritizeNeighborFluids);
+            if ($this->netherPortals !== null && $this->blockIdentifier($state->value) !== 'minecraft:portal') {
+                foreach ($this->netherPortals->invalidateNear(
+                    $position,
+                    $this->blockIdentifier($previous->value) === 'minecraft:portal',
+                ) as $mutation) {
+                    $this->deferredEvents[] = new BlockChanged(
+                        'server',
+                        $mutation->position,
+                        $mutation->state,
+                        $this->players->recipients(),
+                        false,
+                        $mutation->previous,
+                    );
+                }
+            }
+            if ($this->endPortals !== null && $this->blockIdentifier($state->value) !== 'minecraft:end_portal') {
+                foreach ($this->endPortals->invalidateNear($position) as $mutation) {
+                    $this->deferredEvents[] = new BlockChanged(
+                        'server',
+                        $mutation->position,
+                        $mutation->state,
+                        $this->players->recipients(),
+                        false,
+                        $mutation->previous,
+                    );
+                }
+            }
         }
 
         return $previous;
@@ -10952,6 +11290,10 @@ final class WorldSimulation
                 (int) floor($position->y + 0.1),
                 (int) floor($position->z),
             );
+            $portalEvent = $this->advancePlayerPortal($player, $feetState, $headState);
+            if ($portalEvent !== null) {
+                $events[] = $portalEvent;
+            }
             $effects = $player->effects->snapshot();
             $headFluid = $this->blockStateRegistry === null
                 ? null
@@ -11046,6 +11388,92 @@ final class WorldSimulation
         }
 
         return $events;
+    }
+
+    private function advancePlayerPortal(
+        Player $player,
+        InternalBlockStateId $feetState,
+        InternalBlockStateId $headState,
+    ): ?WorldEvent {
+        if ($this->blockStateRegistry === null) {
+            $this->portalContacts->leave($player->sessionId);
+
+            return null;
+        }
+        $position = $player->movement->position;
+        $entry = null;
+        $portalIdentifier = null;
+        foreach ([
+            [$feetState, (int) floor($position->y + 0.1)],
+            [$headState, (int) floor($position->y + 1.62)],
+        ] as [$state, $y]) {
+            $identifier = $this->blockStateRegistry->state($state)->identifier();
+            if ($identifier === 'minecraft:portal' || $identifier === 'minecraft:end_portal') {
+                $entry = new BlockPosition((int) floor($position->x), $y, (int) floor($position->z));
+                $portalIdentifier = $identifier;
+                break;
+            }
+        }
+        if ($entry === null) {
+            $this->portalContacts->leave($player->sessionId);
+
+            return null;
+        }
+        if ($portalIdentifier === 'minecraft:end_portal') {
+            $target = match ($this->dimension) {
+                WorldDimension::OVERWORLD => WorldDimension::END,
+                WorldDimension::END => WorldDimension::OVERWORLD,
+                WorldDimension::NETHER => null,
+            };
+            if ($target === null || !$this->portalContacts->contact(
+                $player->sessionId,
+                $entry,
+                $this->tick,
+                true,
+            )) {
+                return null;
+            }
+
+            return new EndPortalTransferRequested($player->sessionId, $entry, $this->dimension, $target);
+        }
+        if ($this->netherPortals === null || $this->dimension === WorldDimension::END) {
+            $this->portalContacts->leave($player->sessionId);
+
+            return null;
+        }
+        $axis = $this->netherPortals->portalAxisAt($entry);
+        if ($axis === null || !$this->portalContacts->contact(
+            $player->sessionId,
+            $entry,
+            $this->tick,
+            $player->gameMode() === GameMode::CREATIVE,
+        )) {
+            return null;
+        }
+        $plan = $this->portalDestinations->plan($this->dimension, $position, $axis);
+        $destination = $this->pluginEvents?->portalTravel(
+            $player,
+            PortalType::NETHER,
+            $this->dimension,
+            $plan->targetDimension,
+            $plan->projectedPosition,
+        );
+        if ($this->pluginEvents !== null && $destination === null) {
+            $this->portalContacts->retryNextTick($player->sessionId, $this->tick);
+
+            return null;
+        }
+        if ($destination !== null) {
+            $plan = new PortalDestinationPlan(
+                $plan->sourceDimension,
+                $plan->targetDimension,
+                new Position($destination->x, $destination->y, $destination->z),
+                $plan->searchRadius,
+                $plan->preferredAxis,
+            );
+        }
+
+        return new PortalTransferRequested($player->sessionId, $entry, $axis, $plan);
     }
 
     private function isPlayerExposedToRain(Player $player): bool
@@ -13474,6 +13902,15 @@ final class WorldSimulation
         $activeBreak = $this->breakingBlocks[$key] ?? null;
         unset($this->breakingBlocks[$key]);
         $held = $player->inventory->selectedStack();
+        if ($held?->identifier === 'minecraft:ender_eye' && $this->endPortals !== null) {
+            return $this->useEnderEye(
+                $player,
+                $command,
+                $clickedState,
+                $held,
+                $activeBreak['position'] ?? null,
+            );
+        }
         $heldType = $held !== null && $this->itemCatalog?->has($held->identifier) === true
             ? $this->itemCatalog->type($held->identifier)
             : null;
@@ -13515,6 +13952,17 @@ final class WorldSimulation
                 $boatVariant,
                 $held->identifier === 'minecraft:chest_boat'
                     || str_contains($held->identifier, '_chest_'),
+                $activeBreak['position'] ?? null,
+            );
+        }
+        if ($held?->identifier === 'minecraft:flint_and_steel' && $this->netherPortals !== null) {
+            return $this->useFlintAndSteel(
+                $player,
+                $command,
+                $placedPosition,
+                $clickedState,
+                $placedState,
+                $held,
                 $activeBreak['position'] ?? null,
             );
         }
@@ -13651,6 +14099,140 @@ final class WorldSimulation
             $this->players->recipients(),
             $activeBreak['position'] ?? null,
         );
+    }
+
+    private function useEnderEye(
+        Player $player,
+        PlaceBlock $command,
+        InternalBlockStateId $clickedState,
+        InventoryStack $held,
+        ?BlockPosition $stoppedBreaking,
+    ): WorldEvent {
+        $endPortals = $this->endPortals;
+        if ($endPortals === null) {
+            throw new \LogicException('The End portal system is unavailable.');
+        }
+        $filled = $endPortals->filledFrameState($command->clickedPosition);
+        $reason = match (true) {
+            !$player->gameMode()->canBuild() => 'gamemode',
+            $command->sequence <= $player->placementSequence => 'stale_sequence',
+            $command->hotbarSlot !== $player->inventory->selectedHotbarSlot() => 'selected_slot',
+            !$this->blockIsReachable($player->snapshot(), $command->clickedPosition) => 'reach',
+            $filled === null => 'invalid_end_portal_frame',
+            default => null,
+        };
+        if ($command->sequence > $player->placementSequence) {
+            $player->placementSequence = $command->sequence;
+        }
+        if ($reason !== null) {
+            return new BlockPlacementCorrected(
+                $command->session,
+                $command->clickedPosition,
+                $clickedState,
+                $command->clickedPosition,
+                $clickedState,
+                $player->inventory->selectedHotbarSlot(),
+                $held,
+                $stoppedBreaking,
+                $reason,
+            );
+        }
+        $this->setBlockStateAndSchedule($command->clickedPosition, $filled);
+        $remaining = $player->gameMode()->consumesItems()
+            ? $player->inventory->decrementSelectedOne()
+            : $held;
+        if ($player->gameMode()->consumesItems()) {
+            $player->markDirty();
+        }
+        $frame = $endPortals->find($command->clickedPosition);
+        if ($frame !== null
+            && ($this->pluginEvents?->allowEndPortalActivation($player, $frame->center) ?? true)) {
+            foreach ($endPortals->activate($frame) as $mutation) {
+                $this->deferredEvents[] = new BlockChanged(
+                    $command->session,
+                    $mutation->position,
+                    $mutation->state,
+                    $this->players->recipients(),
+                    false,
+                    $mutation->previous,
+                );
+            }
+            $this->pluginEvents?->endPortalActivated($player, $frame->center);
+        }
+
+        return new BlockPlaced(
+            $command->session,
+            $player->runtimeActorId,
+            $command->clickedPosition,
+            $filled,
+            $player->inventory->selectedHotbarSlot(),
+            $remaining,
+            $this->players->recipients(),
+            $stoppedBreaking,
+        );
+    }
+
+    private function useFlintAndSteel(
+        Player $player,
+        PlaceBlock $command,
+        BlockPosition $target,
+        InternalBlockStateId $clickedState,
+        InternalBlockStateId $targetState,
+        InventoryStack $held,
+        ?BlockPosition $stoppedBreakingPosition,
+    ): WorldEvent {
+        $failure = match (true) {
+            !$player->gameMode()->canBuild() => 'gamemode',
+            $command->sequence <= $player->placementSequence => 'stale_sequence',
+            $command->hotbarSlot !== $player->inventory->selectedHotbarSlot() => 'selected_slot',
+            $targetState->value !== $this->blockPalette?->air->value => 'occupied',
+            !$this->blockIsReachable($player->snapshot(), $command->clickedPosition) => 'reach',
+            default => null,
+        };
+        if ($command->sequence > $player->placementSequence) {
+            $player->placementSequence = $command->sequence;
+        }
+        if ($failure === null && $this->pluginEvents !== null
+            && !$this->pluginEvents->allowBlockPlace($player, $target, 'minecraft:portal')) {
+            $failure = 'plugin_cancelled';
+        }
+        $mutations = $failure === null ? $this->netherPortals?->ignite($target) ?? [] : [];
+        if ($failure === null && $mutations === []) {
+            $failure = 'invalid_portal_frame';
+        }
+        if ($failure !== null) {
+            return new BlockPlacementCorrected(
+                $player->sessionId,
+                $command->clickedPosition,
+                $clickedState,
+                $target,
+                $targetState,
+                $player->inventory->selectedHotbarSlot(),
+                $held,
+                $stoppedBreakingPosition,
+                $failure,
+            );
+        }
+        $this->damageHeldItem($player, ApiItemDamageCause::ITEM_USE, 1);
+        $first = null;
+        foreach ($mutations as $index => $mutation) {
+            $event = new BlockChanged(
+                $player->sessionId,
+                $mutation->position,
+                $mutation->state,
+                $this->players->recipients(),
+                false,
+                $mutation->previous,
+            );
+            if ($index === 0) {
+                $first = $event;
+            } else {
+                $this->deferredEvents[] = $event;
+            }
+        }
+        $this->pluginEvents?->blockPlaced($player, $target, 'minecraft:portal');
+
+        return $first ?? throw new \LogicException('Portal ignition completed without a block mutation.');
     }
 
     private function fillFluidBucket(
@@ -15416,7 +15998,10 @@ final class WorldSimulation
 
     private function isReplaceablePlacementState(InternalBlockStateId $state): bool
     {
-        return $state->value === $this->blockPalette?->air->value || $this->fluidState($state) !== null;
+        return $state->value === $this->blockPalette?->air->value
+            || $this->fluidState($state) !== null
+            || ($this->blockStateRegistry !== null
+                && $this->blockStateRegistry->state($state)->identifier() === 'minecraft:portal');
     }
 
     private function itemTouchesLava(DroppedItemEntity $entity): bool

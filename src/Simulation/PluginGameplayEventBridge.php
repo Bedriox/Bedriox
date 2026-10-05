@@ -53,6 +53,8 @@ use Bedriox\Api\Event\Block\BrewingFuelConsumedEvent;
 use Bedriox\Api\Event\Block\BrewingFuelConsumeEvent;
 use Bedriox\Api\Event\Block\ChestPairedEvent;
 use Bedriox\Api\Event\Block\ChestPairEvent;
+use Bedriox\Api\Event\Block\EndPortalActivatedEvent;
+use Bedriox\Api\Event\Block\EndPortalActivateEvent;
 use Bedriox\Api\Event\Entity\ActorKnockbackEvent;
 use Bedriox\Api\Event\Entity\ActorKnockedBackEvent;
 use Bedriox\Api\Event\Entity\EntityBlockChangedEvent;
@@ -148,6 +150,8 @@ use Bedriox\Api\Event\Player\PlayerMovedEvent;
 use Bedriox\Api\Event\Player\PlayerMoveEvent;
 use Bedriox\Api\Event\Player\PlayerPickedUpItemEvent;
 use Bedriox\Api\Event\Player\PlayerPickupItemEvent;
+use Bedriox\Api\Event\Player\PlayerPortalTravelEvent;
+use Bedriox\Api\Event\Player\PlayerPortalTravelledEvent;
 use Bedriox\Api\Event\Player\PlayerPreJoinEvent;
 use Bedriox\Api\Event\Player\PlayerQuitCause;
 use Bedriox\Api\Event\Player\PlayerQuitEvent;
@@ -225,8 +229,10 @@ use Bedriox\Api\TextFormat;
 use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\Block as ApiBlock;
 use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
+use Bedriox\Api\World\PortalType;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\WeatherState;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Entity\AbstractLivingEntity;
 use Bedriox\Server\Entity\AbstractMobEntity;
 use Bedriox\Server\Entity\EntityMotion;
@@ -868,6 +874,63 @@ final readonly class PluginGameplayEventBridge
             $snapshot->position,
             $snapshot->yaw,
             $snapshot->pitch,
+        ));
+    }
+
+    public function portalTravel(
+        Player $player,
+        PortalType $portalType,
+        WorldDimension $sourceDimension,
+        WorldDimension $targetDimension,
+        Position $destination,
+    ): ?ApiPosition {
+        $event = new PlayerPortalTravelEvent(
+            $this->playerView($player),
+            $portalType,
+            $this->positionFor($player, $player->movement->position, dimension: $sourceDimension),
+            $this->positionFor(
+                $player,
+                $destination,
+                $player->movement->yaw,
+                $player->movement->pitch,
+                $targetDimension,
+            ),
+        );
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->destination();
+    }
+
+    public function portalTravelled(
+        Player $player,
+        PortalType $portalType,
+        ApiPosition $from,
+        ApiPosition $destination,
+    ): void {
+        $this->events->dispatch(new PlayerPortalTravelledEvent(
+            $this->playerView($player),
+            $portalType,
+            $from,
+            $destination,
+        ));
+    }
+
+    public function allowEndPortalActivation(Player $player, BlockPosition $center): bool
+    {
+        $event = new EndPortalActivateEvent(
+            $this->playerView($player),
+            new ApiBlockPosition($center->x, $center->y, $center->z, $player->dimension()),
+        );
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function endPortalActivated(Player $player, BlockPosition $center): void
+    {
+        $this->events->dispatch(new EndPortalActivatedEvent(
+            $this->playerView($player),
+            new ApiBlockPosition($center->x, $center->y, $center->z, $player->dimension()),
         ));
     }
 
@@ -2431,6 +2494,7 @@ final readonly class PluginGameplayEventBridge
         Position $position,
         ?float $yaw = null,
         ?float $pitch = null,
+        ?WorldDimension $dimension = null,
     ): ApiPosition {
         $world = $this->worldResolver === null ? null : ($this->worldResolver)($player->worldName());
 
@@ -2441,6 +2505,7 @@ final readonly class PluginGameplayEventBridge
             $yaw ?? $player->movement->yaw,
             $pitch ?? $player->movement->pitch,
             $world,
+            $dimension ?? $player->dimension(),
         );
     }
 

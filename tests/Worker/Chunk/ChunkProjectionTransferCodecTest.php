@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Worker\Chunk;
 
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Packet\ChunkSerializer;
 use Bedriox\Server\Runtime\BedrockChunkPacketSerializer;
@@ -36,6 +37,7 @@ use Bedriox\Server\World\BlockPosition;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\DefaultWorldGenerator;
 use Bedriox\Server\World\FlatWorldGenerator;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class ChunkProjectionTransferCodecTest extends TestCase
@@ -130,5 +132,42 @@ final class ChunkProjectionTransferCodecTest extends TestCase
             (new BedrockChunkPacketSerializer($blocks))->serialize($chunk),
             ChunkSerializer::fullColumn($column),
         );
+    }
+
+    #[DataProvider('dimensionBounds')]
+    public function testProjectionCarriesDimensionSpecificHeightAndBiomeBounds(
+        WorldDimension $dimension,
+        int $wireDimension,
+        int $minimumSectionY,
+        int $maximumSectionY,
+    ): void {
+        $data = BedrockDataSet::bundled();
+        $networkStates = $data->blockStateRegistry();
+        $states = new BlockStateRegistry($networkStates->states());
+        $chunk = (new FlatWorldGenerator(FixedFlatBlockPalette::fromRegistry($states)))
+            ->generate(new ChunkPosition(7, -8));
+        $codec = new ChunkProjectionTransferCodec();
+
+        $column = $codec->decodeColumn(
+            $codec->encode($chunk, $states, $dimension),
+            $states,
+            new BlockNetworkTranslator($states, $networkStates),
+        );
+
+        self::assertSame($wireDimension, $column->dimension);
+        self::assertSame($minimumSectionY, $column->minSectionY);
+        self::assertSame($maximumSectionY, $column->maxSectionY);
+        self::assertCount($maximumSectionY - $minimumSectionY + 1, $column->biomes);
+        foreach ($column->sections as $index => $section) {
+            self::assertSame($minimumSectionY + $index, $section->sectionY);
+        }
+    }
+
+    /** @return iterable<string, array{WorldDimension, int, int, int}> */
+    public static function dimensionBounds(): iterable
+    {
+        yield 'overworld' => [WorldDimension::OVERWORLD, 0, -4, 19];
+        yield 'nether' => [WorldDimension::NETHER, 1, 0, 7];
+        yield 'end' => [WorldDimension::END, 2, 0, 15];
     }
 }

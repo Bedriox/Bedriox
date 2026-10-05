@@ -43,6 +43,7 @@ final readonly class WorldData
         public string $generatorOptions = '{}',
         ?WeatherCycleState $weather = null,
         public bool $weatherCycleEnabled = true,
+        public bool $bedrioxGeneratorVersionDeclared = true,
     ) {
         if (
             $generatorName === ''

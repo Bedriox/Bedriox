@@ -20,10 +20,18 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Spawn\Natural;
 
+use Bedriox\Api\World\WorldDimension;
+
 final readonly class EndermanNaturalSpawnRule implements NaturalSpawnRule
 {
     public function allows(NaturalSpawnContext $context): bool
     {
-        return $context->medium === NaturalSpawnMedium::GROUND && $context->lightLevel <= 7;
+        return in_array($context->dimension, [
+            WorldDimension::OVERWORLD,
+            WorldDimension::NETHER,
+            WorldDimension::END,
+        ], true)
+            && $context->medium === NaturalSpawnMedium::GROUND
+            && $context->lightLevel <= 7;
     }
 }

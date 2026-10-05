@@ -21,6 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Entity\Persistence;
 
 use Bedriox\Api\Entity\CustomEntityState;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Entity\AbstractEntity;
 use Bedriox\Server\Entity\AbstractLivingEntity;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
@@ -107,6 +108,7 @@ final class EntityPersistenceManager
         ?Closure $afterActivation = null,
         ?Closure $customStateEncoder = null,
         ?Closure $afterDeactivation = null,
+        private readonly WorldDimension $dimension = WorldDimension::OVERWORLD,
     ) {
         if ($worldName === '' || strlen($worldName) > EntityPersistenceLimits::MAX_WORLD_NAME_BYTES
             || preg_match('//u', $worldName) !== 1 || preg_match('/[\x00-\x1f\x7f]/', $worldName) === 1) {
@@ -132,7 +134,7 @@ final class EntityPersistenceManager
         }
 
         try {
-            $snapshot = $this->store->loadEntityChunk($chunk);
+            $snapshot = $this->store->loadEntityChunk($chunk, $this->dimension);
         } catch (CorruptEntityPersistenceException) {
             $this->corruptChunks[$key] = true;
 
@@ -427,7 +429,7 @@ final class EntityPersistenceManager
             try {
                 $snapshot = $this->snapshot($state);
                 if ($this->store instanceof AsynchronousEntityPersistenceStore) {
-                    $submission = $this->store->enqueueEntityChunkSave($snapshot);
+                    $submission = $this->store->enqueueEntityChunkSave($snapshot, $this->dimension);
                     if ($submission->status === PersistenceSubmission::SATURATED) {
                         unset($this->autosavePending[$key]);
                         $this->autosavePending[$key] = true;
@@ -444,7 +446,7 @@ final class EntityPersistenceManager
                     ++$attempted;
                     continue;
                 }
-                $this->store->saveEntityChunk($snapshot);
+                $this->store->saveEntityChunk($snapshot, $this->dimension);
                 $this->acknowledge($state, $snapshot);
                 unset($this->autosavePending[$key]);
                 ++$attempted;
@@ -558,7 +560,7 @@ final class EntityPersistenceManager
         }
         if ($state->dirty) {
             $snapshot = $this->snapshot($state);
-            $this->store->saveEntityChunk($snapshot);
+            $this->store->saveEntityChunk($snapshot, $this->dimension);
             $this->acknowledge($state, $snapshot);
         }
         unset($this->autosavePending[$key]);
@@ -731,7 +733,7 @@ final class EntityPersistenceManager
                     || isset($this->pendingOwnershipTransferChunks[$destinationKey])
                     || isset($this->pendingChunkSaves[$sourceKey])
                     || isset($this->pendingChunkSaves[$destinationKey])
-                    || !$this->store->enqueueEntityOwnershipTransfer($transfer)) {
+                    || !$this->store->enqueueEntityOwnershipTransfer($transfer, $this->dimension)) {
                     return 3;
                 }
                 $this->pendingOwnershipTransfers[$uuid] = new PendingEntityOwnershipTransfer(
@@ -749,7 +751,7 @@ final class EntityPersistenceManager
 
                 return 1;
             }
-            $committed = $this->store->transferEntityOwnership($transfer);
+            $committed = $this->store->transferEntityOwnership($transfer, $this->dimension);
             unset($source->records[$uuid]);
             $source->dirty = $this->reconcileOwnershipTransferRecords(
                 $source,
@@ -845,7 +847,7 @@ final class EntityPersistenceManager
             return;
         }
         $this->acceptOwnershipTransferCompletions(
-            $this->store->pollEntityOwnershipTransfers($maximumCompletions),
+            $this->store->pollEntityOwnershipTransfers($maximumCompletions, $this->dimension),
         );
     }
 
@@ -856,7 +858,7 @@ final class EntityPersistenceManager
         }
 
         return $this->acceptEntityChunkSaveCompletions(
-            $this->store->pollEntityChunkSaves($maximumCompletions),
+            $this->store->pollEntityChunkSaves($maximumCompletions, $this->dimension),
         );
     }
 
@@ -866,7 +868,7 @@ final class EntityPersistenceManager
             return new EntityPersistenceFlushResult(0, 0, []);
         }
         $expectedCompletions = count($this->pendingChunkSaves);
-        $completions = $this->store->drainEntityChunkSaves(30_000);
+        $completions = $this->store->drainEntityChunkSaves(30_000, $this->dimension);
         $result = $this->acceptEntityChunkSaveCompletions($completions);
         if (count($completions) !== $expectedCompletions) {
             throw new LogicException('Entity chunk save drain did not resolve every pending snapshot.');
@@ -927,7 +929,7 @@ final class EntityPersistenceManager
             return;
         }
         $this->acceptOwnershipTransferCompletions(
-            $this->store->drainEntityOwnershipTransfers(30_000),
+            $this->store->drainEntityOwnershipTransfers(30_000, $this->dimension),
         );
         if ($this->pendingOwnershipTransfers !== []) {
             throw new LogicException('Entity ownership transfer drain did not resolve every pending transfer.');
@@ -1272,7 +1274,7 @@ final class EntityPersistenceManager
             $state = $this->chunks[$key];
             try {
                 $snapshot = $this->snapshot($state);
-                $this->store->saveEntityChunk($snapshot);
+                $this->store->saveEntityChunk($snapshot, $this->dimension);
                 $this->acknowledge($state, $snapshot);
                 ++$saved;
             } catch (Throwable $error) {

@@ -20,18 +20,21 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Spawn\Natural;
 
+use Bedriox\Api\World\WorldDimension;
+
 final readonly class StrayNaturalSpawnRule implements NaturalSpawnRule
 {
     public function allows(NaturalSpawnContext $context): bool
     {
-        if ($context->medium !== NaturalSpawnMedium::GROUND || $context->lightLevel > 7
-            || !str_contains($context->biome, 'frozen')) {
+        if ($context->dimension !== WorldDimension::OVERWORLD
+            || $context->medium !== NaturalSpawnMedium::GROUND
+            || $context->lightLevel > 7) {
             return false;
         }
-        if (!str_contains($context->biome, 'ocean')) {
-            return true;
+        if (NaturalSpawnBiomes::isFrozenOcean($context->biome)) {
+            return $context->position->y >= 60.0 && $context->position->y <= 66.0;
         }
 
-        return $context->position->y >= 60.0 && $context->position->y <= 66.0;
+        return NaturalSpawnBiomes::isSnowy($context->biome);
     }
 }

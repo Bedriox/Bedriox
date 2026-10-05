@@ -20,8 +20,11 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Worker\Chunk;
 
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\ProtocolVersion;
+use Bedriox\Server\Worker\Chunk\ChunkPreparationRequestCodec;
+use Bedriox\Server\Worker\Chunk\ChunkProjectionTransferCodec;
 use Bedriox\Server\Worker\Chunk\PreparedChunkAvailability;
 use Bedriox\Server\Worker\Chunk\PreparedChunkCache;
 use Bedriox\Server\Worker\Task\PrepareChunkTask;
@@ -31,11 +34,13 @@ use Bedriox\Server\Worker\WorkerReceipt;
 use Bedriox\Server\Worker\WorkerResult;
 use Bedriox\Server\Worker\WorkerResultStatus;
 use Bedriox\Server\Worker\WorkerSubmission;
+use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\FlatWorldGenerator;
 use Closure;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class PreparedChunkCacheTest extends TestCase
@@ -155,6 +160,50 @@ final class PreparedChunkCacheTest extends TestCase
         self::assertGreaterThan(0, $cache->trim(true));
         self::assertSame(0, $cache->snapshot()->pending);
         self::assertSame(0, $cache->snapshot()->pendingBytes);
+    }
+
+    #[DataProvider('nonOverworldDimensions')]
+    public function testWorkerRequestPreservesTheCacheDimension(
+        WorldDimension $dimension,
+        int $wireDimension,
+        int $minimumSectionY,
+        int $maximumSectionY,
+    ): void {
+        $states = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $workers = new FakePreparationWorkerDispatcher();
+        $cache = new PreparedChunkCache(
+            $workers,
+            5,
+            $states,
+            str_repeat('c', 32),
+            dimension: $dimension,
+        );
+        $chunk = (new FlatWorldGenerator(FixedFlatBlockPalette::fromRegistry($states)))
+            ->generate(new ChunkPosition(-6, 9));
+
+        self::assertSame(
+            PreparedChunkAvailability::PENDING,
+            $cache->lookupOrRequest($chunk, ProtocolVersion::CURRENT)->availability,
+        );
+        $request = (new ChunkPreparationRequestCodec())->decode($workers->payloads[1]);
+        $data = BedrockDataSet::bundled();
+        $column = (new ChunkProjectionTransferCodec())->decodeColumn(
+            $request->chunkTransfer,
+            $states,
+            new BlockNetworkTranslator($states, $data->blockStateRegistry()),
+        );
+
+        self::assertSame($wireDimension, $column->dimension);
+        self::assertSame($minimumSectionY, $column->minSectionY);
+        self::assertSame($maximumSectionY, $column->maxSectionY);
+        self::assertCount($maximumSectionY - $minimumSectionY + 1, $column->biomes);
+    }
+
+    /** @return iterable<string, array{WorldDimension, int, int, int}> */
+    public static function nonOverworldDimensions(): iterable
+    {
+        yield 'nether' => [WorldDimension::NETHER, 1, 0, 7];
+        yield 'end' => [WorldDimension::END, 2, 0, 15];
     }
 
     /** @return array{PreparedChunkCache, FakePreparationWorkerDispatcher, \Bedriox\Server\World\Chunk, FixedFlatBlockPalette} */

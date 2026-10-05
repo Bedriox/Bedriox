@@ -28,6 +28,7 @@ use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\WeatherState;
 use Bedriox\Api\World\World;
 use Bedriox\Api\World\WorldActions;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Gameplay\Block\BlockCatalog;
 use Bedriox\Server\Plugin\PluginActionBuffer;
 use Bedriox\Server\World\Block\BlockStateRegistry;
@@ -69,7 +70,7 @@ final class RuntimeWorldActions
 
     private function getBlock(World $world, ApiBlockPosition $position): Block
     {
-        $runtime = $this->runtime($world);
+        $runtime = $this->runtime($world, $position->dimension);
         $state = $runtime->opened->world->blockStateAt($position->x, $position->y, $position->z);
         $identifier = $this->blocks->typeForInternalId($state, $this->states)->identifier();
 
@@ -81,7 +82,7 @@ final class RuntimeWorldActions
         if (preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $identifier) !== 1) {
             throw new InvalidArgumentException('Block identifier must be canonical and namespaced.');
         }
-        $runtime = $this->runtime($world);
+        $runtime = $this->runtime($world, $position->dimension);
         $action = static function () use ($runtime, $position, $identifier): void {
             if (!$runtime->simulation->enqueuePluginBlock(
                 'api',
@@ -111,18 +112,20 @@ final class RuntimeWorldActions
         if ($players !== null && count($players) > 128) {
             throw new InvalidArgumentException('Particle audience exceeds the supported capacity.');
         }
+        $dimension = $position->dimension ?? WorldDimension::OVERWORLD;
         $identities = null;
         if ($players !== null) {
             $identities = [];
             foreach ($players as $player) {
-                if ($player->position->world === null || !$player->position->world->isSameLoad($world)) {
+                if ($player->position->world === null || !$player->position->world->isSameLoad($world)
+                    || $player->getDimension() !== $dimension) {
                     throw new InvalidArgumentException('Particle audience contains a player outside this world load.');
                 }
                 $identities[$player->uuid] = true;
             }
             $identities = array_keys($identities);
         }
-        $runtime = $this->runtime($world);
+        $runtime = $this->runtime($world, $dimension);
         $action = static function () use ($runtime, $position, $particle, $identities): void {
             if (!$runtime->simulation->enqueuePluginParticle(
                 'api',
@@ -157,9 +160,13 @@ final class RuntimeWorldActions
         return $changed;
     }
 
-    private function runtime(World $world): ManagedWorldRuntime
-    {
+    private function runtime(
+        World $world,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): ManagedWorldRuntime {
         return ($this->worlds ?? throw new LogicException('World actions are not attached to the runtime.'))
-            ->assertCurrent($world);
+            ->assertCurrent($world)
+            ->dimension($dimension)
+            ?? throw new LogicException('World does not expose the requested dimension runtime.');
     }
 }

@@ -109,6 +109,7 @@ SETTINGS);
             self::assertSame('500MB', $values['memory-limit']);
             self::assertSame('true', $values['xbox-auth']);
             self::assertSame('default', $values['level-type']);
+            self::assertSame('', $values['level-seed']);
             self::assertSame('true', $values['spawn-animals']);
             self::assertSame('true', $values['spawn-monsters']);
             self::assertSame('4', $values['view-distance']);

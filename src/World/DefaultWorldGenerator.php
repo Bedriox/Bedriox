@@ -36,7 +36,7 @@ use Bedriox\Server\World\Generation\SeededNoise;
 /** Deterministic three-dimensional overworld generator for the built-in default world profile. */
 final class DefaultWorldGenerator implements VersionedWorldGenerator
 {
-    public const int VERSION = 1;
+    public const int VERSION = 2;
     public const int SEA_LEVEL = OverworldTerrainSampler::SEA_LEVEL;
     private const int HORIZONTAL_SAMPLE_STEP = 4;
     private const int VERTICAL_SAMPLE_STEP = 8;

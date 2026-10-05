@@ -92,6 +92,7 @@ final class WorldNaturalSpawnRuntime
         ?Closure $beforeDespawn = null,
         ?string $worldName = null,
     ): self {
+        $worldName ??= $world->metadata->name;
         $environment = new WorldNaturalSpawnEnvironment(
             $world,
             $entities->registry(),
@@ -102,6 +103,7 @@ final class WorldNaturalSpawnRuntime
             $air,
             $water,
             $lava,
+            $worldName,
         );
         $limits = new NaturalSpawnLimits(
             candidateRadius: 7,
@@ -172,12 +174,25 @@ final class WorldNaturalSpawnRuntime
                 [VanillaEntityType::SQUID, 6],
                 [VanillaEntityType::GLOW_SQUID, 3],
                 [VanillaEntityType::DOLPHIN, 2],
-                [VanillaEntityType::TURTLE, 2],
                 [VanillaEntityType::AXOLOTL, 2],
             ] as [$type, $weight]) {
                 if ($definitions->get($type) !== null) {
-                    $entries[] = new NaturalSpawnEntry($type, EntityCategory::WATER, new AquaticNaturalSpawnRule(), $weight);
+                    $entries[] = new NaturalSpawnEntry(
+                        $type,
+                        EntityCategory::WATER,
+                        new AquaticSpeciesNaturalSpawnRule($type),
+                        $weight,
+                        NaturalSpawnMedium::WATER,
+                    );
                 }
+            }
+            if ($definitions->get(VanillaEntityType::TURTLE) !== null) {
+                $entries[] = new NaturalSpawnEntry(
+                    VanillaEntityType::TURTLE,
+                    EntityCategory::ANIMAL,
+                    new TurtleNaturalSpawnRule(),
+                    2,
+                );
             }
         }
         if ($spawnMonsters && $world->difficulty() > 0) {
@@ -194,8 +209,12 @@ final class WorldNaturalSpawnRuntime
                 10,
             );
             foreach ([
-                [VanillaEntityType::DROWNED, new AquaticNaturalSpawnRule(7), 6],
-                [VanillaEntityType::GUARDIAN, new AquaticNaturalSpawnRule(), 2],
+                [
+                    VanillaEntityType::DROWNED,
+                    new AquaticSpeciesNaturalSpawnRule(VanillaEntityType::DROWNED),
+                    6,
+                    NaturalSpawnMedium::WATER,
+                ],
                 [VanillaEntityType::HUSK, new HuskNaturalSpawnRule(), 5],
                 [VanillaEntityType::STRAY, new StrayNaturalSpawnRule(), 4],
                 [VanillaEntityType::BOGGED, new BoggedNaturalSpawnRule(), 3],
@@ -206,9 +225,16 @@ final class WorldNaturalSpawnRuntime
                 [VanillaEntityType::MAGMA_CUBE, new MagmaCubeNaturalSpawnRule(), 4],
                 [VanillaEntityType::ENDERMAN, new EndermanNaturalSpawnRule(), 1],
                 [VanillaEntityType::WITCH, new WitchNaturalSpawnRule(), 1],
-            ] as [$type, $rule, $weight]) {
+            ] as $definition) {
+                [$type, $rule, $weight] = $definition;
                 if ($definitions->get($type) !== null) {
-                    $entries[] = new NaturalSpawnEntry($type, EntityCategory::MONSTER, $rule, $weight);
+                    $entries[] = new NaturalSpawnEntry(
+                        $type,
+                        EntityCategory::MONSTER,
+                        $rule,
+                        $weight,
+                        $definition[3] ?? NaturalSpawnMedium::GROUND,
+                    );
                 }
             }
         }
@@ -231,7 +257,7 @@ final class WorldNaturalSpawnRuntime
             ], [
                 EntityCategory::MONSTER->value => 32.0,
             ]),
-            $worldName ?? $world->metadata->name,
+            $worldName,
             $world->metadata->seed,
             beforeDespawn: $beforeDespawn,
         );

@@ -122,6 +122,11 @@ final readonly class LevelDatMetadata
         return $tag->value;
     }
 
+    public function hasBedrioxGeneratorVersion(): bool
+    {
+        return isset($this->root['BedrioxGeneratorVersion']);
+    }
+
     public function spawnX(): int
     {
         return $this->requiredInteger('SpawnX', LittleEndianNbtTag::INT);

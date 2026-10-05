@@ -22,6 +22,7 @@ namespace Bedriox\Server\Tests\Integration;
 
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\VanillaEntityType;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Entity\EntityDefinition;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
@@ -327,24 +328,30 @@ final class NaturalOwnershipPersistenceStore implements EntityPersistenceStore
         $this->codec = EntityPersistenceCodec::vanilla();
     }
 
-    public function loadEntityChunk(ChunkPosition $position): ?EntityChunkSnapshot
-    {
-        $document = $this->documents[$position->key()] ?? null;
+    public function loadEntityChunk(
+        ChunkPosition $position,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): ?EntityChunkSnapshot {
+        $document = $this->documents[$dimension->value . ':' . $position->key()] ?? null;
 
         return $document === null ? null : $this->codec->decode($document);
     }
 
-    public function saveEntityChunk(EntityChunkSnapshot $snapshot): void
-    {
-        $key = $snapshot->chunk->key();
+    public function saveEntityChunk(
+        EntityChunkSnapshot $snapshot,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): void {
+        $key = $dimension->value . ':' . $snapshot->chunk->key();
         $this->documents[$key] = $this->codec->encode($snapshot);
         $this->chunks[$key] = $snapshot->chunk;
     }
 
-    public function transferEntityOwnership(EntityOwnershipTransfer $transfer): EntityOwnershipTransferResult
-    {
-        $this->saveEntityChunk($transfer->sourceAfter);
-        $this->saveEntityChunk($transfer->destinationAfter);
+    public function transferEntityOwnership(
+        EntityOwnershipTransfer $transfer,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): EntityOwnershipTransferResult {
+        $this->saveEntityChunk($transfer->sourceAfter, $dimension);
+        $this->saveEntityChunk($transfer->destinationAfter, $dimension);
 
         return new EntityOwnershipTransferResult($transfer->sourceAfter, $transfer->destinationAfter);
     }

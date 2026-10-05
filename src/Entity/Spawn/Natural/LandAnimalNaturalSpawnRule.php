@@ -20,48 +20,51 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Spawn\Natural;
 
+use Bedriox\Api\World\WorldDimension;
 use InvalidArgumentException;
 
 /** Bounded biome-family rule for expanded overworld land animals. */
 final readonly class LandAnimalNaturalSpawnRule implements NaturalSpawnRule
 {
     /**
-     * @param list<string> $includedBiomeFragments
-     * @param list<string> $excludedBiomeFragments
+     * @param list<string> $includedBiomeFamilies
+     * @param list<string> $excludedBiomeFamilies
      */
     public function __construct(
-        private array $includedBiomeFragments = [],
-        private array $excludedBiomeFragments = ['ocean', 'river'],
+        private array $includedBiomeFamilies = [],
+        private array $excludedBiomeFamilies = ['ocean', 'river'],
         private int $minimumLight = 9,
     ) {
-        if (count($includedBiomeFragments) > 16
-            || count($excludedBiomeFragments) > 16
+        if (count($includedBiomeFamilies) > 16
+            || count($excludedBiomeFamilies) > 16
             || $minimumLight < 0 || $minimumLight > 15) {
             throw new InvalidArgumentException('Land-animal natural-spawn rule is outside its supported bounds.');
         }
-        foreach ([...$includedBiomeFragments, ...$excludedBiomeFragments] as $fragment) {
-            if ($fragment === '' || strlen($fragment) > 64
-                || preg_match('/^[a-z0-9_.-]+$/D', $fragment) !== 1) {
-                throw new InvalidArgumentException('Land-animal biome fragment is invalid.');
+        foreach ([...$includedBiomeFamilies, ...$excludedBiomeFamilies] as $family) {
+            if ($family === '' || strlen($family) > 64
+                || preg_match('/^[a-z0-9_.-]+$/D', $family) !== 1) {
+                throw new InvalidArgumentException('Land-animal biome family is invalid.');
             }
         }
     }
 
     public function allows(NaturalSpawnContext $context): bool
     {
-        if ($context->medium !== NaturalSpawnMedium::GROUND || $context->lightLevel < $this->minimumLight) {
+        if ($context->dimension !== WorldDimension::OVERWORLD
+            || $context->medium !== NaturalSpawnMedium::GROUND
+            || $context->lightLevel < $this->minimumLight) {
             return false;
         }
-        foreach ($this->excludedBiomeFragments as $fragment) {
-            if (str_contains($context->biome, $fragment)) {
+        foreach ($this->excludedBiomeFamilies as $family) {
+            if (NaturalSpawnBiomes::matchesFamily($context->biome, $family)) {
                 return false;
             }
         }
-        if ($this->includedBiomeFragments === []) {
+        if ($this->includedBiomeFamilies === []) {
             return true;
         }
-        foreach ($this->includedBiomeFragments as $fragment) {
-            if (str_contains($context->biome, $fragment)) {
+        foreach ($this->includedBiomeFamilies as $family) {
+            if (NaturalSpawnBiomes::matchesFamily($context->biome, $family)) {
                 return true;
             }
         }

@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Worker\Chunk;
 
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Protocol\Batch\BedrockBatchCodec;
 use Bedriox\Server\Worker\WorkerDispatcher;
 use Bedriox\Server\Worker\WorkerReceipt;
@@ -69,6 +70,7 @@ final class PreparedChunkCache
         private readonly int $maximumPending = 256,
         private readonly int $maximumPendingBytes = 67_108_864,
         ?string $registryHash = null,
+        private readonly WorldDimension $dimension = WorldDimension::OVERWORLD,
     ) {
         $registryHash ??= ChunkProjectionIdentity::bundledRegistryHash();
         if ($taskTypeId < 1 || $taskTypeId > 65_535
@@ -112,7 +114,7 @@ final class PreparedChunkCache
         }
 
         try {
-            $chunkTransfer = (new ChunkProjectionTransferCodec())->encode($chunk, $this->states);
+            $chunkTransfer = (new ChunkProjectionTransferCodec())->encode($chunk, $this->states, $this->dimension);
             $request = (new ChunkPreparationRequestCodec())->encode(new ChunkPreparationRequest(
                 $protocolVersion,
                 ChunkProjectionIdentity::SERIALIZER_VERSION,
@@ -306,7 +308,7 @@ final class PreparedChunkCache
 
         return hash('sha256', implode('|', [
             $this->worldIncarnation,
-            'minecraft:overworld',
+            $this->dimension->value,
             $chunk->position->x,
             $chunk->position->z,
             $chunk->revision,

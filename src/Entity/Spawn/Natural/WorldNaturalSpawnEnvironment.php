@@ -22,6 +22,7 @@ namespace Bedriox\Server\Entity\Spawn\Natural;
 
 use Bedriox\Api\Entity\EntityCategory;
 use Bedriox\Api\Entity\EntityType;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\EntityRegistry;
 use Bedriox\Server\Simulation\Position;
@@ -45,6 +46,8 @@ final class WorldNaturalSpawnEnvironment implements NaturalSpawnEnvironment
 
     private int $worldTime = 0;
 
+    private readonly string $worldName;
+
     public function __construct(
         private readonly World $world,
         private readonly EntityRegistry $entities,
@@ -55,7 +58,14 @@ final class WorldNaturalSpawnEnvironment implements NaturalSpawnEnvironment
         private readonly InternalBlockStateId $air,
         private readonly ?InternalBlockStateId $water = null,
         private readonly ?InternalBlockStateId $lava = null,
-    ) {}
+        ?string $worldName = null,
+    ) {
+        $worldName ??= $world->metadata->name;
+        if ($worldName === '' || strlen($worldName) > 128 || preg_match('//u', $worldName) !== 1) {
+            throw new InvalidArgumentException('Natural-spawn world identity is invalid.');
+        }
+        $this->worldName = $worldName;
+    }
 
     /** @param array<int, mixed> $players */
     public function updateContext(array $players): void
@@ -83,11 +93,11 @@ final class WorldNaturalSpawnEnvironment implements NaturalSpawnEnvironment
             && $this->world->chunk($chunk)->finalizationState === ChunkFinalizationState::Done;
     }
 
-    public function dimension(string $worldName): string
+    public function dimension(string $worldName): WorldDimension
     {
         $this->requireWorld($worldName);
 
-        return 'minecraft:overworld';
+        return $this->world->dimension();
     }
 
     public function biome(string $worldName, Position $position): string
@@ -104,8 +114,16 @@ final class WorldNaturalSpawnEnvironment implements NaturalSpawnEnvironment
         )->identifier;
     }
 
-    public function heightAt(string $worldName, float $x, float $z): ?float
-    {
+    public function candidatePosition(
+        string $worldName,
+        NaturalSpawnMedium $medium,
+        float $x,
+        float $z,
+        float $verticalSelector,
+    ): ?Position {
+        if (!is_finite($verticalSelector) || $verticalSelector < 0.0 || $verticalSelector >= 1.0) {
+            throw new InvalidArgumentException('Natural-spawn vertical selector is invalid.');
+        }
         $position = new Position($x, 0.0, $z);
         $chunk = $this->loadedChunkAt($worldName, $position);
         if ($chunk === null || $chunk->finalizationState !== ChunkFinalizationState::Done) {
@@ -113,11 +131,21 @@ final class WorldNaturalSpawnEnvironment implements NaturalSpawnEnvironment
         }
         $localX = self::localCoordinate((int) floor($x));
         $localZ = self::localCoordinate((int) floor($z));
-        for ($y = Chunk::MAX_Y; $y >= Chunk::MIN_Y; --$y) {
-            $state = $chunk->blockStateAt($localX, $y, $localZ);
-            $surface = $this->collisionSurface($state);
-            if ($surface !== null) {
-                return $y + $surface;
+        $height = Chunk::MAX_Y - Chunk::MIN_Y + 1;
+        $startY = Chunk::MIN_Y + min($height - 1, (int) floor($verticalSelector * $height));
+        for ($offset = 0; $offset < $height; ++$offset) {
+            $y = Chunk::MIN_Y + (($startY - Chunk::MIN_Y - $offset + $height) % $height);
+            if ($medium === NaturalSpawnMedium::WATER) {
+                $state = $chunk->blockStateAt($localX, $y, $localZ);
+                if (($this->water !== null && $state->value === $this->water->value)
+                    || $this->states->state($state)->identifier() === 'minecraft:water') {
+                    return new Position($x, $y + 0.5, $z);
+                }
+                continue;
+            }
+            $surface = $this->collisionSurface($chunk->blockStateAt($localX, $y, $localZ));
+            if ($surface !== null && $y < Chunk::MAX_Y) {
+                return new Position($x, $y + $surface, $z);
             }
         }
 
@@ -265,7 +293,7 @@ final class WorldNaturalSpawnEnvironment implements NaturalSpawnEnvironment
 
     private function isWorld(string $worldName): bool
     {
-        return $worldName === $this->world->metadata->name;
+        return $worldName === $this->worldName;
     }
 
     private function requireWorld(string $worldName): void

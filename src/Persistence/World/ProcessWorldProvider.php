@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Persistence\World;
 
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Entity\Persistence\AsynchronousEntityPersistenceStore;
 use Bedriox\Server\Entity\Persistence\CorruptEntityPersistenceException;
 use Bedriox\Server\Entity\Persistence\EntityChunkSaveCompletion;
@@ -103,14 +104,16 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
     private bool $asyncWriteIsWorldData = false;
     private int $asyncTaskId = 0;
     private string $asyncOutgoing = '';
-    /** @var array<string, ChunkPosition> */
+    /** @var array<string, array{position: ChunkPosition, dimension: WorldDimension}> */
     private array $queuedLoads = [];
     /** @var array<string, true> */
     private array $loadKeys = [];
     private ?ChunkPosition $asyncLoad = null;
-    /** @var array<string, EntityOwnershipTransfer> */
+    private WorldDimension $asyncLoadDimension = WorldDimension::OVERWORLD;
+    /** @var array<string, array{transfer: EntityOwnershipTransfer, dimension: WorldDimension}> */
     private array $queuedEntityTransfers = [];
     private ?EntityOwnershipTransfer $asyncEntityTransfer = null;
+    private WorldDimension $asyncEntityTransferDimension = WorldDimension::OVERWORLD;
     /** @var list<EntityOwnershipTransferCompletion> */
     private array $entityTransferCompletions = [];
     /** @var array<string, array{state: 'loaded'|'missing'|'corrupt', snapshot: ?EntityChunkSnapshot}> */
@@ -119,6 +122,8 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
     private array $loadCompletions = [];
     /** @var list<PersistenceWriteCompletion> */
     private array $deferredCompletions = [];
+    /** @var list<EntityChunkSaveCompletion> */
+    private array $deferredEntityCompletions = [];
     /** @var list<PersistenceWriteCompletion> */
     private array $deferredWorldDataCompletions = [];
     /** @var array<int, string> persistence request ID => bounded storage failure detail */
@@ -150,11 +155,16 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
         $this->entityOwnershipTransfers = new EntityOwnershipTransferCodec($this->entityPersistenceCodec);
         $this->entityOwnershipTransferResults = new EntityOwnershipTransferResultCodec($this->entityPersistenceCodec);
         $this->chunkLoadPayloads = new WorldChunkLoadPayloadCodec();
-        $this->writeQueue = new OrderedPersistenceQueue(1_024, 67_108_864, ChunkTransferCodec::MAXIMUM_ENCODED_BYTES, 1_024);
+        $this->writeQueue = new OrderedPersistenceQueue(
+            1_024,
+            67_108_864,
+            ChunkTransferCodec::MAXIMUM_ENCODED_BYTES + 1,
+            1_024,
+        );
         $this->entityWriteQueue = new OrderedPersistenceQueue(
             1_024,
             16_777_216,
-            EntityPersistenceLimits::MAX_DOCUMENT_BYTES,
+            EntityPersistenceLimits::MAX_DOCUMENT_BYTES + 1,
             1_024,
         );
         $this->worldDataWriteQueue = new OrderedPersistenceQueue(2, 2_097_152, 1_048_576, 16);
@@ -407,16 +417,21 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
         );
     }
 
-    public function loadChunk(ChunkPosition $position): ?LoadedChunkData
-    {
-        $payload = json_encode(['x' => $position->x, 'z' => $position->z], JSON_THROW_ON_ERROR);
+    public function loadChunk(
+        ChunkPosition $position,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): ?LoadedChunkData {
+        $payload = self::encodeDimensionPayload(
+            $dimension,
+            json_encode(['x' => $position->x, 'z' => $position->z], JSON_THROW_ON_ERROR),
+        );
         $result = $this->request(WorldStorageOperation::LOAD_CHUNK, $payload);
         if (($result->metadata['missing'] ?? null) === true) {
             if ($result->payload !== '') {
                 throw $this->failOwner('Missing chunk result unexpectedly contained data.');
             }
 
-            $this->rememberPreloadedEntityChunk($position, 'missing');
+            $this->rememberPreloadedEntityChunk($position, $dimension, 'missing');
 
             return null;
         }
@@ -424,7 +439,12 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
             throw $this->failOwner('Loaded chunk result metadata is invalid.');
         }
         try {
-            $chunk = $this->decodeLoadedChunkPayload($position, $result->payload, $result->metadata['entity_state'] ?? null);
+            $chunk = $this->decodeLoadedChunkPayload(
+                $position,
+                $dimension,
+                $result->payload,
+                $result->metadata['entity_state'] ?? null,
+            );
         } catch (Throwable $error) {
             throw $this->failOwner('Loaded chunk result is invalid.', $error);
         }
@@ -484,29 +504,40 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
         return $completions;
     }
 
-    public function saveChunk(ChunkSaveData $chunkData): void
-    {
+    public function saveChunk(
+        ChunkSaveData $chunkData,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): void {
         $result = $this->request(
             WorldStorageOperation::SAVE_CHUNK,
-            $this->chunks->encode($chunkData->chunk, $this->blockStates),
+            self::encodeDimensionPayload(
+                $dimension,
+                $this->chunks->encode($chunkData->chunk, $this->blockStates),
+            ),
         );
         if (($result->metadata['revision'] ?? null) !== $chunkData->revision || $result->payload !== '') {
             throw $this->failOwner('Chunk save acknowledgement has the wrong revision.');
         }
     }
 
-    public function loadEntityChunk(ChunkPosition $position): ?EntityChunkSnapshot
-    {
-        $preloaded = $this->preloadedEntityChunks[$position->key()] ?? null;
+    public function loadEntityChunk(
+        ChunkPosition $position,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): ?EntityChunkSnapshot {
+        $preloadKey = self::dimensionChunkKey($dimension, $position);
+        $preloaded = $this->preloadedEntityChunks[$preloadKey] ?? null;
         if ($preloaded !== null) {
-            unset($this->preloadedEntityChunks[$position->key()]);
+            unset($this->preloadedEntityChunks[$preloadKey]);
             if ($preloaded['state'] === 'corrupt') {
                 throw new CorruptEntityPersistenceException($position);
             }
 
             return $preloaded['snapshot'];
         }
-        $payload = json_encode(['x' => $position->x, 'z' => $position->z], JSON_THROW_ON_ERROR);
+        $payload = self::encodeDimensionPayload(
+            $dimension,
+            json_encode(['x' => $position->x, 'z' => $position->z], JSON_THROW_ON_ERROR),
+        );
         $result = $this->request(WorldStorageOperation::LOAD_ENTITY_CHUNK, $payload, false);
         $missing = $result->metadata['missing'] ?? null;
         if ($missing === true) {
@@ -531,67 +562,85 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
         return $snapshot;
     }
 
-    public function saveEntityChunk(EntityChunkSnapshot $snapshot): void
-    {
+    public function saveEntityChunk(
+        EntityChunkSnapshot $snapshot,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): void {
         $result = $this->request(
             WorldStorageOperation::SAVE_ENTITY_CHUNK,
-            $this->entityPersistenceCodec->encode($snapshot),
+            self::encodeDimensionPayload($dimension, $this->entityPersistenceCodec->encode($snapshot)),
             false,
         );
         if (($result->metadata['revision'] ?? null) !== $snapshot->chunkRevision || $result->payload !== '') {
             throw $this->failOwner('Entity snapshot save acknowledgement has the wrong revision.');
         }
-        unset($this->preloadedEntityChunks[$snapshot->chunk->key()]);
+        unset($this->preloadedEntityChunks[self::dimensionChunkKey($dimension, $snapshot->chunk)]);
     }
 
-    public function enqueueEntityChunkSave(EntityChunkSnapshot $snapshot): PersistenceEnqueueResult
-    {
+    public function enqueueEntityChunkSave(
+        EntityChunkSnapshot $snapshot,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): PersistenceEnqueueResult {
         $this->assertOpen();
 
         return $this->entityWriteQueue->enqueue(
-            'entity:' . $snapshot->chunk->key(),
+            self::persistenceKey('entity', $dimension, $snapshot->chunk),
             $snapshot->chunkRevision,
-            $this->entityPersistenceCodec->encode($snapshot),
+            self::encodeDimensionPayload($dimension, $this->entityPersistenceCodec->encode($snapshot)),
         );
     }
 
-    public function pollEntityChunkSaves(int $maximumCompletions = 256): array
-    {
+    public function pollEntityChunkSaves(
+        int $maximumCompletions = 256,
+        ?WorldDimension $dimension = null,
+    ): array {
         $this->assertOpen();
         if ($maximumCompletions < 1 || $maximumCompletions > 256) {
             throw new \InvalidArgumentException('Entity persistence completion limit is invalid.');
         }
         $this->advancePersistence();
-        $completions = [];
-        while (count($completions) < $maximumCompletions) {
+        $available = $this->deferredEntityCompletions;
+        $this->deferredEntityCompletions = [];
+        while (count($available) < $maximumCompletions) {
             $completion = $this->entityWriteQueue->takeCompletion();
             if (!$completion instanceof PersistenceWriteCompletion) {
                 break;
             }
             $chunk = self::entityChunkPositionFor($completion);
+            $completionDimension = self::dimensionForPersistenceKey($completion->key, 'entity');
             $detail = $this->entityWriteFailureDetails[$completion->requestId] ?? null;
             unset($this->entityWriteFailureDetails[$completion->requestId]);
-            $completions[] = new EntityChunkSaveCompletion(
+            $available[] = new EntityChunkSaveCompletion(
                 $chunk,
                 $completion->revision,
                 $completion->successful,
                 $completion->failureCode,
                 $detail,
+                $completionDimension,
             );
         }
+
+        [$completions, $this->deferredEntityCompletions] = self::partitionCompletions(
+            $available,
+            $maximumCompletions,
+            static fn(EntityChunkSaveCompletion $completion): bool => $dimension === null
+                || $completion->dimension === $dimension,
+        );
 
         return $completions;
     }
 
-    public function drainEntityChunkSaves(int $timeoutMilliseconds): array
-    {
+    public function drainEntityChunkSaves(
+        int $timeoutMilliseconds,
+        ?WorldDimension $dimension = null,
+    ): array {
         if ($timeoutMilliseconds < 1 || $timeoutMilliseconds > 300_000) {
             throw new \InvalidArgumentException('Entity persistence drain timeout is invalid.');
         }
         $all = [];
         $deadline = hrtime(true) + $timeoutMilliseconds * 1_000_000;
         do {
-            $all = [...$all, ...$this->pollEntityChunkSaves()];
+            $all = [...$all, ...$this->pollEntityChunkSaves(dimension: $dimension)];
             $snapshot = $this->entityWriteQueue->snapshot();
             if ($snapshot->queued === 0 && $snapshot->inFlight === 0
                 && (!$this->asyncWriteIsEntity || $this->asyncWrite === null)) {
@@ -603,61 +652,77 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
         throw $this->failOwner('Timed out draining queued entity persistence.');
     }
 
-    public function transferEntityOwnership(EntityOwnershipTransfer $transfer): EntityOwnershipTransferResult
-    {
+    public function transferEntityOwnership(
+        EntityOwnershipTransfer $transfer,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): EntityOwnershipTransferResult {
         $result = $this->request(
             WorldStorageOperation::TRANSFER_ENTITY_OWNERSHIP,
-            $this->entityOwnershipTransfers->encode($transfer),
+            self::encodeDimensionPayload($dimension, $this->entityOwnershipTransfers->encode($transfer)),
             false,
         );
         $committed = $this->decodeEntityOwnershipTransferResult($result, $transfer);
         unset(
-            $this->preloadedEntityChunks[$transfer->sourceAfter->chunk->key()],
-            $this->preloadedEntityChunks[$transfer->destinationAfter->chunk->key()],
+            $this->preloadedEntityChunks[self::dimensionChunkKey($dimension, $transfer->sourceAfter->chunk)],
+            $this->preloadedEntityChunks[self::dimensionChunkKey($dimension, $transfer->destinationAfter->chunk)],
         );
 
         return $committed;
     }
 
-    public function enqueueEntityOwnershipTransfer(EntityOwnershipTransfer $transfer): bool
-    {
+    public function enqueueEntityOwnershipTransfer(
+        EntityOwnershipTransfer $transfer,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): bool {
         $this->assertOpen();
-        $uuid = $transfer->uuid;
+        $uuid = $dimension->value . "\x00" . $transfer->uuid;
         $activeTransfer = $this->asyncEntityTransfer;
-        if (($activeTransfer !== null && $activeTransfer->uuid === $uuid)
+        if (($activeTransfer !== null && $this->asyncEntityTransferDimension === $dimension
+                && $activeTransfer->uuid === $transfer->uuid)
             || isset($this->queuedEntityTransfers[$uuid])) {
             return false;
         }
         if (count($this->queuedEntityTransfers) >= self::MAXIMUM_QUEUED_ENTITY_TRANSFERS) {
             return false;
         }
-        $this->queuedEntityTransfers[$uuid] = $transfer;
+        $this->queuedEntityTransfers[$uuid] = ['transfer' => $transfer, 'dimension' => $dimension];
 
         return true;
     }
 
     /** @return list<EntityOwnershipTransferCompletion> */
-    public function pollEntityOwnershipTransfers(int $maximumCompletions = 256): array
-    {
+    public function pollEntityOwnershipTransfers(
+        int $maximumCompletions = 256,
+        ?WorldDimension $dimension = null,
+    ): array {
         $this->assertOpen();
         if ($maximumCompletions < 1 || $maximumCompletions > 256) {
             throw new \InvalidArgumentException('Entity ownership transfer completion limit is invalid.');
         }
         $this->advancePersistence();
 
-        return array_splice($this->entityTransferCompletions, 0, $maximumCompletions);
+        [$completions, $this->entityTransferCompletions] = self::partitionCompletions(
+            $this->entityTransferCompletions,
+            $maximumCompletions,
+            static fn(EntityOwnershipTransferCompletion $completion): bool => $dimension === null
+                || $completion->dimension === $dimension,
+        );
+
+        return $completions;
     }
 
     /** @return list<EntityOwnershipTransferCompletion> */
-    public function drainEntityOwnershipTransfers(int $timeoutMilliseconds): array
-    {
+    public function drainEntityOwnershipTransfers(
+        int $timeoutMilliseconds,
+        ?WorldDimension $dimension = null,
+    ): array {
         if ($timeoutMilliseconds < 1 || $timeoutMilliseconds > 300_000) {
             throw new \InvalidArgumentException('Entity ownership transfer drain timeout is invalid.');
         }
         $all = [];
         $deadline = hrtime(true) + $timeoutMilliseconds * 1_000_000;
         do {
-            $all = [...$all, ...$this->pollEntityOwnershipTransfers()];
+            $all = [...$all, ...$this->pollEntityOwnershipTransfers(dimension: $dimension)];
             if ($this->queuedEntityTransfers === [] && $this->asyncEntityTransfer === null) {
                 return $all;
             }
@@ -668,28 +733,25 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
     }
 
     /** Queues an immutable canonical snapshot without waiting for disk I/O. */
-    public function enqueueChunkSave(ChunkSaveData $chunkData): PersistenceEnqueueResult
-    {
+    public function enqueueChunkSave(
+        ChunkSaveData $chunkData,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): PersistenceEnqueueResult {
         $this->assertOpen();
 
         return $this->writeQueue->enqueue(
-            'chunk:' . $chunkData->chunk->position->key(),
+            self::persistenceKey('chunk', $dimension, $chunkData->chunk->position),
             $chunkData->revision,
-            $this->chunks->encode($chunkData->chunk, $this->blockStates),
+            self::encodeDimensionPayload(
+                $dimension,
+                $this->chunks->encode($chunkData->chunk, $this->blockStates),
+            ),
         );
     }
 
     public static function chunkPositionFor(PersistenceWriteCompletion $completion): ChunkPosition
     {
-        if (preg_match('/^chunk:(-?(?:0|[1-9][0-9]*)):(-?(?:0|[1-9][0-9]*))$/D', $completion->key, $matches) !== 1) {
-            throw new \InvalidArgumentException('Persistence completion does not contain a chunk coordinate key.');
-        }
-        $position = new ChunkPosition((int) $matches[1], (int) $matches[2]);
-        if ('chunk:' . $position->key() !== $completion->key) {
-            throw new \InvalidArgumentException('Persistence completion chunk coordinate is not canonical.');
-        }
-
-        return $position;
+        return self::positionForPersistenceKey($completion->key, 'chunk');
     }
 
     public static function entityChunkPositionFor(PersistenceWriteCompletion $completion): ChunkPosition
@@ -699,22 +761,16 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
 
     private static function entityChunkPositionForKey(string $key): ChunkPosition
     {
-        if (preg_match('/^entity:(-?(?:0|[1-9][0-9]*)):(-?(?:0|[1-9][0-9]*))$/D', $key, $matches) !== 1) {
-            throw new \InvalidArgumentException('Persistence completion does not contain an entity chunk coordinate key.');
-        }
-        $position = new ChunkPosition((int) $matches[1], (int) $matches[2]);
-        if ('entity:' . $position->key() !== $key) {
-            throw new \InvalidArgumentException('Persistence completion entity chunk coordinate is not canonical.');
-        }
-
-        return $position;
+        return self::positionForPersistenceKey($key, 'entity');
     }
 
     /** Deduplicates a coordinate and returns false when it is already queued, in flight, or awaiting collection. */
-    public function requestChunkLoad(ChunkPosition $position): bool
-    {
+    public function requestChunkLoad(
+        ChunkPosition $position,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): bool {
         $this->assertOpen();
-        $key = $position->key();
+        $key = self::dimensionChunkKey($dimension, $position);
         if (isset($this->loadKeys[$key])) {
             return false;
         }
@@ -722,7 +778,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
             throw new \OverflowException('Chunk load request queue is full.');
         }
         $this->loadKeys[$key] = true;
-        $this->queuedLoads[$key] = $position;
+        $this->queuedLoads[$key] = ['position' => $position, 'dimension' => $dimension];
 
         return true;
     }
@@ -731,16 +787,23 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
      * @phpstan-impure Polling advances external storage work and consumes completed loads.
      * @return list<ChunkLoadCompletion>
      */
-    public function pollChunkLoads(int $maximumCompletions = 256): array
-    {
+    public function pollChunkLoads(
+        int $maximumCompletions = 256,
+        ?WorldDimension $dimension = null,
+    ): array {
         $this->assertOpen();
         if ($maximumCompletions < 1 || $maximumCompletions > 256) {
             throw new \InvalidArgumentException('Chunk load completion limit is invalid.');
         }
         $this->advancePersistence();
-        $completions = array_splice($this->loadCompletions, 0, $maximumCompletions);
+        [$completions, $this->loadCompletions] = self::partitionCompletions(
+            $this->loadCompletions,
+            $maximumCompletions,
+            static fn(ChunkLoadCompletion $completion): bool => $dimension === null
+                || $completion->dimension === $dimension,
+        );
         foreach ($completions as $completion) {
-            unset($this->loadKeys[$completion->position->key()]);
+            unset($this->loadKeys[self::dimensionChunkKey($completion->dimension, $completion->position)]);
         }
 
         return $completions;
@@ -750,21 +813,31 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
      * @phpstan-impure Polling advances external storage work and consumes completed writes.
      * @return list<PersistenceWriteCompletion>
      */
-    public function pollChunkSaves(int $maximumCompletions = 256): array
-    {
+    public function pollChunkSaves(
+        int $maximumCompletions = 256,
+        ?WorldDimension $dimension = null,
+    ): array {
         $this->assertOpen();
         if ($maximumCompletions < 1 || $maximumCompletions > 256) {
             throw new \InvalidArgumentException('Chunk persistence completion limit is invalid.');
         }
         $this->advancePersistence();
-        $completions = array_splice($this->deferredCompletions, 0, $maximumCompletions);
-        while (count($completions) < $maximumCompletions) {
+        $available = $this->deferredCompletions;
+        $this->deferredCompletions = [];
+        while (count($available) < $maximumCompletions) {
             $completion = $this->writeQueue->takeCompletion();
             if (!$completion instanceof PersistenceWriteCompletion) {
                 break;
             }
-            $completions[] = $completion;
+            $available[] = $completion;
         }
+
+        [$completions, $this->deferredCompletions] = self::partitionCompletions(
+            $available,
+            $maximumCompletions,
+            static fn(PersistenceWriteCompletion $completion): bool => $dimension === null
+                || self::dimensionForPersistenceKey($completion->key, 'chunk') === $dimension,
+        );
 
         return $completions;
     }
@@ -773,15 +846,17 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
      * @phpstan-impure
      * @return list<PersistenceWriteCompletion>
      */
-    public function drainChunkSaves(int $timeoutMilliseconds): array
-    {
+    public function drainChunkSaves(
+        int $timeoutMilliseconds,
+        ?WorldDimension $dimension = null,
+    ): array {
         if ($timeoutMilliseconds < 1 || $timeoutMilliseconds > 300_000) {
             throw new \InvalidArgumentException('Chunk persistence drain timeout is invalid.');
         }
         $all = [];
         $deadline = hrtime(true) + $timeoutMilliseconds * 1_000_000;
         do {
-            $all = [...$all, ...$this->pollChunkSaves()];
+            $all = [...$all, ...$this->pollChunkSaves(dimension: $dimension)];
             $this->retainWorldDataCompletions();
             $snapshot = $this->writeQueue->snapshot();
             $entitySnapshot = $this->entityWriteQueue->snapshot();
@@ -1090,9 +1165,11 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
             } else {
                 $transferUuid = array_key_first($this->queuedEntityTransfers);
                 if (is_string($transferUuid)) {
-                    $transfer = $this->queuedEntityTransfers[$transferUuid];
+                    $queuedTransfer = $this->queuedEntityTransfers[$transferUuid];
                     unset($this->queuedEntityTransfers[$transferUuid]);
+                    $transfer = $queuedTransfer['transfer'];
                     $this->asyncEntityTransfer = $transfer;
+                    $this->asyncEntityTransferDimension = $queuedTransfer['dimension'];
                     $this->asyncTaskId = $this->allocateTaskId();
                     $this->asyncOutgoing = $this->frames->encode(new WorkerFrame(
                         WorkerFrameKind::SUBMIT,
@@ -1100,15 +1177,20 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
                         $this->asyncTaskId,
                         WorldStorageOperation::TRANSFER_ENTITY_OWNERSHIP->value,
                         WorldStorageProcessProgram::SCHEMA_VERSION,
-                        payload: $this->entityOwnershipTransfers->encode($transfer),
+                        payload: self::encodeDimensionPayload(
+                            $this->asyncEntityTransferDimension,
+                            $this->entityOwnershipTransfers->encode($transfer),
+                        ),
                     ));
                 } else {
                     $loadKey = array_key_first($this->queuedLoads);
                 }
                 if ($this->asyncEntityTransfer === null && is_string($loadKey ?? null)) {
-                    $position = $this->queuedLoads[$loadKey];
+                    $queuedLoad = $this->queuedLoads[$loadKey];
                     unset($this->queuedLoads[$loadKey]);
+                    $position = $queuedLoad['position'];
                     $this->asyncLoad = $position;
+                    $this->asyncLoadDimension = $queuedLoad['dimension'];
                     $this->asyncTaskId = $this->allocateTaskId();
                     $this->asyncOutgoing = $this->frames->encode(new WorkerFrame(
                         WorkerFrameKind::SUBMIT,
@@ -1116,7 +1198,10 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
                         $this->asyncTaskId,
                         WorldStorageOperation::LOAD_CHUNK->value,
                         WorldStorageProcessProgram::SCHEMA_VERSION,
-                        payload: json_encode(['x' => $position->x, 'z' => $position->z], JSON_THROW_ON_ERROR),
+                        payload: self::encodeDimensionPayload(
+                            $this->asyncLoadDimension,
+                            json_encode(['x' => $position->x, 'z' => $position->z], JSON_THROW_ON_ERROR),
+                        ),
                     ));
                 } elseif ($this->asyncEntityTransfer === null) {
                     $request = $this->entityWriteQueue->dispatch();
@@ -1186,11 +1271,18 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
                         ? null
                         : $frame->metadata['detail'],
                     $committed,
+                    $this->asyncEntityTransferDimension,
                 );
                 if ($successful) {
                     unset(
-                        $this->preloadedEntityChunks[$transfer->sourceAfter->chunk->key()],
-                        $this->preloadedEntityChunks[$transfer->destinationAfter->chunk->key()],
+                        $this->preloadedEntityChunks[self::dimensionChunkKey(
+                            $this->asyncEntityTransferDimension,
+                            $transfer->sourceAfter->chunk,
+                        )],
+                        $this->preloadedEntityChunks[self::dimensionChunkKey(
+                            $this->asyncEntityTransferDimension,
+                            $transfer->destinationAfter->chunk,
+                        )],
                     );
                 }
                 $this->asyncEntityTransfer = null;
@@ -1202,7 +1294,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
                 continue;
             }
             if ($this->asyncLoad instanceof ChunkPosition) {
-                $this->acceptAsyncLoad($frame, $this->asyncLoad);
+                $this->acceptAsyncLoad($frame, $this->asyncLoad, $this->asyncLoadDimension);
                 $this->asyncLoad = null;
                 $this->asyncTaskId = 0;
                 if (count($frames) > 1) {
@@ -1245,7 +1337,10 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
                 $failureCode,
             );
             if ($this->asyncWriteIsEntity && $successful) {
-                unset($this->preloadedEntityChunks[self::entityChunkPositionForKey($request->key)->key()]);
+                unset($this->preloadedEntityChunks[self::dimensionChunkKey(
+                    self::dimensionForPersistenceKey($request->key, 'entity'),
+                    self::entityChunkPositionForKey($request->key),
+                )]);
             }
             $this->asyncWrite = null;
             $this->asyncWriteIsEntity = false;
@@ -1286,8 +1381,11 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
         return $result;
     }
 
-    private function acceptAsyncLoad(WorkerFrame $frame, ChunkPosition $position): void
-    {
+    private function acceptAsyncLoad(
+        WorkerFrame $frame,
+        ChunkPosition $position,
+        WorldDimension $dimension,
+    ): void {
         if (!hash_equals($this->epoch, $frame->epoch) || $frame->taskId !== $this->asyncTaskId
             || $frame->taskTypeId !== WorldStorageOperation::LOAD_CHUNK->value
             || $frame->schemaVersion !== WorldStorageProcessProgram::SCHEMA_VERSION) {
@@ -1295,7 +1393,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
         }
         if ($frame->kind === WorkerFrameKind::FAILURE) {
             $code = is_string($frame->metadata['code'] ?? null) ? $frame->metadata['code'] : 'storage_failure';
-            $this->loadCompletions[] = new ChunkLoadCompletion($position, null, false, $code);
+            $this->loadCompletions[] = new ChunkLoadCompletion($position, null, false, $code, $dimension);
 
             return;
         }
@@ -1303,8 +1401,8 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
             throw $this->failOwner('World storage chunk-load response kind is invalid.');
         }
         if (($frame->metadata['missing'] ?? null) === true && $frame->payload === '') {
-            $this->rememberPreloadedEntityChunk($position, 'missing');
-            $this->loadCompletions[] = new ChunkLoadCompletion($position, null, true);
+            $this->rememberPreloadedEntityChunk($position, $dimension, 'missing');
+            $this->loadCompletions[] = new ChunkLoadCompletion($position, null, true, dimension: $dimension);
 
             return;
         }
@@ -1312,7 +1410,12 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
             throw $this->failOwner('World storage chunk-load response metadata is invalid.');
         }
         try {
-            $chunk = $this->decodeLoadedChunkPayload($position, $frame->payload, $frame->metadata['entity_state'] ?? null);
+            $chunk = $this->decodeLoadedChunkPayload(
+                $position,
+                $dimension,
+                $frame->payload,
+                $frame->metadata['entity_state'] ?? null,
+            );
         } catch (Throwable $error) {
             throw $this->failOwner('World storage chunk-load response payload is invalid.', $error);
         }
@@ -1320,12 +1423,17 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
             $position,
             new LoadedChunkData($chunk, $frame->metadata['upgraded']),
             false,
+            dimension: $dimension,
         );
     }
 
     /** @param bool|int|string|null $entityState */
-    private function decodeLoadedChunkPayload(ChunkPosition $position, string $payload, bool|int|string|null $entityState): \Bedriox\Server\World\Chunk
-    {
+    private function decodeLoadedChunkPayload(
+        ChunkPosition $position,
+        WorldDimension $dimension,
+        string $payload,
+        bool|int|string|null $entityState,
+    ): \Bedriox\Server\World\Chunk {
         if (!is_string($entityState) || !in_array($entityState, ['loaded', 'missing', 'corrupt'], true)) {
             throw $this->failOwner('World storage chunk-load entity metadata is invalid.');
         }
@@ -1344,7 +1452,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
             || ($entityState === 'loaded') !== ($entitySnapshot !== null)) {
             throw $this->failOwner('World storage chunk-load response has inconsistent ownership.');
         }
-        $this->rememberPreloadedEntityChunk($position, $entityState, $entitySnapshot);
+        $this->rememberPreloadedEntityChunk($position, $dimension, $entityState, $entitySnapshot);
 
         return $chunk;
     }
@@ -1352,16 +1460,98 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
     /** @param 'loaded'|'missing'|'corrupt' $state */
     private function rememberPreloadedEntityChunk(
         ChunkPosition $position,
+        WorldDimension $dimension,
         string $state,
         ?EntityChunkSnapshot $snapshot = null,
     ): void {
-        $key = $position->key();
+        $key = self::dimensionChunkKey($dimension, $position);
         unset($this->preloadedEntityChunks[$key]);
         $this->preloadedEntityChunks[$key] = ['state' => $state, 'snapshot' => $snapshot];
         while (count($this->preloadedEntityChunks) > self::MAXIMUM_PRELOADED_ENTITY_CHUNKS) {
             $oldest = array_key_first($this->preloadedEntityChunks);
             unset($this->preloadedEntityChunks[$oldest]);
         }
+    }
+
+    private static function encodeDimensionPayload(WorldDimension $dimension, string $payload): string
+    {
+        return chr(match ($dimension) {
+            WorldDimension::OVERWORLD => 0,
+            WorldDimension::NETHER => 1,
+            WorldDimension::END => 2,
+        }) . $payload;
+    }
+
+    private static function dimensionChunkKey(WorldDimension $dimension, ChunkPosition $position): string
+    {
+        return $dimension->value . ':' . $position->key();
+    }
+
+    private static function persistenceKey(
+        string $kind,
+        WorldDimension $dimension,
+        ChunkPosition $position,
+    ): string {
+        return $dimension === WorldDimension::OVERWORLD
+            ? $kind . ':' . $position->key()
+            : $kind . ':' . $dimension->name . ':' . $position->key();
+    }
+
+    private static function positionForPersistenceKey(string $key, string $kind): ChunkPosition
+    {
+        $pattern = '/^' . preg_quote($kind, '/')
+            . ':(?:(OVERWORLD|NETHER|END):)?(-?(?:0|[1-9][0-9]*)):(-?(?:0|[1-9][0-9]*))$/D';
+        if (preg_match($pattern, $key, $matches) !== 1) {
+            throw new \InvalidArgumentException('Persistence completion does not contain a chunk coordinate key.');
+        }
+        $dimension = match ($matches[1] ?? '') {
+            '', 'OVERWORLD' => WorldDimension::OVERWORLD,
+            'NETHER' => WorldDimension::NETHER,
+            'END' => WorldDimension::END,
+            default => throw new \InvalidArgumentException('Persistence completion dimension is invalid.'),
+        };
+        $position = new ChunkPosition((int) $matches[2], (int) $matches[3]);
+        if (self::persistenceKey($kind, $dimension, $position) !== $key) {
+            throw new \InvalidArgumentException('Persistence completion chunk coordinate is not canonical.');
+        }
+
+        return $position;
+    }
+
+    private static function dimensionForPersistenceKey(string $key, string $kind): WorldDimension
+    {
+        $prefix = $kind . ':';
+        if (!str_starts_with($key, $prefix)) {
+            throw new \InvalidArgumentException('Persistence completion has the wrong key kind.');
+        }
+        foreach ([WorldDimension::NETHER, WorldDimension::END] as $dimension) {
+            if (str_starts_with($key, $prefix . $dimension->name . ':')) {
+                return $dimension;
+            }
+        }
+
+        return WorldDimension::OVERWORLD;
+    }
+
+    /**
+     * @template T
+     * @param list<T> $available
+     * @param callable(T): bool $accept
+     * @return array{list<T>, list<T>}
+     */
+    private static function partitionCompletions(array $available, int $maximum, callable $accept): array
+    {
+        $accepted = [];
+        $retained = [];
+        foreach ($available as $completion) {
+            if (count($accepted) < $maximum && $accept($completion)) {
+                $accepted[] = $completion;
+            } else {
+                $retained[] = $completion;
+            }
+        }
+
+        return [$accepted, $retained];
     }
 
     private function assertOpen(): void

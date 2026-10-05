@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Persistence\World;
 
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\Provider\LoadedChunkData;
 use InvalidArgumentException;
@@ -31,6 +32,7 @@ final readonly class ChunkLoadCompletion
         public ?LoadedChunkData $loaded,
         public bool $missing,
         public ?string $failureCode = null,
+        public WorldDimension $dimension = WorldDimension::OVERWORLD,
     ) {
         $outcomes = (int) ($loaded !== null) + (int) $missing + (int) ($failureCode !== null);
         if ($outcomes !== 1 || ($failureCode !== null && (strlen($failureCode) > 128

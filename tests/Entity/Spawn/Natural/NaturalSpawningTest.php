@@ -24,6 +24,7 @@ use Bedriox\Api\Entity\EntityCategory;
 use Bedriox\Api\Entity\EntityType;
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\VanillaEntityType;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Entity\Spawn\Natural\NaturalDespawnDecision;
 use Bedriox\Server\Entity\Spawn\Natural\NaturalDespawnPolicy;
 use Bedriox\Server\Entity\Spawn\Natural\NaturalDespawnRandom;
@@ -102,6 +103,22 @@ final class NaturalSpawningTest extends TestCase
             8,
             'minecraft:plains',
         )));
+        self::assertTrue($rule->allows(self::contextForRule(
+            VanillaEntityType::SKELETON,
+            EntityCategory::MONSTER,
+            NaturalSpawnMedium::GROUND,
+            7,
+            'minecraft:soulsand_valley',
+            WorldDimension::NETHER,
+        )));
+        self::assertFalse($rule->allows(self::contextForRule(
+            VanillaEntityType::SKELETON,
+            EntityCategory::MONSTER,
+            NaturalSpawnMedium::GROUND,
+            7,
+            'minecraft:crimson_forest',
+            WorldDimension::NETHER,
+        )));
         self::assertFalse($rule->allows(self::contextForRule(
             VanillaEntityType::SKELETON,
             EntityCategory::MONSTER,
@@ -170,6 +187,7 @@ final class NaturalSpawningTest extends TestCase
         NaturalSpawnMedium $medium,
         int $lightLevel,
         string $biome,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
     ): NaturalSpawnContext {
         return new NaturalSpawnContext(
             'world',
@@ -177,7 +195,7 @@ final class NaturalSpawningTest extends TestCase
             $type,
             $category,
             new Position(0.0, 64.0, 0.0),
-            'minecraft:overworld',
+            $dimension,
             $biome,
             $medium,
             $lightLevel,
@@ -360,8 +378,30 @@ final class NaturalSpawningTest extends TestCase
         self::assertSame([], $batch->requests());
         self::assertGreaterThan(0, $rule->evaluations);
         self::assertNotNull($rule->lastContext);
-        self::assertSame('minecraft:overworld', $rule->lastContext->dimension);
+        self::assertSame(WorldDimension::OVERWORLD, $rule->lastContext->dimension);
         self::assertSame('minecraft:plains', $rule->lastContext->biome);
+    }
+
+    public function testCandidateHabitatIsIndependentFromPopulationCategory(): void
+    {
+        $environment = new TestNaturalSpawnEnvironment();
+        self::spawner(
+            $environment,
+            new TestNaturalSpawnClock(),
+            entries: [new NaturalSpawnEntry(
+                VanillaEntityType::DROWNED,
+                EntityCategory::MONSTER,
+                new AllowNaturalSpawnRule(),
+                candidateMedium: NaturalSpawnMedium::WATER,
+            )],
+        )->plan(
+            'world',
+            [new NaturalSpawnPlayer('world', new Position(0.0, 64.0, 0.0))],
+            2,
+            2,
+        );
+
+        self::assertSame(NaturalSpawnMedium::WATER, $environment->lastCandidateMedium);
     }
 
     public function testDespawnPolicyHonorsEveryPersistenceExemptionAndDistance(): void
@@ -543,6 +583,7 @@ final class TestNaturalSpawnEnvironment implements NaturalSpawnEnvironment
     public bool $loaded = true;
     public bool $stable = true;
     public NaturalSpawnMedium $medium = NaturalSpawnMedium::GROUND;
+    public ?NaturalSpawnMedium $lastCandidateMedium = null;
     public int $heightQueries = 0;
 
     /** @var array<string, int> */
@@ -561,9 +602,9 @@ final class TestNaturalSpawnEnvironment implements NaturalSpawnEnvironment
         return $this->stable;
     }
 
-    public function dimension(string $worldName): string
+    public function dimension(string $worldName): WorldDimension
     {
-        return 'minecraft:overworld';
+        return WorldDimension::OVERWORLD;
     }
 
     public function biome(string $worldName, Position $position): string
@@ -571,11 +612,17 @@ final class TestNaturalSpawnEnvironment implements NaturalSpawnEnvironment
         return 'minecraft:plains';
     }
 
-    public function heightAt(string $worldName, float $x, float $z): float
-    {
+    public function candidatePosition(
+        string $worldName,
+        NaturalSpawnMedium $medium,
+        float $x,
+        float $z,
+        float $verticalSelector,
+    ): Position {
         ++$this->heightQueries;
+        $this->lastCandidateMedium = $medium;
 
-        return 64.0;
+        return new Position($x, 64.0, $z);
     }
 
     public function medium(string $worldName, Position $position): NaturalSpawnMedium

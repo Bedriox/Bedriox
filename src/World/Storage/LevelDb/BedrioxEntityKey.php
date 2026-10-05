@@ -20,6 +20,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World\Storage\LevelDb;
 
+use Bedriox\Api\World\WorldDimension;
+
 /** Private LevelDB namespace; it deliberately does not replace Mojang's entity-NBT chunk record. */
 final class BedrioxEntityKey
 {
@@ -27,8 +29,11 @@ final class BedrioxEntityKey
 
     private function __construct() {}
 
-    public static function chunk(int $chunkX, int $chunkZ): string
-    {
-        return self::PREFIX . LevelDbChunkKey::prefix($chunkX, $chunkZ);
+    public static function chunk(
+        int $chunkX,
+        int $chunkZ,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): string {
+        return self::PREFIX . LevelDbChunkKey::prefix($chunkX, $chunkZ, $dimension);
     }
 }

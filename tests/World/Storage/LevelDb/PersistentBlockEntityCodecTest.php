@@ -121,6 +121,27 @@ final class PersistentBlockEntityCodecTest extends TestCase
         self::assertSame('preserved', $stack->nbt?->string('bedriox_test'));
     }
 
+    public function testNativeEmptyEndTypedItemListIsAccepted(): void
+    {
+        $position = new ChunkPosition(-1, -3);
+        $block = new BlockPosition(-10, 64, -35);
+        $encoded = (new LittleEndianNbtCodec())->encodeRootCompounds([[
+            'Findable' => LittleEndianNbtTag::byte(0),
+            'Items' => LittleEndianNbtTag::list(LittleEndianNbtTag::END, []),
+            'LootTable' => LittleEndianNbtTag::string('loot_tables/chests/simple_dungeon.json'),
+            'id' => LittleEndianNbtTag::string('Chest'),
+            'isMovable' => LittleEndianNbtTag::byte(1),
+            'x' => LittleEndianNbtTag::int($block->x),
+            'y' => LittleEndianNbtTag::int($block->y),
+            'z' => LittleEndianNbtTag::int($block->z),
+        ]], 1);
+
+        $decoded = (new PersistentBlockEntityCodec())->decode($encoded, $position)->at($block);
+
+        self::assertInstanceOf(ContainerBlockEntity::class, $decoded);
+        self::assertSame([], $decoded->inventory->contents());
+    }
+
     public function testShulkerFacingAndEmptyEnderChestRoundTrip(): void
     {
         $position = new ChunkPosition(0, 0);
@@ -183,24 +204,29 @@ final class PersistentBlockEntityCodecTest extends TestCase
         );
     }
 
-    public function testUnknownAndMisplacedBlockEntitiesFailWithoutPartialRecovery(): void
+    public function testUnknownBlockEntitiesAreOmittedFromRuntimeAndPreservedOnRewrite(): void
     {
         $nbt = new LittleEndianNbtCodec();
         $unknown = $nbt->encodeRootCompounds([[
-            'id' => LittleEndianNbtTag::string('Unsupported'),
+            'id' => LittleEndianNbtTag::string('SporeBlossom'),
+            'isMovable' => LittleEndianNbtTag::byte(1),
             'x' => LittleEndianNbtTag::int(0),
             'y' => LittleEndianNbtTag::int(64),
             'z' => LittleEndianNbtTag::int(0),
         ]], 1);
-        try {
-            (new PersistentBlockEntityCodec())->decode($unknown, new ChunkPosition(0, 0));
-            self::fail('An unknown block entity was admitted.');
-        } catch (LevelDbStorageException) {
-            self::addToAssertionCount(1);
-        }
+        $codec = new PersistentBlockEntityCodec();
+        $chunk = new ChunkPosition(0, 0);
+
+        self::assertCount(0, $codec->decode($unknown, $chunk));
+        self::assertSame($unknown, $codec->encodePreserving(new BlockEntityCollection($chunk), $unknown));
+    }
+
+    public function testMisplacedOpaqueBlockEntityStillFailsClosed(): void
+    {
+        $nbt = new LittleEndianNbtCodec();
 
         $misplaced = $nbt->encodeRootCompounds([[
-            'id' => LittleEndianNbtTag::string('EnderChest'),
+            'id' => LittleEndianNbtTag::string('Unsupported'),
             'x' => LittleEndianNbtTag::int(16),
             'y' => LittleEndianNbtTag::int(64),
             'z' => LittleEndianNbtTag::int(0),

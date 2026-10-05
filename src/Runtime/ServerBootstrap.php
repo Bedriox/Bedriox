@@ -226,7 +226,15 @@ final class ServerBootstrap
         $flatWorld = $openedWorld->world;
         $runtimeWorldActions = new RuntimeWorldActions($blockCatalog, $internalStates, $pluginActions);
         $worldActions = $runtimeWorldActions->actions();
-        $defaultWorldHandle = new ApiWorld(WorldRuntimeManager::canonicalId($config->levelName), 1, $worldActions);
+        $defaultWorldHandle = new ApiWorld(
+            WorldRuntimeManager::canonicalId($config->levelName),
+            1,
+            $worldActions,
+            array_map(
+                static fn(OpenedWorld $dimension): \Bedriox\Api\World\WorldDimension => $dimension->world->dimension(),
+                $openedWorld->dimensions(),
+            ),
+        );
         $generatorRegistry = $this->worldFactory instanceof PersistentWorldFactory
             ? $this->worldFactory->generators()
             : WorldGeneratorFactory::builtIns();
@@ -248,6 +256,7 @@ final class ServerBootstrap
                 $openedWorld->data->metadata->seed,
                 $internalStates,
                 options: GeneratorOptions::fromJson($openedWorld->data->generatorOptions),
+                dimension: $flatWorld->dimension()->value,
                 workerSource: $defaultGeneratorDefinition->workerSource,
                 allowSynchronousFallback: $defaultGeneratorDefinition->workerSource === null,
             ));
@@ -274,6 +283,7 @@ final class ServerBootstrap
                 ),
                 maximumPending: min($config->chunkGenerationQueueSize, $workerCount * 2),
                 registryHash: $chunkProjectionRegistryHash,
+                dimension: $flatWorld->dimension(),
             )
             : null;
         $discovery = null;
@@ -287,6 +297,7 @@ final class ServerBootstrap
                 $itemCatalog,
                 $craftingCatalog,
                 $flatWorld->time(...),
+                $flatWorld->dimension(),
             );
             $spawn = $flatWorld->spawn();
             $playerStore = $this->playerDataStore
@@ -325,29 +336,15 @@ final class ServerBootstrap
                 brewingRecipes: $brewingRecipes,
                 furnaceRecipes: $furnaceRecipes,
                 transientWorkstations: $workstations,
+                dimension: $flatWorld->dimension(),
             );
             $entityPersistenceStore = $flatWorld->entityPersistenceStore();
             if ($entityPersistenceStore !== null) {
                 $world->enableEntityPersistence($entityPersistenceStore, $entityDefinitions);
             }
             $worldLoop = new FixedRateWorldLoop($world, new SystemSimulationClock(), maximumTicksPerPoll: 1);
-            $defaultManagedWorld = new ManagedWorldRuntime(
-                $defaultWorldHandle,
-                $openedWorld,
-                $world,
-                $worldLoop,
-                $preparedChunks,
-            );
-            $worldRuntimes = new WorldRuntimeManager(
-                $defaultWorldHandle->id(),
-                $defaultManagedWorld,
-                actions: $worldActions,
-            );
-            $runtimeWorldActions->attach($worldRuntimes);
-            $worldHandleResolver->attach($worldRuntimes);
-            $worldOperations = new WorldOperationQueue();
 
-            $composeManagedWorld = function (ApiWorld $handle, OpenedWorld $opened) use (
+            $composeManagedDimension = function (ApiWorld $handle, OpenedWorld $opened) use (
                 $workers,
                 $workersAvailable,
                 $config,
@@ -393,6 +390,7 @@ final class ServerBootstrap
                         $opened->data->metadata->seed,
                         $internalStates,
                         options: GeneratorOptions::fromJson($opened->data->generatorOptions),
+                        dimension: $internalWorld->dimension()->value,
                         workerSource: $generatorDefinition->workerSource,
                         allowSynchronousFallback: $generatorDefinition->workerSource === null,
                     ));
@@ -414,6 +412,7 @@ final class ServerBootstrap
                         ),
                         maximumPending: min($config->chunkGenerationQueueSize, $workers->snapshot()->workerCount * 2),
                         registryHash: $chunkProjectionRegistryHash,
+                        dimension: $internalWorld->dimension(),
                     )
                     : null;
                 $chunkCacheAt = hrtime(true);
@@ -446,6 +445,7 @@ final class ServerBootstrap
                     brewingRecipes: $brewingRecipes,
                     furnaceRecipes: $furnaceRecipes,
                     transientWorkstations: $workstations,
+                    dimension: $internalWorld->dimension(),
                 );
                 $simulationAt = hrtime(true);
                 $entityStore = $internalWorld->entityPersistenceStore();
@@ -475,6 +475,53 @@ final class ServerBootstrap
 
                 return $runtime;
             };
+
+            $composeManagedWorld = static function (
+                ApiWorld $handle,
+                OpenedWorld $opened,
+            ) use ($composeManagedDimension): ManagedWorldRuntime {
+                $root = $composeManagedDimension($handle, $opened);
+                $additional = [];
+                foreach ($opened->dimensions() as $dimensionOpened) {
+                    if ($dimensionOpened === $opened) {
+                        continue;
+                    }
+                    $additional[] = $composeManagedDimension($handle, $dimensionOpened);
+                }
+
+                return new ManagedWorldRuntime(
+                    $handle,
+                    $root->opened,
+                    $root->simulation,
+                    $root->loop,
+                    $root->preparedChunks,
+                    $additional,
+                );
+            };
+
+            $defaultAdditionalDimensions = [];
+            foreach ($openedWorld->dimensions() as $dimensionOpened) {
+                if ($dimensionOpened === $openedWorld) {
+                    continue;
+                }
+                $defaultAdditionalDimensions[] = $composeManagedDimension($defaultWorldHandle, $dimensionOpened);
+            }
+            $defaultManagedWorld = new ManagedWorldRuntime(
+                $defaultWorldHandle,
+                $openedWorld,
+                $world,
+                $worldLoop,
+                $preparedChunks,
+                $defaultAdditionalDimensions,
+            );
+            $worldRuntimes = new WorldRuntimeManager(
+                $defaultWorldHandle->id(),
+                $defaultManagedWorld,
+                actions: $worldActions,
+            );
+            $runtimeWorldActions->attach($worldRuntimes);
+            $worldHandleResolver->attach($worldRuntimes);
+            $worldOperations = new WorldOperationQueue();
 
             $persistentWorldFactory = $this->worldFactory instanceof PersistentWorldFactory
                 ? $this->worldFactory
@@ -590,6 +637,39 @@ final class ServerBootstrap
                     compressionTaskTypeId: CoreWorkerTaskCatalog::COMPRESS_BATCH,
                     preparedChunks: $preparedChunks,
                     preparedPlayBatches: $preparedPlayBatches,
+                    worldBinding: static function (\Bedriox\Server\Player\PlayerBootstrap $bootstrap) use (
+                        $worldRuntimes,
+                        $initialization,
+                        $data,
+                        $runtimeLimits,
+                        $config,
+                        $itemCatalog,
+                        $craftingCatalog,
+                    ): ?array {
+                        $runtime = $worldRuntimes->get($bootstrap->worldName, $bootstrap->dimension);
+                        if ($runtime === null) {
+                            return null;
+                        }
+                        $worldInitialization = $initialization instanceof BedrockPlayInitializationFactory
+                            ? BedrockPlayInitializationFactory::forWorld(
+                                $data,
+                                $runtimeLimits,
+                                $runtime->opened->data,
+                                $config->movementRewindHistorySize,
+                                $config->defaultGamemode,
+                                $itemCatalog,
+                                $craftingCatalog,
+                                $runtime->opened->world->time(...),
+                                $runtime->opened->world->dimension(),
+                            )
+                            : $initialization;
+
+                        return [
+                            'initialization' => $worldInitialization,
+                            'world' => $runtime->opened->world,
+                            'preparedChunks' => $runtime->preparedChunks,
+                        ];
+                    },
                 ),
                 $world,
                 $worldLoop,

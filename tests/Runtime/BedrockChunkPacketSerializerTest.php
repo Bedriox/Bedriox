@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Runtime;
 
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Packet\ChunkColumnData;
 use Bedriox\Protocol\Packet\ChunkSectionData;
@@ -34,11 +35,13 @@ use Bedriox\Server\World\BlockEntity\BlockEntityType;
 use Bedriox\Server\World\BlockEntity\ContainerBlockEntity;
 use Bedriox\Server\World\BlockEntity\ContainerItemStack;
 use Bedriox\Server\World\BlockPosition;
+use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\DefaultWorldGenerator;
 use Bedriox\Server\World\FlatWorldGenerator;
 use Bedriox\Server\World\Storage\LevelDb\PersistentBlockEntityCodec;
 use InvalidArgumentException;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class BedrockChunkPacketSerializerTest extends TestCase
@@ -191,5 +194,43 @@ final class BedrockChunkPacketSerializerTest extends TestCase
         ))->serialize($chunk);
 
         self::assertNotSame('', $packet->data);
+    }
+
+    #[DataProvider('nonOverworldDimensions')]
+    public function testNonOverworldProjectionUsesDimensionSpecificBounds(
+        WorldDimension $dimension,
+        int $wireDimension,
+        int $minimumSectionY,
+        int $maximumSectionY,
+    ): void {
+        $data = BedrockDataSet::bundled();
+        $network = $data->blockStateRegistry();
+        $internal = new BlockStateRegistry($network->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($internal);
+        $translator = new BlockNetworkTranslator($internal, $network);
+        $chunk = new Chunk(new ChunkPosition(4, -3), $palette->air, []);
+        $packet = (new BedrockChunkPacketSerializer($translator))->serialize($chunk, $dimension);
+
+        $biome = PalettedStorage::singleton($data->plainsBiomeRuntimeId(), 4096, 2);
+        $expected = ChunkSerializer::fullColumn(new ChunkColumnData(
+            4,
+            -3,
+            $wireDimension,
+            $minimumSectionY,
+            $maximumSectionY,
+            [ChunkSectionData::allAir($minimumSectionY, $translator->toNetwork($palette->air)->signed())],
+            array_fill(0, $maximumSectionY - $minimumSectionY + 1, $biome),
+        ));
+
+        self::assertSame($wireDimension, $packet->dimension);
+        self::assertSame($expected->subChunkCount, $packet->subChunkCount);
+        self::assertSame($expected->data, $packet->data);
+    }
+
+    /** @return iterable<string, array{WorldDimension, int, int, int}> */
+    public static function nonOverworldDimensions(): iterable
+    {
+        yield 'nether' => [WorldDimension::NETHER, 1, 0, 7];
+        yield 'end' => [WorldDimension::END, 2, 0, 15];
     }
 }

@@ -3,6 +3,7 @@
 
 declare(strict_types=1);
 
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\PersistentBlockStateRegistry;
 use Bedriox\Server\Entity\Persistence\CorruptEntityPersistenceException;
 use Bedriox\Server\Entity\Persistence\EntityChunkSnapshot;
@@ -65,13 +66,16 @@ exit(WorldStorageProcessProgram::run(
                 return $this->inner->worldData();
             }
 
-            public function loadChunk(ChunkPosition $position): ?LoadedChunkData
+            public function loadChunk(
+                ChunkPosition $position,
+                WorldDimension $dimension = WorldDimension::OVERWORLD,
+            ): ?LoadedChunkData
             {
                 if ($this->delayLoads) {
                     usleep(500_000);
                 }
 
-                return $this->inner->loadChunk($position);
+                return $this->inner->loadChunk($position, $dimension);
             }
 
             public function saveWorldData(WorldData $worldData): void
@@ -79,41 +83,55 @@ exit(WorldStorageProcessProgram::run(
                 $this->inner->saveWorldData($worldData);
             }
 
-            public function saveChunk(ChunkSaveData $chunkData): void
+            public function saveChunk(
+                ChunkSaveData $chunkData,
+                WorldDimension $dimension = WorldDimension::OVERWORLD,
+            ): void
             {
                 if ($this->delaySaves) {
                     usleep(500_000);
                 }
-                $this->inner->saveChunk($chunkData);
+                $this->inner->saveChunk($chunkData, $dimension);
             }
 
-            public function loadEntityChunk(ChunkPosition $position): ?EntityChunkSnapshot
+            public function loadEntityChunk(
+                ChunkPosition $position,
+                WorldDimension $dimension = WorldDimension::OVERWORLD,
+            ): ?EntityChunkSnapshot
             {
                 if ($this->corruptEntities && $position->x === 0 && $position->z === 0) {
                     throw new CorruptEntityPersistenceException($position);
                 }
 
-                return $this->entitySnapshots[$position->key()] ?? null;
+                return $this->entitySnapshots[$dimension->value . ':' . $position->key()] ?? null;
             }
 
-            public function saveEntityChunk(EntityChunkSnapshot $snapshot): void
+            public function saveEntityChunk(
+                EntityChunkSnapshot $snapshot,
+                WorldDimension $dimension = WorldDimension::OVERWORLD,
+            ): void
             {
-                $current = $this->entitySnapshots[$snapshot->chunk->key()] ?? null;
+                $key = $dimension->value . ':' . $snapshot->chunk->key();
+                $current = $this->entitySnapshots[$key] ?? null;
                 if ($current instanceof EntityChunkSnapshot && $snapshot->chunkRevision <= $current->chunkRevision) {
                     throw new EntityPersistenceConflictException('Injected stale entity snapshot.');
                 }
-                $this->entitySnapshots[$snapshot->chunk->key()] = $snapshot;
+                $this->entitySnapshots[$key] = $snapshot;
             }
 
-            public function transferEntityOwnership(EntityOwnershipTransfer $transfer): EntityOwnershipTransferResult
+            public function transferEntityOwnership(
+                EntityOwnershipTransfer $transfer,
+                WorldDimension $dimension = WorldDimension::OVERWORLD,
+            ): EntityOwnershipTransferResult
             {
-                $source = $this->entitySnapshots[$transfer->sourceAfter->chunk->key()] ?? null;
+                $prefix = $dimension->value . ':';
+                $source = $this->entitySnapshots[$prefix . $transfer->sourceAfter->chunk->key()] ?? null;
                 if (!$source instanceof EntityChunkSnapshot
                     || !$source->containsExactRevision($transfer->uuid, $transfer->expectedEntityRevision)) {
                     throw new EntityPersistenceConflictException('Injected stale entity transfer.');
                 }
-                $this->entitySnapshots[$transfer->sourceAfter->chunk->key()] = $transfer->sourceAfter;
-                $this->entitySnapshots[$transfer->destinationAfter->chunk->key()] = $transfer->destinationAfter;
+                $this->entitySnapshots[$prefix . $transfer->sourceAfter->chunk->key()] = $transfer->sourceAfter;
+                $this->entitySnapshots[$prefix . $transfer->destinationAfter->chunk->key()] = $transfer->destinationAfter;
 
                 return new EntityOwnershipTransferResult($transfer->sourceAfter, $transfer->destinationAfter);
             }

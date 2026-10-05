@@ -36,6 +36,7 @@ use Bedriox\Protocol\Packet\AnimatePacket;
 use Bedriox\Protocol\Packet\BasicInventoryTransaction;
 use Bedriox\Protocol\Packet\BedrockPacketCodec;
 use Bedriox\Protocol\Packet\BlockPosition;
+use Bedriox\Protocol\Packet\ChangeDimensionPacket;
 use Bedriox\Protocol\Packet\ChatPacket;
 use Bedriox\Protocol\Packet\ChunkRadiusUpdatedPacket;
 use Bedriox\Protocol\Packet\ClientCacheStatusPacket;
@@ -51,6 +52,7 @@ use Bedriox\Protocol\Packet\CraftRecipeItemStackRequestAction;
 use Bedriox\Protocol\Packet\CraftRecipeOptionalItemStackRequestAction;
 use Bedriox\Protocol\Packet\CreateItemStackRequestAction;
 use Bedriox\Protocol\Packet\DeathInfoPacket;
+use Bedriox\Protocol\Packet\DimensionId;
 use Bedriox\Protocol\Packet\DropItemStackRequestAction;
 use Bedriox\Protocol\Packet\EmoteFlag;
 use Bedriox\Protocol\Packet\EmoteListPacket;
@@ -105,6 +107,7 @@ use Bedriox\Protocol\Packet\RequestAbilityPacket;
 use Bedriox\Protocol\Packet\RequestChunkRadiusPacket;
 use Bedriox\Protocol\Packet\RespawnPacket;
 use Bedriox\Protocol\Packet\RespawnState;
+use Bedriox\Protocol\Packet\ServerboundLoadingScreenPacket;
 use Bedriox\Protocol\Packet\ServerSettingsRequestPacket;
 use Bedriox\Protocol\Packet\SetActorMotionPacket;
 use Bedriox\Protocol\Packet\SetLocalPlayerAsInitializedPacket;
@@ -124,6 +127,7 @@ use Bedriox\Server\Login\LoginChannelReady;
 use Bedriox\Server\Player\InventoryContainer;
 use Bedriox\Server\Player\InventoryResponseMode;
 use Bedriox\Server\Player\InventorySlotReference;
+use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Player\InventoryStackRequestActionType;
 use Bedriox\Server\Runtime\BedrockChunkPacketSerializer;
 use Bedriox\Server\Runtime\BedrockInventoryPacketProjector;
@@ -2100,6 +2104,94 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertFalse($channel->isClosed());
     }
 
+    public function testDimensionSwitchQueuesTypedBoundaryBeforeDestinationState(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $network = $data->blockStateRegistry();
+        $internal = new BlockStateRegistry($network->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($internal);
+        $source = new World(
+            new WorldMetadata('source-dimension', 1),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(32),
+        );
+        $destination = new World(
+            new WorldMetadata('destination-dimension', 1),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(32),
+        );
+        $serializer = new BedrockChunkPacketSerializer(new BlockNetworkTranslator($internal, $network));
+        [$channel, $client, $server] = $this->channel(
+            [new ChunkRadiusUpdatedPacket(1)],
+            world: $source,
+            serializer: $serializer,
+            generatePerTick: 4,
+            sendPerTick: 4,
+            viewDistance: 1,
+            spawnRadius: 1,
+        );
+        foreach ($channel->drainOutgoing() as $outgoing) {
+            $server->decryptEnvelope($outgoing->payload);
+        }
+
+        self::assertTrue($channel->beginWorldSwitch(
+            $destination,
+            null,
+            8.0,
+            72.0,
+            -8.0,
+            dimension: DimensionId::Nether,
+        ));
+        $ready = false;
+        for ($attempt = 0; $attempt < 16; ++$attempt) {
+            if ($channel->worldSwitchReady()) {
+                $ready = true;
+                break;
+            }
+        }
+        self::assertTrue($ready);
+        self::assertTrue($channel->commitWorldSwitch(45.0, 10.0));
+
+        $outgoing = $channel->drainOutgoing();
+        self::assertCount(1, $outgoing);
+        $batch = BedrockBatchCodec::decode(
+            $server->decryptEnvelope($outgoing[0]->payload),
+            CompressionMode::NegotiatedZlib,
+            new BatchLimits(),
+            NetworkCompressionPolicy::THRESHOLD_BYTES,
+        );
+        self::assertCount(6, $batch->packets);
+        self::assertSame(PacketIds::CHANGE_DIMENSION, $batch->packets[0]->header->packetId);
+        $change = BedrockPacketCodec::decode(PacketIds::CHANGE_DIMENSION, $batch->packets[0]->payload);
+        self::assertInstanceOf(ChangeDimensionPacket::class, $change);
+        self::assertSame(DimensionId::Nether, $change->dimension);
+        self::assertSame(8.0, $change->x);
+        self::assertEqualsWithDelta(PlayerPositionProjection::feetToWireY(72.0), $change->y, 0.00001);
+        self::assertSame(-8.0, $change->z);
+        self::assertSame(PacketIds::PLAYER_ACTION, $batch->packets[4]->header->packetId);
+        $success = BedrockPacketCodec::decode(PacketIds::PLAYER_ACTION, $batch->packets[4]->payload);
+        self::assertInstanceOf(PlayerActionPacket::class, $success);
+        self::assertSame(PlayerActionType::DimensionChangeSuccess, $success->action);
+        self::assertTrue($success->runtimeEntityId->equals($channel->runtimeEntityId()));
+        self::assertEquals(new BlockPosition(0, 0, 0), $success->blockPosition);
+        self::assertEquals(new BlockPosition(0, 0, 0), $success->resultPosition);
+        self::assertSame(0, $success->face);
+        self::assertSame(PacketIds::NETWORK_CHUNK_PUBLISHER_UPDATE, $batch->packets[5]->header->packetId);
+
+        foreach ([
+            new ServerboundLoadingScreenPacket(ServerboundLoadingScreenPacket::START, 91),
+            new ServerboundLoadingScreenPacket(ServerboundLoadingScreenPacket::START, 91),
+            new ServerboundLoadingScreenPacket(ServerboundLoadingScreenPacket::END, 91),
+        ] as $loadingScreen) {
+            self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+                $client->encryptEnvelope($this->encode([$loadingScreen])),
+                Reliability::ReliableOrdered,
+                0,
+            )));
+        }
+        self::assertFalse($channel->isClosed());
+    }
+
     public function testQueuedChunkIsSerializedFromLatestAuthoritativeWorldAtSendTime(): void
     {
         $data = BedrockDataSet::bundled();
@@ -3453,6 +3545,12 @@ final class BedrockPlayChannelTest extends TestCase
         $factory = new SimulationCommandFactory();
         self::assertTrue($simulation->enqueue($factory->join('session', 'identity', 'Player')));
         $simulation->tick();
+        self::assertTrue($simulation->enqueue($factory->pluginInventorySlot(
+            'session',
+            0,
+            new InventoryStack('minecraft:grass_block', 64, 1, $palette->grassBlock),
+        )));
+        $simulation->tick();
         self::assertTrue($simulation->enqueue($selection));
         self::assertTrue($simulation->enqueue($command));
         $events = $simulation->tick()->events;
@@ -3525,6 +3623,12 @@ final class BedrockPlayChannelTest extends TestCase
         $simulation = new WorldSimulation(blockWorld: $world, blockPalette: $palette);
         $factory = new SimulationCommandFactory();
         self::assertTrue($simulation->enqueue($factory->join('session', 'identity', 'Player')));
+        $simulation->tick();
+        self::assertTrue($simulation->enqueue($factory->pluginInventorySlot(
+            'session',
+            0,
+            new InventoryStack('minecraft:grass_block', 64, 1, $palette->grassBlock),
+        )));
         $simulation->tick();
         self::assertTrue($simulation->enqueue($commands[1]));
         self::assertTrue($simulation->enqueue($commands[2]));

@@ -28,7 +28,7 @@ use Bedriox\Server\World\BiomeRuntimeIdMap;
 /** Immutable wire identities shared by chunk-preparation producers and consumers. */
 final class ChunkProjectionIdentity
 {
-    public const int SERIALIZER_VERSION = 3;
+    public const int SERIALIZER_VERSION = 4;
     public const int COMPRESSION_THRESHOLD = NetworkCompressionPolicy::THRESHOLD_BYTES;
     public const string COMPRESSION_PROFILE = 'negotiated-zlib:256';
 

@@ -22,6 +22,7 @@ namespace Bedriox\Server\Player;
 
 use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Player\GameMode;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Effect\ActiveEffectCollection;
 use Bedriox\Server\Effect\ActiveEffectPersistenceState;
 use Bedriox\Server\Simulation\PlayerSnapshot;
@@ -45,6 +46,7 @@ final class Player
     public readonly ActiveEffectCollection $effects;
     public readonly PlayerExperience $experience;
     private string $worldName;
+    private WorldDimension $dimension;
     public readonly int $firstPlayedAt;
     /** Persisted canonical value; mutate only through setGameMode(). */
     public string $gamemode;
@@ -76,6 +78,7 @@ final class Player
         ?ActiveEffectPersistenceState $effectPersistenceState = null,
         int $totalExperience = 0,
         ?Position $spawnPoint = null,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
     ) {
         $this->chatTokens = $chatTokens;
         $this->lastChatRefillTick = $tick;
@@ -87,6 +90,7 @@ final class Player
         );
         $this->inventory = $inventory ?? PlayerInventory::empty();
         $this->worldName = $worldName;
+        $this->dimension = $dimension;
         $this->firstPlayedAt = $firstPlayedAt;
         $this->gamemode = GameMode::from($gamemode)->value;
         $this->vitals = new PlayerVitals($health, $food, $saturation, $exhaustion, $absorption, $airTicks, $fireTicks);
@@ -135,6 +139,7 @@ final class Player
             $this->vitals->airTicks,
             $this->vitals->fireTicks,
             $this->experience->totalPoints(),
+            $this->dimension,
         );
     }
 
@@ -146,6 +151,23 @@ final class Player
     public function worldName(): string
     {
         return $this->worldName;
+    }
+
+    public function dimension(): WorldDimension
+    {
+        return $this->dimension;
+    }
+
+    /** Changes the authoritative dimension and returns the previous dimension. */
+    public function changeWorldDimension(WorldDimension $dimension): WorldDimension
+    {
+        $previous = $this->dimension;
+        if ($previous !== $dimension) {
+            $this->dimension = $dimension;
+            $this->markDirty();
+        }
+
+        return $previous;
     }
 
     /** Changes the authoritative world identity and returns the previous identity. */

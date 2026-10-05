@@ -20,8 +20,11 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World\Storage\LevelDb;
 
+use Bedriox\Data\CanonicalBlockState;
 use Bedriox\Data\KnownPersistentBlockState;
+use Bedriox\Data\LittleEndianBlockStateNbtRootReader;
 use Bedriox\Data\OpaquePersistentBlockState;
+use Bedriox\Data\PersistentBlockStateNbtRoot;
 use Bedriox\Data\PersistentBlockStateRegistry;
 use Bedriox\Server\World\BiomeStorage;
 use Bedriox\Server\World\Block\BlockStateRegistry;
@@ -34,12 +37,15 @@ use Bedriox\Server\World\SubChunkBlockStorage;
 use InvalidArgumentException;
 
 /** Translates canonical persistence values without exposing process-local IDs on disk. */
-final readonly class PersistentChunkMapper
+final class PersistentChunkMapper
 {
+    /** @var array<string, CanonicalBlockState> */
+    private array $upgradedStates = [];
+
     public function __construct(
-        private BlockStateRegistry $blockStates,
-        private PersistentBlockStateRegistry $persistentBlockStates,
-        private PersistentBiomeRegistry $biomes = new PersistentBiomeRegistry(),
+        private readonly BlockStateRegistry $blockStates,
+        private readonly PersistentBlockStateRegistry $persistentBlockStates,
+        private readonly PersistentBiomeRegistry $biomes = new PersistentBiomeRegistry(),
     ) {}
 
     public function storedSubChunk(SubChunk $section): StoredSubChunk
@@ -72,7 +78,28 @@ final readonly class PersistentChunkMapper
             $palette = [];
             foreach ($storage->palette() as $persistentState) {
                 if ($persistentState instanceof OpaquePersistentBlockState) {
-                    throw new LevelDbStorageException('A valid but unadmitted persistent block state cannot be projected into authoritative world state.');
+                    try {
+                        $root = LittleEndianBlockStateNbtRootReader::decode($persistentState->encodedRoot());
+                        $properties = [];
+                        foreach ($root->properties() as $property) {
+                            $properties[$property->name()] = $property->value();
+                        }
+                        $canonical = CanonicalBlockState::from(
+                            $root->identifier(),
+                            $properties,
+                        );
+                        try {
+                            $palette[] = $this->blockStates->internalId($canonical);
+                        } catch (InvalidArgumentException) {
+                            $palette[] = $this->blockStates->internalId($this->upgradedCanonicalState($root));
+                        }
+                    } catch (InvalidArgumentException|\RuntimeException $error) {
+                        throw new LevelDbStorageException(
+                            'A valid persistent block state is absent from the authoritative internal registry.',
+                            previous: $error,
+                        );
+                    }
+                    continue;
                 }
                 if (!$persistentState instanceof KnownPersistentBlockState) {
                     throw new LevelDbStorageException('Persistent block palette contains an unsupported state implementation.');
@@ -97,6 +124,53 @@ final readonly class PersistentChunkMapper
         }
 
         return SubChunk::fromBlockStorageLayers($stored->sectionY, $layers);
+    }
+
+    private function upgradedCanonicalState(PersistentBlockStateNbtRoot $root): CanonicalBlockState
+    {
+        $cacheKey = hash('sha256', $root->encodedRoot(), true);
+        if (isset($this->upgradedStates[$cacheKey])) {
+            return $this->upgradedStates[$cacheKey];
+        }
+        $legacy = [];
+        foreach ($root->properties() as $property) {
+            $legacy[$property->name()] = $property->value();
+        }
+        $matches = [];
+        foreach ($this->persistentBlockStates->states() as $candidate) {
+            if ($candidate->identifier() !== $root->identifier()) {
+                continue;
+            }
+            $candidateProperties = [];
+            $admitted = true;
+            foreach ($candidate->properties() as $property) {
+                $name = $property->name();
+                $value = $property->value();
+                $candidateProperties[$name] = $value;
+                if (array_key_exists($name, $legacy) && $legacy[$name] !== $value) {
+                    $admitted = false;
+                    break;
+                }
+                if (!array_key_exists($name, $legacy) && $value !== 0 && $value !== 'none') {
+                    $admitted = false;
+                    break;
+                }
+            }
+            if (!$admitted || count($candidateProperties) < count($legacy)) {
+                continue;
+            }
+            foreach ($legacy as $name => $_value) {
+                if (!array_key_exists($name, $candidateProperties)) {
+                    continue 2;
+                }
+            }
+            $matches[] = $candidate->canonicalState();
+        }
+        if (count($matches) !== 1) {
+            throw new InvalidArgumentException('Legacy persistent block state has no unique admitted default-property upgrade.');
+        }
+
+        return $this->upgradedStates[$cacheKey] = $matches[0];
     }
 
     public function data3d(Chunk $chunk): Data3dRecord

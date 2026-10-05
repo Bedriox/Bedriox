@@ -20,18 +20,20 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Spawn\Natural;
 
+use Bedriox\Api\World\WorldDimension;
+
 final readonly class SlimeNaturalSpawnRule implements NaturalSpawnRule
 {
     public function allows(NaturalSpawnContext $context): bool
     {
-        if ($context->dimension !== 'minecraft:overworld' || $context->medium !== NaturalSpawnMedium::GROUND) {
+        if ($context->dimension !== WorldDimension::OVERWORLD || $context->medium !== NaturalSpawnMedium::GROUND) {
             return false;
         }
         if ($context->position->y < 40.0) {
             return true;
         }
 
-        return $context->biome === 'minecraft:swamp'
+        return NaturalSpawnBiomes::isSwamp($context->biome)
             && $context->position->y >= 50.0
             && $context->position->y <= 70.0
             && $context->lightLevel <= 7;

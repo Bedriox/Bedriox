@@ -106,6 +106,20 @@ final class RuntimeWorldManager implements WorldManager
             3 => \Bedriox\Api\World\WorldDifficulty::HARD,
             default => throw new LogicException('Loaded world difficulty is invalid.'),
         };
+        $dimensionSpawns = [];
+        foreach ($runtime->dimensions() as $dimensionRuntime) {
+            $dimension = $dimensionRuntime->opened->world->dimension();
+            $dimensionSpawn = $dimensionRuntime->opened->world->spawn();
+            $dimensionSpawns[$dimension->value] = new \Bedriox\Api\World\Position(
+                (float) $dimensionSpawn->x,
+                (float) $dimensionSpawn->y,
+                (float) $dimensionSpawn->z,
+                0.0,
+                0.0,
+                $runtime->handle,
+                $dimension,
+            );
+        }
 
         return new WorldInfo(
             $runtime->handle,
@@ -123,6 +137,8 @@ final class RuntimeWorldManager implements WorldManager
                 $runtime->handle,
             ),
             $runtime->playerCount(),
+            $runtime->handle->getDimensions(),
+            $dimensionSpawns,
         );
     }
 

@@ -20,12 +20,15 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Spawn\Natural;
 
+use Bedriox\Api\World\WorldDimension;
+
 final readonly class ParchedNaturalSpawnRule implements NaturalSpawnRule
 {
     public function allows(NaturalSpawnContext $context): bool
     {
-        return $context->medium === NaturalSpawnMedium::GROUND
+        return $context->dimension === WorldDimension::OVERWORLD
+            && $context->medium === NaturalSpawnMedium::GROUND
             && $context->lightLevel <= 7
-            && str_contains($context->biome, 'desert');
+            && NaturalSpawnBiomes::isDesert($context->biome);
     }
 }

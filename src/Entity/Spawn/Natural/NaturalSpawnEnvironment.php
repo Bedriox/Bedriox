@@ -22,6 +22,7 @@ namespace Bedriox\Server\Entity\Spawn\Natural;
 
 use Bedriox\Api\Entity\EntityCategory;
 use Bedriox\Api\Entity\EntityType;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\ChunkPosition;
 
@@ -31,11 +32,17 @@ interface NaturalSpawnEnvironment
 
     public function isChunkStable(string $worldName, ChunkPosition $chunk): bool;
 
-    public function dimension(string $worldName): string;
+    public function dimension(string $worldName): WorldDimension;
 
     public function biome(string $worldName, Position $position): string;
 
-    public function heightAt(string $worldName, float $x, float $z): ?float;
+    public function candidatePosition(
+        string $worldName,
+        NaturalSpawnMedium $medium,
+        float $x,
+        float $z,
+        float $verticalSelector,
+    ): ?Position;
 
     public function medium(string $worldName, Position $position): NaturalSpawnMedium;
 

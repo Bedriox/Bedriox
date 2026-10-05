@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World\Provider;
 
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\LittleEndianBlockStateNbtCodec;
 use Bedriox\Data\PersistentBlockStateRegistry;
 use Bedriox\Protocol\ProtocolVersion;
@@ -67,6 +68,7 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
 {
     private const int CURRENT_CHUNK_VERSION = 42;
     private const int CURRENT_NETWORK_VERSION = 2193;
+    private const int NATIVE_AUTOMATIC_SPAWN_Y = 32_767;
     private const string TRANSIENT_ENTITY_KEY_PREFIX = "bedriox:transient_entities:";
 
     private bool $closed = false;
@@ -145,6 +147,7 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
         $levelDatPath = $worldPath . DIRECTORY_SEPARATOR . 'level.dat';
         try {
             $metadata = $store->load($levelDatPath);
+            self::worldDataFromMetadata($metadata);
             $database = NativeLevelDbDatabase::open($worldPath . DIRECTORY_SEPARATOR . 'db', false);
         } catch (UnsupportedWorldDataException $error) {
             throw new UnsupportedWorldFormatException($error->getMessage(), previous: $error);
@@ -155,16 +158,30 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
         }
 
         try {
-            $provider = new self($levelDatPath, $database, $metadata, $blockStates, $persistentBlockStates, $store, $nameStore);
-            $nameStore->synchronize($worldPath . DIRECTORY_SEPARATOR . 'levelname.txt', $metadata->levelName());
-
-            return $provider;
-        } catch (CorruptWorldDataException|UnsupportedWorldFormatException|WorldDataWriteException $error) {
+            return new self($levelDatPath, $database, $metadata, $blockStates, $persistentBlockStates, $store, $nameStore);
+        } catch (CorruptWorldDataException|UnsupportedWorldFormatException $error) {
             $database->close();
-            if ($error instanceof WorldDataWriteException) {
-                throw new WorldStorageException('Unable to synchronize levelname.txt.', previous: $error);
-            }
             throw $error;
+        }
+    }
+
+    /** Validates authoritative metadata without opening or changing the LevelDB database. */
+    public static function preflight(string $worldPath, ?LevelDatStore $levelDatStore = null): WorldData
+    {
+        $dbPath = $worldPath . DIRECTORY_SEPARATOR . 'db';
+        if (!is_dir($dbPath)) {
+            throw new CorruptWorldDataException('World LevelDB directory is missing.');
+        }
+        try {
+            $metadata = ($levelDatStore ?? new LevelDatStore())->load(
+                $worldPath . DIRECTORY_SEPARATOR . 'level.dat',
+            );
+
+            return self::worldDataFromMetadata($metadata);
+        } catch (UnsupportedWorldDataException $error) {
+            throw new UnsupportedWorldFormatException($error->getMessage(), previous: $error);
+        } catch (StorageCorruptWorldDataException $error) {
+            throw new CorruptWorldDataException($error->getMessage(), previous: $error);
         }
     }
 
@@ -209,14 +226,16 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
         return $this->data;
     }
 
-    public function loadChunk(ChunkPosition $position): ?LoadedChunkData
-    {
+    public function loadChunk(
+        ChunkPosition $position,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): ?LoadedChunkData {
         $this->assertOpen();
         try {
-            $versionKey = LevelDbChunkKey::version($position->x, $position->z);
+            $versionKey = LevelDbChunkKey::version($position->x, $position->z, $dimension);
             $version = $this->database->get($versionKey);
             if ($version === null) {
-                if ($this->hasOrphanedChunkData($position)) {
+                if ($this->hasOrphanedChunkData($position, $dimension)) {
                     throw new CorruptChunkException('Chunk records exist without the required version record.');
                 }
 
@@ -230,7 +249,7 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
                 throw new UnsupportedWorldFormatException("Chunk format version $chunkVersion is not supported.");
             }
 
-            $data3d = $this->database->get(LevelDbChunkKey::data3d($position->x, $position->z));
+            $data3d = $this->database->get(LevelDbChunkKey::data3d($position->x, $position->z, $dimension));
             if ($data3d === null) {
                 throw new CorruptChunkException('Current chunk is missing its required Data3D record.');
             }
@@ -239,7 +258,12 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
             $sections = [];
             $upgraded = false;
             for ($sectionY = Chunk::MIN_SECTION_Y; $sectionY <= Chunk::MAX_SECTION_Y; ++$sectionY) {
-                $record = $this->database->get(LevelDbChunkKey::subChunk($position->x, $position->z, $sectionY));
+                $record = $this->database->get(LevelDbChunkKey::subChunk(
+                    $position->x,
+                    $position->z,
+                    $sectionY,
+                    $dimension,
+                ));
                 if ($record === null) {
                     continue;
                 }
@@ -248,16 +272,22 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
                 $sections[] = $this->mapper->runtimeSubChunk($stored);
             }
 
-            $finalizationBytes = $this->database->get(LevelDbChunkKey::finalization($position->x, $position->z));
-            if ($finalizationBytes === null || strlen($finalizationBytes) !== 1) {
-                throw new CorruptChunkException('Current chunk is missing a valid finalization record.');
-            }
-            $finalization = ChunkFinalizationState::tryFrom(ord($finalizationBytes));
+            $finalizationBytes = $this->database->get(LevelDbChunkKey::finalization(
+                $position->x,
+                $position->z,
+                $dimension,
+            ));
+            // Native and older Bedrock saves omit this record for fully generated chunks.
+            $finalization = self::finalizationFromBytes($finalizationBytes);
             if ($finalization === null) {
-                throw new CorruptChunkException('Chunk finalization state is outside the supported range.');
+                throw new CorruptChunkException('Chunk finalization record is malformed or outside the supported range.');
             }
 
-            $blockEntityBytes = $this->database->get(LevelDbChunkKey::blockEntities($position->x, $position->z));
+            $blockEntityBytes = $this->database->get(LevelDbChunkKey::blockEntities(
+                $position->x,
+                $position->z,
+                $dimension,
+            ));
             $blockEntities = $blockEntityBytes === null
                 ? new BlockEntityCollection($position)
                 : $this->blockEntities->decode($blockEntityBytes, $position);
@@ -318,21 +348,23 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
         }
     }
 
-    public function saveChunk(ChunkSaveData $chunkData): void
-    {
+    public function saveChunk(
+        ChunkSaveData $chunkData,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): void {
         $this->assertOpen();
         $chunk = $chunkData->chunk;
         $x = $chunk->position->x;
         $z = $chunk->position->z;
         try {
             $puts = [
-                LevelDbChunkKey::version($x, $z) => chr(self::CURRENT_CHUNK_VERSION),
-                LevelDbChunkKey::data3d($x, $z) => (new Data3dCodec())->encode($this->mapper->data3d($chunk)),
-                LevelDbChunkKey::finalization($x, $z) => chr($chunk->finalizationState->value),
+                LevelDbChunkKey::version($x, $z, $dimension) => chr(self::CURRENT_CHUNK_VERSION),
+                LevelDbChunkKey::data3d($x, $z, $dimension) => (new Data3dCodec())->encode($this->mapper->data3d($chunk)),
+                LevelDbChunkKey::finalization($x, $z, $dimension) => chr($chunk->finalizationState->value),
             ];
             $deletes = [];
             for ($sectionY = Chunk::MIN_SECTION_Y; $sectionY <= Chunk::MAX_SECTION_Y; ++$sectionY) {
-                $key = LevelDbChunkKey::subChunk($x, $z, $sectionY);
+                $key = LevelDbChunkKey::subChunk($x, $z, $sectionY, $dimension);
                 $section = $chunk->section($sectionY);
                 if ($section === null) {
                     $deletes[] = $key;
@@ -340,10 +372,18 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
                     $puts[$key] = $this->subChunks->encode($this->mapper->storedSubChunk($section));
                 }
             }
-            $blockEntityKey = LevelDbChunkKey::blockEntities($x, $z);
-            if ($chunk->blockEntityCollection()->count() === 0) {
-                $deletes[] = $blockEntityKey;
-            } else {
+            $blockEntityKey = LevelDbChunkKey::blockEntities($x, $z, $dimension);
+            $storedBlockEntities = $this->database->get($blockEntityKey);
+            if ($chunk->hasDirtyFlag(Chunk::DIRTY_BLOCK_ENTITIES)) {
+                $encodedBlockEntities = $storedBlockEntities === null
+                    ? $this->blockEntities->encode($chunk->blockEntityCollection())
+                    : $this->blockEntities->encodePreserving($chunk->blockEntityCollection(), $storedBlockEntities);
+                if ($encodedBlockEntities === '') {
+                    $deletes[] = $blockEntityKey;
+                } else {
+                    $puts[$blockEntityKey] = $encodedBlockEntities;
+                }
+            } elseif ($storedBlockEntities === null && $chunk->blockEntityCollection()->count() !== 0) {
                 $puts[$blockEntityKey] = $this->blockEntities->encode($chunk->blockEntityCollection());
             }
             $this->database->writeBatch($puts, $deletes);
@@ -352,24 +392,30 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
         }
     }
 
-    public function loadEntityChunk(ChunkPosition $position): ?EntityChunkSnapshot
-    {
+    public function loadEntityChunk(
+        ChunkPosition $position,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): ?EntityChunkSnapshot {
         $this->assertOpen();
 
-        return $this->entities->loadEntityChunk($position);
+        return $this->entities->loadEntityChunk($position, $dimension);
     }
 
-    public function saveEntityChunk(EntityChunkSnapshot $snapshot): void
-    {
+    public function saveEntityChunk(
+        EntityChunkSnapshot $snapshot,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): void {
         $this->assertOpen();
-        $this->entities->saveEntityChunk($snapshot);
+        $this->entities->saveEntityChunk($snapshot, $dimension);
     }
 
-    public function transferEntityOwnership(EntityOwnershipTransfer $transfer): EntityOwnershipTransferResult
-    {
+    public function transferEntityOwnership(
+        EntityOwnershipTransfer $transfer,
+        WorldDimension $dimension = WorldDimension::OVERWORLD,
+    ): EntityOwnershipTransferResult {
         $this->assertOpen();
 
-        return $this->entities->transferEntityOwnership($transfer);
+        return $this->entities->transferEntityOwnership($transfer, $dimension);
     }
 
     public function close(): void
@@ -386,15 +432,20 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
         $this->closed = true;
     }
 
-    private function hasOrphanedChunkData(ChunkPosition $position): bool
+    private function hasOrphanedChunkData(ChunkPosition $position, WorldDimension $dimension): bool
     {
-        if ($this->database->get(LevelDbChunkKey::data3d($position->x, $position->z)) !== null
-            || $this->database->get(LevelDbChunkKey::finalization($position->x, $position->z)) !== null
-            || $this->database->get(LevelDbChunkKey::blockEntities($position->x, $position->z)) !== null) {
+        if ($this->database->get(LevelDbChunkKey::data3d($position->x, $position->z, $dimension)) !== null
+            || $this->database->get(LevelDbChunkKey::finalization($position->x, $position->z, $dimension)) !== null
+            || $this->database->get(LevelDbChunkKey::blockEntities($position->x, $position->z, $dimension)) !== null) {
             return true;
         }
         for ($sectionY = Chunk::MIN_SECTION_Y; $sectionY <= Chunk::MAX_SECTION_Y; ++$sectionY) {
-            if ($this->database->get(LevelDbChunkKey::subChunk($position->x, $position->z, $sectionY)) !== null) {
+            if ($this->database->get(LevelDbChunkKey::subChunk(
+                $position->x,
+                $position->z,
+                $sectionY,
+                $dimension,
+            )) !== null) {
                 return true;
             }
         }
@@ -409,6 +460,25 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
         }
     }
 
+    private static function finalizationFromBytes(?string $bytes): ?ChunkFinalizationState
+    {
+        if ($bytes === null) {
+            return ChunkFinalizationState::Done;
+        }
+        if (strlen($bytes) === 1) {
+            return ChunkFinalizationState::tryFrom(ord($bytes));
+        }
+        if (strlen($bytes) !== 4) {
+            return null;
+        }
+        $decoded = unpack('Vvalue', $bytes);
+        if ($decoded === false || !isset($decoded['value']) || !is_int($decoded['value'])) {
+            return null;
+        }
+
+        return ChunkFinalizationState::tryFrom($decoded['value']);
+    }
+
     private static function assertNativeSupport(): void
     {
         if (!extension_loaded('leveldb')) {
@@ -419,16 +489,22 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
     private static function worldDataFromMetadata(LevelDatMetadata $metadata): WorldData
     {
         try {
+            $spawnY = $metadata->spawnY();
+            if ($spawnY === self::NATIVE_AUTOMATIC_SPAWN_Y) {
+                // Bedrock uses 32767 to request a top-down safe-spawn search.
+                $spawnY = Chunk::MAX_Y - 1;
+            }
             return new WorldData(
                 new WorldMetadata($metadata->levelName(), $metadata->seed()),
                 $metadata->generatorName(),
-                new SpawnPosition($metadata->spawnX(), $metadata->spawnY(), $metadata->spawnZ()),
+                new SpawnPosition($metadata->spawnX(), $spawnY, $metadata->spawnZ()),
                 $metadata->time(),
                 $metadata->difficulty(),
                 $metadata->generatorVersion(),
                 $metadata->generatorOptions() === '' ? '{}' : $metadata->generatorOptions(),
                 $metadata->weather(),
                 $metadata->weatherCycleEnabled(),
+                $metadata->hasBedrioxGeneratorVersion(),
             );
         } catch (UnsupportedWorldDataException $error) {
             throw new UnsupportedWorldFormatException($error->getMessage(), previous: $error);

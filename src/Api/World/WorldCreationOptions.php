@@ -33,7 +33,7 @@ final readonly class WorldCreationOptions
      */
     public function __construct(
         public string $generator = 'default',
-        public int $seed = 0,
+        public ?int $seed = null,
         public array $generatorOptions = [],
         public ?string $displayName = null,
         public WorldDifficulty $difficulty = WorldDifficulty::NORMAL,

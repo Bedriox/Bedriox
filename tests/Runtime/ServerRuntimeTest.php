@@ -28,6 +28,7 @@ use Bedriox\Api\Command\CommandResult;
 use Bedriox\Api\Command\CommandSoftEnum;
 use Bedriox\Api\Command\PlayerCommandSender;
 use Bedriox\Api\World\World as PublicWorld;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Batch\BatchLimits;
 use Bedriox\Protocol\Batch\BedrockBatch;
@@ -42,6 +43,7 @@ use Bedriox\Protocol\Identity\VerifiedClientData;
 use Bedriox\Protocol\Packet\AuthenticationType;
 use Bedriox\Protocol\Packet\AvailableCommandsPacket;
 use Bedriox\Protocol\Packet\BedrockPacketCodec;
+use Bedriox\Protocol\Packet\ChangeDimensionPacket;
 use Bedriox\Protocol\Packet\ChatPacket;
 use Bedriox\Protocol\Packet\ChunkRadiusUpdatedPacket;
 use Bedriox\Protocol\Packet\ClientToServerHandshakePacket;
@@ -51,6 +53,7 @@ use Bedriox\Protocol\Packet\CommandOutputPacket;
 use Bedriox\Protocol\Packet\CommandPermissionLevel;
 use Bedriox\Protocol\Packet\CommandRequestPacket;
 use Bedriox\Protocol\Packet\CraftingDataPacket;
+use Bedriox\Protocol\Packet\DimensionId;
 use Bedriox\Protocol\Packet\DisconnectPacket;
 use Bedriox\Protocol\Packet\FullContainerName;
 use Bedriox\Protocol\Packet\InventoryContentPacket;
@@ -352,6 +355,205 @@ final class ServerRuntimeTest extends TestCase
                 $packets,
                 static fn(Packet $packet): bool => str_contains($packet::class, 'Dimension'),
             )), 'Same-dimension transfer must not emit a loading-screen dimension packet.');
+        } finally {
+            $runtime->close();
+        }
+    }
+
+    public function testWorldTransferFailureAfterTargetAttachDoesNotLeakPlayerOwnership(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $network = $data->blockStateRegistry();
+        $internal = new BlockStateRegistry($network->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($internal);
+        $sourceWorld = new World(
+            new WorldMetadata('world', 1),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(32),
+        );
+        $targetWorld = new World(
+            new WorldMetadata('arena', 2),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(32),
+        );
+        $clock = new RuntimeTestClock();
+        $sourceSimulation = new WorldSimulation(blockWorld: $sourceWorld, blockPalette: $palette);
+        $targetSimulation = new WorldSimulation(blockWorld: $targetWorld, blockPalette: $palette);
+        $sourceRuntime = new ManagedWorldRuntime(
+            new PublicWorld('world', 1),
+            new OpenedWorld($sourceWorld, new WorldData($sourceWorld->metadata, 'flat', new SpawnPosition(0, 64, 0))),
+            $sourceSimulation,
+            new FixedRateWorldLoop($sourceSimulation, $clock, maximumTicksPerPoll: 1),
+        );
+        $worlds = new WorldRuntimeManager('world', $sourceRuntime);
+        $targetRuntime = $worlds->load('arena', static fn(PublicWorld $handle): ManagedWorldRuntime => new ManagedWorldRuntime(
+            $handle,
+            new OpenedWorld($targetWorld, new WorldData($targetWorld->metadata, 'flat', new SpawnPosition(32, 64, 32))),
+            $targetSimulation,
+            new FixedRateWorldLoop($targetSimulation, $clock, maximumTicksPerPoll: 1),
+        ));
+        $transport = new FakeConnectedTransport();
+        $loginFactory = new RuntimeLoginFactory();
+        $events = new RecordingEventEncoder(failOnPlayerJoinedX: 32.5);
+        $runtime = new ServerRuntime(
+            $transport,
+            $loginFactory,
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $sourceSimulation,
+            $sourceRuntime->loop,
+            $events,
+            persistentWorld: $sourceWorld,
+            worldRuntimes: $worlds,
+        );
+        $session = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $identity = '00000000-0000-0000-0000-000000000001';
+
+        try {
+            $client = $this->advanceToInitializing($runtime, $transport, $session, $loginFactory);
+            $this->receiveEncrypted(
+                $transport,
+                $session,
+                $client,
+                new SetLocalPlayerAsInitializedPacket(UnsignedLong::fromInt(1)),
+            );
+            self::assertTrue($runtime->poll());
+            $clock->advance(50_000_000);
+            self::assertTrue($runtime->poll());
+
+            self::assertTrue($runtime->teleportPlayer(
+                $identity,
+                new \Bedriox\Api\World\Position(32.5, 64.0, 32.5, world: $targetRuntime->handle),
+            ));
+            for ($poll = 0; $poll < 16 && $runtime->sessionCount() > 0; ++$poll) {
+                self::assertTrue($runtime->poll());
+                $clock->advance(50_000_000);
+            }
+
+            self::assertNull($runtime->failure());
+            self::assertSame(0, $runtime->sessionCount());
+            self::assertTrue(array_any(
+                $events->events,
+                static fn(WorldEvent $event): bool => $event instanceof PlayerJoined
+                    && $event->player->position->x === 32.5,
+            ), 'The failure fixture must run after destination ownership has attached.');
+            self::assertNull($sourceSimulation->authoritativePlayer($identity));
+            self::assertNull($targetSimulation->authoritativePlayer($identity));
+        } finally {
+            $runtime->close();
+        }
+    }
+
+    public function testDimensionTransferRoutesPlayerToDimensionRuntimeAndEmitsChangeDimension(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $network = $data->blockStateRegistry();
+        $internal = new BlockStateRegistry($network->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($internal);
+        $handle = new PublicWorld('world', 1);
+        $clock = new RuntimeTestClock();
+        $overworld = new World(
+            new WorldMetadata('world', 1),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(32),
+        );
+        $nether = new World(
+            new WorldMetadata('world', 1),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(32),
+            dimension: WorldDimension::NETHER,
+        );
+        $overworldSimulation = new WorldSimulation(blockWorld: $overworld, blockPalette: $palette);
+        $netherSimulation = new WorldSimulation(
+            blockWorld: $nether,
+            blockPalette: $palette,
+            dimension: WorldDimension::NETHER,
+        );
+        $netherRuntime = new ManagedWorldRuntime(
+            $handle,
+            new OpenedWorld($nether, new WorldData($nether->metadata, 'flat', new SpawnPosition(8, 64, 8))),
+            $netherSimulation,
+            new FixedRateWorldLoop($netherSimulation, $clock, maximumTicksPerPoll: 1),
+        );
+        $overworldRuntime = new ManagedWorldRuntime(
+            $handle,
+            new OpenedWorld($overworld, new WorldData($overworld->metadata, 'flat', new SpawnPosition(0, 64, 0))),
+            $overworldSimulation,
+            new FixedRateWorldLoop($overworldSimulation, $clock, maximumTicksPerPoll: 1),
+            additionalDimensions: [$netherRuntime],
+        );
+        $worlds = new WorldRuntimeManager('world', $overworldRuntime);
+        $serializer = new BedrockChunkPacketSerializer(new BlockNetworkTranslator($internal, $network));
+        $transport = new FakeConnectedTransport();
+        $loginFactory = new RuntimeLoginFactory();
+        $runtime = new ServerRuntime(
+            $transport,
+            $loginFactory,
+            new BedrockPlayChannelFactory(
+                new EmptyInitializationFactory(),
+                world: $overworld,
+                chunkSerializer: $serializer,
+                viewDistance: 1,
+                spawnRadius: 1,
+                chunksGeneratePerTick: 4,
+                chunksSendPerTick: 4,
+            ),
+            $overworldSimulation,
+            $overworldRuntime->loop,
+            new RecordingEventEncoder(),
+            persistentWorld: $overworld,
+            chunksGeneratePerTick: 4,
+            chunksSendPerTick: 4,
+            worldRuntimes: $worlds,
+        );
+        $session = new SessionInfo('127.0.0.1', 20_002, 43, 1_400, 12);
+
+        try {
+            $client = $this->advanceToInitializing($runtime, $transport, $session, $loginFactory);
+            $decryptor = $loginFactory->clientDecryptor();
+            $this->decodeEncryptedPackets($transport->sent, $decryptor);
+            $transport->sent = [];
+            $this->receiveEncrypted($transport, $session, $client, new RequestChunkRadiusPacket(1, 1));
+            $this->receiveEncrypted(
+                $transport,
+                $session,
+                $client,
+                new SetLocalPlayerAsInitializedPacket(UnsignedLong::fromInt(1)),
+            );
+            self::assertTrue($runtime->poll());
+            $clock->advance(50_000_000);
+            self::assertTrue($runtime->poll());
+            $this->decodeEncryptedPackets($transport->sent, $decryptor);
+            $transport->sent = [];
+
+            self::assertTrue($runtime->teleportPlayer(
+                '00000000-0000-0000-0000-000000000001',
+                new \Bedriox\Api\World\Position(
+                    8.5,
+                    64.0,
+                    8.5,
+                    world: $handle,
+                    dimension: WorldDimension::NETHER,
+                ),
+            ));
+            $packets = [];
+            for ($poll = 0; $poll < 16; ++$poll) {
+                self::assertTrue($runtime->poll());
+                array_push($packets, ...$this->decodeEncryptedPackets($transport->sent, $decryptor));
+                $transport->sent = [];
+                if (array_any($packets, static fn(Packet $packet): bool => $packet instanceof ChangeDimensionPacket)) {
+                    break;
+                }
+                $clock->advance(50_000_000);
+            }
+
+            $change = array_find($packets, static fn(Packet $packet): bool => $packet instanceof ChangeDimensionPacket);
+            self::assertInstanceOf(ChangeDimensionPacket::class, $change, implode(', ', array_map(
+                static fn(Packet $packet): string => $packet::class,
+                $packets,
+            )));
+            self::assertSame(DimensionId::Nether, $change->dimension);
+            self::assertNull($overworldSimulation->authoritativePlayer('00000000-0000-0000-0000-000000000001'));
+            self::assertNotNull($netherSimulation->authoritativePlayer('00000000-0000-0000-0000-000000000001'));
         } finally {
             $runtime->close();
         }
@@ -2407,6 +2609,7 @@ final class ServerRuntimeTest extends TestCase
                     self::assertSame(strlen($frame->payload), $decoded['bytes']);
                     $packets[] = new SetDifficultyPacket($decoded['value']);
                 } elseif (in_array($frame->header->packetId, [
+                    PacketIds::CHANGE_DIMENSION,
                     PacketIds::MOVE_PLAYER,
                     PacketIds::NETWORK_CHUNK_PUBLISHER_UPDATE,
                     PacketIds::LEVEL_CHUNK,
@@ -2879,6 +3082,7 @@ final class RecordingEventEncoder implements WorldEventPacketEncoder
         private readonly ?string $packetCountOnClass = null,
         private readonly int $packetCount = 0,
         private readonly ?WorldEventPacketEncoder $delegate = null,
+        private readonly ?float $failOnPlayerJoinedX = null,
     ) {}
 
     public function clearEvents(): void
@@ -2897,6 +3101,9 @@ final class RecordingEventEncoder implements WorldEventPacketEncoder
         $this->events[] = $event;
         if ($event::class === $this->failOnClass) {
             throw new \RuntimeException('event fixture failure');
+        }
+        if ($event instanceof PlayerJoined && $event->player->position->x === $this->failOnPlayerJoinedX) {
+            throw new \RuntimeException('world transfer event fixture failure');
         }
         if ($event::class === $this->packetCountOnClass) {
             $sessionId = array_key_first($sessions);

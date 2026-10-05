@@ -23,6 +23,7 @@ namespace Bedriox\Server\Tests\Runtime;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\WorldCreationOptions;
 use Bedriox\Api\World\WorldDifficulty;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Data\PersistentBlockStateRegistry;
 use Bedriox\Server\Login\AuthenticationMode;
@@ -88,8 +89,11 @@ final class PersistentWorldFactoryTest extends TestCase
         self::assertSame('Fresh World', $opened->data->metadata->name);
         self::assertSame(91, $opened->data->metadata->seed);
         self::assertSame(3, $opened->data->difficulty);
-        self::assertSame(1, $opened->data->generatorVersion);
+        self::assertSame(2, $opened->data->generatorVersion);
         self::assertSame('default', $opened->world->generatorName());
+        self::assertCount(3, $opened->dimensions());
+        self::assertSame(WorldDimension::NETHER, $opened->dimension(WorldDimension::NETHER)?->world->dimension());
+        self::assertSame(WorldDimension::END, $opened->dimension(WorldDimension::END)?->world->dimension());
         self::assertGreaterThanOrEqual(63, $opened->world->spawn()->y);
         $opened->world->close();
         self::assertTrue($providers->provider?->closed);
@@ -170,7 +174,7 @@ final class PersistentWorldFactoryTest extends TestCase
             new WorldMetadata('Future Terrain', 1),
             'default',
             new SpawnPosition(0, 80, 0),
-            generatorVersion: 2,
+            generatorVersion: 3,
         ));
 
         try {
@@ -180,9 +184,30 @@ final class PersistentWorldFactoryTest extends TestCase
             );
             self::fail('An unsupported persisted generator version was accepted.');
         } catch (\RuntimeException $failure) {
-            self::assertStringContainsString('version 2 is not supported', $failure->getMessage());
+            self::assertStringContainsString('version 3 is not supported', $failure->getMessage());
             self::assertTrue($providers->provider?->closed);
         }
+    }
+
+    public function testNativeWorldWithoutBedrioxGeneratorVersionUsesCurrentGeneratorContract(): void
+    {
+        $path = $this->workingDirectory . DIRECTORY_SEPARATOR . 'worlds' . DIRECTORY_SEPARATOR . 'world';
+        self::assertTrue(mkdir($path, 0775, true));
+        $providers = new RecordingWorldProviderFactory(new WorldData(
+            new WorldMetadata('Native World', 1),
+            'default',
+            new SpawnPosition(0, 80, 0),
+            generatorVersion: 1,
+            bedrioxGeneratorVersionDeclared: false,
+        ));
+
+        $opened = (new PersistentWorldFactory($this->workingDirectory, $providers))->open(
+            self::config(),
+            BedrockDataSet::bundled(),
+        );
+
+        self::assertSame(2, $opened->data->generatorVersion);
+        self::assertTrue($opened->data->bedrioxGeneratorVersionDeclared);
     }
 
     public function testUnsafeLevelNameFailsBeforeProviderAccess(): void
@@ -245,6 +270,28 @@ final class PersistentWorldFactoryTest extends TestCase
             self::assertNull($providers->openedPath);
             self::assertNull($providers->createdPath);
         }
+    }
+
+    public function testNamedLoadPreservesTheExistingMixedCaseDirectory(): void
+    {
+        $path = $this->workingDirectory . DIRECTORY_SEPARATOR . 'worlds' . DIRECTORY_SEPARATOR . 'ZooKeeper';
+        self::assertTrue(mkdir($path, 0775, true));
+        $providers = new RecordingWorldProviderFactory(new WorldData(
+            new WorldMetadata('ZooKeeper', 410),
+            'default',
+            new SpawnPosition(12, 70, -9),
+            generatorVersion: 2,
+        ));
+
+        $opened = (new PersistentWorldFactory($this->workingDirectory, $providers))->loadNamed(
+            self::config(),
+            BedrockDataSet::bundled(),
+            'zookeeper',
+        );
+
+        self::assertSame($path, $providers->openedPath);
+        self::assertSame('ZooKeeper', $opened->data->metadata->name);
+        self::assertNull($providers->createdPath);
     }
 
     private static function config(
@@ -335,7 +382,7 @@ final class RecordingWritableWorldProvider implements WritableWorldProvider
         return $this->data;
     }
 
-    public function loadChunk(ChunkPosition $position): ?LoadedChunkData
+    public function loadChunk(ChunkPosition $position, WorldDimension $dimension = WorldDimension::OVERWORLD): ?LoadedChunkData
     {
         return null;
     }
@@ -345,7 +392,7 @@ final class RecordingWritableWorldProvider implements WritableWorldProvider
         $this->data = $worldData;
     }
 
-    public function saveChunk(ChunkSaveData $chunkData): void {}
+    public function saveChunk(ChunkSaveData $chunkData, WorldDimension $dimension = WorldDimension::OVERWORLD): void {}
 
     public function close(): void
     {

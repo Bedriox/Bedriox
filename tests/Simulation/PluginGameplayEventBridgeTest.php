@@ -71,6 +71,7 @@ use Bedriox\Api\Player\PlayerInteractionType;
 use Bedriox\Api\TextFormat;
 use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\Position as ApiPosition;
+use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Entity\EntityUuid;
 use Bedriox\Server\Entity\Vanilla\SheepEntity;
@@ -1040,6 +1041,7 @@ final class PluginGameplayEventBridgeTest extends TestCase
             0,
             64.0,
             worldName: 'world',
+            dimension: WorldDimension::END,
         );
         $player->movement->yaw = 120.0;
         $player->movement->pitch = -25.0;
@@ -1050,6 +1052,7 @@ final class PluginGameplayEventBridgeTest extends TestCase
         self::assertSame($handle, $view->position->world);
         self::assertSame(120.0, $view->position->yaw);
         self::assertSame(-25.0, $view->position->pitch);
+        self::assertSame(WorldDimension::END, $view->position->dimension);
     }
 
     /** @return array{EventDispatcher, PluginGameplayEventBridge} */
