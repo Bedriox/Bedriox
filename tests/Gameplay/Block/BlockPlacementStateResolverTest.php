@@ -62,7 +62,7 @@ final class BlockPlacementStateResolverTest extends TestCase
             'minecraft:cardinal_direction' => 'south',
         ]);
 
-        foreach ([0.0 => 'north', 90.0 => 'east', 180.0 => 'south', 270.0 => 'west'] as $yaw => $direction) {
+        foreach ([[0.0, 'north'], [90.0, 'east'], [180.0, 'south'], [270.0, 'west']] as [$yaw, $direction]) {
             $placed = $registry->state($resolver->resolve($base, 1, $yaw));
             self::assertSame($direction, $placed->properties()['minecraft:cardinal_direction']);
             self::assertSame(0, $placed->properties()['end_portal_eye_bit']);
