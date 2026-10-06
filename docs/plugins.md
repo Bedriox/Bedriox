@@ -111,6 +111,8 @@ Natural regeneration enters `PlayerRegainHealthEvent` before health changes. A l
 
 The plugin-bound logger prefixes every record with the plugin name and supports `debug()`, `info()`, `notice()`, `warning()`, `error()`, and `critical()`.
 
+`PluginContext::updates()` exposes the automatically selected update channel and the latest validated `UpdateInfo`, when a newer release is known. `UpdateAvailableEvent` is emitted once when a newly discovered version becomes available. Plugins may use this metadata for presentation, but Bedriox does not download or install updates automatically.
+
 The whitelist API exposes enabled state, membership checks, atomic add/remove operations, entries, and reload. `WhitelistChangedEvent` is a post-change notification with `ENABLED`, `DISABLED`, `ENTRY_ADDED`, `ENTRY_REMOVED`, or `RELOADED`; admission still runs before player persistence and simulation startup.
 
 `WeatherChangeEvent` runs before a natural, command, or plugin transition and may cancel it or replace the proposed bounded `WeatherState`. `WeatherChangedEvent` observes the committed state. Both expose `WeatherChangeCause`; plugins work with `WeatherType::CLEAR`, `RAIN`, and `THUNDER` rather than protocol event numbers.

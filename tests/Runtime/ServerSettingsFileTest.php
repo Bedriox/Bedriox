@@ -86,7 +86,13 @@ SETTINGS);
             self::assertSame('6000', $values['players.autosave-interval-ticks']);
             self::assertSame('8', $values['players.save-per-tick']);
             self::assertSame('40', $values['movement.rewind-history-size']);
+            self::assertSame('true', $values['updates.enabled']);
+            self::assertSame('true', $values['updates.notify-operators']);
             self::assertStringContainsString('Common server settings belong in server.properties.', (string) file_get_contents($path));
+            self::assertStringContainsString('https://update.bedriox.com', (string) file_get_contents($path));
+            self::assertStringContainsString('does not send the current version', (string) file_get_contents($path));
+            self::assertStringContainsString('standard HTTP/TLS metadata', (string) file_get_contents($path));
+            self::assertStringContainsString('Updates are never downloaded or installed automatically.', (string) file_get_contents($path));
 
             file_put_contents($path, "server.name=Preserved\n");
             self::assertSame(['server.name' => 'Preserved'], $settings->loadOrCreate($path));

@@ -59,6 +59,8 @@ final class ServerConfigTest extends TestCase
         self::assertTrue($defaults->pvp);
         self::assertTrue($defaults->spawnAnimals);
         self::assertTrue($defaults->spawnMonsters);
+        self::assertTrue($defaults->updatesEnabled);
+        self::assertTrue($defaults->updateOperatorNotifications);
 
         $config = ServerConfig::fromArguments([
             '--bind=127.0.0.1',

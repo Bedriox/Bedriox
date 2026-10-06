@@ -143,6 +143,7 @@ final readonly class BuiltinCommandRegistrar
         private ?BanManager $bans = null,
         private ?Closure $playerAddress = null,
         private ?Closure $kickAddress = null,
+        private ?Closure $latestUpdate = null,
     ) {}
 
     public function register(): CommandSoftEnum
@@ -172,7 +173,7 @@ final readonly class BuiltinCommandRegistrar
         ?CommandSoftEnum $entityIdentifiers,
     ): array {
         $commands = [
-            new VersionCommand(),
+            new VersionCommand($this->latestUpdate),
             new HelpCommand($this->commands),
             new ListCommand($players),
             new StopCommand($this->stop),

@@ -151,6 +151,8 @@ Both files use one `key=value` entry per line. Blank lines and lines beginning w
 | `players.autosave-interval-ticks` | `6000` | 20 through 72000 ticks between player autosave scheduling cycles |
 | `players.save-per-tick` | `8` | 1 through 64 dirty player profiles saved during each autosave tick |
 | `movement.rewind-history-size` | `40` | 1 through 1200 processed input ticks retained by the client for authoritative movement correction |
+| `updates.enabled` | `true` | Exactly `true` or `false`; controls asynchronous release checks |
+| `updates.notify-operators` | `true` | Exactly `true` or `false`; controls in-game notices for players with `bedriox.update.notify` |
 | `plugins.maximum` | `64` | 0–256 total admitted plugins |
 | `logging.level` | `INFO` | `DEBUG`, `INFO`, `NOTICE`, `WARNING`, `ERROR`, or `CRITICAL` |
 | `logging.console` | `true` | Exactly `true` or `false` |
@@ -166,6 +168,8 @@ The protected `--spawn-x`, `--spawn-y`, and `--spawn-z` CLI overrides remain ava
 The generator, generator algorithm version, and seed recorded in an existing world's `level.dat` remain authoritative when it is reopened. Changing `level-type` or `level-seed` does not silently convert stored chunks. Unsupported future generator versions fail before missing terrain can be created. New worlds use the configured values and create the native `level.dat`, `levelname.txt`, and `db/` layout. `default` currently selects the version-three Overworld, Nether, and End generator family; `flat` retains its fixed bedrock, dirt, and grass profile. Delete development worlds created by an older default-generator version before testing this build rather than mixing old and new chunks.
 
 Settings for independent query ports, resource packs, and other unfinished features are deliberately not accepted yet. This prevents apparently valid options from silently doing nothing.
+
+Update checks begin only after the server is listening and run through the bounded core worker pool, never the simulation thread. Bedriox sends no server, player, plugin, or installation identity to the update service. A failed or malformed response is isolated and retried later; it never prevents startup or stops a running server. The current version selects the stable or beta channel automatically. Console notices appear once per discovered version, eligible operators receive one notice per connection, and `version` includes the known update until the server is upgraded.
 
 `level.autosave-interval-ticks` controls how often the runtime schedules dirty-world work. At the default 20 ticks per second, `6000` ticks is five minutes. `chunk-saving.per-tick` bounds each autosave step so a large dirty queue is drained over multiple ticks rather than written all at once. Dirty chunks are still saved before eviction, and graceful shutdown performs a complete durability flush rather than applying the per-tick limit.
 

@@ -113,6 +113,15 @@ movement.rewind-history-size=40
 # Entity simulation
 entities.ai.enabled=true
 
+# Update notifications
+# Bedriox checks https://update.bedriox.com for release notifications only.
+# The request selects the stable or beta channel but does not send the current version or server,
+# player, plugin, configuration, or installation identifiers. As with normal HTTPS traffic, the
+# service and its CDN can observe the public IP, request time, channel, and standard HTTP/TLS metadata.
+# Allow outbound HTTPS access to that host. Updates are never downloaded or installed automatically.
+updates.enabled=true
+updates.notify-operators=true
+
 # Plugins and diagnostics
 plugins.maximum=64
 logging.level=INFO

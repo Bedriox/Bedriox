@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Plugin;
 
+use Bedriox\Api\Update\UpdateService;
 use Bedriox\Server\Runtime\BootstrappedServer;
 
 /** @internal Mutable startup hand-off; never exposed to plugins. */
@@ -30,4 +31,5 @@ final class PluginComposition
     public ?PluginItemBehaviorRegistrar $itemBehaviors = null;
     public ?PluginRecipeRegistrar $recipes = null;
     public ?PluginEntityLifecycleBridge $entityLifecycle = null;
+    public ?UpdateService $updates = null;
 }

@@ -25,11 +25,22 @@ use Bedriox\Api\Command\CommandContext;
 use Bedriox\Api\Command\CommandDefinition;
 use Bedriox\Api\Command\CommandResult;
 use Bedriox\Api\TextFormat;
+use Bedriox\Api\Update\UpdateInfo;
 use Bedriox\Server\BuildInfo;
 use Bedriox\Server\Command\CommandFeedback;
+use Closure;
 
 final readonly class VersionCommand implements BuiltinCommand
 {
+    /** @var null|Closure(): ?\Bedriox\Api\Update\UpdateInfo */
+    private ?Closure $latestUpdate;
+
+    /** @param null|Closure(): ?\Bedriox\Api\Update\UpdateInfo $latestUpdate */
+    public function __construct(?Closure $latestUpdate = null)
+    {
+        $this->latestUpdate = $latestUpdate;
+    }
+
     public function definition(): CommandDefinition
     {
         return new CommandDefinition('version', 'Shows Bedriox and protocol version information.', aliases: ['ver']);
@@ -53,7 +64,22 @@ final readonly class VersionCommand implements BuiltinCommand
             TextFormat::AQUA,
             'Visit https://bedriox.com',
         ));
+        $update = $this->resolveLatestUpdate();
+        if ($update !== null) {
+            $context->sender()->sendMessage(CommandFeedback::line(
+                $context->sender(),
+                TextFormat::YELLOW,
+                "Bedriox {$update->version} is available: {$update->releaseUrl}",
+            ));
+        }
 
         return CommandResult::success();
+    }
+
+    private function resolveLatestUpdate(): ?UpdateInfo
+    {
+        $update = ($this->latestUpdate)?->__invoke();
+
+        return $update instanceof UpdateInfo ? $update : null;
     }
 }

@@ -72,6 +72,7 @@ use Bedriox\Server\Runtime\ServerConfig;
 use Bedriox\Server\Runtime\SetupWizard;
 use Bedriox\Server\Runtime\UdpBindPreflight;
 use Bedriox\Server\Simulation\PluginGameplayEventBridge;
+use Bedriox\Server\Update\UpdateManager;
 use Bedriox\Server\Worker\CoreWorkerTaskCatalog;
 use Bedriox\Server\Worker\ManagedWorkerDispatcher;
 use Bedriox\Server\Worker\ManagedWorkerPool;
@@ -127,6 +128,7 @@ final class Bedriox
         $coreWorkers = null;
         $pluginWorkerPool = null;
         $playerStore = null;
+        $updates = null;
         try {
             $workingDirectory = getcwd();
             if (!is_string($workingDirectory)) {
@@ -310,6 +312,8 @@ final class Bedriox
                             $manifest->name,
                             $composition->host->manager(),
                         ),
+                        updates: $composition->updates
+                            ?? throw new \LogicException('The update capability is unavailable.'),
                     );
                 },
                 maximumPlugins: $config->maximumPlugins,
@@ -639,6 +643,8 @@ final class Bedriox
                     $composition->server?->runtime->remoteAddressForPlayer($name),
                 kickAddress: static fn(string $address, string $reason, string $actor): int =>
                     $composition->server?->runtime->kickAddress($address, $reason, $actor) ?? 0,
+                latestUpdate: static fn(): ?\Bedriox\Api\Update\UpdateInfo =>
+                    $composition->updates?->latestAvailable(),
             ))->register();
             $server = (new ServerBootstrap(
                 new PersistentWorldFactory(
@@ -668,6 +674,25 @@ final class Bedriox
                 playerLifecycleLogger: new PlayerLifecycleLogger($logger),
             );
             $composition->server = $server;
+            $updates = new UpdateManager(
+                self::VERSION,
+                $config->updatesEnabled,
+                $config->updateOperatorNotifications,
+                $coreWorkers,
+                static fn(): array => $server->runtime->onlinePlayers(),
+                static fn(string $uuid, string $permission): bool =>
+                    $permissionStore->hasPermission($uuid, $permission),
+                static function (\Bedriox\Api\Event\Server\UpdateAvailableEvent $event) use ($pluginEvents): void {
+                    $pluginEvents->dispatch($event);
+                },
+                static function (string $message) use ($logger): void {
+                    $logger->notice($message, 'Update');
+                },
+                static function (string $message) use ($logger): void {
+                    $logger->debug($message, 'Update');
+                },
+            );
+            $composition->updates = $updates;
             $composition->itemBehaviors = new PluginItemBehaviorRegistrar(
                 $server->pluginApi->itemBehaviorRegistry(),
                 $pluginHost->ownership(),
@@ -735,8 +760,9 @@ final class Bedriox
                         $crashHandler->capture($failure);
                     },
                     performance: $performance,
-                    backgroundPoll: static function () use ($coreWorkers, $backgroundLog): void {
+                    backgroundPoll: static function () use ($coreWorkers, $backgroundLog, $updates): void {
                         $coreWorkers->pollWithinBudget(256, 5_000_000);
+                        $updates->tick();
                         $backgroundLog?->poll();
                     },
                 ))->run(static function () use (&$stop): bool {

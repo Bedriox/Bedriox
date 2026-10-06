@@ -72,6 +72,8 @@ final readonly class ServerConfig
         'players.save-per-tick' => '8',
         'movement.rewind-history-size' => '40',
         'entities.ai.enabled' => 'true',
+        'updates.enabled' => 'true',
+        'updates.notify-operators' => 'true',
         'plugins.maximum' => '64',
         'logging.level' => 'INFO',
         'logging.console' => 'true',
@@ -126,6 +128,8 @@ final readonly class ServerConfig
         'players.save-per-tick' => true,
         'movement.rewind-history-size' => true,
         'entities.ai.enabled' => true,
+        'updates.enabled' => true,
+        'updates.notify-operators' => true,
         'plugins.maximum' => true,
         'logging.level' => true,
         'logging.console' => true,
@@ -235,6 +239,8 @@ final readonly class ServerConfig
         public int $memoryHighThreshold = 85,
         public int $memoryCriticalThreshold = 92,
         public bool $entityAiEnabled = true,
+        public bool $updatesEnabled = true,
+        public bool $updateOperatorNotifications = true,
     ) {
         if (filter_var($this->bindAddress, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
             throw new InvalidArgumentException('Bind address must be a literal IPv4 address.');
@@ -472,6 +478,11 @@ final readonly class ServerConfig
                 100,
             ),
             entityAiEnabled: self::boolean($values['entities.ai.enabled'], 'entities.ai.enabled'),
+            updatesEnabled: self::boolean($values['updates.enabled'], 'updates.enabled'),
+            updateOperatorNotifications: self::boolean(
+                $values['updates.notify-operators'],
+                'updates.notify-operators',
+            ),
         );
     }
 

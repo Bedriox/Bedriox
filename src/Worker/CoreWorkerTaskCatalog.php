@@ -21,10 +21,12 @@ declare(strict_types=1);
 namespace Bedriox\Server\Worker;
 
 use Bedriox\Server\Plugin\Scheduler\Worker\PluginAsyncTaskHandler;
+use Bedriox\Server\Update\UpdateTaskCodec;
 use Bedriox\Server\Worker\Chunk\ChunkPreparationRequestCodec;
 use Bedriox\Server\Worker\Navigation\NavigationPathCodec;
 use Bedriox\Server\Worker\Navigation\NavigationSearchRequestCodec;
 use Bedriox\Server\Worker\Network\BatchCompressionTask;
+use Bedriox\Server\Worker\Task\CheckForUpdatesTask;
 use Bedriox\Server\Worker\Task\FindNavigationPathTask;
 use Bedriox\Server\Worker\Task\GenerateChunkTask;
 use Bedriox\Server\Worker\Task\PrepareChunkTask;
@@ -43,6 +45,7 @@ final class CoreWorkerTaskCatalog
     public const FIND_NAVIGATION_PATH = 6;
     public const SPAWN_WORLD_STORAGE_OWNER = 7;
     public const PREPARE_WORLD = 8;
+    public const CHECK_FOR_UPDATES = 9;
 
     public static function create(): WorkerTaskRegistry
     {
@@ -135,6 +138,17 @@ final class CoreWorkerTaskCatalog
             300_000,
             cancellable: true,
             retryWhenNotStarted: true,
+        ));
+        $registry->register(new WorkerTaskDefinition(
+            self::CHECK_FOR_UPDATES,
+            1,
+            'update-check',
+            WorkerLane::CONTROL,
+            CheckForUpdatesTask::class,
+            UpdateTaskCodec::MAXIMUM_REQUEST_BYTES,
+            UpdateTaskCodec::MAXIMUM_RESPONSE_BYTES,
+            5_000,
+            cancellable: false,
         ));
 
         return $registry;

@@ -35,6 +35,8 @@ use Bedriox\Api\Plugin\Data\PluginData;
 use Bedriox\Api\Scheduler\PluginScheduler;
 use Bedriox\Api\Scheduler\UnavailablePluginScheduler;
 use Bedriox\Api\Server;
+use Bedriox\Api\Update\UnavailableUpdateService;
+use Bedriox\Api\Update\UpdateService;
 use Bedriox\Api\World\Generator\GeneratorRegistrar;
 use Bedriox\Api\World\Generator\UnavailableGeneratorRegistrar;
 
@@ -56,6 +58,7 @@ final class PluginContext
         private readonly ?ContainerManager $containers = null,
         private readonly ?BossBarManager $bossBars = null,
         private readonly ?EncounterManager $encounters = null,
+        private readonly UpdateService $updates = new UnavailableUpdateService(),
     ) {}
 
     public function name(): string
@@ -136,6 +139,11 @@ final class PluginContext
             ?? throw new \LogicException('The encounter capability is unavailable.');
     }
 
+    public function updates(): UpdateService
+    {
+        return $this->updates;
+    }
+
     /** @internal Used by the server composition root to attach an owner-scoped scheduler. */
     public function withScheduler(PluginScheduler $scheduler): self
     {
@@ -155,6 +163,7 @@ final class PluginContext
             $this->containers,
             $this->bossBars,
             $this->encounters,
+            $this->updates,
         );
     }
 
@@ -177,6 +186,7 @@ final class PluginContext
             $this->containers,
             $this->bossBars,
             $this->encounters,
+            $this->updates,
         );
     }
 }

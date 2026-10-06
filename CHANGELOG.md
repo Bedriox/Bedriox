@@ -1,5 +1,6 @@
 # Changelog
 
+- Add asynchronous stable and beta release checks, bounded console and operator notifications, `/version` update status, and a read-only plugin update API.
 - Keep Endermen neutral until directly provoked, then retain their authoritative
   player target for a bounded anger period even after the player looks away.
 - Project targetable Ender Dragon head, wing and tail actors and route their
