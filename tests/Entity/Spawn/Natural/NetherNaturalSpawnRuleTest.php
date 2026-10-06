@@ -23,9 +23,12 @@ namespace Bedriox\Server\Tests\Entity\Spawn\Natural;
 use Bedriox\Api\Entity\EntityCategory;
 use Bedriox\Api\Entity\VanillaEntityType;
 use Bedriox\Api\World\WorldDimension;
+use Bedriox\Server\Entity\Spawn\Natural\MagmaCubeNaturalSpawnRule;
 use Bedriox\Server\Entity\Spawn\Natural\NaturalSpawnContext;
 use Bedriox\Server\Entity\Spawn\Natural\NaturalSpawnMedium;
 use Bedriox\Server\Entity\Spawn\Natural\NetherNaturalSpawnRule;
+use Bedriox\Server\Entity\Spawn\Natural\NetherStructureType;
+use Bedriox\Server\Entity\Spawn\Natural\WitherSkeletonNaturalSpawnRule;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\ChunkPosition;
 use PHPUnit\Framework\TestCase;
@@ -41,19 +44,44 @@ final class NetherNaturalSpawnRuleTest extends TestCase
             self::context(VanillaEntityType::STRIDER),
         ));
         self::assertTrue((new NetherNaturalSpawnRule(VanillaEntityType::BLAZE))->allows(
-            self::context(VanillaEntityType::BLAZE, supportBlock: 'minecraft:nether_brick'),
+            self::context(VanillaEntityType::BLAZE, structure: NetherStructureType::FORTRESS),
         ));
         self::assertFalse((new NetherNaturalSpawnRule(VanillaEntityType::BLAZE))->allows(
-            self::context(VanillaEntityType::BLAZE, supportBlock: 'minecraft:netherrack'),
+            self::context(VanillaEntityType::BLAZE, supportBlock: 'minecraft:nether_brick'),
         ));
-        self::assertTrue((new NetherNaturalSpawnRule(VanillaEntityType::PIGLIN_BRUTE))->allows(
-            self::context(VanillaEntityType::PIGLIN_BRUTE, supportBlock: 'minecraft:polished_blackstone_bricks'),
+        self::assertFalse((new NetherNaturalSpawnRule(VanillaEntityType::PIGLIN_BRUTE))->allows(
+            self::context(VanillaEntityType::PIGLIN_BRUTE, structure: NetherStructureType::BASTION),
+        ));
+        self::assertTrue((new NetherNaturalSpawnRule(VanillaEntityType::GHAST))->allows(
+            self::context(VanillaEntityType::GHAST, medium: NaturalSpawnMedium::AIR),
+        ));
+        self::assertFalse((new NetherNaturalSpawnRule(VanillaEntityType::GHAST))->allows(
+            self::context(VanillaEntityType::GHAST),
         ));
         self::assertTrue((new NetherNaturalSpawnRule(VanillaEntityType::HOGLIN))->allows(
             self::context(VanillaEntityType::HOGLIN, biome: 'minecraft:crimson_forest'),
         ));
         self::assertFalse((new NetherNaturalSpawnRule(VanillaEntityType::HOGLIN))->allows(
             self::context(VanillaEntityType::HOGLIN, dimension: WorldDimension::OVERWORLD),
+        ));
+        self::assertTrue((new WitherSkeletonNaturalSpawnRule())->allows(
+            self::context(VanillaEntityType::WITHER_SKELETON, structure: NetherStructureType::FORTRESS),
+        ));
+        self::assertFalse((new WitherSkeletonNaturalSpawnRule())->allows(
+            self::context(VanillaEntityType::WITHER_SKELETON, supportBlock: 'minecraft:nether_brick'),
+        ));
+        self::assertTrue((new MagmaCubeNaturalSpawnRule())->allows(
+            self::context(VanillaEntityType::MAGMA_CUBE, biome: 'minecraft:basalt_deltas'),
+        ));
+        self::assertTrue((new MagmaCubeNaturalSpawnRule())->allows(
+            self::context(
+                VanillaEntityType::MAGMA_CUBE,
+                biome: 'minecraft:crimson_forest',
+                structure: NetherStructureType::FORTRESS,
+            ),
+        ));
+        self::assertFalse((new MagmaCubeNaturalSpawnRule())->allows(
+            self::context(VanillaEntityType::MAGMA_CUBE, biome: 'minecraft:crimson_forest'),
         ));
     }
 
@@ -63,6 +91,7 @@ final class NetherNaturalSpawnRuleTest extends TestCase
         string $biome = 'minecraft:hell',
         NaturalSpawnMedium $medium = NaturalSpawnMedium::GROUND,
         ?string $supportBlock = 'minecraft:netherrack',
+        ?NetherStructureType $structure = null,
     ): NaturalSpawnContext {
         return new NaturalSpawnContext(
             'nether',
@@ -77,6 +106,7 @@ final class NetherNaturalSpawnRuleTest extends TestCase
             576.0,
             576.0,
             $supportBlock,
+            $structure,
         );
     }
 }

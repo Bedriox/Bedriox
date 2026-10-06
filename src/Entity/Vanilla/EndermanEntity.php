@@ -23,15 +23,20 @@ namespace Bedriox\Server\Entity\Vanilla;
 use Bedriox\Api\Entity\Vanilla\Enderman;
 use Bedriox\Server\Entity\Ai\AiBehaviorDefinition;
 use Bedriox\Server\Entity\Ai\VanillaAiBehaviors;
+use Bedriox\Server\Entity\Concern\AngerStateTrait;
+use Bedriox\Server\Entity\Concern\MutableAngerState;
 use Bedriox\Server\Entity\EntityMotion;
 use Bedriox\Server\Entity\MonsterEntity;
 use Bedriox\Server\Entity\VanillaEntityDefinitions;
 use Bedriox\Server\Simulation\Position;
 
-final class EndermanEntity extends MonsterEntity implements Enderman
+final class EndermanEntity extends MonsterEntity implements Enderman, MutableAngerState
 {
+    use AngerStateTrait;
+
     public function __construct(string $uniqueId, int $runtimeId, string $worldName, Position $position, ?AiBehaviorDefinition $behavior = null, EntityMotion $motion = new EntityMotion(), float $yaw = 0.0, float $pitch = 0.0, ?float $health = null)
     {
         parent::__construct($uniqueId, $runtimeId, VanillaEntityDefinitions::enderman(), $worldName, $position, $behavior ?? VanillaAiBehaviors::enderman(), $motion, $yaw, $pitch, $health);
+        $this->initializeAngerState();
     }
 }

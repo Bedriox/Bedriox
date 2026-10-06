@@ -25,12 +25,13 @@ use Bedriox\Server\Entity\AbstractEntity;
 use Bedriox\Server\Entity\AbstractMobEntity;
 use Bedriox\Server\Entity\EntityRegistry;
 use Bedriox\Server\Entity\EntitySpatialIndex;
+use Bedriox\Server\Entity\Vanilla\EndermanEntity;
 use Bedriox\Server\Simulation\Position;
 use Closure;
 use InvalidArgumentException;
 
 /** Spatial-index-backed AI view with a compact player-position supplier. */
-final readonly class IndexedAiWorldView implements AquaticAiWorldView, PlayerIdentityAiWorldView
+final readonly class IndexedAiWorldView implements AquaticAiWorldView, EndermanAwareAiWorldView
 {
     /** @param Closure(): array<array-key, mixed> $playerPositions */
     public function __construct(
@@ -102,6 +103,18 @@ final readonly class IndexedAiWorldView implements AquaticAiWorldView, PlayerIde
         }
 
         return null;
+    }
+
+    public function nearestPlayerProvokingEnderman(
+        EndermanEntity $enderman,
+        float $radius,
+    ): ?AiPlayerSnapshot {
+        return $this->nearestPlayerMatching(
+            $enderman,
+            $radius,
+            static fn(AiPlayerSnapshot $player): bool => !$player->wearingEndermanProtectiveHeadwear
+                && self::playerIsLookingAtEnderman($player, $enderman),
+        );
     }
 
     /** @param array<mixed> $itemIdentifiers */
@@ -208,5 +221,31 @@ final readonly class IndexedAiWorldView implements AquaticAiWorldView, PlayerIde
         }
 
         return $players;
+    }
+
+    private static function playerIsLookingAtEnderman(
+        AiPlayerSnapshot $player,
+        EndermanEntity $enderman,
+    ): bool {
+        $fromX = $player->position->x;
+        $fromY = $player->position->y + 1.62;
+        $fromZ = $player->position->z;
+        $target = $enderman->internalPosition();
+        $dx = $target->x - $fromX;
+        $dy = ($target->y + 2.55) - $fromY;
+        $dz = $target->z - $fromZ;
+        $distance = hypot(hypot($dx, $dz), $dy);
+        if ($distance < 0.001) {
+            return true;
+        }
+
+        $yaw = deg2rad($player->headYaw);
+        $pitch = deg2rad($player->pitch);
+        $horizontal = cos($pitch);
+        $dot = ((-sin($yaw) * $horizontal) * ($dx / $distance))
+            + ((-sin($pitch)) * ($dy / $distance))
+            + ((cos($yaw) * $horizontal) * ($dz / $distance));
+
+        return $dot > 1.0 - (0.025 / $distance);
     }
 }

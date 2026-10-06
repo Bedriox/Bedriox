@@ -1055,6 +1055,108 @@ final class PluginGameplayEventBridgeTest extends TestCase
         self::assertSame(WorldDimension::END, $view->position->dimension);
     }
 
+    public function testEndEncounterRewardEventsPreserveOrderingModificationAndListenerIsolation(): void
+    {
+        $control = new class implements PluginRuntimeControl {
+            /** @var array<string, true> */
+            public array $disabled = [];
+
+            public function isEnabled(string $plugin): bool
+            {
+                return !isset($this->disabled[$plugin]);
+            }
+
+            public function version(string $plugin): string
+            {
+                return '1.0.0';
+            }
+
+            public function disableAfterFailure(string $plugin, Throwable $failure, ?PluginExecutionFrame $frame): void
+            {
+                $this->disabled[$plugin] = true;
+            }
+        };
+        $dispatcher = new EventDispatcher(
+            $control,
+            new PluginExecutionContext(),
+            new PluginActionBuffer(),
+            new PluginOwnershipRegistry(),
+        );
+        $bridge = new PluginGameplayEventBridge($dispatcher);
+        $encounter = $this->createStub(\Bedriox\Api\Encounter\EnderDragonEncounter::class);
+        $order = [];
+
+        $dispatcher->register(
+            'Faulty',
+            \Bedriox\Api\Event\Encounter\EnderDragonRewardEvent::class,
+            static function (\Bedriox\Api\Event\Encounter\EnderDragonRewardEvent $event) use (&$order): void {
+                $order[] = 'faulty';
+                $event->setExperience(999);
+                throw new RuntimeException('listener failed');
+            },
+        );
+        $dispatcher->register(
+            'Healthy',
+            \Bedriox\Api\Event\Encounter\EnderDragonRewardEvent::class,
+            static function (\Bedriox\Api\Event\Encounter\EnderDragonRewardEvent $event) use (&$order): void {
+                $order[] = 'pre';
+                self::assertSame(12_000, $event->experience());
+                $event->setExperience(777);
+            },
+        );
+        $dispatcher->register(
+            'Healthy',
+            \Bedriox\Api\Event\Encounter\EnderDragonRewardedEvent::class,
+            static function (\Bedriox\Api\Event\Encounter\EnderDragonRewardedEvent $event) use (&$order): void {
+                $order[] = 'post';
+                self::assertSame(777, $event->experience);
+            },
+        );
+
+        $reward = $bridge->enderDragonReward($encounter, true, 12_000);
+        self::assertSame(777, $reward);
+        self::assertArrayHasKey('Faulty', $control->disabled);
+        $bridge->enderDragonRewarded($encounter, true, $reward);
+        self::assertSame(['faulty', 'pre', 'post'], $order);
+    }
+
+    public function testCancelledEndEncounterPreEventDoesNotRequireAPostEvent(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $encounter = $this->createStub(\Bedriox\Api\Encounter\EnderDragonEncounter::class);
+        $postEvents = 0;
+        $dispatcher->register(
+            'Example',
+            \Bedriox\Api\Event\Encounter\EnderDragonPhaseChangeEvent::class,
+            static function (\Bedriox\Api\Event\Encounter\EnderDragonPhaseChangeEvent $event): void {
+                $event->cancel();
+            },
+        );
+        $dispatcher->register(
+            'Example',
+            \Bedriox\Api\Event\Encounter\EnderDragonPhaseChangedEvent::class,
+            static function () use (&$postEvents): void {
+                ++$postEvents;
+            },
+        );
+
+        $accepted = $bridge->enderDragonPhaseChange(
+            $encounter,
+            \Bedriox\Api\Encounter\EnderDragonPhase::CIRCLING,
+            \Bedriox\Api\Encounter\EnderDragonPhase::STRAFING,
+        );
+        if ($accepted !== null) {
+            $bridge->enderDragonPhaseChanged(
+                $encounter,
+                \Bedriox\Api\Encounter\EnderDragonPhase::CIRCLING,
+                $accepted,
+            );
+        }
+
+        self::assertNull($accepted);
+        self::assertSame(0, $postEvents);
+    }
+
     /** @return array{EventDispatcher, PluginGameplayEventBridge} */
     private static function bridge(): array
     {

@@ -23,6 +23,7 @@ namespace Bedriox\Server\Tests\Entity\Spawn\Natural;
 use Bedriox\Api\Entity\EntityCategory;
 use Bedriox\Api\Entity\EntityType;
 use Bedriox\Api\Entity\SpawnCause;
+use Bedriox\Api\Entity\Value\SlimeSize;
 use Bedriox\Api\Entity\VanillaEntityType;
 use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Entity\Spawn\Natural\NaturalDespawnDecision;
@@ -40,6 +41,7 @@ use Bedriox\Server\Entity\Spawn\Natural\NaturalSpawnLimits;
 use Bedriox\Server\Entity\Spawn\Natural\NaturalSpawnMedium;
 use Bedriox\Server\Entity\Spawn\Natural\NaturalSpawnPlayer;
 use Bedriox\Server\Entity\Spawn\Natural\NaturalSpawnRule;
+use Bedriox\Server\Entity\Spawn\Natural\NetherStructureType;
 use Bedriox\Server\Entity\Spawn\Natural\SheepNaturalSpawnRule;
 use Bedriox\Server\Entity\Spawn\Natural\SkeletonNaturalSpawnRule;
 use Bedriox\Server\Simulation\Position;
@@ -404,6 +406,29 @@ final class NaturalSpawningTest extends TestCase
         self::assertSame(NaturalSpawnMedium::WATER, $environment->lastCandidateMedium);
     }
 
+    public function testNaturalMagmaCubeRequestsCarryDeterministicRegisteredSize(): void
+    {
+        $batch = self::spawner(
+            new TestNaturalSpawnEnvironment(),
+            new TestNaturalSpawnClock(),
+            entries: [new NaturalSpawnEntry(
+                VanillaEntityType::MAGMA_CUBE,
+                EntityCategory::MONSTER,
+                new AllowNaturalSpawnRule(),
+            )],
+        )->plan(
+            'nether',
+            [new NaturalSpawnPlayer('nether', new Position(0.0, 64.0, 0.0))],
+            42,
+            20,
+        );
+
+        self::assertNotEmpty($batch->requests());
+        $variant = $batch->requests()[0]->variant;
+        self::assertIsInt($variant);
+        self::assertNotNull(SlimeSize::tryFrom($variant));
+    }
+
     public function testDespawnPolicyHonorsEveryPersistenceExemptionAndDistance(): void
     {
         $policy = new NaturalDespawnPolicy(200, [
@@ -633,6 +658,11 @@ final class TestNaturalSpawnEnvironment implements NaturalSpawnEnvironment
     public function lightLevel(string $worldName, Position $position): int
     {
         return 8;
+    }
+
+    public function netherStructure(string $worldName, Position $position): ?NetherStructureType
+    {
+        return null;
     }
 
     public function isCollisionFree(string $worldName, EntityType $type, Position $position): bool

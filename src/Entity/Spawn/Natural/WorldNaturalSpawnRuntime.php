@@ -215,7 +215,6 @@ final class WorldNaturalSpawnRuntime
                     [VanillaEntityType::GHAST, 3],
                     [VanillaEntityType::HOGLIN, 7],
                     [VanillaEntityType::PIGLIN, 9],
-                    [VanillaEntityType::PIGLIN_BRUTE, 1],
                     [VanillaEntityType::ZOMBIFIED_PIGLIN, 8],
                 ] as [$type, $weight]) {
                     if ($definitions->get($type) !== null) {
@@ -224,6 +223,9 @@ final class WorldNaturalSpawnRuntime
                             EntityCategory::MONSTER,
                             new NetherNaturalSpawnRule($type),
                             $weight,
+                            $type === VanillaEntityType::GHAST
+                                ? NaturalSpawnMedium::AIR
+                                : NaturalSpawnMedium::GROUND,
                         );
                     }
                 }

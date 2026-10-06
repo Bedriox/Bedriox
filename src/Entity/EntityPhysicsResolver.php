@@ -76,6 +76,9 @@ final readonly class EntityPhysicsResolver
             ? $this->environment?->lavaSurfaceY($entity)
             : null;
         $striderOnLava = $striderLavaSurface !== null;
+        if ($entity instanceof StriderEntity) {
+            $entity->setWarm($striderOnLava);
+        }
         $fluidSupported = $inWater || $boatOnWater || $striderOnLava;
         $friction = $fluidSupported ? 0.90 : 1.0 - $definition->drag;
         $gravity = $fluidSupported ? 0.0 : ($entity->isGravityEnabled() ? $definition->gravity : 0.0);

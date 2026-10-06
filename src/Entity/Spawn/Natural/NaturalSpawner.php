@@ -22,6 +22,7 @@ namespace Bedriox\Server\Entity\Spawn\Natural;
 
 use Bedriox\Api\Entity\EntityCategory;
 use Bedriox\Api\Entity\SpawnCause;
+use Bedriox\Api\Entity\VanillaEntityType;
 use Bedriox\Server\Entity\Spawn\EntitySpawnRequest;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\ChunkPosition;
@@ -173,6 +174,7 @@ final class NaturalSpawner
                 $this->environment instanceof WorldNaturalSpawnEnvironment
                     ? $this->environment->supportBlock($worldName, $position)
                     : null,
+                $this->environment->netherStructure($worldName, $position),
             );
             if (!$entry->rule->allows($context)) {
                 continue;
@@ -185,6 +187,9 @@ final class NaturalSpawner
                 $worldName,
                 $position,
                 $yaw,
+                variant: $entry->type === VanillaEntityType::MAGMA_CUBE
+                    ? MagmaCubeSpawnVariantSelector::select($worldSeed, $position, $tick)->value
+                    : null,
             );
             $plannedByCategory[$entry->category->value] = $worldPlanned + 1;
             $plannedByLocalCategory[$localKey] = $localPlanned + 1;

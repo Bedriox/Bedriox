@@ -37,6 +37,8 @@ use Bedriox\Protocol\Packet\AutoCraftRecipeItemStackRequestAction;
 use Bedriox\Protocol\Packet\BasicInventoryTransaction;
 use Bedriox\Protocol\Packet\BedrockPacketCodec;
 use Bedriox\Protocol\Packet\BlockPosition;
+use Bedriox\Protocol\Packet\BossEventAction;
+use Bedriox\Protocol\Packet\BossEventPacket;
 use Bedriox\Protocol\Packet\ChangeDimensionPacket;
 use Bedriox\Protocol\Packet\ChatPacket;
 use Bedriox\Protocol\Packet\ChunkRadiusUpdatedPacket;
@@ -1121,7 +1123,7 @@ final class BedrockPlayChannel
 
         if ($this->flatWorld !== null) {
             foreach ($this->retainedChunks as $position) {
-                $this->flatWorld->releaseChunk($position);
+                $this->flatWorld->releaseChunk($position, immediateUnload: true);
             }
         }
         $this->flatWorld = $transition->world;
@@ -1220,7 +1222,7 @@ final class BedrockPlayChannel
         $this->servedSubChunkSections = [];
         if ($this->flatWorld !== null) {
             foreach ($this->retainedChunks as $position) {
-                $this->flatWorld->releaseChunk($position);
+                $this->flatWorld->releaseChunk($position, immediateUnload: true);
             }
         }
         $this->retainedChunks = [];
@@ -1266,6 +1268,16 @@ final class BedrockPlayChannel
 
     private function handle(Packet $packet): bool
     {
+        if ($packet instanceof BossEventPacket) {
+            // Retail clients acknowledge membership in an actor-backed boss encounter
+            // and may query its presentation state. These messages are advisory: the
+            // authoritative server remains the sole owner of the bar and encounter.
+            return in_array($packet->action, [
+                BossEventAction::REGISTER_PLAYER,
+                BossEventAction::UNREGISTER_PLAYER,
+                BossEventAction::QUERY,
+            ], true);
+        }
         if ($this->worldSwitchInputGated) {
             if ($packet instanceof PlayerAuthInputPacket) {
                 if ($packet->hasInput(PlayerAuthInputFlag::HandledTeleport)) {

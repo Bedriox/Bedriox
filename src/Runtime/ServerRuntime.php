@@ -76,6 +76,7 @@ use Bedriox\Server\Entity\Ai\AiSchedulerMetrics;
 use Bedriox\Server\Entity\EntityRuntimeMetrics;
 use Bedriox\Server\Entity\Item\DroppedItemEntity;
 use Bedriox\Server\Entity\Spawn\EntitySpawnRequest;
+use Bedriox\Server\Entity\Vanilla\End\EnderDragonEntity;
 use Bedriox\Server\Gameplay\Crafting\CraftingCatalog;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Gameplay\Potion\AreaEffectCloud;
@@ -98,6 +99,7 @@ use Bedriox\Server\Player\Persistence\PlayerPersistenceManager;
 use Bedriox\Server\Plugin\Command\CommandRegistry;
 use Bedriox\Server\Plugin\Command\ServerPlayerCommandSender;
 use Bedriox\Server\Plugin\PluginActionBuffer;
+use Bedriox\Server\Runtime\BossBar\ActorBackedBossBarDelivery;
 use Bedriox\Server\Simulation\Event\AreaEffectCloudRemoved;
 use Bedriox\Server\Simulation\Event\AreaEffectCloudSpawned;
 use Bedriox\Server\Simulation\Event\AreaEffectCloudUpdated;
@@ -111,6 +113,8 @@ use Bedriox\Server\Simulation\Event\BlockPunch;
 use Bedriox\Server\Simulation\Event\ChatBroadcast;
 use Bedriox\Server\Simulation\Event\CommandRejected;
 use Bedriox\Server\Simulation\Event\EmotePerformed;
+use Bedriox\Server\Simulation\Event\EnderDragonBossBarChanged;
+use Bedriox\Server\Simulation\Event\EndGatewayTransferRequested;
 use Bedriox\Server\Simulation\Event\EndPortalTransferRequested;
 use Bedriox\Server\Simulation\Event\EntityActorDamaged;
 use Bedriox\Server\Simulation\Event\EntityActorDied;
@@ -181,6 +185,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private const int PLAYER_ADMISSIONS_PER_TICK = 2;
     private const int PLAY_SESSION_MAINTENANCE_INTERVAL_NANOSECONDS = 50_000_000;
     private const int CHUNK_STREAMING_BUDGET_NANOSECONDS = 8_000_000;
+    private const int WORLD_AUTOSAVE_BUDGET_MICROSECONDS = 3_000;
     private const int RUNTIME_STAGE_TRACE_THRESHOLD_NANOSECONDS = 10_000_000;
     private const int WORLD_TRANSFER_TIMEOUT_NANOSECONDS = 10_000_000_000;
     /** Maximum actor-recipient fan-out is kept bounded while simulation remains at 20 TPS. */
@@ -294,6 +299,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     /** @var array<string, array<int, array<string, true>>> */
     private array $entityActorViewers = [];
 
+    private readonly ActorBackedBossBarDelivery $actorBackedBossBars;
+
     /** @var array<string, array<int, Projectile>> */
     private array $projectileActors = [];
 
@@ -358,6 +365,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         $this->commands = $commands ?? new SimulationCommandFactory();
         $this->diagnostics = $diagnostics ?? RuntimeDiagnostics::disabled();
         $this->actorVisibility = new PlayerActorVisibilityRegistry($this->limits->maximumSessions);
+        $this->actorBackedBossBars = new ActorBackedBossBarDelivery();
         $this->pendingActorVisibilityPairs = new SplQueue();
         $this->playerConnections = $playerConnections ?? new PlayerConnectionDirectory();
         $this->closeClock = $closeClock ?? new SystemSimulationClock();
@@ -750,7 +758,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 $position->pitch ?? $pitch,
             );
         }
-        if (!$targetRuntime->simulation->canAcceptTransferredPlayer($player)) {
+        if ($sourceRuntime !== $targetRuntime && !$targetRuntime->simulation->canAcceptTransferredPlayer($player)) {
             return false;
         }
 
@@ -857,7 +865,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         PendingPlayerWorldTransfer $transfer,
     ): bool {
         $player = $source->simulation->authoritativePlayer($transfer->identity);
-        if ($player === null || !$target->simulation->canAcceptTransferredPlayer($player)) {
+        if ($player === null || ($source !== $target && !$target->simulation->canAcceptTransferredPlayer($player))) {
             return false;
         }
         $departure = $source->simulation->detachPlayerForTransfer($session->id);
@@ -1535,6 +1543,16 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                             }
                             continue;
                         }
+                        if ($event instanceof EndGatewayTransferRequested) {
+                            if (!$this->beginEndGatewayTransfer($event)) {
+                                $session = $this->sessionById($event->sessionId);
+                                if ($session !== null) {
+                                    $this->simulationForSession($session)?->rejectEndGatewayTransfer($event->sessionId);
+                                }
+                                $this->diagnostics->record('world.end_gateway_transfer_deferred');
+                            }
+                            continue;
+                        }
                         if ($event instanceof BlockPlacementCorrected) {
                             $this->diagnostics->record('world.protocol_trace', [
                                 'kind' => 'block_placement_corrected',
@@ -2117,7 +2135,10 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     if ($activePersistentWorld !== null
                         && isset($this->autosaveActive[$worldId])
                         && $remainingChunkAutosaveBudget > 0) {
-                        $saved = $activePersistentWorld->autosave($remainingChunkAutosaveBudget);
+                        $saved = $activePersistentWorld->autosave(
+                            $remainingChunkAutosaveBudget,
+                            self::WORLD_AUTOSAVE_BUDGET_MICROSECONDS,
+                        );
                         $remainingChunkAutosaveBudget -= min($remainingChunkAutosaveBudget, $saved);
                         $remaining = $activePersistentWorld->dirtyChunkCount();
                         if ($remaining === 0) {
@@ -2539,9 +2560,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
         $forceCollection = $decision?->collectCycles === true && (
             $decision->pressure !== $decision->previousPressure
-            || ($decision->pressure === MemoryPressure::CRITICAL && $tickNumber % 5 === 0)
-            || ($decision->pressure === MemoryPressure::HIGH && $tickNumber % 20 === 0)
-            || ($decision->pressure === MemoryPressure::ELEVATED && $tickNumber % 100 === 0)
+            || ($decision->pressure === MemoryPressure::CRITICAL && $tickNumber % 20 === 0)
+            || ($decision->pressure === MemoryPressure::HIGH && $tickNumber % 200 === 0)
         );
         $this->lastGarbageCollection = $forceCollection
             ? $this->garbageCollector->collectNow($decision->releaseAllocatorCaches)
@@ -3362,6 +3382,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 $this->entityActorViewers[$worldId][$runtimeId] = $viewers;
             }
         }
+        $this->actorBackedBossBars->removeViewer($session->id);
         foreach ($this->projectileViewers as $worldId => $actors) {
             foreach ($actors as $runtimeId => $viewers) {
                 unset($viewers[$session->id]);
@@ -4051,10 +4072,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         $events = [];
         $worldId = $this->processingWorldId ?? 'world';
         foreach ($this->entityActors[$worldId] ?? [] as $entity) {
-            if ($chunkKeys !== null && !isset($chunkKeys[self::positionChunkKey(
-                $entity->internalPosition()->x,
-                $entity->internalPosition()->z,
-            )])) {
+            if ($chunkKeys !== null && !isset($chunkKeys[$this->entityActorVisibilityChunkKey($entity)])) {
                 continue;
             }
             foreach ($this->reconcileEntityActorEvent(new EntityActorSpawned(
@@ -4074,13 +4092,26 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private function entityActorViewerCanSee(string $sessionId, AbstractLivingEntity $entity): bool
     {
         $viewer = $this->sessionById($sessionId);
+        $position = $entity->internalPosition();
+        $visibilityX = $entity instanceof EnderDragonEntity ? 0.0 : $position->x;
+        $visibilityZ = $entity instanceof EnderDragonEntity ? 0.0 : $position->z;
 
         return $viewer?->phase === SessionPhase::SPAWNED
             && $this->runtimePollKeyForSession($viewer) === ($this->processingWorldId ?? 'world')
             && ($viewer->play?->hasSentChunkAt(
-                $entity->internalPosition()->x,
-                $entity->internalPosition()->z,
+                $visibilityX,
+                $visibilityZ,
             ) ?? false);
+    }
+
+    private function entityActorVisibilityChunkKey(AbstractLivingEntity $entity): string
+    {
+        if ($entity instanceof EnderDragonEntity) {
+            return '0:0';
+        }
+        $position = $entity->internalPosition();
+
+        return self::positionChunkKey($position->x, $position->z);
     }
 
     private static function positionChunkKey(float $x, float $z): string
@@ -4280,8 +4311,47 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         return true;
     }
 
+    private function beginEndGatewayTransfer(EndGatewayTransferRequested $event): bool
+    {
+        $session = $this->sessionById($event->sessionId);
+        $runtime = $session === null ? null : $this->runtimeForSession($session);
+        $identity = $session?->bootstrap?->identity->uuid;
+        if ($session?->play === null || $runtime === null || $identity === null
+            || isset($this->pendingPlayerWorldTransfers[$event->sessionId])
+            || $runtime->simulation->authoritativePlayer($identity) === null) {
+            return false;
+        }
+        if (!$runtime->simulation->preparePortalPosition($event->destination)) {
+            return false;
+        }
+
+        return $this->teleportPlayer($identity, new ApiPosition(
+            $event->destination->x,
+            $event->destination->y,
+            $event->destination->z,
+            world: $runtime->handle,
+            dimension: $session->dimension,
+        ));
+    }
+
     private function dispatchWorldEvent(WorldEvent $event, int &$directedCount): bool
     {
+        if ($event instanceof EnderDragonBossBarChanged) {
+            $worldId = $this->processingWorldId ?? 'world';
+            $requestedRecipients = count($event->recipientSessionIds);
+            $event = $this->actorBackedBossBars->admit(
+                $worldId,
+                $event,
+                $this->entityActorViewers[$worldId][$event->dragonRuntimeId] ?? [],
+            );
+            if ($event === null) {
+                $this->diagnostics->record('runtime.actor_backed_boss_bar_deferred.protocol_trace', [
+                    'world' => $worldId,
+                    'recipients' => $requestedRecipients,
+                ]);
+                return true;
+            }
+        }
         try {
             $directedPackets = $this->eventEncoder->encode($event, $this->sessionEndpointsById());
         } catch (Throwable $exception) {
@@ -4306,57 +4376,46 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             ]);
         }
         $directedCount += count($directedPackets);
-        /** @var array<int, array{packet: Packet, recipients: list<string>}> $groups */
-        $groups = [];
+        /** @var array<string, list<Packet>> $packetsByRecipient */
+        $packetsByRecipient = [];
         foreach ($directedPackets as $directed) {
-            $packetId = spl_object_id($directed->packet);
-            $groups[$packetId] ??= ['packet' => $directed->packet, 'recipients' => []];
-            $groups[$packetId]['recipients'][] = $directed->sessionId;
+            $packetsByRecipient[$directed->sessionId][] = $directed->packet;
+        }
+        /** @var array<string, array{packets: list<Packet>, recipients: list<string>}> $groups */
+        $groups = [];
+        foreach ($packetsByRecipient as $recipient => $packets) {
+            $signature = implode(',', array_map(spl_object_id(...), $packets));
+            $groups[$signature] ??= ['packets' => $packets, 'recipients' => []];
+            $groups[$signature]['recipients'][] = $recipient;
         }
         foreach ($groups as $group) {
-            $packet = $group['packet'];
-            $recipients = $group['recipients'];
-            $frame = null;
-            $clearEnvelope = null;
-            if (count($recipients) > 1) {
-                try {
-                    $frame = new PacketFrame(
+            try {
+                $frames = array_map(
+                    static fn(Packet $packet): PacketFrame => new PacketFrame(
                         new PacketHeader(BedrockPacketCodec::packetId($packet)),
                         BedrockPacketCodec::encode($packet),
-                    );
-                    $clearEnvelope = BedrockBatchCodec::encode(
-                        new BedrockBatch(
-                            [$frame],
-                            CompressionMode::NegotiatedZlib,
-                            NetworkCompressionPolicy::THRESHOLD_BYTES,
-                        ),
-                        new BatchLimits(maximumPackets: $this->limits->maximumPacketsPerPayload),
-                    );
-                } catch (Throwable $exception) {
-                    return $this->containEventFailure(
-                        $event,
-                        'runtime.shared_event_projection_failed',
-                        ['exception' => $exception::class],
-                    );
-                }
+                    ),
+                    $group['packets'],
+                );
+                $clearEnvelope = BedrockBatchCodec::encode(
+                    new BedrockBatch(
+                        $frames,
+                        CompressionMode::NegotiatedZlib,
+                        NetworkCompressionPolicy::THRESHOLD_BYTES,
+                    ),
+                    new BatchLimits(maximumPackets: $this->limits->maximumPacketsPerPayload),
+                );
+            } catch (Throwable $exception) {
+                return $this->containEventFailure(
+                    $event,
+                    'runtime.shared_event_projection_failed',
+                    ['exception' => $exception::class],
+                );
             }
-            foreach ($recipients as $recipient) {
+            foreach ($group['recipients'] as $recipient) {
                 $session = $this->sessionById($recipient);
-                $queued = false;
-                if ($session?->play !== null) {
-                    if ($frame === null || $this->hasDeferredWorldPackets($session->id)) {
-                        $queued = $this->queueWorldPacket($session, $packet);
-                    } else {
-                        $queued = $session->play->queuePreparedAuthoritativePacketFrames(
-                            [$frame],
-                            $clearEnvelope,
-                            [$packet],
-                        );
-                        if (!$queued && !$session->play->isClosed()) {
-                            $queued = $this->deferWorldPacket($session->id, $packet);
-                        }
-                    }
-                }
+                $queued = $session?->play !== null
+                    && $this->queuePreparedWorldPackets($session, $group['packets'], $frames, $clearEnvelope);
                 if (!$queued && $session !== null) {
                     $this->diagnostics->record('runtime.world_packet_backlog_exhausted.protocol_trace', [
                         'event_class' => $event::class,
@@ -4370,7 +4429,70 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             }
         }
 
+        if ($event instanceof EntityActorSpawned) {
+            $worldId = $this->processingWorldId ?? 'world';
+            $readyBossBars = $this->actorBackedBossBars->actorAppeared(
+                $worldId,
+                $event->entity->getRuntimeId(),
+                $event->recipientSessionIds,
+            );
+            if ($readyBossBars !== []) {
+                $this->diagnostics->record('runtime.actor_backed_boss_bar_released.protocol_trace', [
+                    'world' => $worldId,
+                    'recipients' => count($readyBossBars),
+                ]);
+            }
+            foreach ($readyBossBars as $bossBar) {
+                if (!$this->dispatchWorldEvent($bossBar, $directedCount)) {
+                    return false;
+                }
+            }
+        }
+
         return true;
+    }
+
+    /**
+     * Queues one event's ordered packet sequence as a single compressed batch.
+     *
+     * @param list<Packet> $packets
+     * @param list<PacketFrame> $frames
+     */
+    private function queuePreparedWorldPackets(
+        RuntimeSession $session,
+        array $packets,
+        array $frames,
+        string $clearEnvelope,
+    ): bool {
+        if ($packets === [] || $frames === []) {
+            return true;
+        }
+        $play = $session->play;
+        if ($play === null) {
+            return false;
+        }
+        if ($this->hasDeferredWorldPackets($session->id)) {
+            return $this->deferWorldPackets($session->id, $packets);
+        }
+        if ($play->queuePreparedAuthoritativePacketFrames($frames, $clearEnvelope, $packets)) {
+            return true;
+        }
+        if ($play->isClosed()) {
+            return false;
+        }
+        $key = self::endpointKey($session->transport);
+        $this->flush($key, $session);
+        if (($this->sessions[$key] ?? null) !== $session || $session->play === null) {
+            return false;
+        }
+        if ($session->play->queuePreparedAuthoritativePacketFrames($frames, $clearEnvelope, $packets)) {
+            return true;
+        }
+        if ($session->play->isClosed()) {
+            return false;
+        }
+
+        return $this->deferWorldPackets($session->id, $packets);
     }
 
     /** Gives a healthy session one delivery opportunity before treating bounded output rejection as fatal. */
@@ -4425,6 +4547,25 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             return false;
         }
         $queue->enqueue($packet);
+
+        return true;
+    }
+
+    /** @param non-empty-list<Packet> $packets */
+    private function deferWorldPackets(string $sessionId, array $packets): bool
+    {
+        $queue = $this->deferredWorldPackets[$sessionId] ?? null;
+        $queued = $queue?->count() ?? 0;
+        if ($queued + count($packets) > $this->limits->maximumPacketsPerPayload * 8) {
+            return false;
+        }
+        if ($queue === null) {
+            $queue = new DeferredWorldPacketQueue();
+            $this->deferredWorldPackets[$sessionId] = $queue;
+        }
+        foreach ($packets as $packet) {
+            $queue->enqueue($packet);
+        }
 
         return true;
     }

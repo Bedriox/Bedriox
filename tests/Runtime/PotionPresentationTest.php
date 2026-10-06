@@ -24,7 +24,10 @@ use Bedriox\Api\Potion\PotionType;
 use Bedriox\Protocol\Packet\LevelEventPacket;
 use Bedriox\Protocol\Packet\LevelSoundEventName;
 use Bedriox\Protocol\Packet\LevelSoundEventPacket;
+use Bedriox\Protocol\Packet\SetActorDataPacket;
+use Bedriox\Server\Gameplay\Potion\AreaEffectCloud;
 use Bedriox\Server\Runtime\BedrockWorldEventPacketEncoder;
+use Bedriox\Server\Simulation\Event\AreaEffectCloudUpdated;
 use Bedriox\Server\Simulation\Event\BrewingCompleted;
 use Bedriox\Server\Simulation\Event\PotionSplashImpacted;
 use Bedriox\Server\Simulation\Position;
@@ -61,5 +64,17 @@ final class PotionPresentationTest extends TestCase
         self::assertSame(LevelSoundEventName::POTION_BREWED, $packets[0]->packet->sound->value);
         self::assertSame(2.5, $packets[0]->packet->position->x);
         self::assertSame(64.5, $packets[0]->packet->position->y);
+    }
+
+    public function testAreaEffectCloudProjectsUnsignedArgbColorAsSignedWireBits(): void
+    {
+        $packets = (new BedrockWorldEventPacketEncoder())->encode(new AreaEffectCloudUpdated(
+            new AreaEffectCloud(1, 2, 'dragon', PotionType::WATER, new Position(0.0, 70.0, 0.0)),
+            ['viewer'],
+        ), []);
+
+        self::assertCount(1, $packets);
+        self::assertInstanceOf(SetActorDataPacket::class, $packets[0]->packet);
+        self::assertSame(-13083194, $packets[0]->packet->metadata[1]->value);
     }
 }

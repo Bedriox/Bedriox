@@ -331,6 +331,26 @@ final class AsynchronousWorldPersistenceTest extends TestCase
         self::assertSame(3, $world->dirtyChunkCount());
     }
 
+    public function testAutosaveStopsSubmittingAfterItsElapsedTimeBudget(): void
+    {
+        [, , $generator] = self::worldDependencies();
+        $provider = new FakeAsynchronousWorldProvider(self::worldData());
+        $provider->enqueueDelayMicroseconds = 1_000;
+        $world = new World(
+            new WorldMetadata('world', 7),
+            $generator,
+            new ChunkRepository(4),
+            provider: $provider,
+        );
+        foreach ([new ChunkPosition(0, 0), new ChunkPosition(1, 0), new ChunkPosition(2, 0)] as $position) {
+            $world->chunk($position);
+        }
+
+        self::assertSame(1, $world->autosave(3, 1));
+        self::assertCount(1, $provider->submittedKeys);
+        self::assertSame(3, $world->dirtyChunkCount());
+    }
+
     public function testDirtyChunkEvictsOnlyAfterExactAsynchronousAcknowledgement(): void
     {
         [, , $generator] = self::worldDependencies();
@@ -505,6 +525,7 @@ final class FakeAsynchronousWorldProvider implements AsynchronousWorldProvider
     public int $closeCalls = 0;
     public bool $completeMissingAfterRequest = false;
     public bool $completeDrainedSaves = false;
+    public int $enqueueDelayMicroseconds = 0;
     /** @var array<string, true> */
     private array $pendingLoads = [];
     /** @var list<ChunkLoadCompletion> */
@@ -572,6 +593,9 @@ final class FakeAsynchronousWorldProvider implements AsynchronousWorldProvider
 
     public function enqueueChunkSave(ChunkSaveData $chunkData, WorldDimension $dimension = WorldDimension::OVERWORLD): PersistenceEnqueueResult
     {
+        if ($this->enqueueDelayMicroseconds > 0) {
+            usleep($this->enqueueDelayMicroseconds);
+        }
         $key = 'chunk:' . ($dimension === WorldDimension::OVERWORLD ? '' : $dimension->name . ':')
             . $chunkData->chunk->position->key();
         $existing = $this->pendingSaves[$key] ?? null;

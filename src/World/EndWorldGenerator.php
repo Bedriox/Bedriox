@@ -29,9 +29,9 @@ use Bedriox\Server\World\Generation\SeededNoise;
 /** Deterministic bounded island, landmark, and structure terrain for the built-in End dimension. */
 final readonly class EndWorldGenerator implements VersionedWorldGenerator
 {
-    public const int VERSION = 3;
+    public const int VERSION = 4;
     private const int CITY_REGION = 512;
-    private const int CITY_RADIUS = 42;
+    private const int CITY_RADIUS = 104;
 
     /** @var list<array{int, int, int, int}> x, z, radius, height */
     private const array PILLARS = [
@@ -198,7 +198,8 @@ final readonly class EndWorldGenerator implements VersionedWorldGenerator
                 if ($distance === 3) {
                     $builder->setWorld($x, 69, $z, $this->blocks->state('minecraft:bedrock'));
                 } elseif ($distance <= 1) {
-                    $builder->setWorld($x, 69, $z, $this->blocks->state('minecraft:end_portal'));
+                    // The exit remains closed until the authoritative first dragon victory.
+                    $builder->setWorld($x, 69, $z, $this->blocks->state('minecraft:air'));
                 }
             }
         }
@@ -252,6 +253,16 @@ final readonly class EndWorldGenerator implements VersionedWorldGenerator
                     $centerZ,
                     $this->noise->chance($regionX, 3, $regionZ, 1_919, 2) === 0,
                 );
+                if ($this->noise->chance($regionX, 4, $regionZ, 1_921, 2) === 0) {
+                    $alongX = $this->noise->chance($regionX, 3, $regionZ, 1_919, 2) === 0;
+                    $this->renderEndShip(
+                        $builder,
+                        $centerX + ($alongX ? 34 : 62),
+                        $surface + 20,
+                        $centerZ + ($alongX ? 62 : 34),
+                        $alongX,
+                    );
+                }
             }
         }
     }
@@ -296,6 +307,59 @@ final readonly class EndWorldGenerator implements VersionedWorldGenerator
                 $builder->setWorld($roomX + $dx, $bridgeY + 7, $roomZ + $dz, $purpur);
             }
         }
+    }
+
+    private function renderEndShip(MutableChunkBuilder $builder, int $centerX, int $baseY, int $centerZ, bool $alongX): void
+    {
+        $purpur = $this->blocks->state('minecraft:purpur_block');
+        $pillar = $this->blocks->state('minecraft:purpur_pillar', BlockAxis::Y);
+        $air = $this->blocks->state('minecraft:air');
+        $length = 22;
+        for ($forward = -$length; $forward <= $length; ++$forward) {
+            $halfWidth = max(1, min(5, intdiv($length - abs($forward), 3) + 1));
+            for ($side = -$halfWidth; $side <= $halfWidth; ++$side) {
+                $x = $centerX + ($alongX ? $forward : $side);
+                $z = $centerZ + ($alongX ? $side : $forward);
+                $hullDepth = max(1, $halfWidth - abs($side));
+                $builder->setWorld($x, $baseY, $z, $purpur, true);
+                for ($depth = 1; $depth <= $hullDepth; ++$depth) {
+                    $builder->setWorld($x, $baseY - $depth, $z, $pillar, true);
+                }
+                for ($height = 1; $height <= 5; ++$height) {
+                    $builder->setWorld($x, $baseY + $height, $z, $air, true);
+                }
+            }
+        }
+
+        for ($forward = -5; $forward <= 5; ++$forward) {
+            for ($side = -4; $side <= 4; ++$side) {
+                $x = $centerX + ($alongX ? $forward : $side);
+                $z = $centerZ + ($alongX ? $side : $forward);
+                $edge = abs($forward) === 5 || abs($side) === 4;
+                for ($height = 1; $height <= 4; ++$height) {
+                    $builder->setWorld($x, $baseY + $height, $z, $edge ? $pillar : $air, true);
+                }
+                $builder->setWorld($x, $baseY + 5, $z, $purpur, true);
+            }
+        }
+
+        $mastX = $centerX + ($alongX ? -7 : 0);
+        $mastZ = $centerZ + ($alongX ? 0 : -7);
+        for ($height = 1; $height <= 13; ++$height) {
+            $builder->setWorld($mastX, $baseY + $height, $mastZ, $pillar, true);
+        }
+        $bowX = $centerX + ($alongX ? $length + 1 : 0);
+        $bowZ = $centerZ + ($alongX ? 0 : $length + 1);
+        $builder->setWorld($bowX, $baseY - 1, $bowZ, $this->blocks->state('minecraft:dragon_head'), true);
+        $builder->setWorld($centerX, $baseY + 1, $centerZ, $this->blocks->state('minecraft:brewing_stand'), true);
+        $builder->setWorld(
+            $centerX + ($alongX ? -3 : 0),
+            $baseY + 1,
+            $centerZ + ($alongX ? 0 : -3),
+            $this->blocks->state('minecraft:chest'),
+            true,
+        );
+        $builder->setWorld($mastX, $baseY + 14, $mastZ, $this->blocks->state('minecraft:end_rod'), true);
     }
 
     private static function floorDiv(int $value, int $divisor): int

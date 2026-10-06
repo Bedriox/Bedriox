@@ -20,6 +20,9 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Simulation;
 
+use Bedriox\Api\BossBar\BossBar;
+use Bedriox\Api\BossBar\BossBarColor;
+use Bedriox\Api\BossBar\BossBarStyle;
 use Bedriox\Api\Crafting\CraftingGrid as ApiCraftingGrid;
 use Bedriox\Api\Crafting\CraftingRecipe as ApiCraftingRecipe;
 use Bedriox\Api\Crafting\RecipeIngredient as ApiRecipeIngredient;
@@ -98,6 +101,7 @@ use Bedriox\Server\Entity\Ai\AiPlayerSnapshot;
 use Bedriox\Server\Entity\Ai\AiRangedIntent;
 use Bedriox\Server\Entity\Ai\AiSchedulerMetrics;
 use Bedriox\Server\Entity\Ai\IndexedAiWorldView;
+use Bedriox\Server\Entity\Ai\Sensor\HoglinRepellentIndex;
 use Bedriox\Server\Entity\Ai\VanillaAiMemories;
 use Bedriox\Server\Entity\AquaticBucketRegistry;
 use Bedriox\Server\Entity\AquaticRuntimeState;
@@ -134,8 +138,18 @@ use Bedriox\Server\Entity\PluginMobEntity;
 use Bedriox\Server\Entity\Spawn\EntitySpawnOutcome;
 use Bedriox\Server\Entity\Spawn\EntitySpawnRequest;
 use Bedriox\Server\Entity\Spawn\EntitySpawnService;
+use Bedriox\Server\Entity\Spawn\Natural\NaturalSpawnClock;
 use Bedriox\Server\Entity\Spawn\Natural\NaturalSpawnPlayer;
+use Bedriox\Server\Entity\Spawn\Natural\NetherStructureLocator;
 use Bedriox\Server\Entity\Spawn\Natural\WorldNaturalSpawnRuntime;
+use Bedriox\Server\Entity\Spawn\Structure\BastionBrutePopulationRuntime;
+use Bedriox\Server\Entity\Spawn\Structure\BastionBrutePopulationState;
+use Bedriox\Server\Entity\Spawn\Structure\BastionBrutePopulationStateRepository;
+use Bedriox\Server\Entity\Spawn\Structure\EndCityLocator;
+use Bedriox\Server\Entity\Spawn\Structure\EndCityPlacement;
+use Bedriox\Server\Entity\Spawn\Structure\EndCityShulkerPopulationRuntime;
+use Bedriox\Server\Entity\Spawn\Structure\EndCityShulkerPopulationState;
+use Bedriox\Server\Entity\Spawn\Structure\EndCityShulkerPopulationStateRepository;
 use Bedriox\Server\Entity\TameableAnimalEntity;
 use Bedriox\Server\Entity\Vanilla\ArmadilloEntity;
 use Bedriox\Server\Entity\Vanilla\AxolotlEntity;
@@ -146,6 +160,9 @@ use Bedriox\Server\Entity\Vanilla\CaveSpiderEntity;
 use Bedriox\Server\Entity\Vanilla\ChickenEntity;
 use Bedriox\Server\Entity\Vanilla\CowEntity;
 use Bedriox\Server\Entity\Vanilla\CreeperEntity;
+use Bedriox\Server\Entity\Vanilla\End\EnderDragonEntity;
+use Bedriox\Server\Entity\Vanilla\End\ShulkerAttachmentResolver;
+use Bedriox\Server\Entity\Vanilla\End\ShulkerEntity;
 use Bedriox\Server\Entity\Vanilla\EndermanEntity;
 use Bedriox\Server\Entity\Vanilla\FoxEntity;
 use Bedriox\Server\Entity\Vanilla\GoatEntity;
@@ -199,6 +216,9 @@ use Bedriox\Server\Gameplay\Crafting\ShapedRecipe;
 use Bedriox\Server\Gameplay\Crafting\ShapelessRecipe;
 use Bedriox\Server\Gameplay\Enchanting\EnchantmentEffects;
 use Bedriox\Server\Gameplay\Enchanting\VanillaEnchantments;
+use Bedriox\Server\Gameplay\End\EndArenaLayout;
+use Bedriox\Server\Gameplay\End\EnderDragonPart;
+use Bedriox\Server\Gameplay\End\EnderDragonPartProjection;
 use Bedriox\Server\Gameplay\Explosion\Planning\ExplosionPlanningService;
 use Bedriox\Server\Gameplay\Explosion\Planning\LoadedWorldExplosionView;
 use Bedriox\Server\Gameplay\Explosion\Value\ExplosionRequest;
@@ -208,6 +228,7 @@ use Bedriox\Server\Gameplay\Item\ItemBehaviorRegistry;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Gameplay\Item\ItemUseSession;
 use Bedriox\Server\Gameplay\Item\VanillaItemDurability;
+use Bedriox\Server\Gameplay\Nether\DriedGhastHydrationRuntime;
 use Bedriox\Server\Gameplay\Portal\EndPortalSystem;
 use Bedriox\Server\Gameplay\Portal\NetherPortalFrame;
 use Bedriox\Server\Gameplay\Portal\NetherPortalSystem;
@@ -248,6 +269,7 @@ use Bedriox\Server\Gameplay\Projectile\ProjectilePersistenceCodec;
 use Bedriox\Server\Gameplay\Projectile\ProjectileRegistry;
 use Bedriox\Server\Gameplay\Projectile\ProjectileState;
 use Bedriox\Server\Gameplay\Projectile\ProjectileType;
+use Bedriox\Server\Gameplay\Projectile\ShulkerBulletGuidance;
 use Bedriox\Server\Inventory\ContainerInventory as LiveContainerInventory;
 use Bedriox\Server\Inventory\ContainerRevisionMismatchException;
 use Bedriox\Server\Inventory\ResolvedWorldContainer;
@@ -337,6 +359,9 @@ use Bedriox\Server\Simulation\Event\ContainerViewerProjection;
 use Bedriox\Server\Simulation\Event\CraftingTableOpened;
 use Bedriox\Server\Simulation\Event\EmotePerformed;
 use Bedriox\Server\Simulation\Event\EnchantingOptionsUpdated;
+use Bedriox\Server\Simulation\Event\EnderDragonBossBarAction;
+use Bedriox\Server\Simulation\Event\EnderDragonBossBarChanged;
+use Bedriox\Server\Simulation\Event\EndGatewayTransferRequested;
 use Bedriox\Server\Simulation\Event\EndPortalTransferRequested;
 use Bedriox\Server\Simulation\Event\EntityActorAttackStarted;
 use Bedriox\Server\Simulation\Event\EntityActorDamaged;
@@ -519,6 +544,22 @@ final class WorldSimulation
 
     private readonly ?WorldNaturalSpawnRuntime $naturalSpawns;
 
+    private readonly ?DriedGhastHydrationRuntime $driedGhastHydration;
+
+    private readonly ?BastionBrutePopulationRuntime $bastionBrutePopulation;
+
+    private readonly ?EndCityShulkerPopulationRuntime $endCityShulkerPopulation;
+
+    private readonly ShulkerAttachmentResolver $shulkerAttachments;
+
+    /** @var array<string, true> Loaded End chunks already admitted for structure population. */
+    private array $knownEndPopulationChunks = [];
+
+    private readonly HoglinRepellentIndex $hoglinRepellents;
+
+    /** @var array<string, true> Loaded chunks already indexed for Nether lifecycle state. */
+    private array $knownNetherLifecycleChunks = [];
+
     private readonly ?EnvironmentTickScheduler $environmentTicks;
     private ?InternalBlockStateId $frostedIceState = null;
 
@@ -529,6 +570,36 @@ final class WorldSimulation
     private readonly ?NetherPortalSystem $netherPortals;
 
     private readonly ?EndPortalSystem $endPortals;
+
+    private readonly ?\Bedriox\Server\Gameplay\End\EndEncounterCoordinator $endEncounter;
+
+    /** @var array<string, true> */
+    private array $retainedEndArenaChunks = [];
+
+    private readonly ?\Bedriox\Server\Gameplay\End\EndGatewayRuntime $endGateways;
+
+    private readonly ?\Bedriox\Server\Gameplay\End\EndGatewayStructureBuilder $endGatewayStructures;
+    private float $pendingEnderDragonHealAmount = 0.0;
+
+    /** @var array<string, true> Derived live End-arena participant UUIDs; never persisted. */
+    private array $endEncounterParticipants = [];
+
+    private ?int $publishedEnderDragonBossId = null;
+    private ?float $publishedEnderDragonBossProgress = null;
+    private string $endBossBarTitle = 'Ender Dragon';
+    private BossBarColor $endBossBarColor = BossBarColor::PURPLE;
+    private BossBarStyle $endBossBarStyle = BossBarStyle::SOLID;
+    private bool $endBossBarVisible = true;
+    private bool $endBossBarRemoved = false;
+    private ?float $endBossBarProgressOverride = null;
+    private ?BossBar $endBossBar = null;
+
+    private ?string $publishedEnderDragonBossTitle = null;
+    private ?BossBarColor $publishedEnderDragonBossColor = null;
+    private ?BossBarStyle $publishedEnderDragonBossStyle = null;
+
+    /** @var array<string, true> */
+    private array $publishedEnderDragonBossViewers = [];
 
     private readonly PortalContactTracker $portalContacts;
 
@@ -548,6 +619,9 @@ final class WorldSimulation
     private array $itemPublishedMotions = [];
     /** @var array<int, EntityMotion> */
     private array $projectilePublishedMotions = [];
+
+    /** @var array<int, string> Shulker Bullet runtime ID to target player UUID. */
+    private array $shulkerBulletTargets = [];
 
     /** @var list<int> */
     private array $pendingItemDespawns = [];
@@ -679,6 +753,7 @@ final class WorldSimulation
         private readonly WorldDimension $dimension = WorldDimension::OVERWORLD,
         private readonly ?TransientWorkstationProcessor $transientWorkstations = null,
         ?MountRegistry $mounts = null,
+        private readonly ?NaturalSpawnClock $naturalSpawnClock = null,
     ) {
         $this->worldId = $worldId ?? $blockWorld?->metadata->name ?? 'world';
         if ($this->worldId === '' || strlen($this->worldId) > 64) {
@@ -690,6 +765,7 @@ final class WorldSimulation
         $this->validator = new SimulationCommandFactory($this->limits);
         $this->players = new PlayerRegistry($this->limits->maximumPlayers);
         $this->mounts = $mounts ?? new MountRegistry();
+        $this->shulkerAttachments = new ShulkerAttachmentResolver();
         $this->knockbackResolver = new KnockbackResolver();
         $this->dropRandom = $dropRandom ?? new SystemDropRandom();
         $this->itemEntities = $itemEntities ?? new ItemEntityRegistry(firstEntityId: 1_000_000_000);
@@ -840,6 +916,7 @@ final class WorldSimulation
                 $blockPalette->air,
                 $waterState,
                 $lavaState,
+                clock: $this->naturalSpawnClock,
                 spawnAnimals: $this->spawnAnimals,
                 spawnMonsters: $this->spawnMonsters,
                 beforeDespawn: fn(AbstractLivingEntity $entity): bool =>
@@ -847,6 +924,42 @@ final class WorldSimulation
                 worldName: $this->worldId,
             )
             : null;
+        $this->hoglinRepellents = new HoglinRepellentIndex();
+        $this->driedGhastHydration = $blockWorld !== null && $blockStateRegistry !== null
+            ? new DriedGhastHydrationRuntime(
+                $blockStateRegistry,
+                fn(EntitySpawnRequest $request): EntitySpawnOutcome => $this->spawnEntity($request),
+            )
+            : null;
+        $bastionStore = $blockWorld?->transientEntityPersistenceStore();
+        if ($this->dimension === WorldDimension::NETHER && $blockWorld !== null) {
+            $bastionRepository = $bastionStore === null
+                ? null
+                : new BastionBrutePopulationStateRepository($bastionStore);
+            $this->bastionBrutePopulation = new BastionBrutePopulationRuntime(
+                new NetherStructureLocator($blockWorld->metadata->seed),
+                $bastionRepository?->load() ?? new BastionBrutePopulationState(),
+                fn(EntitySpawnRequest $request): EntitySpawnOutcome => $this->spawnEntity($request),
+                $bastionRepository,
+            );
+        } else {
+            $this->bastionBrutePopulation = null;
+        }
+        if ($this->dimension === WorldDimension::END && $blockWorld !== null) {
+            $endCityRepository = $bastionStore === null
+                ? null
+                : new EndCityShulkerPopulationStateRepository($bastionStore);
+            $this->endCityShulkerPopulation = new EndCityShulkerPopulationRuntime(
+                new EndCityLocator($blockWorld->metadata->seed),
+                $endCityRepository?->load() ?? new EndCityShulkerPopulationState(),
+                fn(EntitySpawnRequest $request): EntitySpawnOutcome => $this->spawnEntity($request),
+                fn(EndCityPlacement $city, ChunkPosition $chunk): array =>
+                    $this->endCityShulkerCandidates($city, $chunk),
+                $endCityRepository,
+            );
+        } else {
+            $this->endCityShulkerPopulation = null;
+        }
         if ($blockWorld !== null && $blockStateRegistry !== null && $blockCollisionRegistry !== null) {
             $this->environmentTicks = new EnvironmentTickScheduler();
             $this->fluidFlow = new FluidFlowPlanner();
@@ -885,6 +998,121 @@ final class WorldSimulation
         $this->blockPlacementStates = $blockStateRegistry === null
             ? null
             : new BlockPlacementStateResolver($blockStateRegistry);
+        $encounterStore = $blockWorld?->transientEntityPersistenceStore();
+        $this->endGateways = $this->dimension === WorldDimension::END
+            ? new \Bedriox\Server\Gameplay\End\EndGatewayRuntime(
+                $encounterStore === null
+                    ? null
+                    : new \Bedriox\Server\Gameplay\End\EndGatewayStateRepository($encounterStore),
+            )
+            : null;
+        $this->endGatewayStructures = $this->dimension === WorldDimension::END
+            && $blockStateRegistry !== null
+            ? new \Bedriox\Server\Gameplay\End\EndGatewayStructureBuilder(
+                $blockStateRegistry,
+                function (BlockPosition $position, InternalBlockStateId $state): void {
+                    $previous = $this->setBlockStateAndSchedule($position, $state, invalidatePortals: false);
+                    if ($previous->value !== $state->value) {
+                        $this->deferredEvents[] = new BlockChanged(
+                            'server',
+                            $position,
+                            $state,
+                            $this->players->recipients(),
+                            destroyedState: $previous,
+                        );
+                    }
+                },
+            )
+            : null;
+        $this->endEncounter = $this->dimension === WorldDimension::END
+            ? new \Bedriox\Server\Gameplay\End\EndEncounterCoordinator(
+                $this->worldId,
+                $blockWorld?->metadata->seed ?? 0,
+                $this->entityRuntime->registry(),
+                fn(EntitySpawnRequest $request): EntitySpawnOutcome => $this->spawnEntity($request),
+                $blockWorld,
+                $blockStateRegistry,
+                $encounterStore === null
+                    ? null
+                    : new \Bedriox\Server\Gameplay\End\EndEncounterStateRepository($encounterStore),
+                targets: fn(): array => array_values(array_map(
+                    static fn(Player $player): \Bedriox\Server\Gameplay\End\EndEncounterTarget =>
+                        new \Bedriox\Server\Gameplay\End\EndEncounterTarget(
+                            $player->identity->uuid,
+                            $player->movement->position,
+                        ),
+                    array_filter(
+                        $this->players->players(),
+                        static fn(Player $player): bool => $player->vitals->isAlive()
+                            && $player->gameMode() !== GameMode::SPECTATOR,
+                    ),
+                )),
+                setBlock: function (BlockPosition $position, InternalBlockStateId $state): void {
+                    $previous = $this->setBlockStateAndSchedule($position, $state, invalidatePortals: false);
+                    if ($previous->value === $state->value) {
+                        return;
+                    }
+                    $this->deferredEvents[] = new BlockChanged(
+                        'server',
+                        $position,
+                        $state,
+                        $this->players->recipients(),
+                    );
+                },
+                phaseChange: function (
+                    \Bedriox\Server\Gameplay\End\EnderDragonPhase $from,
+                    \Bedriox\Server\Gameplay\End\EnderDragonPhase $to,
+                ): ?\Bedriox\Server\Gameplay\End\EnderDragonPhase {
+                    $view = $this->endEncounterView();
+                    if ($view === null || $this->pluginEvents === null) {
+                        return $to;
+                    }
+                    $accepted = $this->pluginEvents->enderDragonPhaseChange(
+                        $view,
+                        \Bedriox\Api\Encounter\EnderDragonPhase::from($from->value),
+                        \Bedriox\Api\Encounter\EnderDragonPhase::from($to->value),
+                    );
+
+                    return $accepted === null
+                        ? null
+                        : \Bedriox\Server\Gameplay\End\EnderDragonPhase::tryFrom($accepted->value);
+                },
+                healAmount: function (
+                    \Bedriox\Server\Entity\Vanilla\End\EnderDragonEntity $dragon,
+                    float $amount,
+                ): float {
+                    $accepted = $this->pluginEvents?->entityRegainHealth(
+                        $dragon,
+                        \Bedriox\Api\Entity\EntityHealthRegainCause::END_CRYSTAL,
+                        $amount,
+                    ) ?? ($this->pluginEvents === null ? $amount : 0.0);
+                    $this->pendingEnderDragonHealAmount = $accepted;
+
+                    return $accepted;
+                },
+                gatewayPosition: function (int $index, BlockPosition $position): ?BlockPosition {
+                    $view = $this->endEncounterView();
+                    if ($view === null || $this->pluginEvents === null) {
+                        return $position;
+                    }
+                    $accepted = $this->pluginEvents->endGatewayCreate(
+                        $view,
+                        new ApiBlockPosition($position->x, $position->y, $position->z, WorldDimension::END),
+                        $index,
+                    );
+
+                    return $accepted === null || $accepted->dimension !== WorldDimension::END
+                        ? null
+                        : new BlockPosition($accepted->x, $accepted->y, $accepted->z);
+                },
+            )
+            : null;
+        if ($this->endEncounter !== null && $this->endGateways !== null) {
+            $order = \Bedriox\Server\Gameplay\End\EndGatewayPlanner::order($blockWorld?->metadata->seed ?? 0);
+            for ($index = 0; $index < $this->endEncounter->state()->gatewayCount; ++$index) {
+                $this->endGateways->activate($order[$index]);
+            }
+        }
         $this->validator->move('spawn', 0, $spawn->x, $spawn->y, $spawn->z, 0.0, 0.0, MovementMode::STOPPED);
         if ($blockWorld === null && $spawn->y < $this->limits->flatGroundY) {
             throw new InvalidArgumentException('Spawn cannot be below the flat-world surface.');
@@ -1126,6 +1354,8 @@ final class WorldSimulation
         array_push($events, ...$this->advanceItemUseSessions());
         array_push($events, ...$this->advancePlayerEffects());
         $environmentStartedNanoseconds = hrtime(true);
+        array_push($events, ...$this->advanceNetherLifecycle());
+        $this->advanceEndStructurePopulation();
         array_push($events, ...$this->advanceEnvironmentalBlocks());
         array_push($events, ...$this->advanceWeather());
         $stages['environment'] = hrtime(true) - $environmentStartedNanoseconds;
@@ -1147,6 +1377,103 @@ final class WorldSimulation
         $stages['items'] = $nextStageNanoseconds - $stageCompletedNanoseconds;
         $stageCompletedNanoseconds = $nextStageNanoseconds;
         array_push($events, ...$this->advanceNaturalEntities());
+        if ($this->endEncounter !== null && $this->players->count() > 0
+            && $this->advanceEndArenaTicket()) {
+            $encounterView = $this->endEncounterView();
+            $this->reconcileEndEncounterParticipants($encounterView);
+            $firstVictory = !$this->endEncounter->state()->previouslyKilledDragon;
+            $previousPhase = $this->endEncounter->state()->phase;
+            $previousRespawnStage = $this->endEncounter->state()->respawnStage;
+            $endEncounterTick = $this->endEncounter->tick($this->tick);
+            if ($endEncounterTick->healed && $this->pendingEnderDragonHealAmount > 0.0) {
+                $dragonUuid = $this->endEncounter->state()->dragonUuid;
+                $dragon = $dragonUuid === null ? null : $this->entityRuntime->registry()->getByUniqueId($dragonUuid);
+                if ($dragon instanceof \Bedriox\Server\Entity\Vanilla\End\EnderDragonEntity) {
+                    $this->pluginEvents?->entityRegainedHealth(
+                        $dragon,
+                        \Bedriox\Api\Entity\EntityHealthRegainCause::END_CRYSTAL,
+                        $this->pendingEnderDragonHealAmount,
+                    );
+                }
+            }
+            $this->pendingEnderDragonHealAmount = 0.0;
+            foreach ($endEncounterTick->attacks as $attack) {
+                array_push($events, ...$this->applyEnderDragonAttack($attack));
+            }
+            $currentState = $this->endEncounter->state();
+            if ($encounterView !== null && $previousPhase !== $currentState->phase) {
+                $this->pluginEvents?->enderDragonPhaseChanged(
+                    $encounterView,
+                    \Bedriox\Api\Encounter\EnderDragonPhase::from($previousPhase->value),
+                    \Bedriox\Api\Encounter\EnderDragonPhase::from($currentState->phase->value),
+                );
+            }
+            if ($encounterView !== null && $endEncounterTick->dragonSpawned
+                && $previousRespawnStage !== \Bedriox\Server\Gameplay\End\EnderDragonRespawnStage::NONE) {
+                $this->pluginEvents?->enderDragonRespawned($encounterView);
+            }
+            if ($endEncounterTick->completed && $this->endEncounter->claimVictoryPublication()) {
+                $experience = $firstVictory
+                    ? $this->endEncounter->firstVictoryExperience()
+                    : $this->endEncounter->repeatVictoryExperience();
+                if ($encounterView !== null) {
+                    $experience = $this->pluginEvents?->enderDragonReward(
+                        $encounterView,
+                        $firstVictory,
+                        $experience,
+                    ) ?? ($this->pluginEvents === null ? $experience : 0);
+                }
+                if ($experience > 0) {
+                    array_push($events, ...$this->spawnExperienceOrbs($experience, new Position(0.5, 75.0, 0.5)));
+                }
+                $createdGatewayPosition = null;
+                $createdGatewayIndex = null;
+                if ($endEncounterTick->gatewayCreated) {
+                    $endGateways = $this->endGateways
+                        ?? throw new \LogicException('The End encounter requires an End gateway runtime.');
+                    $blockWorld = $this->blockWorld
+                        ?? throw new \LogicException('The End encounter requires an authoritative block world.');
+                    $createdGatewayIndex = max(0, $currentState->gatewayCount - 1);
+                    $order = \Bedriox\Server\Gameplay\End\EndGatewayPlanner::order(
+                        $blockWorld->metadata->seed,
+                    );
+                    $link = $endGateways->activateAt(
+                        $order[$createdGatewayIndex],
+                        $endEncounterTick->gatewayPosition
+                            ?? \Bedriox\Server\Gameplay\End\EndGatewayPlanner::inner($order[$createdGatewayIndex]),
+                    );
+                    $this->endGatewayStructures?->build($link);
+                    $createdGatewayPosition = $link->inner;
+                }
+                if ($encounterView !== null) {
+                    $this->pluginEvents?->enderDragonRewarded($encounterView, $firstVictory, $experience);
+                    $this->pluginEvents?->enderDragonEncounterCompleted($encounterView, $firstVictory);
+                    if ($createdGatewayPosition !== null) {
+                        $this->pluginEvents?->endGatewayCreated(
+                            $encounterView,
+                            new ApiBlockPosition(
+                                $createdGatewayPosition->x,
+                                $createdGatewayPosition->y,
+                                $createdGatewayPosition->z,
+                                WorldDimension::END,
+                            ),
+                            $createdGatewayIndex,
+                        );
+                    }
+                }
+                $this->endEncounter->completeVictoryPublication();
+            }
+            foreach ($this->synchronizeEnderDragonBossBar() as $bossBarEvent) {
+                if ($bossBarEvent->action === EnderDragonBossBarAction::CREATE) {
+                    // Bedrock ignores a boss CREATE that references an actor which has not
+                    // entered the recipient's actor table yet. Entity visibility is deferred,
+                    // so queue CREATE behind those actor-spawn events for this tick.
+                    $this->deferredEvents[] = $bossBarEvent;
+                } else {
+                    $events[] = $bossBarEvent;
+                }
+            }
+        }
         $nextStageNanoseconds = hrtime(true);
         $stages['natural_entities'] = $nextStageNanoseconds - $stageCompletedNanoseconds;
         $stageCompletedNanoseconds = $nextStageNanoseconds;
@@ -1166,6 +1493,36 @@ final class WorldSimulation
         $this->lastTickStageNanoseconds = $stages;
 
         return new SimulationTick($this->tick, $processed, $events);
+    }
+
+    /**
+     * Keeps the central End arena available independently of the arrival platform.
+     *
+     * End players arrive near x=100, while the dragon encounter is rooted at 0,0.
+     * Treating player chunk streaming as an encounter prerequisite could therefore
+     * leave the dragon permanently uninitialized. This bounded ticket loads the
+     * arena asynchronously and retains its authoritative pillar footprint exactly once.
+     */
+    private function advanceEndArenaTicket(): bool
+    {
+        if ($this->blockWorld === null || $this->dimension !== WorldDimension::END) {
+            return false;
+        }
+
+        $requiredChunks = EndArenaLayout::requiredChunks();
+        $pollCompletions = true;
+        foreach ($requiredChunks as $position) {
+            $key = $position->key();
+            if (isset($this->retainedEndArenaChunks[$key])) {
+                continue;
+            }
+            if ($this->blockWorld->requestRetainChunk($position, $pollCompletions)) {
+                $this->retainedEndArenaChunks[$key] = true;
+            }
+            $pollCompletions = false;
+        }
+
+        return count($this->retainedEndArenaChunks) === count($requiredChunks);
     }
 
     /** @return array<string, int> */
@@ -1270,6 +1627,7 @@ final class WorldSimulation
             $this->deferredEvents[] = $closed;
         }
         $this->evacuateCraftingGrid($player, $this->players->recipients($player->sessionId));
+        $this->removeEndEncounterParticipant($player);
 
         $events = array_splice($this->deferredEvents, $deferredOffset);
         $removed = $this->players->remove($sessionId);
@@ -1490,6 +1848,7 @@ final class WorldSimulation
 
     public function flushEntityPersistence(): EntityPersistenceFlushResult
     {
+        $this->endEncounter?->flush();
         $this->persistProjectileEntities();
         return $this->entityPersistence?->flushShutdown()
             ?? new EntityPersistenceFlushResult(0, 0, []);
@@ -1498,6 +1857,305 @@ final class WorldSimulation
     public function entityRuntime(): EntityWorldRuntime
     {
         return $this->entityRuntime;
+    }
+
+    /** @internal Main-thread encounter seam used by the public world API adapter. */
+    public function endEncounter(): ?\Bedriox\Server\Gameplay\End\EndEncounterCoordinator
+    {
+        return $this->endEncounter;
+    }
+
+    /** @internal Logical owner used by API adapters; not a second world reference. */
+    public function worldId(): string
+    {
+        return $this->worldId;
+    }
+
+    /** @internal Dimension identity used by API adapters. */
+    public function dimension(): WorldDimension
+    {
+        return $this->dimension;
+    }
+
+    /** @internal Shared live boss-bar handle for the public End encounter view. */
+    public function endEncounterBossBar(): BossBar
+    {
+        if ($this->endEncounter === null) {
+            throw new \LogicException('This world has no Ender Dragon encounter.');
+        }
+
+        return $this->endBossBar ??= new BossBar(
+            'ender_dragon.' . strtolower(preg_replace('/[^a-z0-9._-]+/i', '_', $this->worldId) ?? 'end'),
+            function (): array {
+                $dragonUuid = $this->endEncounter->state()->dragonUuid;
+                $dragon = $dragonUuid === null ? null : $this->entityRuntime->registry()->getByUniqueId($dragonUuid);
+                $progress = $dragon instanceof \Bedriox\Server\Entity\Vanilla\End\EnderDragonEntity
+                    ? $dragon->getHealth() / $dragon->getMaximumHealth()
+                    : 0.0;
+
+                return [
+                    'title' => $this->endBossBarTitle,
+                    'progress' => $this->endBossBarProgressOverride ?? $progress,
+                    'color' => $this->endBossBarColor,
+                    'style' => $this->endBossBarStyle,
+                    'viewers' => $this->pluginEndEncounterParticipants(),
+                    'visible' => $this->endBossBarVisible && $dragon !== null,
+                    'removed' => $this->endBossBarRemoved,
+                ];
+            },
+            function (string $field, mixed $value): void {
+                match ($field) {
+                    'title' => $this->endBossBarTitle = is_string($value)
+                        ? $value
+                        : throw new \LogicException('Invalid End boss-bar title.'),
+                    'progress' => $this->endBossBarProgressOverride = is_float($value)
+                        ? $value
+                        : throw new \LogicException('Invalid End boss-bar progress.'),
+                    'color' => $this->endBossBarColor = $value instanceof BossBarColor
+                        ? $value
+                        : throw new \LogicException('Invalid End boss-bar color.'),
+                    'style' => $this->endBossBarStyle = $value instanceof BossBarStyle
+                        ? $value
+                        : throw new \LogicException('Invalid End boss-bar style.'),
+                    'visible' => $this->endBossBarVisible = is_bool($value)
+                        ? $value
+                        : throw new \LogicException('Invalid End boss-bar visibility.'),
+                    default => throw new \LogicException('Unknown End boss-bar field.'),
+                };
+            },
+            static function (ApiPlayer $player): void {},
+            static function (ApiPlayer $player): void {},
+            function (): void {
+                $this->endBossBarRemoved = true;
+                $this->endBossBarVisible = false;
+            },
+        );
+    }
+
+    /** @internal Live encounter projection used by plugin services and encounter events. */
+    public function endEncounterView(): ?\Bedriox\Api\Encounter\EnderDragonEncounter
+    {
+        if ($this->endEncounter === null) {
+            return null;
+        }
+        $controller = new \Bedriox\Server\Simulation\Encounter\SimulationEnderDragonEncounterController(
+            function (?\Bedriox\Api\Encounter\EnderDragonPhase $phase): bool {
+                if ($phase === null) {
+                    return $this->requestEnderDragonRespawn();
+                }
+                $internal = \Bedriox\Server\Gameplay\End\EnderDragonPhase::tryFrom($phase->value);
+
+                return $internal !== null && $this->endEncounter->requestPhase($internal);
+            },
+        );
+
+        return new \Bedriox\Server\Simulation\Encounter\SimulationEnderDragonEncounter(
+            $this,
+            $this->endEncounter,
+            $this->endEncounterBossBar(),
+            $controller,
+        );
+    }
+
+    private function requestEnderDragonRespawn(): bool
+    {
+        if ($this->endEncounter === null || !$this->endEncounter->canRequestRespawn()) {
+            return false;
+        }
+        $view = $this->endEncounterView();
+        if ($view !== null && $this->pluginEvents !== null
+            && !$this->pluginEvents->enderDragonRespawn($view)) {
+            return false;
+        }
+
+        return $this->endEncounter->requestRespawn();
+    }
+
+    /** @return list<EnderDragonBossBarChanged> */
+    private function synchronizeEnderDragonBossBar(): array
+    {
+        if ($this->endEncounter === null) {
+            return [];
+        }
+        $dragonUuid = $this->endEncounter->state()->dragonUuid;
+        $dragon = $dragonUuid === null ? null : $this->entityRuntime->registry()->getByUniqueId($dragonUuid);
+        if (!$dragon instanceof \Bedriox\Server\Entity\Vanilla\End\EnderDragonEntity || !$dragon->isAlive()) {
+            if ($this->publishedEnderDragonBossId === null) {
+                return [];
+            }
+            $event = new EnderDragonBossBarChanged(
+                $this->publishedEnderDragonBossId,
+                EnderDragonBossBarAction::REMOVE,
+                0.0,
+                array_keys($this->publishedEnderDragonBossViewers),
+            );
+            $this->publishedEnderDragonBossId = null;
+            $this->publishedEnderDragonBossProgress = null;
+            $this->publishedEnderDragonBossViewers = [];
+
+            return [$event];
+        }
+
+        $progress = $this->endBossBarProgressOverride
+            ?? max(0.0, min(1.0, $dragon->getHealth() / $dragon->getMaximumHealth()));
+        $visible = $this->endBossBarVisible && !$this->endBossBarRemoved;
+        if (!$visible) {
+            if ($this->publishedEnderDragonBossId === null) {
+                return [];
+            }
+            $event = new EnderDragonBossBarChanged(
+                $this->publishedEnderDragonBossId,
+                EnderDragonBossBarAction::REMOVE,
+                0.0,
+                array_keys($this->publishedEnderDragonBossViewers),
+            );
+            $this->publishedEnderDragonBossId = null;
+            $this->publishedEnderDragonBossViewers = [];
+
+            return [$event];
+        }
+        $current = array_fill_keys($this->players->recipients(), true);
+        $events = [];
+        if ($this->publishedEnderDragonBossId !== $dragon->getRuntimeId()) {
+            if ($this->publishedEnderDragonBossId !== null && $this->publishedEnderDragonBossViewers !== []) {
+                $events[] = new EnderDragonBossBarChanged(
+                    $this->publishedEnderDragonBossId,
+                    EnderDragonBossBarAction::REMOVE,
+                    0.0,
+                    array_keys($this->publishedEnderDragonBossViewers),
+                );
+            }
+            $this->publishedEnderDragonBossId = $dragon->getRuntimeId();
+            $this->publishedEnderDragonBossProgress = $progress;
+            $this->publishedEnderDragonBossTitle = $this->endBossBarTitle;
+            $this->publishedEnderDragonBossColor = $this->endBossBarColor;
+            $this->publishedEnderDragonBossStyle = $this->endBossBarStyle;
+            $this->publishedEnderDragonBossViewers = [];
+        }
+        $newViewers = array_keys(array_diff_key($current, $this->publishedEnderDragonBossViewers));
+        if ($newViewers !== []) {
+            $events[] = new EnderDragonBossBarChanged(
+                $dragon->getRuntimeId(),
+                EnderDragonBossBarAction::CREATE,
+                $progress,
+                $newViewers,
+                $this->endBossBarTitle,
+                $this->endBossBarColor,
+                $this->endBossBarStyle,
+            );
+        }
+        $existingViewers = array_keys(array_intersect_key($current, $this->publishedEnderDragonBossViewers));
+        if ($existingViewers !== [] && $this->publishedEnderDragonBossProgress !== $progress) {
+            $events[] = new EnderDragonBossBarChanged(
+                $dragon->getRuntimeId(),
+                EnderDragonBossBarAction::UPDATE_PROGRESS,
+                $progress,
+                $existingViewers,
+                $this->endBossBarTitle,
+                $this->endBossBarColor,
+                $this->endBossBarStyle,
+            );
+        }
+        if ($existingViewers !== [] && $this->publishedEnderDragonBossTitle !== $this->endBossBarTitle) {
+            $events[] = new EnderDragonBossBarChanged(
+                $dragon->getRuntimeId(),
+                EnderDragonBossBarAction::UPDATE_NAME,
+                $progress,
+                $existingViewers,
+                $this->endBossBarTitle,
+                $this->endBossBarColor,
+                $this->endBossBarStyle,
+            );
+        }
+        if ($existingViewers !== [] && ($this->publishedEnderDragonBossColor !== $this->endBossBarColor
+            || $this->publishedEnderDragonBossStyle !== $this->endBossBarStyle)) {
+            $events[] = new EnderDragonBossBarChanged(
+                $dragon->getRuntimeId(),
+                EnderDragonBossBarAction::UPDATE_STYLE,
+                $progress,
+                $existingViewers,
+                $this->endBossBarTitle,
+                $this->endBossBarColor,
+                $this->endBossBarStyle,
+            );
+        }
+        $this->publishedEnderDragonBossProgress = $progress;
+        $this->publishedEnderDragonBossTitle = $this->endBossBarTitle;
+        $this->publishedEnderDragonBossColor = $this->endBossBarColor;
+        $this->publishedEnderDragonBossStyle = $this->endBossBarStyle;
+        $this->publishedEnderDragonBossViewers = $current;
+
+        return $events;
+    }
+
+    /** @return list<WorldEvent> */
+    private function applyEnderDragonAttack(\Bedriox\Server\Gameplay\End\EnderDragonAttack $attack): array
+    {
+        $target = $this->players->playerByIdentity($attack->targetUuid);
+        if ($target === null
+            || $target->movement->position->distanceTo($attack->target) > max(2.0, $attack->radius)) {
+            return [];
+        }
+        if ($attack->type === \Bedriox\Server\Gameplay\End\EnderDragonAttackType::FIREBALL) {
+            $dragonUuid = $this->endEncounter?->state()->dragonUuid;
+            $dragon = $dragonUuid === null ? null : $this->entityRuntime->registry()->getByUniqueId($dragonUuid);
+            if (!$dragon instanceof \Bedriox\Server\Entity\Vanilla\End\EnderDragonEntity) {
+                return [];
+            }
+            try {
+                $projectile = $this->projectiles->spawnDragonFireball(
+                    $dragon->getUniqueId(),
+                    $dragon->getRuntimeId(),
+                    $attack->origin,
+                    $attack->target,
+                );
+            } catch (InvalidArgumentException|OverflowException) {
+                return [];
+            }
+            $this->projectileEntitiesDirty = true;
+
+            return [new ProjectileSpawned($projectile, $this->players->recipients())];
+        }
+
+        $cause = $attack->type === \Bedriox\Server\Gameplay\End\EnderDragonAttackType::BREATH
+            ? DamageCause::Magic
+            : DamageCause::Attack;
+        $event = $this->damage(new DamagePlayer($target->sessionId, $attack->damage, $cause));
+        $events = [$event];
+        if ($attack->type === \Bedriox\Server\Gameplay\End\EnderDragonAttackType::BREATH) {
+            try {
+                $cloud = $this->areaEffectClouds->spawn(
+                    $this->endEncounter?->state()->dragonUuid ?? 'ender_dragon',
+                    PotionType::HARMING,
+                    $attack->target,
+                );
+                $events[] = new AreaEffectCloudSpawned($cloud, $this->players->recipients());
+            } catch (OverflowException) {
+                // The bounded cloud registry is saturated; direct breath damage still commits.
+            }
+        }
+        if ($attack->knockback <= 0.0 || !$event instanceof PlayerDamaged) {
+            return $events;
+        }
+        $dx = $target->movement->position->x - $attack->origin->x;
+        $dz = $target->movement->position->z - $attack->origin->z;
+        $length = max(0.001, hypot($dx, $dz));
+        $target->movement->velocityX = $dx / $length * $attack->knockback;
+        $target->movement->verticalVelocity = max(0.4, $attack->knockback * 0.45);
+        $target->movement->velocityZ = $dz / $length * $attack->knockback;
+        $target->movement->verticalState = VerticalState::AIRBORNE;
+        $target->markDirty();
+        $events[] = new PlayerKnockedBack(
+            $target->sessionId,
+            $target->snapshot(),
+            $target->movement->velocityX,
+            $target->movement->verticalVelocity,
+            $target->movement->velocityZ,
+            $target->movement->clientTick,
+            $this->players->recipients(),
+        );
+
+        return $events;
     }
 
     private function prepareLivingEntity(AbstractEntity $entity, bool $initialSpawn): void
@@ -1716,7 +2374,10 @@ final class WorldSimulation
         }
         $netherWeapon = match (true) {
             $entity instanceof PiglinBruteEntity => 'minecraft:golden_axe',
-            $entity instanceof PiglinEntity, $entity instanceof ZombifiedPiglinEntity => 'minecraft:golden_sword',
+            $entity instanceof PiglinEntity => $this->dropRandom->integer(0, 1) === 0
+                ? 'minecraft:golden_sword'
+                : 'minecraft:crossbow',
+            $entity instanceof ZombifiedPiglinEntity => 'minecraft:golden_sword',
             default => null,
         };
         if ($netherWeapon !== null) {
@@ -1941,6 +2602,9 @@ final class WorldSimulation
                 $player->vitals->isAlive() && $player->gameMode()->takesDamage(),
                 $player->inventory->selectedStack()?->identifier,
                 self::wearsGoldArmor($player),
+                $player->movement->headYaw,
+                $player->movement->pitch,
+                self::wearsEndermanProtectiveHeadwear($player),
             ),
             array_values(array_filter(
                 $this->players->players(),
@@ -2011,6 +2675,7 @@ final class WorldSimulation
                 $entity->advanceAngerState(20);
             }
         }
+        $this->applyHoglinRepellentAvoidance();
         $entityRuntimeStartedNanoseconds = hrtime(true);
         $tick = $this->entityRuntime->tick(
             $this->tick,
@@ -2018,6 +2683,17 @@ final class WorldSimulation
             $this->entityAiEnabled,
         );
         $this->lastEntityRuntimeNanoseconds = hrtime(true) - $entityRuntimeStartedNanoseconds;
+        /** @var array<int, AbstractEntity> $forcedMovedEntities */
+        $forcedMovedEntities = [];
+        foreach ($this->entityRuntime->registry()->all() as $entity) {
+            if ($entity instanceof ShulkerEntity && ($this->tick + $entity->getRuntimeId()) % 10 === 0
+                && $this->reconcileShulkerAttachment($entity)) {
+                $forcedMovedEntities[$entity->getRuntimeId()] = $entity;
+            }
+            if ($this->transferEntityThroughEndGateway($entity)) {
+                $forcedMovedEntities[$entity->getRuntimeId()] = $entity;
+            }
+        }
         foreach ($this->mounts->links() as $link) {
             $passenger = $link->passengerEntity;
             if ($passenger === null) {
@@ -2156,6 +2832,10 @@ final class WorldSimulation
                 $recipients,
                 $tick->motionChangedFor($entity->getRuntimeId()),
             );
+            unset($forcedMovedEntities[$entity->getRuntimeId()]);
+        }
+        foreach ($forcedMovedEntities as $entity) {
+            $events[] = new EntityActorMoved($entity, $this->tick, $recipients, true);
         }
         foreach ($this->announcedEntities as $runtimeId => $entity) {
             $revision = $entity->presentationRevision();
@@ -2175,6 +2855,10 @@ final class WorldSimulation
                 continue;
             }
             $this->reconcileEntityTarget($entity);
+            if ($entity instanceof ShulkerEntity) {
+                $target = $entity->aiRuntime()->memory()->get(VanillaAiMemories::nearestPlayer(), $this->tick);
+                $entity->setPeekAmount($target instanceof AiPlayerSnapshot ? 100 : 0);
+            }
             $intent = $entity->aiRuntime()->takeMeleeIntent($this->tick);
             if ($intent !== null) {
                 array_push($events, ...$this->applyEntityMeleeIntent($entity, $intent));
@@ -2185,6 +2869,9 @@ final class WorldSimulation
             }
         }
         foreach ($tick->died as $entity) {
+            if ($entity instanceof \Bedriox\Server\Entity\Vanilla\End\EnderDragonEntity) {
+                $this->endEncounter?->confirmDragonDeath($entity->getUniqueId());
+            }
             $this->triggerDeathEffectConsequences(
                 $entity->getPosition(),
                 $entity->effectState()->snapshot(),
@@ -2229,6 +2916,87 @@ final class WorldSimulation
         return $events;
     }
 
+    private function reconcileShulkerAttachment(ShulkerEntity $shulker): bool
+    {
+        if ($this->blockWorld === null || $this->blockCollisions === null
+            || $this->blockCollisionRegistry === null) {
+            return false;
+        }
+        $attachment = $this->shulkerAttachments->resolve(
+            $shulker->internalPosition(),
+            $shulker->getAttachmentFace(),
+            function (int $x, int $y, int $z): bool {
+                $margin = 0.01;
+                $boxes = $this->blockCollisions->boxesIntersectingLoaded(new AxisAlignedBox(
+                    $x + $margin,
+                    $y + $margin,
+                    $z + $margin,
+                    $x + 1.0 - $margin,
+                    $y + 1.0 - $margin,
+                    $z + 1.0 - $margin,
+                ));
+
+                return $boxes === [];
+            },
+            function (int $x, int $y, int $z): bool {
+                $state = $this->blockWorld->loadedBlockStateAt($x, $y, $z);
+
+                return $state !== null && $this->blockCollisionRegistry->find($state)?->isEmpty() === false;
+            },
+        );
+        if ($attachment === null) {
+            $shulker->setPeekAmount(0);
+
+            return false;
+        }
+        $moved = $attachment->position != $shulker->internalPosition();
+        $shulker->setAttachmentFace($attachment->face);
+        $shulker->setMotion(new EntityMotion());
+        if ($moved) {
+            $this->entityRuntime->registry()->move(
+                $shulker->getRuntimeId(),
+                $shulker->getWorldName(),
+                $attachment->position,
+                $shulker->getYaw(),
+                $shulker->getPitch(),
+            );
+        }
+
+        return $moved;
+    }
+
+    private function transferEntityThroughEndGateway(AbstractEntity $entity): bool
+    {
+        if ($this->endGateways === null || $entity->isRemoved() || $entity->isRiding() || $entity->hasPassengers()
+            || $entity->getType()->identifier() === 'minecraft:ender_dragon') {
+            return false;
+        }
+        if ($entity instanceof AbstractLivingEntity && !$entity->isAlive()) {
+            return false;
+        }
+        $transfer = $this->endGateways->contactVolume(
+            'entity:' . $entity->getUniqueId(),
+            $entity->internalPosition(),
+            $entity->collisionWidth(),
+            $entity->collisionHeight(),
+            $this->tick,
+        );
+        if ($transfer === null) {
+            return false;
+        }
+        $entity->setMotion(new EntityMotion());
+        $entity->setOnGround(false);
+        $this->entityRuntime->registry()->move(
+            $entity->getRuntimeId(),
+            $entity->getWorldName(),
+            $transfer->destination,
+            $entity->getYaw(),
+            $entity->getPitch(),
+        );
+
+        return true;
+    }
+
     private static function wearsGoldArmor(Player $player): bool
     {
         foreach ($player->inventory->armorSlots() as $stack) {
@@ -2243,6 +3011,11 @@ final class WorldSimulation
         }
 
         return false;
+    }
+
+    private static function wearsEndermanProtectiveHeadwear(Player $player): bool
+    {
+        return $player->inventory->armorStack(ArmorSlot::Head)?->identifier === 'minecraft:carved_pumpkin';
     }
 
     private function splitSlime(AbstractLivingEntity $entity): void
@@ -2922,8 +3695,8 @@ final class WorldSimulation
             $movement->velocityZ,
             $directionX,
             $directionZ,
-            CombatRules::KNOCKBACK_FORCE,
-            CombatRules::KNOCKBACK_FORCE,
+            $attacker instanceof HoglinEntity ? 0.9 : CombatRules::KNOCKBACK_FORCE,
+            $attacker instanceof HoglinEntity ? 0.75 : CombatRules::KNOCKBACK_FORCE,
             $movement->verticalState === VerticalState::GROUNDED,
             $target->inventory->knockbackResistance(),
         );
@@ -2974,6 +3747,21 @@ final class WorldSimulation
                 }
             }
         }
+        if ($applied > 0.0 && $target->vitals->isAlive() && $attacker instanceof WitherSkeletonEntity) {
+            $duration = match ($this->blockWorld?->difficulty() ?? 2) {
+                1 => 100,
+                3 => 800,
+                default => 200,
+            };
+            $effectEvent = $this->addPlayerEffect(new AddPlayerEffect(
+                $target->sessionId,
+                new EffectInstance(EffectType::WITHER, $duration),
+                EffectCause::ENTITY_ATTACK,
+            ));
+            if ($effectEvent !== null) {
+                $this->deferredEvents[] = $effectEvent;
+            }
+        }
 
         $recipients = $this->players->recipients();
         $events = [
@@ -3013,8 +3801,11 @@ final class WorldSimulation
             return [];
         }
         $held = $shooter->equipmentState()->getItem(ApiEquipmentSlot::MAIN_HAND);
-        $fireballShooter = $shooter instanceof BlazeEntity || $shooter instanceof GhastEntity;
-        if (!$fireballShooter && !$shooter instanceof WitchEntity && $held?->identifier !== 'minecraft:bow') {
+        $intrinsicRangedShooter = $shooter instanceof BlazeEntity
+            || $shooter instanceof GhastEntity
+            || $shooter instanceof ShulkerEntity;
+        if (!$intrinsicRangedShooter && !$shooter instanceof WitchEntity
+            && !in_array($held?->identifier, ['minecraft:bow', 'minecraft:crossbow'], true)) {
             return [];
         }
         $from = $shooter->internalPosition();
@@ -3043,6 +3834,12 @@ final class WorldSimulation
             default => null,
         };
         $projectile = match (true) {
+            $shooter instanceof ShulkerEntity => $this->projectiles->spawnShulkerBullet(
+                $shooter->getUniqueId(),
+                $shooter->getRuntimeId(),
+                $spawn,
+                new Position($to->x, $to->y + 0.9, $to->z),
+            ),
             $shooter instanceof BlazeEntity => $this->projectiles->spawnFireball(
                 $shooter->getUniqueId(),
                 $shooter->getRuntimeId(),
@@ -3102,6 +3899,12 @@ final class WorldSimulation
             return [];
         }
         $this->projectiles->replace($admitted);
+        if ($admitted->type === ProjectileType::SHULKER_BULLET) {
+            $this->shulkerBulletTargets[$admitted->runtimeEntityId] = $target->identity->uuid;
+            if ($shooter instanceof ShulkerEntity) {
+                $shooter->setPeekAmount(100);
+            }
+        }
         $this->pluginEvents?->projectileLaunched($shooter, $admitted, $projectileIdentifier);
 
         $recipients = $this->players->recipients();
@@ -3179,6 +3982,59 @@ final class WorldSimulation
         }
 
         return $views;
+    }
+
+    /** @return list<\Bedriox\Api\Player\Player> */
+    public function pluginEndEncounterParticipants(): array
+    {
+        return array_values(array_filter(
+            $this->pluginPlayers(),
+            fn(ApiPlayer $player): bool => isset($this->endEncounterParticipants[$player->uuid]),
+        ));
+    }
+
+    private function reconcileEndEncounterParticipants(?\Bedriox\Api\Encounter\EnderDragonEncounter $encounter): void
+    {
+        $present = [];
+        foreach ($this->players->players() as $player) {
+            $position = $player->movement->position;
+            $inArena = ($position->x * $position->x) + ($position->z * $position->z) <= 192.0 ** 2
+                && $position->y >= 0.0 && $position->y <= 256.0;
+            if ($inArena) {
+                $present[$player->identity->uuid] = true;
+            }
+            $joined = isset($this->endEncounterParticipants[$player->identity->uuid]);
+            if ($joined === $inArena) {
+                continue;
+            }
+            if ($encounter !== null && $this->pluginEvents !== null
+                && !$this->pluginEvents->enderDragonParticipantChange($encounter, $player, $inArena)) {
+                if ($joined) {
+                    $present[$player->identity->uuid] = true;
+                } else {
+                    unset($present[$player->identity->uuid]);
+                }
+                continue;
+            }
+            if ($encounter !== null) {
+                $this->pluginEvents?->enderDragonParticipantChanged($encounter, $player, $inArena);
+            }
+        }
+        $this->endEncounterParticipants = $present;
+    }
+
+    private function removeEndEncounterParticipant(Player $player): void
+    {
+        if (!isset($this->endEncounterParticipants[$player->identity->uuid])) {
+            return;
+        }
+        $encounter = $this->endEncounterView();
+        $allowed = $encounter === null || $this->pluginEvents === null
+            || $this->pluginEvents->enderDragonParticipantChange($encounter, $player, false);
+        unset($this->endEncounterParticipants[$player->identity->uuid]);
+        if ($allowed && $encounter !== null) {
+            $this->pluginEvents?->enderDragonParticipantChanged($encounter, $player, false);
+        }
     }
 
     public function pluginPlayer(string $identity): ?\Bedriox\Api\Player\Player
@@ -3398,6 +4254,16 @@ final class WorldSimulation
     public function rejectPortalTransfer(string $sessionId): void
     {
         $this->portalContacts->retryNextTick($sessionId, $this->tick);
+        $this->rejectEndGatewayTransfer($sessionId);
+    }
+
+    /** Allows a failed prepared gateway transfer to retry while the player remains in contact. */
+    public function rejectEndGatewayTransfer(string $sessionId): void
+    {
+        $player = $this->players->player($sessionId);
+        if ($player !== null) {
+            $this->endGateways?->forgetActor('player:' . $player->identity->uuid);
+        }
     }
 
     /** Prevents an arrival portal from immediately scheduling the reverse dimension transfer. */
@@ -4544,7 +5410,7 @@ final class WorldSimulation
         $bootstrap = $command->bootstrap;
         $position = $this->spawn;
         $identity = new PlayerIdentity($command->identity, $command->displayName);
-        $worldName = 'world';
+        $worldName = $this->worldId;
         $firstPlayedAt = 0;
         $gamemode = 'survival';
         if ($bootstrap !== null) {
@@ -5510,6 +6376,24 @@ final class WorldSimulation
             );
         }
         $target = $this->entityRuntime->registry()->getByRuntimeId($command->targetRuntimeActorId);
+        $dragonPart = null;
+        $dragonPartPosition = null;
+        if (!$target instanceof AbstractLivingEntity) {
+            $parentRuntimeId = EnderDragonPartProjection::parentRuntimeId($command->targetRuntimeActorId);
+            $parent = $parentRuntimeId === null
+                ? null
+                : $this->entityRuntime->registry()->getByRuntimeId($parentRuntimeId);
+            if ($parent instanceof EnderDragonEntity) {
+                $projection = EnderDragonPartProjection::find($parent, $command->targetRuntimeActorId);
+                if ($projection !== null) {
+                    $target = $parent;
+                    $dragonPart = $projection->part;
+                    $dragonPartPosition = $projection->position;
+                }
+            }
+        } elseif ($target instanceof EnderDragonEntity) {
+            $dragonPart = EnderDragonPart::BODY;
+        }
         if (!$target instanceof AbstractLivingEntity) {
             return new CommandRejected($command->session, 'target_unavailable');
         }
@@ -5517,12 +6401,43 @@ final class WorldSimulation
             $attacker->gameMode() === GameMode::SPECTATOR => 'attacker_gamemode',
             !$target->isAlive() => 'target_dead',
             $command->hotbarSlot !== $attacker->inventory->selectedHotbarSlot() => 'selected_slot',
-            !$this->generalEntityIsReachable($attacker, $target) => 'reach',
+            !($dragonPartPosition === null
+                ? $this->generalEntityIsReachable($attacker, $target)
+                : $this->entityPositionIsReachable($attacker, $dragonPartPosition)) => 'reach',
             $this->tick <= ($this->entityInvulnerableUntilTicks[$target->getRuntimeId()] ?? -1) => 'damage_cooldown',
             default => null,
         };
         if ($reason !== null) {
             return new CommandRejected($command->session, $reason);
+        }
+
+        if ($target instanceof \Bedriox\Server\Entity\Vanilla\End\EndCrystalEntity && $target->isInvulnerable()) {
+            return new CommandRejected($command->session, 'target_invulnerable');
+        }
+        if ($target instanceof \Bedriox\Server\Entity\Vanilla\End\EndCrystalEntity
+            && $this->endEncounter !== null) {
+            $damageEvent = $this->pluginEvents?->entityDamage(
+                $target,
+                ApiEntityDamageCause::ATTACK,
+                1.0,
+                $this->pluginEvents->playerView($attacker),
+            );
+            if ($this->pluginEvents !== null && $damageEvent === null) {
+                return new CommandRejected($command->session, 'plugin_cancelled');
+            }
+            $explosion = $this->endEncounter->destroyCrystal($target->getRuntimeId());
+            if ($explosion === null) {
+                return new CommandRejected($command->session, 'target_unavailable');
+            }
+            $this->entityPersistence?->forgetEntity($target->getUniqueId());
+            $this->deferredEvents[] = new EntityActorRemoved($target, $this->players->recipients());
+            array_push($this->deferredEvents, ...$this->applyEndCrystalExplosion($explosion, $attacker));
+            $swing = $this->armSwingEvent($attacker, ArmSwingSource::Attack);
+            if ($swing !== null) {
+                $this->deferredEvents[] = $swing;
+            }
+
+            return new EntityExplosionPresented($explosion->position, $this->players->recipients());
         }
 
         $heldEnchantments = $this->heldEnchantments($attacker);
@@ -5548,6 +6463,9 @@ final class WorldSimulation
             return new CommandRejected($command->session, 'plugin_cancelled');
         }
         $damage = $damageEvent?->damage() ?? $reducedDamage;
+        if ($target instanceof EnderDragonEntity) {
+            $damage *= ($dragonPart ?? EnderDragonPart::BODY)->damageMultiplier();
+        }
         if ($damage <= 0.0) {
             return new CommandRejected($command->session, 'plugin_cancelled');
         }
@@ -5652,6 +6570,62 @@ final class WorldSimulation
         $this->publishedEntityHealth[$target->getRuntimeId()] = $target->getHealth();
 
         return new EntityActorDamaged($target, $this->tick, $this->players->recipients());
+    }
+
+    /** @return list<WorldEvent> */
+    private function applyEndCrystalExplosion(
+        \Bedriox\Server\Gameplay\End\EndCrystalExplosion $explosion,
+        Player $attacker,
+    ): array {
+        $events = [];
+        $radius = $explosion->power;
+        foreach ($this->players->players() as $player) {
+            if (!$player->vitals->isAlive() || !$player->gameMode()->takesDamage()) {
+                continue;
+            }
+            $distance = $player->movement->position->distanceTo($explosion->position);
+            if ($distance > $radius * 2.0) {
+                continue;
+            }
+            $exposure = max(0.0, 1.0 - ($distance / ($radius * 2.0)));
+            $events[] = $this->damage(new DamagePlayer(
+                $player->sessionId,
+                max(1.0, (($exposure * $exposure + $exposure) / 2.0) * 42.0 + 1.0),
+                DamageCause::Explosion,
+                $attacker->sessionId,
+            ));
+        }
+        foreach ($this->entityRuntime->registry()->nearby(
+            $this->worldId,
+            $explosion->position,
+            $radius * 2.0,
+            128,
+        ) as $entity) {
+            if (!$entity instanceof AbstractLivingEntity || !$entity->isAlive()
+                || $entity instanceof \Bedriox\Server\Entity\Vanilla\End\EndCrystalEntity) {
+                continue;
+            }
+            $distance = $entity->internalPosition()->distanceTo($explosion->position);
+            $exposure = max(0.0, 1.0 - ($distance / ($radius * 2.0)));
+            $proposedDamage = max(1.0, (($exposure * $exposure + $exposure) / 2.0) * 42.0 + 1.0);
+            $damageEvent = $this->pluginEvents?->entityDamage(
+                $entity,
+                ApiEntityDamageCause::EXPLOSION,
+                $proposedDamage,
+                $this->pluginEvents->playerView($attacker),
+            );
+            $damage = $damageEvent?->damage() ?? ($this->pluginEvents === null ? $proposedDamage : 0.0);
+            $result = $damage > 0.0
+                ? $this->entityRuntime->damage($entity->getRuntimeId(), $damage)
+                : null;
+            if ($result !== null && $result->appliedDamage > 0.0) {
+                if ($damageEvent !== null) {
+                    $this->entityLastDamageEvents[$entity->getRuntimeId()] = $damageEvent;
+                }
+                $events[] = new EntityActorDamaged($entity, $this->tick, $this->players->recipients());
+            }
+        }
+        return $events;
     }
 
     private function provokeNetherGroup(NetherAngerableEntity $provoked, Player $attacker): void
@@ -6551,6 +7525,16 @@ final class WorldSimulation
         ) <= $this->maximumMeleeReach($attacker);
     }
 
+    private function entityPositionIsReachable(Player $attacker, Position $position): bool
+    {
+        $from = $attacker->movement->position;
+
+        return hypot(
+            hypot($position->x - $from->x, $position->z - $from->z),
+            $position->y - ($from->y + 1.62),
+        ) <= $this->maximumMeleeReach($attacker);
+    }
+
     private function entityIsReachable(Player $attacker, Player $target): bool
     {
         $from = $attacker->movement->position;
@@ -7084,6 +8068,7 @@ final class WorldSimulation
                 $command->quitMessage ?? $defaultQuitMessage,
             );
         $this->playerPersistence?->save($player);
+        $this->removeEndEncounterParticipant($player);
         $this->players->remove($command->session);
 
         return new PlayerDisconnected(
@@ -8001,6 +8986,41 @@ final class WorldSimulation
         }
 
         if ($behavior->kind === ApiItemUseKind::INSTANT) {
+            if ($held->identifier === 'minecraft:ender_pearl') {
+                try {
+                    $projectile = $this->projectiles->spawnEnderPearl(
+                        $player->identity->uuid,
+                        $player->runtimeActorId,
+                        new Position(
+                            $player->movement->position->x,
+                            $player->movement->position->y + 1.62,
+                            $player->movement->position->z,
+                        ),
+                        $player->movement->yaw,
+                        $player->movement->pitch,
+                    );
+                } catch (InvalidArgumentException|OverflowException) {
+                    return new CommandRejected($command->session, 'ender_pearl_projectile_limit');
+                }
+                $projectile = $this->admitProjectileLaunch($player, $projectile, $held->identifier);
+                if ($projectile === null) {
+                    return new CommandRejected($command->session, 'plugin_cancelled');
+                }
+                if ($player->gameMode()->consumesItems()) {
+                    $player->inventory->decrementSelectedOne();
+                    $player->markDirty();
+                    $this->deferredEvents[] = new HeldItemChanged(
+                        $player->sessionId,
+                        $player->runtimeActorId,
+                        $player->inventory->selectedHotbarSlot(),
+                        $player->inventory->selectedStack(),
+                        $this->players->recipients($player->sessionId),
+                        ownerSlotCorrection: false,
+                    );
+                }
+                $this->deferredEvents[] = new ProjectileSpawned($projectile, $this->players->recipients());
+                $this->projectileEntitiesDirty = true;
+            }
             if ($behavior->throwablePotion !== null) {
                 $potion = (new PotionCatalog())->resolve($held->identifier, $held->auxValue);
                 if ($potion === null || $potion->container !== $behavior->throwablePotion) {
@@ -9567,12 +10587,51 @@ final class WorldSimulation
         }
         $events = [];
         $projector = new PotionEffectProjector();
+        foreach ($this->shulkerBulletTargets as $runtimeId => $targetUuid) {
+            $bullet = $this->projectiles->get($runtimeId);
+            if ($bullet === null || $bullet->type !== ProjectileType::SHULKER_BULLET) {
+                unset($this->shulkerBulletTargets[$runtimeId]);
+                continue;
+            }
+            $target = $this->players->playerByIdentity($targetUuid);
+            if ($target === null || !$target->vitals->isAlive()) {
+                continue;
+            }
+            $this->projectiles->replace(ShulkerBulletGuidance::steer(
+                $bullet,
+                new Position(
+                    $target->movement->position->x,
+                    $target->movement->position->y + 0.9,
+                    $target->movement->position->z,
+                ),
+            ));
+        }
         $projectileTick = $this->projectiles->tick();
         foreach ($projectileTick->expired as $projectile) {
             unset($this->projectilePublishedMotions[$projectile->runtimeEntityId]);
+            unset($this->shulkerBulletTargets[$projectile->runtimeEntityId]);
             $events[] = new ProjectileRemoved($projectile->runtimeEntityId, $this->players->recipients());
         }
         foreach ($projectileTick->updated as $projectile) {
+            if ($projectile->state === ProjectileState::FLYING && $this->endGateways !== null) {
+                $gatewayTransfer = $this->endGateways->contactVolume(
+                    'projectile:' . $projectile->runtimeEntityId,
+                    $projectile->position,
+                    0.25,
+                    0.25,
+                    $this->tick,
+                );
+                if ($gatewayTransfer !== null) {
+                    $projectile = $projectile->atPosition($gatewayTransfer->destination);
+                    $this->projectiles->replace($projectile);
+                    $events[] = new ProjectileMoved(
+                        $projectile,
+                        $this->players->recipients(),
+                        $this->projectileMotionChanged($projectile),
+                    );
+                    continue;
+                }
+            }
             $shooter = $this->projectileShooter($projectile);
             if ($projectile->state === ProjectileState::RETURNING) {
                 $owner = $shooter instanceof Player ? $shooter : null;
@@ -9881,7 +10940,87 @@ final class WorldSimulation
             $apiShooter = $shooter instanceof Player
                 ? $this->pluginEvents?->playerView($shooter)
                 : $shooter;
-            if ($projectile->type === ProjectileType::TRIDENT) {
+            if ($projectile->type === ProjectileType::ENDER_PEARL) {
+                $owner = $this->players->playerByIdentity($projectile->ownerUuid);
+                if ($owner !== null && $owner->vitals->isAlive()) {
+                    $destination = $projectile->position;
+                    $decision = $this->pluginEvents?->teleport(
+                        $owner,
+                        $destination,
+                        $owner->movement->yaw,
+                        $owner->movement->pitch,
+                    );
+                    if ($this->pluginEvents === null || $decision !== null) {
+                        $from = $owner->movement->position;
+                        if ($decision !== null) {
+                            $destination = $decision->destination;
+                        }
+                        $this->forceDismountPlayer($owner, MountReason::TELEPORT);
+                        $this->deferItemUseCancellation($owner, ItemUseCancellationReason::TELEPORT);
+                        $owner->movement->position = $destination;
+                        $owner->movement->mode = MovementMode::STOPPED;
+                        $owner->movement->velocityX = 0.0;
+                        $owner->movement->verticalVelocity = 0.0;
+                        $owner->movement->velocityZ = 0.0;
+                        $owner->movement->fallDistance = 0.0;
+                        $owner->movement->verticalState = $this->collisionResolver?->isGrounded($destination) === true
+                            ? VerticalState::GROUNDED
+                            : VerticalState::AIRBORNE;
+                        $owner->markDirty();
+                        $this->pluginEvents?->teleported($owner, $from);
+                        $events[] = new MovementCorrected(
+                            $owner->snapshot(),
+                            'ender_pearl',
+                            $this->players->recipients($owner->sessionId),
+                            true,
+                        );
+                        $damage = $this->damage(new DamagePlayer(
+                            $owner->sessionId,
+                            5.0,
+                            DamageCause::Magic,
+                        ));
+                        $events[] = $damage;
+                        if ($this->dropRandom->integer(1, 20) === 1) {
+                            $this->spawnEntity(new EntitySpawnRequest(
+                                VanillaEntityType::ENDERMITE,
+                                SpawnCause::ITEM,
+                                $this->worldId,
+                                $destination,
+                            ));
+                        }
+                    }
+                }
+            } elseif ($projectile->type === ProjectileType::DRAGON_FIREBALL) {
+                foreach ($this->players->players() as $candidate) {
+                    if (!$candidate->vitals->isAlive() || !$candidate->gameMode()->takesDamage()
+                        || $candidate->movement->position->distanceTo($projectile->position) > 3.0) {
+                        continue;
+                    }
+                    $events[] = $this->damage(new DamagePlayer(
+                        $candidate->sessionId,
+                        $projectile->damageBonus,
+                        DamageCause::Magic,
+                    ), $shooter instanceof AbstractLivingEntity ? $shooter : null);
+                }
+                try {
+                    $cloud = $this->areaEffectClouds->spawn(
+                        $projectile->ownerUuid,
+                        PotionType::HARMING,
+                        $projectile->position,
+                    );
+                    $events[] = new AreaEffectCloudSpawned($cloud, $this->players->recipients());
+                } catch (OverflowException) {
+                    // Direct impact remains authoritative when the bounded cloud registry is full.
+                }
+                $events[] = new ParticleSpawned(
+                    $projectile->position,
+                    new \Bedriox\Api\World\Particle\SimpleParticle(
+                        \Bedriox\Api\World\Particle\ParticleType::DRAGON_BREATH,
+                    ),
+                    $this->players->recipients(),
+                    $this->dimension,
+                );
+            } elseif ($projectile->type === ProjectileType::TRIDENT) {
                 $baseDamage = 8.0;
                 if ($direct !== null) {
                     $wetTarget = $this->playerIsSubmerged($direct)
@@ -10066,6 +11205,52 @@ final class WorldSimulation
                         $events[] = $ignited;
                     }
                 }
+            } elseif ($projectile->type === ProjectileType::SHULKER_BULLET) {
+                if ($direct !== null) {
+                    $damage = $this->damage(new DamagePlayer(
+                        $direct->sessionId,
+                        $projectile->damageBonus,
+                        DamageCause::Projectile,
+                    ), $shooter instanceof AbstractLivingEntity ? $shooter : null);
+                    if ($damage instanceof PlayerDamaged) {
+                        $events[] = $damage;
+                        if ($direct->vitals->isAlive()) {
+                            $effect = $this->addPlayerEffect(new AddPlayerEffect(
+                                $direct->sessionId,
+                                new EffectInstance(EffectType::LEVITATION, 200),
+                                EffectCause::ENTITY_ATTACK,
+                            ));
+                            if ($effect !== null) {
+                                $events[] = $effect;
+                            }
+                        }
+                    }
+                } elseif ($directEntity !== null) {
+                    $damageEvent = $this->pluginEvents?->entityDamage(
+                        $directEntity,
+                        ApiEntityDamageCause::PROJECTILE,
+                        $projectile->damageBonus,
+                        $apiShooter,
+                    );
+                    $actualDamage = $damageEvent?->damage()
+                        ?? ($this->pluginEvents === null ? $projectile->damageBonus : 0.0);
+                    if ($actualDamage > 0.0) {
+                        $this->entityRuntime->damage($directEntity->getRuntimeId(), $actualDamage);
+                        if ($directEntity->isAlive()) {
+                            $this->applyEffectToEntity(
+                                $directEntity,
+                                new EffectInstance(EffectType::LEVITATION, 200),
+                                EffectCause::ENTITY_ATTACK,
+                            );
+                        }
+                        $events[] = new EntityActorDamaged(
+                            $directEntity,
+                            $this->tick,
+                            $this->players->recipients(),
+                        );
+                    }
+                }
+                unset($this->shulkerBulletTargets[$projectile->runtimeEntityId]);
             } elseif ($projectile->type === ProjectileType::ARROW) {
                 $arrowDamage = max(1.0, round(hypot(
                     hypot($projectile->motion->x, $projectile->motion->z),
@@ -11648,6 +12833,167 @@ final class WorldSimulation
     }
 
     /** @return list<WorldEvent> */
+    private function advanceNetherLifecycle(): array
+    {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null) {
+            return [];
+        }
+        $loaded = [];
+        $inspected = 0;
+        foreach ($this->blockWorld->loadedChunks() as $chunk) {
+            $key = $chunk->position->key();
+            $loaded[$key] = true;
+            if (isset($this->knownNetherLifecycleChunks[$key]) || $inspected >= 8) {
+                continue;
+            }
+            ++$inspected;
+            $this->knownNetherLifecycleChunks[$key] = true;
+            $this->indexNetherLifecycleChunk($chunk);
+            if ($this->bastionBrutePopulation !== null
+                && $chunk->finalizationState === \Bedriox\Server\World\ChunkFinalizationState::Done) {
+                $this->bastionBrutePopulation->populateFinalizedChunk($this->worldId, $chunk->position);
+            }
+        }
+        foreach (array_keys($this->knownNetherLifecycleChunks) as $key) {
+            if (isset($loaded[$key])) {
+                continue;
+            }
+            unset($this->knownNetherLifecycleChunks[$key]);
+            [$chunkX, $chunkZ] = array_map('intval', explode(':', $key, 2));
+            $this->hoglinRepellents->removeChunk($this->worldId, new ChunkPosition($chunkX, $chunkZ));
+        }
+
+        return [];
+    }
+
+    private function advanceEndStructurePopulation(): void
+    {
+        if ($this->endCityShulkerPopulation === null || $this->blockWorld === null) {
+            return;
+        }
+        $loaded = [];
+        $inspected = 0;
+        foreach ($this->blockWorld->loadedChunks() as $chunk) {
+            $key = $chunk->position->key();
+            $loaded[$key] = true;
+            if (isset($this->knownEndPopulationChunks[$key]) || $inspected >= 8) {
+                continue;
+            }
+            ++$inspected;
+            if ($chunk->finalizationState === \Bedriox\Server\World\ChunkFinalizationState::Done) {
+                $this->endCityShulkerPopulation->populateFinalizedChunk($this->worldId, $chunk->position);
+                $this->knownEndPopulationChunks[$key] = true;
+            }
+        }
+        foreach (array_keys($this->knownEndPopulationChunks) as $key) {
+            if (!isset($loaded[$key])) {
+                unset($this->knownEndPopulationChunks[$key]);
+            }
+        }
+    }
+
+    /** @return list<Position> */
+    private function endCityShulkerCandidates(EndCityPlacement $city, ChunkPosition $chunk): array
+    {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null) {
+            return [];
+        }
+        $roomX = $city->centerX + ($city->alongX ? 34 : 0);
+        $roomZ = $city->centerZ + ($city->alongX ? 0 : 34);
+        $columns = [
+            [$city->centerX + 2, $city->centerZ],
+            [$city->centerX - 2, $city->centerZ],
+            [$roomX + ($city->alongX ? 0 : 2), $roomZ + ($city->alongX ? 2 : 0)],
+            [$roomX - ($city->alongX ? 0 : 2), $roomZ - ($city->alongX ? 2 : 0)],
+        ];
+        $candidates = [];
+        foreach ($columns as [$x, $z]) {
+            if ((int) floor($x / 16.0) !== $chunk->x || (int) floor($z / 16.0) !== $chunk->z) {
+                continue;
+            }
+            for ($y = 180; $y >= 30; --$y) {
+                $floor = $this->blockWorld->loadedBlockStateAt($x, $y, $z);
+                $feet = $this->blockWorld->loadedBlockStateAt($x, $y + 1, $z);
+                $head = $this->blockWorld->loadedBlockStateAt($x, $y + 2, $z);
+                if ($floor === null || $feet === null || $head === null) {
+                    continue;
+                }
+                if (!in_array($this->blockStateRegistry->state($floor)->identifier(), [
+                    'minecraft:purpur_block',
+                    'minecraft:purpur_pillar',
+                ], true) || $this->blockStateRegistry->state($feet)->identifier() !== 'minecraft:air'
+                    || $this->blockStateRegistry->state($head)->identifier() !== 'minecraft:air') {
+                    continue;
+                }
+                $candidates[] = new Position($x + 0.5, $y + 1.0, $z + 0.5);
+                break;
+            }
+        }
+
+        return $candidates;
+    }
+
+    private function indexNetherLifecycleChunk(\Bedriox\Server\World\Chunk $chunk): void
+    {
+        if ($this->blockStateRegistry === null) {
+            return;
+        }
+        foreach ($chunk->populatedSections() as $section) {
+            $storage = $section->blockStorageLayer(0);
+            $interesting = [];
+            foreach ($storage->palette() as $paletteIndex => $state) {
+                $identifier = $this->blockStateRegistry->state($state)->identifier();
+                if ($identifier === 'minecraft:dried_ghast' || HoglinRepellentIndex::isRepellent($identifier)) {
+                    $interesting[$paletteIndex] = $identifier;
+                }
+            }
+            if ($interesting === []) {
+                continue;
+            }
+            $indices = $storage->paletteIndices();
+            for ($offset = 0; $offset < SubChunk::BLOCK_COUNT; ++$offset) {
+                $identifier = $interesting[ord($indices[$offset])] ?? null;
+                if ($identifier === null) {
+                    continue;
+                }
+                $position = new BlockPosition(
+                    $chunk->position->x * 16 + ($offset & 0x0f),
+                    $section->sectionY * 16 + (($offset >> 8) & 0x0f),
+                    $chunk->position->z * 16 + (($offset >> 4) & 0x0f),
+                );
+                $this->updateHoglinRepellent($position, $identifier);
+                if ($identifier === 'minecraft:dried_ghast') {
+                    $this->scheduleDriedGhastHydration($position);
+                }
+            }
+        }
+    }
+
+    private function applyHoglinRepellentAvoidance(): void
+    {
+        foreach ($this->entityRuntime->registry()->all() as $entity) {
+            if (!$entity instanceof HoglinEntity || !$entity->isAlive()) {
+                continue;
+            }
+            $motion = $this->hoglinRepellents->avoidanceMotion($entity->getWorldName(), $entity->internalPosition());
+            if ($motion === null) {
+                continue;
+            }
+            $entity->suppressAiMovementUntil($this->tick + 2);
+            $entity->setMotion(new EntityMotion($motion->x, $entity->getMotion()->y, $motion->z));
+        }
+    }
+
+    private function updateHoglinRepellent(BlockPosition $position, string $identifier): void
+    {
+        try {
+            $this->hoglinRepellents->update($this->worldId, $position, $identifier);
+        } catch (OverflowException) {
+            // A full optional sensor index must not reject an otherwise valid world mutation.
+        }
+    }
+
+    /** @return list<WorldEvent> */
     private function advanceEnvironmentalBlocks(): array
     {
         if ($this->environmentTicks === null || $this->fluidFlow === null || $this->fluidWorld === null
@@ -11657,6 +13003,51 @@ final class WorldSimulation
         $drain = $this->environmentTicks->drain($this->tick, 256, 1_500);
         $events = [];
         foreach ($drain->ticks as $scheduled) {
+            if ($scheduled->type === EnvironmentTickType::DRIED_GHAST) {
+                if ($this->driedGhastHydration === null) {
+                    continue;
+                }
+                $previous = $this->blockWorld->loadedBlockStateAt(
+                    $scheduled->position->x,
+                    $scheduled->position->y,
+                    $scheduled->position->z,
+                );
+                if ($previous === null) {
+                    continue;
+                }
+                $result = $this->driedGhastHydration->tick(
+                    $this->blockWorld,
+                    $this->blockStateRegistry,
+                    $scheduled->position,
+                    $this->isDriedGhastSubmerged($scheduled->position),
+                );
+                if ($result->blockChanged) {
+                    $current = $this->blockWorld->loadedBlockStateAt(
+                        $scheduled->position->x,
+                        $scheduled->position->y,
+                        $scheduled->position->z,
+                    );
+                    if ($current !== null) {
+                        $events[] = new BlockChanged(
+                            'server',
+                            $scheduled->position,
+                            $current,
+                            $this->players->recipients(),
+                            false,
+                            $previous,
+                        );
+                    }
+                }
+                if ($result->scheduleNext) {
+                    $this->environmentTicks->schedule(
+                        $scheduled->position,
+                        EnvironmentTickType::DRIED_GHAST,
+                        $this->tick,
+                        $result->nextDelayTicks,
+                    );
+                }
+                continue;
+            }
             if ($scheduled->type === EnvironmentTickType::FROSTED_ICE) {
                 if ($this->frostedIceState === null || $this->waterState === null) {
                     continue;
@@ -11726,18 +13117,85 @@ final class WorldSimulation
         return $events;
     }
 
+    private function scheduleDriedGhastHydration(BlockPosition $position): void
+    {
+        if ($this->environmentTicks === null || $this->driedGhastHydration === null) {
+            return;
+        }
+        $this->environmentTicks->schedule(
+            $position,
+            EnvironmentTickType::DRIED_GHAST,
+            $this->tick,
+            DriedGhastHydrationRuntime::HYDRATION_STEP_TICKS,
+        );
+    }
+
+    private function scheduleDriedGhastNeighborhood(BlockPosition $origin, bool $reset): void
+    {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null) {
+            return;
+        }
+        foreach ([[0, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, -1], [0, 0, 1], [-1, 0, 0], [1, 0, 0]] as [$x, $y, $z]) {
+            try {
+                $position = new BlockPosition($origin->x + $x, $origin->y + $y, $origin->z + $z);
+            } catch (InvalidArgumentException) {
+                continue;
+            }
+            $state = $this->blockWorld->loadedBlockStateAt($position->x, $position->y, $position->z);
+            if ($state !== null && $this->blockStateRegistry->state($state)->identifier() === 'minecraft:dried_ghast') {
+                if ($reset) {
+                    $this->environmentTicks?->cancel($position, EnvironmentTickType::DRIED_GHAST);
+                }
+                $this->scheduleDriedGhastHydration($position);
+            }
+        }
+    }
+
+    private function isDriedGhastSubmerged(BlockPosition $position): bool
+    {
+        if ($this->fluidWorld === null) {
+            return false;
+        }
+        foreach ([[0, 1, 0], [0, -1, 0], [0, 0, -1], [0, 0, 1], [-1, 0, 0], [1, 0, 0]] as [$x, $y, $z]) {
+            try {
+                $neighbor = new BlockPosition($position->x + $x, $position->y + $y, $position->z + $z);
+            } catch (InvalidArgumentException) {
+                continue;
+            }
+            if ($this->fluidWorld->cellAt($neighbor)?->fluid?->type === FluidType::WATER) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function setBlockStateAndSchedule(
         BlockPosition $position,
         InternalBlockStateId $state,
         bool $prioritizeNeighborFluids = true,
+        bool $invalidatePortals = true,
     ): InternalBlockStateId {
         if ($this->blockWorld === null) {
             throw new \LogicException('The authoritative block world is unavailable.');
         }
         $previous = $this->blockWorld->setBlockState($position->x, $position->y, $position->z, $state);
         if ($previous->value !== $state->value) {
+            $identifier = $this->blockIdentifier($state->value);
+            $previousIdentifier = $this->blockIdentifier($previous->value);
+            $this->updateHoglinRepellent($position, $identifier);
+            if ($identifier === 'minecraft:dried_ghast' || $previousIdentifier === 'minecraft:dried_ghast') {
+                $this->environmentTicks?->cancel($position, EnvironmentTickType::DRIED_GHAST);
+            }
+            if ($identifier === 'minecraft:dried_ghast') {
+                $this->scheduleDriedGhastHydration($position);
+            }
+            if ($identifier === 'minecraft:water' || $previousIdentifier === 'minecraft:water') {
+                $this->scheduleDriedGhastNeighborhood($position, true);
+            }
             $this->scheduleFluidNeighborhood($position, $prioritizeNeighborFluids);
-            if ($this->netherPortals !== null && $this->blockIdentifier($state->value) !== 'minecraft:portal') {
+            if ($invalidatePortals && $this->netherPortals !== null
+                && $this->blockIdentifier($state->value) !== 'minecraft:portal') {
                 foreach ($this->netherPortals->invalidateNear(
                     $position,
                     $this->blockIdentifier($previous->value) === 'minecraft:portal',
@@ -11752,7 +13210,8 @@ final class WorldSimulation
                     );
                 }
             }
-            if ($this->endPortals !== null && $this->blockIdentifier($state->value) !== 'minecraft:end_portal') {
+            if ($invalidatePortals && $this->endPortals !== null
+                && $this->blockIdentifier($state->value) !== 'minecraft:end_portal') {
                 foreach ($this->endPortals->invalidateNear($position) as $mutation) {
                     $this->deferredEvents[] = new BlockChanged(
                         'server',
@@ -11947,7 +13406,7 @@ final class WorldSimulation
             [$headState, (int) floor($position->y + 1.62)],
         ] as [$state, $y]) {
             $identifier = $this->blockStateRegistry->state($state)->identifier();
-            if ($identifier === 'minecraft:portal' || $identifier === 'minecraft:end_portal') {
+            if (in_array($identifier, ['minecraft:portal', 'minecraft:end_portal', 'minecraft:end_gateway'], true)) {
                 $entry = new BlockPosition((int) floor($position->x), $y, (int) floor($position->z));
                 $portalIdentifier = $identifier;
                 break;
@@ -11957,6 +13416,13 @@ final class WorldSimulation
             $this->portalContacts->leave($player->sessionId);
 
             return null;
+        }
+        if ($portalIdentifier === 'minecraft:end_gateway') {
+            $transfer = $this->endGateways?->contact('player:' . $player->identity->uuid, $entry, $this->tick);
+            if ($transfer === null) {
+                return null;
+            }
+            return new EndGatewayTransferRequested($player->sessionId, $transfer->destination);
         }
         if ($portalIdentifier === 'minecraft:end_portal') {
             $target = match ($this->dimension) {
@@ -14441,6 +15907,16 @@ final class WorldSimulation
         $activeBreak = $this->breakingBlocks[$key] ?? null;
         unset($this->breakingBlocks[$key]);
         $held = $player->inventory->selectedStack();
+        if ($held?->identifier === 'minecraft:end_crystal') {
+            return $this->useEndCrystal(
+                $player,
+                $command,
+                $placedPosition,
+                $clickedState,
+                $held,
+                $activeBreak['position'] ?? null,
+            );
+        }
         if ($held?->identifier === 'minecraft:ender_eye' && $this->endPortals !== null) {
             return $this->useEnderEye(
                 $player,
@@ -14708,6 +16184,82 @@ final class WorldSimulation
             $remaining,
             $this->players->recipients(),
             $stoppedBreaking,
+        );
+    }
+
+    private function useEndCrystal(
+        Player $player,
+        PlaceBlock $command,
+        BlockPosition $position,
+        InternalBlockStateId $clickedState,
+        InventoryStack $held,
+        ?BlockPosition $stoppedBreaking,
+    ): WorldEvent {
+        $support = $this->blockIdentifier($clickedState->value);
+        $target = $this->blockWorld?->loadedBlockStateAt($position->x, $position->y, $position->z);
+        $failure = match (true) {
+            $this->dimension !== WorldDimension::END => 'dimension',
+            $command->face !== 1 => 'block_face',
+            !in_array($support, ['minecraft:bedrock', 'minecraft:obsidian'], true) => 'support_block',
+            $target === null || $target->value !== $this->blockPalette?->air->value => 'occupied',
+            $command->sequence <= $player->placementSequence => 'stale_sequence',
+            $command->hotbarSlot !== $player->inventory->selectedHotbarSlot() => 'selected_slot',
+            !$this->blockIsReachable($player->snapshot(), $command->clickedPosition) => 'reach',
+            default => null,
+        };
+        if ($command->sequence > $player->placementSequence) {
+            $player->placementSequence = $command->sequence;
+        }
+        if ($failure === null) {
+            $outcome = $this->spawnEntity(new EntitySpawnRequest(
+                VanillaEntityType::ENDER_CRYSTAL,
+                SpawnCause::ITEM,
+                $this->worldId,
+                new Position($position->x + 0.5, $position->y, $position->z + 0.5),
+            ));
+            $failure = $outcome->failure;
+        }
+        if ($failure !== null) {
+            return new BlockPlacementCorrected(
+                $command->session,
+                $command->clickedPosition,
+                $clickedState,
+                $position,
+                $target ?? $clickedState,
+                $player->inventory->selectedHotbarSlot(),
+                $held,
+                $stoppedBreaking,
+                $failure,
+            );
+        }
+        $remaining = $player->gameMode()->consumesItems()
+            ? $player->inventory->decrementSelectedOne()
+            : $held;
+        if ($player->gameMode()->consumesItems()) {
+            $player->markDirty();
+        }
+        $this->deferredEvents[] = new HeldItemChanged(
+            $player->sessionId,
+            $player->runtimeActorId,
+            $player->inventory->selectedHotbarSlot(),
+            $remaining,
+            $this->players->recipients($player->sessionId),
+            ownerSlotCorrection: false,
+        );
+        if ($this->endEncounter !== null) {
+            $this->requestEnderDragonRespawn();
+        }
+
+        return new BlockPlacementCorrected(
+            $command->session,
+            $command->clickedPosition,
+            $clickedState,
+            $position,
+            $target ?? $clickedState,
+            $player->inventory->selectedHotbarSlot(),
+            $remaining,
+            $stoppedBreaking,
+            'end_crystal_placed',
         );
     }
 

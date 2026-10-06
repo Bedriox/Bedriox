@@ -256,6 +256,43 @@ final class ProjectileRegistryTest extends TestCase
         self::assertGreaterThan(0, $large->fireTicks);
     }
 
+    public function testEnderPearlUsesPlayerOwnershipAndBallisticMotion(): void
+    {
+        $registry = new ProjectileRegistry(firstEntityId: 2_250);
+        $pearl = $registry->spawnEnderPearl(
+            '5c8fd1fe-ec31-4bd4-ab14-2c68732d88ea',
+            73,
+            new Position(0.0, 64.0, 0.0),
+            0.0,
+            0.0,
+        );
+
+        self::assertSame(ProjectileType::ENDER_PEARL, $pearl->type);
+        self::assertSame(ProjectileOwnerType::PLAYER, $pearl->ownerType);
+        self::assertEqualsWithDelta(1.5, $pearl->motion->z, 0.000_001);
+        self::assertLessThan(0.0, $pearl->tick()->motion->y);
+    }
+
+    public function testDragonFireballUsesEntityOwnershipAndDirectTrajectory(): void
+    {
+        $registry = new ProjectileRegistry(firstEntityId: 91);
+        $fireball = $registry->spawnDragonFireball(
+            'dragon-1',
+            17,
+            new Position(0.0, 80.0, 0.0),
+            new Position(9.0, 80.0, 0.0),
+        );
+
+        self::assertSame(ProjectileType::DRAGON_FIREBALL, $fireball->type);
+        self::assertSame(ProjectileOwnerType::ENTITY, $fireball->ownerType);
+        self::assertSame(17, $fireball->ownerRuntimeEntityId);
+        self::assertEqualsWithDelta(0.9, $fireball->motion->x, 0.000_001);
+        self::assertSame(0.0, $fireball->motion->y);
+        self::assertSame(0.0, $fireball->motion->z);
+        self::assertSame(0.0, ProjectileType::DRAGON_FIREBALL->gravity());
+        self::assertSame(0.0, ProjectileType::DRAGON_FIREBALL->drag());
+    }
+
     public function testProjectileOwnerRequiresAPositiveRuntimeIdentity(): void
     {
         $registry = new ProjectileRegistry();

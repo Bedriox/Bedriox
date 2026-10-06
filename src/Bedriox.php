@@ -305,6 +305,11 @@ final class Bedriox
                             $composition->host->actions(),
                             $composition->host->ownership(),
                         ),
+                        bossBars: $composition->host->bossBars($manifest->name),
+                        encounters: $composition->server->pluginApi->encounterManagerFor(
+                            $manifest->name,
+                            $composition->host->manager(),
+                        ),
                     );
                 },
                 maximumPlugins: $config->maximumPlugins,

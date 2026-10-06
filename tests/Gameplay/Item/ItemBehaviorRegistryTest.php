@@ -83,6 +83,15 @@ final class ItemBehaviorRegistryTest extends TestCase
         self::assertSame('minecraft:bucket', $milk->consumable->residueIdentifier);
     }
 
+    public function testEnderPearlIsAnInstantItemWithAVanillaCooldown(): void
+    {
+        $pearl = ItemBehaviorRegistry::vanilla()->behavior('minecraft:ender_pearl');
+
+        self::assertNotNull($pearl);
+        self::assertSame(\Bedriox\Api\Inventory\ItemUseKind::INSTANT, $pearl->kind);
+        self::assertSame(20, $pearl->cooldownTicks);
+    }
+
     public function testOwnedDefinitionsCanBeReplacedAndRemovedWithoutGlobalState(): void
     {
         $registry = new ItemBehaviorRegistry();

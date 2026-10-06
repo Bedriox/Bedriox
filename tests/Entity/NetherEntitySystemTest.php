@@ -30,8 +30,8 @@ use Bedriox\Server\Entity\Ai\AiMemoryStore;
 use Bedriox\Server\Entity\Ai\AiPlayerSnapshot;
 use Bedriox\Server\Entity\Ai\AiTickContext;
 use Bedriox\Server\Entity\Ai\Goal\FlyingWanderGoal;
+use Bedriox\Server\Entity\Ai\PlayerIdentityAiWorldView;
 use Bedriox\Server\Entity\Ai\Sensor\PiglinNearestPlayerSensor;
-use Bedriox\Server\Entity\Ai\TargetAwareAiWorldView;
 use Bedriox\Server\Entity\Ai\VanillaAiMemories;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\EntityMotion;
@@ -44,6 +44,7 @@ use Bedriox\Server\Entity\Vanilla\Nether\HappyGhastEntity;
 use Bedriox\Server\Entity\Vanilla\Nether\HoglinEntity;
 use Bedriox\Server\Entity\Vanilla\Nether\PiglinEntity;
 use Bedriox\Server\Entity\Vanilla\Nether\StriderEntity;
+use Bedriox\Server\Entity\Vanilla\Nether\ZombifiedPiglinEntity;
 use Bedriox\Server\Entity\VanillaEntityDefinitions;
 use Bedriox\Server\Gameplay\Projectile\Projectile;
 use Bedriox\Server\Gameplay\Projectile\ProjectileOwnerType;
@@ -206,13 +207,30 @@ final class NetherEntitySystemTest extends TestCase
         self::assertNull($memory->get(VanillaAiMemories::nearestPlayer(), 30));
     }
 
+    public function testZombifiedPiglinOnlyAcquiresItsAuthoritativeAngerTarget(): void
+    {
+        $target = new AiPlayerSnapshot(self::uuid(14), 'nether', new Position(2.0, 64.0, 0.0));
+        $world = new NetherTargetWorldView($target);
+        $entity = new ZombifiedPiglinEntity(self::uuid(13), 13, 'nether', new Position(0.0, 64.0, 0.0));
+
+        $entity->aiRuntime()->tick($entity, new AiTickContext(2, $world));
+        self::assertNull($entity->aiRuntime()->memory()->get(VanillaAiMemories::nearestPlayer(), 2));
+
+        $entity->setAngerTargetUniqueId($target->playerId, 400);
+        $entity->aiRuntime()->tick($entity, new AiTickContext(7, $world));
+        self::assertSame(
+            $target,
+            $entity->aiRuntime()->memory()->get(VanillaAiMemories::nearestPlayer(), 7),
+        );
+    }
+
     private static function uuid(int $suffix): string
     {
         return sprintf('00000000-0000-4000-8000-%012d', $suffix);
     }
 }
 
-final class NetherTargetWorldView implements TargetAwareAiWorldView
+final class NetherTargetWorldView implements PlayerIdentityAiWorldView
 {
     public function __construct(public ?AiPlayerSnapshot $target) {}
 
@@ -245,5 +263,10 @@ final class NetherTargetWorldView implements TargetAwareAiWorldView
         return $target !== null && in_array($target->heldItemIdentifier, $itemIdentifiers, true)
             ? $target
             : null;
+    }
+
+    public function playerByIdentity(string $playerId): ?AiPlayerSnapshot
+    {
+        return $this->target?->playerId === $playerId ? $this->target : null;
     }
 }

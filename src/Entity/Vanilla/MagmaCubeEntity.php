@@ -27,11 +27,12 @@ use Bedriox\Server\Entity\Ai\VanillaAiBehaviors;
 use Bedriox\Server\Entity\EntityMotion;
 use Bedriox\Server\Entity\MonsterEntity;
 use Bedriox\Server\Entity\Persistence\IntrinsicEntityPersistence;
+use Bedriox\Server\Entity\Spawn\SpawnVariantAware;
 use Bedriox\Server\Entity\VanillaEntityDefinitions;
 use Bedriox\Server\Simulation\Position;
 use InvalidArgumentException;
 
-final class MagmaCubeEntity extends MonsterEntity implements MagmaCube, IntrinsicEntityPersistence
+final class MagmaCubeEntity extends MonsterEntity implements MagmaCube, IntrinsicEntityPersistence, SpawnVariantAware
 {
     public function __construct(string $uniqueId, int $runtimeId, string $worldName, Position $position, private readonly SlimeSize $size = SlimeSize::LARGE, ?AiBehaviorDefinition $behavior = null, EntityMotion $motion = new EntityMotion(), float $yaw = 0.0, float $pitch = 0.0, ?float $health = null)
     {
@@ -41,6 +42,13 @@ final class MagmaCubeEntity extends MonsterEntity implements MagmaCube, Intrinsi
     public function getSize(): SlimeSize
     {
         return $this->size;
+    }
+
+    public function applySpawnVariant(int|string $variant): void
+    {
+        if (!is_int($variant) || SlimeSize::tryFrom($variant) !== $this->size) {
+            throw new InvalidArgumentException('Magma-cube spawn variant is unsupported.');
+        }
     }
 
     public function persistenceVariant(): int

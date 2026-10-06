@@ -26,6 +26,7 @@ use Bedriox\Api\Plugin\PluginContext;
 use Bedriox\Api\Plugin\SourcePluginDefinition;
 use Bedriox\Server\Observability\CrashContextPublisher;
 use Bedriox\Server\Observability\ServerLogger;
+use Bedriox\Server\Plugin\BossBar\BossBarRegistry;
 use Bedriox\Server\Plugin\Command\CommandRegistry;
 use Bedriox\Server\Plugin\Command\OwnedCommandRegistrar;
 use Bedriox\Server\Plugin\Data\ArrayPluginResourceProvider;
@@ -47,6 +48,7 @@ final class PluginHost
     private readonly CommandRegistry $commands;
     private readonly MainThreadPluginScheduler $scheduler;
     private readonly PluginEntityRegistrar $entities;
+    private readonly BossBarRegistry $bossBars;
     /** @var list<PluginPackage> */
     private array $packages = [];
     /** @var array<string, array{provider: string, definitions: list<SourcePluginDefinition>}> */
@@ -70,6 +72,8 @@ final class PluginHost
         ?Closure $commandSelectorOrigin = null,
     ) {
         $this->ownership = new PluginOwnershipRegistry();
+        $onlinePlayers ??= static fn(): array => [];
+        $this->bossBars = new BossBarRegistry($this->ownership, $onlinePlayers);
         $this->actions = new PluginActionBuffer();
         $this->execution = new PluginExecutionContext(crashContext: $crashContext);
         $this->manager = new PluginManager($this->execution, $this->ownership, function (PluginFailure $failure): void {
@@ -188,6 +192,7 @@ final class PluginHost
                 $plugin = ($package->instantiate)($context);
                 $this->manager->add($package->manifest, $plugin);
             } catch (Throwable $failure) {
+                $this->ownership->releaseAll($package->manifest->name);
                 $this->logger->error(sprintf(
                     'Plugin %s could not be prepared (%s)',
                     $package->manifest->name,
@@ -264,6 +269,12 @@ final class PluginHost
     public function entities(): PluginEntityRegistrar
     {
         return $this->entities;
+    }
+
+    /** @internal Used to construct owner-scoped public boss-bar managers. */
+    public function bossBars(string $plugin): \Bedriox\Api\BossBar\BossBarManager
+    {
+        return $this->bossBars->forOwner($plugin);
     }
 
     /** @internal Used by the simulation-backed public API composition. */

@@ -22,12 +22,14 @@ namespace Bedriox\Server\Tests\Entity\Spawn;
 
 use Bedriox\Api\Entity\CustomEntityType;
 use Bedriox\Api\Entity\SpawnCause;
+use Bedriox\Api\Entity\Value\SlimeSize;
 use Bedriox\Api\Entity\VanillaEntityType;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\EntityDespawnPolicy;
 use Bedriox\Server\Entity\EntityRegistry;
 use Bedriox\Server\Entity\Spawn\EntitySpawnRequest;
 use Bedriox\Server\Entity\Spawn\EntitySpawnService;
+use Bedriox\Server\Entity\Vanilla\MagmaCubeEntity;
 use Bedriox\Server\Simulation\Position;
 use PHPUnit\Framework\TestCase;
 
@@ -166,5 +168,24 @@ final class EntitySpawnServiceTest extends TestCase
         self::assertTrue($command->succeeded());
         self::assertTrue($spawnEgg->succeeded());
         self::assertSame('collision', $natural->failure);
+    }
+
+    public function testMagmaCubeVariantSelectsItsAuthoritativeDefinitionBeforeAdmission(): void
+    {
+        $registry = new EntityRegistry();
+        $service = new EntitySpawnService($registry, EntityDefinitionRegistry::baseline());
+
+        $outcome = $service->spawn(new EntitySpawnRequest(
+            VanillaEntityType::MAGMA_CUBE,
+            SpawnCause::NATURAL,
+            'nether',
+            new Position(1.5, 64.0, 1.5),
+            variant: SlimeSize::SMALL->value,
+        ));
+
+        self::assertInstanceOf(MagmaCubeEntity::class, $outcome->entity);
+        self::assertSame(SlimeSize::SMALL, $outcome->entity->getSize());
+        self::assertSame(1.0, $outcome->entity->getMaximumHealth());
+        self::assertEqualsWithDelta(0.52, $outcome->entity->collisionWidth(), 0.000_001);
     }
 }

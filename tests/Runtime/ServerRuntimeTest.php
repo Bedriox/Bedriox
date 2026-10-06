@@ -282,6 +282,24 @@ final class ServerRuntimeTest extends TestCase
 
             self::assertTrue($runtime->teleportPlayer(
                 '00000000-0000-0000-0000-000000000001',
+                new \Bedriox\Api\World\Position(12.5, 70.0, 12.5),
+            ));
+            $clock->advance(50_000_000);
+            self::assertTrue($runtime->poll());
+            self::assertSame(12.5, $sourceSimulation->authoritativePlayer(
+                '00000000-0000-0000-0000-000000000001',
+            )?->movement->position->x);
+            $sameWorldPackets = $this->decodeEncryptedPackets($transport->sent, $decryptor);
+            self::assertFalse(array_any(
+                $sameWorldPackets,
+                static fn(Packet $packet): bool => $packet instanceof SetTimePacket
+                    || $packet instanceof SetDifficultyPacket
+                    || $packet instanceof ChangeDimensionPacket,
+            ), 'A same-runtime teleport must not enter the world-switch pipeline.');
+            $transport->sent = [];
+
+            self::assertTrue($runtime->teleportPlayer(
+                '00000000-0000-0000-0000-000000000001',
                 new \Bedriox\Api\World\Position(160.5, 70.0, -79.5, 135.0, -30.0, $destinationRuntime->handle),
             ));
             $packets = [];

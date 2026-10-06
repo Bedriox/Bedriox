@@ -20,9 +20,11 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\Plugin;
 
+use Bedriox\Api\BossBar\BossBarManager;
 use Bedriox\Api\Command\CommandRegistrar;
 use Bedriox\Api\Crafting\RecipeRegistrar;
 use Bedriox\Api\Crafting\UnavailableRecipeRegistrar;
+use Bedriox\Api\Encounter\EncounterManager;
 use Bedriox\Api\Entity\EntityRegistrar;
 use Bedriox\Api\Entity\UnavailableEntityRegistrar;
 use Bedriox\Api\Event\EventRegistrar;
@@ -52,6 +54,8 @@ final class PluginContext
         private readonly EntityRegistrar $entities = new UnavailableEntityRegistrar(),
         private readonly GeneratorRegistrar $generators = new UnavailableGeneratorRegistrar(),
         private readonly ?ContainerManager $containers = null,
+        private readonly ?BossBarManager $bossBars = null,
+        private readonly ?EncounterManager $encounters = null,
     ) {}
 
     public function name(): string
@@ -120,6 +124,18 @@ final class PluginContext
             ?? throw new \LogicException('The container capability is unavailable.');
     }
 
+    public function bossBars(): BossBarManager
+    {
+        return $this->bossBars
+            ?? throw new \LogicException('The boss-bar capability is unavailable.');
+    }
+
+    public function encounters(): EncounterManager
+    {
+        return $this->encounters
+            ?? throw new \LogicException('The encounter capability is unavailable.');
+    }
+
     /** @internal Used by the server composition root to attach an owner-scoped scheduler. */
     public function withScheduler(PluginScheduler $scheduler): self
     {
@@ -137,6 +153,8 @@ final class PluginContext
             $this->entities,
             $this->generators,
             $this->containers,
+            $this->bossBars,
+            $this->encounters,
         );
     }
 
@@ -157,6 +175,8 @@ final class PluginContext
             $this->entities,
             $generators,
             $this->containers,
+            $this->bossBars,
+            $this->encounters,
         );
     }
 }

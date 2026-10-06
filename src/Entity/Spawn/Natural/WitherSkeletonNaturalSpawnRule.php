@@ -28,6 +28,6 @@ final readonly class WitherSkeletonNaturalSpawnRule implements NaturalSpawnRule
     {
         return $context->dimension === WorldDimension::NETHER
             && $context->medium === NaturalSpawnMedium::GROUND
-            && $context->supportBlock === 'minecraft:nether_brick';
+            && $context->netherStructure === NetherStructureType::FORTRESS;
     }
 }

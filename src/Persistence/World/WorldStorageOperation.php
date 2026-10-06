@@ -28,4 +28,6 @@ enum WorldStorageOperation: int
     case LOAD_ENTITY_CHUNK = 32_104;
     case SAVE_ENTITY_CHUNK = 32_105;
     case TRANSFER_ENTITY_OWNERSHIP = 32_106;
+    case LOAD_TRANSIENT_ENTITIES = 32_107;
+    case SAVE_TRANSIENT_ENTITIES = 32_108;
 }

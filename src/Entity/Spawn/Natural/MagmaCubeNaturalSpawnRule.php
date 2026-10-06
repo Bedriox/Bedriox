@@ -27,6 +27,8 @@ final readonly class MagmaCubeNaturalSpawnRule implements NaturalSpawnRule
     public function allows(NaturalSpawnContext $context): bool
     {
         return $context->dimension === WorldDimension::NETHER
-            && $context->medium === NaturalSpawnMedium::GROUND;
+            && $context->medium === NaturalSpawnMedium::GROUND
+            && ($context->netherStructure === NetherStructureType::FORTRESS
+                || in_array($context->biome, ['minecraft:hell', 'minecraft:basalt_deltas'], true));
     }
 }

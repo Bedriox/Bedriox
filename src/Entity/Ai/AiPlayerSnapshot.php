@@ -33,6 +33,9 @@ final readonly class AiPlayerSnapshot
         public bool $damageable = true,
         public ?string $heldItemIdentifier = null,
         public bool $wearingGoldArmor = false,
+        public float $headYaw = 0.0,
+        public float $pitch = 0.0,
+        public bool $wearingEndermanProtectiveHeadwear = false,
     ) {
         if ($playerId === '' || strlen($playerId) > 128 || preg_match('//u', $playerId) !== 1) {
             throw new InvalidArgumentException('AI player identity must be valid UTF-8 and bounded.');
@@ -49,6 +52,9 @@ final readonly class AiPlayerSnapshot
             && (strlen($heldItemIdentifier) > 128
                 || preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $heldItemIdentifier) !== 1)) {
             throw new InvalidArgumentException('AI held-item identifier must be canonical and bounded.');
+        }
+        if (!is_finite($headYaw) || !is_finite($pitch) || abs($headYaw) > 360.0 || abs($pitch) > 90.0) {
+            throw new InvalidArgumentException('AI player look rotation is invalid.');
         }
     }
 

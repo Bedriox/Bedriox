@@ -155,6 +155,12 @@ final class ItemBehaviorRegistry
             0,
             kind: \Bedriox\Api\Inventory\ItemUseKind::INSTANT,
         );
+        $behaviors[] = new ItemUseBehavior(
+            'minecraft:ender_pearl',
+            0,
+            kind: \Bedriox\Api\Inventory\ItemUseKind::INSTANT,
+            cooldownTicks: 20,
+        );
 
         return new self($behaviors);
     }

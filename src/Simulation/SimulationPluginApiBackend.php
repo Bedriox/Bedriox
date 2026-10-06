@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Simulation;
 
+use Bedriox\Api\Encounter\EncounterManager;
 use Bedriox\Api\Server;
 use Bedriox\Api\Whitelist\Whitelist;
 use Bedriox\Api\World\WorldManager as ApiWorldManager;
@@ -29,6 +30,7 @@ use Bedriox\Server\Plugin\PluginActionBuffer;
 use Bedriox\Server\Plugin\PluginOwnershipRegistry;
 use Bedriox\Server\Plugin\PluginRuntimeControl;
 use Bedriox\Server\Runtime\WorldRuntimeManager;
+use Bedriox\Server\Simulation\Encounter\SimulationEncounterManager;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 
 /** @internal Owns the only public-API projection into the authoritative simulation. */
@@ -89,6 +91,17 @@ final readonly class SimulationPluginApiBackend
         ))->manager();
     }
 
+    public function encounterManagerFor(
+        string $plugin,
+        PluginRuntimeControl $plugins,
+    ): EncounterManager {
+        return new SimulationEncounterManager(
+            $plugin,
+            $plugins,
+            $this->simulations(...),
+        );
+    }
+
     /** @return list<\Bedriox\Api\Player\Player> */
     private function pluginPlayers(): array
     {
@@ -121,7 +134,7 @@ final readonly class SimulationPluginApiBackend
 
         return array_map(
             static fn(\Bedriox\Server\Runtime\ManagedWorldRuntime $runtime): WorldSimulation => $runtime->simulation,
-            $this->worldRuntimes->loaded(),
+            $this->worldRuntimes->loadedDimensions(),
         );
     }
 }

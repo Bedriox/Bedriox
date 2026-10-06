@@ -36,22 +36,30 @@ use Bedriox\Api\Entity\Vanilla\Fox;
 use Bedriox\Api\Entity\Vanilla\Pig;
 use Bedriox\Api\Entity\Vanilla\Rabbit;
 use Bedriox\Api\Entity\Vanilla\Sheep;
+use Bedriox\Api\Entity\Vanilla\Shulker;
 use Bedriox\Api\Entity\Vanilla\Slime;
 use Bedriox\Api\Entity\Vanilla\Wolf;
 use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Inventory\ItemStack;
+use Bedriox\Api\World\BlockFace;
 use Bedriox\Protocol\Packet\ActorAttribute;
 use Bedriox\Protocol\Packet\ActorFlag;
 use Bedriox\Protocol\Packet\ActorMetadata;
 use Bedriox\Protocol\Packet\ActorSpawnAttribute;
+use Bedriox\Protocol\Packet\BlockPosition as ProtocolBlockPosition;
 use Bedriox\Protocol\Packet\BoatActorMetadata;
+use Bedriox\Protocol\Packet\EndCrystalActorMetadata;
 use Bedriox\Protocol\Packet\InventoryContainerId;
 use Bedriox\Protocol\Packet\InventoryItemStack as ProtocolInventoryItemStack;
 use Bedriox\Protocol\Packet\MobArmorEquipmentPacket;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
 use Bedriox\Protocol\Packet\Packet;
+use Bedriox\Protocol\Packet\ShulkerActorMetadata;
+use Bedriox\Protocol\Packet\ShulkerAttachmentFace;
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\Server\Entity\AbstractLivingEntity;
+use Bedriox\Server\Entity\Vanilla\End\EndCrystalEntity;
+use Bedriox\Server\Entity\Vanilla\Nether\StriderEntity;
 use Bedriox\Server\Entity\Vehicle\BoatEntity;
 use Bedriox\Server\Player\InventoryStack;
 use LogicException;
@@ -118,9 +126,29 @@ final class BedrockLivingActorProjector
             ActorMetadata::long(37, -1),
             ActorMetadata::float(38, $entity->scale()),
             ActorMetadata::short(42, 400),
+            ...($entity instanceof EndCrystalEntity ? [EndCrystalActorMetadata::beamTarget(
+                $entity->beamTarget() === null
+                    ? new ProtocolBlockPosition(0, 0, 0)
+                    : new ProtocolBlockPosition(
+                        (int) floor($entity->beamTarget()->x),
+                        (int) floor($entity->beamTarget()->y),
+                        (int) floor($entity->beamTarget()->z),
+                    ),
+            )] : []),
             ActorMetadata::float(53, $entity->collisionWidth()),
             ActorMetadata::float(54, $entity->collisionHeight()),
             ...($entity instanceof Creeper ? [ActorMetadata::int(55, 30)] : []),
+            ...($entity instanceof Shulker ? ShulkerActorMetadata::presentation(
+                $entity->getPeekAmount(),
+                match ($entity->getAttachmentFace()) {
+                    BlockFace::DOWN => ShulkerAttachmentFace::Down,
+                    BlockFace::UP => ShulkerAttachmentFace::Up,
+                    BlockFace::NORTH => ShulkerAttachmentFace::North,
+                    BlockFace::SOUTH => ShulkerAttachmentFace::South,
+                    BlockFace::WEST => ShulkerAttachmentFace::West,
+                    BlockFace::EAST => ShulkerAttachmentFace::East,
+                },
+            ) : []),
             ActorMetadata::byte(81, 0),
             ActorMetadata::long(92, 0),
             ActorMetadata::float(120, 0.0),
@@ -178,6 +206,12 @@ final class BedrockLivingActorProjector
         }
         if ($entity instanceof Shearable && $entity->isSheared()) {
             $flags |= ActorFlag::Sheared->mask();
+        }
+        if ($entity instanceof EndCrystalEntity && $entity->showsBase()) {
+            $flags |= ActorFlag::ShowBottom->mask();
+        }
+        if ($entity instanceof StriderEntity && !$entity->isWarm()) {
+            $flags |= ActorFlag::Shaking->mask();
         }
 
         return ActorMetadata::long(0, $flags);

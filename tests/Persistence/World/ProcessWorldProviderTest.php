@@ -114,6 +114,56 @@ final class ProcessWorldProviderTest extends TestCase
         $provider->worldData();
     }
 
+    public function testTransientEntityStateCrossesDedicatedOwnerBoundary(): void
+    {
+        $provider = ProcessWorldProvider::start(
+            'test-version',
+            new WorldStorageStartup('create', 'fixture-transient-entities', self::worldData(), 1234),
+            self::states(),
+            entryPoint: self::FIXTURE,
+        );
+        try {
+            self::assertNull($provider->loadTransientEntities('end_encounter'));
+            $provider->saveTransientEntities('end_encounter', '{"dragonKilled":true}');
+            self::assertSame('{"dragonKilled":true}', $provider->loadTransientEntities('end_encounter'));
+            $provider->saveTransientEntities('end_encounter', null);
+            self::assertNull($provider->loadTransientEntities('end_encounter'));
+        } finally {
+            $provider->close();
+        }
+    }
+
+    public function testTransientEntityCheckpointDoesNotWaitForActiveTerrainPersistence(): void
+    {
+        $states = self::states();
+        $provider = ProcessWorldProvider::start(
+            'test-version',
+            new WorldStorageStartup('create', 'fixture-transient-slow-save', self::worldData(), 1234),
+            $states,
+            entryPoint: self::FIXTURE,
+        );
+        try {
+            $chunk = WorldGeneratorFactory::create('flat', 42, $states)->generate(new ChunkPosition(4, -5));
+            self::assertSame(
+                PersistenceSubmission::ACCEPTED,
+                $provider->enqueueChunkSave(new ChunkSaveData($chunk))->status,
+            );
+            self::assertSame([], $provider->pollChunkSaves());
+
+            $started = hrtime(true);
+            $provider->saveTransientEntities('end_encounter', '{"revision":43}');
+            self::assertLessThan(
+                250_000_000,
+                hrtime(true) - $started,
+                'Encounter checkpoint waited for active terrain persistence.',
+            );
+            self::assertSame('{"revision":43}', $provider->loadTransientEntities('end_encounter'));
+            $provider->drainChunkSaves(5_000);
+        } finally {
+            $provider->close();
+        }
+    }
+
     public function testDedicatedOwnerStartupCanBePolledWithoutBlockingTheCaller(): void
     {
         $startedAt = hrtime(true);

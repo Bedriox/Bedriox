@@ -36,6 +36,8 @@ use Bedriox\Protocol\Packet\AnimatePacket;
 use Bedriox\Protocol\Packet\BasicInventoryTransaction;
 use Bedriox\Protocol\Packet\BedrockPacketCodec;
 use Bedriox\Protocol\Packet\BlockPosition;
+use Bedriox\Protocol\Packet\BossEventAction;
+use Bedriox\Protocol\Packet\BossEventPacket;
 use Bedriox\Protocol\Packet\ChangeDimensionPacket;
 use Bedriox\Protocol\Packet\ChatPacket;
 use Bedriox\Protocol\Packet\ChunkRadiusUpdatedPacket;
@@ -1659,6 +1661,35 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertTrue($unknown->isClosed());
     }
 
+    public function testBossEventMembershipAndQueryAreAdvisoryButClientMutationFailsClosed(): void
+    {
+        foreach ([
+            BossEventAction::REGISTER_PLAYER,
+            BossEventAction::UNREGISTER_PLAYER,
+            BossEventAction::QUERY,
+        ] as $action) {
+            [$advisory, $advisoryClient] = $this->channel();
+            self::assertTrue($advisory->accept(new ConnectedPayloadEvent(
+                $advisoryClient->encryptEnvelope($this->encode([
+                    new BossEventPacket(-1, $action),
+                ])),
+                Reliability::ReliableOrdered,
+                0,
+            )));
+            self::assertFalse($advisory->isClosed());
+        }
+
+        [$mutation, $mutationClient] = $this->channel();
+        self::assertFalse($mutation->accept(new ConnectedPayloadEvent(
+            $mutationClient->encryptEnvelope($this->encode([
+                new BossEventPacket(-1, BossEventAction::UPDATE_NAME, 'client-owned'),
+            ])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        self::assertTrue($mutation->isClosed());
+    }
+
     public function testCreativeRequestDecodeFailureReportsActionWithoutPacketBytes(): void
     {
         $lines = [];
@@ -2032,6 +2063,7 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertSame(70, $publisher->y);
         self::assertSame(-80, $publisher->z);
         self::assertFalse($channel->hasSentChunkAt(0.0, 0.0));
+        self::assertGreaterThan(0, $source->processChunkUnloads()->evicted);
 
         self::assertTrue($channel->worldTick());
         $destinationPayloads = $channel->drainOutgoing();

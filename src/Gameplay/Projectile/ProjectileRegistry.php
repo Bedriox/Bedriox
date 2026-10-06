@@ -233,6 +233,120 @@ final class ProjectileRegistry
         return $projectile;
     }
 
+    public function spawnEnderPearl(
+        string $ownerUuid,
+        int $ownerRuntimeEntityId,
+        Position $position,
+        float $yaw,
+        float $pitch,
+    ): Projectile {
+        if (count($this->projectiles) >= $this->capacity || $this->nextEntityId >= PHP_INT_MAX
+            || !is_finite($yaw) || !is_finite($pitch) || $pitch < -90.0 || $pitch > 90.0) {
+            throw new InvalidArgumentException('Ender Pearl projectile input is invalid or the registry is exhausted.');
+        }
+        $yawRadians = deg2rad($yaw);
+        $pitchRadians = deg2rad($pitch);
+        $horizontal = cos($pitchRadians);
+        $id = $this->nextEntityId++;
+        $projectile = new Projectile(
+            $id,
+            $id,
+            $ownerUuid,
+            PotionType::WATER,
+            false,
+            $position,
+            new EntityMotion(
+                -sin($yawRadians) * $horizontal * 1.5,
+                -sin($pitchRadians) * 1.5,
+                cos($yawRadians) * $horizontal * 1.5,
+            ),
+            pickupAllowed: false,
+            type: ProjectileType::ENDER_PEARL,
+            ownerRuntimeEntityId: $ownerRuntimeEntityId,
+            ownerType: ProjectileOwnerType::PLAYER,
+            yaw: $yaw,
+            pitch: $pitch,
+        );
+        $this->projectiles[$id] = $projectile;
+
+        return $projectile;
+    }
+
+    public function spawnDragonFireball(
+        string $ownerUuid,
+        int $ownerRuntimeEntityId,
+        Position $position,
+        Position $target,
+    ): Projectile {
+        if (count($this->projectiles) >= $this->capacity || $this->nextEntityId >= PHP_INT_MAX) {
+            throw new OverflowException('Projectile registry is exhausted.');
+        }
+        $dx = $target->x - $position->x;
+        $dy = $target->y - $position->y;
+        $dz = $target->z - $position->z;
+        $distance = hypot(hypot($dx, $dz), $dy);
+        if ($distance < 0.001 || !is_finite($distance)) {
+            throw new InvalidArgumentException('Dragon fireball target must differ from its origin.');
+        }
+        $speed = 0.9;
+        $id = $this->nextEntityId++;
+        $yaw = rad2deg(atan2(-$dx, $dz));
+        $pitch = rad2deg(-asin(max(-1.0, min(1.0, $dy / $distance))));
+        $projectile = new Projectile(
+            $id,
+            $id,
+            $ownerUuid,
+            PotionType::WATER,
+            false,
+            $position,
+            new EntityMotion($dx / $distance * $speed, $dy / $distance * $speed, $dz / $distance * $speed),
+            pickupAllowed: false,
+            damageBonus: 6.0,
+            knockbackStrength: 0.0,
+            type: ProjectileType::DRAGON_FIREBALL,
+            ownerRuntimeEntityId: $ownerRuntimeEntityId,
+            ownerType: ProjectileOwnerType::ENTITY,
+            yaw: $yaw,
+            pitch: $pitch,
+        );
+        $this->projectiles[$id] = $projectile;
+
+        return $projectile;
+    }
+
+    public function spawnShulkerBullet(
+        string $ownerUuid,
+        int $ownerRuntimeEntityId,
+        Position $position,
+        Position $target,
+    ): Projectile {
+        if (count($this->projectiles) >= $this->capacity || $this->nextEntityId >= PHP_INT_MAX) {
+            throw new OverflowException('Projectile registry is exhausted.');
+        }
+        $motion = ShulkerBulletGuidance::initialMotion($position, $target);
+        $id = $this->nextEntityId++;
+        $projectile = new Projectile(
+            $id,
+            $id,
+            $ownerUuid,
+            PotionType::WATER,
+            false,
+            $position,
+            $motion,
+            pickupAllowed: false,
+            damageBonus: 4.0,
+            knockbackStrength: 0.0,
+            type: ProjectileType::SHULKER_BULLET,
+            ownerRuntimeEntityId: $ownerRuntimeEntityId,
+            ownerType: ProjectileOwnerType::ENTITY,
+            yaw: ShulkerBulletGuidance::yaw($motion),
+            pitch: ShulkerBulletGuidance::pitch($motion),
+        );
+        $this->projectiles[$id] = $projectile;
+
+        return $projectile;
+    }
+
     public function spawnTrident(
         string $ownerUuid,
         int $ownerRuntimeEntityId,

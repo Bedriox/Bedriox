@@ -79,7 +79,7 @@ final class DimensionWorldGeneratorTest extends TestCase
         self::assertSame('minecraft:air', $states->state($spawnChunk->blockStateAt(4, 49, 0))->identifier());
 
         $origin = $generator->generate(new ChunkPosition(0, 0));
-        self::assertSame('minecraft:end_portal', $states->state($origin->blockStateAt(0, 69, 0))->identifier());
+        self::assertSame('minecraft:air', $states->state($origin->blockStateAt(0, 69, 0))->identifier());
         self::assertSame('minecraft:bedrock', $states->state($origin->blockStateAt(3, 69, 0))->identifier());
 
         $pillar = $generator->generate(new ChunkPosition(2, 0));

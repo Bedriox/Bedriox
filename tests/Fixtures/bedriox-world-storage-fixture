@@ -11,6 +11,7 @@ use Bedriox\Server\Entity\Persistence\EntityOwnershipTransfer;
 use Bedriox\Server\Entity\Persistence\EntityOwnershipTransferResult;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceConflictException;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
+use Bedriox\Server\Entity\Persistence\TransientEntityPersistenceStore;
 use Bedriox\Server\Persistence\World\Internal\WorldStorageProcessProgram;
 use Bedriox\Server\Persistence\World\WorldStorageStartup;
 use Bedriox\Server\Tests\World\InMemoryWorldProvider;
@@ -50,9 +51,11 @@ exit(WorldStorageProcessProgram::run(
         $delayLoads = str_contains($startup->path, 'timeout');
         $delaySaves = str_contains($startup->path, 'slow-save');
 
-        return new class ($inner, $delayLoads, $delaySaves, str_contains($startup->path, 'entity-corrupt')) implements WritableWorldProvider, EntityPersistenceStore {
+        return new class ($inner, $delayLoads, $delaySaves, str_contains($startup->path, 'entity-corrupt')) implements WritableWorldProvider, EntityPersistenceStore, TransientEntityPersistenceStore {
             /** @var array<string, EntityChunkSnapshot> */
             private array $entitySnapshots = [];
+            /** @var array<string, string> */
+            private array $transientEntities = [];
 
             public function __construct(
                 private InMemoryWorldProvider $inner,
@@ -69,8 +72,7 @@ exit(WorldStorageProcessProgram::run(
             public function loadChunk(
                 ChunkPosition $position,
                 WorldDimension $dimension = WorldDimension::OVERWORLD,
-            ): ?LoadedChunkData
-            {
+            ): ?LoadedChunkData {
                 if ($this->delayLoads) {
                     usleep(500_000);
                 }
@@ -86,8 +88,7 @@ exit(WorldStorageProcessProgram::run(
             public function saveChunk(
                 ChunkSaveData $chunkData,
                 WorldDimension $dimension = WorldDimension::OVERWORLD,
-            ): void
-            {
+            ): void {
                 if ($this->delaySaves) {
                     usleep(500_000);
                 }
@@ -97,8 +98,7 @@ exit(WorldStorageProcessProgram::run(
             public function loadEntityChunk(
                 ChunkPosition $position,
                 WorldDimension $dimension = WorldDimension::OVERWORLD,
-            ): ?EntityChunkSnapshot
-            {
+            ): ?EntityChunkSnapshot {
                 if ($this->corruptEntities && $position->x === 0 && $position->z === 0) {
                     throw new CorruptEntityPersistenceException($position);
                 }
@@ -109,8 +109,7 @@ exit(WorldStorageProcessProgram::run(
             public function saveEntityChunk(
                 EntityChunkSnapshot $snapshot,
                 WorldDimension $dimension = WorldDimension::OVERWORLD,
-            ): void
-            {
+            ): void {
                 $key = $dimension->value . ':' . $snapshot->chunk->key();
                 $current = $this->entitySnapshots[$key] ?? null;
                 if ($current instanceof EntityChunkSnapshot && $snapshot->chunkRevision <= $current->chunkRevision) {
@@ -122,8 +121,7 @@ exit(WorldStorageProcessProgram::run(
             public function transferEntityOwnership(
                 EntityOwnershipTransfer $transfer,
                 WorldDimension $dimension = WorldDimension::OVERWORLD,
-            ): EntityOwnershipTransferResult
-            {
+            ): EntityOwnershipTransferResult {
                 $prefix = $dimension->value . ':';
                 $source = $this->entitySnapshots[$prefix . $transfer->sourceAfter->chunk->key()] ?? null;
                 if (!$source instanceof EntityChunkSnapshot
@@ -134,6 +132,21 @@ exit(WorldStorageProcessProgram::run(
                 $this->entitySnapshots[$prefix . $transfer->destinationAfter->chunk->key()] = $transfer->destinationAfter;
 
                 return new EntityOwnershipTransferResult($transfer->sourceAfter, $transfer->destinationAfter);
+            }
+
+            public function loadTransientEntities(string $namespace): ?string
+            {
+                return $this->transientEntities[$namespace] ?? null;
+            }
+
+            public function saveTransientEntities(string $namespace, ?string $payload): void
+            {
+                if ($payload === null) {
+                    unset($this->transientEntities[$namespace]);
+
+                    return;
+                }
+                $this->transientEntities[$namespace] = $payload;
             }
 
             public function close(): void

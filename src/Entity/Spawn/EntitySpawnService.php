@@ -76,23 +76,27 @@ final readonly class EntitySpawnService
         $entity = null;
         try {
             $entity = $this->entities->spawn(
-                fn(string $uuid, int $runtimeId) => ($registration->factory)(
-                    $uuid,
-                    $runtimeId,
-                    $request->worldName,
-                    $request->position,
-                    $request->yaw,
-                    $request->pitch,
-                ),
+                fn(string $uuid, int $runtimeId) => $request->variant !== null
+                    && $registration->variantFactory !== null
+                    ? ($registration->variantFactory)(
+                        $uuid,
+                        $runtimeId,
+                        $request->worldName,
+                        $request->position,
+                        $request->yaw,
+                        $request->pitch,
+                        $request->variant,
+                    )
+                    : ($registration->factory)(
+                        $uuid,
+                        $runtimeId,
+                        $request->worldName,
+                        $request->position,
+                        $request->yaw,
+                        $request->pitch,
+                    ),
                 $request->uniqueId,
             );
-            if ($entity->getType()->identifier() !== $registration->definition->type->identifier()
-                || $entity->getCategory() !== $registration->definition->category
-                || $entity->definition() !== $registration->definition) {
-                $this->entities->remove($entity->getRuntimeId());
-                throw new LogicException('Entity factory returned an entity which does not match its definition.');
-            }
-            $entity->restoreSpawnOwnership($request->cause, EntityDespawnPolicy::forSpawnCause($request->cause));
             if ($request->variant !== null) {
                 if (!$entity instanceof SpawnVariantAware) {
                     $this->entities->remove($entity->getRuntimeId());
@@ -101,6 +105,13 @@ final readonly class EntitySpawnService
                 }
                 $entity->applySpawnVariant($request->variant);
             }
+            if ($entity->getType()->identifier() !== $registration->definition->type->identifier()
+                || $entity->getCategory() !== $registration->definition->category
+                || ($registration->variantFactory === null && $entity->definition() !== $registration->definition)) {
+                $this->entities->remove($entity->getRuntimeId());
+                throw new LogicException('Entity factory returned an entity which does not match its definition.');
+            }
+            $entity->restoreSpawnOwnership($request->cause, EntityDespawnPolicy::forSpawnCause($request->cause));
             ($this->prepareEntity)?->__invoke($entity);
             $event = new EntitySpawnEvent($entity, $request->cause);
             if ($this->beforeSpawn !== null && !($this->beforeSpawn)($event)) {

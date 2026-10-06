@@ -49,6 +49,8 @@ final class WorldNaturalSpawnEnvironment implements NaturalSpawnEnvironment
 
     private readonly string $worldName;
 
+    private readonly NetherStructureLocator $netherStructures;
+
     public function __construct(
         private readonly World $world,
         private readonly EntityRegistry $entities,
@@ -66,6 +68,7 @@ final class WorldNaturalSpawnEnvironment implements NaturalSpawnEnvironment
             throw new InvalidArgumentException('Natural-spawn world identity is invalid.');
         }
         $this->worldName = $worldName;
+        $this->netherStructures = new NetherStructureLocator($world->metadata->seed);
     }
 
     /** @param array<int, mixed> $players */
@@ -136,6 +139,16 @@ final class WorldNaturalSpawnEnvironment implements NaturalSpawnEnvironment
         $maximumY = WorldDimensionBounds::maximumY($this->world->dimension());
         $height = $maximumY - $minimumY + 1;
         $startY = $minimumY + min($height - 1, (int) floor($verticalSelector * $height));
+        if ($medium === NaturalSpawnMedium::AIR) {
+            for ($offset = 0; $offset < $height; ++$offset) {
+                $y = $minimumY + (($startY - $minimumY - $offset + $height) % $height);
+                if ($this->collisionSurface($chunk->blockStateAt($localX, $y, $localZ)) === null) {
+                    return new Position($x, $y + 0.5, $z);
+                }
+            }
+
+            return null;
+        }
         for ($offset = 0; $offset < $height; ++$offset) {
             $y = $minimumY + (($startY - $minimumY - $offset + $height) % $height);
             if ($medium === NaturalSpawnMedium::WATER || $medium === NaturalSpawnMedium::LAVA) {
@@ -210,6 +223,11 @@ final class WorldNaturalSpawnEnvironment implements NaturalSpawnEnvironment
         if ($chunk === null) {
             return 0;
         }
+        if ($this->world->dimension() !== WorldDimension::OVERWORLD) {
+            // The Nether and End have no Overworld skylight cycle. Their visible
+            // ambient lighting must not make hostile-spawn checks read as daytime.
+            return 0;
+        }
         $x = self::localCoordinate((int) floor($position->x));
         $z = self::localCoordinate((int) floor($position->z));
         for ($y = max(Chunk::MIN_Y, (int) ceil($position->y)); $y <= Chunk::MAX_Y; ++$y) {
@@ -221,6 +239,15 @@ final class WorldNaturalSpawnEnvironment implements NaturalSpawnEnvironment
         $dayTime = $this->worldTime % 24_000;
 
         return $dayTime >= 13_000 && $dayTime <= 23_000 ? 4 : 15;
+    }
+
+    public function netherStructure(string $worldName, Position $position): ?NetherStructureType
+    {
+        $this->requireWorld($worldName);
+
+        return $this->world->dimension() === WorldDimension::NETHER
+            ? $this->netherStructures->at($position)
+            : null;
     }
 
     public function isCollisionFree(string $worldName, EntityType $type, Position $position): bool

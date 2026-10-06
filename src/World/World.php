@@ -319,11 +319,15 @@ final class World
         return true;
     }
 
-    public function releaseChunk(ChunkPosition $position): void
+    public function releaseChunk(ChunkPosition $position, bool $immediateUnload = false): void
     {
         $this->chunks->release($position);
         if (!$this->chunks->isRetained($position)) {
-            $this->chunkUnloads->queue($position);
+            if ($immediateUnload) {
+                $this->chunkUnloads->queueImmediately($position);
+            } else {
+                $this->chunkUnloads->queue($position);
+            }
         }
     }
 
@@ -599,10 +603,13 @@ final class World
     }
 
     /** Saves a bounded number of dirty chunks, oldest-dirty first. */
-    public function autosave(int $maximumChunks): int
+    public function autosave(int $maximumChunks, ?int $timeBudgetMicroseconds = null): int
     {
         if ($maximumChunks < 1) {
             throw new InvalidArgumentException('Autosave chunk limit must be positive.');
+        }
+        if ($timeBudgetMicroseconds !== null && $timeBudgetMicroseconds < 1) {
+            throw new InvalidArgumentException('Autosave time budget must be positive.');
         }
         if (!$this->provider instanceof WritableWorldProvider) {
             throw new LogicException('This world does not have a writable provider.');
@@ -614,6 +621,7 @@ final class World
 
         $this->pollAsynchronousCompletions();
         $submitted = 0;
+        $startedNanoseconds = hrtime(true);
         foreach ($this->chunks->dirtySnapshots($maximumChunks, $this->pendingChunkSaveRevisions) as $chunk) {
             $status = $this->submitAsynchronousChunkSave($chunk);
             if ($status === PersistenceSubmission::SATURATED) {
@@ -621,6 +629,10 @@ final class World
             }
             if ($status !== PersistenceSubmission::STALE) {
                 ++$submitted;
+            }
+            if ($timeBudgetMicroseconds !== null && $submitted > 0
+                && hrtime(true) - $startedNanoseconds >= $timeBudgetMicroseconds * 1_000) {
+                break;
             }
         }
         $this->pollAsynchronousCompletions();

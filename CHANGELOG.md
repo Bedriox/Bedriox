@@ -1,5 +1,17 @@
 # Changelog
 
+- Keep Endermen neutral until directly provoked, then retain their authoritative
+  player target for a bounded anger period even after the player looks away.
+- Project targetable Ender Dragon head, wing and tail actors and route their
+  authoritative damage multipliers through the owning dragon.
+- Persist encounter-owned End Crystal identity, base, beam and invulnerability
+  state across chunk unloads and restarts.
+- Generate deterministic End ships beside eligible End Cities.
+- Add owner-scoped plugin boss bars with bounded state, live viewer projection,
+  diff-only updates, invisible backing actors, and automatic lifecycle cleanup.
+- Project Shulker shell opening and attachment orientation in spawn and live
+  actor metadata updates.
+- Synchronize End Crystal beams with dragon healing and respawn presentation.
 - Place Happy Ghast riders in distinct harness seats above the actor, prevent
   duplicate portal transfers, land players outside destination portal blocks,
   and prefer portal sites connected to traversable terrain.

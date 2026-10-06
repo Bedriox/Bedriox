@@ -48,6 +48,8 @@ interface NaturalSpawnEnvironment
 
     public function lightLevel(string $worldName, Position $position): int;
 
+    public function netherStructure(string $worldName, Position $position): ?NetherStructureType;
+
     public function isCollisionFree(string $worldName, EntityType $type, Position $position): bool;
 
     public function nearestPlayerDistanceSquared(string $worldName, Position $position): ?float;

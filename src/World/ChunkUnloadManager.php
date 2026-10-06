@@ -66,6 +66,28 @@ final class ChunkUnloadManager
         return true;
     }
 
+    /**
+     * Makes an unowned chunk eligible for the next bounded maintenance pass.
+     *
+     * Dimension changes and disconnected sessions have no locality benefit from
+     * retaining their abandoned view for the normal reuse grace period.
+     */
+    public function queueImmediately(ChunkPosition $position): bool
+    {
+        $key = $position->key();
+        if (isset($this->queued[$key])) {
+            $this->queued[$key]['eligibleAt'] = $this->now();
+
+            return false;
+        }
+        if (count($this->queued) >= $this->maximumQueued) {
+            throw new OverflowException('Chunk unload queue is full.');
+        }
+        $this->queued[$key] = ['position' => $position, 'eligibleAt' => $this->now()];
+
+        return true;
+    }
+
     public function cancel(ChunkPosition $position): bool
     {
         $key = $position->key();

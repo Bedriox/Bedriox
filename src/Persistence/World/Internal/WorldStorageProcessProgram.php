@@ -29,6 +29,7 @@ use Bedriox\Server\Entity\Persistence\EntityOwnershipTransferResultCodec;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceCodec;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceConflictException;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
+use Bedriox\Server\Entity\Persistence\TransientEntityPersistenceStore;
 use Bedriox\Server\Persistence\World\WorldDataIpcCodec;
 use Bedriox\Server\Persistence\World\WorldStorageOperation;
 use Bedriox\Server\Persistence\World\WorldStorageStartupCodec;
@@ -50,7 +51,7 @@ use Throwable;
 
 final class WorldStorageProcessProgram
 {
-    public const int SCHEMA_VERSION = 2;
+    public const int SCHEMA_VERSION = 3;
 
     public static function run(
         string $epochHex,
@@ -193,6 +194,14 @@ final class WorldStorageProcessProgram
                         $entityTransfers,
                         $entityTransferResults,
                     ),
+                    WorldStorageOperation::LOAD_TRANSIENT_ENTITIES => self::loadTransientEntities(
+                        $provider,
+                        $frame->payload,
+                    ),
+                    WorldStorageOperation::SAVE_TRANSIENT_ENTITIES => self::saveTransientEntities(
+                        $provider,
+                        $frame->payload,
+                    ),
                 };
                 self::write($connection, $codec->encode(new WorkerFrame(
                     WorkerFrameKind::RESULT,
@@ -334,6 +343,53 @@ final class WorldStorageProcessProgram
             'source_revision' => $result->sourceAfter->chunkRevision,
             'destination_revision' => $result->destinationAfter->chunkRevision,
         ], $results->encode($result)];
+    }
+
+    /** @return array{array<string, bool|int|string|null>, string} */
+    private static function loadTransientEntities(WritableWorldProvider $provider, string $namespace): array
+    {
+        if (!$provider instanceof TransientEntityPersistenceStore) {
+            throw new \RuntimeException('World storage provider does not support transient entity persistence.');
+        }
+        self::validateTransientNamespace($namespace);
+        $payload = $provider->loadTransientEntities($namespace);
+
+        return $payload === null ? [['missing' => true], ''] : [['missing' => false], $payload];
+    }
+
+    /** @return array{array<string, bool|int|string|null>, string} */
+    private static function saveTransientEntities(WritableWorldProvider $provider, string $request): array
+    {
+        if (!$provider instanceof TransientEntityPersistenceStore) {
+            throw new \RuntimeException('World storage provider does not support transient entity persistence.');
+        }
+        if (strlen($request) < 3) {
+            throw new \InvalidArgumentException('Transient entity save request is truncated.');
+        }
+        $namespaceLength = ord($request[0]);
+        if ($namespaceLength < 1 || strlen($request) < $namespaceLength + 2) {
+            throw new \InvalidArgumentException('Transient entity save request is malformed.');
+        }
+        $namespace = substr($request, 1, $namespaceLength);
+        self::validateTransientNamespace($namespace);
+        $present = ord($request[$namespaceLength + 1]);
+        if ($present !== 0 && $present !== 1) {
+            throw new \InvalidArgumentException('Transient entity save request has an invalid presence marker.');
+        }
+        $payload = substr($request, $namespaceLength + 2);
+        if ($present === 0 && $payload !== '') {
+            throw new \InvalidArgumentException('Deleted transient entity state unexpectedly contained data.');
+        }
+        $provider->saveTransientEntities($namespace, $present === 0 ? null : $payload);
+
+        return [[], ''];
+    }
+
+    private static function validateTransientNamespace(string $namespace): void
+    {
+        if (preg_match('/^[a-z0-9_.-]{1,64}$/D', $namespace) !== 1) {
+            throw new \InvalidArgumentException('Transient entity namespace is invalid.');
+        }
     }
 
     private static function decodePosition(string $payload): ChunkPosition

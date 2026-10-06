@@ -130,7 +130,8 @@ final readonly class GenerationBlockPalette
             'minecraft:crimson_roots', 'minecraft:warped_roots', 'minecraft:nether_sprouts',
             'minecraft:weeping_vines', 'minecraft:twisting_vines', 'minecraft:end_stone',
             'minecraft:chorus_plant', 'minecraft:chorus_flower', 'minecraft:purpur_block',
-            'minecraft:purpur_pillar', 'minecraft:end_portal',
+            'minecraft:purpur_pillar', 'minecraft:dragon_head', 'minecraft:brewing_stand',
+            'minecraft:chest', 'minecraft:end_rod', 'minecraft:end_portal',
             'minecraft:rail', 'minecraft:bookshelf', 'minecraft:torch', 'minecraft:fire', 'minecraft:soul_fire',
         ];
         $resolved = [];

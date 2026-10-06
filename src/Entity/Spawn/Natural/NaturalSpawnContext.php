@@ -42,6 +42,7 @@ final readonly class NaturalSpawnContext
         public float $nearestPlayerDistanceSquared,
         public float $worldSpawnDistanceSquared,
         public ?string $supportBlock = null,
+        public ?NetherStructureType $netherStructure = null,
     ) {
         if ($worldName === '' || strlen($worldName) > 128 || preg_match('//u', $worldName) !== 1
             || preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $biome) !== 1

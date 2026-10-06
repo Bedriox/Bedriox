@@ -25,12 +25,15 @@ use Bedriox\Api\Crafting\CraftingRecipe as ApiCraftingRecipe;
 use Bedriox\Api\Effect\EffectActions;
 use Bedriox\Api\Effect\EffectCause;
 use Bedriox\Api\Effect\EffectInstance;
+use Bedriox\Api\Encounter\EnderDragonEncounter;
+use Bedriox\Api\Encounter\EnderDragonPhase;
 use Bedriox\Api\Entity\Capability\Breedable;
 use Bedriox\Api\Entity\Capability\Shearable;
 use Bedriox\Api\Entity\Capability\Tameable;
 use Bedriox\Api\Entity\Entity as ApiEntity;
 use Bedriox\Api\Entity\EntityCombustionCause;
 use Bedriox\Api\Entity\EntityDamageCause;
+use Bedriox\Api\Entity\EntityHealthRegainCause;
 use Bedriox\Api\Entity\EntityInteractionType;
 use Bedriox\Api\Entity\EntityTargetReason;
 use Bedriox\Api\Entity\EntityType;
@@ -55,6 +58,17 @@ use Bedriox\Api\Event\Block\ChestPairedEvent;
 use Bedriox\Api\Event\Block\ChestPairEvent;
 use Bedriox\Api\Event\Block\EndPortalActivatedEvent;
 use Bedriox\Api\Event\Block\EndPortalActivateEvent;
+use Bedriox\Api\Event\Encounter\EnderDragonEncounterCompletedEvent;
+use Bedriox\Api\Event\Encounter\EnderDragonParticipantChangedEvent;
+use Bedriox\Api\Event\Encounter\EnderDragonParticipantChangeEvent;
+use Bedriox\Api\Event\Encounter\EnderDragonPhaseChangedEvent;
+use Bedriox\Api\Event\Encounter\EnderDragonPhaseChangeEvent;
+use Bedriox\Api\Event\Encounter\EnderDragonRespawnedEvent;
+use Bedriox\Api\Event\Encounter\EnderDragonRespawnEvent;
+use Bedriox\Api\Event\Encounter\EnderDragonRewardedEvent;
+use Bedriox\Api\Event\Encounter\EnderDragonRewardEvent;
+use Bedriox\Api\Event\Encounter\EndGatewayCreatedEvent;
+use Bedriox\Api\Event\Encounter\EndGatewayCreateEvent;
 use Bedriox\Api\Event\Entity\ActorKnockbackEvent;
 use Bedriox\Api\Event\Entity\ActorKnockedBackEvent;
 use Bedriox\Api\Event\Entity\EntityBlockChangedEvent;
@@ -83,6 +97,8 @@ use Bedriox\Api\Event\Entity\EntityMountedEvent;
 use Bedriox\Api\Event\Entity\EntityMountEvent;
 use Bedriox\Api\Event\Entity\EntityPickedUpItemEvent;
 use Bedriox\Api\Event\Entity\EntityPickupItemEvent;
+use Bedriox\Api\Event\Entity\EntityRegainedHealthEvent;
+use Bedriox\Api\Event\Entity\EntityRegainHealthEvent;
 use Bedriox\Api\Event\Entity\EntityShearedEvent;
 use Bedriox\Api\Event\Entity\EntityShearEvent;
 use Bedriox\Api\Event\Entity\EntitySpawnedEvent;
@@ -280,6 +296,104 @@ final readonly class PluginGameplayEventBridge
     public function dispatch(Event $event): Event
     {
         return $this->events->dispatch($event);
+    }
+
+    public function enderDragonPhaseChange(
+        EnderDragonEncounter $encounter,
+        EnderDragonPhase $from,
+        EnderDragonPhase $to,
+    ): ?EnderDragonPhase {
+        $event = new EnderDragonPhaseChangeEvent($encounter, $from, $to);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->to();
+    }
+
+    public function enderDragonPhaseChanged(
+        EnderDragonEncounter $encounter,
+        EnderDragonPhase $from,
+        EnderDragonPhase $to,
+    ): void {
+        $this->events->dispatch(new EnderDragonPhaseChangedEvent($encounter, $from, $to));
+    }
+
+    public function enderDragonParticipantChange(
+        EnderDragonEncounter $encounter,
+        Player $player,
+        bool $joining,
+    ): bool {
+        $event = new EnderDragonParticipantChangeEvent($encounter, $this->playerView($player), $joining);
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function enderDragonParticipantChanged(
+        EnderDragonEncounter $encounter,
+        Player $player,
+        bool $joined,
+    ): void {
+        $this->events->dispatch(new EnderDragonParticipantChangedEvent(
+            $encounter,
+            $this->playerView($player),
+            $joined,
+        ));
+    }
+
+    public function enderDragonReward(
+        EnderDragonEncounter $encounter,
+        bool $firstVictory,
+        int $experience,
+    ): ?int {
+        $event = new EnderDragonRewardEvent($encounter, $firstVictory, $experience);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->experience();
+    }
+
+    public function enderDragonRewarded(
+        EnderDragonEncounter $encounter,
+        bool $firstVictory,
+        int $experience,
+    ): void {
+        $this->events->dispatch(new EnderDragonRewardedEvent($encounter, $firstVictory, $experience));
+    }
+
+    public function enderDragonRespawn(EnderDragonEncounter $encounter): bool
+    {
+        $event = new EnderDragonRespawnEvent($encounter);
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function enderDragonRespawned(EnderDragonEncounter $encounter): void
+    {
+        $this->events->dispatch(new EnderDragonRespawnedEvent($encounter));
+    }
+
+    public function endGatewayCreate(
+        EnderDragonEncounter $encounter,
+        ApiBlockPosition $position,
+        int $index,
+    ): ?ApiBlockPosition {
+        $event = new EndGatewayCreateEvent($encounter, $position, $index);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->position();
+    }
+
+    public function endGatewayCreated(
+        EnderDragonEncounter $encounter,
+        ApiBlockPosition $position,
+        int $index,
+    ): void {
+        $this->events->dispatch(new EndGatewayCreatedEvent($encounter, $position, $index));
+    }
+
+    public function enderDragonEncounterCompleted(EnderDragonEncounter $encounter, bool $firstVictory): void
+    {
+        $this->events->dispatch(new EnderDragonEncounterCompletedEvent($encounter, $firstVictory));
     }
 
     public function breedEntities(Breedable $first, Breedable $second, int $experience): ?int
@@ -613,6 +727,25 @@ final readonly class PluginGameplayEventBridge
         $this->events->dispatch($event);
 
         return $event->isCancelled() ? null : $event;
+    }
+
+    public function entityRegainHealth(
+        ApiLivingEntity $entity,
+        EntityHealthRegainCause $cause,
+        float $amount,
+    ): ?float {
+        $event = new EntityRegainHealthEvent($entity, $cause, $amount);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->amount();
+    }
+
+    public function entityRegainedHealth(
+        ApiLivingEntity $entity,
+        EntityHealthRegainCause $cause,
+        float $amount,
+    ): void {
+        $this->events->dispatch(new EntityRegainedHealthEvent($entity, $cause, $amount));
     }
 
     public function knockback(

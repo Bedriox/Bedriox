@@ -57,6 +57,9 @@ enum VanillaEntityType: string implements VanillaEntityIdentity
     case ZOMBIFIED_PIGLIN = 'minecraft:zombie_pigman';
     case ENDERMAN = 'minecraft:enderman';
     case ENDERMITE = 'minecraft:endermite';
+    case ENDER_DRAGON = 'minecraft:ender_dragon';
+    case ENDER_CRYSTAL = 'minecraft:ender_crystal';
+    case SHULKER = 'minecraft:shulker';
     case SILVERFISH = 'minecraft:silverfish';
     case WITCH = 'minecraft:witch';
     case COD = 'minecraft:cod';

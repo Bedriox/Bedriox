@@ -77,6 +77,7 @@ final class EntityLootResolver
                 VanillaEntityType::ZOGLIN->value => new NetherMobLootTable(VanillaEntityType::ZOGLIN),
                 VanillaEntityType::ZOMBIFIED_PIGLIN->value => new NetherMobLootTable(VanillaEntityType::ZOMBIFIED_PIGLIN),
                 VanillaEntityType::ENDERMAN->value => new EndermanLootTable(),
+                VanillaEntityType::SHULKER->value => new ShulkerLootTable(),
                 VanillaEntityType::WITCH->value => new WitchLootTable(),
                 VanillaEntityType::COD->value => new AquaticLootTable('minecraft:cod', 1, 1, 'minecraft:cooked_cod'),
                 VanillaEntityType::SALMON->value => new AquaticLootTable('minecraft:salmon', 1, 1, 'minecraft:cooked_salmon'),

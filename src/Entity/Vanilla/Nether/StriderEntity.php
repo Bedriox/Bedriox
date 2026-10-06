@@ -34,6 +34,8 @@ use JsonException;
 
 final class StriderEntity extends BreedableAnimalEntity implements Strider, IntrinsicEntityPersistence
 {
+    private bool $warm = true;
+
     public function __construct(string $uniqueId, int $runtimeId, string $worldName, Position $position, ?AiBehaviorDefinition $behavior = null, EntityMotion $motion = new EntityMotion(), float $yaw = 0.0, float $pitch = 0.0, ?float $health = null, bool $baby = false, private bool $saddled = false)
     {
         parent::__construct($uniqueId, $runtimeId, VanillaEntityDefinitions::strider(), $worldName, $position, $behavior ?? VanillaAiBehaviors::strider(), $motion, $yaw, $pitch, $health);
@@ -49,6 +51,20 @@ final class StriderEntity extends BreedableAnimalEntity implements Strider, Intr
     {
         if ($this->saddled !== $saddled) {
             $this->saddled = $saddled;
+            $this->markPresentationChanged();
+        }
+    }
+
+    public function isWarm(): bool
+    {
+        return $this->warm;
+    }
+
+    /** @internal Updated from the authoritative lava-support query. */
+    public function setWarm(bool $warm): void
+    {
+        if ($this->warm !== $warm) {
+            $this->warm = $warm;
             $this->markPresentationChanged();
         }
     }
@@ -70,17 +86,17 @@ final class StriderEntity extends BreedableAnimalEntity implements Strider, Intr
 
     public function persistenceSchemaVersion(): int
     {
-        return 1;
+        return 2;
     }
 
     public function persistenceData(): string
     {
-        return json_encode([...$this->breedablePersistenceData(), 'saddled' => $this->saddled], JSON_THROW_ON_ERROR);
+        return json_encode([...$this->breedablePersistenceData(), 'saddled' => $this->saddled, 'warm' => $this->warm], JSON_THROW_ON_ERROR);
     }
 
     public function restorePersistenceState(int|string|null $variant, int $schemaVersion, string $data): void
     {
-        if ($variant !== null || $schemaVersion !== 1 || strlen($data) > 256) {
+        if ($variant !== null || $schemaVersion !== 2 || strlen($data) > 256) {
             throw new InvalidArgumentException('Persisted strider state has an unsupported schema.');
         }
         try {
@@ -89,11 +105,12 @@ final class StriderEntity extends BreedableAnimalEntity implements Strider, Intr
             throw new InvalidArgumentException('Persisted strider state is malformed.', previous: $error);
         }
         if (!is_array($decoded)
-            || array_keys($decoded) !== ['baby', 'babyGrowthTicks', 'breedingCooldownTicks', 'loveTicks', 'saddled']
-            || !is_bool($decoded['saddled'])) {
+            || array_keys($decoded) !== ['baby', 'babyGrowthTicks', 'breedingCooldownTicks', 'loveTicks', 'saddled', 'warm']
+            || !is_bool($decoded['saddled']) || !is_bool($decoded['warm'])) {
             throw new InvalidArgumentException('Persisted strider state is malformed.');
         }
         $this->restoreBreedablePersistenceData($decoded);
         $this->saddled = $decoded['saddled'];
+        $this->warm = $decoded['warm'];
     }
 }

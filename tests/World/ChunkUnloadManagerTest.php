@@ -80,4 +80,18 @@ final class ChunkUnloadManagerTest extends TestCase
         self::assertSame([$positions[0]], $manager->due(3, 1));
         self::assertSame(3, $manager->count());
     }
+
+    public function testImmediateQueueShortensAnExistingGraceDeadline(): void
+    {
+        $now = 10_000;
+        $manager = new ChunkUnloadManager(5_000, 4, static function () use (&$now): int {
+            return $now;
+        });
+        $position = new ChunkPosition(4, -7);
+
+        self::assertTrue($manager->queue($position));
+        self::assertSame([], $manager->due(1, 1_000));
+        self::assertFalse($manager->queueImmediately($position));
+        self::assertSame([$position], $manager->due(1, 1_000));
+    }
 }

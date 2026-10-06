@@ -34,6 +34,9 @@ use Bedriox\Server\Entity\Vanilla\CowEntity;
 use Bedriox\Server\Entity\Vanilla\CreeperEntity;
 use Bedriox\Server\Entity\Vanilla\DolphinEntity;
 use Bedriox\Server\Entity\Vanilla\DrownedEntity;
+use Bedriox\Server\Entity\Vanilla\End\EndCrystalEntity;
+use Bedriox\Server\Entity\Vanilla\End\EnderDragonEntity;
+use Bedriox\Server\Entity\Vanilla\End\ShulkerEntity;
 use Bedriox\Server\Entity\Vanilla\EndermanEntity;
 use Bedriox\Server\Entity\Vanilla\EndermiteEntity;
 use Bedriox\Server\Entity\Vanilla\ExpandedLandEntityRegistrations;
@@ -213,6 +216,29 @@ final class VanillaEntityDefinitions
     public static function endermite(): EntityDefinition
     {
         return self::hostile(VanillaEntityType::ENDERMITE, 0.4, 0.3, 8.0);
+    }
+
+    public static function enderDragon(): EntityDefinition
+    {
+        return self::flyingHostile(VanillaEntityType::ENDER_DRAGON, 16.0, 8.0, 200.0);
+    }
+
+    public static function endCrystal(): EntityDefinition
+    {
+        return self::$passive[VanillaEntityType::ENDER_CRYSTAL->value] ??= new EntityDefinition(
+            VanillaEntityType::ENDER_CRYSTAL,
+            EntityCategory::AMBIENT,
+            VanillaEntityType::ENDER_CRYSTAL->value,
+            2.0,
+            2.0,
+            1.0,
+            gravity: 0.0,
+        );
+    }
+
+    public static function shulker(): EntityDefinition
+    {
+        return self::hostile(VanillaEntityType::SHULKER, 1.0, 1.0, 30.0);
     }
     public static function silverfish(): EntityDefinition
     {
@@ -475,9 +501,21 @@ final class VanillaEntityDefinitions
                     yaw: $record->yaw,
                     pitch: $record->pitch,
                 ),
+                variantFactory: static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch, int|string $variant): MagmaCubeEntity => new MagmaCubeEntity(
+                    $uuid,
+                    $runtimeId,
+                    $world,
+                    $position,
+                    is_int($variant) ? SlimeSize::tryFrom($variant) ?? SlimeSize::LARGE : SlimeSize::LARGE,
+                    yaw: $yaw,
+                    pitch: $pitch,
+                ),
             ),
             new RegisteredEntityDefinition(self::enderman(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): EndermanEntity => new EndermanEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
             new RegisteredEntityDefinition(self::endermite(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): EndermiteEntity => new EndermiteEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
+            new RegisteredEntityDefinition(self::enderDragon(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): EnderDragonEntity => new EnderDragonEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
+            new RegisteredEntityDefinition(self::endCrystal(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): EndCrystalEntity => new EndCrystalEntity($uuid, $runtimeId, $world, $position)),
+            new RegisteredEntityDefinition(self::shulker(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): ShulkerEntity => new ShulkerEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
             new RegisteredEntityDefinition(self::silverfish(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): SilverfishEntity => new SilverfishEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
             new RegisteredEntityDefinition(self::witch(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): WitchEntity => new WitchEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
             new RegisteredEntityDefinition(self::cod(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): CodEntity => new CodEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),

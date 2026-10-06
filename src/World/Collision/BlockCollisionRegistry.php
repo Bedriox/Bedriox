@@ -105,6 +105,10 @@ final readonly class BlockCollisionRegistry
             'minecraft:mud', 'minecraft:soul_sand' => self::box(0.0, 0.0, 0.0, 1.0, 7.0 / 8.0, 1.0),
             'minecraft:chorus_plant' => self::box(3.0 / 16.0, 0.0, 3.0 / 16.0, 13.0 / 16.0, 1.0, 13.0 / 16.0),
             'minecraft:chorus_flower' => self::box(2.0 / 16.0, 0.0, 2.0 / 16.0, 14.0 / 16.0, 1.0, 14.0 / 16.0),
+            'minecraft:dragon_head' => self::box(0.25, 0.0, 0.25, 0.75, 0.5, 0.75),
+            'minecraft:brewing_stand' => self::box(1.0 / 8.0, 0.0, 1.0 / 8.0, 7.0 / 8.0, 7.0 / 8.0, 7.0 / 8.0),
+            'minecraft:chest' => self::box(1.0 / 16.0, 0.0, 1.0 / 16.0, 15.0 / 16.0, 7.0 / 8.0, 15.0 / 16.0),
+            'minecraft:end_rod' => self::box(3.0 / 8.0, 0.0, 3.0 / 8.0, 5.0 / 8.0, 1.0, 5.0 / 8.0),
             default => self::fullCubeFor($identifier),
         };
     }

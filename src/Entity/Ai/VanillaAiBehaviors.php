@@ -30,8 +30,11 @@ use Bedriox\Server\Entity\Ai\Goal\FlyingWanderGoal;
 use Bedriox\Server\Entity\Ai\Goal\MeleeAttackIntentGoal;
 use Bedriox\Server\Entity\Ai\Goal\RabbitHopGoal;
 use Bedriox\Server\Entity\Ai\Goal\RangedAttackIntentGoal;
+use Bedriox\Server\Entity\Ai\Goal\StationaryRangedAttackIntentGoal;
 use Bedriox\Server\Entity\Ai\Goal\TemptedByItemGoal;
 use Bedriox\Server\Entity\Ai\Goal\WanderGoal;
+use Bedriox\Server\Entity\Ai\Sensor\AngerTargetSensor;
+use Bedriox\Server\Entity\Ai\Sensor\EndermanProvocationSensor;
 use Bedriox\Server\Entity\Ai\Sensor\HurtSensor;
 use Bedriox\Server\Entity\Ai\Sensor\NearestPlayerSensor;
 use Bedriox\Server\Entity\Ai\Sensor\PiglinNearestPlayerSensor;
@@ -203,7 +206,32 @@ final class VanillaAiBehaviors
 
     public static function enderman(): AiBehaviorDefinition
     {
-        return self::$hostiles['enderman'] ??= self::meleeHostile('enderman', 32.0, 7.0, 0.15);
+        return self::$hostiles['enderman'] ??= new AiBehaviorDefinition(
+            sensors: [
+                new EndermanProvocationSensor(),
+            ],
+            goals: [
+                new ChasePlayerGoal('bedriox:enderman_chase', 80, 2.5, 0.15),
+                new MeleeAttackIntentGoal('bedriox:enderman_melee', 100, 1.8, 20, 7.0),
+                new WanderGoal('bedriox:enderman_wander', 10, 30, 40, 0.075),
+            ],
+        );
+    }
+
+    public static function shulker(): AiBehaviorDefinition
+    {
+        return self::$hostiles['shulker'] ??= new AiBehaviorDefinition(
+            sensors: [new NearestPlayerSensor('bedriox:shulker_nearest_player', 10, 16.0, 30)],
+            goals: [
+                new StationaryRangedAttackIntentGoal(
+                    'bedriox:shulker_bullet',
+                    100,
+                    16.0,
+                    40,
+                    0.30,
+                ),
+            ],
+        );
     }
 
     public static function witherSkeleton(): AiBehaviorDefinition
@@ -236,6 +264,15 @@ final class VanillaAiBehaviors
         return self::$hostiles[$species] ??= new AiBehaviorDefinition(
             sensors: [new PiglinNearestPlayerSensor()],
             goals: [
+                new RangedAttackIntentGoal(
+                    'bedriox:piglin_crossbow',
+                    110,
+                    4.0,
+                    15.0,
+                    40,
+                    1.6,
+                    0.1,
+                ),
                 new MeleeAttackIntentGoal('bedriox:piglin_melee', 100, 1.8, 20, 5.0),
                 new ChasePlayerGoal('bedriox:piglin_chase', 80, 1.8, 0.12),
                 new WanderGoal('bedriox:piglin_wander', 10, 30, 40, 0.09),
@@ -259,7 +296,14 @@ final class VanillaAiBehaviors
 
     public static function zombifiedPiglin(): AiBehaviorDefinition
     {
-        return self::$hostiles['zombified_piglin'] ??= self::meleeHostile('zombified_piglin', 16.0, 5.0, 0.12);
+        return self::$hostiles['zombified_piglin'] ??= new AiBehaviorDefinition(
+            sensors: [new AngerTargetSensor('bedriox:zombified_piglin_anger_target')],
+            goals: [
+                new MeleeAttackIntentGoal('bedriox:zombified_piglin_melee', 100, 1.8, 20, 5.0),
+                new ChasePlayerGoal('bedriox:zombified_piglin_chase', 80, 1.8, 0.12),
+                new WanderGoal('bedriox:zombified_piglin_wander', 10, 30, 40, 0.09),
+            ],
+        );
     }
 
     public static function happyGhast(): AiBehaviorDefinition

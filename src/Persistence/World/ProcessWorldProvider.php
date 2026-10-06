@@ -34,6 +34,7 @@ use Bedriox\Server\Entity\Persistence\EntityPersistenceCodec;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceConflictException;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceLimits;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
+use Bedriox\Server\Entity\Persistence\TransientEntityPersistenceStore;
 use Bedriox\Server\Persistence\OrderedPersistenceQueue;
 use Bedriox\Server\Persistence\PersistenceEnqueueResult;
 use Bedriox\Server\Persistence\PersistenceQueueSnapshot;
@@ -67,10 +68,11 @@ use Bedriox\Server\World\Provider\WorldData;
 use RuntimeException;
 use Throwable;
 
-final class ProcessWorldProvider implements AsynchronousWorldProvider, AsynchronousWorldDataProvider, AsynchronousEntityPersistenceStore, PersistenceQueueStatusProvider
+final class ProcessWorldProvider implements AsynchronousWorldProvider, AsynchronousWorldDataProvider, AsynchronousEntityPersistenceStore, TransientEntityPersistenceStore, PersistenceQueueStatusProvider
 {
     private const int MAXIMUM_PRELOADED_ENTITY_CHUNKS = 2_048;
     private const int MAXIMUM_QUEUED_ENTITY_TRANSFERS = 256;
+    private const int MAXIMUM_TRANSIENT_ENTITY_BYTES = 1_048_576;
 
     /** @var resource|null */
     private $process = null;
@@ -97,11 +99,13 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
     private readonly OrderedPersistenceQueue $writeQueue;
     private readonly OrderedPersistenceQueue $entityWriteQueue;
     private readonly OrderedPersistenceQueue $worldDataWriteQueue;
+    private readonly OrderedPersistenceQueue $transientEntityWriteQueue;
     private readonly WorkerFrameDecoder $asyncDecoder;
     private int $nextTaskId = 1;
     private ?PersistenceWriteRequest $asyncWrite = null;
     private bool $asyncWriteIsEntity = false;
     private bool $asyncWriteIsWorldData = false;
+    private bool $asyncWriteIsTransientEntity = false;
     private int $asyncTaskId = 0;
     private string $asyncOutgoing = '';
     /** @var array<string, array{position: ChunkPosition, dimension: WorldDimension}> */
@@ -132,6 +136,10 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
     private bool $ownerConfirmedClosed = false;
     private WorldData $data;
     private int $worldDataRevision = 0;
+    /** @var array<string, int> */
+    private array $transientEntityRevisions = [];
+    /** @var array<string, ?string> */
+    private array $transientEntityCache = [];
 
     private function __construct(
         private readonly string $applicationVersion,
@@ -168,6 +176,12 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
             1_024,
         );
         $this->worldDataWriteQueue = new OrderedPersistenceQueue(2, 2_097_152, 1_048_576, 16);
+        $this->transientEntityWriteQueue = new OrderedPersistenceQueue(
+            64,
+            8_388_608,
+            self::MAXIMUM_TRANSIENT_ENTITY_BYTES + 66,
+            64,
+        );
         $this->asyncDecoder = new WorkerFrameDecoder($this->frames, 33_619_968);
     }
 
@@ -405,15 +419,16 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
         $terrain = $this->writeQueue->snapshot();
         $entities = $this->entityWriteQueue->snapshot();
         $worldData = $this->worldDataWriteQueue->snapshot();
+        $transientEntities = $this->transientEntityWriteQueue->snapshot();
 
         return new PersistenceQueueSnapshot(
-            $terrain->queued + $entities->queued + $worldData->queued,
-            $terrain->inFlight + $entities->inFlight + $worldData->inFlight,
-            $terrain->completions + $entities->completions + $worldData->completions,
-            $terrain->requestBytes + $entities->requestBytes + $worldData->requestBytes,
-            $terrain->coalesced + $entities->coalesced + $worldData->coalesced,
-            $terrain->saturated + $entities->saturated + $worldData->saturated,
-            $terrain->failed + $entities->failed + $worldData->failed,
+            $terrain->queued + $entities->queued + $worldData->queued + $transientEntities->queued,
+            $terrain->inFlight + $entities->inFlight + $worldData->inFlight + $transientEntities->inFlight,
+            $terrain->completions + $entities->completions + $worldData->completions + $transientEntities->completions,
+            $terrain->requestBytes + $entities->requestBytes + $worldData->requestBytes + $transientEntities->requestBytes,
+            $terrain->coalesced + $entities->coalesced + $worldData->coalesced + $transientEntities->coalesced,
+            $terrain->saturated + $entities->saturated + $worldData->saturated + $transientEntities->saturated,
+            $terrain->failed + $entities->failed + $worldData->failed + $transientEntities->failed,
         );
     }
 
@@ -575,6 +590,55 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
             throw $this->failOwner('Entity snapshot save acknowledgement has the wrong revision.');
         }
         unset($this->preloadedEntityChunks[self::dimensionChunkKey($dimension, $snapshot->chunk)]);
+    }
+
+    public function loadTransientEntities(string $namespace): ?string
+    {
+        self::validateTransientNamespace($namespace);
+        if (array_key_exists($namespace, $this->transientEntityCache)) {
+            return $this->transientEntityCache[$namespace];
+        }
+        $result = $this->request(WorldStorageOperation::LOAD_TRANSIENT_ENTITIES, $namespace, false);
+        $missing = $result->metadata['missing'] ?? null;
+        if ($missing === true) {
+            if ($result->payload !== '') {
+                throw $this->failOwner('Missing transient entity state unexpectedly contained data.');
+            }
+
+            return $this->transientEntityCache[$namespace] = null;
+        }
+        if ($missing !== false || strlen($result->payload) > self::MAXIMUM_TRANSIENT_ENTITY_BYTES) {
+            throw $this->failOwner('Transient entity state result is invalid.');
+        }
+
+        return $this->transientEntityCache[$namespace] = $result->payload;
+    }
+
+    public function saveTransientEntities(string $namespace, ?string $payload): void
+    {
+        self::validateTransientNamespace($namespace);
+        if ($payload !== null && strlen($payload) > self::MAXIMUM_TRANSIENT_ENTITY_BYTES) {
+            throw new \InvalidArgumentException('Transient entity state exceeds its size limit.');
+        }
+        $revision = ($this->transientEntityRevisions[$namespace] ?? 0) + 1;
+        $result = $this->transientEntityWriteQueue->enqueue(
+            $namespace,
+            $revision,
+            pack('C', strlen($namespace)) . $namespace . ($payload === null ? "\x00" : "\x01" . $payload),
+        );
+        if ($result->status === PersistenceSubmission::SATURATED
+            || $result->status === PersistenceSubmission::STALE) {
+            throw $this->failOwner('Transient entity persistence queue rejected the current state.');
+        }
+        $this->transientEntityRevisions[$namespace] = $revision;
+        $this->transientEntityCache[$namespace] = $payload;
+    }
+
+    private static function validateTransientNamespace(string $namespace): void
+    {
+        if (preg_match('/^[a-z0-9_.-]{1,64}$/D', $namespace) !== 1) {
+            throw new \InvalidArgumentException('Transient entity namespace is invalid.');
+        }
     }
 
     public function enqueueEntityChunkSave(
@@ -861,9 +925,12 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
             $snapshot = $this->writeQueue->snapshot();
             $entitySnapshot = $this->entityWriteQueue->snapshot();
             $worldDataSnapshot = $this->worldDataWriteQueue->snapshot();
+            $transientEntitySnapshot = $this->transientEntityWriteQueue->snapshot();
+            $this->retainTransientEntityCompletions();
             if ($snapshot->queued === 0 && $snapshot->inFlight === 0
                 && $entitySnapshot->queued === 0 && $entitySnapshot->inFlight === 0
                 && $worldDataSnapshot->queued === 0 && $worldDataSnapshot->inFlight === 0
+                && $transientEntitySnapshot->queued === 0 && $transientEntitySnapshot->inFlight === 0
                 && $this->asyncWrite === null && $this->asyncLoad === null
                 && $this->asyncEntityTransfer === null && $this->queuedEntityTransfers === []
                 && $this->asyncOutgoing === '' && $this->queuedLoads === []) {
@@ -900,6 +967,15 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
     {
         while (($completion = $this->worldDataWriteQueue->takeCompletion()) instanceof PersistenceWriteCompletion) {
             $this->deferredWorldDataCompletions[] = $completion;
+        }
+    }
+
+    private function retainTransientEntityCompletions(): void
+    {
+        while (($completion = $this->transientEntityWriteQueue->takeCompletion()) instanceof PersistenceWriteCompletion) {
+            if (!$completion->successful) {
+                throw $this->failOwner('Transient entity persistence failed: ' . $completion->failureCode);
+            }
         }
     }
 
@@ -1064,9 +1140,11 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
         $pending = $this->writeQueue->snapshot();
         $pendingEntities = $this->entityWriteQueue->snapshot();
         $pendingWorldData = $this->worldDataWriteQueue->snapshot();
+        $pendingTransientEntities = $this->transientEntityWriteQueue->snapshot();
         if ($pending->queued > 0 || $pending->inFlight > 0 || $this->asyncWrite !== null
             || $pendingEntities->queued > 0 || $pendingEntities->inFlight > 0
             || $pendingWorldData->queued > 0 || $pendingWorldData->inFlight > 0
+            || $pendingTransientEntities->queued > 0 || $pendingTransientEntities->inFlight > 0
             || $this->asyncLoad !== null || $this->asyncEntityTransfer !== null
             || $this->asyncOutgoing !== '' || $this->queuedLoads !== []
             || $this->queuedEntityTransfers !== []) {
@@ -1153,6 +1231,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
                 $this->asyncWrite = $request;
                 $this->asyncWriteIsWorldData = true;
                 $this->asyncWriteIsEntity = false;
+                $this->asyncWriteIsTransientEntity = false;
                 $this->asyncTaskId = $this->allocateTaskId();
                 $this->asyncOutgoing = $this->frames->encode(new WorkerFrame(
                     WorkerFrameKind::SUBMIT,
@@ -1163,6 +1242,24 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
                     payload: $request->payload,
                 ));
             } else {
+                $request = $this->transientEntityWriteQueue->dispatch();
+                if ($request instanceof PersistenceWriteRequest) {
+                    $this->asyncWrite = $request;
+                    $this->asyncWriteIsWorldData = false;
+                    $this->asyncWriteIsEntity = false;
+                    $this->asyncWriteIsTransientEntity = true;
+                    $this->asyncTaskId = $this->allocateTaskId();
+                    $this->asyncOutgoing = $this->frames->encode(new WorkerFrame(
+                        WorkerFrameKind::SUBMIT,
+                        $this->epoch,
+                        $this->asyncTaskId,
+                        WorldStorageOperation::SAVE_TRANSIENT_ENTITIES->value,
+                        WorldStorageProcessProgram::SCHEMA_VERSION,
+                        payload: $request->payload,
+                    ));
+                }
+            }
+            if ($this->asyncWrite === null) {
                 $transferUuid = array_key_first($this->queuedEntityTransfers);
                 if (is_string($transferUuid)) {
                     $queuedTransfer = $this->queuedEntityTransfers[$transferUuid];
@@ -1207,6 +1304,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
                     $request = $this->entityWriteQueue->dispatch();
                     $this->asyncWriteIsEntity = $request instanceof PersistenceWriteRequest;
                     $this->asyncWriteIsWorldData = false;
+                    $this->asyncWriteIsTransientEntity = false;
                     if (!$request instanceof PersistenceWriteRequest) {
                         $request = $this->writeQueue->dispatch();
                         $this->asyncWriteIsEntity = false;
@@ -1306,9 +1404,11 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
             $request = $this->asyncWrite;
             $operation = $this->asyncWriteIsWorldData
                 ? WorldStorageOperation::SAVE_WORLD_DATA
-                : ($this->asyncWriteIsEntity
+                : ($this->asyncWriteIsTransientEntity
+                    ? WorldStorageOperation::SAVE_TRANSIENT_ENTITIES
+                    : ($this->asyncWriteIsEntity
                     ? WorldStorageOperation::SAVE_ENTITY_CHUNK
-                    : WorldStorageOperation::SAVE_CHUNK);
+                    : WorldStorageOperation::SAVE_CHUNK));
             if (!$request instanceof PersistenceWriteRequest
                 || !hash_equals($this->epoch, $frame->epoch)
                 || $frame->taskId !== $this->asyncTaskId
@@ -1317,7 +1417,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
                 throw $this->failOwner('World storage asynchronous response did not match its request.');
             }
             $successful = $frame->kind === WorkerFrameKind::RESULT
-                && ($this->asyncWriteIsWorldData
+                && ($this->asyncWriteIsWorldData || $this->asyncWriteIsTransientEntity
                     || ($frame->metadata['revision'] ?? null) === $request->revision)
                 && $frame->payload === '';
             $failureCode = $successful
@@ -1325,7 +1425,9 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
                 : (is_string($frame->metadata['code'] ?? null) ? $frame->metadata['code'] : 'storage_failure');
             $queue = $this->asyncWriteIsWorldData
                 ? $this->worldDataWriteQueue
-                : ($this->asyncWriteIsEntity ? $this->entityWriteQueue : $this->writeQueue);
+                : ($this->asyncWriteIsTransientEntity
+                    ? $this->transientEntityWriteQueue
+                    : ($this->asyncWriteIsEntity ? $this->entityWriteQueue : $this->writeQueue));
             if ($this->asyncWriteIsEntity && !$successful && is_string($frame->metadata['detail'] ?? null)) {
                 $this->entityWriteFailureDetails[$request->id] = $frame->metadata['detail'];
             }
@@ -1345,6 +1447,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
             $this->asyncWrite = null;
             $this->asyncWriteIsEntity = false;
             $this->asyncWriteIsWorldData = false;
+            $this->asyncWriteIsTransientEntity = false;
             $this->asyncTaskId = 0;
             if (count($frames) > 1) {
                 throw $this->failOwner('World storage returned more than one asynchronous completion.');

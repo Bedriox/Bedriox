@@ -56,6 +56,8 @@ use Bedriox\Protocol\Packet\AreaEffectCloudActorMetadata;
 use Bedriox\Protocol\Packet\BlockActorDataPacket;
 use Bedriox\Protocol\Packet\BlockEventPacket;
 use Bedriox\Protocol\Packet\BlockPosition as ProtocolBlockPosition;
+use Bedriox\Protocol\Packet\BossEventAction;
+use Bedriox\Protocol\Packet\BossEventPacket;
 use Bedriox\Protocol\Packet\BrewingStandProperty;
 use Bedriox\Protocol\Packet\ChatPacket;
 use Bedriox\Protocol\Packet\CommandPermissionLevel;
@@ -129,6 +131,7 @@ use Bedriox\Protocol\Packet\UpdateBlockPacket;
 use Bedriox\Protocol\Packet\UpdatePlayerGameTypePacket;
 use Bedriox\Protocol\Value\BuildPlatform;
 use Bedriox\Protocol\Value\UnsignedLong;
+use Bedriox\Server\Entity\Vanilla\End\EnderDragonEntity;
 use Bedriox\Server\Entity\Vehicle\BoatEntity;
 use Bedriox\Server\Gameplay\Enchanting\VanillaEnchantmentIdMap;
 use Bedriox\Server\Gameplay\Potion\PotionColorMixer;
@@ -157,6 +160,8 @@ use Bedriox\Server\Simulation\Event\ContainerOpened;
 use Bedriox\Server\Simulation\Event\CraftingTableOpened;
 use Bedriox\Server\Simulation\Event\EmotePerformed;
 use Bedriox\Server\Simulation\Event\EnchantingOptionsUpdated;
+use Bedriox\Server\Simulation\Event\EnderDragonBossBarAction;
+use Bedriox\Server\Simulation\Event\EnderDragonBossBarChanged;
 use Bedriox\Server\Simulation\Event\EntityActorAttackStarted;
 use Bedriox\Server\Simulation\Event\EntityActorDamaged;
 use Bedriox\Server\Simulation\Event\EntityActorDied;
@@ -240,6 +245,41 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             $event instanceof ParticleSpawned => $this->particle($event, $sessions),
             $event instanceof PlayerJoined => $this->joined($event, $sessions),
             $event instanceof WeatherChanged => $this->weatherChanged($event),
+            $event instanceof EnderDragonBossBarChanged => array_map(
+                static fn(string $recipient): DirectedPacket => new DirectedPacket(
+                    $recipient,
+                    new BossEventPacket(
+                        $event->dragonRuntimeId,
+                        match ($event->action) {
+                            EnderDragonBossBarAction::CREATE => BossEventAction::CREATE,
+                            EnderDragonBossBarAction::UPDATE_PROGRESS => BossEventAction::UPDATE_PERCENTAGE,
+                            EnderDragonBossBarAction::UPDATE_NAME => BossEventAction::UPDATE_NAME,
+                            EnderDragonBossBarAction::UPDATE_STYLE => BossEventAction::UPDATE_STYLE,
+                            EnderDragonBossBarAction::REMOVE => BossEventAction::REMOVE,
+                        },
+                        $event->title,
+                        '',
+                        $event->progress,
+                        match ($event->color) {
+                            \Bedriox\Api\BossBar\BossBarColor::PINK => \Bedriox\Protocol\Packet\BossEventColor::PINK,
+                            \Bedriox\Api\BossBar\BossBarColor::BLUE => \Bedriox\Protocol\Packet\BossEventColor::BLUE,
+                            \Bedriox\Api\BossBar\BossBarColor::RED => \Bedriox\Protocol\Packet\BossEventColor::RED,
+                            \Bedriox\Api\BossBar\BossBarColor::GREEN => \Bedriox\Protocol\Packet\BossEventColor::GREEN,
+                            \Bedriox\Api\BossBar\BossBarColor::YELLOW => \Bedriox\Protocol\Packet\BossEventColor::YELLOW,
+                            \Bedriox\Api\BossBar\BossBarColor::PURPLE => \Bedriox\Protocol\Packet\BossEventColor::PURPLE,
+                            \Bedriox\Api\BossBar\BossBarColor::WHITE => \Bedriox\Protocol\Packet\BossEventColor::WHITE,
+                        },
+                        match ($event->style) {
+                            \Bedriox\Api\BossBar\BossBarStyle::SOLID => \Bedriox\Protocol\Packet\BossEventOverlay::PROGRESS,
+                            \Bedriox\Api\BossBar\BossBarStyle::SEGMENTED_6 => \Bedriox\Protocol\Packet\BossEventOverlay::NOTCHED_6,
+                            \Bedriox\Api\BossBar\BossBarStyle::SEGMENTED_10 => \Bedriox\Protocol\Packet\BossEventOverlay::NOTCHED_10,
+                            \Bedriox\Api\BossBar\BossBarStyle::SEGMENTED_12 => \Bedriox\Protocol\Packet\BossEventOverlay::NOTCHED_12,
+                            \Bedriox\Api\BossBar\BossBarStyle::SEGMENTED_20 => \Bedriox\Protocol\Packet\BossEventOverlay::NOTCHED_20,
+                        },
+                    ),
+                ),
+                $event->recipientSessionIds,
+            ),
             $event instanceof PlayerBecameVisible => $this->visible($event, $sessions),
             $event instanceof PlayerBecameHidden => [
                 new DirectedPacket($event->recipientSessionId, new RemoveActorPacket($event->runtimeActorId)),
