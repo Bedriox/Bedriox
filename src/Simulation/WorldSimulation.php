@@ -51,6 +51,7 @@ use Bedriox\Api\Entity\Value\EntityTransformReason;
 use Bedriox\Api\Entity\Value\MooshroomVariant;
 use Bedriox\Api\Entity\Value\MountReason;
 use Bedriox\Api\Entity\Value\MountSeat;
+use Bedriox\Api\Entity\Value\PandaGene;
 use Bedriox\Api\Entity\Value\RabbitVariant;
 use Bedriox\Api\Entity\Value\SlimeSize;
 use Bedriox\Api\Entity\Value\WoolColor;
@@ -7495,6 +7496,22 @@ final class WorldSimulation
         }
         if ($child instanceof FoxEntity) {
             $child->addTrustedPlayerUniqueId($player->identity->uuid);
+        }
+        if ($child instanceof PandaEntity && $animal instanceof PandaEntity && $partner instanceof PandaEntity) {
+            $mainGene = $this->dropRandom->integer(0, 1) === 0
+                ? $animal->getMainGene()
+                : $animal->getHiddenGene();
+            $hiddenGene = $this->dropRandom->integer(0, 1) === 0
+                ? $partner->getMainGene()
+                : $partner->getHiddenGene();
+            $genes = PandaGene::cases();
+            if ($this->dropRandom->integer(1, 32) === 1) {
+                $mainGene = $genes[$this->dropRandom->integer(0, count($genes) - 1)];
+            }
+            if ($this->dropRandom->integer(1, 32) === 1) {
+                $hiddenGene = $genes[$this->dropRandom->integer(0, count($genes) - 1)];
+            }
+            $child->setGenes($mainGene, $hiddenGene);
         }
         if ($child instanceof TameableAnimalEntity && $animal instanceof TameableAnimalEntity
             && $partner instanceof TameableAnimalEntity

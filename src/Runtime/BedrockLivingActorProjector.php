@@ -30,10 +30,12 @@ use Bedriox\Api\Entity\Capability\Shearable;
 use Bedriox\Api\Entity\Capability\Sittable;
 use Bedriox\Api\Entity\Capability\Tameable;
 use Bedriox\Api\Entity\Capability\Trusting;
+use Bedriox\Api\Entity\Value\PandaActivity;
 use Bedriox\Api\Entity\Value\WoolColor;
 use Bedriox\Api\Entity\Vanilla\Cat;
 use Bedriox\Api\Entity\Vanilla\Creeper;
 use Bedriox\Api\Entity\Vanilla\Fox;
+use Bedriox\Api\Entity\Vanilla\Panda;
 use Bedriox\Api\Entity\Vanilla\Pig;
 use Bedriox\Api\Entity\Vanilla\Rabbit;
 use Bedriox\Api\Entity\Vanilla\Sheep;
@@ -108,12 +110,13 @@ final class BedrockLivingActorProjector
         return [
             $this->flagsMetadata($entity, $noAi),
             ActorMetadata::int(1, (int) ceil($entity->getHealth())),
-            ...($entity instanceof Rabbit || $entity instanceof Slime || $entity instanceof Cat
+            ...($entity instanceof Rabbit || $entity instanceof Slime || $entity instanceof Cat || $entity instanceof Panda
                 || $entity instanceof Wolf || $entity instanceof Fox ? [ActorMetadata::int(
                     2,
                     match (true) {
                         $entity instanceof Rabbit, $entity instanceof Cat,
                         $entity instanceof Wolf, $entity instanceof Fox => $entity->getVariant()->value,
+                        $entity instanceof Panda => $entity->getExpressedGene()->value,
                         default => $entity->getSize()->value,
                     },
                 )] : []),
@@ -214,6 +217,12 @@ final class BedrockLivingActorProjector
         if ($entity instanceof Sittable && $entity->isSitting()) {
             $flags |= ActorFlag::Sitting->mask();
         }
+        if ($entity instanceof Panda && $entity->getActivity() === PandaActivity::SITTING) {
+            $flags |= ActorFlag::Sitting->mask();
+        }
+        if ($entity instanceof Panda && $entity->getActivity() === PandaActivity::EATING) {
+            $flags |= ActorFlag::Eating->mask();
+        }
         if ($entity instanceof Angerable && $entity->getRemainingAngerTicks() > 0) {
             $flags |= ActorFlag::Angry->mask();
         }
@@ -238,6 +247,14 @@ final class BedrockLivingActorProjector
         }
         if ($entity instanceof Fox && $entity->isSleeping()) {
             $flags |= ActorFlag::Sleeping->mask();
+        }
+        if ($entity instanceof Panda) {
+            $flags |= match ($entity->getActivity()) {
+                PandaActivity::ROLLING => ActorFlag::Rolling->mask(),
+                PandaActivity::SNEEZING => ActorFlag::Sneezing->mask(),
+                PandaActivity::SCARED => ActorFlag::Scared->mask(),
+                default => 0,
+            };
         }
 
         return ActorMetadata::long(92, $flags);

@@ -18,20 +18,14 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api\Entity\Vanilla;
+namespace Bedriox\Api\Entity\Value;
 
-use Bedriox\Api\Entity\Capability\Animal;
-use Bedriox\Api\Entity\Capability\Breedable;
-use Bedriox\Api\Entity\Value\PandaActivity;
-use Bedriox\Api\Entity\Value\PandaGene;
-
-interface Panda extends Animal, Breedable
+enum PandaActivity: string
 {
-    public function getMainGene(): PandaGene;
-
-    public function getHiddenGene(): PandaGene;
-
-    public function getExpressedGene(): PandaGene;
-
-    public function getActivity(): PandaActivity;
+    case IDLE = 'idle';
+    case SITTING = 'sitting';
+    case EATING = 'eating';
+    case ROLLING = 'rolling';
+    case SNEEZING = 'sneezing';
+    case SCARED = 'scared';
 }

@@ -23,6 +23,7 @@ namespace Bedriox\Server\Tests\Entity;
 use Bedriox\Api\Entity\Value\ArmadilloState;
 use Bedriox\Api\Entity\Value\FoxVariant;
 use Bedriox\Api\Entity\Value\MooshroomVariant;
+use Bedriox\Api\Entity\Value\PandaActivity;
 use Bedriox\Api\Entity\Value\PandaGene;
 use Bedriox\Server\Entity\EntityUuid;
 use Bedriox\Server\Entity\Vanilla\ArmadilloEntity;
@@ -81,6 +82,10 @@ final class RemainingLandAnimalSpeciesTest extends TestCase
         $panda->setGenes(PandaGene::BROWN, PandaGene::WEAK);
         self::assertSame(PandaGene::BROWN, $panda->getMainGene());
         self::assertSame(PandaGene::WEAK, $panda->getHiddenGene());
+        self::assertSame(PandaGene::NORMAL, $panda->getExpressedGene());
+        $panda->setGenes(PandaGene::BROWN, PandaGene::BROWN);
+        $panda->setActivity(PandaActivity::ROLLING);
+        self::assertSame(PandaGene::BROWN, $panda->getExpressedGene());
 
         $armadillo = new ArmadilloEntity(EntityUuid::random(), 14, 'world', $position);
         $armadillo->setState(ArmadilloState::ROLLED_UP_PEEKING);
@@ -131,11 +136,12 @@ final class RemainingLandAnimalSpeciesTest extends TestCase
         self::assertTrue($restoredGoat->isScreaming());
         self::assertFalse($restoredGoat->hasLeftHorn());
 
-        $panda = new PandaEntity(EntityUuid::random(), 25, 'world', $position, mainGene: PandaGene::PLAYFUL, hiddenGene: PandaGene::BROWN);
+        $panda = new PandaEntity(EntityUuid::random(), 25, 'world', $position, mainGene: PandaGene::PLAYFUL, hiddenGene: PandaGene::BROWN, activity: PandaActivity::SNEEZING);
         $restoredPanda = new PandaEntity(EntityUuid::random(), 26, 'world', $position);
         $restoredPanda->restorePersistenceState($panda->persistenceVariant(), $panda->persistenceSchemaVersion(), $panda->persistenceData());
         self::assertSame(PandaGene::PLAYFUL, $restoredPanda->getMainGene());
         self::assertSame(PandaGene::BROWN, $restoredPanda->getHiddenGene());
+        self::assertSame(PandaActivity::SNEEZING, $restoredPanda->getActivity());
 
         $armadillo = new ArmadilloEntity(EntityUuid::random(), 27, 'world', $position, state: ArmadilloState::ROLLED_UP_RELAXING);
         $restoredArmadillo = new ArmadilloEntity(EntityUuid::random(), 28, 'world', $position);

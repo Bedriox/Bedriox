@@ -21,6 +21,8 @@ declare(strict_types=1);
 namespace Bedriox\Server\Tests\Runtime;
 
 use Bedriox\Api\Entity\Value\CatVariant;
+use Bedriox\Api\Entity\Value\PandaActivity;
+use Bedriox\Api\Entity\Value\PandaGene;
 use Bedriox\Api\Entity\Value\SlimeSize;
 use Bedriox\Api\Entity\Value\WolfVariant;
 use Bedriox\Api\Entity\Value\WoolColor;
@@ -32,6 +34,7 @@ use Bedriox\Server\Entity\Vanilla\CreeperEntity;
 use Bedriox\Server\Entity\Vanilla\FoxEntity;
 use Bedriox\Server\Entity\Vanilla\MagmaCubeEntity;
 use Bedriox\Server\Entity\Vanilla\OcelotEntity;
+use Bedriox\Server\Entity\Vanilla\PandaEntity;
 use Bedriox\Server\Entity\Vanilla\SheepEntity;
 use Bedriox\Server\Entity\Vanilla\SkeletonEntity;
 use Bedriox\Server\Entity\Vanilla\SlimeEntity;
@@ -173,6 +176,23 @@ final class LandMobActorMetadataTest extends TestCase
 
         self::assertNotSame(0, $flags2 & ActorFlag::Trusting->mask());
         self::assertNotSame(0, $flags2 & ActorFlag::Sleeping->mask());
+    }
+
+    public function testPandaProjectsExpressedGeneAndActivityAcrossBothFlagWords(): void
+    {
+        $panda = new PandaEntity(
+            EntityUuid::random(),
+            11,
+            'world',
+            new Position(0.0, 64.0, 0.0),
+            mainGene: PandaGene::BROWN,
+            hiddenGene: PandaGene::BROWN,
+            activity: PandaActivity::ROLLING,
+        );
+        $metadata = (new BedrockLivingActorProjector())->metadata($panda);
+
+        self::assertSame(PandaGene::BROWN->value, self::integer($metadata, 2));
+        self::assertNotSame(0, self::integer($metadata, 92) & ActorFlag::Rolling->mask());
     }
 
     /** @param list<ActorMetadata> $metadata */
