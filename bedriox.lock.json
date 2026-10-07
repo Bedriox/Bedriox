@@ -15,8 +15,8 @@
     "components": {
         "raknet": {
             "package": "bedriox/raknet",
-            "version": "0.1.0-alpha.2",
-            "commit": "a7171819cb6cc6bdc46726364ca4967df8216340"
+            "version": "0.1.0-alpha.3",
+            "commit": "efd20d678ad4bea45da23d3a55886f405b197ec8"
         },
         "protocol": {
             "package": "bedriox/protocol",
