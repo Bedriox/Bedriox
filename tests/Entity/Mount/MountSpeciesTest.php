@@ -92,6 +92,8 @@ final class MountSpeciesTest extends TestCase
         self::assertInstanceOf(Breedable::class, $mounts[0]);
         self::assertInstanceOf(Undead::class, $mounts[6]);
         self::assertInstanceOf(Undead::class, $mounts[7]);
+        self::assertFalse($mounts[6]->definition()->burnsInDaylight);
+        self::assertTrue($mounts[7]->definition()->burnsInDaylight);
     }
 
     public function testLivingAndUndeadMountStateRoundTrips(): void

@@ -32,6 +32,7 @@ use Bedriox\Server\Entity\EntityUuid;
 use Bedriox\Server\Entity\Vanilla\CatEntity;
 use Bedriox\Server\Entity\Vanilla\CreeperEntity;
 use Bedriox\Server\Entity\Vanilla\FoxEntity;
+use Bedriox\Server\Entity\Vanilla\GoatEntity;
 use Bedriox\Server\Entity\Vanilla\LlamaEntity;
 use Bedriox\Server\Entity\Vanilla\MagmaCubeEntity;
 use Bedriox\Server\Entity\Vanilla\OcelotEntity;
@@ -213,6 +214,22 @@ final class LandMobActorMetadataTest extends TestCase
         self::assertSame(4, self::integer($metadata, 75));
         self::assertSame(5, self::integer($metadata, 76));
         self::assertNotSame(0, self::integer($metadata, 0) & ActorFlag::Chested->mask());
+    }
+
+    public function testGoatProjectsHornCountAndRamState(): void
+    {
+        $goat = new GoatEntity(
+            EntityUuid::random(),
+            13,
+            'world',
+            new Position(0.0, 64.0, 0.0),
+            leftHorn: false,
+            ramming: true,
+        );
+        $metadata = (new BedrockLivingActorProjector())->metadata($goat);
+
+        self::assertSame(1, self::integer($metadata, 122));
+        self::assertNotSame(0, self::integer($metadata, 92) & ActorFlag::RamAttack->mask());
     }
 
     /** @param list<ActorMetadata> $metadata */

@@ -30,4 +30,6 @@ interface Goat extends Animal, Breedable
     public function hasLeftHorn(): bool;
 
     public function hasRightHorn(): bool;
+
+    public function isRamming(): bool;
 }

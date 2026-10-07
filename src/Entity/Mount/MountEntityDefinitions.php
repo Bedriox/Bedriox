@@ -57,10 +57,18 @@ final class MountEntityDefinitions
     }
     public static function zombieHorse(): EntityDefinition
     {
-        return self::get(VanillaEntityType::ZOMBIE_HORSE, 1.4, 1.6, 15.0);
+        return self::get(VanillaEntityType::ZOMBIE_HORSE, 1.4, 1.6, 15.0, true);
     }
-    private static function get(VanillaEntityType $type, float $width, float $height, float $health): EntityDefinition
+    private static function get(VanillaEntityType $type, float $width, float $height, float $health, bool $burnsInDaylight = false): EntityDefinition
     {
-        return self::$definitions[$type->value] ??= new EntityDefinition($type, EntityCategory::ANIMAL, $type->value, $width, $height, $health);
+        return self::$definitions[$type->value] ??= new EntityDefinition(
+            $type,
+            EntityCategory::ANIMAL,
+            $type->value,
+            $width,
+            $height,
+            $health,
+            burnsInDaylight: $burnsInDaylight,
+        );
     }
 }

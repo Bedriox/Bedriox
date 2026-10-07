@@ -77,6 +77,8 @@ final class RemainingLandAnimalSpeciesTest extends TestCase
         $goat->setHorns(false, true);
         self::assertFalse($goat->hasLeftHorn());
         self::assertTrue($goat->hasRightHorn());
+        $goat->setRamming(true);
+        self::assertTrue($goat->isRamming());
 
         $panda = new PandaEntity(EntityUuid::random(), 13, 'world', $position);
         $panda->setGenes(PandaGene::BROWN, PandaGene::WEAK);
@@ -130,11 +132,12 @@ final class RemainingLandAnimalSpeciesTest extends TestCase
         self::assertTrue($restoredFox->trustsPlayer($foxTrust));
         self::assertTrue($restoredFox->isSleeping());
 
-        $goat = new GoatEntity(EntityUuid::random(), 23, 'world', $position, screaming: true, leftHorn: false);
+        $goat = new GoatEntity(EntityUuid::random(), 23, 'world', $position, screaming: true, leftHorn: false, ramming: true);
         $restoredGoat = new GoatEntity(EntityUuid::random(), 24, 'world', $position);
         $restoredGoat->restorePersistenceState($goat->persistenceVariant(), $goat->persistenceSchemaVersion(), $goat->persistenceData());
         self::assertTrue($restoredGoat->isScreaming());
         self::assertFalse($restoredGoat->hasLeftHorn());
+        self::assertTrue($restoredGoat->isRamming());
 
         $panda = new PandaEntity(EntityUuid::random(), 25, 'world', $position, mainGene: PandaGene::PLAYFUL, hiddenGene: PandaGene::BROWN, activity: PandaActivity::SNEEZING);
         $restoredPanda = new PandaEntity(EntityUuid::random(), 26, 'world', $position);

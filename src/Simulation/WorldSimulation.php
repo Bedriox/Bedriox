@@ -200,6 +200,7 @@ use Bedriox\Server\Entity\Vanilla\WitchEntity;
 use Bedriox\Server\Entity\Vanilla\WitherSkeletonEntity;
 use Bedriox\Server\Entity\Vanilla\WolfEntity;
 use Bedriox\Server\Entity\Vanilla\ZombieFamilyEntity;
+use Bedriox\Server\Entity\Vanilla\ZombieHorseEntity;
 use Bedriox\Server\Entity\Vehicle\BoatEntity;
 use Bedriox\Server\Entity\WorldEntityEnvironment;
 use Bedriox\Server\Gameplay\Block\BlockBreakContext;
@@ -3745,6 +3746,12 @@ final class WorldSimulation
 
     private function consumeEntityDaylightHelmet(AbstractLivingEntity $entity): bool
     {
+        if ($entity instanceof ZombieHorseEntity) {
+            $horseArmor = $entity->equipmentState()->getItem(ApiEquipmentSlot::CHEST);
+            if ($horseArmor !== null && str_ends_with($horseArmor->identifier, '_horse_armor')) {
+                return true;
+            }
+        }
         $helmet = $entity->equipmentState()->getItem(ApiEquipmentSlot::HEAD);
         if ($helmet === null || $this->itemCatalog === null || !$this->itemCatalog->has($helmet->identifier)) {
             return false;

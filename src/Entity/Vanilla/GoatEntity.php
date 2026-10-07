@@ -42,6 +42,7 @@ final class GoatEntity extends LandBreedableAnimalEntity implements Goat
         private bool $screaming = false,
         private bool $leftHorn = true,
         private bool $rightHorn = true,
+        private bool $ramming = false,
     ) {
         parent::__construct($uniqueId, $runtimeId, LandAnimalEntityDefinitions::goat(), $worldName, $position, $behavior ?? LandAnimalAiBehaviors::passive('goat', ['minecraft:wheat'], 0.12), $motion, $yaw, $pitch, $health);
         $this->initializeBreedableState($baby);
@@ -62,6 +63,20 @@ final class GoatEntity extends LandBreedableAnimalEntity implements Goat
         return $this->rightHorn;
     }
 
+    public function isRamming(): bool
+    {
+        return $this->ramming;
+    }
+
+    /** @internal Authoritative ram-state mutation. */
+    public function setRamming(bool $ramming): void
+    {
+        if ($this->ramming !== $ramming) {
+            $this->ramming = $ramming;
+            $this->markPresentationChanged();
+        }
+    }
+
     /** @internal Authoritative species-state mutation. */
     public function setHorns(bool $left, bool $right): void
     {
@@ -72,23 +87,26 @@ final class GoatEntity extends LandBreedableAnimalEntity implements Goat
         }
     }
 
-    /** @return array{screaming: bool, leftHorn: bool, rightHorn: bool} */
+    /** @return array{screaming: bool, leftHorn: bool, rightHorn: bool, ramming: bool} */
     protected function speciesPersistenceData(): array
     {
         return [
             'screaming' => $this->screaming,
             'leftHorn' => $this->leftHorn,
             'rightHorn' => $this->rightHorn,
+            'ramming' => $this->ramming,
         ];
     }
 
     protected function restoreSpeciesPersistenceState(int|string|null $variant, array $data): void
     {
-        if ($variant !== null || !is_bool($data['screaming']) || !is_bool($data['leftHorn']) || !is_bool($data['rightHorn'])) {
+        if ($variant !== null || !is_bool($data['screaming']) || !is_bool($data['leftHorn'])
+            || !is_bool($data['rightHorn']) || !is_bool($data['ramming'])) {
             throw new InvalidArgumentException('Persisted goat state is malformed.');
         }
         $this->screaming = $data['screaming'];
         $this->leftHorn = $data['leftHorn'];
         $this->rightHorn = $data['rightHorn'];
+        $this->ramming = $data['ramming'];
     }
 }

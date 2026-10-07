@@ -36,6 +36,7 @@ use Bedriox\Api\Entity\Value\WoolColor;
 use Bedriox\Api\Entity\Vanilla\Cat;
 use Bedriox\Api\Entity\Vanilla\Creeper;
 use Bedriox\Api\Entity\Vanilla\Fox;
+use Bedriox\Api\Entity\Vanilla\Goat;
 use Bedriox\Api\Entity\Vanilla\Llama as ApiLlama;
 use Bedriox\Api\Entity\Vanilla\Panda;
 use Bedriox\Api\Entity\Vanilla\Pig;
@@ -154,6 +155,10 @@ final class BedrockLivingActorProjector
                 ActorMetadata::int(75, $entity->getStrength()),
                 ActorMetadata::int(76, 5),
             ] : []),
+            ...($entity instanceof Goat ? [ActorMetadata::int(
+                122,
+                (int) $entity->hasLeftHorn() + (int) $entity->hasRightHorn(),
+            )] : []),
             ...($entity instanceof Creeper ? [ActorMetadata::int(55, 30)] : []),
             ...($entity instanceof Shulker ? ShulkerActorMetadata::presentation(
                 $entity->getPeekAmount(),
@@ -265,6 +270,9 @@ final class BedrockLivingActorProjector
                 PandaActivity::SCARED => ActorFlag::Scared->mask(),
                 default => 0,
             };
+        }
+        if ($entity instanceof Goat && $entity->isRamming()) {
+            $flags |= ActorFlag::RamAttack->mask();
         }
 
         return ActorMetadata::long(92, $flags);
