@@ -337,6 +337,7 @@ final class ServerBootstrap
                 furnaceRecipes: $furnaceRecipes,
                 transientWorkstations: $workstations,
                 dimension: $flatWorld->dimension(),
+                navigationWorkers: $workersAvailable ? $workers : null,
             );
             $entityPersistenceStore = $flatWorld->entityPersistenceStore();
             if ($entityPersistenceStore !== null) {
@@ -377,7 +378,7 @@ final class ServerBootstrap
                     WorldGeneratorFactory::canonicalIdentifier($opened->data->generatorName),
                 );
                 $generatorLookupAt = hrtime(true);
-                if ($generatorDefinition->workerSource !== null && (!$workersAvailable || $workers === null)) {
+                if ($generatorDefinition->workerSource !== null && !$workersAvailable) {
                     throw new \RuntimeException('Plugin world generators require an available generation worker.');
                 }
                 if ($workers !== null && $workersAvailable
@@ -446,6 +447,7 @@ final class ServerBootstrap
                     furnaceRecipes: $furnaceRecipes,
                     transientWorkstations: $workstations,
                     dimension: $internalWorld->dimension(),
+                    navigationWorkers: $workersAvailable ? $workers : null,
                 );
                 $simulationAt = hrtime(true);
                 $entityStore = $internalWorld->entityPersistenceStore();

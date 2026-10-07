@@ -29,16 +29,20 @@ use Bedriox\Server\Entity\Vehicle\BoatEntity;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\Collision\AxisAlignedBox;
 use Bedriox\Server\World\Collision\LoadedCollisionBoxQuery;
+use Closure;
 
 /** Resolves authoritative gravity and motion without invoking AI. */
 final readonly class EntityPhysicsResolver
 {
     private const float MOB_JUMP_VELOCITY = 0.42;
     private const float MOB_CLIMB_HEIGHT = 1.0;
+    private const float DEFAULT_GROUND_FRICTION = 0.60;
 
     public function __construct(
         private LoadedCollisionBoxQuery $collisions,
         private ?WorldEntityEnvironment $environment = null,
+        /** @var null|Closure(AbstractEntity): array{float, float} */
+        private ?Closure $mountedCollisionSize = null,
     ) {}
 
     public function tick(AbstractEntity $entity, int $tick): EntityPhysicsResult
@@ -56,13 +60,16 @@ final readonly class EntityPhysicsResolver
         $definition = $entity->definition();
         $beforePosition = $entity->internalPosition();
         $beforeMotion = $entity->getMotion();
-        $halfWidth = $entity->collisionWidth() / 2.0;
+        [$collisionWidth, $collisionHeight] = $this->mountedCollisionSize === null
+            ? [$entity->collisionWidth(), $entity->collisionHeight()]
+            : ($this->mountedCollisionSize)($entity);
+        $halfWidth = $collisionWidth / 2.0;
         $box = new AxisAlignedBox(
             $beforePosition->x - $halfWidth,
             $beforePosition->y,
             $beforePosition->z - $halfWidth,
             $beforePosition->x + $halfWidth,
-            $beforePosition->y + $entity->collisionHeight(),
+            $beforePosition->y + $collisionHeight,
             $beforePosition->z + $halfWidth,
         );
         $inWater = $entity instanceof AbstractLivingEntity
@@ -80,21 +87,26 @@ final readonly class EntityPhysicsResolver
             $entity->setWarm($striderOnLava);
         }
         $fluidSupported = $inWater || $boatOnWater || $striderOnLava;
-        $friction = $fluidSupported ? 0.90 : 1.0 - $definition->drag;
+        $airFriction = 1.0 - $definition->drag;
+        $horizontalFriction = $fluidSupported
+            ? 0.90
+            : ($entity->isOnGround()
+                ? $airFriction * ($this->environment?->groundFriction($entity) ?? self::DEFAULT_GROUND_FRICTION)
+                : $airFriction);
         $gravity = $fluidSupported ? 0.0 : ($entity->isGravityEnabled() ? $definition->gravity : 0.0);
         $vertical = $entity instanceof BoatEntity && $boatWaterSurface !== null
             ? $entity->waterlineCorrection($boatWaterSurface)
             : ($striderLavaSurface !== null
                 ? max(-0.08, min(0.08, ($striderLavaSurface - $beforePosition->y) * 0.25))
-                : ($beforeMotion->y - $gravity) * $friction);
+                : ($beforeMotion->y - $gravity) * $airFriction);
         if (($entity instanceof GhastEntity || $entity instanceof HappyGhastEntity)
             && $vertical <= 0.0 && $this->hasGroundWithin($box, 5.0)) {
             $vertical = 0.10;
         }
         $requested = new EntityMotion(
-            $beforeMotion->x * $friction,
+            $beforeMotion->x * $horizontalFriction,
             max(-$entity->maximumDownwardVelocity(), $vertical),
-            $beforeMotion->z * $friction,
+            $beforeMotion->z * $horizontalFriction,
         );
         $resolved = $this->resolve($box, $requested);
         if ($resolved === null) {

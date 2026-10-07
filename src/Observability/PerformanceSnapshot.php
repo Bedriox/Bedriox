@@ -22,6 +22,7 @@ namespace Bedriox\Server\Observability;
 
 use Bedriox\Server\Entity\Ai\AiSchedulerMetrics;
 use Bedriox\Server\Entity\EntityRuntimeMetrics;
+use Bedriox\Server\Entity\Navigation\EntityNavigationMetrics;
 use Bedriox\Server\Observability\Memory\GarbageCollectionReport;
 use Bedriox\Server\Observability\Memory\MemoryManagementDecision;
 use Bedriox\Server\Persistence\PersistenceQueueSnapshot;
@@ -83,5 +84,6 @@ final readonly class PerformanceSnapshot
         public int $preparedBytesTrimmed = 0,
         public ?AiSchedulerMetrics $entityAi = null,
         public ?EntityRuntimeMetrics $entityRuntime = null,
+        public ?EntityNavigationMetrics $entityNavigation = null,
     ) {}
 }

@@ -61,7 +61,12 @@ final class SpecialHostileSpawnRuleTest extends TestCase
         self::assertFalse($slime->allows(self::context('minecraft:slime', y: 60.0, light: 0, biome: 'minecraft:plains')));
 
         $magma = new MagmaCubeNaturalSpawnRule();
-        self::assertTrue($magma->allows(self::context('minecraft:magma_cube', dimension: WorldDimension::NETHER)));
+        self::assertTrue($magma->allows(self::context(
+            'minecraft:magma_cube',
+            biome: 'minecraft:hell',
+            dimension: WorldDimension::NETHER,
+        )));
+        self::assertFalse($magma->allows(self::context('minecraft:magma_cube', dimension: WorldDimension::NETHER)));
         self::assertFalse($magma->allows(self::context('minecraft:magma_cube')));
     }
 

@@ -20,23 +20,13 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity;
 
-final readonly class EntityRuntimeMetrics
+final readonly class EntityContactMetrics
 {
     public function __construct(
-        public int $entities,
-        public int $physicsEligible,
-        public int $physicsTicked,
-        public int $cadenceSkipped,
-        public int $budgetDeferred,
-        public int $continuousBeyondBudget,
-        public int $moved,
-        public int $motionChanged,
+        public int $candidates,
+        public int $pairs,
+        public int $contacts,
         public int $elapsedNanoseconds,
         public bool $budgetExhausted,
-        public int $contactCandidates = 0,
-        public int $contactPairs = 0,
-        public int $contactsResolved = 0,
-        public int $contactElapsedNanoseconds = 0,
-        public bool $contactBudgetExhausted = false,
     ) {}
 }

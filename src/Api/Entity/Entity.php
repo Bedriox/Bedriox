@@ -41,6 +41,10 @@ interface Entity
 
     public function getPitch(): float;
 
+    public function getCollisionWidth(): float;
+
+    public function getCollisionHeight(): float;
+
     public function isOnGround(): bool;
 
     public function isPersistent(): bool;

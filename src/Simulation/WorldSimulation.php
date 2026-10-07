@@ -44,6 +44,7 @@ use Bedriox\Api\Entity\EntityDamageCause as ApiEntityDamageCause;
 use Bedriox\Api\Entity\EntityTargetReason;
 use Bedriox\Api\Entity\KnockbackCause as ApiKnockbackCause;
 use Bedriox\Api\Entity\KnockbackVector as ApiKnockbackVector;
+use Bedriox\Api\Entity\MobActivationState;
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\Value\BoatVariant;
 use Bedriox\Api\Entity\Value\EntityTransformReason;
@@ -107,6 +108,7 @@ use Bedriox\Server\Entity\AquaticBucketRegistry;
 use Bedriox\Server\Entity\AquaticRuntimeState;
 use Bedriox\Server\Entity\BreedableAnimalEntity;
 use Bedriox\Server\Entity\Concern\MutableAngerState;
+use Bedriox\Server\Entity\EntityContactResolver;
 use Bedriox\Server\Entity\EntityDefinition;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\EntityDespawnPolicy;
@@ -131,6 +133,7 @@ use Bedriox\Server\Entity\Mount\HorseFamilyEntity;
 use Bedriox\Server\Entity\Mount\MountLink;
 use Bedriox\Server\Entity\Mount\MountRegistry;
 use Bedriox\Server\Entity\Mount\UndeadHorseEntity;
+use Bedriox\Server\Entity\Navigation\AsyncNavigationCoordinator;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceFlushResult;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceManager;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
@@ -417,6 +420,7 @@ use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
 use Bedriox\Server\Simulation\Event\TameAttemptPresented;
 use Bedriox\Server\Simulation\Event\WeatherChanged;
 use Bedriox\Server\Simulation\Event\WorldEvent;
+use Bedriox\Server\Worker\WorkerDispatcher;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\Block\InternalBlockStateId;
@@ -714,6 +718,8 @@ final class WorldSimulation
 
     private readonly MountRegistry $mounts;
 
+    private readonly ?AsyncNavigationCoordinator $navigation;
+
     /** @var array<string, array{position: BlockPosition, state: int, sequence: int, face: int, lastParticleTick: int, lastSwingTick: int}> */
     private array $breakingBlocks = [];
 
@@ -754,6 +760,7 @@ final class WorldSimulation
         private readonly ?TransientWorkstationProcessor $transientWorkstations = null,
         ?MountRegistry $mounts = null,
         private readonly ?NaturalSpawnClock $naturalSpawnClock = null,
+        ?WorkerDispatcher $navigationWorkers = null,
     ) {
         $this->worldId = $worldId ?? $blockWorld?->metadata->name ?? 'world';
         if ($this->worldId === '' || strlen($this->worldId) > 64) {
@@ -832,6 +839,7 @@ final class WorldSimulation
                 $blockCollisionRegistry,
                 $blockPalette->air,
                 $waterState,
+                $blockProperties,
             )
             : null;
         if ($entityRuntime === null) {
@@ -841,20 +849,48 @@ final class WorldSimulation
                 $definitions,
                 static fn(string $_world, int $chunkX, int $chunkZ): bool => $blockWorld === null
                     || $blockWorld->hasLoadedChunk(new ChunkPosition($chunkX, $chunkZ)),
-                static function (EntityDefinition $definition, Position $position) use ($collisionQuery): bool {
-                    if ($collisionQuery === null) {
-                        return true;
-                    }
+                function (
+                    EntityDefinition $definition,
+                    Position $position,
+                    SpawnCause $cause,
+                ) use ($collisionQuery, $entityRegistry): bool {
                     $halfWidth = $definition->width / 2.0;
-
-                    return !$collisionQuery->hasCollision(new AxisAlignedBox(
+                    $candidate = new AxisAlignedBox(
                         $position->x - $halfWidth,
                         $position->y,
                         $position->z - $halfWidth,
                         $position->x + $halfWidth,
                         $position->y + $definition->height,
                         $position->z + $halfWidth,
-                    ));
+                    );
+                    if ($collisionQuery === null) {
+                        $blockFree = true;
+                    } else {
+                        $blockFree = !$collisionQuery->hasCollision($candidate);
+                    }
+                    if (!$blockFree) {
+                        return false;
+                    }
+                    // Breeding deliberately creates a child beside its parents. Contact resolution separates the
+                    // family immediately after admission without weakening terrain collision validation.
+                    if ($cause === SpawnCause::BREEDING) {
+                        return true;
+                    }
+                    foreach ($entityRegistry->nearby($this->worldId, $position, 8.0, 64) as $entity) {
+                        $entityHalfWidth = $entity->collisionWidth() / 2.0;
+                        if ($candidate->intersects(new AxisAlignedBox(
+                            $entity->internalPosition()->x - $entityHalfWidth,
+                            $entity->internalPosition()->y,
+                            $entity->internalPosition()->z - $entityHalfWidth,
+                            $entity->internalPosition()->x + $entityHalfWidth,
+                            $entity->internalPosition()->y + $entity->collisionHeight(),
+                            $entity->internalPosition()->z + $entityHalfWidth,
+                        ))) {
+                            return false;
+                        }
+                    }
+
+                    return true;
                 },
                 $this->pluginEvents === null
                     ? null
@@ -878,7 +914,36 @@ final class WorldSimulation
             $entityRuntime = new EntityWorldRuntime(
                 $entityRegistry,
                 $spawnService,
-                $collisionQuery === null ? null : new EntityPhysicsResolver($collisionQuery, $this->entityEnvironment),
+                $collisionQuery === null ? null : new EntityPhysicsResolver(
+                    $collisionQuery,
+                    $this->entityEnvironment,
+                    function (AbstractEntity $vehicle): array {
+                        $width = $vehicle->collisionWidth();
+                        $height = $vehicle->collisionHeight();
+                        foreach ($this->mounts->linksForVehicle($vehicle->getRuntimeId()) as $link) {
+                            $playerPassenger = $link->playerSessionId !== null;
+                            $passengerHeight = $playerPassenger
+                                ? PlayerCollisionShape::HEIGHT
+                                : ($link->passengerEntity?->collisionHeight() ?? 0.0);
+                            $passengerWidth = $playerPassenger
+                                ? PlayerCollisionShape::WIDTH
+                                : ($link->passengerEntity?->collisionWidth() ?? 0.0);
+                            $offset = $vehicle->mountedPassengerOffset(
+                                $link->seat,
+                                $passengerHeight,
+                                $playerPassenger,
+                            );
+                            $height = max($height, $offset->y + $passengerHeight);
+                            $width = max(
+                                $width,
+                                (abs($offset->x) * 2.0) + $passengerWidth,
+                                (abs($offset->z) * 2.0) + $passengerWidth,
+                            );
+                        }
+
+                        return [$width, $height];
+                    },
+                ),
                 scheduledAiTick: static function (AbstractMobEntity $entity, int $currentTick) use (
                     $pluginEntityLifecycle,
                 ): void {
@@ -886,9 +951,32 @@ final class WorldSimulation
                         $pluginEntityLifecycle?->aiTick($entity, $currentTick);
                     }
                 },
+                contacts: new EntityContactResolver($entityRegistry, $this->mounts),
             );
         }
         $this->entityRuntime = $entityRuntime;
+        $this->navigation = $collisionQuery !== null && $navigationWorkers !== null
+            ? new AsyncNavigationCoordinator(
+                $this->entityRuntime->registry(),
+                $collisionQuery,
+                $navigationWorkers,
+                function (Position $from, Position $to): string {
+                    $parts = [];
+                    $minimumX = (int) floor((min($from->x, $to->x) - 10.0) / 16.0);
+                    $maximumX = (int) floor((max($from->x, $to->x) + 10.0) / 16.0);
+                    $minimumZ = (int) floor((min($from->z, $to->z) - 10.0) / 16.0);
+                    $maximumZ = (int) floor((max($from->z, $to->z) + 10.0) / 16.0);
+                    for ($chunkZ = $minimumZ; $chunkZ <= $maximumZ; ++$chunkZ) {
+                        for ($chunkX = $minimumX; $chunkX <= $maximumX; ++$chunkX) {
+                            $chunk = $this->blockWorld?->loadedChunk(new ChunkPosition($chunkX, $chunkZ));
+                            $parts[] = $chunkX . ':' . $chunkZ . ':' . ($chunk === null ? -1 : $chunk->revision);
+                        }
+                    }
+
+                    return hash('sha256', implode(';', $parts));
+                },
+            )
+            : null;
         $this->entityAiWorld = new IndexedAiWorldView(
             $this->entityRuntime->registry(),
             fn(): array => $this->entityAiPlayers,
@@ -900,6 +988,10 @@ final class WorldSimulation
                 $this->entityEnvironment?->isWaterAt($worldName, $position) === true,
             fn(AbstractMobEntity $entity): bool =>
                 $this->entityEnvironment?->isTouchingWater($entity) === true,
+            $this->navigation === null
+                ? null
+                : fn(AbstractMobEntity $entity, Position $target, int $tick): Position =>
+                    $this->navigation->waypoint($entity, $target, $tick),
         );
         $this->naturalSpawns = $blockWorld !== null
             && $blockPalette !== null
@@ -2458,6 +2550,12 @@ final class WorldSimulation
         return $this->entityRuntime->lastRuntimeMetrics();
     }
 
+    public function entityNavigationMetrics(): \Bedriox\Server\Entity\Navigation\EntityNavigationMetrics
+    {
+        return $this->navigation?->metrics()
+            ?? new \Bedriox\Server\Entity\Navigation\EntityNavigationMetrics(0, 0, 0, 0, 0);
+    }
+
     /** @internal Diagnostic counter used to prove idle stands do not consume recipe work. */
     public function brewingRecipeEvaluationCount(): int
     {
@@ -2677,6 +2775,7 @@ final class WorldSimulation
         }
         $this->applyHoglinRepellentAvoidance();
         $entityRuntimeStartedNanoseconds = hrtime(true);
+        $this->resolvePlayerEntityContacts();
         $tick = $this->entityRuntime->tick(
             $this->tick,
             $this->entityAiWorld,
@@ -5463,6 +5562,9 @@ final class WorldSimulation
                 ? VerticalState::GROUNDED
                 : VerticalState::AIRBORNE;
         }
+        $player->configureRidingStateResolver(
+            fn(): bool => $this->mounts->playerLink($player->sessionId) !== null,
+        );
         $player->markDirty();
         $this->players->add($player);
         foreach ($this->itemEntities->all() as $entity) {
@@ -5789,12 +5891,18 @@ final class WorldSimulation
                 $this->entityEnvironment?->isWaterSupporting($vehicle) === true,
             );
             $current = $vehicle->getMotion();
-            $vehicle->applyControlledMotion(new EntityMotion(
+            $controlledMotion = new EntityMotion(
                 (-sin($radians) * $forward + cos($radians) * $strafe) * $speed,
                 $current->y,
                 (cos($radians) * $forward + sin($radians) * $strafe) * $speed,
-            ), $this->tick);
-            $vehicle->moveTo($vehicle->getWorldName(), $vehicle->internalPosition(), $vehicleControlYaw, 0.0);
+            );
+            $vehicle->applyControlledMotion($controlledMotion, $this->tick);
+            $vehicle->moveTo(
+                $vehicle->getWorldName(),
+                $vehicle->internalPosition(),
+                self::vehicleTravelYaw($controlledMotion, $vehicleControlYaw),
+                0.0,
+            );
             if ($control !== null) {
                 $this->pluginEvents->vehicleControlled($player, $vehicle, $control);
             }
@@ -5806,12 +5914,18 @@ final class WorldSimulation
                 $strafe = max(-1.0, min(1.0, $command->moveX));
                 $radians = deg2rad($vehicleControlYaw);
                 $speed = $command->sprinting === true ? 0.24 : 0.18;
-                $vehicle->applyControlledMotion(new EntityMotion(
+                $controlledMotion = new EntityMotion(
                     (-sin($radians) * $forward + cos($radians) * $strafe) * $speed,
                     $vehicle->getMotion()->y,
                     (cos($radians) * $forward + sin($radians) * $strafe) * $speed,
-                ), $this->tick);
-                $vehicle->moveTo($vehicle->getWorldName(), $vehicle->internalPosition(), $vehicleYaw, 0.0);
+                );
+                $vehicle->applyControlledMotion($controlledMotion, $this->tick);
+                $vehicle->moveTo(
+                    $vehicle->getWorldName(),
+                    $vehicle->internalPosition(),
+                    self::vehicleTravelYaw($controlledMotion, $vehicleControlYaw),
+                    0.0,
+                );
             } else {
                 $motion = $vehicle->getMotion();
                 $vehicle->setMotion(new EntityMotion(0.0, $motion->y, 0.0));
@@ -5824,12 +5938,18 @@ final class WorldSimulation
                 $strafe = max(-1.0, min(1.0, $command->moveX));
                 $radians = deg2rad($vehicleControlYaw);
                 $speed = $command->sprinting === true ? 0.28 : 0.20;
-                $vehicle->applyControlledMotion(new EntityMotion(
+                $controlledMotion = new EntityMotion(
                     (-sin($radians) * $forward + cos($radians) * $strafe) * $speed,
                     $vehicle->getMotion()->y,
                     (cos($radians) * $forward + sin($radians) * $strafe) * $speed,
-                ), $this->tick);
-                $vehicle->moveTo($vehicle->getWorldName(), $vehicle->internalPosition(), $vehicleYaw, 0.0);
+                );
+                $vehicle->applyControlledMotion($controlledMotion, $this->tick);
+                $vehicle->moveTo(
+                    $vehicle->getWorldName(),
+                    $vehicle->internalPosition(),
+                    self::vehicleTravelYaw($controlledMotion, $vehicleControlYaw),
+                    0.0,
+                );
             }
         } elseif ($vehicle instanceof HappyGhastEntity && $link->seat->controlsVehicle()) {
             $vehicle->suppressAiMovementUntil($this->tick + 2);
@@ -5837,12 +5957,18 @@ final class WorldSimulation
             $strafe = max(-1.0, min(1.0, $command->moveX));
             $vertical = $command->jumpRequested ? 0.22 : ($command->sneaking === true ? -0.18 : 0.0);
             $radians = deg2rad($vehicleControlYaw);
-            $vehicle->applyControlledMotion(new EntityMotion(
+            $controlledMotion = new EntityMotion(
                 (-sin($radians) * $forward + cos($radians) * $strafe) * 0.24,
                 $vertical,
                 (cos($radians) * $forward + sin($radians) * $strafe) * 0.24,
-            ), $this->tick);
-            $vehicle->moveTo($vehicle->getWorldName(), $vehicle->internalPosition(), $vehicleYaw, $command->pitch);
+            );
+            $vehicle->applyControlledMotion($controlledMotion, $this->tick);
+            $vehicle->moveTo(
+                $vehicle->getWorldName(),
+                $vehicle->internalPosition(),
+                self::vehicleTravelYaw($controlledMotion, $vehicleControlYaw),
+                $command->pitch,
+            );
         } elseif ($vehicle instanceof Rideable && $vehicle instanceof Tameable && $vehicle instanceof AbstractMobEntity
             && ($vehicle->isSaddled() || $vehicle instanceof SkeletonHorseEntity)
             && $vehicle->isTamed() && $link->seat->controlsVehicle()) {
@@ -5855,12 +5981,18 @@ final class WorldSimulation
             if ($command->jumpRequested && $vehicle->isOnGround()) {
                 $verticalMotion = 0.42;
             }
-            $vehicle->applyControlledMotion(new EntityMotion(
+            $controlledMotion = new EntityMotion(
                 (-sin($radians) * $forward + cos($radians) * $strafe) * $speed,
                 $verticalMotion,
                 (cos($radians) * $forward + sin($radians) * $strafe) * $speed,
-            ), $this->tick);
-            $vehicle->moveTo($vehicle->getWorldName(), $vehicle->internalPosition(), $vehicleYaw, 0.0);
+            );
+            $vehicle->applyControlledMotion($controlledMotion, $this->tick);
+            $vehicle->moveTo(
+                $vehicle->getWorldName(),
+                $vehicle->internalPosition(),
+                self::vehicleTravelYaw($controlledMotion, $vehicleControlYaw),
+                0.0,
+            );
         }
         $this->syncMountedPlayer($player, $link);
 
@@ -6706,6 +6838,7 @@ final class WorldSimulation
             return new CommandRejected($command->session, 'plugin_cancelled');
         }
         $heldBefore = $player->inventory->selectedStack();
+        $pigWasSaddled = $target instanceof PigEntity && $target->isSaddled();
         if ($target instanceof PiglinEntity && !$target->isAdmiring()
             && $heldBefore?->identifier === 'minecraft:gold_ingot') {
             $target->equipmentState()->setItem(
@@ -6760,8 +6893,11 @@ final class WorldSimulation
         }
         if ($target instanceof PigEntity && !$target->isBaby() && $target->isSaddled()
             && $this->mounts->playerLink($player->sessionId) === null
-            && ($heldBefore === null || ($heldBefore->identifier !== 'minecraft:saddle'
-                && !in_array($heldBefore->identifier, $this->breedingFoods($target), true)))) {
+            && ($heldBefore === null
+                || $heldBefore->identifier !== 'minecraft:saddle'
+                || $pigWasSaddled)
+            && ($heldBefore === null
+                || !in_array($heldBefore->identifier, $this->breedingFoods($target), true))) {
             $result = $this->mountPlayer(new MountPlayer(
                 $player->sessionId,
                 $target->getRuntimeId(),
@@ -7042,6 +7178,78 @@ final class WorldSimulation
         $player->markDirty();
     }
 
+    /** Keeps player/mob contact bounded while leaving the client-owned visual player push prediction intact. */
+    private function resolvePlayerEntityContacts(): void
+    {
+        $remainingPairs = 512;
+        foreach ($this->players->players() as $player) {
+            if ($remainingPairs <= 0) {
+                break;
+            }
+            if (!$player->vitals->isAlive() || $player->gameMode() === GameMode::SPECTATOR) {
+                continue;
+            }
+            $playerMount = $this->mounts->playerLink($player->sessionId);
+            foreach ($this->entityRuntime->registry()->nearby(
+                $this->worldId,
+                $player->movement->position,
+                2.5,
+                16,
+            ) as $entity) {
+                if (--$remainingPairs < 0) {
+                    break;
+                }
+                if ($entity->isRemoved() || $playerMount?->vehicle === $entity) {
+                    continue;
+                }
+                $entityPosition = $entity->internalPosition();
+                $playerPosition = $player->movement->position;
+                if ($playerPosition->y >= $entityPosition->y + $entity->collisionHeight()
+                    || $entityPosition->y >= $playerPosition->y + PlayerCollisionShape::HEIGHT) {
+                    continue;
+                }
+                $dx = $entityPosition->x - $playerPosition->x;
+                $dz = $entityPosition->z - $playerPosition->z;
+                $distance = hypot($dx, $dz);
+                $required = (PlayerCollisionShape::WIDTH + $entity->collisionWidth()) / 2.0;
+                if ($distance >= $required) {
+                    continue;
+                }
+                $penetration = $required - $distance;
+                if ($distance < 0.000_001) {
+                    $dx = ($entity->getRuntimeId() & 1) === 0 ? 1.0 : 0.0;
+                    $dz = $dx === 0.0 ? 1.0 : 0.0;
+                    $distance = 1.0;
+                }
+                $push = min(0.05, $penetration * 0.25);
+                $motion = $entity->getMotion();
+                $pushX = ($dx / $distance) * $push;
+                $pushZ = ($dz / $distance) * $push;
+                $combinedX = $motion->x + $pushX;
+                $combinedZ = $motion->z + $pushZ;
+                $combinedLength = hypot($combinedX, $combinedZ);
+                $maximumLength = max(hypot($motion->x, $motion->z), 0.05);
+                if ($combinedLength > $maximumLength) {
+                    $scale = $maximumLength / $combinedLength;
+                    $combinedX *= $scale;
+                    $combinedZ *= $scale;
+                }
+                $entity->setMotion(new EntityMotion($combinedX, $motion->y, $combinedZ));
+                if ($entity instanceof AbstractMobEntity
+                    && $entity->getActivationState() === MobActivationState::SLEEPING) {
+                    $entity->setActivationState(MobActivationState::REDUCED);
+                }
+            }
+        }
+    }
+
+    private static function vehicleTravelYaw(EntityMotion $motion, float $fallback): float
+    {
+        return hypot($motion->x, $motion->z) < 0.000_001
+            ? $fallback
+            : rad2deg(atan2(-$motion->x, $motion->z));
+    }
+
     private function placeDismountedPlayer(Player $player, MountLink $link): void
     {
         $vehicle = $link->vehicle->internalPosition();
@@ -7053,11 +7261,12 @@ final class WorldSimulation
             new Position($vehicle->x, $vehicle->y, $vehicle->z - 1.0),
             new Position($vehicle->x, $vehicle->y + $link->vehicle->collisionHeight(), $vehicle->z),
         ];
-        $destination = $candidates[0];
+        $destination = $candidates[4];
         if ($this->collisionResolver !== null) {
             foreach ($candidates as $candidate) {
                 $resolved = $this->collisionResolver->resolve($origin, $candidate, false, false);
-                if ($resolved->terrainLoaded && $resolved->position->distanceTo($candidate) < 0.1) {
+                if ($resolved->terrainLoaded && $resolved->position->distanceTo($candidate) < 0.1
+                    && !$this->playerPositionOverlapsEntity($resolved->position, $link->vehicle)) {
                     $destination = $resolved->position;
                     break;
                 }
@@ -7070,6 +7279,29 @@ final class WorldSimulation
         $player->movement->fallDistance = 0.0;
         $player->markDirty();
         $this->deferredEvents[] = new MovementCorrected($player->snapshot(), 'dismounted');
+    }
+
+    private function playerPositionOverlapsEntity(Position $position, AbstractEntity $excluded): bool
+    {
+        $playerBox = PlayerCollisionShape::at($position);
+        foreach ($this->entityRuntime->registry()->nearby($this->worldId, $position, 8.0, 64) as $entity) {
+            if ($entity === $excluded || $entity->isRemoved()) {
+                continue;
+            }
+            $halfWidth = $entity->collisionWidth() / 2.0;
+            if ($playerBox->intersects(new AxisAlignedBox(
+                $entity->internalPosition()->x - $halfWidth,
+                $entity->internalPosition()->y,
+                $entity->internalPosition()->z - $halfWidth,
+                $entity->internalPosition()->x + $halfWidth,
+                $entity->internalPosition()->y + $entity->collisionHeight(),
+                $entity->internalPosition()->z + $halfWidth,
+            ))) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function interactWithSheep(
@@ -7317,9 +7549,8 @@ final class WorldSimulation
                 );
             }
         }
-        if ($held?->identifier === 'minecraft:saddle') {
-            if (!$mount instanceof LlamaEntity && !$mount instanceof TraderLlamaEntity
-                && $mount->isTamed() && !$mount->isSaddled()) {
+        if ($held?->identifier === 'minecraft:saddle' && !$mount->isSaddled()) {
+            if (!$mount instanceof LlamaEntity && !$mount instanceof TraderLlamaEntity && $mount->isTamed()) {
                 $mount->setSaddled(true);
                 $this->consumeSelectedItem($player);
             }

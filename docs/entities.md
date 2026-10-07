@@ -86,12 +86,19 @@ Cows support bucket milking. Pigs persist saddle state. Chickens fall slowly and
 
 Every world owns one transient mount registry. A passenger has at most one vehicle, each finite `MountSeat` can hold at most one passenger, cyclic relationships are rejected, and links are removed when either side dies, despawns, disconnects, teleports, or changes world. Mount relationships are intentionally not restored after a restart.
 
-Players can inspect and control a live relationship through `Player::getVehicle()`, `isRiding()`, `mount()`, and `dismount()`. Entities expose `getVehicle()`, `isRiding()`, `getPassengers()`, and `hasPassengers()` without exposing packet actor-link values. `EntityMountEvent` and `EntityDismountEvent` run before ordinary player or plugin transitions; `EntityMountedEvent` and `EntityDismountedEvent` observe committed state. Lifecycle-forced dismounts cannot be cancelled.
+Players can inspect and control a live relationship through `Player::getVehicle()`, `isRiding()`, `mount()`, and `dismount()`. Entities expose `getVehicle()`, `isRiding()`, `getPassengers()`, `hasPassengers()`, `getCollisionWidth()`, and `getCollisionHeight()` without exposing packet actor-link values. Collision dimensions are read-only and include the entity's current scale and age shape. `EntityMountEvent` and `EntityDismountEvent` run before ordinary player or plugin transitions; `EntityMountedEvent` and `EntityDismountedEvent` observe committed state. Lifecycle-forced dismounts cannot be cancelled.
 
 Vehicle implementations own local three-dimensional seat attachment points.
 The authoritative rider position and Bedrock seat metadata use that same
 attachment, including the Happy Ghast's front pilot seat and three clockwise
 passenger seats above its harness.
+
+Riding state is resolved from that registry for every player metadata snapshot,
+so later posture, effect, fire, or breathing updates cannot clear a live mount.
+Vehicle physics uses the combined vehicle and passenger envelope when checking
+loaded terrain, and dismount placement checks both blocks and nearby actors.
+The point on an actor which the player selected does not change its assigned
+seat.
 
 Boats, chest boats, bamboo rafts, and bamboo chest rafts are authoritative
 vehicle entities. Every current wood variant is represented by `BoatVariant`.

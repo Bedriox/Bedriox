@@ -36,7 +36,7 @@ final readonly class EntitySpawnService
 {
     /**
      * @param null|Closure(string, int, int): bool $chunkLoaded world, chunk X, chunk Z
-     * @param null|Closure(EntityDefinition, \Bedriox\Server\Simulation\Position): bool $collisionFree
+     * @param null|Closure(EntityDefinition, \Bedriox\Server\Simulation\Position, SpawnCause): bool $collisionFree
      * @param null|Closure(EntitySpawnEvent): bool $beforeSpawn returns false when cancelled
      * @param null|Closure(EntitySpawnedEvent): void $afterSpawn
      * @param null|Closure(\Bedriox\Server\Entity\AbstractEntity, \Bedriox\Api\Entity\SpawnCause): bool $admitSpawn
@@ -66,7 +66,7 @@ final readonly class EntitySpawnService
         }
         if (self::requiresCollisionClearance($request->cause)
             && $this->collisionFree !== null
-            && !($this->collisionFree)($registration->definition, $request->position)) {
+            && !($this->collisionFree)($registration->definition, $request->position, $request->cause)) {
             return EntitySpawnOutcome::failed('collision');
         }
         if (!$this->entities->canSpawn()) {

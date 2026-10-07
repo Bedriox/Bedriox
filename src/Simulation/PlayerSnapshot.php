@@ -63,5 +63,6 @@ final readonly class PlayerSnapshot
         public int $fireTicks = 0,
         public int $totalExperience = 0,
         public WorldDimension $dimension = WorldDimension::OVERWORLD,
+        public bool $riding = false,
     ) {}
 }

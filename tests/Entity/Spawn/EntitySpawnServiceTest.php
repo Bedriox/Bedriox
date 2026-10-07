@@ -24,6 +24,7 @@ use Bedriox\Api\Entity\CustomEntityType;
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\Value\SlimeSize;
 use Bedriox\Api\Entity\VanillaEntityType;
+use Bedriox\Server\Entity\EntityDefinition;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\EntityDespawnPolicy;
 use Bedriox\Server\Entity\EntityRegistry;
@@ -168,6 +169,34 @@ final class EntitySpawnServiceTest extends TestCase
         self::assertTrue($command->succeeded());
         self::assertTrue($spawnEgg->succeeded());
         self::assertSame('collision', $natural->failure);
+    }
+
+    public function testCollisionAdmissionReceivesTheAuthoritativeSpawnCause(): void
+    {
+        $observed = null;
+        $service = new EntitySpawnService(
+            new EntityRegistry(),
+            EntityDefinitionRegistry::baseline(),
+            collisionFree: static function (
+                EntityDefinition $_definition,
+                Position $_position,
+                SpawnCause $cause,
+            ) use (&$observed): bool {
+                $observed = $cause;
+
+                return true;
+            },
+        );
+
+        $outcome = $service->spawn(new EntitySpawnRequest(
+            VanillaEntityType::COW,
+            SpawnCause::BREEDING,
+            'world',
+            new Position(1.5, 64.0, 1.5),
+        ));
+
+        self::assertTrue($outcome->succeeded());
+        self::assertSame(SpawnCause::BREEDING, $observed);
     }
 
     public function testMagmaCubeVariantSelectsItsAuthoritativeDefinitionBeforeAdmission(): void

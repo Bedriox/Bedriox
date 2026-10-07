@@ -425,12 +425,17 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
         $actorData = null;
         if ($event->passenger !== null) {
             $metadata = $this->playerMetadata($event->passenger);
-            $metadata[] = ActorMetadata::vector3(
-                56,
+            $metadata[] = PlayerActorMetadata::seatOffset(
                 $event instanceof ActorMounted ? $event->seatOffset->x : 0.0,
                 $event instanceof ActorMounted ? $event->seatOffset->y : 0.0,
                 $event instanceof ActorMounted ? $event->seatOffset->z : 0.0,
             );
+            $metadata[] = PlayerActorMetadata::seatLockRiderRotation(false);
+            $metadata[] = PlayerActorMetadata::seatLockRiderRotationDegrees(
+                $event instanceof ActorMounted ? 181.0 : 0.0,
+            );
+            $metadata[] = PlayerActorMetadata::seatHasRotation(false);
+            $metadata[] = PlayerActorMetadata::seatRotationOffsetDegrees(0.0);
             usort($metadata, static fn(ActorMetadata $left, ActorMetadata $right): int => $left->id <=> $right->id);
             $actorData = new SetActorDataPacket(
                 UnsignedLong::fromInt($event->passengerRuntimeId),
@@ -1510,8 +1515,9 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             $player->displayName,
             $player->sneaking,
             $player->sprinting,
+            riding: $player->riding,
         );
-        $flags = PlayerActorMetadata::flags($player->sneaking, $player->sprinting);
+        $flags = PlayerActorMetadata::flags($player->sneaking, $player->sprinting, riding: $player->riding);
         if ($player->fireTicks > 0) {
             $flags |= ActorFlag::OnFire->mask();
         }

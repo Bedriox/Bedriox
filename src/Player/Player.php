@@ -28,6 +28,7 @@ use Bedriox\Server\Effect\ActiveEffectPersistenceState;
 use Bedriox\Server\Simulation\PlayerSnapshot;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\Simulation\VerticalState;
+use Closure;
 use InvalidArgumentException;
 use OverflowException;
 
@@ -53,6 +54,9 @@ final class Player
     private int $stateRevision = 0;
     private int $savedRevision = 0;
     private ?Position $spawnPoint;
+
+    /** @var null|Closure(): bool */
+    private ?Closure $ridingStateResolver = null;
 
     /** @param list<EffectInstance> $effects */
     public function __construct(
@@ -108,6 +112,8 @@ final class Player
 
     public function snapshot(): PlayerSnapshot
     {
+        $riding = $this->ridingStateResolver !== null && ($this->ridingStateResolver)();
+
         return new PlayerSnapshot(
             $this->sessionId,
             $this->identity->uuid,
@@ -140,7 +146,14 @@ final class Player
             $this->vitals->fireTicks,
             $this->experience->totalPoints(),
             $this->dimension,
+            $riding,
         );
+    }
+
+    /** @internal The world mount registry remains the sole owner of riding state. */
+    public function configureRidingStateResolver(Closure $resolver): void
+    {
+        $this->ridingStateResolver = $resolver;
     }
 
     public function gameMode(): GameMode

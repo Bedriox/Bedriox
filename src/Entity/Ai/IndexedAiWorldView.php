@@ -31,7 +31,7 @@ use Closure;
 use InvalidArgumentException;
 
 /** Spatial-index-backed AI view with a compact player-position supplier. */
-final readonly class IndexedAiWorldView implements AquaticAiWorldView, EndermanAwareAiWorldView
+final readonly class IndexedAiWorldView implements AquaticAiWorldView, EndermanAwareAiWorldView, NavigatingAiWorldView
 {
     /** @param Closure(): array<array-key, mixed> $playerPositions */
     public function __construct(
@@ -43,7 +43,16 @@ final readonly class IndexedAiWorldView implements AquaticAiWorldView, EndermanA
         private ?Closure $waterAt = null,
         /** @var null|Closure(AbstractMobEntity): bool */
         private ?Closure $touchingWater = null,
+        /** @var null|Closure(AbstractMobEntity, Position, int): Position */
+        private ?Closure $navigationWaypoint = null,
     ) {}
+
+    public function navigationWaypoint(AbstractMobEntity $entity, Position $target, int $tick): Position
+    {
+        return $this->navigationWaypoint === null
+            ? $target
+            : ($this->navigationWaypoint)($entity, $target, $tick);
+    }
 
     public function isTouchingWater(AbstractMobEntity $entity): bool
     {

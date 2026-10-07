@@ -46,6 +46,8 @@ final class EntityWorldRuntime
 
     private int $physicsCursor = 0;
 
+    private readonly EntityContactResolver $contacts;
+
     /** @var null|Closure(AbstractMobEntity, int): void */
     private readonly ?Closure $scheduledAiTick;
 
@@ -56,8 +58,10 @@ final class EntityWorldRuntime
         private readonly AiScheduler $ai = new AiScheduler(),
         ?Closure $scheduledAiTick = null,
         private readonly AiClock $clock = new SystemAiClock(),
+        ?EntityContactResolver $contacts = null,
     ) {
         $this->scheduledAiTick = $scheduledAiTick;
+        $this->contacts = $contacts ?? new EntityContactResolver($entities, clock: $clock);
     }
 
     public function registry(): EntityRegistry
@@ -129,6 +133,9 @@ final class EntityWorldRuntime
             }
         }
 
+        // Contact impulses are resolved before integration so they are consumed by friction and projected in the
+        // same tick. Deferring them until after physics produces one-tick-late, accumulating visual slides.
+        $contactMetrics = $this->contacts->resolve($entityBudget);
         $start = $this->clock->nanoseconds();
         $entityCount = count($entities);
         $physicsEligible = $physicsTicked = $cadenceSkipped = $budgetDeferred = 0;
@@ -189,6 +196,11 @@ final class EntityWorldRuntime
             $motionChanged,
             $elapsed,
             $budgetExhausted,
+            $contactMetrics->candidates,
+            $contactMetrics->pairs,
+            $contactMetrics->contacts,
+            $contactMetrics->elapsedNanoseconds,
+            $contactMetrics->budgetExhausted,
         );
 
         return new EntityRuntimeTick($moved, $died, $metrics, $runtime, $movedMotionChanged);

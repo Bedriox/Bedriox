@@ -75,6 +75,7 @@ use Bedriox\Server\Entity\AbstractLivingEntity;
 use Bedriox\Server\Entity\Ai\AiSchedulerMetrics;
 use Bedriox\Server\Entity\EntityRuntimeMetrics;
 use Bedriox\Server\Entity\Item\DroppedItemEntity;
+use Bedriox\Server\Entity\Navigation\EntityNavigationMetrics;
 use Bedriox\Server\Entity\Spawn\EntitySpawnRequest;
 use Bedriox\Server\Entity\Vanilla\End\EnderDragonEntity;
 use Bedriox\Server\Gameplay\Crafting\CraftingCatalog;
@@ -2433,6 +2434,11 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     public function entityRuntimeMetrics(): ?EntityRuntimeMetrics
     {
         return $this->world->entityRuntimeMetrics();
+    }
+
+    public function entityNavigationMetrics(): EntityNavigationMetrics
+    {
+        return $this->world->entityNavigationMetrics();
     }
 
     public function chunkStreamingSnapshot(): ChunkStreamingSnapshot

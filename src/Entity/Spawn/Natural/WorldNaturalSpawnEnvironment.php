@@ -256,14 +256,32 @@ final class WorldNaturalSpawnEnvironment implements NaturalSpawnEnvironment
         $definition = $this->definitions->require($type)->definition;
         $halfWidth = $definition->width / 2.0;
 
-        return !$this->collisions->hasCollision(new AxisAlignedBox(
+        $candidate = new AxisAlignedBox(
             $position->x - $halfWidth,
             $position->y,
             $position->z - $halfWidth,
             $position->x + $halfWidth,
             $position->y + $definition->height,
             $position->z + $halfWidth,
-        ));
+        );
+        if ($this->collisions->hasCollision($candidate)) {
+            return false;
+        }
+        foreach ($this->entities->nearby($worldName, $position, 8.0, 64) as $entity) {
+            $entityHalfWidth = $entity->collisionWidth() / 2.0;
+            if ($candidate->intersects(new AxisAlignedBox(
+                $entity->internalPosition()->x - $entityHalfWidth,
+                $entity->internalPosition()->y,
+                $entity->internalPosition()->z - $entityHalfWidth,
+                $entity->internalPosition()->x + $entityHalfWidth,
+                $entity->internalPosition()->y + $entity->collisionHeight(),
+                $entity->internalPosition()->z + $entityHalfWidth,
+            ))) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     public function nearestPlayerDistanceSquared(string $worldName, Position $position): ?float

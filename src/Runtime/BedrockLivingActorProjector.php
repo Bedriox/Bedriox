@@ -58,8 +58,14 @@ use Bedriox\Protocol\Packet\ShulkerActorMetadata;
 use Bedriox\Protocol\Packet\ShulkerAttachmentFace;
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\Server\Entity\AbstractLivingEntity;
+use Bedriox\Server\Entity\Mount\HorseFamilyEntity;
+use Bedriox\Server\Entity\Mount\UndeadHorseEntity;
+use Bedriox\Server\Entity\Vanilla\CamelEntity;
 use Bedriox\Server\Entity\Vanilla\End\EndCrystalEntity;
+use Bedriox\Server\Entity\Vanilla\LlamaEntity;
 use Bedriox\Server\Entity\Vanilla\Nether\StriderEntity;
+use Bedriox\Server\Entity\Vanilla\SkeletonHorseEntity;
+use Bedriox\Server\Entity\Vanilla\TraderLlamaEntity;
 use Bedriox\Server\Entity\Vehicle\BoatEntity;
 use Bedriox\Server\Player\InventoryStack;
 use LogicException;
@@ -198,6 +204,12 @@ final class BedrockLivingActorProjector
         if ($entity instanceof Tameable && $entity->isTamed()) {
             $flags |= ActorFlag::Tamed->mask();
         }
+        if (self::hasGroundVehicleControls($entity)) {
+            $flags |= ActorFlag::WasdControlled->mask();
+            if (!$entity instanceof CamelEntity) {
+                $flags |= ActorFlag::CanPowerJump->mask();
+            }
+        }
         if ($entity instanceof Sittable && $entity->isSitting()) {
             $flags |= ActorFlag::Sitting->mask();
         }
@@ -215,6 +227,19 @@ final class BedrockLivingActorProjector
         }
 
         return ActorMetadata::long(0, $flags);
+    }
+
+    private static function hasGroundVehicleControls(AbstractLivingEntity $entity): bool
+    {
+        if ($entity instanceof LlamaEntity || $entity instanceof TraderLlamaEntity) {
+            return false;
+        }
+
+        return match (true) {
+            $entity instanceof SkeletonHorseEntity => true,
+            $entity instanceof HorseFamilyEntity, $entity instanceof UndeadHorseEntity => $entity->isSaddled(),
+            default => false,
+        };
     }
 
     private static function woolColorIndex(WoolColor $color): int

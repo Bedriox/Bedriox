@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity;
 
+use Bedriox\Data\BlockPropertyRegistry;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\InternalBlockStateId;
@@ -43,7 +44,29 @@ final readonly class WorldEntityEnvironment
         private BlockCollisionRegistry $shapes,
         private InternalBlockStateId $air,
         private ?InternalBlockStateId $water = null,
+        private ?BlockPropertyRegistry $blockProperties = null,
     ) {}
+
+    public function groundFriction(AbstractEntity $entity): ?float
+    {
+        if ($this->blockProperties === null || $entity->getWorldName() !== $this->world->metadata->name) {
+            return null;
+        }
+        $position = $entity->internalPosition();
+        $support = $this->world->loadedBlockStateAt(
+            (int) floor($position->x),
+            (int) floor($position->y - 0.000_001),
+            (int) floor($position->z),
+        );
+        if ($support === null) {
+            return null;
+        }
+
+        return max(0.0, min(
+            1.0,
+            $this->blockProperties->propertiesForState($this->states->state($support))->friction(),
+        ));
+    }
 
     public function shouldCheckDaylight(AbstractLivingEntity $entity, int $tick): bool
     {

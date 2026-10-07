@@ -88,6 +88,17 @@ final class WorldNaturalSpawnRuntimeTest extends TestCase
             VanillaEntityType::COW,
             new Position(0.5, 64.0, 0.5),
         ));
+        self::assertTrue($runtime->spawn(new EntitySpawnRequest(
+            VanillaEntityType::COW,
+            SpawnCause::COMMAND,
+            'world',
+            new Position(0.5, 64.0, 0.5),
+        ))->succeeded());
+        self::assertFalse($environment->isCollisionFree(
+            'world',
+            VanillaEntityType::COW,
+            new Position(0.5, 64.0, 0.5),
+        ));
         self::assertFalse($environment->isCollisionFree(
             'world',
             VanillaEntityType::COW,

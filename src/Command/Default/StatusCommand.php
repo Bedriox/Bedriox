@@ -260,6 +260,24 @@ final readonly class StatusCommand implements BuiltinCommand
                     ? sprintf(', budget exhausted (%d safety-critical)', $status->entityRuntime->continuousBeyondBudget)
                     : '',
             ));
+            self::send($sender, TextFormat::GRAY, sprintf(
+                'Entity contacts: %d resolved from %d pairs (%d candidates), %.2f ms%s',
+                $status->entityRuntime->contactsResolved,
+                $status->entityRuntime->contactPairs,
+                $status->entityRuntime->contactCandidates,
+                $status->entityRuntime->contactElapsedNanoseconds / 1_000_000,
+                $status->entityRuntime->contactBudgetExhausted ? ', budget exhausted' : '',
+            ));
+        }
+        if ($status->entityNavigation !== null) {
+            self::send($sender, TextFormat::GRAY, sprintf(
+                'Entity navigation: %d submitted, %d completed, %d rejected, %d pending, %d cached',
+                $status->entityNavigation->submitted,
+                $status->entityNavigation->completed,
+                $status->entityNavigation->rejected,
+                $status->entityNavigation->pending,
+                $status->entityNavigation->cached,
+            ));
         }
         if ($status->preparedChunkCache !== null) {
             self::send($sender, TextFormat::AQUA, sprintf(

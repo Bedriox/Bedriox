@@ -282,9 +282,19 @@ abstract class AbstractEntity implements ApiEntity
         return $this->definition->width * $this->sizeMultiplier() * $this->scale;
     }
 
+    final public function getCollisionWidth(): float
+    {
+        return $this->collisionWidth();
+    }
+
     final public function collisionHeight(): float
     {
         return $this->definition->height * $this->sizeMultiplier() * $this->scale;
+    }
+
+    final public function getCollisionHeight(): float
+    {
+        return $this->collisionHeight();
     }
 
     /** @internal Resolves the Bedrock seat offset carried by passenger actor metadata. */

@@ -59,6 +59,15 @@ Player attacks arrive as bounded intent containing only the authenticated attack
 
 Non-player physics queries only immutable snapshots already present in the world repository. Every chunk touched by the complete swept collision box is preflighted before block inspection; a missing chunk blocks the movement without loading or generating terrain. Hostile target selection excludes creative, spectator, dead and otherwise non-damageable players. Loaded-only block collision supplies line of sight both when selecting a target and immediately before melee commits, so a wall or missing chunk fails closed. Accepted hostile melee retains the existing damage, armor, cooldown and plugin authority, then applies normalized authoritative knockback and publishes the attacker's visible attack state. External knockback temporarily owns mob movement, so a chase or stop goal cannot replace the impulse during the same damage window. Grounded AI steering which meets a clear one-block rise produces a physical jump; insufficient headroom and taller walls remain blocking collisions.
 
+Nearby entity contact uses the spatial index rather than an all-pairs scan. Each
+pair receives at most one deterministic horizontal soft push per pass; members
+of one mount assembly are excluded. Steering adds a bounded separation vector
+so groups approaching the same target spread naturally. Unobstructed movement
+remains direct. An obstructed ground route captures only already-loaded
+walkability cells and submits a bounded path search to the worker pool. The
+main thread accepts the result only while entity identity, world, destination,
+and snapshot revision still match.
+
 Aquatic mobs retain that same loaded-only collision boundary while using
 three-dimensional steering and water drag without ordinary downward gravity
 when submerged. Air-breathing species consume bounded air underwater;

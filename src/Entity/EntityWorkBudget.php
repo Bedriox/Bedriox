@@ -28,9 +28,15 @@ final readonly class EntityWorkBudget
     public function __construct(
         public int $maximumPhysicsEntities = 512,
         public int $maximumNanoseconds = 4_000_000,
+        public int $maximumContactCandidates = 16,
+        public int $maximumContactPairs = 1_024,
+        public int $maximumContactNanoseconds = 1_000_000,
     ) {
         if ($maximumPhysicsEntities < 1 || $maximumPhysicsEntities > 65_536
-            || $maximumNanoseconds < 100_000 || $maximumNanoseconds > 50_000_000) {
+            || $maximumNanoseconds < 100_000 || $maximumNanoseconds > 50_000_000
+            || $maximumContactCandidates < 2 || $maximumContactCandidates > 256
+            || $maximumContactPairs < 1 || $maximumContactPairs > 65_536
+            || $maximumContactNanoseconds < 100_000 || $maximumContactNanoseconds > 20_000_000) {
             throw new InvalidArgumentException('Entity work budget is outside its supported bounds.');
         }
     }

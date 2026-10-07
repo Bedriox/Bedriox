@@ -30,10 +30,13 @@ use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\EntityMotion;
 use Bedriox\Server\Entity\EntityPhysicsResolver;
 use Bedriox\Server\Entity\EntityRegistry;
+use Bedriox\Server\Entity\EntityUuid;
 use Bedriox\Server\Entity\EntityWorkBudget;
 use Bedriox\Server\Entity\EntityWorldRuntime;
 use Bedriox\Server\Entity\Spawn\EntitySpawnRequest;
 use Bedriox\Server\Entity\Spawn\EntitySpawnService;
+use Bedriox\Server\Entity\Vanilla\CowEntity;
+use Bedriox\Server\Entity\Vanilla\HorseEntity;
 use Bedriox\Server\Entity\Vehicle\BoatEntity;
 use Bedriox\Server\Entity\WorldEntityEnvironment;
 use Bedriox\Server\Simulation\Position;
@@ -53,6 +56,130 @@ use PHPUnit\Framework\TestCase;
 
 final class EntityWorldRuntimeTest extends TestCase
 {
+    public function testGroundFrictionStopsContactImpulseFromSlidingLikeIce(): void
+    {
+        $entity = new CowEntity(
+            EntityUuid::random(),
+            1,
+            'world',
+            new Position(0.5, 64.0, 0.5),
+            motion: new EntityMotion(0.05, 0.0, 0.0),
+        );
+        $entity->setOnGround(true);
+        $resolver = new EntityPhysicsResolver(new class implements LoadedCollisionBoxQuery {
+            public function boxesIntersecting(AxisAlignedBox $area): array
+            {
+                return $this->boxesIntersectingLoaded($area);
+            }
+
+            public function hasCollision(AxisAlignedBox $area): bool
+            {
+                return $this->boxesIntersectingLoaded($area) !== [];
+            }
+
+            public function boxesIntersectingLoaded(AxisAlignedBox $area): array
+            {
+                $floor = new AxisAlignedBox(-10.0, 63.0, -10.0, 10.0, 64.0, 10.0);
+
+                return $floor->intersects($area) ? [$floor] : [];
+            }
+        });
+
+        $resolver->tick($entity, 1);
+
+        self::assertEqualsWithDelta(0.0294, $entity->getMotion()->x, 0.000_001);
+        self::assertEqualsWithDelta(0.5294, $entity->getPosition()->x, 0.000_001);
+    }
+
+    public function testGroundFrictionComesFromTheSupportingBlockDefinition(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $states = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($states);
+        $generation = GenerationBlockPalette::fromRegistry($states);
+        $world = new World(
+            new WorldMetadata('friction-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+        );
+        $world->chunk(new ChunkPosition(0, 0));
+        $support = $generation->state('minecraft:grass_block');
+        $world->setBlockState(0, 63, 0, $support);
+        $shapes = BlockCollisionRegistry::forGenerationPalette($states, $generation);
+        $environment = new WorldEntityEnvironment(
+            $world,
+            $states,
+            $shapes,
+            $palette->air,
+            $generation->state('minecraft:water'),
+            $data->blockPropertyRegistry(),
+        );
+        $entity = new CowEntity(
+            EntityUuid::random(),
+            1,
+            'friction-test',
+            new Position(0.5, 64.0, 0.5),
+            motion: new EntityMotion(0.05, 0.0, 0.0),
+        );
+        $entity->setOnGround(true);
+        $friction = $data->blockPropertyRegistry()->propertiesForState($states->state($support))->friction();
+        self::assertSame($friction, $environment->groundFriction($entity));
+
+        (new EntityPhysicsResolver(
+            new BlockCollisionQuery($world, $palette->air, [], $shapes),
+            $environment,
+        ))->tick($entity, 1);
+
+        self::assertEqualsWithDelta(0.05 * (1.0 - $entity->definition()->drag) * $friction, $entity->getMotion()->x, 0.000_001);
+    }
+
+    public function testControlledHorseFallsImmediatelyAfterLeavingALoadedLedge(): void
+    {
+        $platform = new AxisAlignedBox(-10.0, 63.0, -10.0, 1.0, 64.0, 10.0);
+        $registry = new EntityRegistry();
+        $runtime = new EntityWorldRuntime(
+            $registry,
+            new EntitySpawnService($registry, EntityDefinitionRegistry::baseline()),
+            new EntityPhysicsResolver(new class ($platform) implements LoadedCollisionBoxQuery {
+                public function __construct(private readonly AxisAlignedBox $platform) {}
+
+                public function boxesIntersecting(AxisAlignedBox $area): array
+                {
+                    return $this->boxesIntersectingLoaded($area);
+                }
+
+                public function hasCollision(AxisAlignedBox $area): bool
+                {
+                    return $this->boxesIntersectingLoaded($area) !== [];
+                }
+
+                public function boxesIntersectingLoaded(AxisAlignedBox $area): array
+                {
+                    return $this->platform->intersects($area) ? [$this->platform] : [];
+                }
+            }),
+        );
+        $entity = $runtime->spawn(new EntitySpawnRequest(
+            VanillaEntityType::HORSE,
+            SpawnCause::COMMAND,
+            'world',
+            new Position(0.5, 64.0, 0.5),
+        ))->entity;
+        self::assertInstanceOf(HorseEntity::class, $entity);
+        $entity->setOnGround(true);
+
+        for ($tick = 1; $tick <= 15; ++$tick) {
+            $entity->suppressAiMovementUntil($tick + 2);
+            $entity->applyControlledMotion(new EntityMotion(0.22, $entity->getMotion()->y, 0.0), $tick);
+            $runtime->tick($tick, self::emptyAiWorld(), false);
+        }
+
+        self::assertGreaterThan(1.7, $entity->getPosition()->x);
+        self::assertLessThan(64.0, $entity->getPosition()->y);
+        self::assertFalse($entity->isOnGround());
+        self::assertLessThan(0.0, $entity->getMotion()->y);
+    }
+
     public function testPhysicsFailsClosedAtAnUnloadedChunkEdgeWithoutGeneratingTerrain(): void
     {
         $states = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
@@ -550,6 +677,38 @@ final class EntityWorldRuntimeTest extends TestCase
         $spawn->entity->setOnGround(true);
 
         return [$runtime, $spawn->entity];
+    }
+
+    public function testOverlappingEntitiesReceiveBoundedSymmetricContactMotion(): void
+    {
+        $registry = new EntityRegistry();
+        $runtime = new EntityWorldRuntime(
+            $registry,
+            new EntitySpawnService($registry, EntityDefinitionRegistry::baseline()),
+        );
+        $first = $runtime->spawn(new EntitySpawnRequest(
+            VanillaEntityType::COW,
+            SpawnCause::COMMAND,
+            'world',
+            new Position(0.5, 64.0, 0.5),
+        ))->entity;
+        $second = $runtime->spawn(new EntitySpawnRequest(
+            VanillaEntityType::COW,
+            SpawnCause::COMMAND,
+            'world',
+            new Position(0.5, 64.0, 0.5),
+        ))->entity;
+        self::assertNotNull($first);
+        self::assertNotNull($second);
+
+        $tick = $runtime->tick(1, self::emptyAiWorld(), false);
+
+        self::assertSame(1, $tick->runtime->contactsResolved);
+        self::assertGreaterThan(0.0, $first->getMotion()->lengthSquared());
+        self::assertEqualsWithDelta(-$first->getMotion()->x, $second->getMotion()->x, 0.000_001);
+        self::assertEqualsWithDelta(-$first->getMotion()->z, $second->getMotion()->z, 0.000_001);
+        self::assertSame(0.0, $first->getMotion()->y);
+        self::assertLessThanOrEqual(0.05 ** 2, $first->getMotion()->lengthSquared());
     }
 
     private static function emptyAiWorld(): AiWorldView
