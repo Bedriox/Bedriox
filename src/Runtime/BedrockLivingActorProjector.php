@@ -33,6 +33,7 @@ use Bedriox\Api\Entity\Value\WoolColor;
 use Bedriox\Api\Entity\Vanilla\Cat;
 use Bedriox\Api\Entity\Vanilla\Creeper;
 use Bedriox\Api\Entity\Vanilla\Fox;
+use Bedriox\Api\Entity\Vanilla\Ocelot;
 use Bedriox\Api\Entity\Vanilla\Pig;
 use Bedriox\Api\Entity\Vanilla\Rabbit;
 use Bedriox\Api\Entity\Vanilla\Sheep;
@@ -156,7 +157,7 @@ final class BedrockLivingActorProjector
                 },
             ) : []),
             ActorMetadata::byte(81, 0),
-            ActorMetadata::long(92, 0),
+            $this->flags2Metadata($entity),
             ActorMetadata::float(120, 0.0),
             ActorMetadata::long(131, 0),
         ];
@@ -227,6 +228,16 @@ final class BedrockLivingActorProjector
         }
 
         return ActorMetadata::long(0, $flags);
+    }
+
+    public function flags2Metadata(AbstractLivingEntity $entity): ActorMetadata
+    {
+        $flags = 0;
+        if ($entity instanceof Ocelot && $entity->isTrusting()) {
+            $flags |= ActorFlag::Trusting->mask();
+        }
+
+        return ActorMetadata::long(92, $flags);
     }
 
     private static function hasGroundVehicleControls(AbstractLivingEntity $entity): bool

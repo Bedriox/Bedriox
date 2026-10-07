@@ -18,14 +18,17 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api\Entity\Vanilla;
+namespace Bedriox\Api\Event\Entity;
 
-use Bedriox\Api\Entity\Capability\Animal;
-use Bedriox\Api\Entity\Capability\Breedable;
+use Bedriox\Api\Entity\Vanilla\Ocelot;
+use Bedriox\Api\Event\CancellableEvent;
+use Bedriox\Api\Player\Player;
 
-interface Ocelot extends Animal, Breedable
+/** Cancellable intent emitted before an ocelot establishes trust. */
+final class EntityTrustEvent extends CancellableEvent
 {
-    public function isTrusting(): bool;
-
-    public function getTrustedPlayerUniqueId(): ?string;
+    public function __construct(
+        public readonly Ocelot $entity,
+        public readonly Player $player,
+    ) {}
 }

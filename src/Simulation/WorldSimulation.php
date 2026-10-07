@@ -6889,6 +6889,19 @@ final class WorldSimulation
 
             return new EntityInteracted($command->session, $target->getRuntimeId(), $command->interaction);
         }
+        if ($target instanceof OcelotEntity && !$target->isTrusting()
+            && in_array($heldBefore?->identifier, ['minecraft:cod', 'minecraft:salmon'], true)) {
+            $this->consumeSelectedItem($player);
+            if ($this->dropRandom->integer(1, 3) === 1
+                && ($this->pluginEvents?->allowTrust($target, $player) ?? true)) {
+                $target->setTrustedPlayerUniqueId($player->identity->uuid);
+                $this->deferredEvents[] = new TameAttemptPresented($target, true, $this->players->recipients());
+                $this->pluginEvents?->entityTrusted($target, $player);
+            }
+            $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
+
+            return new EntityInteracted($command->session, $target->getRuntimeId(), $command->interaction);
+        }
         if ($target instanceof WolfEntity || $target instanceof CatEntity) {
             $taming = $this->interactWithTameableAnimal($player, $target);
             if ($taming === false) {

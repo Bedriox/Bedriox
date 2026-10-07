@@ -141,10 +141,13 @@ final class RemainingLandAnimalSpeciesTest extends TestCase
         $restoredSniffer->restorePersistenceState($sniffer->persistenceVariant(), $sniffer->persistenceSchemaVersion(), $sniffer->persistenceData());
         self::assertTrue($restoredSniffer->isDigging());
 
-        $ocelot = new OcelotEntity(EntityUuid::random(), 33, 'world', $position, baby: true);
+        $trustedPlayer = EntityUuid::random();
+        $ocelot = new OcelotEntity(EntityUuid::random(), 33, 'world', $position, baby: true, trustedPlayerUniqueId: $trustedPlayer);
         $restoredOcelot = new OcelotEntity(EntityUuid::random(), 34, 'world', $position);
         $restoredOcelot->restorePersistenceState($ocelot->persistenceVariant(), $ocelot->persistenceSchemaVersion(), $ocelot->persistenceData());
         self::assertTrue($restoredOcelot->isBaby());
+        self::assertTrue($restoredOcelot->isTrusting());
+        self::assertSame($trustedPlayer, $restoredOcelot->getTrustedPlayerUniqueId());
 
         $polarBear = new PolarBearEntity(EntityUuid::random(), 35, 'world', $position, baby: true);
         $restoredPolarBear = new PolarBearEntity(EntityUuid::random(), 36, 'world', $position);

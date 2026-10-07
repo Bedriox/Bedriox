@@ -45,6 +45,7 @@ use Bedriox\Api\Entity\Value\EntityBlockChangeReason;
 use Bedriox\Api\Entity\Value\EntityTransformReason;
 use Bedriox\Api\Entity\Value\MountReason;
 use Bedriox\Api\Entity\Value\MountSeat;
+use Bedriox\Api\Entity\Vanilla\Ocelot as ApiOcelot;
 use Bedriox\Api\Entity\Vector3;
 use Bedriox\Api\Event\Block\BlockBreakEvent;
 use Bedriox\Api\Event\Block\BlockBrokenEvent;
@@ -110,6 +111,8 @@ use Bedriox\Api\Event\Entity\EntityTargetChangedEvent;
 use Bedriox\Api\Event\Entity\EntityTargetEvent;
 use Bedriox\Api\Event\Entity\EntityTransformedEvent;
 use Bedriox\Api\Event\Entity\EntityTransformEvent;
+use Bedriox\Api\Event\Entity\EntityTrustedEvent;
+use Bedriox\Api\Event\Entity\EntityTrustEvent;
 use Bedriox\Api\Event\Entity\ExperienceOrbSpawnedEvent;
 use Bedriox\Api\Event\Entity\ExperienceOrbSpawnEvent;
 use Bedriox\Api\Event\Entity\PiglinBarteredEvent;
@@ -419,6 +422,19 @@ final readonly class PluginGameplayEventBridge
     public function entityTamed(Tameable $entity, Player $player): void
     {
         $this->events->dispatch(new EntityTamedEvent($entity, $this->playerView($player)));
+    }
+
+    public function allowTrust(ApiOcelot $entity, Player $player): bool
+    {
+        $event = new EntityTrustEvent($entity, $this->playerView($player));
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function entityTrusted(ApiOcelot $entity, Player $player): void
+    {
+        $this->events->dispatch(new EntityTrustedEvent($entity, $this->playerView($player)));
     }
 
     /** @param Closure(string): PlayerConnection $playerConnections */

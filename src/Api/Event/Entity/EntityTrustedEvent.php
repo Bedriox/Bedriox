@@ -18,14 +18,18 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api\Entity\Vanilla;
+namespace Bedriox\Api\Event\Entity;
 
-use Bedriox\Api\Entity\Capability\Animal;
-use Bedriox\Api\Entity\Capability\Breedable;
+use Bedriox\Api\Entity\Vanilla\Ocelot;
+use Bedriox\Api\Event\Event;
+use Bedriox\Api\Event\PostEvent;
+use Bedriox\Api\Player\Player;
 
-interface Ocelot extends Animal, Breedable
+/** Immutable observation emitted after an ocelot establishes trust. */
+final class EntityTrustedEvent extends Event implements PostEvent
 {
-    public function isTrusting(): bool;
-
-    public function getTrustedPlayerUniqueId(): ?string;
+    public function __construct(
+        public readonly Ocelot $entity,
+        public readonly Player $player,
+    ) {}
 }

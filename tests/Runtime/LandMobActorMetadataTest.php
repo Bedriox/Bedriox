@@ -30,6 +30,7 @@ use Bedriox\Server\Entity\EntityUuid;
 use Bedriox\Server\Entity\Vanilla\CatEntity;
 use Bedriox\Server\Entity\Vanilla\CreeperEntity;
 use Bedriox\Server\Entity\Vanilla\MagmaCubeEntity;
+use Bedriox\Server\Entity\Vanilla\OcelotEntity;
 use Bedriox\Server\Entity\Vanilla\SheepEntity;
 use Bedriox\Server\Entity\Vanilla\SkeletonEntity;
 use Bedriox\Server\Entity\Vanilla\SlimeEntity;
@@ -141,6 +142,20 @@ final class LandMobActorMetadataTest extends TestCase
             variant: CatVariant::TABBY,
         );
         self::assertSame(8, self::integer((new BedrockLivingActorProjector())->metadata($cat), 2));
+    }
+
+    public function testTrustedOcelotProjectsTrustingInTheSecondFlagWord(): void
+    {
+        $ocelot = new OcelotEntity(
+            EntityUuid::random(),
+            9,
+            'world',
+            new Position(0.0, 64.0, 0.0),
+            trustedPlayerUniqueId: EntityUuid::random(),
+        );
+        $flags2 = self::integer((new BedrockLivingActorProjector())->metadata($ocelot), 92);
+
+        self::assertNotSame(0, $flags2 & ActorFlag::Trusting->mask());
     }
 
     /** @param list<ActorMetadata> $metadata */
