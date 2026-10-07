@@ -66,7 +66,9 @@ final class MuleEntity extends PersistentHorseFamilyEntity implements Mule
             $temper,
             $sitting,
             1,
-            1.05,
+            0.0,
+            0.975,
+            -0.2,
         );
     }
 }

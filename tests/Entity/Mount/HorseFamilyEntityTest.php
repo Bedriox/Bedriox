@@ -37,7 +37,7 @@ final class HorseFamilyEntityTest extends TestCase
     public function testBoundedMountStateAndSeatGeometryAreShared(): void
     {
         $owner = EntityUuid::random();
-        $mount = self::mount(ownerUniqueId: $owner, saddled: true, temper: 42, seatCapacity: 2, riderSeatOffsetY: 1.25);
+        $mount = self::mount(ownerUniqueId: $owner, saddled: true, temper: 42, seatCapacity: 2);
 
         self::assertInstanceOf(Horse::class, $mount);
         self::assertInstanceOf(Rideable::class, $mount);
@@ -47,7 +47,7 @@ final class HorseFamilyEntityTest extends TestCase
         self::assertSame(42, $mount->getTemper());
         self::assertSame(2, $mount->getSeatCapacity());
         self::assertEqualsWithDelta(
-            2.334_444_445,
+            1.25,
             $mount->mountedPassengerOffsetY(MountSeat::DRIVER, 1.6, true),
             0.000_000_001,
         );
@@ -88,7 +88,6 @@ final class HorseFamilyEntityTest extends TestCase
         int $temper = 0,
         bool $baby = false,
         int $seatCapacity = 1,
-        float $riderSeatOffsetY = 0.0,
     ): TestHorseEntity {
         return new TestHorseEntity(
             EntityUuid::random(),
@@ -100,7 +99,6 @@ final class HorseFamilyEntityTest extends TestCase
             temper: $temper,
             baby: $baby,
             seatCapacity: $seatCapacity,
-            riderSeatOffsetY: $riderSeatOffsetY,
         );
     }
 }
@@ -117,7 +115,6 @@ final class TestHorseEntity extends HorseFamilyEntity implements Horse
         int $temper = 0,
         bool $baby = false,
         int $seatCapacity = 1,
-        float $riderSeatOffsetY = 0.0,
     ) {
         parent::__construct(
             $uniqueId,
@@ -131,7 +128,10 @@ final class TestHorseEntity extends HorseFamilyEntity implements Horse
             saddled: $saddled,
             temper: $temper,
             seatCapacity: $seatCapacity,
-            riderSeatOffsetY: $riderSeatOffsetY,
+            driverSeatOffsetY: 1.25,
+            passengerSeatOffsetX: 0.0,
+            passengerSeatOffsetY: 1.25,
+            passengerSeatOffsetZ: -0.5,
         );
     }
 

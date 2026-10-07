@@ -66,7 +66,9 @@ final class HorseEntity extends PersistentHorseFamilyEntity implements Horse
             $temper,
             $sitting,
             1,
-            1.15,
+            0.0,
+            1.1,
+            -0.2,
         );
     }
 }

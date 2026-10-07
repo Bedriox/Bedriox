@@ -66,7 +66,9 @@ final class DonkeyEntity extends PersistentHorseFamilyEntity implements Donkey
             $temper,
             $sitting,
             1,
-            1.05,
+            0.0,
+            0.925,
+            -0.2,
         );
     }
 }

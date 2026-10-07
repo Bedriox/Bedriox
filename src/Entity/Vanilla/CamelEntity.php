@@ -66,7 +66,12 @@ final class CamelEntity extends PersistentHorseFamilyEntity implements Camel
             $temper,
             $sitting,
             2,
-            1.65,
+            0.0,
+            1.905,
+            0.5,
+            0.0,
+            1.905,
+            -0.5,
         );
     }
 }

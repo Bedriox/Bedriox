@@ -66,7 +66,9 @@ final class TraderLlamaEntity extends PersistentHorseFamilyEntity implements Tra
             $temper,
             $sitting,
             1,
-            1.25,
+            0.0,
+            1.17,
+            -0.3,
         );
     }
 }

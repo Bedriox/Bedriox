@@ -57,12 +57,17 @@ abstract class UndeadHorseEntity extends AnimalEntity implements Rideable, Sitta
         private int $temper = 0,
         private bool $sitting = false,
         private readonly int $seatCapacity = 1,
-        private readonly float $riderSeatOffsetY = 0.0,
+        private readonly float $driverSeatOffsetX = 0.0,
+        private readonly float $driverSeatOffsetY = 0.0,
+        private readonly float $driverSeatOffsetZ = 0.0,
         private readonly bool $intrinsicallyTamed = false,
     ) {
         parent::__construct($uniqueId, $runtimeId, $definition, $worldName, $position, $behavior, $motion, $yaw, $pitch, $health);
         if ($seatCapacity < 1 || $seatCapacity > MountRegistry::MAXIMUM_PASSENGERS_PER_VEHICLE
-            || !is_finite($riderSeatOffsetY) || $riderSeatOffsetY < -64.0 || $riderSeatOffsetY > 64.0) {
+            || !is_finite($driverSeatOffsetX) || !is_finite($driverSeatOffsetY) || !is_finite($driverSeatOffsetZ)
+            || $driverSeatOffsetX < -64.0 || $driverSeatOffsetX > 64.0
+            || $driverSeatOffsetY < -64.0 || $driverSeatOffsetY > 64.0
+            || $driverSeatOffsetZ < -64.0 || $driverSeatOffsetZ > 64.0) {
             throw new InvalidArgumentException('Undead-horse seating state is outside its supported bounds.');
         }
         self::validateTemper($temper);
@@ -147,7 +152,12 @@ abstract class UndeadHorseEntity extends AnimalEntity implements Rideable, Sitta
 
     final public function mountedPassengerOffsetY(MountSeat $seat, float $passengerHeight, bool $playerPassenger): float
     {
-        return parent::mountedPassengerOffsetY($seat, $passengerHeight, $playerPassenger) + $this->riderSeatOffsetY;
+        return $this->driverSeatOffsetY;
+    }
+
+    final public function mountedPassengerOffset(MountSeat $seat, float $passengerHeight, bool $playerPassenger): MountSeatOffset
+    {
+        return new MountSeatOffset($this->driverSeatOffsetX, $this->driverSeatOffsetY, $this->driverSeatOffsetZ);
     }
 
     final public function getController(): MountController

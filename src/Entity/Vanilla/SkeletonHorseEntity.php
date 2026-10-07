@@ -58,7 +58,9 @@ final class SkeletonHorseEntity extends PersistentUndeadHorseEntity implements S
             $temper,
             $sitting,
             1,
-            1.15,
+            0.0,
+            1.1,
+            -0.2,
             true,
         );
     }

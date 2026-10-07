@@ -58,7 +58,9 @@ final class ZombieHorseEntity extends PersistentUndeadHorseEntity implements Zom
             $temper,
             $sitting,
             1,
-            1.15,
+            0.0,
+            1.1,
+            -0.2,
         );
     }
 }

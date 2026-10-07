@@ -23,6 +23,7 @@ namespace Bedriox\Server\Tests\Entity\Mount;
 use Bedriox\Api\Entity\Capability\Breedable;
 use Bedriox\Api\Entity\Capability\Rideable;
 use Bedriox\Api\Entity\Capability\Undead;
+use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\Entity\VanillaEntityType;
 use Bedriox\Server\Entity\EntityUuid;
 use Bedriox\Server\Entity\Vanilla\CamelEntity;
@@ -67,6 +68,26 @@ final class MountSpeciesTest extends TestCase
             self::assertSame($types[$index], $mount->getType());
             self::assertSame($mount instanceof CamelEntity ? 2 : 1, $mount->getSeatCapacity());
         }
+        $expectedSeats = [
+            [0.0, 1.1, -0.2],
+            [0.0, 0.925, -0.2],
+            [0.0, 0.975, -0.2],
+            [0.0, 1.905, 0.5],
+            [0.0, 1.17, -0.3],
+            [0.0, 1.17, -0.3],
+            [0.0, 1.1, -0.2],
+            [0.0, 1.1, -0.2],
+        ];
+        foreach ($mounts as $index => $mount) {
+            $seat = $mount->mountedPassengerOffset(MountSeat::DRIVER, 1.8, true);
+            self::assertSame($expectedSeats[$index][0], $seat->x);
+            self::assertSame($expectedSeats[$index][1], $seat->y);
+            self::assertSame($expectedSeats[$index][2], $seat->z);
+        }
+        $camelRearSeat = $mounts[3]->mountedPassengerOffset(MountSeat::PASSENGER_1, 1.8, true);
+        self::assertSame(0.0, $camelRearSeat->x);
+        self::assertSame(1.905, $camelRearSeat->y);
+        self::assertSame(-0.5, $camelRearSeat->z);
         self::assertInstanceOf(Breedable::class, $mounts[0]);
         self::assertInstanceOf(Undead::class, $mounts[6]);
         self::assertInstanceOf(Undead::class, $mounts[7]);

@@ -58,7 +58,12 @@ abstract class HorseFamilyEntity extends TameableAnimalEntity implements Rideabl
         private int $temper = 0,
         bool $sitting = false,
         private readonly int $seatCapacity = 1,
-        private readonly float $riderSeatOffsetY = 0.0,
+        private readonly float $driverSeatOffsetX = 0.0,
+        private readonly float $driverSeatOffsetY = 0.0,
+        private readonly float $driverSeatOffsetZ = 0.0,
+        private readonly ?float $passengerSeatOffsetX = null,
+        private readonly ?float $passengerSeatOffsetY = null,
+        private readonly ?float $passengerSeatOffsetZ = null,
     ) {
         parent::__construct(
             $uniqueId,
@@ -73,7 +78,13 @@ abstract class HorseFamilyEntity extends TameableAnimalEntity implements Rideabl
             $health,
         );
         if ($seatCapacity < 1 || $seatCapacity > MountRegistry::MAXIMUM_PASSENGERS_PER_VEHICLE
-            || !is_finite($riderSeatOffsetY) || $riderSeatOffsetY < -64.0 || $riderSeatOffsetY > 64.0) {
+            || !$this->validSeatCoordinate($driverSeatOffsetX)
+            || !$this->validSeatCoordinate($driverSeatOffsetY)
+            || !$this->validSeatCoordinate($driverSeatOffsetZ)
+            || ($seatCapacity > 1 && ($passengerSeatOffsetX === null || $passengerSeatOffsetY === null || $passengerSeatOffsetZ === null))
+            || ($passengerSeatOffsetX !== null && !$this->validSeatCoordinate($passengerSeatOffsetX))
+            || ($passengerSeatOffsetY !== null && !$this->validSeatCoordinate($passengerSeatOffsetY))
+            || ($passengerSeatOffsetZ !== null && !$this->validSeatCoordinate($passengerSeatOffsetZ))) {
             throw new InvalidArgumentException('Mount seating state is outside its supported bounds.');
         }
         self::validateTemper($temper);
@@ -117,7 +128,20 @@ abstract class HorseFamilyEntity extends TameableAnimalEntity implements Rideabl
 
     final public function mountedPassengerOffsetY(MountSeat $seat, float $passengerHeight, bool $playerPassenger): float
     {
-        return parent::mountedPassengerOffsetY($seat, $passengerHeight, $playerPassenger) + $this->riderSeatOffsetY;
+        return $this->mountedPassengerOffset($seat, $passengerHeight, $playerPassenger)->y;
+    }
+
+    final public function mountedPassengerOffset(MountSeat $seat, float $passengerHeight, bool $playerPassenger): MountSeatOffset
+    {
+        if ($seat !== MountSeat::DRIVER && $this->seatCapacity > 1) {
+            return new MountSeatOffset(
+                $this->passengerSeatOffsetX ?? $this->driverSeatOffsetX,
+                $this->passengerSeatOffsetY ?? $this->driverSeatOffsetY,
+                $this->passengerSeatOffsetZ ?? $this->driverSeatOffsetZ,
+            );
+        }
+
+        return new MountSeatOffset($this->driverSeatOffsetX, $this->driverSeatOffsetY, $this->driverSeatOffsetZ);
     }
 
     final public function getController(): MountController
@@ -171,5 +195,10 @@ abstract class HorseFamilyEntity extends TameableAnimalEntity implements Rideabl
         if ($temper < 0 || $temper > self::MAXIMUM_TEMPER) {
             throw new InvalidArgumentException('Mount temper is outside its supported bounds.');
         }
+    }
+
+    private function validSeatCoordinate(float $coordinate): bool
+    {
+        return is_finite($coordinate) && $coordinate >= -64.0 && $coordinate <= 64.0;
     }
 }

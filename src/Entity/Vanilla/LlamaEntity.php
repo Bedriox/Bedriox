@@ -66,7 +66,9 @@ final class LlamaEntity extends PersistentHorseFamilyEntity implements Llama
             $temper,
             $sitting,
             1,
-            1.25,
+            0.0,
+            1.17,
+            -0.3,
         );
     }
 }
