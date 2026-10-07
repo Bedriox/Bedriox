@@ -38,6 +38,7 @@ use Closure;
 final class AsyncNavigationCoordinator
 {
     private const int HORIZONTAL_RADIUS = 10;
+    private const int MAXIMUM_SNAPSHOT_PATH_DISTANCE = 30;
     private const int VERTICAL_RADIUS = 3;
     private const int MAXIMUM_SUBMISSIONS_PER_TICK = 2;
     private const int RETRY_BACKOFF_TICKS = 20;
@@ -102,7 +103,15 @@ final class AsyncNavigationCoordinator
             return $entity->internalPosition();
         }
         [$volume, $start, $destination] = $snapshot;
-        $request = new NavigationSearchRequest($volume, $start, $destination, 24, 8, 2_048, 25);
+        $request = new NavigationSearchRequest(
+            $volume,
+            $start,
+            $destination,
+            self::MAXIMUM_SNAPSHOT_PATH_DISTANCE,
+            8,
+            2_048,
+            25,
+        );
         $identity = $entity->getUniqueId();
         $world = $entity->getWorldName();
         $revision = $volume->revision;

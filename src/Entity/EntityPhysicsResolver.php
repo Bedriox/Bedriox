@@ -22,6 +22,8 @@ namespace Bedriox\Server\Entity;
 
 use Bedriox\Api\Entity\Capability\Aquatic;
 use Bedriox\Api\Entity\Capability\Climbing;
+use Bedriox\Server\Entity\Movement\AvoidsPowderSnow;
+use Bedriox\Server\Entity\Movement\WaterBuoyant;
 use Bedriox\Server\Entity\Vanilla\Nether\GhastEntity;
 use Bedriox\Server\Entity\Vanilla\Nether\HappyGhastEntity;
 use Bedriox\Server\Entity\Vanilla\Nether\StriderEntity;
@@ -73,7 +75,7 @@ final readonly class EntityPhysicsResolver
             $beforePosition->z + $halfWidth,
         );
         $inWater = $entity instanceof AbstractLivingEntity
-            && $entity instanceof Aquatic
+            && ($entity instanceof Aquatic || $entity instanceof WaterBuoyant)
             && $this->environment?->isTouchingWater($entity) === true;
         $boatWaterSurface = $entity instanceof BoatEntity
             ? $this->environment?->waterSurfaceY($entity)
@@ -98,16 +100,32 @@ final readonly class EntityPhysicsResolver
             ? $entity->waterlineCorrection($boatWaterSurface)
             : ($striderLavaSurface !== null
                 ? max(-0.08, min(0.08, ($striderLavaSurface - $beforePosition->y) * 0.25))
-                : ($beforeMotion->y - $gravity) * $airFriction);
+                : ($entity instanceof WaterBuoyant && $inWater
+                    ? max(-0.08, min($entity->waterBuoyancyVelocity(), $beforeMotion->y + 0.01))
+                    : ($beforeMotion->y - $gravity) * $airFriction));
         if (($entity instanceof GhastEntity || $entity instanceof HappyGhastEntity)
             && $vertical <= 0.0 && $this->hasGroundWithin($box, 5.0)) {
             $vertical = 0.10;
         }
+        $restriction = $this->environment?->movementRestrictionMultiplier($entity) ?? 1.0;
         $requested = new EntityMotion(
-            $beforeMotion->x * $horizontalFriction,
+            $beforeMotion->x * $horizontalFriction * $restriction,
             max(-$entity->maximumDownwardVelocity(), $vertical),
-            $beforeMotion->z * $horizontalFriction,
+            $beforeMotion->z * $horizontalFriction * $restriction,
         );
+        if ($entity instanceof AvoidsPowderSnow
+            && ($requested->x !== 0.0 || $requested->z !== 0.0)
+            && $this->environment?->isPowderSnowAt($entity->getWorldName(), $beforePosition) !== true
+            && $this->environment?->isPowderSnowAt(
+                $entity->getWorldName(),
+                new Position(
+                    $beforePosition->x + $requested->x,
+                    $beforePosition->y,
+                    $beforePosition->z + $requested->z,
+                ),
+            ) === true) {
+            $requested = new EntityMotion(0.0, $requested->y, 0.0);
+        }
         $resolved = $this->resolve($box, $requested);
         if ($resolved === null) {
             $motion = new EntityMotion();
@@ -128,7 +146,11 @@ final readonly class EntityPhysicsResolver
             }
         }
         if ($this->shouldJump($entity, $tick, $box, $requested, $x, $z)) {
-            $jump = new EntityMotion($requested->x, self::MOB_JUMP_VELOCITY, $requested->z);
+            $jump = new EntityMotion(
+                $requested->x,
+                self::MOB_JUMP_VELOCITY,
+                $requested->z,
+            );
             $jumpResolved = $this->resolve($box, $jump);
             if ($jumpResolved !== null) {
                 $requested = $jump;

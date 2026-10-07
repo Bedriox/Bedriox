@@ -31,16 +31,64 @@ use Bedriox\Server\World\BlockEntity\BlockEntityCollection;
 use Bedriox\Server\World\BlockEntity\BlockEntityType;
 use Bedriox\Server\World\BlockEntity\ContainerBlockEntity;
 use Bedriox\Server\World\BlockEntity\ContainerItemStack;
+use Bedriox\Server\World\BlockEntity\SuspiciousSandBlockEntity;
 use Bedriox\Server\World\BlockPosition;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\Storage\LevelDb\LevelDbStorageException;
 use Bedriox\Server\World\Storage\LevelDb\PersistentBlockEntityCodec;
 use Bedriox\Server\World\Storage\Nbt\LittleEndianNbtCodec;
 use Bedriox\Server\World\Storage\Nbt\LittleEndianNbtTag;
+use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 
 final class PersistentBlockEntityCodecTest extends TestCase
 {
+    public function testSuspiciousSandHiddenLootProgressAndProvenanceRoundTrip(): void
+    {
+        $position = new ChunkPosition(-2, 3);
+        $block = new BlockPosition(-31, 52, 49);
+        $entity = new SuspiciousSandBlockEntity(
+            $block,
+            new ContainerItemStack('minecraft:sniffer_egg', 1),
+            -9_223_372_036_854_775_000,
+            SuspiciousSandBlockEntity::WARM_OCEAN_RUIN_PROVENANCE,
+            2,
+            7,
+        );
+        $codec = new PersistentBlockEntityCodec();
+
+        $decoded = $codec->decode(
+            $codec->encode(new BlockEntityCollection($position, [$entity])),
+            $position,
+        )->at($block);
+
+        self::assertInstanceOf(SuspiciousSandBlockEntity::class, $decoded);
+        self::assertSame('minecraft:sniffer_egg', $decoded->hiddenItem->identifier);
+        self::assertSame(1, $decoded->hiddenItem->count);
+        self::assertSame(-9_223_372_036_854_775_000, $decoded->lootSeed);
+        self::assertSame(SuspiciousSandBlockEntity::WARM_OCEAN_RUIN_PROVENANCE, $decoded->provenance);
+        self::assertSame(2, $decoded->progress);
+        self::assertSame(7, $decoded->revision);
+        self::assertNotSame('', $codec->encodeNetworkEntity($decoded));
+    }
+
+    public function testSuspiciousSandRejectsUntrustedProvenanceOversizedLootAndProgress(): void
+    {
+        $position = new BlockPosition(0, 64, 0);
+        foreach ([
+            [new ContainerItemStack('minecraft:sniffer_egg', 2), SuspiciousSandBlockEntity::WARM_OCEAN_RUIN_PROVENANCE, 0],
+            [new ContainerItemStack('minecraft:sniffer_egg', 1), 'player:placed', 0],
+            [new ContainerItemStack('minecraft:sniffer_egg', 1), SuspiciousSandBlockEntity::WARM_OCEAN_RUIN_PROVENANCE, 4],
+        ] as [$loot, $provenance, $progress]) {
+            try {
+                new SuspiciousSandBlockEntity($position, $loot, 1, $provenance, $progress);
+                self::fail('Malformed suspicious-sand state was accepted.');
+            } catch (InvalidArgumentException) {
+                self::addToAssertionCount(1);
+            }
+        }
+    }
+
     public function testPotionCauldronMetadataRoundTripsAndProjectsToNetworkNbt(): void
     {
         $chunk = new ChunkPosition(0, 0);

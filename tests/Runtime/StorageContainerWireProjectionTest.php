@@ -23,6 +23,7 @@ namespace Bedriox\Server\Tests\Runtime;
 use Bedriox\Api\Inventory\ContainerLayout;
 use Bedriox\Api\Inventory\ContainerType as ApiContainerType;
 use Bedriox\Data\BedrockDataSet;
+use Bedriox\Protocol\Packet\BedrockPacketCodec;
 use Bedriox\Protocol\Packet\BlockActorDataPacket;
 use Bedriox\Protocol\Packet\BlockEventPacket;
 use Bedriox\Protocol\Packet\ContainerClosePacket;
@@ -32,6 +33,9 @@ use Bedriox\Protocol\Packet\FullContainerName;
 use Bedriox\Protocol\Packet\InventoryContentPacket;
 use Bedriox\Protocol\Packet\InventorySlotPacket;
 use Bedriox\Protocol\Packet\ItemStackResponsePacket;
+use Bedriox\Protocol\Packet\UpdateEquipPacket;
+use Bedriox\Server\Entity\Mount\AnimalEquipmentSlotDeclaration;
+use Bedriox\Server\Entity\Mount\AnimalEquipmentSlotType;
 use Bedriox\Server\Player\InventoryContainer;
 use Bedriox\Server\Player\InventorySlotReference;
 use Bedriox\Server\Player\InventoryStack;
@@ -123,6 +127,82 @@ final class StorageContainerWireProjectionTest extends TestCase
         self::assertSame(412, $packets[0]->packet->actorUniqueId);
         self::assertInstanceOf(InventoryContentPacket::class, $packets[1]->packet);
         self::assertCount(27, $packets[1]->packet->items);
+    }
+
+    public function testHorseStorageDeclaresEquipmentBeforeOpeningAndSendingContents(): void
+    {
+        $contents = array_fill(0, 16, null);
+        $contents[0] = new InventoryStack('minecraft:saddle', 1, 71);
+        $packets = $this->encoder()->encode(new ContainerOpened(
+            'owner',
+            10,
+            ApiContainerType::HORSE,
+            null,
+            $contents,
+            ['owner'],
+            entityRuntimeId: 512,
+            animalEquipmentSlots: [new AnimalEquipmentSlotDeclaration(
+                0,
+                AnimalEquipmentSlotType::SADDLE,
+                ['minecraft:saddle'],
+                'minecraft:saddle',
+            )],
+        ), []);
+
+        self::assertCount(2, $packets);
+        self::assertSame([
+            UpdateEquipPacket::class,
+            InventoryContentPacket::class,
+        ], array_map(static fn($packet): string => $packet->packet::class, $packets));
+        self::assertSame(['owner', 'owner'], array_map(
+            static fn($packet): string => $packet->sessionId,
+            $packets,
+        ));
+        self::assertInstanceOf(UpdateEquipPacket::class, $packets[0]->packet);
+        self::assertSame(10, $packets[0]->packet->containerId);
+        self::assertSame(ContainerType::Horse, $packets[0]->packet->containerType);
+        self::assertSame(0, $packets[0]->packet->size);
+        self::assertSame(512, $packets[0]->packet->actorUniqueId);
+        self::assertStringContainsString('minecraft:saddle', $packets[0]->packet->networkNbt);
+        self::assertSame(
+            $packets[0]->packet->encode(),
+            BedrockPacketCodec::decode(
+                $packets[0]->packet->packetId(),
+                $packets[0]->packet->encode(),
+            )->encode(),
+        );
+        self::assertInstanceOf(InventoryContentPacket::class, $packets[1]->packet);
+        self::assertSame(71, $packets[1]->packet->items[0]->stackNetworkId);
+        self::assertCount(16, $packets[1]->packet->items);
+    }
+
+    public function testHorseOpenRejectsMissingDuplicateAndOversizedEquipmentLayoutsBeforeEncoding(): void
+    {
+        $slot = new AnimalEquipmentSlotDeclaration(
+            0,
+            AnimalEquipmentSlotType::SADDLE,
+            ['minecraft:saddle'],
+        );
+        foreach ([
+            [],
+            [$slot, $slot],
+        ] as $equipmentSlots) {
+            try {
+                new ContainerOpened(
+                    'owner',
+                    10,
+                    ApiContainerType::HORSE,
+                    null,
+                    [null],
+                    [],
+                    entityRuntimeId: 512,
+                    animalEquipmentSlots: $equipmentSlots,
+                );
+                self::fail('Invalid horse equipment layout reached packet projection.');
+            } catch (\InvalidArgumentException) {
+                self::addToAssertionCount(1);
+            }
+        }
     }
 
     public function testContainerChangesUseEachViewersWindowAndStackIdentity(): void

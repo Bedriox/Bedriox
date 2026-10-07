@@ -30,6 +30,7 @@ use Bedriox\Server\Entity\AnimalEntity;
 use Bedriox\Server\Entity\EntityDefinition;
 use Bedriox\Server\Entity\EntityMotion;
 use Bedriox\Server\Entity\EntityUuid;
+use Bedriox\Server\Entity\Mount\State\HorseArmorState;
 use Bedriox\Server\Plugin\BufferedMountController;
 use Bedriox\Server\Plugin\PluginActionBuffer;
 use Bedriox\Server\Simulation\Position;
@@ -37,8 +38,10 @@ use InvalidArgumentException;
 use LogicException;
 
 /** Shared non-breeding horse state for skeleton and zombie horses. */
-abstract class UndeadHorseEntity extends AnimalEntity implements Rideable, Sittable, Tameable
+abstract class UndeadHorseEntity extends AnimalEntity implements HorseArmorHolder, Rideable, Sittable, Tameable
 {
+    use HorseArmorState;
+
     private ?string $ownerUniqueId;
 
     public function __construct(
@@ -152,12 +155,18 @@ abstract class UndeadHorseEntity extends AnimalEntity implements Rideable, Sitta
 
     final public function mountedPassengerOffsetY(MountSeat $seat, float $passengerHeight, bool $playerPassenger): float
     {
-        return $this->driverSeatOffsetY;
+        return $this->mountedPassengerOffset($seat, $passengerHeight, $playerPassenger)->y;
     }
 
     final public function mountedPassengerOffset(MountSeat $seat, float $passengerHeight, bool $playerPassenger): MountSeatOffset
     {
-        return new MountSeatOffset($this->driverSeatOffsetX, $this->driverSeatOffsetY, $this->driverSeatOffsetZ);
+        $passengerBaseY = parent::mountedPassengerOffsetY($seat, $passengerHeight, $playerPassenger);
+
+        return new MountSeatOffset(
+            $this->driverSeatOffsetX,
+            $passengerBaseY + $this->driverSeatOffsetY,
+            $this->driverSeatOffsetZ,
+        );
     }
 
     final public function getController(): MountController
@@ -169,16 +178,22 @@ abstract class UndeadHorseEntity extends AnimalEntity implements Rideable, Sitta
         return $controller;
     }
 
-    /** @return array{ownerUniqueId: ?string, saddled: bool, sitting: bool, temper: int} */
+    /** @return array{horseArmor: ?array<string, mixed>, ownerUniqueId: ?string, saddled: bool, sitting: bool, temper: int} */
     final protected function undeadHorsePersistenceData(): array
     {
-        return ['ownerUniqueId' => $this->ownerUniqueId, 'saddled' => $this->saddled, 'sitting' => $this->sitting, 'temper' => $this->temper];
+        return [
+            'ownerUniqueId' => $this->ownerUniqueId,
+            'horseArmor' => $this->horseArmorPersistenceData(),
+            'saddled' => $this->saddled,
+            'sitting' => $this->sitting,
+            'temper' => $this->temper,
+        ];
     }
 
     /** @param array<mixed> $data */
     final protected function restoreUndeadHorsePersistenceData(array $data): void
     {
-        if (array_keys($data) !== ['ownerUniqueId', 'saddled', 'sitting', 'temper']
+        if (array_keys($data) !== ['ownerUniqueId', 'horseArmor', 'saddled', 'sitting', 'temper']
             || ($data['ownerUniqueId'] !== null && !is_string($data['ownerUniqueId']))
             || !is_bool($data['saddled']) || !is_bool($data['sitting']) || !is_int($data['temper'])) {
             throw new InvalidArgumentException('Persisted undead-horse state is malformed.');
@@ -189,6 +204,7 @@ abstract class UndeadHorseEntity extends AnimalEntity implements Rideable, Sitta
             throw new InvalidArgumentException('Persisted sitting undead-horse state requires an owner.');
         }
         $this->ownerUniqueId = $owner;
+        $this->restoreHorseArmor($data['horseArmor']);
         $this->saddled = $data['saddled'];
         $this->sitting = $data['sitting'];
         $this->temper = $data['temper'];

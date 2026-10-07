@@ -34,6 +34,7 @@ use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\BlockEntity\BlockEntityType;
 use Bedriox\Server\World\BlockEntity\ContainerBlockEntity;
 use Bedriox\Server\World\BlockEntity\ContainerItemStack;
+use Bedriox\Server\World\BlockEntity\SuspiciousSandBlockEntity;
 use Bedriox\Server\World\BlockPosition;
 use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkPosition;
@@ -46,6 +47,31 @@ use PHPUnit\Framework\TestCase;
 
 final class BedrockChunkPacketSerializerTest extends TestCase
 {
+    public function testLateViewerChunkContainsCurrentBrushableBlockActorState(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $network = $data->blockStateRegistry();
+        $internal = new BlockStateRegistry($network->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($internal);
+        $position = new BlockPosition(3, 64, 7);
+        $entity = new SuspiciousSandBlockEntity(
+            $position,
+            new ContainerItemStack('minecraft:sniffer_egg', 1),
+            99,
+            SuspiciousSandBlockEntity::WARM_OCEAN_RUIN_PROVENANCE,
+            2,
+        );
+        $chunk = (new FlatWorldGenerator($palette))->generate(new ChunkPosition(0, 0))->withBlockEntity($entity);
+        $codec = new PersistentBlockEntityCodec();
+
+        $packet = (new BedrockChunkPacketSerializer(
+            new BlockNetworkTranslator($internal, $network),
+            blockEntities: $codec,
+        ))->serialize($chunk);
+
+        self::assertStringContainsString($codec->encodeNetworkEntity($entity), $packet->data);
+    }
+
     public function testInternalFlatChunkMatchesQualifiedFullColumnWireShape(): void
     {
         $data = BedrockDataSet::bundled();

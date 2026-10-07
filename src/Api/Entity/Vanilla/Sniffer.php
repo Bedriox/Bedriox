@@ -26,4 +26,6 @@ use Bedriox\Api\Entity\Capability\Breedable;
 interface Sniffer extends Animal, Breedable
 {
     public function isDigging(): bool;
+
+    public function getRememberedDigSiteCount(): int;
 }

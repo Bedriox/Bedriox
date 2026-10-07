@@ -122,7 +122,9 @@ final class ChickenEntity extends BreedableAnimalEntity implements Chicken, Intr
         } catch (JsonException $error) {
             throw new InvalidArgumentException('Persisted chicken state is malformed.', previous: $error);
         }
-        if (!is_array($decoded) || array_keys($decoded) !== ['baby', 'babyGrowthTicks', 'breedingCooldownTicks', 'eggLayTicks', 'loveTicks'] || !is_int($decoded['eggLayTicks']) || $decoded['eggLayTicks'] < 0 || $decoded['eggLayTicks'] > 12_000) {
+        if (!is_array($decoded)
+            || array_keys($decoded) !== array_keys([...$this->breedablePersistenceData(), 'eggLayTicks' => $this->eggLayTicks])
+            || !is_int($decoded['eggLayTicks']) || $decoded['eggLayTicks'] < 0 || $decoded['eggLayTicks'] > 12_000) {
             throw new InvalidArgumentException('Persisted chicken state is malformed.');
         }
         $this->restoreBreedablePersistenceData($decoded);

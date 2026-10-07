@@ -144,7 +144,7 @@ final class SheepEntity extends BreedableAnimalEntity implements Sheep, Intrinsi
             throw new InvalidArgumentException('Persisted sheep state is malformed.', previous: $error);
         }
         if ($color === null || !is_array($decoded)
-            || array_keys($decoded) !== ['baby', 'babyGrowthTicks', 'breedingCooldownTicks', 'loveTicks', 'sheared']
+            || array_keys($decoded) !== array_keys([...$this->breedablePersistenceData(), 'sheared' => $this->sheared])
             || !is_bool($decoded['baby']) || !is_int($decoded['babyGrowthTicks'])
             || !is_int($decoded['breedingCooldownTicks']) || !is_int($decoded['loveTicks'])
             || !is_bool($decoded['sheared'])) {

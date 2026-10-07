@@ -28,6 +28,8 @@ use Bedriox\Api\Player\GameMode;
 use Bedriox\Protocol\Packet\ActorFlag;
 use Bedriox\Protocol\Packet\ActorLinkType;
 use Bedriox\Protocol\Packet\ActorMetadataVector3;
+use Bedriox\Protocol\Packet\ContainerClosePacket;
+use Bedriox\Protocol\Packet\ContainerSlotType;
 use Bedriox\Protocol\Packet\PlayerActorMetadata;
 use Bedriox\Protocol\Packet\SetActorDataPacket;
 use Bedriox\Protocol\Packet\SetActorLinkPacket;
@@ -40,11 +42,21 @@ use Bedriox\Server\Entity\Vanilla\HorseEntity;
 use Bedriox\Server\Entity\Vanilla\LlamaEntity;
 use Bedriox\Server\Entity\Vanilla\PigEntity;
 use Bedriox\Server\Entity\Vanilla\SkeletonHorseEntity;
+use Bedriox\Server\Player\InventoryContainer;
+use Bedriox\Server\Player\InventorySlotReference;
 use Bedriox\Server\Player\InventoryStack;
+use Bedriox\Server\Player\InventoryStackRequestAction;
+use Bedriox\Server\Player\InventoryStackRequestActionType;
 use Bedriox\Server\Runtime\BedrockLivingActorProjector;
 use Bedriox\Server\Runtime\BedrockWorldEventPacketEncoder;
 use Bedriox\Server\Simulation\Event\ActorDismounted;
 use Bedriox\Server\Simulation\Event\ActorMounted;
+use Bedriox\Server\Simulation\Event\ContainerClosed;
+use Bedriox\Server\Simulation\Event\ContainerOpened;
+use Bedriox\Server\Simulation\Event\EntityActorBodyEquipmentChanged;
+use Bedriox\Server\Simulation\Event\EntityActorMetadataChanged;
+use Bedriox\Server\Simulation\Event\EntityInteracted;
+use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
 use Bedriox\Server\Simulation\Event\MovementCorrected;
 use Bedriox\Server\Simulation\MovementMode;
 use Bedriox\Server\Simulation\Position;
@@ -55,6 +67,191 @@ use PHPUnit\Framework\TestCase;
 
 final class MountingIntegrationTest extends TestCase
 {
+    public function testDirectHorseArmorInteractionEquipsWithoutMounting(): void
+    {
+        $identity = EntityUuid::random();
+        $simulation = new WorldSimulation(entityAiEnabled: false);
+        $commands = new SimulationCommandFactory();
+        self::assertTrue($simulation->enqueue($commands->join('rider', $identity, 'Rider')));
+        $simulation->tick();
+        $player = $simulation->authoritativePlayer($identity);
+        self::assertNotNull($player);
+        $player->inventory->replaceSlot(0, new InventoryStack('minecraft:diamond_horse_armor', 1, 41));
+        $horse = $simulation->spawnEntity(new EntitySpawnRequest(
+            VanillaEntityType::HORSE,
+            SpawnCause::COMMAND,
+            'world',
+            new Position(1.5, 64.0, 0.5),
+        ))->entity;
+        self::assertInstanceOf(HorseEntity::class, $horse);
+        $horse->setOwnerUniqueId($identity);
+        $simulation->tick();
+
+        self::assertTrue($simulation->enqueue($commands->interactEntity(
+            'rider',
+            $horse->getRuntimeId(),
+            0,
+            EntityInteractionType::ITEM_INTERACT,
+        )));
+        $events = $simulation->tick()->events;
+
+        self::assertSame('minecraft:diamond_horse_armor', $horse->getHorseArmor()?->identifier);
+        self::assertNull($player->inventory->selectedStack());
+        self::assertInstanceOf(EntityInteracted::class, self::event($events, EntityInteracted::class));
+        self::assertInstanceOf(
+            EntityActorBodyEquipmentChanged::class,
+            self::event($events, EntityActorBodyEquipmentChanged::class),
+        );
+        self::assertNull(self::event($events, EntityActorMetadataChanged::class));
+        self::assertNull(self::event($events, ActorMounted::class));
+    }
+
+    public function testHorseWindowCommitsEquipmentRejectsInvalidSwapsAndReopensAuthoritatively(): void
+    {
+        $identity = EntityUuid::random();
+        $simulation = new WorldSimulation(entityAiEnabled: false);
+        $commands = new SimulationCommandFactory();
+        self::assertTrue($simulation->enqueue($commands->join('rider', $identity, 'Rider')));
+        $simulation->tick();
+        $player = $simulation->authoritativePlayer($identity);
+        self::assertNotNull($player);
+        $player->inventory->replaceSlot(0, new InventoryStack('minecraft:saddle', 1, 41));
+        $player->inventory->replaceSlot(1, new InventoryStack('minecraft:diamond_horse_armor', 1, 42));
+        $player->inventory->replaceSlot(2, new InventoryStack('minecraft:stone', 1, 43));
+        $horse = $simulation->spawnEntity(new EntitySpawnRequest(
+            VanillaEntityType::HORSE,
+            SpawnCause::COMMAND,
+            'world',
+            new Position(1.5, 64.0, 0.5),
+        ))->entity;
+        self::assertInstanceOf(HorseEntity::class, $horse);
+        $horse->setOwnerUniqueId($identity);
+
+        self::assertTrue($simulation->enqueue($commands->move(
+            'rider',
+            1,
+            0.0,
+            64.0,
+            0.0,
+            0.0,
+            0.0,
+            MovementMode::CROUCHING,
+            sneaking: true,
+        )));
+        $simulation->tick();
+        self::assertTrue($simulation->enqueue($commands->interactEntity(
+            'rider',
+            $horse->getRuntimeId(),
+            0,
+            EntityInteractionType::INTERACT,
+        )));
+        $opened = self::event($simulation->tick()->events, ContainerOpened::class);
+        self::assertInstanceOf(ContainerOpened::class, $opened);
+        self::assertCount(2, $opened->slots);
+        self::assertCount(2, $opened->animalEquipmentSlots);
+
+        // Normal movement and AI projection changes must not stale the independent equipment window.
+        $horse->moveTo('world', new Position(1.75, 64.0, 0.75), 35.0, 0.0);
+        $simulation->tick();
+
+        foreach ([[0, 0], [1, 1]] as [$mainSlot, $horseSlot]) {
+            $networkId = $player->inventory->stackAt($mainSlot)?->stackNetworkId;
+            self::assertIsInt($networkId);
+            self::assertTrue($simulation->enqueue($commands->inventoryStackRequest(
+                'rider',
+                -100 - $mainSlot,
+                [new InventoryStackRequestAction(
+                    InventoryStackRequestActionType::Take,
+                    new InventorySlotReference(InventoryContainer::Main, $mainSlot, $networkId),
+                    new InventorySlotReference(
+                        InventoryContainer::OpenedContainer,
+                        $horseSlot,
+                        0,
+                        ContainerSlotType::HorseEquipment->value,
+                    ),
+                    1,
+                )],
+            )));
+            $processed = self::event($simulation->tick()->events, InventoryStackRequestProcessed::class);
+            self::assertInstanceOf(InventoryStackRequestProcessed::class, $processed);
+            self::assertTrue($processed->success, $processed->reason);
+        }
+        self::assertTrue($horse->isSaddled());
+        self::assertSame('minecraft:diamond_horse_armor', $horse->getHorseArmor()?->identifier);
+
+        $armorNetworkId = $processed->openedContainerInventory[1]?->stackNetworkId;
+        self::assertIsInt($armorNetworkId);
+        $stoneNetworkId = $player->inventory->stackAt(2)?->stackNetworkId;
+        self::assertIsInt($stoneNetworkId);
+        self::assertTrue($simulation->enqueue($commands->inventoryStackRequest(
+            'rider',
+            -103,
+            [new InventoryStackRequestAction(
+                InventoryStackRequestActionType::Swap,
+                new InventorySlotReference(InventoryContainer::Main, 2, $stoneNetworkId),
+                new InventorySlotReference(
+                    InventoryContainer::OpenedContainer,
+                    1,
+                    $armorNetworkId,
+                    ContainerSlotType::HorseEquipment->value,
+                ),
+            )],
+        )));
+        $rejected = self::event($simulation->tick()->events, InventoryStackRequestProcessed::class);
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $rejected);
+        self::assertFalse($rejected->success);
+        self::assertSame('container_commit', $rejected->reason);
+        self::assertSame('minecraft:stone', $player->inventory->stackAt(2)->identifier);
+        self::assertSame('minecraft:diamond_horse_armor', $horse->getHorseArmor()->identifier);
+
+        self::assertTrue($simulation->enqueue($commands->closeContainer('rider', $opened->windowId)));
+        $simulation->tick();
+        self::assertTrue($simulation->enqueue($commands->interactEntity(
+            'rider',
+            $horse->getRuntimeId(),
+            0,
+            EntityInteractionType::INTERACT,
+        )));
+        $reopened = self::event($simulation->tick()->events, ContainerOpened::class);
+        self::assertInstanceOf(ContainerOpened::class, $reopened);
+        self::assertSame('minecraft:saddle', $reopened->slots[0]?->identifier);
+        self::assertSame('minecraft:diamond_horse_armor', $reopened->slots[1]?->identifier);
+
+        self::assertTrue($simulation->enqueueKillEntity($horse->getRuntimeId(), $horse->getUniqueId()));
+        $deathEvents = $simulation->tick()->events;
+        $closed = self::event($deathEvents, ContainerClosed::class);
+        for ($tick = 0; $tick < 40 && $closed === null; ++$tick) {
+            $closed = self::event($simulation->tick()->events, ContainerClosed::class);
+        }
+        self::assertInstanceOf(ContainerClosed::class, $closed);
+        self::assertTrue($closed->serverInitiated);
+        $closePackets = (new BedrockWorldEventPacketEncoder())->encode($closed, []);
+        self::assertCount(1, $closePackets);
+        self::assertInstanceOf(ContainerClosePacket::class, $closePackets[0]->packet);
+
+        $saddle = $reopened->slots[0];
+        $saddleNetworkId = $saddle->stackNetworkId;
+        self::assertTrue($simulation->enqueue($commands->inventoryStackRequest(
+            'rider',
+            -104,
+            [new InventoryStackRequestAction(
+                InventoryStackRequestActionType::Take,
+                new InventorySlotReference(
+                    InventoryContainer::OpenedContainer,
+                    0,
+                    $saddleNetworkId,
+                    ContainerSlotType::HorseEquipment->value,
+                ),
+                new InventorySlotReference(InventoryContainer::Cursor, 0, 0),
+                1,
+            )],
+        )));
+        $late = self::event($simulation->tick()->events, InventoryStackRequestProcessed::class);
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $late);
+        self::assertFalse($late->success);
+        self::assertSame('container_not_open', $late->reason);
+    }
+
     public function testSaddledPigInteractionMountsAndVehicleExitDismountsAuthoritatively(): void
     {
         $simulation = new WorldSimulation(entityAiEnabled: false);
@@ -82,7 +279,7 @@ final class MountingIntegrationTest extends TestCase
         self::assertSame($spawn->entity, $simulation->mountedVehicle('identity-one'));
 
         $packets = (new BedrockWorldEventPacketEncoder())->encode($mounted, []);
-        self::assertCount(2, $packets);
+        self::assertCount(3, $packets);
         self::assertInstanceOf(SetActorDataPacket::class, $packets[0]->packet);
         $seatOffset = null;
         $flags = null;
@@ -105,6 +302,8 @@ final class MountingIntegrationTest extends TestCase
         self::assertSame(1 << 2, $flags & (1 << 2));
         self::assertInstanceOf(SetActorLinkPacket::class, $packets[1]->packet);
         self::assertSame(ActorLinkType::Rider, $packets[1]->packet->link->type);
+        self::assertInstanceOf(SetActorDataPacket::class, $packets[2]->packet);
+        self::assertSame($packets[0]->packet, $packets[2]->packet);
 
         self::assertTrue($simulation->enqueue($commands->dismountPlayer('one')));
         $dismounted = self::event($simulation->tick()->events, ActorDismounted::class);
@@ -115,6 +314,21 @@ final class MountingIntegrationTest extends TestCase
         self::assertCount(2, $packets);
         self::assertInstanceOf(SetActorLinkPacket::class, $packets[0]->packet);
         self::assertSame(ActorLinkType::Remove, $packets[0]->packet->link->type);
+    }
+
+    public function testPowerJumpMountDismountResetsTheClientJumpPresentation(): void
+    {
+        $event = new ActorDismounted(71, 72, null, ['one'], true);
+
+        $packets = (new BedrockWorldEventPacketEncoder())->encode($event, []);
+
+        self::assertCount(2, $packets);
+        self::assertInstanceOf(SetActorLinkPacket::class, $packets[0]->packet);
+        self::assertSame(ActorLinkType::Remove, $packets[0]->packet->link->type);
+        self::assertInstanceOf(SetActorDataPacket::class, $packets[1]->packet);
+        self::assertCount(1, $packets[1]->packet->metadata);
+        self::assertSame(10, $packets[1]->packet->metadata[0]->id);
+        self::assertSame(0, $packets[1]->packet->metadata[0]->value);
     }
 
     public function testCreativePlayerCanMountPigWhileStillHoldingTheSaddleUsedToEquipIt(): void
@@ -272,8 +486,22 @@ final class MountingIntegrationTest extends TestCase
             0,
             EntityInteractionType::INTERACT,
         )));
-        self::assertInstanceOf(ActorMounted::class, self::event($simulation->tick()->events, ActorMounted::class));
+        $mounted = self::event($simulation->tick()->events, ActorMounted::class);
+        self::assertInstanceOf(ActorMounted::class, $mounted);
         self::assertSame($spawn->entity, $simulation->mountedVehicle($identity));
+
+        $packets = (new BedrockWorldEventPacketEncoder())->encode($mounted, []);
+        self::assertInstanceOf(SetActorDataPacket::class, $packets[0]->packet);
+        $seatOffset = null;
+        foreach ($packets[0]->packet->metadata as $metadata) {
+            if ($metadata->id === 56) {
+                $seatOffset = $metadata->value;
+            }
+        }
+        self::assertInstanceOf(ActorMetadataVector3::class, $seatOffset);
+        self::assertEqualsWithDelta(0.0, $seatOffset->x, 0.000_001);
+        self::assertEqualsWithDelta(2.32, $seatOffset->y, 0.000_001);
+        self::assertEqualsWithDelta(-0.2, $seatOffset->z, 0.000_001);
     }
 
     public function testMountedHorseFacesItsAuthoritativeControlDirection(): void
@@ -387,6 +615,51 @@ final class MountingIntegrationTest extends TestCase
         self::assertSame($spawn->entity, $simulation->mountedVehicle($identity));
     }
 
+    public function testHorseAndSkeletonHorseApplyMountedJumpInput(): void
+    {
+        foreach ([VanillaEntityType::HORSE, VanillaEntityType::SKELETON_HORSE] as $type) {
+            $identity = EntityUuid::random();
+            $simulation = new WorldSimulation(entityAiEnabled: false);
+            $commands = new SimulationCommandFactory();
+            self::assertTrue($simulation->enqueue($commands->join('rider', $identity, 'Rider')));
+            $simulation->tick();
+            $entity = $simulation->spawnEntity(new EntitySpawnRequest(
+                $type,
+                SpawnCause::COMMAND,
+                'world',
+                new Position(1.5, 64.0, 0.5),
+            ))->entity;
+            self::assertTrue($entity instanceof HorseFamilyEntity || $entity instanceof UndeadHorseEntity);
+            $entity->setOwnerUniqueId($identity);
+            if (!$entity instanceof SkeletonHorseEntity) {
+                $entity->setSaddled(true);
+            }
+            $entity->setOnGround(true);
+            self::assertTrue($simulation->enqueueMount($identity, $entity));
+            $simulation->tick();
+
+            self::assertTrue($simulation->enqueue($commands->move(
+                'rider',
+                1,
+                0.0,
+                64.0,
+                0.0,
+                0.0,
+                0.0,
+                MovementMode::JUMPING,
+                jumpRequested: true,
+                moveZ: 1.0,
+                vehiclePitch: 0.0,
+                vehicleYaw: 0.0,
+                vehicleControlYaw: 0.0,
+                predictedVehicleActorId: $entity->getRuntimeId(),
+            )));
+            $simulation->tick();
+
+            self::assertEqualsWithDelta(0.42, $entity->getMotion()->y, 0.000_001, $type->value);
+        }
+    }
+
     public function testEverySteerableHorseFamilyUsesTheSharedTravelRotation(): void
     {
         foreach ([
@@ -482,11 +755,58 @@ final class MountingIntegrationTest extends TestCase
             self::assertIsInt($flags);
             self::assertNotSame(0, $flags & ActorFlag::WasdControlled->mask());
             self::assertNotSame(0, $flags & ActorFlag::CanPowerJump->mask());
+            $jumpAttributes = array_values(array_filter(
+                $projector->spawnAttributes($entity),
+                static fn($attribute): bool => $attribute->name === 'minecraft:horse.jump_strength',
+            ));
+            self::assertCount(1, $jumpAttributes);
+            self::assertEqualsWithDelta(0.7, $jumpAttributes[0]->value, 0.000_001);
         }
         $llamaFlags = $projector->flagsMetadata($llama)->value;
         self::assertIsInt($llamaFlags);
         self::assertSame(0, $llamaFlags & ActorFlag::WasdControlled->mask());
         self::assertSame(0, $llamaFlags & ActorFlag::CanPowerJump->mask());
+    }
+
+    public function testMountedLlamaRejectsSpoofedVehicleControlEvenWithCorruptSaddleState(): void
+    {
+        $identity = EntityUuid::random();
+        $simulation = new WorldSimulation(entityAiEnabled: false);
+        $commands = new SimulationCommandFactory();
+        self::assertTrue($simulation->enqueue($commands->join('rider', $identity, 'Rider')));
+        $simulation->tick();
+        $llama = $simulation->spawnEntity(new EntitySpawnRequest(
+            VanillaEntityType::LLAMA,
+            SpawnCause::COMMAND,
+            'world',
+            new Position(1.5, 64.0, 0.5),
+        ))->entity;
+        self::assertInstanceOf(LlamaEntity::class, $llama);
+        $llama->setOwnerUniqueId($identity);
+        $llama->setSaddled(true);
+        self::assertTrue($simulation->enqueueMount($identity, $llama));
+        $simulation->tick();
+
+        self::assertTrue($simulation->enqueue($commands->move(
+            'rider',
+            1,
+            0.0,
+            64.0,
+            0.0,
+            0.0,
+            0.0,
+            MovementMode::WALKING,
+            moveX: 1.0,
+            moveZ: 1.0,
+            vehiclePitch: 0.0,
+            vehicleYaw: 90.0,
+            vehicleControlYaw: 90.0,
+            predictedVehicleActorId: $llama->getRuntimeId(),
+        )));
+        $simulation->tick();
+
+        self::assertSame(0.0, $llama->getMotion()->x);
+        self::assertSame(0.0, $llama->getMotion()->z);
     }
 
     /**

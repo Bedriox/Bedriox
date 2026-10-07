@@ -33,6 +33,7 @@ use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\Spawn\EntitySpawnRequest;
 use Bedriox\Server\Entity\Vanilla\CowEntity;
+use Bedriox\Server\Entity\Vanilla\GoatEntity;
 use Bedriox\Server\Entity\Vanilla\ZombieEntity;
 use Bedriox\Server\Gameplay\Block\BlockCatalog;
 use Bedriox\Server\Gameplay\Block\DropRandom;
@@ -89,6 +90,28 @@ final class EntityControllerRuntimeIntegrationTest extends TestCase
         $events = $simulation->tick()->events;
         self::assertFalse($controller->isAvailable());
         self::assertCount(1, self::events($events, EntityActorRemoved::class));
+    }
+
+    public function testGoatFallReductionAppliesBeforeAuthoritativeDamageCommit(): void
+    {
+        $simulation = self::simulation();
+        $spawn = $simulation->spawnEntity(new EntitySpawnRequest(
+            VanillaEntityType::GOAT,
+            SpawnCause::COMMAND,
+            'world',
+            new Position(1.0, 64.0, 1.0),
+        ));
+        self::assertInstanceOf(GoatEntity::class, $spawn->entity);
+        $goat = $spawn->entity;
+
+        $goat->getController()->damage(12.0, EntityDamageCause::FALL);
+        $events = $simulation->tick()->events;
+        self::assertSame(8.0, $goat->getHealth());
+        self::assertCount(1, self::events($events, EntityActorDamaged::class));
+
+        $goat->getController()->damage(3.0, EntityDamageCause::ATTACK);
+        $simulation->tick();
+        self::assertSame(5.0, $goat->getHealth());
     }
 
     public function testLivingControllerEffectsUseAuthoritativeTimedAndInstantDamagePaths(): void

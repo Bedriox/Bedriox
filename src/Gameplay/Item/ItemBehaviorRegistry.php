@@ -92,6 +92,12 @@ final class ItemBehaviorRegistry
             );
         }
         $behaviors[] = new ItemUseBehavior(
+            'minecraft:suspicious_stew',
+            32,
+            new ConsumableDefinition(6.0, 7.2, false, 'minecraft:bowl'),
+            effects: ConsumableEffectDefinition::suspiciousStew(),
+        );
+        $behaviors[] = new ItemUseBehavior(
             'minecraft:golden_apple',
             32,
             new ConsumableDefinition(4.0, 9.6, false),

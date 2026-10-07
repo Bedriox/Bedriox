@@ -47,7 +47,6 @@ use Bedriox\Protocol\Packet\ActorFlag;
 use Bedriox\Protocol\Packet\ActorLink;
 use Bedriox\Protocol\Packet\ActorLinkType;
 use Bedriox\Protocol\Packet\ActorMetadata;
-use Bedriox\Protocol\Packet\ActorProperties;
 use Bedriox\Protocol\Packet\AddActorPacket;
 use Bedriox\Protocol\Packet\AddItemActorPacket;
 use Bedriox\Protocol\Packet\AddPlayerPacket;
@@ -75,6 +74,9 @@ use Bedriox\Protocol\Packet\EnchantOption as ProtocolEnchantOption;
 use Bedriox\Protocol\Packet\FishingHookActorMetadata;
 use Bedriox\Protocol\Packet\FullContainerName;
 use Bedriox\Protocol\Packet\FurnaceProperty;
+use Bedriox\Protocol\Packet\HorseActorMetadata;
+use Bedriox\Protocol\Packet\HorseEquipmentNbt;
+use Bedriox\Protocol\Packet\HorseEquipmentSlot;
 use Bedriox\Protocol\Packet\InventoryContainerId;
 use Bedriox\Protocol\Packet\InventoryContentPacket;
 use Bedriox\Protocol\Packet\InventoryItemStack as ProtocolInventoryItemStack;
@@ -128,6 +130,7 @@ use Bedriox\Protocol\Packet\TranslatedTextPacket;
 use Bedriox\Protocol\Packet\UpdateAttributesPacket;
 use Bedriox\Protocol\Packet\UpdateBlockFlag;
 use Bedriox\Protocol\Packet\UpdateBlockPacket;
+use Bedriox\Protocol\Packet\UpdateEquipPacket;
 use Bedriox\Protocol\Packet\UpdatePlayerGameTypePacket;
 use Bedriox\Protocol\Value\BuildPlatform;
 use Bedriox\Protocol\Value\UnsignedLong;
@@ -164,6 +167,7 @@ use Bedriox\Server\Simulation\Event\EnchantingOptionsUpdated;
 use Bedriox\Server\Simulation\Event\EnderDragonBossBarAction;
 use Bedriox\Server\Simulation\Event\EnderDragonBossBarChanged;
 use Bedriox\Server\Simulation\Event\EntityActorAttackStarted;
+use Bedriox\Server\Simulation\Event\EntityActorBodyEquipmentChanged;
 use Bedriox\Server\Simulation\Event\EntityActorDamaged;
 use Bedriox\Server\Simulation\Event\EntityActorDied;
 use Bedriox\Server\Simulation\Event\EntityActorEffectChanged;
@@ -174,6 +178,7 @@ use Bedriox\Server\Simulation\Event\EntityActorMoved;
 use Bedriox\Server\Simulation\Event\EntityActorRemoved;
 use Bedriox\Server\Simulation\Event\EntityActorSpawned;
 use Bedriox\Server\Simulation\Event\EntityExplosionPresented;
+use Bedriox\Server\Simulation\Event\EntityTotemConsumedPresented;
 use Bedriox\Server\Simulation\Event\ExperienceOrbMoved;
 use Bedriox\Server\Simulation\Event\ExperienceOrbPickedUp;
 use Bedriox\Server\Simulation\Event\ExperienceOrbRemoved;
@@ -386,9 +391,11 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             ),
             $event instanceof EntityActorSpawned => $this->entityActorSpawned($event),
             $event instanceof EntityActorEffectChanged => $this->entityActorEffectChanged($event),
+            $event instanceof EntityActorBodyEquipmentChanged => $this->entityActorBodyEquipmentChanged($event),
             $event instanceof EntityActorEquipmentChanged => $this->entityActorEquipmentChanged($event),
             $event instanceof EntityActorHealthChanged => $this->entityActorHealthChanged($event),
             $event instanceof EntityActorMetadataChanged => $this->entityActorMetadataChanged($event),
+            $event instanceof EntityTotemConsumedPresented => $this->entityTotemConsumed($event),
             $event instanceof TameAttemptPresented => $this->tameAttempt($event),
             $event instanceof AnimalLovePresented => $this->animalLove($event),
             $event instanceof EntityActorMoved => $this->entityActorMoved($event),
@@ -453,8 +460,20 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
                     $packets[] = new DirectedPacket($recipient, $actorData);
                 }
                 $packets[] = new DirectedPacket($recipient, $link);
+                if ($actorData !== null && $event->passenger->sessionId === $recipient) {
+                    // The local client may apply its interaction-point prediction while creating the link.
+                    // Reassert the authoritative seat immediately afterward so that click height cannot move the rider.
+                    $packets[] = new DirectedPacket($recipient, $actorData);
+                }
             } else {
                 $packets[] = new DirectedPacket($recipient, $link);
+                if ($event->resetHorseJumpPresentation) {
+                    $packets[] = new DirectedPacket($recipient, new SetActorDataPacket(
+                        UnsignedLong::fromInt($event->vehicleRuntimeId),
+                        UnsignedLong::fromInt(0),
+                        [HorseActorMetadata::jumpDuration(0)],
+                    ));
+                }
                 if ($actorData !== null) {
                     $packets[] = new DirectedPacket($recipient, $actorData);
                 }
@@ -594,13 +613,31 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
                 $position,
                 $event->entityRuntimeId,
             );
-        $packets = [
-            new DirectedPacket($event->ownerSessionId, $open),
-            new DirectedPacket($event->ownerSessionId, new InventoryContentPacket(
+        $packets = [];
+        if ($event->containerType === ApiContainerType::HORSE) {
+            $equipmentNbt = HorseEquipmentNbt::encode(array_map(
+                static fn(\Bedriox\Server\Entity\Mount\AnimalEquipmentSlotDeclaration $slot): HorseEquipmentSlot => new HorseEquipmentSlot(
+                    $slot->slotNumber,
+                    $slot->acceptedItemIdentifiers,
+                    $slot->equippedItemIdentifier,
+                ),
+                $event->animalEquipmentSlots,
+            ));
+            $packets[] = new DirectedPacket($event->ownerSessionId, new UpdateEquipPacket(
                 $event->windowId,
-                array_map($this->requireInventoryProjector()->toProtocol(...), $event->slots),
-            )),
-        ];
+                ContainerType::Horse,
+                0,
+                $event->entityRuntimeId ?? throw new \LogicException('Horse container is missing its entity identity.'),
+                $equipmentNbt,
+            ));
+        }
+        if ($event->containerType !== ApiContainerType::HORSE) {
+            $packets[] = new DirectedPacket($event->ownerSessionId, $open);
+        }
+        $packets[] = new DirectedPacket($event->ownerSessionId, new InventoryContentPacket(
+            $event->windowId,
+            array_map($this->requireInventoryProjector()->toProtocol(...), $event->slots),
+        ));
 
         // A custom virtual title requires a future bounded presentation adapter which supplies a temporary
         // block actor. The wire layer deliberately does not spoof world state merely to carry that title.
@@ -794,6 +831,7 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
                 ApiContainerType::LOOM => ContainerType::Loom,
                 ApiContainerType::CARTOGRAPHY_TABLE => ContainerType::Cartography,
                 ApiContainerType::CHEST_BOAT => ContainerType::ChestBoat,
+                ApiContainerType::HORSE => ContainerType::Horse,
                 default => ContainerType::Container,
             };
         }
@@ -2382,7 +2420,7 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             $entity->getYaw(),
             $this->livingActors->spawnAttributes($entity),
             $this->livingActors->metadata($entity, $event->noAi),
-            new ActorProperties(),
+            $this->livingActors->properties($entity),
             [],
         );
 
@@ -2559,7 +2597,22 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             UnsignedLong::fromInt($event->entity->getRuntimeId()),
             UnsignedLong::fromInt(max(0, $event->tick)),
             $this->livingActors->metadata($event->entity, $event->noAi),
+            $this->livingActors->properties($event->entity),
         );
+
+        return array_map(
+            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
+            $event->recipientSessionIds,
+        );
+    }
+
+    /** @return list<DirectedPacket> */
+    private function entityActorBodyEquipmentChanged(EntityActorBodyEquipmentChanged $event): array
+    {
+        $packet = $this->livingActors->bodyEquipmentPacket($event->entity, $this->inventory);
+        if ($packet === null) {
+            return [];
+        }
 
         return array_map(
             static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
@@ -2587,6 +2640,20 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
         $packet = new ActorEventPacket(
             UnsignedLong::fromInt($event->animal->getRuntimeId()),
             ActorEventType::InLoveHearts,
+        );
+
+        return array_map(
+            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
+            $event->recipientSessionIds,
+        );
+    }
+
+    /** @return list<DirectedPacket> */
+    private function entityTotemConsumed(EntityTotemConsumedPresented $event): array
+    {
+        $packet = new ActorEventPacket(
+            UnsignedLong::fromInt($event->entity->getRuntimeId()),
+            ActorEventType::ConsumeTotem,
         );
 
         return array_map(

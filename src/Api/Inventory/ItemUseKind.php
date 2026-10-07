@@ -28,4 +28,5 @@ enum ItemUseKind: string
     case EQUIP = 'equip';
     case CHARGE = 'charge';
     case VEHICLE_PLACE = 'vehicle_place';
+    case BRUSH = 'brush';
 }

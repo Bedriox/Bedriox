@@ -72,7 +72,7 @@ final class HoglinEntity extends BreedableAnimalEntity implements Hoglin, Intrin
             throw new InvalidArgumentException('Persisted hoglin state is malformed.', previous: $error);
         }
         if (!is_array($decoded)
-            || array_keys($decoded) !== ['baby', 'babyGrowthTicks', 'breedingCooldownTicks', 'loveTicks', 'outsideNetherTicks']
+            || array_keys($decoded) !== array_keys([...$this->breedablePersistenceData(), 'outsideNetherTicks' => $this->outsideNetherTicks])
             || !is_int($decoded['outsideNetherTicks']) || $decoded['outsideNetherTicks'] < 0
             || $decoded['outsideNetherTicks'] > self::ZOMBIFICATION_TICKS) {
             throw new InvalidArgumentException('Persisted hoglin state is malformed.');

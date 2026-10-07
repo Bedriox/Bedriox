@@ -633,6 +633,21 @@ final readonly class SimulationCommandFactory
         return new BreakBlock($session, $sequence, $action, $position, $face);
     }
 
+    public function brushBlock(
+        string $session,
+        int $sequence,
+        BrushAction $action,
+        ?BlockPosition $position,
+        int $face,
+    ): \Bedriox\Server\Simulation\Command\BrushBlock {
+        $this->assertOpaqueId($session, 128, 'session');
+        if ($sequence < 1 || $face < 0 || $face > 5 || ($action === BrushAction::START && $position === null)) {
+            throw new CommandValidationException('Block-brush intent is invalid.');
+        }
+
+        return new \Bedriox\Server\Simulation\Command\BrushBlock($session, $sequence, $action, $position, $face);
+    }
+
     public function placeBlock(
         string $session,
         int $sequence,

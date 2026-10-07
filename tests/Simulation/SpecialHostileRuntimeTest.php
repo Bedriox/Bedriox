@@ -26,9 +26,11 @@ use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Entity\Spawn\EntitySpawnRequest;
 use Bedriox\Server\Entity\Vanilla\CreeperEntity;
 use Bedriox\Server\Entity\Vanilla\EndermanEntity;
+use Bedriox\Server\Entity\Vanilla\OcelotEntity;
 use Bedriox\Server\Simulation\Event\EntityActorRemoved;
 use Bedriox\Server\Simulation\Event\EntityExplosionPresented;
 use Bedriox\Server\Simulation\Position;
+use Bedriox\Server\Simulation\SimulationCommandFactory;
 use Bedriox\Server\Simulation\WorldSimulation;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
@@ -43,6 +45,64 @@ use PHPUnit\Framework\TestCase;
 
 final class SpecialHostileRuntimeTest extends TestCase
 {
+    public function testNearbyOcelotSuppressesAndCancelsOnlyProximityFuse(): void
+    {
+        [$simulation] = self::simulation();
+        $commands = new SimulationCommandFactory();
+        self::assertTrue($simulation->enqueue($commands->join('session', 'player', 'Player')));
+        $simulation->tick();
+        $creeper = $simulation->spawnEntity(new EntitySpawnRequest(
+            VanillaEntityType::CREEPER,
+            SpawnCause::COMMAND,
+            'world',
+            new Position(1.0, 64.0, 0.0),
+        ))->entity;
+        $ocelot = $simulation->spawnEntity(new EntitySpawnRequest(
+            VanillaEntityType::OCELOT,
+            SpawnCause::COMMAND,
+            'world',
+            new Position(2.0, 64.0, 0.0),
+        ))->entity;
+        self::assertInstanceOf(CreeperEntity::class, $creeper);
+        self::assertInstanceOf(OcelotEntity::class, $ocelot);
+
+        $creeper->beginProximityFuse();
+        $simulation->tick();
+        self::assertFalse($creeper->isIgnited());
+        self::assertSame(0, $creeper->getFuseTicks());
+
+        for ($tick = 0; $tick < 10; ++$tick) {
+            $simulation->tick();
+        }
+        self::assertFalse($creeper->isIgnited());
+        self::assertSame(0, $creeper->getFuseTicks());
+    }
+
+    public function testNearbyOcelotDoesNotCancelManualIgnition(): void
+    {
+        [$simulation] = self::simulation();
+        $creeper = $simulation->spawnEntity(new EntitySpawnRequest(
+            VanillaEntityType::CREEPER,
+            SpawnCause::COMMAND,
+            'world',
+            new Position(0.5, 64.0, 0.5),
+        ))->entity;
+        self::assertInstanceOf(CreeperEntity::class, $creeper);
+        self::assertInstanceOf(OcelotEntity::class, $simulation->spawnEntity(new EntitySpawnRequest(
+            VanillaEntityType::OCELOT,
+            SpawnCause::COMMAND,
+            'world',
+            new Position(1.5, 64.0, 0.5),
+        ))->entity);
+        $creeper->setIgnited(true);
+
+        for ($tick = 0; $tick < 30; ++$tick) {
+            $simulation->tick();
+        }
+
+        self::assertNull($simulation->entityRuntime()->registry()->getByRuntimeId($creeper->getRuntimeId()));
+    }
+
     public function testManuallyIgnitedCreeperCompletesItsBoundedFuse(): void
     {
         [$simulation] = self::simulation();

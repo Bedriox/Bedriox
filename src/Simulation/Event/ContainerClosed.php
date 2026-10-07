@@ -41,7 +41,7 @@ final readonly class ContainerClosed implements WorldEvent
     ) {
         $double = $containerType->isPaired();
         if ($windowId < 2 || $windowId > 99
-            || (($containerType === ContainerType::VIRTUAL || $containerType === ContainerType::CHEST_BOAT)
+            || ((in_array($containerType, [ContainerType::VIRTUAL, ContainerType::CHEST_BOAT, ContainerType::HORSE], true))
                 !== ($position === null))
             || ($containerType === ContainerType::VIRTUAL) !== ($layout !== null)
             || $double !== ($pairedPosition !== null)) {

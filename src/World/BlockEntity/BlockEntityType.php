@@ -33,10 +33,11 @@ enum BlockEntityType: string
     case Smoker = 'minecraft:smoker';
     case Campfire = 'minecraft:campfire';
     case Cauldron = 'minecraft:cauldron';
+    case BrushableBlock = 'minecraft:brushable_block';
 
     public function ownsPersistentInventory(): bool
     {
-        return $this !== self::EnderChest && $this !== self::Cauldron;
+        return $this !== self::EnderChest && $this !== self::Cauldron && $this !== self::BrushableBlock;
     }
 
     public function isStorageContainer(): bool

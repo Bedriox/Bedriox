@@ -23,13 +23,21 @@ namespace Bedriox\Server\Entity\Vanilla;
 use Bedriox\Api\Entity\Value\FoxVariant;
 use Bedriox\Api\Entity\Vanilla\Fox;
 use Bedriox\Server\Entity\Ai\AiBehaviorDefinition;
+use Bedriox\Server\Entity\Ai\ExclusiveAiActivity;
 use Bedriox\Server\Entity\EntityMotion;
 use Bedriox\Server\Entity\EntityUuid;
 use Bedriox\Server\Simulation\Position;
 use InvalidArgumentException;
 
-final class FoxEntity extends LandBreedableAnimalEntity implements Fox
+final class FoxEntity extends LandBreedableAnimalEntity implements ExclusiveAiActivity, Fox
 {
+    private bool $totemPresentationPending = false;
+    private int $pounceTicks = 0;
+    private bool $pounceAirborne = false;
+    private int $faceplantedTicks = 0;
+    private ?string $trustedDefenseTargetUniqueId = null;
+    private int $trustedDefenseTicks = 0;
+
     public function __construct(
         string $uniqueId,
         int $runtimeId,
@@ -46,7 +54,7 @@ final class FoxEntity extends LandBreedableAnimalEntity implements Fox
         private ?string $secondaryTrustedPlayerUniqueId = null,
         private bool $sleeping = false,
     ) {
-        parent::__construct($uniqueId, $runtimeId, LandAnimalEntityDefinitions::fox(), $worldName, $position, $behavior ?? LandAnimalAiBehaviors::passive('fox', ['minecraft:sweet_berries', 'minecraft:glow_berries'], 0.10), $motion, $yaw, $pitch, $health);
+        parent::__construct($uniqueId, $runtimeId, LandAnimalEntityDefinitions::fox(), $worldName, $position, $behavior ?? LandAnimalAiBehaviors::cautious('fox', ['minecraft:sweet_berries', 'minecraft:glow_berries'], 0.10), $motion, $yaw, $pitch, $health);
         $this->initializeBreedableState($baby);
         $this->primaryTrustedPlayerUniqueId = $primaryTrustedPlayerUniqueId === null
             ? null
@@ -79,6 +87,166 @@ final class FoxEntity extends LandBreedableAnimalEntity implements Fox
         return $this->sleeping;
     }
 
+    public function isPouncing(): bool
+    {
+        return $this->pounceTicks > 0;
+    }
+
+    public function isFaceplanted(): bool
+    {
+        return $this->faceplantedTicks > 0;
+    }
+
+    public function hasExclusiveAiActivity(): bool
+    {
+        return $this->sleeping || $this->isPouncing() || $this->isFaceplanted()
+            || $this->getTrustedDefenseTargetUniqueId() !== null;
+    }
+
+    /** @internal Authoritative hunting-state mutation. */
+    public function beginPounce(int $ticks = 20): void
+    {
+        if ($ticks < 1 || $ticks > 40) {
+            throw new InvalidArgumentException('Fox pounce duration is outside its supported bounds.');
+        }
+        $this->pounceTicks = $ticks;
+        $this->pounceAirborne = false;
+        $this->faceplantedTicks = 0;
+        $this->setSleeping(false);
+        $this->markPresentationChanged();
+    }
+
+    /** @internal Authoritative snow-dive state mutation. */
+    public function beginFaceplant(int $ticks = 40): void
+    {
+        if ($ticks < 1 || $ticks > 100) {
+            throw new InvalidArgumentException('Fox faceplant duration is outside its supported bounds.');
+        }
+        $this->pounceTicks = 0;
+        $this->pounceAirborne = false;
+        $this->faceplantedTicks = $ticks;
+        $this->setSleeping(false);
+        $this->markPresentationChanged();
+    }
+
+    /** @internal Advances transient pounce and snow-dive presentation. */
+    public function advanceHuntingState(int $ticks): void
+    {
+        if ($ticks < 1 || $ticks > 20) {
+            throw new InvalidArgumentException('Fox hunting-state advance is outside its supported bounds.');
+        }
+        $wasPouncing = $this->pounceTicks > 0;
+        $wasFaceplanted = $this->faceplantedTicks > 0;
+        $this->pounceTicks = max(0, $this->pounceTicks - $ticks);
+        $this->faceplantedTicks = max(0, $this->faceplantedTicks - $ticks);
+        if ($wasPouncing !== ($this->pounceTicks > 0) || $wasFaceplanted !== ($this->faceplantedTicks > 0)) {
+            if ($this->pounceTicks === 0) {
+                $this->pounceAirborne = false;
+            }
+            $this->markPresentationChanged();
+        }
+    }
+
+    /** @internal Records that a pounce has actually left the ground. */
+    public function recordPounceAirborne(): void
+    {
+        if ($this->isPouncing()) {
+            $this->pounceAirborne = true;
+        }
+    }
+
+    /** @internal */
+    public function hasAirbornePounce(): bool
+    {
+        return $this->isPouncing() && $this->pounceAirborne;
+    }
+
+    /** @internal Completes a physics-confirmed pounce landing. */
+    public function completePounce(bool $faceplanted): void
+    {
+        if (!$this->isPouncing()) {
+            return;
+        }
+        $this->pounceTicks = 0;
+        $this->pounceAirborne = false;
+        if ($faceplanted) {
+            $this->beginFaceplant();
+            return;
+        }
+        $this->markPresentationChanged();
+    }
+
+    /** @internal Interrupts hunting when a higher-priority threat takes ownership. */
+    public function cancelPounce(): void
+    {
+        if ($this->pounceTicks === 0 && !$this->pounceAirborne) {
+            return;
+        }
+        $this->pounceTicks = 0;
+        $this->pounceAirborne = false;
+        $this->markPresentationChanged();
+    }
+
+    /** @internal Records a bounded attacker of a trusted player. */
+    public function defendTrustedPlayerAgainst(string $targetUniqueId, int $ticks = 200): void
+    {
+        if ($ticks < 1 || $ticks > 1_200) {
+            throw new InvalidArgumentException('Fox trusted-defense duration is outside its supported bounds.');
+        }
+        $this->trustedDefenseTargetUniqueId = EntityUuid::validate($targetUniqueId);
+        $this->trustedDefenseTicks = $ticks;
+        $this->setSleeping(false);
+        $this->markChanged();
+    }
+
+    /** @internal */
+    public function getTrustedDefenseTargetUniqueId(): ?string
+    {
+        return $this->trustedDefenseTicks > 0 ? $this->trustedDefenseTargetUniqueId : null;
+    }
+
+    /** @internal */
+    public function clearTrustedDefenseTarget(): void
+    {
+        if ($this->trustedDefenseTargetUniqueId !== null || $this->trustedDefenseTicks !== 0) {
+            $this->trustedDefenseTargetUniqueId = null;
+            $this->trustedDefenseTicks = 0;
+            $this->markChanged();
+        }
+    }
+
+    /** @internal */
+    public function advanceTrustedDefense(int $ticks): void
+    {
+        if ($ticks < 1 || $ticks > 20) {
+            throw new InvalidArgumentException('Fox trusted-defense advance is outside its supported bounds.');
+        }
+        if ($this->trustedDefenseTicks === 0) {
+            return;
+        }
+        $this->trustedDefenseTicks = max(0, $this->trustedDefenseTicks - $ticks);
+        if ($this->trustedDefenseTicks === 0) {
+            $this->trustedDefenseTargetUniqueId = null;
+        }
+        $this->markChanged();
+    }
+
+    /** @internal Records a one-shot totem animation after authoritative survival. */
+    public function markTotemConsumed(): void
+    {
+        $this->totemPresentationPending = true;
+        $this->markPresentationChanged();
+    }
+
+    /** @internal */
+    public function takeTotemPresentation(): bool
+    {
+        $pending = $this->totemPresentationPending;
+        $this->totemPresentationPending = false;
+
+        return $pending;
+    }
+
     public function getTrustedPlayerUniqueIds(): array
     {
         return array_values(array_filter([
@@ -107,6 +275,10 @@ final class FoxEntity extends LandBreedableAnimalEntity implements Fox
     {
         if ($this->sleeping !== $sleeping) {
             $this->sleeping = $sleeping;
+            if ($sleeping) {
+                $motion = $this->getMotion();
+                $this->setMotion(new EntityMotion(0.0, $motion->y, 0.0));
+            }
             $this->markPresentationChanged();
         }
     }

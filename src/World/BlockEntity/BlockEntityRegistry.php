@@ -61,6 +61,8 @@ final readonly class BlockEntityRegistry
             'minecraft:campfire' => BlockEntityType::Campfire,
             'Cauldron' => BlockEntityType::Cauldron,
             'minecraft:cauldron' => BlockEntityType::Cauldron,
+            'BrushableBlock' => BlockEntityType::BrushableBlock,
+            'minecraft:brushable_block' => BlockEntityType::BrushableBlock,
         ];
         $this->saveIds = [
             BlockEntityType::Chest->value => 'Chest',
@@ -73,6 +75,7 @@ final readonly class BlockEntityRegistry
             BlockEntityType::Smoker->value => 'Smoker',
             BlockEntityType::Campfire->value => 'Campfire',
             BlockEntityType::Cauldron->value => 'Cauldron',
+            BlockEntityType::BrushableBlock->value => 'BrushableBlock',
         ];
     }
 
@@ -96,6 +99,7 @@ final readonly class BlockEntityRegistry
             BlockEntityType::Smoker => FurnaceBlockEntity::empty(FurnaceType::Smoker, $position),
             BlockEntityType::Campfire => CampfireBlockEntity::empty(CampfireType::Campfire, $position),
             BlockEntityType::Cauldron => new CauldronBlockEntity($position),
+            BlockEntityType::BrushableBlock => SuspiciousSandBlockEntity::empty($position),
             BlockEntityType::Chest, BlockEntityType::Barrel, BlockEntityType::ShulkerBox =>
                 ContainerBlockEntity::empty($type, $position),
             BlockEntityType::EnderChest => new SimpleBlockEntity($type, $position),

@@ -21,6 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Entity;
 
 use Bedriox\Data\BlockPropertyRegistry;
+use Bedriox\Server\Entity\Vanilla\FoxEntity;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\InternalBlockStateId;
@@ -66,6 +67,30 @@ final readonly class WorldEntityEnvironment
             1.0,
             $this->blockProperties->propertiesForState($this->states->state($support))->friction(),
         ));
+    }
+
+    public function movementRestrictionMultiplier(AbstractEntity $entity): float
+    {
+        if ($entity instanceof FoxEntity || $entity->getWorldName() !== $this->world->metadata->name) {
+            return 1.0;
+        }
+        $position = $entity->internalPosition();
+        $state = $this->world->loadedBlockStateAt(
+            (int) floor($position->x),
+            (int) floor($position->y + 0.1),
+            (int) floor($position->z),
+        );
+        if ($state === null) {
+            return 1.0;
+        }
+        $identifier = $this->states->state($state)->identifier();
+
+        return in_array($identifier, [
+            'minecraft:sweet_berry_bush',
+            'minecraft:cave_vines',
+            'minecraft:cave_vines_body_with_berries',
+            'minecraft:cave_vines_head_with_berries',
+        ], true) ? 0.25 : 1.0;
     }
 
     public function shouldCheckDaylight(AbstractLivingEntity $entity, int $tick): bool
@@ -128,6 +153,49 @@ final readonly class WorldEntityEnvironment
 
         return $this->isWater($chunk->blockStateAt($x, $feetY, $z))
             || ($headY !== $feetY && $this->isWater($chunk->blockStateAt($x, $headY, $z)));
+    }
+
+    public function isTouchingPowderSnow(AbstractLivingEntity $entity): bool
+    {
+        if ($entity->getWorldName() !== $this->world->metadata->name) {
+            return false;
+        }
+        $position = $entity->internalPosition();
+        $feetY = (int) floor($position->y + 0.001);
+        $headY = (int) floor($position->y + $entity->collisionHeight() - 0.000_001);
+        foreach (array_unique([$feetY, $headY]) as $y) {
+            if ($y < Chunk::MIN_Y || $y > Chunk::MAX_Y) {
+                continue;
+            }
+            $state = $this->world->loadedBlockStateAt(
+                (int) floor($position->x),
+                $y,
+                (int) floor($position->z),
+            );
+            if ($state !== null && $this->states->state($state)->identifier() === 'minecraft:powder_snow') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public function isPowderSnowAt(string $worldName, Position $position): bool
+    {
+        if ($worldName !== $this->world->metadata->name) {
+            return false;
+        }
+        $y = (int) floor($position->y + 0.001);
+        if ($y < Chunk::MIN_Y || $y > Chunk::MAX_Y) {
+            return false;
+        }
+        $state = $this->world->loadedBlockStateAt(
+            (int) floor($position->x),
+            $y,
+            (int) floor($position->z),
+        );
+
+        return $state !== null && $this->states->state($state)->identifier() === 'minecraft:powder_snow';
     }
 
     public function isWaterAt(string $worldName, Position $position): bool

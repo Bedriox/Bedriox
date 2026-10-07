@@ -102,7 +102,7 @@ final class CowEntity extends BreedableAnimalEntity implements Cow, IntrinsicEnt
         } catch (JsonException $error) {
             throw new InvalidArgumentException('Persisted cow state is malformed.', previous: $error);
         }
-        if (!is_array($decoded) || array_keys($decoded) !== ['baby', 'babyGrowthTicks', 'breedingCooldownTicks', 'loveTicks']) {
+        if (!is_array($decoded) || array_keys($decoded) !== array_keys($this->breedablePersistenceData())) {
             throw new InvalidArgumentException('Persisted cow state is malformed.');
         }
         $this->restoreBreedablePersistenceData($decoded);

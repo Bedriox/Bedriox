@@ -89,7 +89,7 @@ final class PersistentWorldFactoryTest extends TestCase
         self::assertSame('Fresh World', $opened->data->metadata->name);
         self::assertSame(91, $opened->data->metadata->seed);
         self::assertSame(3, $opened->data->difficulty);
-        self::assertSame(2, $opened->data->generatorVersion);
+        self::assertSame(3, $opened->data->generatorVersion);
         self::assertSame('default', $opened->world->generatorName());
         self::assertCount(3, $opened->dimensions());
         self::assertSame(WorldDimension::NETHER, $opened->dimension(WorldDimension::NETHER)?->world->dimension());
@@ -174,7 +174,7 @@ final class PersistentWorldFactoryTest extends TestCase
             new WorldMetadata('Future Terrain', 1),
             'default',
             new SpawnPosition(0, 80, 0),
-            generatorVersion: 3,
+            generatorVersion: 4,
         ));
 
         try {
@@ -184,7 +184,7 @@ final class PersistentWorldFactoryTest extends TestCase
             );
             self::fail('An unsupported persisted generator version was accepted.');
         } catch (\RuntimeException $failure) {
-            self::assertStringContainsString('version 3 is not supported', $failure->getMessage());
+            self::assertStringContainsString('version 4 is not supported', $failure->getMessage());
             self::assertTrue($providers->provider?->closed);
         }
     }
@@ -206,7 +206,7 @@ final class PersistentWorldFactoryTest extends TestCase
             BedrockDataSet::bundled(),
         );
 
-        self::assertSame(2, $opened->data->generatorVersion);
+        self::assertSame(3, $opened->data->generatorVersion);
         self::assertTrue($opened->data->bedrioxGeneratorVersionDeclared);
     }
 
@@ -280,7 +280,7 @@ final class PersistentWorldFactoryTest extends TestCase
             new WorldMetadata('ZooKeeper', 410),
             'default',
             new SpawnPosition(12, 70, -9),
-            generatorVersion: 2,
+            generatorVersion: 3,
         ));
 
         $opened = (new PersistentWorldFactory($this->workingDirectory, $providers))->loadNamed(

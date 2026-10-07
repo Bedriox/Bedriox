@@ -48,7 +48,7 @@ final class GeneratedBlockCollisionTest extends TestCase
         [$states, $generation] = self::generationPalette();
         $collisions = BlockCollisionRegistry::forGenerationPalette($states, $generation);
 
-        self::assertCount(197, $generation->states());
+        self::assertCount(204, $generation->states());
         self::assertGreaterThanOrEqual(count($generation->states()), $collisions->count());
         foreach ($generation->states() as $state) {
             self::assertTrue($collisions->contains($state));

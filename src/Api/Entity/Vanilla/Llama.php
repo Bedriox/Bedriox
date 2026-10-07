@@ -21,11 +21,16 @@ declare(strict_types=1);
 namespace Bedriox\Api\Entity\Vanilla;
 
 use Bedriox\Api\Entity\Capability\ChestedAnimal;
+use Bedriox\Api\Entity\Value\LlamaVariant;
 use Bedriox\Api\Entity\Value\WoolColor;
 
 interface Llama extends Horse, ChestedAnimal
 {
     public function getStrength(): int;
 
+    public function getVariant(): LlamaVariant;
+
     public function getCarpetColor(): ?WoolColor;
+
+    public function getRetaliationTargetUniqueId(): ?string;
 }

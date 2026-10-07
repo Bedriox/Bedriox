@@ -115,7 +115,9 @@ final class PigEntity extends BreedableAnimalEntity implements Pig, IntrinsicEnt
         } catch (JsonException $error) {
             throw new InvalidArgumentException('Persisted pig state is malformed.', previous: $error);
         }
-        if (!is_array($decoded) || array_keys($decoded) !== ['baby', 'babyGrowthTicks', 'breedingCooldownTicks', 'loveTicks', 'saddled'] || !is_bool($decoded['saddled'])) {
+        if (!is_array($decoded)
+            || array_keys($decoded) !== array_keys([...$this->breedablePersistenceData(), 'saddled' => $this->saddled])
+            || !is_bool($decoded['saddled'])) {
             throw new InvalidArgumentException('Persisted pig state is malformed.');
         }
         $this->restoreBreedablePersistenceData($decoded);

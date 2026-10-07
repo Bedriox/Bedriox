@@ -26,7 +26,9 @@ use Bedriox\Api\Entity\Capability\Undead;
 use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\Entity\Value\WoolColor;
 use Bedriox\Api\Entity\VanillaEntityType;
+use Bedriox\Api\Inventory\ItemStack;
 use Bedriox\Server\Entity\EntityUuid;
+use Bedriox\Server\Entity\Persistence\EntityPersistenceLimits;
 use Bedriox\Server\Entity\Vanilla\CamelEntity;
 use Bedriox\Server\Entity\Vanilla\DonkeyEntity;
 use Bedriox\Server\Entity\Vanilla\HorseEntity;
@@ -36,6 +38,7 @@ use Bedriox\Server\Entity\Vanilla\SkeletonHorseEntity;
 use Bedriox\Server\Entity\Vanilla\TraderLlamaEntity;
 use Bedriox\Server\Entity\Vanilla\ZombieHorseEntity;
 use Bedriox\Server\Simulation\Position;
+use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 
 final class MountSpeciesTest extends TestCase
@@ -69,26 +72,26 @@ final class MountSpeciesTest extends TestCase
             self::assertSame($types[$index], $mount->getType());
             self::assertSame($mount instanceof CamelEntity ? 2 : 1, $mount->getSeatCapacity());
         }
-        $expectedSeats = [
-            [0.0, 1.1, -0.2],
-            [0.0, 0.925, -0.2],
-            [0.0, 0.975, -0.2],
-            [0.0, 1.905, 0.5],
-            [0.0, 1.17, -0.3],
-            [0.0, 1.17, -0.3],
-            [0.0, 1.1, -0.2],
-            [0.0, 1.1, -0.2],
+        $expectedPlayerSeats = [
+            [0.0, 2.32, -0.2],
+            [0.0, 2.145, -0.2],
+            [0.0, 2.195, -0.2],
+            [0.0, 3.125, 0.5],
+            [0.0, 2.39, -0.3],
+            [0.0, 2.39, -0.3],
+            [0.0, 2.32, -0.2],
+            [0.0, 2.32, -0.2],
         ];
         foreach ($mounts as $index => $mount) {
             $seat = $mount->mountedPassengerOffset(MountSeat::DRIVER, 1.8, true);
-            self::assertSame($expectedSeats[$index][0], $seat->x);
-            self::assertSame($expectedSeats[$index][1], $seat->y);
-            self::assertSame($expectedSeats[$index][2], $seat->z);
+            self::assertEqualsWithDelta($expectedPlayerSeats[$index][0], $seat->x, 0.000_001);
+            self::assertEqualsWithDelta($expectedPlayerSeats[$index][1], $seat->y, 0.000_001);
+            self::assertEqualsWithDelta($expectedPlayerSeats[$index][2], $seat->z, 0.000_001);
         }
         $camelRearSeat = $mounts[3]->mountedPassengerOffset(MountSeat::PASSENGER_1, 1.8, true);
-        self::assertSame(0.0, $camelRearSeat->x);
-        self::assertSame(1.905, $camelRearSeat->y);
-        self::assertSame(-0.5, $camelRearSeat->z);
+        self::assertEqualsWithDelta(0.0, $camelRearSeat->x, 0.000_001);
+        self::assertEqualsWithDelta(3.125, $camelRearSeat->y, 0.000_001);
+        self::assertEqualsWithDelta(-0.5, $camelRearSeat->z, 0.000_001);
         self::assertInstanceOf(Breedable::class, $mounts[0]);
         self::assertInstanceOf(Undead::class, $mounts[6]);
         self::assertInstanceOf(Undead::class, $mounts[7]);
@@ -138,5 +141,59 @@ final class MountSpeciesTest extends TestCase
         self::assertTrue($restoredLlama->hasChest());
         self::assertSame(15, $restoredLlama->getStorageSlotCount());
         self::assertSame(WoolColor::LIME, $restoredLlama->getCarpetColor());
+        self::assertNull($restoredLlama->getRetaliationTargetUniqueId());
+
+        $target = EntityUuid::random();
+        $restoredLlama->setRetaliationTargetUniqueId($target, 20);
+        self::assertSame($target, $restoredLlama->getRetaliationTargetUniqueId());
+        self::assertTrue($restoredLlama->canSpit());
+        $restoredLlama->markSpat(20);
+        self::assertFalse($restoredLlama->canSpit());
+        $restoredLlama->advanceLlamaCombatState(20);
+        self::assertNull($restoredLlama->getRetaliationTargetUniqueId());
+        self::assertTrue($restoredLlama->canSpit());
+    }
+
+    public function testChestedMountStorageRoundTripsAndDrainsExactlyOnce(): void
+    {
+        $position = new Position(0.0, 64.0, 0.0);
+        $donkey = new DonkeyEntity(EntityUuid::random(), 19, 'world', $position, chested: true);
+        $donkey->storageInventory()->setStack(0, new ItemStack('minecraft:diamond', 3));
+        $donkey->storageInventory()->setStack(14, new ItemStack('minecraft:apple', 2));
+
+        $restored = new DonkeyEntity(EntityUuid::random(), 20, 'world', $position);
+        $restored->restorePersistenceState(null, 1, $donkey->persistenceData());
+        $diamond = $restored->storageInventory()->stackAt(0);
+        self::assertNotNull($diamond);
+        self::assertSame('minecraft:diamond', $diamond->identifier);
+        self::assertSame(3, $diamond->count);
+        $apple = $restored->storageInventory()->stackAt(14);
+        self::assertNotNull($apple);
+        self::assertSame('minecraft:apple', $apple->identifier);
+
+        $firstDrain = $restored->drainStorageItems();
+        self::assertSame(['minecraft:diamond', 'minecraft:apple'], array_map(
+            static fn(ItemStack $stack): string => $stack->identifier,
+            $firstDrain,
+        ));
+        self::assertSame([], $restored->drainStorageItems());
+        self::assertSame(array_fill(0, 15, null), $restored->storageInventory()->contents());
+    }
+
+    public function testHorseFamilyPersistenceRejectsPayloadAboveTheSharedBound(): void
+    {
+        $donkey = new DonkeyEntity(
+            EntityUuid::random(),
+            21,
+            'world',
+            new Position(0.0, 64.0, 0.0),
+        );
+
+        $this->expectException(InvalidArgumentException::class);
+        $donkey->restorePersistenceState(
+            null,
+            1,
+            str_repeat('x', EntityPersistenceLimits::MAX_CUSTOM_DATA_BYTES + 1),
+        );
     }
 }

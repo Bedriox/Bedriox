@@ -50,7 +50,10 @@ final class VanillaEntityQualificationTest extends TestCase
             self::assertGreaterThan(0.0, $entity->getCollisionHeight());
             self::assertEquals($entity->collisionWidth(), $entity->getCollisionWidth());
             self::assertEquals($entity->collisionHeight(), $entity->getCollisionHeight());
-            if ($registration->definition->networkIdentifier === 'minecraft:ender_crystal') {
+            if (in_array($registration->definition->networkIdentifier, [
+                'minecraft:ender_crystal',
+                'minecraft:leash_knot',
+            ], true)) {
                 self::assertSame(0.0, $entity->getYaw());
                 self::assertSame(0.0, $entity->getPitch());
             } else {

@@ -105,7 +105,11 @@ final class StriderEntity extends BreedableAnimalEntity implements Strider, Intr
             throw new InvalidArgumentException('Persisted strider state is malformed.', previous: $error);
         }
         if (!is_array($decoded)
-            || array_keys($decoded) !== ['baby', 'babyGrowthTicks', 'breedingCooldownTicks', 'loveTicks', 'saddled', 'warm']
+            || array_keys($decoded) !== array_keys([
+                ...$this->breedablePersistenceData(),
+                'saddled' => $this->saddled,
+                'warm' => $this->warm,
+            ])
             || !is_bool($decoded['saddled']) || !is_bool($decoded['warm'])) {
             throw new InvalidArgumentException('Persisted strider state is malformed.');
         }

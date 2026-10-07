@@ -121,6 +121,7 @@ use Bedriox\Protocol\Packet\SubChunkRequestPacket;
 use Bedriox\Protocol\Packet\SwapItemStackRequestAction;
 use Bedriox\Protocol\Packet\TakeItemStackRequestAction;
 use Bedriox\Protocol\Packet\UpdateAbilitiesPacket;
+use Bedriox\Protocol\Packet\UpdateEquipPacket;
 use Bedriox\Protocol\ProtocolVersion;
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\RakNet\Connected\ConnectedPayloadEvent;
@@ -135,6 +136,7 @@ use Bedriox\Server\Player\InventoryStackRequestActionType;
 use Bedriox\Server\Player\PlayerInventory;
 use Bedriox\Server\Simulation\ArmSwingSource;
 use Bedriox\Server\Simulation\BlockBreakAction;
+use Bedriox\Server\Simulation\BrushAction;
 use Bedriox\Server\Simulation\ClientInputTick;
 use Bedriox\Server\Simulation\Command\CraftingRequest;
 use Bedriox\Server\Simulation\Command\MovePlayer;
@@ -708,8 +710,15 @@ final class BedrockPlayChannel
             $this->authoritativeAbilities = $packet;
         }
         if ($packet instanceof ContainerOpenPacket
-            && $packet->actorUniqueId === -1
             && $packet->containerType !== ContainerType::Workbench) {
+            $this->storageContainerId = $packet->containerId;
+            $this->storageContainerType = $packet->containerType;
+            $this->pendingStorageCloseId = null;
+            $this->pendingStorageCloseType = null;
+
+            return;
+        }
+        if ($packet instanceof UpdateEquipPacket) {
             $this->storageContainerId = $packet->containerId;
             $this->storageContainerType = $packet->containerType;
             $this->pendingStorageCloseId = null;
@@ -1445,6 +1454,30 @@ final class BedrockPlayChannel
 
                 return true;
             }
+            if ($packet->action === PlayerActionType::StartItemUseOn
+                || $packet->action === PlayerActionType::StopItemUseOn) {
+                if ($this->commands->count() >= $this->limits->maximumCommandsPerPayload
+                    || $this->blockSequence === PHP_INT_MAX) {
+                    return false;
+                }
+                $start = $packet->action === PlayerActionType::StartItemUseOn;
+                if ($start && ($packet->face < 0 || $packet->face > 5 || !$this->hasLoadedBlock($packet->blockPosition))) {
+                    return true;
+                }
+                $this->commands->enqueue($this->commandFactory->brushBlock(
+                    $this->sessionId,
+                    ++$this->blockSequence,
+                    $start ? BrushAction::START : BrushAction::STOP,
+                    $start ? new WorldBlockPosition(
+                        $packet->blockPosition->x,
+                        $packet->blockPosition->y,
+                        $packet->blockPosition->z,
+                    ) : null,
+                    $start ? $packet->face : 0,
+                ));
+
+                return true;
+            }
             if (in_array($packet->action, [
                 PlayerActionType::StartDestroyBlock,
                 PlayerActionType::AbortDestroyBlock,
@@ -2015,6 +2048,7 @@ final class BedrockPlayChannel
                     FullContainerName::ARMOR => InventoryContainer::Armor,
                     FullContainerName::OFFHAND => InventoryContainer::Offhand,
                     FullContainerName::CURSOR => InventoryContainer::Cursor,
+                    ContainerSlotType::HorseEquipment->value,
                     FullContainerName::LEVEL_ENTITY,
                     FullContainerName::SHULKER_BOX,
                     FullContainerName::BARREL,
@@ -2687,6 +2721,7 @@ final class BedrockPlayChannel
             FullContainerName::CURSOR => InventoryContainer::Cursor,
             FullContainerName::CRAFTING_INPUT => InventoryContainer::CraftingInput,
             FullContainerName::CREATED_OUTPUT => InventoryContainer::CreatedOutput,
+            ContainerSlotType::HorseEquipment->value,
             FullContainerName::LEVEL_ENTITY,
             FullContainerName::SHULKER_BOX,
             FullContainerName::BARREL,

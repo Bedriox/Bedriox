@@ -33,6 +33,7 @@ enum ProjectileType: string
     case FIREBALL = 'minecraft:fireball';
     case DRAGON_FIREBALL = 'minecraft:dragon_fireball';
     case SHULKER_BULLET = 'minecraft:shulker_bullet';
+    case LLAMA_SPIT = 'minecraft:llama_spit';
 
     public function gravity(): float
     {
@@ -40,6 +41,7 @@ enum ProjectileType: string
             self::TRIDENT => 0.1,
             self::FISHING_HOOK => 0.03,
             self::SMALL_FIREBALL, self::FIREBALL, self::DRAGON_FIREBALL, self::SHULKER_BULLET => 0.0,
+            self::LLAMA_SPIT => 0.06,
             default => 0.05,
         };
     }
@@ -49,6 +51,7 @@ enum ProjectileType: string
         return match ($this) {
             self::FISHING_HOOK => 0.08,
             self::SMALL_FIREBALL, self::FIREBALL, self::DRAGON_FIREBALL, self::SHULKER_BULLET => 0.0,
+            self::LLAMA_SPIT => 0.01,
             default => 0.01,
         };
     }

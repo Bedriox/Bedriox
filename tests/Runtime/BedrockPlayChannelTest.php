@@ -139,10 +139,12 @@ use Bedriox\Server\Runtime\RuntimeDiagnostics;
 use Bedriox\Server\Runtime\RuntimeLimits;
 use Bedriox\Server\Simulation\ArmSwingSource;
 use Bedriox\Server\Simulation\BlockBreakAction;
+use Bedriox\Server\Simulation\BrushAction;
 use Bedriox\Server\Simulation\Command\AcknowledgeRespawn;
 use Bedriox\Server\Simulation\Command\ApplyInventoryStackRequest;
 use Bedriox\Server\Simulation\Command\AttackPlayer;
 use Bedriox\Server\Simulation\Command\BreakBlock;
+use Bedriox\Server\Simulation\Command\BrushBlock;
 use Bedriox\Server\Simulation\Command\CloseContainer;
 use Bedriox\Server\Simulation\Command\CloseCraftingGrid;
 use Bedriox\Server\Simulation\Command\DropItem;
@@ -3009,6 +3011,77 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertSame(73, $source->responseContainerDynamicId);
     }
 
+    public function testHorseEquipmentStackRequestMapsToTheLeadingCompositeSlot(): void
+    {
+        [$channel, $clientEncryptor, , $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $request = new ItemStackRequest(-19, [new TakeItemStackRequestAction(
+            1,
+            new ItemStackRequestSlot(new FullContainerName(ContainerSlotType::HorseEquipment), 0, 17),
+            new ItemStackRequestSlot(new FullContainerName(FullContainerName::HOTBAR), 0, 0),
+        )]);
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([$request])])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(ApplyInventoryStackRequest::class, $commands[0]);
+        self::assertNull($commands[0]->rejectionReason);
+        $source = $commands[0]->actions[0]->source;
+        self::assertSame(InventoryContainer::OpenedContainer, $source->container);
+        self::assertSame(0, $source->slot);
+        self::assertSame(ContainerSlotType::HorseEquipment->value, $source->responseContainerId);
+        self::assertNull($source->responseContainerDynamicId);
+    }
+
+    public function testLegacyHorseWindowTransferRetainsTheCompositeSlotIndex(): void
+    {
+        [$channel, $clientEncryptor, , $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $saddle = new InventoryItemStack(81, 1, 0, 23, 0, '');
+        $transaction = new InventoryTransactionPacket(0, [], [
+            new InventoryAction(
+                new InventorySource(InventorySourceType::Container, 7),
+                0,
+                $saddle,
+                InventoryItemStack::empty(),
+            ),
+            new InventoryAction(
+                new InventorySource(InventorySourceType::Container, 0),
+                1,
+                InventoryItemStack::empty(),
+                new InventoryItemStack(81, 1, 0, -1, 0, ''),
+            ),
+        ], new BasicInventoryTransaction(InventoryTransactionType::Normal));
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([$transaction])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(ApplyInventoryStackRequest::class, $commands[0]);
+        self::assertNull($commands[0]->rejectionReason);
+        self::assertSame(InventoryContainer::OpenedContainer, $commands[0]->actions[0]->source->container);
+        self::assertSame(0, $commands[0]->actions[0]->source->slot);
+        self::assertSame(InventoryContainer::Main, $commands[0]->actions[0]->destination->container);
+        self::assertSame(1, $commands[0]->actions[0]->destination->slot);
+        self::assertSame(InventoryResponseMode::LegacySlotSync, $commands[0]->responseMode);
+    }
+
     public function testEmbeddedInventoryRequestBecomesACommandAfterItsMovementFrame(): void
     {
         [$channel, $clientEncryptor, , $entityId] = $this->channel();
@@ -3420,6 +3493,36 @@ final class BedrockPlayChannelTest extends TestCase
             if ($intent === BlockBreakAction::Abort) {
                 self::assertNull($commands[1]->position);
                 self::assertSame(0, $commands[1]->face);
+            }
+        }
+
+        foreach ([
+            [PlayerActionType::StartItemUseOn, BrushAction::START],
+            [PlayerActionType::StopItemUseOn, BrushAction::STOP],
+        ] as [$wireAction, $brushAction]) {
+            self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+                $client->encryptEnvelope($this->encode([new PlayerActionPacket(
+                    $entityId,
+                    $wireAction,
+                    new BlockPosition(1, 63, -2),
+                    new BlockPosition(1, 63, -2),
+                    1,
+                )])),
+                Reliability::ReliableOrdered,
+                0,
+            )));
+            $commands = $channel->drainCommands();
+            self::assertCount(1, $commands);
+            self::assertInstanceOf(BrushBlock::class, $commands[0]);
+            self::assertSame($brushAction, $commands[0]->action);
+            if ($brushAction === BrushAction::STOP) {
+                self::assertNull($commands[0]->position);
+            } else {
+                self::assertSame([1, 63, -2], [
+                    $commands[0]->position?->x,
+                    $commands[0]->position?->y,
+                    $commands[0]->position?->z,
+                ]);
             }
         }
 

@@ -1,6 +1,19 @@
 # Changelog
 
+- Complete authoritative land-animal interactions for llamas, foxes, pandas,
+  goats, polar bears, mooshrooms, armadillos, sniffers, ocelots, donkeys,
+  mules, trader llamas, skeleton horses, and zombie horses.
+- Add persistent animal equipment and storage, llama carpets and caravans,
+  real fence leash knots, bounded species AI, breeding inheritance, item use,
+  scute shedding, goat horns, suspicious stew, freezing, and exact death drops.
+- Add persisted warm-ocean archaeology with authoritative brushing and a
+  deterministic sniffer-egg discovery path.
+- Add Phantom summon, spawn-egg, persistence, flight, combat, and cat or
+  ocelot avoidance behavior.
 - Project the current client-control and powered-jump metadata for steerable horse-family mounts.
+- Compose horse-family seat definitions with the passenger-height projection
+  so riders remain above horses, donkeys, mules, llamas, camels, and undead
+  horses.
 - Qualify mounts, bounded entity contact, AI separation, spawn spacing, collision dimensions, and worker-backed ground navigation.
 - Add asynchronous stable and beta release checks, bounded console and operator notifications, `/version` update status, and a read-only plugin update API.
 - Keep Endermen neutral until directly provoked, then retain their authoritative

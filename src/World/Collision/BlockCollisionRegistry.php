@@ -192,7 +192,7 @@ final readonly class BlockCollisionRegistry
     {
         return [
             'minecraft:bedrock', 'minecraft:stone', 'minecraft:deepslate', 'minecraft:dirt',
-            'minecraft:grass_block', 'minecraft:sand', 'minecraft:red_sand', 'minecraft:sandstone',
+            'minecraft:grass_block', 'minecraft:sand', 'minecraft:suspicious_sand', 'minecraft:red_sand', 'minecraft:sandstone',
             'minecraft:red_sandstone', 'minecraft:gravel', 'minecraft:clay', 'minecraft:snow',
             'minecraft:ice', 'minecraft:packed_ice', 'minecraft:podzol', 'minecraft:coarse_dirt',
             'minecraft:moss_block', 'minecraft:pale_moss_block', 'minecraft:calcite',

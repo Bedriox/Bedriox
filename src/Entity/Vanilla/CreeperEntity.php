@@ -117,12 +117,15 @@ final class CreeperEntity extends MonsterEntity implements Creeper, IntrinsicEnt
     }
 
     /** @internal */
-    public function cancelProximityFuse(): void
+    public function cancelProximityFuse(): bool
     {
         if ($this->proximityIgnited) {
             $this->proximityIgnited = false;
             $this->changeIgnited(false);
+            return true;
         }
+
+        return false;
     }
 
     /** @internal */

@@ -56,7 +56,7 @@ final class EndGatewayAndShulkerTest extends TestCase
         $world = new \Bedriox\Server\World\World(
             new \Bedriox\Server\World\WorldMetadata('end', 42),
             new \Bedriox\Server\World\EndWorldGenerator(42, $states),
-            new \Bedriox\Server\World\ChunkRepository(8),
+            new \Bedriox\Server\World\ChunkRepository(64),
             dimension: \Bedriox\Api\World\WorldDimension::END,
         );
         $world->retainChunk(new \Bedriox\Server\World\ChunkPosition(0, 0));
@@ -132,7 +132,7 @@ final class EndGatewayAndShulkerTest extends TestCase
         $world = new \Bedriox\Server\World\World(
             new \Bedriox\Server\World\WorldMetadata('end-projectiles', 42),
             new \Bedriox\Server\World\EndWorldGenerator(42, $states),
-            new \Bedriox\Server\World\ChunkRepository(8),
+            new \Bedriox\Server\World\ChunkRepository(64),
             dimension: \Bedriox\Api\World\WorldDimension::END,
         );
         $world->retainChunk(new \Bedriox\Server\World\ChunkPosition(0, 0));

@@ -81,6 +81,14 @@ final class ItemBehaviorRegistryTest extends TestCase
         self::assertTrue($milk->effects->clearExisting);
         self::assertSame(EffectCause::MILK, $milk->effects->cause);
         self::assertSame('minecraft:bucket', $milk->consumable->residueIdentifier);
+
+        $stew = $registry->behavior('minecraft:suspicious_stew');
+        self::assertNotNull($stew);
+        self::assertNotNull($stew->effects);
+        self::assertNotNull($stew->consumable);
+        self::assertTrue($stew->effects->resolveSuspiciousStewAuxiliaryValue);
+        self::assertFalse($stew->consumable->requiresHunger);
+        self::assertSame('minecraft:bowl', $stew->consumable->residueIdentifier);
     }
 
     public function testEnderPearlIsAnInstantItemWithAVanillaCooldown(): void

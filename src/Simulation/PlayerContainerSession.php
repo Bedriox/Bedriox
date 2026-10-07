@@ -23,6 +23,7 @@ namespace Bedriox\Server\Simulation;
 use Bedriox\Api\Inventory\ContainerLayout;
 use Bedriox\Api\Inventory\ContainerType;
 use Bedriox\Api\Processing\EnchantingOption;
+use Bedriox\Server\Entity\Mount\AnimalEquipmentSlotDeclaration;
 use Bedriox\Server\Inventory\ContainerInventory;
 use Bedriox\Server\Inventory\ResolvedWorldContainer;
 use Bedriox\Server\Player\OpenedContainerInventory;
@@ -51,6 +52,8 @@ final class PlayerContainerSession
         public readonly bool $playerOwnedEnderChest = false,
         public readonly ?string $owningPlugin = null,
         public readonly ?int $entityRuntimeId = null,
+        /** @var list<AnimalEquipmentSlotDeclaration> */
+        public readonly array $animalEquipmentSlots = [],
         public ?WorkstationRequest $workstationRequest = null,
     ) {}
 }

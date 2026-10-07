@@ -29,6 +29,7 @@ enum EffectCause: string
     case LINGERING_POTION = 'lingering_potion';
     case TIPPED_ARROW = 'tipped_arrow';
     case FOOD = 'food';
+    case TOTEM = 'totem';
     case BEACON = 'beacon';
     case ENTITY_ATTACK = 'entity_attack';
     case ENVIRONMENT = 'environment';

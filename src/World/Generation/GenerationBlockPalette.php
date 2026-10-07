@@ -83,7 +83,7 @@ final readonly class GenerationBlockPalette
         $identifiers = [
             'minecraft:air', 'minecraft:bedrock', 'minecraft:stone', 'minecraft:deepslate',
             'minecraft:water', 'minecraft:lava', 'minecraft:dirt', 'minecraft:grass_block',
-            'minecraft:sand', 'minecraft:red_sand', 'minecraft:sandstone', 'minecraft:red_sandstone',
+            'minecraft:sand', 'minecraft:suspicious_sand', 'minecraft:red_sand', 'minecraft:sandstone', 'minecraft:red_sandstone',
             'minecraft:gravel', 'minecraft:clay', 'minecraft:snow', 'minecraft:snow_layer',
             'minecraft:ice', 'minecraft:packed_ice', 'minecraft:podzol', 'minecraft:coarse_dirt',
             'minecraft:mud', 'minecraft:moss_block', 'minecraft:pale_moss_block', 'minecraft:calcite',

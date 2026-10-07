@@ -22,9 +22,10 @@ namespace Bedriox\Api\Entity\Vanilla;
 
 use Bedriox\Api\Entity\Capability\Animal;
 use Bedriox\Api\Entity\Capability\Breedable;
+use Bedriox\Api\Entity\Capability\FelineDeterrent;
 use Bedriox\Api\Entity\Capability\Trusting;
 
-interface Ocelot extends Animal, Breedable, Trusting
+interface Ocelot extends Animal, Breedable, Trusting, FelineDeterrent
 {
     public function isTrusting(): bool;
 

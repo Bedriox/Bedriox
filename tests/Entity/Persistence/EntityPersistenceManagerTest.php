@@ -41,6 +41,8 @@ use Bedriox\Server\Entity\Persistence\EntityPersistenceManager;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceRecord;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
 use Bedriox\Server\Entity\Vanilla\CowEntity;
+use Bedriox\Server\Entity\Vanilla\Misc\LeashKnotEntity;
+use Bedriox\Server\Entity\Vanilla\PhantomEntity;
 use Bedriox\Server\Entity\Vanilla\ZombieEntity;
 use Bedriox\Server\Persistence\PersistenceEnqueueResult;
 use Bedriox\Server\Persistence\PersistenceSubmission;
@@ -52,6 +54,49 @@ use PHPUnit\Framework\TestCase;
 final class EntityPersistenceManagerTest extends TestCase
 {
     private const string COW_UUID = '123e4567-e89b-42d3-a456-426614174000';
+
+    public function testFenceLeashKnotRoundTripsAsItsVerifiedPersistentActor(): void
+    {
+        $chunk = new ChunkPosition(0, 0);
+        $store = new TestEntityPersistenceStore();
+        $registry = new EntityRegistry();
+        $manager = new EntityPersistenceManager(
+            'world',
+            $registry,
+            EntityDefinitionRegistry::baseline(),
+            $store,
+        );
+        $knot = self::requireLeashKnot($registry->spawn(static fn(string $uuid, int $runtimeId): LeashKnotEntity => new LeashKnotEntity(
+            $uuid,
+            $runtimeId,
+            'world',
+            new Position(1.5, 64.5, 1.5),
+        )));
+        $manager->registerSpawned($knot);
+        self::assertSame(1, $manager->persistDirty(1)->savedChunks);
+
+        $restoredRegistry = new EntityRegistry();
+        $restoredManager = new EntityPersistenceManager(
+            'world',
+            $restoredRegistry,
+            EntityDefinitionRegistry::baseline(),
+            $store,
+        );
+        self::assertSame(1, $restoredManager->activateChunk($chunk)->activatedEntities);
+        $restored = self::requireLeashKnot($restoredRegistry->getByUniqueId($knot->getUniqueId()));
+        self::assertTrue($restored->isPersistent());
+        self::assertEquals($knot->fencePosition(), $restored->fencePosition());
+        self::assertEquals(new Position(1.5, 64.5, 1.5), $restored->internalPosition());
+    }
+
+    private static function requireLeashKnot(?AbstractEntity $entity): LeashKnotEntity
+    {
+        if (!$entity instanceof LeashKnotEntity) {
+            self::fail('Expected the persisted leash knot actor to restore as its concrete type.');
+        }
+
+        return $entity;
+    }
 
     public function testChunkActivationIsIdempotentAndPreservesDormantRecordsAndExactRevisions(): void
     {
@@ -714,6 +759,42 @@ final class EntityPersistenceManagerTest extends TestCase
         self::assertInstanceOf(EntityPersistenceRecord::class, $record);
         self::assertSame('minecraft:stone_sword', $record->equipment()[0]->itemIdentifier);
         self::assertSame(1.0, $record->equipment()[0]->dropChance);
+    }
+
+    public function testPhantomCommonStateRoundTripsThroughTheGenericPersistentFactory(): void
+    {
+        $chunk = new ChunkPosition(0, 0);
+        $store = new TestEntityPersistenceStore();
+        $registry = new EntityRegistry();
+        $manager = new EntityPersistenceManager(
+            'world',
+            $registry,
+            EntityDefinitionRegistry::baseline(),
+            $store,
+        );
+        $phantom = $registry->spawn(static fn(string $uuid, int $runtimeId): PhantomEntity => new PhantomEntity(
+            $uuid,
+            $runtimeId,
+            'world',
+            new Position(1.5, 74.0, 1.5),
+            motion: new EntityMotion(0.10, 0.04, -0.02),
+            yaw: 37.0,
+            pitch: -12.0,
+        ));
+        self::assertInstanceOf(PhantomEntity::class, $phantom);
+        $phantom->damage(3.0);
+        $manager->registerSpawned($phantom);
+
+        self::assertSame(1, $manager->persistDirty(1)->savedChunks);
+        self::assertSame(1, $manager->unloadChunk($chunk));
+        self::assertSame(1, $manager->activateChunk($chunk)->activatedEntities);
+
+        $restored = $registry->getByUniqueId($phantom->getUniqueId());
+        self::assertInstanceOf(PhantomEntity::class, $restored);
+        self::assertSame(17.0, $restored->getHealth());
+        self::assertEquals(new EntityMotion(0.10, 0.04, -0.02), $restored->getMotion());
+        self::assertSame(37.0, $restored->getYaw());
+        self::assertSame(-12.0, $restored->getPitch());
     }
 
     private static function record(

@@ -31,6 +31,10 @@ interface Fox extends Animal, Breedable, Trusting
 
     public function isSleeping(): bool;
 
+    public function isPouncing(): bool;
+
+    public function isFaceplanted(): bool;
+
     /** @return list<string> */
     public function getTrustedPlayerUniqueIds(): array;
 }

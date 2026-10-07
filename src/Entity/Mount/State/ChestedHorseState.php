@@ -24,6 +24,8 @@ use InvalidArgumentException;
 
 trait ChestedHorseState
 {
+    use AnimalStorageState;
+
     private bool $chested = false;
 
     final public function hasChest(): bool
@@ -45,15 +47,16 @@ trait ChestedHorseState
         }
     }
 
-    final protected function initializeChestedHorseState(bool $chested): void
+    final protected function initializeChestedHorseState(string $uniqueId, bool $chested): void
     {
         $this->chested = $chested;
+        $this->initializeAnimalStorage($uniqueId, 15);
     }
 
-    /** @return array{chested: bool} */
+    /** @return array{chested: bool, items: list<mixed>} */
     final protected function chestedHorsePersistenceData(): array
     {
-        return ['chested' => $this->chested];
+        return ['chested' => $this->chested, 'items' => $this->animalStoragePersistenceData()];
     }
 
     /** @param array<mixed> $data */
@@ -63,5 +66,6 @@ trait ChestedHorseState
             throw new InvalidArgumentException('Persisted chested-horse state is malformed.');
         }
         $this->chested = $data['chested'];
+        $this->restoreAnimalStorage($data['items'] ?? null);
     }
 }

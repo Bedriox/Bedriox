@@ -21,6 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Tests\Simulation;
 
 use Bedriox\Api\Effect\EffectType;
+use Bedriox\Api\Entity\Value\MooshroomStewEffect;
 use Bedriox\Api\Inventory\ItemUseKind;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Data\BedrockDataSet;
@@ -217,6 +218,57 @@ final class ItemUseSimulationTest extends TestCase
         self::assertTrue($effects->has(EffectType::FIRE_RESISTANCE));
     }
 
+    public function testSuspiciousStewAppliesItsAuthoritativeVariantExactlyOnceAndReturnsTheBowl(): void
+    {
+        [$world, $factory] = self::worldWithPlayer(
+            'minecraft:suspicious_stew',
+            1,
+            food: 20.0,
+            damage: MooshroomStewEffect::WITHER_ROSE->value,
+        );
+        $world->enqueue($factory->useItem('session', 0));
+        $world->tick();
+        for ($tick = 0; $tick < 31; ++$tick) {
+            $world->tick();
+        }
+        $world->enqueue($factory->useItem('session', 0));
+
+        $event = $world->tick()->events[0];
+        self::assertInstanceOf(ItemConsumed::class, $event);
+        self::assertSame('minecraft:bowl', $event->selectedStack?->identifier);
+        $wither = $world->pluginPlayers()[0]->getEffects()->get(EffectType::WITHER);
+        self::assertNotNull($wither);
+        self::assertSame(119, $wither->durationTicks);
+
+        for ($tick = 0; $tick < 20; ++$tick) {
+            $world->tick();
+        }
+        $wither = $world->pluginPlayers()[0]->getEffects()->get(EffectType::WITHER);
+        self::assertNotNull($wither);
+        self::assertSame(99, $wither->durationTicks);
+    }
+
+    public function testMalformedSuspiciousStewVariantConsumesSafelyWithoutInventingAnEffect(): void
+    {
+        [$world, $factory] = self::worldWithPlayer(
+            'minecraft:suspicious_stew',
+            1,
+            food: 10.0,
+            damage: 65_535,
+        );
+        $world->enqueue($factory->useItem('session', 0));
+        $world->tick();
+        for ($tick = 0; $tick < 31; ++$tick) {
+            $world->tick();
+        }
+        $world->enqueue($factory->useItem('session', 0));
+
+        $event = $world->tick()->events[0];
+        self::assertInstanceOf(ItemConsumed::class, $event);
+        self::assertSame('minecraft:bowl', $event->selectedStack?->identifier);
+        self::assertSame([], $world->pluginPlayers()[0]->getEffects()->all());
+    }
+
     public function testHighHungerRegeneratesHealthAndChargesExhaustionAtVanillaCadence(): void
     {
         [$world] = self::worldWithPlayer('minecraft:apple', 1, health: 18.0, food: 20.0, saturation: 20.0);
@@ -352,6 +404,7 @@ final class ItemUseSimulationTest extends TestCase
         float $saturation = 20.0,
         float $exhaustion = 0.0,
         GameMode $gameMode = GameMode::SURVIVAL,
+        int $damage = 0,
     ): array {
         $data = BedrockDataSet::bundled();
         $palette = FixedFlatBlockPalette::fromRegistry(new BlockStateRegistry(
@@ -366,7 +419,7 @@ final class ItemUseSimulationTest extends TestCase
             0.0,
             0.0,
             new PlayerInventoryState([
-                new PlayerInventoryEntry(0, new PlayerInventoryStackState($identifier, $count)),
+                new PlayerInventoryEntry(0, new PlayerInventoryStackState($identifier, $count, $damage)),
             ], 0),
             1,
             1,

@@ -30,6 +30,7 @@ final readonly class ActorDismounted implements WorldEvent
         public int $passengerRuntimeId,
         public ?PlayerSnapshot $passenger,
         public array $recipientSessionIds,
+        public bool $resetHorseJumpPresentation = false,
     ) {}
 
     public function recipients(): array

@@ -36,6 +36,7 @@ final readonly class ConsumableEffectDefinition
         public EffectCause $cause,
         public bool $clearExisting = false,
         public bool $resolvePotionAuxiliaryValue = false,
+        public bool $resolveSuspiciousStewAuxiliaryValue = false,
     ) {
         if (!array_is_list($effects)) {
             throw new InvalidArgumentException('Consumable effects must be a list.');
@@ -45,11 +46,16 @@ final readonly class ConsumableEffectDefinition
                 throw new InvalidArgumentException('Consumable effect list contains an invalid value.');
             }
         }
-        if ($effects === [] && !$clearExisting && !$resolvePotionAuxiliaryValue) {
+        if ($effects === [] && !$clearExisting && !$resolvePotionAuxiliaryValue
+            && !$resolveSuspiciousStewAuxiliaryValue) {
             throw new InvalidArgumentException('Consumable effect behavior must perform an effect mutation.');
         }
         if ($resolvePotionAuxiliaryValue && ($effects !== [] || $clearExisting || $cause !== EffectCause::POTION)) {
             throw new InvalidArgumentException('Potion auxiliary resolution must be the sole potion effect behavior.');
+        }
+        if ($resolveSuspiciousStewAuxiliaryValue
+            && ($effects !== [] || $clearExisting || $resolvePotionAuxiliaryValue || $cause !== EffectCause::FOOD)) {
+            throw new InvalidArgumentException('Suspicious-stew auxiliary resolution must be the sole food effect behavior.');
         }
         $this->effects = $effects;
     }
@@ -62,6 +68,11 @@ final readonly class ConsumableEffectDefinition
     public static function milk(): self
     {
         return new self([], EffectCause::MILK, clearExisting: true);
+    }
+
+    public static function suspiciousStew(): self
+    {
+        return new self([], EffectCause::FOOD, resolveSuspiciousStewAuxiliaryValue: true);
     }
 
     /** @param list<EffectInstance> $effects */

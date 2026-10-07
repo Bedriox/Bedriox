@@ -38,13 +38,13 @@ final class BuildInfoTest extends TestCase
         self::assertSame(ProtocolVersion::CURRENT, $build->protocolVersion);
         self::assertSame(PluginPackageLoader::API_VERSION, $build->pluginApiVersion);
         self::assertSame(PHP_VERSION, $build->phpVersion);
-        self::assertSame('Bedriox 1.0.0-beta.2', $build->displayName());
+        self::assertSame('Bedriox 1.0.0-beta.3-dev', $build->displayName());
     }
 
     public function testPublicSummaryContainsNoDuplicatedVersionSources(): void
     {
         self::assertSame([
-            'Bedriox 1.0.0-beta.2',
+            'Bedriox 1.0.0-beta.3-dev',
             'Minecraft: Bedrock 1.26.50',
             'Protocol: 2193',
             'PHP: ' . PHP_VERSION,

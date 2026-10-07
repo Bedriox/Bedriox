@@ -23,8 +23,11 @@ namespace Bedriox\Server\Entity\Ai;
 use Bedriox\Server\Entity\Ai\Goal\AquaticChasePlayerGoal;
 use Bedriox\Server\Entity\Ai\Goal\AquaticMeleeAttackIntentGoal;
 use Bedriox\Server\Entity\Ai\Goal\AquaticWanderGoal;
+use Bedriox\Server\Entity\Ai\Goal\AvoidFelineGoal;
 use Bedriox\Server\Entity\Ai\Goal\ChasePlayerGoal;
 use Bedriox\Server\Entity\Ai\Goal\FleeFromPlayerGoal;
+use Bedriox\Server\Entity\Ai\Goal\FlyingAvoidFelineGoal;
+use Bedriox\Server\Entity\Ai\Goal\FlyingMeleeAttackGoal;
 use Bedriox\Server\Entity\Ai\Goal\FlyingRangedAttackIntentGoal;
 use Bedriox\Server\Entity\Ai\Goal\FlyingWanderGoal;
 use Bedriox\Server\Entity\Ai\Goal\MeleeAttackIntentGoal;
@@ -188,8 +191,21 @@ final class VanillaAiBehaviors
         return self::$hostiles['creeper'] ??= new AiBehaviorDefinition(
             sensors: [new NearestPlayerSensor('bedriox:creeper_nearest_player', 5, 24.0, 20)],
             goals: [
+                new AvoidFelineGoal(),
                 new ChasePlayerGoal('bedriox:creeper_chase', 80, 2.5, 0.10),
                 new WanderGoal('bedriox:creeper_wander', 10, 30, 40, 0.075),
+            ],
+        );
+    }
+
+    public static function phantom(): AiBehaviorDefinition
+    {
+        return self::$hostiles['phantom'] ??= new AiBehaviorDefinition(
+            sensors: [new NearestPlayerSensor('bedriox:phantom_nearest_player', 5, 64.0, 30)],
+            goals: [
+                new FlyingAvoidFelineGoal(),
+                new FlyingMeleeAttackGoal('bedriox:phantom_attack', 100, 2.5, 30, 6.0, 0.10),
+                new FlyingWanderGoal('bedriox:phantom_wander', 10, 0.08),
             ],
         );
     }

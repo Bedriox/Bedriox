@@ -28,6 +28,7 @@ use Bedriox\Server\Entity\Ai\AiBehaviorDefinition;
 use Bedriox\Server\Entity\Ai\AiBehaviorRuntime;
 use Bedriox\Server\Entity\Ai\AiTickContext;
 use Bedriox\Server\Entity\Ai\AiTickResult;
+use Bedriox\Server\Entity\Ai\ExclusiveAiActivity;
 use Bedriox\Server\Plugin\BufferedMobController;
 use Bedriox\Server\Plugin\PluginActionBuffer;
 use Bedriox\Server\Simulation\Position;
@@ -107,6 +108,7 @@ abstract class AbstractMobEntity extends AbstractLivingEntity implements ApiMob
     {
         if (!$enabled || !$this->aiEnabled || $this->isImmobile()
             || ($this instanceof Sittable && $this->isSitting())
+            || ($this instanceof ExclusiveAiActivity && $this->hasExclusiveAiActivity())
             || $this->activationState === MobActivationState::SLEEPING) {
             $this->ai->stopAll($this, $context);
 

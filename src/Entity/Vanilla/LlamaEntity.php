@@ -20,15 +20,19 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Vanilla;
 
+use Bedriox\Api\Entity\Value\LlamaVariant;
 use Bedriox\Api\Entity\Value\WoolColor;
 use Bedriox\Api\Entity\Vanilla\Llama;
+use Bedriox\Server\Entity\Ai\ExclusiveAiActivity;
 use Bedriox\Server\Entity\EntityMotion;
+use Bedriox\Server\Entity\Equipment\BodyEquipmentHolder;
+use Bedriox\Server\Entity\Mount\AnimalStorageInventoryOwner;
 use Bedriox\Server\Entity\Mount\MountEntityDefinitions;
 use Bedriox\Server\Entity\Mount\PersistentHorseFamilyEntity;
 use Bedriox\Server\Entity\Mount\State\LlamaEquipmentState;
 use Bedriox\Server\Simulation\Position;
 
-final class LlamaEntity extends PersistentHorseFamilyEntity implements Llama
+final class LlamaEntity extends PersistentHorseFamilyEntity implements AnimalStorageInventoryOwner, BodyEquipmentHolder, ExclusiveAiActivity, Llama
 {
     use LlamaEquipmentState;
 
@@ -52,6 +56,7 @@ final class LlamaEntity extends PersistentHorseFamilyEntity implements Llama
         int $strength = 1,
         bool $chested = false,
         ?WoolColor $carpetColor = null,
+        ?LlamaVariant $variant = null,
     ) {
         parent::__construct(
             $uniqueId,
@@ -77,7 +82,14 @@ final class LlamaEntity extends PersistentHorseFamilyEntity implements Llama
             1.17,
             -0.3,
         );
-        $this->initializeLlamaEquipmentState($strength, $chested, $carpetColor);
+        $variants = LlamaVariant::cases();
+        $this->initializeLlamaEquipmentState(
+            $uniqueId,
+            $strength,
+            $chested,
+            $carpetColor,
+            $variant ?? $variants[$runtimeId % count($variants)],
+        );
     }
 
     protected function mountSpeciesPersistenceData(): array

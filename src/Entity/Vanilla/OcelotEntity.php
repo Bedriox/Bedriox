@@ -42,7 +42,7 @@ final class OcelotEntity extends LandBreedableAnimalEntity implements Ocelot
         bool $baby = false,
         private ?string $trustedPlayerUniqueId = null,
     ) {
-        parent::__construct($uniqueId, $runtimeId, LandAnimalEntityDefinitions::ocelot(), $worldName, $position, $behavior ?? LandAnimalAiBehaviors::passive('ocelot', ['minecraft:cod', 'minecraft:salmon'], 0.10), $motion, $yaw, $pitch, $health);
+        parent::__construct($uniqueId, $runtimeId, LandAnimalEntityDefinitions::ocelot(), $worldName, $position, $behavior ?? LandAnimalAiBehaviors::cautious('ocelot', ['minecraft:cod', 'minecraft:salmon'], 0.10), $motion, $yaw, $pitch, $health);
         $this->initializeBreedableState($baby);
         $this->trustedPlayerUniqueId = $trustedPlayerUniqueId === null
             ? null

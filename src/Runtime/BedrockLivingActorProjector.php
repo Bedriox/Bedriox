@@ -31,30 +31,38 @@ use Bedriox\Api\Entity\Capability\Shearable;
 use Bedriox\Api\Entity\Capability\Sittable;
 use Bedriox\Api\Entity\Capability\Tameable;
 use Bedriox\Api\Entity\Capability\Trusting;
+use Bedriox\Api\Entity\Value\ArmadilloState;
 use Bedriox\Api\Entity\Value\PandaActivity;
 use Bedriox\Api\Entity\Value\WoolColor;
+use Bedriox\Api\Entity\Vanilla\Armadillo;
 use Bedriox\Api\Entity\Vanilla\Cat;
 use Bedriox\Api\Entity\Vanilla\Creeper;
 use Bedriox\Api\Entity\Vanilla\Fox;
 use Bedriox\Api\Entity\Vanilla\Goat;
 use Bedriox\Api\Entity\Vanilla\Llama as ApiLlama;
+use Bedriox\Api\Entity\Vanilla\Mooshroom;
 use Bedriox\Api\Entity\Vanilla\Panda;
 use Bedriox\Api\Entity\Vanilla\Pig;
+use Bedriox\Api\Entity\Vanilla\PolarBear;
 use Bedriox\Api\Entity\Vanilla\Rabbit;
 use Bedriox\Api\Entity\Vanilla\Sheep;
 use Bedriox\Api\Entity\Vanilla\Shulker;
 use Bedriox\Api\Entity\Vanilla\Slime;
+use Bedriox\Api\Entity\Vanilla\Sniffer;
 use Bedriox\Api\Entity\Vanilla\Wolf;
 use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Inventory\ItemStack;
 use Bedriox\Api\World\BlockFace;
 use Bedriox\Protocol\Packet\ActorAttribute;
 use Bedriox\Protocol\Packet\ActorFlag;
+use Bedriox\Protocol\Packet\ActorIntProperty;
 use Bedriox\Protocol\Packet\ActorMetadata;
+use Bedriox\Protocol\Packet\ActorProperties;
 use Bedriox\Protocol\Packet\ActorSpawnAttribute;
 use Bedriox\Protocol\Packet\BlockPosition as ProtocolBlockPosition;
 use Bedriox\Protocol\Packet\BoatActorMetadata;
 use Bedriox\Protocol\Packet\EndCrystalActorMetadata;
+use Bedriox\Protocol\Packet\HorseActorMetadata;
 use Bedriox\Protocol\Packet\InventoryContainerId;
 use Bedriox\Protocol\Packet\InventoryItemStack as ProtocolInventoryItemStack;
 use Bedriox\Protocol\Packet\MobArmorEquipmentPacket;
@@ -64,11 +72,14 @@ use Bedriox\Protocol\Packet\ShulkerActorMetadata;
 use Bedriox\Protocol\Packet\ShulkerAttachmentFace;
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\Server\Entity\AbstractLivingEntity;
+use Bedriox\Server\Entity\BreedableAnimalEntity;
+use Bedriox\Server\Entity\Equipment\BodyEquipmentHolder;
 use Bedriox\Server\Entity\Mount\HorseFamilyEntity;
 use Bedriox\Server\Entity\Mount\UndeadHorseEntity;
 use Bedriox\Server\Entity\Vanilla\CamelEntity;
 use Bedriox\Server\Entity\Vanilla\End\EndCrystalEntity;
 use Bedriox\Server\Entity\Vanilla\LlamaEntity;
+use Bedriox\Server\Entity\Vanilla\Misc\LeashKnotEntity;
 use Bedriox\Server\Entity\Vanilla\Nether\StriderEntity;
 use Bedriox\Server\Entity\Vanilla\SkeletonHorseEntity;
 use Bedriox\Server\Entity\Vanilla\TraderLlamaEntity;
@@ -84,6 +95,9 @@ final class BedrockLivingActorProjector
     /** @return list<ActorSpawnAttribute> */
     public function spawnAttributes(AbstractLivingEntity $entity): array
     {
+        if ($entity instanceof LeashKnotEntity) {
+            return [];
+        }
         $maximumHealth = $entity->getMaximumHealth();
 
         return [
@@ -93,6 +107,9 @@ final class BedrockLivingActorProjector
             new ActorSpawnAttribute('minecraft:movement', 0.0, self::FLOAT32_MAX, 0.1),
             new ActorSpawnAttribute('minecraft:attack_damage', 0.0, self::FLOAT32_MAX, 1.0),
             new ActorSpawnAttribute('minecraft:absorption', 0.0, self::FLOAT32_MAX, $entity->getAbsorption()),
+            ...(self::hasPowerJump($entity) ? [
+                new ActorSpawnAttribute('minecraft:horse.jump_strength', 0.0, 1.0, 0.7),
+            ] : []),
         ];
     }
 
@@ -110,14 +127,16 @@ final class BedrockLivingActorProjector
             );
         }
 
-        return [
+        $metadata = [
             $this->flagsMetadata($entity, $noAi),
             ActorMetadata::int(1, (int) ceil($entity->getHealth())),
             ...($entity instanceof Rabbit || $entity instanceof Slime || $entity instanceof Cat || $entity instanceof Panda
+                || $entity instanceof Mooshroom || $entity instanceof ApiLlama
                 || $entity instanceof Wolf || $entity instanceof Fox ? [ActorMetadata::int(
                     2,
                     match (true) {
-                        $entity instanceof Rabbit, $entity instanceof Cat,
+                        $entity instanceof Rabbit, $entity instanceof Cat, $entity instanceof Mooshroom,
+                        $entity instanceof ApiLlama,
                         $entity instanceof Wolf, $entity instanceof Fox => $entity->getVariant()->value,
                         $entity instanceof Panda => $entity->getExpressedGene()->value,
                         default => $entity->getSize()->value,
@@ -133,13 +152,22 @@ final class BedrockLivingActorProjector
             ActorMetadata::long(5, -1),
             ActorMetadata::long(6, 0),
             ActorMetadata::short(7, 400),
+            ...(self::hasPowerJump($entity) ? [HorseActorMetadata::jumpDuration(0)] : []),
             ...($entity instanceof Creeper ? [
                 ActorMetadata::int(20, $entity->getFuseTicks()),
                 ActorMetadata::int(21, $entity->isIgnited() ? 1 : -1),
             ] : []),
-            ActorMetadata::long(37, -1),
+            ActorMetadata::long(37, $entity instanceof BreedableAnimalEntity
+                ? ($entity->getLeashHolderRuntimeId() ?? -1)
+                : -1),
             ActorMetadata::float(38, $entity->scale()),
             ActorMetadata::short(42, 400),
+            ...($entity instanceof ApiLlama ? [ActorMetadata::int(43, $entity instanceof TraderLlamaEntity ? 1 : 0)] : []),
+            ...($entity instanceof ChestedAnimal ? [
+                ActorMetadata::byte(44, 12),
+                ActorMetadata::int(45, $entity instanceof ApiLlama ? 16 : 17),
+                ActorMetadata::int(46, $entity instanceof ApiLlama ? 3 : 0),
+            ] : []),
             ...($entity instanceof EndCrystalEntity ? [EndCrystalActorMetadata::beamTarget(
                 $entity->beamTarget() === null
                     ? new ProtocolBlockPosition(0, 0, 0)
@@ -173,14 +201,19 @@ final class BedrockLivingActorProjector
             ) : []),
             ActorMetadata::byte(81, 0),
             $this->flags2Metadata($entity),
-            ActorMetadata::float(120, 0.0),
+            ActorMetadata::float(120, $entity->freezingEffectStrength()),
             ActorMetadata::long(131, 0),
         ];
+        usort($metadata, static fn(ActorMetadata $left, ActorMetadata $right): int => $left->id <=> $right->id);
+
+        return $metadata;
     }
 
     public function flagsMetadata(AbstractLivingEntity $entity, bool $noAi = false): ActorMetadata
     {
-        $flags = ActorFlag::combine(ActorFlag::Breathing, ActorFlag::HasCollision);
+        $flags = $entity instanceof LeashKnotEntity
+            ? 0
+            : ActorFlag::combine(ActorFlag::Breathing, ActorFlag::HasCollision);
         if ($entity instanceof Climbing) {
             $flags |= ActorFlag::CanClimb->mask();
         }
@@ -195,6 +228,9 @@ final class BedrockLivingActorProjector
         }
         if ($entity instanceof ChestedAnimal && $entity->hasChest()) {
             $flags |= ActorFlag::Chested->mask();
+        }
+        if ($entity instanceof BreedableAnimalEntity && $entity->getLeashHolderRuntimeId() !== null) {
+            $flags |= ActorFlag::Leashed->mask();
         }
         if ($entity->isGravityEnabled()) {
             $flags |= ActorFlag::HasGravity->mask();
@@ -238,6 +274,9 @@ final class BedrockLivingActorProjector
         if ($entity instanceof Panda && $entity->getActivity() === PandaActivity::EATING) {
             $flags |= ActorFlag::Eating->mask();
         }
+        if ($entity instanceof PolarBear && $entity->isStanding()) {
+            $flags |= ActorFlag::Standing->mask();
+        }
         if ($entity instanceof Angerable && $entity->getRemainingAngerTicks() > 0) {
             $flags |= ActorFlag::Angry->mask();
         }
@@ -254,6 +293,22 @@ final class BedrockLivingActorProjector
         return ActorMetadata::long(0, $flags);
     }
 
+    public function properties(AbstractLivingEntity $entity): ActorProperties
+    {
+        if (!$entity instanceof Armadillo) {
+            return new ActorProperties();
+        }
+        $state = match ($entity->getState()) {
+            ArmadilloState::UNROLLED => 0,
+            ArmadilloState::ROLLED_UP => 1,
+            ArmadilloState::ROLLED_UP_PEEKING => 2,
+            ArmadilloState::ROLLED_UP_RELAXING => 3,
+            ArmadilloState::ROLLED_UP_UNROLLING => 4,
+        };
+
+        return new ActorProperties([new ActorIntProperty(0, $state)]);
+    }
+
     public function flags2Metadata(AbstractLivingEntity $entity): ActorMetadata
     {
         $flags = 0;
@@ -262,6 +317,12 @@ final class BedrockLivingActorProjector
         }
         if ($entity instanceof Fox && $entity->isSleeping()) {
             $flags |= ActorFlag::Sleeping->mask();
+        }
+        if ($entity instanceof Fox && $entity->isFaceplanted()) {
+            $flags |= ActorFlag::Stunned->mask();
+        }
+        if ($entity instanceof Fox && $entity->isPouncing()) {
+            $flags |= ActorFlag::JumpGoalJump->mask();
         }
         if ($entity instanceof Panda) {
             $flags |= match ($entity->getActivity()) {
@@ -273,6 +334,9 @@ final class BedrockLivingActorProjector
         }
         if ($entity instanceof Goat && $entity->isRamming()) {
             $flags |= ActorFlag::RamAttack->mask();
+        }
+        if ($entity instanceof Sniffer && $entity->isDigging()) {
+            $flags |= ActorFlag::Digging->mask();
         }
 
         return ActorMetadata::long(92, $flags);
@@ -289,6 +353,11 @@ final class BedrockLivingActorProjector
             $entity instanceof HorseFamilyEntity, $entity instanceof UndeadHorseEntity => $entity->isSaddled(),
             default => false,
         };
+    }
+
+    private static function hasPowerJump(AbstractLivingEntity $entity): bool
+    {
+        return self::hasGroundVehicleControls($entity) && !$entity instanceof CamelEntity;
     }
 
     private static function woolColorIndex(WoolColor $color): int
@@ -352,6 +421,9 @@ final class BedrockLivingActorProjector
         ?BedrockInventoryPacketProjector $inventory,
         ?array $changedSlots = null,
     ): array {
+        if ($entity instanceof LeashKnotEntity) {
+            return [];
+        }
         $armorChanged = $changedSlots === null;
         $mainHandChanged = $changedSlots === null;
         $offHandChanged = $changedSlots === null;
@@ -365,13 +437,7 @@ final class BedrockLivingActorProjector
         $equipment = $entity->equipmentState();
         $packets = [];
         if ($armorChanged) {
-            $packets[] = new MobArmorEquipmentPacket(
-                $runtimeId,
-                $this->equipmentItem($equipment->getItem(EquipmentSlot::HEAD), $inventory),
-                $this->equipmentItem($equipment->getItem(EquipmentSlot::CHEST), $inventory),
-                $this->equipmentItem($equipment->getItem(EquipmentSlot::LEGS), $inventory),
-                $this->equipmentItem($equipment->getItem(EquipmentSlot::FEET), $inventory),
-            );
+            $packets[] = $this->armorEquipmentPacket($entity, $inventory);
         }
         if ($mainHandChanged) {
             $packets[] = new MobEquipmentPacket(
@@ -393,6 +459,32 @@ final class BedrockLivingActorProjector
         }
 
         return $packets;
+    }
+
+    public function bodyEquipmentPacket(
+        AbstractLivingEntity $entity,
+        ?BedrockInventoryPacketProjector $inventory,
+    ): ?MobArmorEquipmentPacket {
+        return $entity instanceof BodyEquipmentHolder ? $this->armorEquipmentPacket($entity, $inventory) : null;
+    }
+
+    private function armorEquipmentPacket(
+        AbstractLivingEntity $entity,
+        ?BedrockInventoryPacketProjector $inventory,
+    ): MobArmorEquipmentPacket {
+        $equipment = $entity->equipmentState();
+
+        return new MobArmorEquipmentPacket(
+            UnsignedLong::fromInt($entity->getRuntimeId()),
+            $this->equipmentItem($equipment->getItem(EquipmentSlot::HEAD), $inventory),
+            $this->equipmentItem($equipment->getItem(EquipmentSlot::CHEST), $inventory),
+            $this->equipmentItem($equipment->getItem(EquipmentSlot::LEGS), $inventory),
+            $this->equipmentItem($equipment->getItem(EquipmentSlot::FEET), $inventory),
+            $this->equipmentItem(
+                $entity instanceof BodyEquipmentHolder ? $entity->getBodyEquipment() : null,
+                $inventory,
+            ),
+        );
     }
 
     private function equipmentItem(

@@ -23,6 +23,8 @@ namespace Bedriox\Server\Tests\Runtime;
 use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Entity\EntityCategory;
+use Bedriox\Api\Entity\Value\ArmadilloState;
+use Bedriox\Api\Entity\Value\WoolColor;
 use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Inventory\ItemStack;
 use Bedriox\Data\BedrockDataSet;
@@ -48,7 +50,12 @@ use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\Server\Entity\AbstractLivingEntity;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\EntityMotion;
+use Bedriox\Server\Entity\Vanilla\ArmadilloEntity;
 use Bedriox\Server\Entity\Vanilla\CowEntity;
+use Bedriox\Server\Entity\Vanilla\LlamaEntity;
+use Bedriox\Server\Entity\Vanilla\Misc\LeashKnotEntity;
+use Bedriox\Server\Entity\Vanilla\SnifferEntity;
+use Bedriox\Server\Entity\Vanilla\TraderLlamaEntity;
 use Bedriox\Server\Entity\Vanilla\ZombieEntity;
 use Bedriox\Server\Entity\Vehicle\BoatEntity;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
@@ -56,6 +63,7 @@ use Bedriox\Server\Runtime\BedrockInventoryPacketProjector;
 use Bedriox\Server\Runtime\BedrockWorldEventPacketEncoder;
 use Bedriox\Server\Simulation\Event\AnimalLovePresented;
 use Bedriox\Server\Simulation\Event\EntityActorAttackStarted;
+use Bedriox\Server\Simulation\Event\EntityActorBodyEquipmentChanged;
 use Bedriox\Server\Simulation\Event\EntityActorDamaged;
 use Bedriox\Server\Simulation\Event\EntityActorDied;
 use Bedriox\Server\Simulation\Event\EntityActorEffectChanged;
@@ -72,6 +80,147 @@ use PHPUnit\Framework\TestCase;
 
 final class BedrockEntityActorPacketEncoderTest extends TestCase
 {
+    public function testLeashKnotUsesVerifiedCurrentActorIdentityWithoutMobEquipment(): void
+    {
+        $definition = BedrockDataSet::bundled()->entityTypeRegistry()
+            ->definitionForIdentifier('minecraft:leash_knot');
+        self::assertSame(88, $definition->networkRuntimeId());
+
+        $knot = new LeashKnotEntity(
+            '00000000-0000-4000-8000-000000000088',
+            88,
+            'world',
+            new Position(4.5, 64.5, 8.5),
+        );
+        $packets = (new BedrockWorldEventPacketEncoder())->encode(
+            new EntityActorSpawned($knot, ['late-viewer']),
+            [],
+        );
+        self::assertCount(1, $packets);
+        self::assertSame('late-viewer', $packets[0]->sessionId);
+        self::assertInstanceOf(AddActorPacket::class, $packets[0]->packet);
+        $spawn = $packets[0]->packet;
+        self::assertSame('minecraft:leash_knot', $spawn->identifier);
+        self::assertSame([], $spawn->attributes);
+        self::assertSame(4.5, $spawn->x);
+        self::assertSame(64.5, $spawn->y);
+        self::assertSame(8.5, $spawn->z);
+        self::assertSame(
+            0,
+            self::metadataInteger($spawn->metadata, 0)
+                & ActorFlag::combine(ActorFlag::Breathing, ActorFlag::HasCollision, ActorFlag::HasGravity),
+        );
+
+        $decoded = AddActorPacket::decode($spawn->encode());
+        self::assertSame('minecraft:leash_knot', $decoded->identifier);
+        self::assertSame([], $decoded->attributes);
+
+        $removed = (new BedrockWorldEventPacketEncoder())->encode(
+            new EntityActorRemoved($knot, ['late-viewer']),
+            [],
+        );
+        self::assertCount(1, $removed);
+        self::assertInstanceOf(RemoveActorPacket::class, $removed[0]->packet);
+        self::assertSame(88, RemoveActorPacket::decode($removed[0]->packet->encode())->actorUniqueId);
+    }
+
+    public function testArmadilloStateProjectsToLateViewerSpawnAndLiveMetadataUpdate(): void
+    {
+        $armadillo = new ArmadilloEntity(
+            '00000000-0000-4000-8000-000000000251',
+            251,
+            'world',
+            new Position(1.0, 64.0, 2.0),
+            state: ArmadilloState::ROLLED_UP_PEEKING,
+        );
+        $encoder = new BedrockWorldEventPacketEncoder();
+
+        $spawned = $encoder->encode(new EntityActorSpawned($armadillo, ['late-viewer']), []);
+        $addActorPackets = array_values(array_filter(
+            $spawned,
+            static fn($packet): bool => $packet->packet instanceof AddActorPacket,
+        ));
+        self::assertCount(1, $addActorPackets);
+        self::assertSame('late-viewer', $addActorPackets[0]->sessionId);
+        $spawn = $addActorPackets[0]->packet;
+        self::assertInstanceOf(AddActorPacket::class, $spawn);
+        self::assertCount(1, $spawn->properties->integers);
+        self::assertSame(0, $spawn->properties->integers[0]->index);
+        self::assertSame(2, $spawn->properties->integers[0]->value);
+
+        $armadillo->setState(ArmadilloState::ROLLED_UP_UNROLLING);
+        $changed = $encoder->encode(new EntityActorMetadataChanged(
+            $armadillo,
+            42,
+            ['late-viewer', 'existing-viewer'],
+        ), []);
+        self::assertCount(2, $changed);
+        self::assertSame(['late-viewer', 'existing-viewer'], array_map(
+            static fn($packet): string => $packet->sessionId,
+            $changed,
+        ));
+        foreach ($changed as $directed) {
+            self::assertInstanceOf(SetActorDataPacket::class, $directed->packet);
+            self::assertCount(1, $directed->packet->properties->integers);
+            self::assertSame(0, $directed->packet->properties->integers[0]->index);
+            self::assertSame(4, $directed->packet->properties->integers[0]->value);
+        }
+    }
+
+    public function testSnifferDiggingProjectsToLateViewerAndClearsForEveryLiveViewer(): void
+    {
+        $sniffer = new SnifferEntity(
+            '00000000-0000-4000-8000-000000000252',
+            252,
+            'world',
+            new Position(1.0, 64.0, 2.0),
+            digging: true,
+            diggingTicks: 100,
+        );
+        $encoder = new BedrockWorldEventPacketEncoder();
+
+        $spawned = $encoder->encode(new EntityActorSpawned($sniffer, ['late-viewer']), []);
+        $spawn = array_values(array_filter(
+            $spawned,
+            static fn($packet): bool => $packet->packet instanceof AddActorPacket,
+        ));
+        self::assertCount(1, $spawn);
+        self::assertSame('late-viewer', $spawn[0]->sessionId);
+        $spawnPacket = $spawn[0]->packet;
+        self::assertInstanceOf(AddActorPacket::class, $spawnPacket);
+        self::assertNotSame(
+            0,
+            self::metadataInteger($spawnPacket->metadata, 92) & ActorFlag::Digging->mask(),
+        );
+        $decodedSpawn = AddActorPacket::decode($spawnPacket->encode());
+        self::assertNotSame(
+            0,
+            self::metadataInteger($decodedSpawn->metadata, 92) & ActorFlag::Digging->mask(),
+        );
+
+        $revision = $sniffer->presentationRevision();
+        $sniffer->setDigging(false);
+        self::assertGreaterThan($revision, $sniffer->presentationRevision());
+        $changed = $encoder->encode(new EntityActorMetadataChanged(
+            $sniffer,
+            42,
+            ['late-viewer', 'existing-viewer'],
+        ), []);
+        self::assertSame(['late-viewer', 'existing-viewer'], array_map(
+            static fn($packet): string => $packet->sessionId,
+            $changed,
+        ));
+        foreach ($changed as $directed) {
+            self::assertInstanceOf(SetActorDataPacket::class, $directed->packet);
+            self::assertSame(
+                0,
+                self::metadataInteger($directed->packet->metadata, 92) & ActorFlag::Digging->mask(),
+            );
+            $decoded = SetActorDataPacket::decode($directed->packet->encode());
+            self::assertSame(0, self::metadataInteger($decoded->metadata, 92) & ActorFlag::Digging->mask());
+        }
+    }
+
     public function testBoatUsesItsBedrockBaseOffsetAndStructuralHitMetadata(): void
     {
         $boat = new BoatEntity(
@@ -474,9 +623,14 @@ final class BedrockEntityActorPacketEncoderTest extends TestCase
 
     public function testEveryAdmittedCatalogMobHasACompleteRoundTripSafeSpawnProjection(): void
     {
-        $catalog = BedrockDataSet::bundled()->entityTypeRegistry();
+        $data = BedrockDataSet::bundled();
+        $catalog = $data->entityTypeRegistry();
         $definitions = EntityDefinitionRegistry::fromData($catalog)->all();
-        $encoder = new BedrockWorldEventPacketEncoder();
+        $internal = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $encoder = new BedrockWorldEventPacketEncoder(inventory: BedrockInventoryPacketProjector::fromData(
+            $data,
+            new BlockNetworkTranslator($internal, $data->blockStateRegistry()),
+        ));
 
         self::assertGreaterThan(2, count($definitions));
         foreach ($definitions as $index => $registration) {
@@ -571,6 +725,46 @@ final class BedrockEntityActorPacketEncoderTest extends TestCase
             MobArmorEquipmentPacket::class,
             MobEquipmentPacket::class,
         ], array_map(static fn($entry): string => $entry->packet::class, $armorAndOffhand));
+    }
+
+    public function testLlamaCarpetsUseBodyEquipmentAndTraderMarkerProjection(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $internal = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $inventory = BedrockInventoryPacketProjector::fromData(
+            $data,
+            new BlockNetworkTranslator($internal, $data->blockStateRegistry()),
+        );
+        $encoder = new BedrockWorldEventPacketEncoder(inventory: $inventory);
+        $llama = new LlamaEntity(
+            '00000000-0000-4000-8000-000000000204',
+            204,
+            'world',
+            new Position(0.0, 64.0, 0.0),
+            carpetColor: WoolColor::LIME,
+        );
+        $traderLlama = new TraderLlamaEntity(
+            '00000000-0000-4000-8000-000000000205',
+            205,
+            'world',
+            new Position(2.0, 64.0, 0.0),
+        );
+
+        $llamaSpawn = $encoder->encode(new EntityActorSpawned($llama, ['observer']), []);
+        $traderSpawn = $encoder->encode(new EntityActorSpawned($traderLlama, ['observer']), []);
+        self::assertInstanceOf(MobArmorEquipmentPacket::class, $llamaSpawn[1]->packet);
+        self::assertNotSame(0, $llamaSpawn[1]->packet->body->runtimeId);
+        self::assertInstanceOf(AddActorPacket::class, $traderSpawn[0]->packet);
+        self::assertSame(1, self::metadataInteger($traderSpawn[0]->packet->metadata, 43));
+        self::assertInstanceOf(MobArmorEquipmentPacket::class, $traderSpawn[1]->packet);
+        self::assertNotSame(0, $traderSpawn[1]->packet->body->runtimeId);
+
+        $llama->setCarpetColor(WoolColor::RED);
+        self::assertTrue($llama->drainBodyEquipmentChange());
+        $changed = $encoder->encode(new EntityActorBodyEquipmentChanged($llama, ['observer']), []);
+        self::assertCount(1, $changed);
+        self::assertInstanceOf(MobArmorEquipmentPacket::class, $changed[0]->packet);
+        self::assertNotSame(0, $changed[0]->packet->body->runtimeId);
     }
 
     /** @param list<ActorMetadata> $metadata */

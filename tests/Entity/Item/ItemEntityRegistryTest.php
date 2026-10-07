@@ -59,6 +59,25 @@ final class ItemEntityRegistryTest extends TestCase
         self::assertSame($second, $registry->get($second->runtimeEntityId));
     }
 
+    public function testReplacementAdmissionAccountsForCapacityAndExhaustedIds(): void
+    {
+        $full = new ItemEntityRegistry(1, 10);
+        $full->spawn(self::stack(2), new Position(1.0, 70.0, 2.0));
+
+        self::assertFalse($full->canSpawn());
+        self::assertSame(0, $full->spawnableCapacity());
+        self::assertGreaterThan(0, $full->remainingRuntimeIdCapacity());
+        self::assertTrue($full->canRespawnAfterRemovingOne());
+
+        $exhausted = new ItemEntityRegistry(1, PHP_INT_MAX - 1);
+        $exhausted->spawn(self::stack(2), new Position(1.0, 70.0, 2.0));
+
+        self::assertFalse($exhausted->canSpawn());
+        self::assertSame(0, $exhausted->spawnableCapacity());
+        self::assertSame(0, $exhausted->remainingRuntimeIdCapacity());
+        self::assertFalse($exhausted->canRespawnAfterRemovingOne());
+    }
+
     public function testTicksWithPmmpItemGravityDragAndPickupDelay(): void
     {
         $registry = new ItemEntityRegistry();

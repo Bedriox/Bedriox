@@ -23,6 +23,7 @@ namespace Bedriox\Server\Tests\Entity;
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\VanillaEntityType;
 use Bedriox\Data\BedrockDataSet;
+use Bedriox\Server\Entity\AbstractLivingEntity;
 use Bedriox\Server\Entity\AbstractMobEntity;
 use Bedriox\Server\Entity\Ai\AiWorldView;
 use Bedriox\Server\Entity\Ai\HorizontalSteering;
@@ -36,7 +37,10 @@ use Bedriox\Server\Entity\EntityWorldRuntime;
 use Bedriox\Server\Entity\Spawn\EntitySpawnRequest;
 use Bedriox\Server\Entity\Spawn\EntitySpawnService;
 use Bedriox\Server\Entity\Vanilla\CowEntity;
+use Bedriox\Server\Entity\Vanilla\FoxEntity;
+use Bedriox\Server\Entity\Vanilla\GoatEntity;
 use Bedriox\Server\Entity\Vanilla\HorseEntity;
+use Bedriox\Server\Entity\Vanilla\PolarBearEntity;
 use Bedriox\Server\Entity\Vehicle\BoatEntity;
 use Bedriox\Server\Entity\WorldEntityEnvironment;
 use Bedriox\Server\Simulation\Position;
@@ -131,6 +135,41 @@ final class EntityWorldRuntimeTest extends TestCase
         ))->tick($entity, 1);
 
         self::assertEqualsWithDelta(0.05 * (1.0 - $entity->definition()->drag) * $friction, $entity->getMotion()->x, 0.000_001);
+    }
+
+    public function testFoxIsImmuneToBerryMovementRestrictionAppliedToOtherEntities(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $states = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($states);
+        $generation = GenerationBlockPalette::fromRegistry($states);
+        $world = new World(
+            new WorldMetadata('berry-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+        );
+        $world->chunk(new ChunkPosition(0, 0));
+        $berry = null;
+        foreach ($states->states() as $state) {
+            if ($state->identifier() === 'minecraft:sweet_berry_bush') {
+                $berry = $states->internalId($state);
+                break;
+            }
+        }
+        self::assertNotNull($berry);
+        $world->setBlockState(0, 64, 0, $berry);
+        $environment = new WorldEntityEnvironment(
+            $world,
+            $states,
+            BlockCollisionRegistry::forGenerationPalette($states, $generation),
+            $palette->air,
+        );
+        $position = new Position(0.5, 64.0, 0.5);
+        $cow = new CowEntity(EntityUuid::random(), 2, 'berry-test', $position);
+        $fox = new FoxEntity(EntityUuid::random(), 3, 'berry-test', $position);
+
+        self::assertSame(0.25, $environment->movementRestrictionMultiplier($cow));
+        self::assertSame(1.0, $environment->movementRestrictionMultiplier($fox));
     }
 
     public function testControlledHorseFallsImmediatelyAfterLeavingALoadedLedge(): void
@@ -520,6 +559,35 @@ final class EntityWorldRuntimeTest extends TestCase
         self::assertGreaterThan(1.0, $pig->getPosition()->x);
     }
 
+    public function testGoatUsesOrdinaryStepJumpRatherThanItsSpecialLongJump(): void
+    {
+        $oneBlock = new AxisAlignedBox(1.0, 64.0, -1.0, 10.0, 65.0, 1.0);
+        [$goatRuntime, $goat] = self::obstacleRuntime($oneBlock, VanillaEntityType::GOAT);
+        [$zombieRuntime, $zombie] = self::obstacleRuntime($oneBlock);
+        $goatHighestY = 64.0;
+        $zombieHighestY = 64.0;
+        for ($tick = 1; $tick <= 40; ++$tick) {
+            HorizontalSteering::motion($goat, 0.2, 0.0, $tick);
+            HorizontalSteering::motion($zombie, 0.2, 0.0, $tick);
+            $goatRuntime->tick($tick, self::emptyAiWorld(), false);
+            $zombieRuntime->tick($tick, self::emptyAiWorld(), false);
+            $goatHighestY = max($goatHighestY, $goat->getPosition()->y);
+            $zombieHighestY = max($zombieHighestY, $zombie->getPosition()->y);
+        }
+
+        self::assertGreaterThan(1.0, $goat->getPosition()->x);
+        self::assertGreaterThan(1.0, $zombie->getPosition()->x);
+        self::assertEqualsWithDelta($zombieHighestY, $goatHighestY, 0.001);
+
+        $highObstacle = new AxisAlignedBox(1.0, 64.0, -1.0, 10.0, 65.2, 1.0);
+        [$blockedRuntime, $blockedGoat] = self::obstacleRuntime($highObstacle, VanillaEntityType::GOAT);
+        for ($tick = 1; $tick <= 40; ++$tick) {
+            HorizontalSteering::motion($blockedGoat, 0.2, 0.0, $tick);
+            $blockedRuntime->tick($tick, self::emptyAiWorld(), false);
+        }
+        self::assertLessThan(1.0, $blockedGoat->getPosition()->x);
+    }
+
     public function testControlledBoatCannotUseMobJumpingToClimbAFullBlock(): void
     {
         [$runtime, $boat] = self::obstacleRuntime(
@@ -586,6 +654,149 @@ final class EntityWorldRuntimeTest extends TestCase
 
         self::assertSame(0.0, $spawn->entity->getMotion()->y);
         self::assertGreaterThan(5.0, $spawn->entity->internalPosition()->x);
+    }
+
+    public function testPolarBearUsesBoundedBuoyancyWithoutAquaticBreathingState(): void
+    {
+        $states = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($states);
+        $generation = GenerationBlockPalette::fromRegistry($states);
+        $water = $generation->state('minecraft:water');
+        $world = new World(
+            new WorldMetadata('polar-water-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+        );
+        $world->chunk(new ChunkPosition(0, 0));
+        for ($z = 0; $z <= 3; ++$z) {
+            for ($x = 0; $x <= 3; ++$x) {
+                for ($y = 61; $y <= 64; ++$y) {
+                    $world->setBlockState($x, $y, $z, $water);
+                }
+            }
+        }
+        $shapes = BlockCollisionRegistry::forGenerationPalette($states, $generation);
+        $environment = new WorldEntityEnvironment($world, $states, $shapes, $palette->air, $water);
+        $registry = new EntityRegistry();
+        $runtime = new EntityWorldRuntime(
+            $registry,
+            new EntitySpawnService($registry, EntityDefinitionRegistry::baseline()),
+            new EntityPhysicsResolver(
+                new BlockCollisionQuery($world, $palette->air, [$water], $shapes),
+                $environment,
+            ),
+        );
+        $spawn = $runtime->spawn(new EntitySpawnRequest(
+            VanillaEntityType::POLAR_BEAR,
+            SpawnCause::COMMAND,
+            'polar-water-test',
+            new Position(1.5, 62.0, 1.5),
+        ));
+        self::assertInstanceOf(PolarBearEntity::class, $spawn->entity);
+        $spawn->entity->setMotion(new EntityMotion(0.0, -0.4, 0.0));
+
+        for ($tick = 1; $tick <= 30; ++$tick) {
+            $runtime->tick($tick, self::emptyAiWorld(), false);
+        }
+
+        self::assertGreaterThan(61.5, $spawn->entity->internalPosition()->y);
+        self::assertGreaterThanOrEqual(0.0, $spawn->entity->getMotion()->y);
+    }
+
+    public function testLoadedPowderSnowExposureIsDetectedWithoutGeneratingMissingTerrain(): void
+    {
+        $states = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($states);
+        $generation = GenerationBlockPalette::fromRegistry($states);
+        $world = new World(
+            new WorldMetadata('powder-snow-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+        );
+        $world->chunk(new ChunkPosition(0, 0));
+        $powderSnow = array_values(array_filter(
+            $states->states(),
+            static fn(\Bedriox\Data\CanonicalBlockState $state): bool =>
+                $state->identifier() === 'minecraft:powder_snow',
+        ))[0] ?? self::fail('Bundled data does not contain powder snow.');
+        $world->setBlockState(1, 64, 1, $states->internalId($powderSnow));
+        $environment = new WorldEntityEnvironment(
+            $world,
+            $states,
+            BlockCollisionRegistry::forGenerationPalette($states, $generation),
+            $palette->air,
+        );
+        $registry = new EntityRegistry();
+        $runtime = new EntityWorldRuntime(
+            $registry,
+            new EntitySpawnService($registry, EntityDefinitionRegistry::baseline()),
+        );
+        $goat = $runtime->spawn(new EntitySpawnRequest(
+            VanillaEntityType::GOAT,
+            SpawnCause::COMMAND,
+            'powder-snow-test',
+            new Position(1.5, 64.0, 1.5),
+        ))->entity;
+        self::assertInstanceOf(AbstractLivingEntity::class, $goat);
+
+        self::assertTrue($environment->isTouchingPowderSnow($goat));
+        $goat->moveTo('powder-snow-test', new Position(17.5, 64.0, 1.5), 0.0, 0.0);
+        self::assertFalse($environment->isTouchingPowderSnow($goat));
+        self::assertNull($world->loadedChunk(new ChunkPosition(1, 0)));
+    }
+
+    public function testGoatVoluntaryMotionDoesNotEnterLoadedPowderSnow(): void
+    {
+        $states = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($states);
+        $generation = GenerationBlockPalette::fromRegistry($states);
+        $world = new World(
+            new WorldMetadata('goat-powder-snow-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+        );
+        $world->chunk(new ChunkPosition(0, 0));
+        $powderSnow = array_values(array_filter(
+            $states->states(),
+            static fn(\Bedriox\Data\CanonicalBlockState $state): bool =>
+                $state->identifier() === 'minecraft:powder_snow',
+        ))[0] ?? self::fail('Bundled data does not contain powder snow.');
+        $world->setBlockState(1, 64, 1, $states->internalId($powderSnow));
+        $environment = new WorldEntityEnvironment(
+            $world,
+            $states,
+            BlockCollisionRegistry::forGenerationPalette($states, $generation),
+            $palette->air,
+        );
+        $resolver = new EntityPhysicsResolver(new class implements LoadedCollisionBoxQuery {
+            public function boxesIntersecting(AxisAlignedBox $area): array
+            {
+                return [];
+            }
+
+            public function hasCollision(AxisAlignedBox $area): bool
+            {
+                return false;
+            }
+
+            public function boxesIntersectingLoaded(AxisAlignedBox $area): array
+            {
+                return [];
+            }
+        }, $environment);
+        $goat = new GoatEntity(
+            EntityUuid::random(),
+            500,
+            'goat-powder-snow-test',
+            new Position(0.9, 64.0, 1.5),
+            motion: new EntityMotion(0.25, 0.0, 0.0),
+        );
+        $goat->setOnGround(true);
+
+        $resolver->tick($goat, 1);
+
+        self::assertSame(0.9, $goat->internalPosition()->x);
+        self::assertSame(0.0, $goat->getMotion()->x);
     }
 
     public function testGhastRecoversAltitudeBeforeReachingNearbyGround(): void

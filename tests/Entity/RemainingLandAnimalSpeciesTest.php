@@ -20,8 +20,11 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Entity;
 
+use Bedriox\Api\Entity\Capability\FreezeImmune;
+use Bedriox\Api\Entity\EntityDamageCause;
 use Bedriox\Api\Entity\Value\ArmadilloState;
 use Bedriox\Api\Entity\Value\FoxVariant;
+use Bedriox\Api\Entity\Value\MooshroomStewEffect;
 use Bedriox\Api\Entity\Value\MooshroomVariant;
 use Bedriox\Api\Entity\Value\PandaActivity;
 use Bedriox\Api\Entity\Value\PandaGene;
@@ -71,6 +74,22 @@ final class RemainingLandAnimalSpeciesTest extends TestCase
         $fox->setVariant(FoxVariant::SNOW);
         self::assertSame(FoxVariant::SNOW, $fox->getVariant());
         self::assertGreaterThan($foxRevision, $fox->presentationRevision());
+        $fox->beginPounce();
+        self::assertTrue($fox->isPouncing());
+        self::assertFalse($fox->isFaceplanted());
+        $fox->beginFaceplant();
+        self::assertFalse($fox->isPouncing());
+        self::assertTrue($fox->isFaceplanted());
+        $fox->advanceHuntingState(20);
+        self::assertTrue($fox->isFaceplanted());
+        $fox->advanceHuntingState(20);
+        self::assertFalse($fox->isFaceplanted());
+
+        $defenseTarget = EntityUuid::random();
+        $fox->defendTrustedPlayerAgainst($defenseTarget, 20);
+        self::assertSame($defenseTarget, $fox->getTrustedDefenseTargetUniqueId());
+        $fox->advanceTrustedDefense(20);
+        self::assertNull($fox->getTrustedDefenseTargetUniqueId());
 
         $goat = new GoatEntity(EntityUuid::random(), 12, 'world', $position, screaming: true);
         self::assertTrue($goat->isScreaming());
@@ -88,6 +107,13 @@ final class RemainingLandAnimalSpeciesTest extends TestCase
         $panda->setGenes(PandaGene::BROWN, PandaGene::BROWN);
         $panda->setActivity(PandaActivity::ROLLING);
         self::assertSame(PandaGene::BROWN, $panda->getExpressedGene());
+        $panda->setGenes(PandaGene::WEAK, PandaGene::WEAK);
+        self::assertSame(10.0, $panda->getMaximumHealth());
+        self::assertSame(10.0, $panda->getHealth());
+        $panda->beginEating(20);
+        self::assertSame(PandaActivity::EATING, $panda->getActivity());
+        $panda->advanceTraitActivity(false, 20, 40);
+        self::assertSame(PandaActivity::EATING, $panda->getActivity());
 
         $armadillo = new ArmadilloEntity(EntityUuid::random(), 14, 'world', $position);
         $armadillo->setState(ArmadilloState::ROLLED_UP_PEEKING);
@@ -99,6 +125,11 @@ final class RemainingLandAnimalSpeciesTest extends TestCase
         $mooshroom = new MooshroomEntity(EntityUuid::random(), 15, 'world', $position);
         $mooshroom->setVariant(MooshroomVariant::BROWN);
         self::assertSame(MooshroomVariant::BROWN, $mooshroom->getVariant());
+        $mooshroom->setStewEffect(MooshroomStewEffect::BLUE_ORCHID);
+        self::assertSame(MooshroomStewEffect::BLUE_ORCHID, $mooshroom->takeStewEffect());
+        self::assertNull($mooshroom->takeStewEffect());
+        $mooshroom->struckByLightning();
+        self::assertSame(MooshroomVariant::RED, $mooshroom->getVariant());
 
         $sniffer = new SnifferEntity(EntityUuid::random(), 16, 'world', $position, baby: true);
         self::assertSame(0.45, $sniffer->scale());
@@ -131,8 +162,21 @@ final class RemainingLandAnimalSpeciesTest extends TestCase
         self::assertSame(FoxVariant::SNOW, $restoredFox->getVariant());
         self::assertTrue($restoredFox->trustsPlayer($foxTrust));
         self::assertTrue($restoredFox->isSleeping());
+        self::assertFalse($restoredFox->isPouncing());
+        self::assertFalse($restoredFox->isFaceplanted());
+        self::assertNull($restoredFox->getTrustedDefenseTargetUniqueId());
 
-        $goat = new GoatEntity(EntityUuid::random(), 23, 'world', $position, screaming: true, leftHorn: false, ramming: true);
+        $goat = new GoatEntity(
+            EntityUuid::random(),
+            23,
+            'world',
+            $position,
+            screaming: true,
+            leftHorn: false,
+            ramming: true,
+            ramTicks: 100,
+            ramTargetUniqueId: EntityUuid::random(),
+        );
         $restoredGoat = new GoatEntity(EntityUuid::random(), 24, 'world', $position);
         $restoredGoat->restorePersistenceState($goat->persistenceVariant(), $goat->persistenceSchemaVersion(), $goat->persistenceData());
         self::assertTrue($restoredGoat->isScreaming());
@@ -152,15 +196,25 @@ final class RemainingLandAnimalSpeciesTest extends TestCase
         self::assertSame(ArmadilloState::ROLLED_UP_RELAXING, $restoredArmadillo->getState());
         self::assertSame($armadillo->getScuteShedTicks(), $restoredArmadillo->getScuteShedTicks());
 
-        $mooshroom = new MooshroomEntity(EntityUuid::random(), 29, 'world', $position, variant: MooshroomVariant::BROWN);
+        $mooshroom = new MooshroomEntity(
+            EntityUuid::random(),
+            29,
+            'world',
+            $position,
+            variant: MooshroomVariant::BROWN,
+            stewEffect: MooshroomStewEffect::ALLIUM,
+        );
         $restoredMooshroom = new MooshroomEntity(EntityUuid::random(), 30, 'world', $position);
         $restoredMooshroom->restorePersistenceState($mooshroom->persistenceVariant(), $mooshroom->persistenceSchemaVersion(), $mooshroom->persistenceData());
         self::assertSame(MooshroomVariant::BROWN, $restoredMooshroom->getVariant());
+        self::assertSame(MooshroomStewEffect::ALLIUM, $restoredMooshroom->getStewEffect());
 
         $sniffer = new SnifferEntity(EntityUuid::random(), 31, 'world', $position, digging: true);
+        $sniffer->rememberDigSite(4, 63, -2);
         $restoredSniffer = new SnifferEntity(EntityUuid::random(), 32, 'world', $position);
         $restoredSniffer->restorePersistenceState($sniffer->persistenceVariant(), $sniffer->persistenceSchemaVersion(), $sniffer->persistenceData());
         self::assertTrue($restoredSniffer->isDigging());
+        self::assertTrue($restoredSniffer->hasDugAt(4, 63, -2));
 
         $trustedPlayer = EntityUuid::random();
         $ocelot = new OcelotEntity(EntityUuid::random(), 33, 'world', $position, baby: true, trustedPlayerUniqueId: $trustedPlayer);
@@ -182,5 +236,133 @@ final class RemainingLandAnimalSpeciesTest extends TestCase
 
         $this->expectException(InvalidArgumentException::class);
         $fox->restorePersistenceState(99, 1, $fox->persistenceData());
+    }
+
+    public function testMooshroomStewStateRejectsInvalidSpeciesAndPersistence(): void
+    {
+        foreach ([
+            'minecraft:poppy' => 0,
+            'minecraft:cornflower' => 1,
+            'minecraft:pink_tulip' => 2,
+            'minecraft:azure_bluet' => 3,
+            'minecraft:lily_of_the_valley' => 4,
+            'minecraft:dandelion' => 5,
+            'minecraft:blue_orchid' => 6,
+            'minecraft:allium' => 7,
+            'minecraft:oxeye_daisy' => 8,
+            'minecraft:wither_rose' => 9,
+            'minecraft:torchflower' => 10,
+            'minecraft:open_eyeblossom' => 11,
+            'minecraft:closed_eyeblossom' => 12,
+        ] as $flower => $damage) {
+            self::assertSame($damage, MooshroomStewEffect::fromFlower($flower)?->value);
+        }
+        self::assertNull(MooshroomStewEffect::fromFlower('minecraft:stone'));
+
+        $red = new MooshroomEntity(EntityUuid::random(), 50, 'world', new Position(0.0, 64.0, 0.0));
+        try {
+            $red->setStewEffect(MooshroomStewEffect::LILY_OF_THE_VALLEY);
+            self::fail('A red mooshroom accepted a suspicious-stew effect.');
+        } catch (InvalidArgumentException) {
+            self::assertNull($red->getStewEffect());
+        }
+
+        $this->expectException(InvalidArgumentException::class);
+        $red->restorePersistenceState(
+            MooshroomVariant::RED->value,
+            1,
+            str_replace('"stewEffect":null', '"stewEffect":4', $red->persistenceData()),
+        );
+    }
+
+    public function testSnifferDigSiteMemoryIsBoundedUniqueAndRejectsMalformedPersistence(): void
+    {
+        $sniffer = new SnifferEntity(EntityUuid::random(), 51, 'world', new Position(0.0, 64.0, 0.0));
+        for ($x = 0; $x < 21; ++$x) {
+            $sniffer->rememberDigSite($x, 63, 0);
+        }
+        $sniffer->rememberDigSite(20, 63, 0);
+
+        self::assertSame(20, $sniffer->getRememberedDigSiteCount());
+        self::assertFalse($sniffer->hasDugAt(0, 63, 0));
+        self::assertTrue($sniffer->hasDugAt(20, 63, 0));
+
+        $this->expectException(InvalidArgumentException::class);
+        $sniffer->restorePersistenceState(
+            null,
+            1,
+            str_replace('"rememberedDigSites":"1,63,0;', '"rememberedDigSites":"bad;', $sniffer->persistenceData()),
+        );
+    }
+
+    public function testSnifferDigCompletionIsExactOnceAndInvalidGroundInterruptsIt(): void
+    {
+        $sniffer = new SnifferEntity(EntityUuid::random(), 52, 'world', new Position(0.0, 64.0, 0.0));
+        self::assertFalse($sniffer->advanceSniffing(20, true));
+        self::assertTrue($sniffer->isDigging());
+        self::assertFalse($sniffer->advanceSniffing(20, false));
+        self::assertFalse($sniffer->isDigging());
+
+        for ($ticks = 0; $ticks < 10; ++$ticks) {
+            self::assertFalse($sniffer->advanceSniffing(20, true));
+        }
+        self::assertTrue($sniffer->isDigging());
+        for ($ticks = 0; $ticks < 5; ++$ticks) {
+            self::assertFalse($sniffer->advanceSniffing(20, true));
+        }
+        self::assertTrue($sniffer->advanceSniffing(20, true));
+        self::assertFalse($sniffer->advanceSniffing(20, true));
+    }
+
+    public function testGoatHornLossAndRamCompletionAreBoundedAndExactOnce(): void
+    {
+        $target = EntityUuid::random();
+        $goat = new GoatEntity(EntityUuid::random(), 53, 'world', new Position(0.0, 64.0, 0.0));
+        $goat->beginRam($target);
+        self::assertTrue($goat->isRamming());
+        self::assertSame($target, $goat->getRamTargetUniqueId());
+        self::assertTrue($goat->loseHorn());
+        self::assertFalse($goat->hasLeftHorn());
+        self::assertTrue($goat->loseHorn());
+        self::assertFalse($goat->hasRightHorn());
+        self::assertFalse($goat->loseHorn());
+
+        $goat->finishRam();
+        self::assertFalse($goat->isRamming());
+        self::assertNull($goat->getRamTargetUniqueId());
+        self::assertFalse($goat->canBeginRam());
+    }
+
+    public function testGoatReducesOnlyFallDamageWithoutProducingNegativeDamage(): void
+    {
+        $goat = new GoatEntity(EntityUuid::random(), 54, 'world', new Position(0.0, 64.0, 0.0));
+
+        self::assertSame(0.0, $goat->modifyIncomingDamage(10.0, EntityDamageCause::FALL));
+        self::assertSame(2.0, $goat->modifyIncomingDamage(12.0, EntityDamageCause::FALL));
+        self::assertSame(12.0, $goat->modifyIncomingDamage(12.0, EntityDamageCause::ATTACK));
+    }
+
+    public function testPowderSnowFreezingIsBoundedAndPolarBearsRemainImmune(): void
+    {
+        $goat = new GoatEntity(EntityUuid::random(), 55, 'world', new Position(0.0, 64.0, 0.0));
+        for ($tick = 1; $tick < 140; ++$tick) {
+            self::assertFalse($goat->advanceFreezingState(true, true, $tick));
+        }
+        self::assertTrue($goat->advanceFreezingState(true, true, 160));
+        self::assertSame(140, $goat->getFreezeTicks());
+        self::assertSame(1.0, $goat->freezingEffectStrength());
+        self::assertTrue($goat->advanceFreezingState(true, true, 200));
+
+        for ($tick = 201; $tick <= 270; ++$tick) {
+            $goat->advanceFreezingState(false, true, $tick);
+        }
+        self::assertSame(0, $goat->getFreezeTicks());
+
+        $polarBear = new PolarBearEntity(EntityUuid::random(), 56, 'world', new Position(0.0, 64.0, 0.0));
+        self::assertInstanceOf(FreezeImmune::class, $polarBear);
+        for ($tick = 1; $tick <= 200; ++$tick) {
+            self::assertFalse($polarBear->advanceFreezingState(true, false, $tick));
+        }
+        self::assertSame(0, $polarBear->getFreezeTicks());
     }
 }

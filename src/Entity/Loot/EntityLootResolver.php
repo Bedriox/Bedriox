@@ -99,7 +99,7 @@ final class EntityLootResolver
                 VanillaEntityType::SKELETON_HORSE->value => new AquaticLootTable('minecraft:bone', 0, 2),
                 VanillaEntityType::ZOMBIE_HORSE->value => new AquaticLootTable('minecraft:rotten_flesh', 0, 2),
                 VanillaEntityType::PANDA->value => new AquaticLootTable('minecraft:bamboo', 0, 2),
-                VanillaEntityType::POLAR_BEAR->value => new AquaticLootTable('minecraft:cod', 0, 2, 'minecraft:cooked_cod'),
+                VanillaEntityType::POLAR_BEAR->value => new PolarBearLootTable(),
                 VanillaEntityType::MOOSHROOM->value => new CowLootTable(),
             ],
         );

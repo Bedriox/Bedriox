@@ -27,4 +27,5 @@ enum EnvironmentTickType: string
     case RANDOM_BLOCK = 'random_block';
     case FROSTED_ICE = 'frosted_ice';
     case DRIED_GHAST = 'dried_ghast';
+    case SNIFFER_EGG = 'sniffer_egg';
 }

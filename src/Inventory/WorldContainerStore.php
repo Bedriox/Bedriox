@@ -335,6 +335,7 @@ final class WorldContainerStore
             BlockEntityType::Smoker => $identifier === 'minecraft:smoker' || $identifier === 'minecraft:lit_smoker',
             BlockEntityType::Campfire => false,
             BlockEntityType::Cauldron => false,
+            BlockEntityType::BrushableBlock => false,
         };
     }
 

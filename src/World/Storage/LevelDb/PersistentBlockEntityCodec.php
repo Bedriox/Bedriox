@@ -36,6 +36,7 @@ use Bedriox\Server\World\BlockEntity\BlockEntityType;
 use Bedriox\Server\World\BlockEntity\ContainerBlockEntity;
 use Bedriox\Server\World\BlockEntity\ContainerInventory;
 use Bedriox\Server\World\BlockEntity\ContainerItemStack;
+use Bedriox\Server\World\BlockEntity\SuspiciousSandBlockEntity;
 use Bedriox\Server\World\BlockPosition;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\Storage\Exception\CorruptWorldDataException;
@@ -256,6 +257,15 @@ final readonly class PersistentBlockEntityCodec
 
             return $root;
         }
+        if ($entity instanceof SuspiciousSandBlockEntity) {
+            $root['item'] = LittleEndianNbtTag::compound($this->encodeItem(0, $entity->hiddenItem));
+            $root['brush_count'] = LittleEndianNbtTag::int($entity->progress);
+            $root['BedrioxLootSeed'] = LittleEndianNbtTag::long($entity->lootSeed);
+            $root['BedrioxStructureProvenance'] = LittleEndianNbtTag::string($entity->provenance);
+            $root['BedrioxRevision'] = LittleEndianNbtTag::int($entity->revision);
+
+            return $root;
+        }
         if (!$entity instanceof ContainerBlockEntity) {
             return $root;
         }
@@ -326,6 +336,12 @@ final readonly class PersistentBlockEntityCodec
 
             return $root;
         }
+        if ($entity instanceof SuspiciousSandBlockEntity) {
+            $root['item'] = LittleEndianNbtTag::compound($this->encodeItem(0, $entity->hiddenItem));
+            $root['brush_count'] = LittleEndianNbtTag::int($entity->progress);
+
+            return $root;
+        }
         if (!$entity instanceof ContainerBlockEntity) {
             return $root;
         }
@@ -352,6 +368,24 @@ final readonly class PersistentBlockEntityCodec
             self::integer(self::required($root, 'y'), LittleEndianNbtTag::INT, 'y'),
             self::integer(self::required($root, 'z'), LittleEndianNbtTag::INT, 'z'),
         );
+        if ($type === BlockEntityType::BrushableBlock) {
+            $item = self::compound(self::required($root, 'item'), 'item');
+            [, $hiddenItem] = $this->decodeItem($item, 1);
+            $progress = isset($root['brush_count'])
+                ? self::integer($root['brush_count'], LittleEndianNbtTag::INT, 'brush_count')
+                : 0;
+            $seed = isset($root['BedrioxLootSeed'])
+                ? self::integer($root['BedrioxLootSeed'], LittleEndianNbtTag::LONG, 'BedrioxLootSeed')
+                : 0;
+            $provenance = isset($root['BedrioxStructureProvenance'])
+                ? self::string($root['BedrioxStructureProvenance'], 'BedrioxStructureProvenance')
+                : throw new InvalidArgumentException('Brushable block is missing trusted structure provenance.');
+            $revision = isset($root['BedrioxRevision'])
+                ? self::integer($root['BedrioxRevision'], LittleEndianNbtTag::INT, 'BedrioxRevision')
+                : 0;
+
+            return new SuspiciousSandBlockEntity($position, $hiddenItem, $seed, $provenance, $progress, $revision);
+        }
         if (!$type->ownsPersistentInventory()) {
             if ($type === BlockEntityType::Cauldron) {
                 $potionId = isset($root['PotionId'])
@@ -597,7 +631,13 @@ final readonly class PersistentBlockEntityCodec
     {
         $id = self::string(self::required($root, 'id'), 'id');
         try {
-            $this->registry->fromPersistentId($id);
+            $type = $this->registry->fromPersistentId($id);
+            if ($type === BlockEntityType::BrushableBlock) {
+                return isset($root['BedrioxStructureProvenance'])
+                    && self::string($root['BedrioxStructureProvenance'], 'BedrioxStructureProvenance')
+                        === SuspiciousSandBlockEntity::WARM_OCEAN_RUIN_PROVENANCE;
+            }
+
             return true;
         } catch (InvalidArgumentException) {
             return false;

@@ -147,14 +147,38 @@ type, implementation, dimensions, health, variant or species state where
 applicable, persistence, spawn-egg path, actor projection, and loot policy.
 Eligible species participate in bounded natural spawning; village-, trader-,
 structure-, and event-owned species remain explicit spawns until their owning
-world systems exist. Goats and mooshrooms can be milked, and mooshrooms fill a
-bowl with stew.
+world systems exist.
 
-Species-specific advanced actions such as fox item carrying and pouncing, goat
-ramming, panda activities, armadillo scute production, mooshroom shearing,
-sniffer digging, and complete horse inventory and jump-charge screens remain
-separate gameplay increments. Their typed state does not imply those actions
-are already implemented.
+Land-animal interactions are server-authoritative. Llamas retain their variant,
+strength, carpet and attached storage, form bounded caravans behind a led
+llama, retaliate with spit, and remain uncontrollable while ridden. Donkeys and
+mules use the same durable attached-storage foundation. Horse equipment opens
+through the current composite inventory layout, while skeleton horses retain
+their saddle-free control rules and armored zombie horses are protected from
+daylight combustion.
+
+Foxes avoid players and predators, rest, hunt, pounce, carry and consume
+items, apply held-weapon damage, and can use a carried totem. Panda genes drive
+their health, aggression and visible activities. Goats climb, ram, lose horns
+against qualified blocks, avoid powder snow and receive their reduced fall
+damage. Polar bears protect cubs, swim, and ignore freezing. Mooshrooms provide
+milk and stew, retain brown or red variants, accept flowers for one suspicious
+stew, react to lightning, and transform into cows when sheared. Armadillos roll
+under threat and provide scutes through brushing and timed shedding.
+
+Ocelots establish trust instead of ownership, become leashable when trusted,
+hunt prey, and deter creepers and Phantoms alongside cats. Sniffers remember
+bounded dig sites and uncover ancient seeds. Warm-ocean ruins contain persisted
+suspicious sand whose hidden loot is revealed through an authoritative,
+interruptible brush sequence; the qualified loot path includes sniffer eggs.
+Leashes support players, entity caravan links, and persistent fence-knot actors
+with exact cleanup and lead recovery.
+
+Plugins can observe or cancel the existing interaction, damage, targeting,
+pickup, equipment, shearing, transformation, breeding, mounting, projectile,
+inventory, effect and item-damage boundaries. Focused leash, storage attachment,
+trust, entity item consumption, brushing and goat-ram events cover mutations
+which do not have a truthful general-purpose boundary.
 
 ## Common hostile mobs
 

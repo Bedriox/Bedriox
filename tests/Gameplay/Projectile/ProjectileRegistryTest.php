@@ -293,6 +293,25 @@ final class ProjectileRegistryTest extends TestCase
         self::assertSame(0.0, ProjectileType::DRAGON_FIREBALL->drag());
     }
 
+    public function testLlamaSpitUsesEntityOwnershipAndBoundedBallisticTrajectory(): void
+    {
+        $registry = new ProjectileRegistry(firstEntityId: 2_300);
+        $spit = $registry->spawnLlamaSpit(
+            '5c8fd1fe-ec31-4bd4-ab14-2c68732d88ea',
+            73,
+            new Position(0.0, 65.0, 0.0),
+            new Position(9.0, 66.0, 0.0),
+        );
+
+        self::assertSame(ProjectileType::LLAMA_SPIT, $spit->type);
+        self::assertSame(ProjectileOwnerType::ENTITY, $spit->ownerType);
+        self::assertSame(73, $spit->ownerRuntimeEntityId);
+        self::assertSame(1.0, $spit->damageBonus);
+        self::assertGreaterThan(0.0, $spit->motion->x);
+        self::assertGreaterThan(0.0, $spit->motion->y);
+        self::assertLessThan($spit->motion->y, $spit->tick()->motion->y);
+    }
+
     public function testProjectileOwnerRequiresAPositiveRuntimeIdentity(): void
     {
         $registry = new ProjectileRegistry();

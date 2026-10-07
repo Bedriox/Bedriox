@@ -44,8 +44,10 @@ use Bedriox\Server\Entity\Vanilla\GlowSquidEntity;
 use Bedriox\Server\Entity\Vanilla\GuardianEntity;
 use Bedriox\Server\Entity\Vanilla\HuskEntity;
 use Bedriox\Server\Entity\Vanilla\MagmaCubeEntity;
+use Bedriox\Server\Entity\Vanilla\Misc\LeashKnotEntity;
 use Bedriox\Server\Entity\Vanilla\Nether\NetherEntityRegistrations;
 use Bedriox\Server\Entity\Vanilla\ParchedEntity;
+use Bedriox\Server\Entity\Vanilla\PhantomEntity;
 use Bedriox\Server\Entity\Vanilla\PigEntity;
 use Bedriox\Server\Entity\Vanilla\PufferfishEntity;
 use Bedriox\Server\Entity\Vanilla\RabbitEntity;
@@ -209,6 +211,20 @@ final class VanillaEntityDefinitions
     {
         return self::hostile(VanillaEntityType::CREEPER, 0.6, 1.8, 20.0);
     }
+    public static function phantom(): EntityDefinition
+    {
+        return self::$hostiles[VanillaEntityType::PHANTOM->value] ??= new EntityDefinition(
+            VanillaEntityType::PHANTOM,
+            EntityCategory::MONSTER,
+            VanillaEntityType::PHANTOM->value,
+            0.9,
+            0.5,
+            20.0,
+            gravity: 0.0,
+            drag: 0.05,
+            burnsInDaylight: true,
+        );
+    }
     public static function enderman(): EntityDefinition
     {
         return self::hostile(VanillaEntityType::ENDERMAN, 0.6, 2.9, 40.0);
@@ -227,10 +243,23 @@ final class VanillaEntityDefinitions
     {
         return self::$passive[VanillaEntityType::ENDER_CRYSTAL->value] ??= new EntityDefinition(
             VanillaEntityType::ENDER_CRYSTAL,
-            EntityCategory::AMBIENT,
+            EntityCategory::MISCELLANEOUS,
             VanillaEntityType::ENDER_CRYSTAL->value,
             2.0,
             2.0,
+            1.0,
+            gravity: 0.0,
+        );
+    }
+
+    public static function leashKnot(): EntityDefinition
+    {
+        return self::$passive[VanillaEntityType::LEASH_KNOT->value] ??= new EntityDefinition(
+            VanillaEntityType::LEASH_KNOT,
+            EntityCategory::MISCELLANEOUS,
+            VanillaEntityType::LEASH_KNOT->value,
+            0.375,
+            0.5,
             1.0,
             gravity: 0.0,
         );
@@ -476,6 +505,7 @@ final class VanillaEntityDefinitions
             new RegisteredEntityDefinition(self::spider(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): SpiderEntity => new SpiderEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
             new RegisteredEntityDefinition(self::caveSpider(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): CaveSpiderEntity => new CaveSpiderEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
             new RegisteredEntityDefinition(self::creeper(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): CreeperEntity => new CreeperEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
+            new RegisteredEntityDefinition(self::phantom(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): PhantomEntity => new PhantomEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
             new RegisteredEntityDefinition(
                 self::slime(),
                 static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): SlimeEntity => new SlimeEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch),
@@ -515,6 +545,7 @@ final class VanillaEntityDefinitions
             new RegisteredEntityDefinition(self::endermite(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): EndermiteEntity => new EndermiteEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
             new RegisteredEntityDefinition(self::enderDragon(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): EnderDragonEntity => new EnderDragonEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
             new RegisteredEntityDefinition(self::endCrystal(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): EndCrystalEntity => new EndCrystalEntity($uuid, $runtimeId, $world, $position)),
+            new RegisteredEntityDefinition(self::leashKnot(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): LeashKnotEntity => new LeashKnotEntity($uuid, $runtimeId, $world, $position)),
             new RegisteredEntityDefinition(self::shulker(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): ShulkerEntity => new ShulkerEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
             new RegisteredEntityDefinition(self::silverfish(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): SilverfishEntity => new SilverfishEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),
             new RegisteredEntityDefinition(self::witch(), static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): WitchEntity => new WitchEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch)),

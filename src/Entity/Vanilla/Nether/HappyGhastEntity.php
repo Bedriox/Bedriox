@@ -102,7 +102,7 @@ final class HappyGhastEntity extends BreedableAnimalEntity implements HappyGhast
             throw new InvalidArgumentException('Persisted happy-ghast state is malformed.', previous: $error);
         }
         if (!is_array($decoded)
-            || array_keys($decoded) !== ['baby', 'babyGrowthTicks', 'breedingCooldownTicks', 'loveTicks', 'harnessed']
+            || array_keys($decoded) !== array_keys([...$this->breedablePersistenceData(), 'harnessed' => $this->harnessed])
             || !is_bool($decoded['harnessed'])) {
             throw new InvalidArgumentException('Persisted happy-ghast state is malformed.');
         }

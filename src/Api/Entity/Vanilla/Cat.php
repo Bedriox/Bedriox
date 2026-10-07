@@ -22,13 +22,14 @@ namespace Bedriox\Api\Entity\Vanilla;
 
 use Bedriox\Api\Entity\Capability\Animal;
 use Bedriox\Api\Entity\Capability\Breedable;
+use Bedriox\Api\Entity\Capability\FelineDeterrent;
 use Bedriox\Api\Entity\Capability\Sittable;
 use Bedriox\Api\Entity\Capability\Tameable;
 use Bedriox\Api\Entity\Controller\TameableAnimalController;
 use Bedriox\Api\Entity\Value\CatVariant;
 use Bedriox\Api\Entity\Value\WoolColor;
 
-interface Cat extends Animal, Breedable, Tameable, Sittable
+interface Cat extends Animal, Breedable, Tameable, Sittable, FelineDeterrent
 {
     public function getVariant(): CatVariant;
 

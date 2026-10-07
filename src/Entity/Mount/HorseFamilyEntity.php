@@ -26,6 +26,7 @@ use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Server\Entity\Ai\AiBehaviorDefinition;
 use Bedriox\Server\Entity\EntityDefinition;
 use Bedriox\Server\Entity\EntityMotion;
+use Bedriox\Server\Entity\Mount\State\HorseArmorState;
 use Bedriox\Server\Entity\TameableAnimalEntity;
 use Bedriox\Server\Plugin\BufferedMountController;
 use Bedriox\Server\Plugin\PluginActionBuffer;
@@ -34,8 +35,10 @@ use InvalidArgumentException;
 use LogicException;
 
 /** Shared authoritative tame, saddle, temper, seating, and breeding state for mount animals. */
-abstract class HorseFamilyEntity extends TameableAnimalEntity implements Rideable
+abstract class HorseFamilyEntity extends TameableAnimalEntity implements HorseArmorHolder, Rideable
 {
+    use HorseArmorState;
+
     public const int MAXIMUM_TEMPER = 100;
 
     public function __construct(
@@ -133,15 +136,20 @@ abstract class HorseFamilyEntity extends TameableAnimalEntity implements Rideabl
 
     final public function mountedPassengerOffset(MountSeat $seat, float $passengerHeight, bool $playerPassenger): MountSeatOffset
     {
+        $passengerBaseY = parent::mountedPassengerOffsetY($seat, $passengerHeight, $playerPassenger);
         if ($seat !== MountSeat::DRIVER && $this->seatCapacity > 1) {
             return new MountSeatOffset(
                 $this->passengerSeatOffsetX ?? $this->driverSeatOffsetX,
-                $this->passengerSeatOffsetY ?? $this->driverSeatOffsetY,
+                $passengerBaseY + ($this->passengerSeatOffsetY ?? $this->driverSeatOffsetY),
                 $this->passengerSeatOffsetZ ?? $this->driverSeatOffsetZ,
             );
         }
 
-        return new MountSeatOffset($this->driverSeatOffsetX, $this->driverSeatOffsetY, $this->driverSeatOffsetZ);
+        return new MountSeatOffset(
+            $this->driverSeatOffsetX,
+            $passengerBaseY + $this->driverSeatOffsetY,
+            $this->driverSeatOffsetZ,
+        );
     }
 
     final public function getController(): MountController
@@ -155,13 +163,14 @@ abstract class HorseFamilyEntity extends TameableAnimalEntity implements Rideabl
     }
 
     /**
-     * @return array{baby: bool, babyGrowthTicks: int, breedingCooldownTicks: int, loveTicks: int, ownerUniqueId: ?string, saddled: bool, sitting: bool, temper: int}
+     * @return array{baby: bool, babyGrowthTicks: int, breedingCooldownTicks: int, horseArmor: ?array<string, mixed>, loveTicks: int, ownerUniqueId: ?string, saddled: bool, sitting: bool, temper: int}
      */
     final protected function horseFamilyPersistenceData(): array
     {
         return [
             ...$this->breedablePersistenceData(),
             ...$this->tameablePersistenceData(),
+            'horseArmor' => $this->horseArmorPersistenceData(),
             'saddled' => $this->saddled,
             'temper' => $this->temper,
         ];
@@ -170,7 +179,7 @@ abstract class HorseFamilyEntity extends TameableAnimalEntity implements Rideabl
     /** @param array<mixed> $data */
     final protected function restoreHorseFamilyPersistenceData(array $data): void
     {
-        foreach (['saddled', 'temper'] as $key) {
+        foreach (['horseArmor', 'saddled', 'temper'] as $key) {
             if (!array_key_exists($key, $data)) {
                 throw new InvalidArgumentException('Persisted horse-family state is missing mount data.');
             }
@@ -181,6 +190,7 @@ abstract class HorseFamilyEntity extends TameableAnimalEntity implements Rideabl
         self::validateTemper($data['temper']);
         $this->restoreBreedablePersistenceData($data);
         $this->restoreTameablePersistenceData($data);
+        $this->restoreHorseArmor($data['horseArmor']);
         $this->saddled = $data['saddled'];
         $this->temper = $data['temper'];
     }

@@ -44,6 +44,7 @@ enum VanillaEntityType: string implements VanillaEntityIdentity
     case SPIDER = 'minecraft:spider';
     case CAVE_SPIDER = 'minecraft:cave_spider';
     case CREEPER = 'minecraft:creeper';
+    case PHANTOM = 'minecraft:phantom';
     case SLIME = 'minecraft:slime';
     case MAGMA_CUBE = 'minecraft:magma_cube';
     case BLAZE = 'minecraft:blaze';
@@ -59,6 +60,7 @@ enum VanillaEntityType: string implements VanillaEntityIdentity
     case ENDERMITE = 'minecraft:endermite';
     case ENDER_DRAGON = 'minecraft:ender_dragon';
     case ENDER_CRYSTAL = 'minecraft:ender_crystal';
+    case LEASH_KNOT = 'minecraft:leash_knot';
     case SHULKER = 'minecraft:shulker';
     case SILVERFISH = 'minecraft:silverfish';
     case WITCH = 'minecraft:witch';

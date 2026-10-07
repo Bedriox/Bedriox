@@ -94,7 +94,7 @@
     },
     "config": {
         "allow-plugins": {},
-        "process-timeout": 1200,
+        "process-timeout": 3600,
         "sort-packages": true
     },
     "minimum-stability": "stable",

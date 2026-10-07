@@ -47,8 +47,13 @@ final class HorseFamilyEntityTest extends TestCase
         self::assertSame(42, $mount->getTemper());
         self::assertSame(2, $mount->getSeatCapacity());
         self::assertEqualsWithDelta(
-            1.25,
+            2.334_444_444_8,
             $mount->mountedPassengerOffsetY(MountSeat::DRIVER, 1.6, true),
+            0.000_000_001,
+        );
+        self::assertEqualsWithDelta(
+            0.854_938_272,
+            $mount->mountedPassengerOffsetY(MountSeat::DRIVER, 1.6, false),
             0.000_000_001,
         );
     }

@@ -28,6 +28,8 @@ use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Encounter\EnderDragonEncounter;
 use Bedriox\Api\Encounter\EnderDragonPhase;
 use Bedriox\Api\Entity\Capability\Breedable;
+use Bedriox\Api\Entity\Capability\ChestedAnimal;
+use Bedriox\Api\Entity\Capability\Leashable;
 use Bedriox\Api\Entity\Capability\Shearable;
 use Bedriox\Api\Entity\Capability\Tameable;
 use Bedriox\Api\Entity\Entity as ApiEntity;
@@ -43,8 +45,11 @@ use Bedriox\Api\Entity\LivingEntity as ApiLivingEntity;
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\Value\EntityBlockChangeReason;
 use Bedriox\Api\Entity\Value\EntityTransformReason;
+use Bedriox\Api\Entity\Value\LeashDetachReason;
 use Bedriox\Api\Entity\Value\MountReason;
 use Bedriox\Api\Entity\Value\MountSeat;
+use Bedriox\Api\Entity\Vanilla\Armadillo as ApiArmadillo;
+use Bedriox\Api\Entity\Vanilla\Goat as ApiGoat;
 use Bedriox\Api\Entity\Vanilla\Ocelot as ApiOcelot;
 use Bedriox\Api\Entity\Vector3;
 use Bedriox\Api\Event\Block\BlockBreakEvent;
@@ -72,10 +77,14 @@ use Bedriox\Api\Event\Encounter\EndGatewayCreatedEvent;
 use Bedriox\Api\Event\Encounter\EndGatewayCreateEvent;
 use Bedriox\Api\Event\Entity\ActorKnockbackEvent;
 use Bedriox\Api\Event\Entity\ActorKnockedBackEvent;
+use Bedriox\Api\Event\Entity\AnimalStorageAttachedEvent;
+use Bedriox\Api\Event\Entity\AnimalStorageAttachEvent;
 use Bedriox\Api\Event\Entity\EntityBlockChangedEvent;
 use Bedriox\Api\Event\Entity\EntityBlockChangeEvent;
 use Bedriox\Api\Event\Entity\EntityBredEvent;
 use Bedriox\Api\Event\Entity\EntityBreedEvent;
+use Bedriox\Api\Event\Entity\EntityBrushedEvent;
+use Bedriox\Api\Event\Entity\EntityBrushEvent;
 use Bedriox\Api\Event\Entity\EntityCombustEvent;
 use Bedriox\Api\Event\Entity\EntityDamageByEntityEvent;
 use Bedriox\Api\Event\Entity\EntityDamageEvent;
@@ -94,6 +103,10 @@ use Bedriox\Api\Event\Entity\EntityExplodedEvent;
 use Bedriox\Api\Event\Entity\EntityExplosionPrimeEvent;
 use Bedriox\Api\Event\Entity\EntityInteractedEvent;
 use Bedriox\Api\Event\Entity\EntityInteractEvent;
+use Bedriox\Api\Event\Entity\EntityItemConsumedEvent;
+use Bedriox\Api\Event\Entity\EntityItemConsumeEvent;
+use Bedriox\Api\Event\Entity\EntityLeashedEvent;
+use Bedriox\Api\Event\Entity\EntityLeashEvent;
 use Bedriox\Api\Event\Entity\EntityMountedEvent;
 use Bedriox\Api\Event\Entity\EntityMountEvent;
 use Bedriox\Api\Event\Entity\EntityPickedUpItemEvent;
@@ -113,8 +126,12 @@ use Bedriox\Api\Event\Entity\EntityTransformedEvent;
 use Bedriox\Api\Event\Entity\EntityTransformEvent;
 use Bedriox\Api\Event\Entity\EntityTrustedEvent;
 use Bedriox\Api\Event\Entity\EntityTrustEvent;
+use Bedriox\Api\Event\Entity\EntityUnleashedEvent;
+use Bedriox\Api\Event\Entity\EntityUnleashEvent;
 use Bedriox\Api\Event\Entity\ExperienceOrbSpawnedEvent;
 use Bedriox\Api\Event\Entity\ExperienceOrbSpawnEvent;
+use Bedriox\Api\Event\Entity\GoatRamEvent;
+use Bedriox\Api\Event\Entity\GoatRammedEvent;
 use Bedriox\Api\Event\Entity\PiglinBarteredEvent;
 use Bedriox\Api\Event\Entity\PiglinBarterEvent;
 use Bedriox\Api\Event\Entity\PotionProjectileImpactedEvent;
@@ -435,6 +452,119 @@ final readonly class PluginGameplayEventBridge
     public function entityTrusted(ApiOcelot $entity, Player $player): void
     {
         $this->events->dispatch(new EntityTrustedEvent($entity, $this->playerView($player)));
+    }
+
+    public function allowBrush(
+        Player $player,
+        ApiArmadillo $entity,
+        InventoryStack $tool,
+        ApiItemStack $drop,
+    ): bool {
+        $event = new EntityBrushEvent(
+            $this->playerView($player),
+            $entity,
+            new ApiItemStack($tool->identifier, 1, $tool->damage, $tool->nbt, $tool->auxValue),
+            $drop,
+        );
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function entityBrushed(
+        Player $player,
+        ApiArmadillo $entity,
+        InventoryStack $tool,
+        ApiItemStack $drop,
+    ): void {
+        $this->events->dispatch(new EntityBrushedEvent(
+            $this->playerView($player),
+            $entity,
+            new ApiItemStack($tool->identifier, 1, $tool->damage, $tool->nbt, $tool->auxValue),
+            $drop,
+        ));
+    }
+
+    public function allowLeash(Leashable $entity, Player|ApiEntity $holder): bool
+    {
+        $event = new EntityLeashEvent(
+            $entity,
+            $holder instanceof Player ? $this->playerView($holder) : $holder,
+        );
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function entityLeashed(Leashable $entity, Player|ApiEntity $holder): void
+    {
+        $this->events->dispatch(new EntityLeashedEvent(
+            $entity,
+            $holder instanceof Player ? $this->playerView($holder) : $holder,
+        ));
+    }
+
+    public function allowUnleash(Leashable $entity, Player|ApiEntity|null $holder, LeashDetachReason $reason): bool
+    {
+        $event = new EntityUnleashEvent(
+            $entity,
+            $holder instanceof Player ? $this->playerView($holder) : $holder,
+            $reason,
+        );
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function entityUnleashed(Leashable $entity, Player|ApiEntity|null $holder, LeashDetachReason $reason): void
+    {
+        $this->events->dispatch(new EntityUnleashedEvent(
+            $entity,
+            $holder instanceof Player ? $this->playerView($holder) : $holder,
+            $reason,
+        ));
+    }
+
+    public function allowAnimalStorageAttach(ChestedAnimal $entity, Player $player): bool
+    {
+        $event = new AnimalStorageAttachEvent($entity, $this->playerView($player));
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function animalStorageAttached(ChestedAnimal $entity, Player $player): void
+    {
+        $this->events->dispatch(new AnimalStorageAttachedEvent($entity, $this->playerView($player)));
+    }
+
+    public function allowEntityItemConsume(ApiLivingEntity $entity, ApiItemStack $item): bool
+    {
+        $event = new EntityItemConsumeEvent($entity, $item);
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function entityItemConsumed(ApiLivingEntity $entity, ApiItemStack $item): void
+    {
+        $this->events->dispatch(new EntityItemConsumedEvent($entity, $item));
+    }
+
+    public function allowGoatRam(ApiGoat $goat, Player|ApiLivingEntity $target): bool
+    {
+        $event = new GoatRamEvent($goat, $target instanceof Player ? $this->playerView($target) : $target);
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function goatRammed(ApiGoat $goat, Player|ApiLivingEntity $target): void
+    {
+        $this->events->dispatch(new GoatRammedEvent(
+            $goat,
+            $target instanceof Player ? $this->playerView($target) : $target,
+        ));
     }
 
     /** @param Closure(string): PlayerConnection $playerConnections */

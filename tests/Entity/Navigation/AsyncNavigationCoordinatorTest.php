@@ -69,6 +69,28 @@ final class AsyncNavigationCoordinatorTest extends TestCase
         self::assertSame(1, $navigation->metrics()->completed);
         self::assertSame(1, $navigation->metrics()->cached);
     }
+
+    public function testDistantDiagonalTargetCannotExceedSnapshotRequestBounds(): void
+    {
+        $entities = new EntityRegistry();
+        $mob = (new EntitySpawnService($entities, EntityDefinitionRegistry::baseline()))->spawn(
+            new EntitySpawnRequest(
+                VanillaEntityType::COW,
+                SpawnCause::COMMAND,
+                'world',
+                new Position(0.5, 64.0, 0.5),
+            ),
+        )->entity;
+        self::assertInstanceOf(AbstractMobEntity::class, $mob);
+        $workers = new NavigationTestDispatcher();
+        $navigation = new AsyncNavigationCoordinator($entities, new NavigationTestCollisionQuery(), $workers);
+
+        self::assertEquals(
+            $mob->internalPosition(),
+            $navigation->waypoint($mob, new Position(100.5, 64.0, 100.5), 1),
+        );
+        self::assertSame(1, $workers->submissions);
+    }
 }
 
 final class NavigationTestCollisionQuery implements LoadedCollisionBoxQuery

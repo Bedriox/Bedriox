@@ -21,6 +21,8 @@ declare(strict_types=1);
 namespace Bedriox\Server\World\Generation;
 
 use Bedriox\Server\World\Block\InternalBlockStateId;
+use Bedriox\Server\World\BlockEntity\BlockEntity;
+use Bedriox\Server\World\BlockEntity\BlockEntityCollection;
 use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\SubChunk;
@@ -33,6 +35,9 @@ final class MutableChunkBuilder
     private array $sections = [];
 
     private readonly string $emptySection;
+
+    /** @var array<string, BlockEntity> */
+    private array $blockEntities = [];
 
     public function __construct(
         public readonly ChunkPosition $position,
@@ -94,6 +99,24 @@ final class MutableChunkBuilder
         }
 
         return Chunk::MIN_Y;
+    }
+
+    public function addBlockEntity(BlockEntity $entity): void
+    {
+        if ((int) floor($entity->position->x / 16) !== $this->position->x
+            || (int) floor($entity->position->z / 16) !== $this->position->z) {
+            return;
+        }
+        $key = $entity->position->x . ':' . $entity->position->y . ':' . $entity->position->z;
+        if (isset($this->blockEntities[$key])) {
+            throw new \LogicException('Generation attempted to place duplicate block entities.');
+        }
+        $this->blockEntities[$key] = $entity;
+    }
+
+    public function blockEntities(): BlockEntityCollection
+    {
+        return new BlockEntityCollection($this->position, array_values($this->blockEntities));
     }
 
     /** @return list<SubChunk> */

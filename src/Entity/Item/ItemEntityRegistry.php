@@ -63,9 +63,29 @@ final class ItemEntityRegistry
         return $this->capacity - count($this->entities);
     }
 
+    public function spawnableCapacity(): int
+    {
+        return min(
+            $this->remainingCapacity(),
+            $this->remainingRuntimeIdCapacity(),
+        );
+    }
+
+    public function remainingRuntimeIdCapacity(): int
+    {
+        return max(0, PHP_INT_MAX - $this->nextEntityId);
+    }
+
     public function canSpawn(): bool
     {
-        return count($this->entities) < $this->capacity
+        return $this->spawnableCapacity() > 0;
+    }
+
+    /** Whether one removed actor can be replaced without losing its remaining stack. */
+    public function canRespawnAfterRemovingOne(): bool
+    {
+        return $this->entities !== []
+            && (count($this->entities) - 1) < $this->capacity
             && $this->nextEntityId > 0 && $this->nextEntityId < PHP_INT_MAX;
     }
 

@@ -21,10 +21,12 @@ declare(strict_types=1);
 namespace Bedriox\Server\Entity;
 
 use Bedriox\Api\Entity\Capability\Breedable;
+use Bedriox\Api\Entity\Capability\Leashable;
+use Bedriox\Api\Entity\Value\LeashHolderType;
 use InvalidArgumentException;
 
 /** Shared authoritative age and breeding state for vanilla animals. */
-abstract class BreedableAnimalEntity extends AnimalEntity implements Breedable
+abstract class BreedableAnimalEntity extends AnimalEntity implements Breedable, Leashable
 {
     public const int MAXIMUM_LOVE_TICKS = 600;
     public const int BABY_GROWTH_TICKS = 24_000;
@@ -34,6 +36,9 @@ abstract class BreedableAnimalEntity extends AnimalEntity implements Breedable
     private int $loveTicks;
     private int $babyGrowthTicks;
     private int $breedingCooldownTicks;
+    private ?string $leashHolderUniqueId = null;
+    private ?int $leashHolderRuntimeId = null;
+    private ?LeashHolderType $leashHolderType = null;
 
     final protected function initializeBreedableState(
         bool $baby = false,
@@ -64,6 +69,53 @@ abstract class BreedableAnimalEntity extends AnimalEntity implements Breedable
     final public function isReadyToBreed(): bool
     {
         return !$this->baby && $this->loveTicks > 0 && $this->breedingCooldownTicks === 0;
+    }
+
+    final public function isLeashed(): bool
+    {
+        return $this->leashHolderUniqueId !== null;
+    }
+
+    final public function getLeashHolderUniqueId(): ?string
+    {
+        return $this->leashHolderUniqueId;
+    }
+
+    final public function getLeashHolderType(): ?LeashHolderType
+    {
+        return $this->leashHolderType;
+    }
+
+    /** @internal Current-session identity used by Bedrock leash metadata. */
+    final public function getLeashHolderRuntimeId(): ?int
+    {
+        return $this->leashHolderRuntimeId;
+    }
+
+    /** @internal Authoritative leash mutation. */
+    final public function setLeashHolder(
+        ?string $uniqueId,
+        ?int $runtimeId,
+        ?LeashHolderType $type = null,
+    ): void {
+        if ($uniqueId !== null && $type === null) {
+            $type = LeashHolderType::PLAYER;
+        }
+        if (($uniqueId === null) !== ($runtimeId === null)
+            || ($uniqueId === null) !== ($type === null)
+            || ($runtimeId !== null && $runtimeId < 1)) {
+            throw new InvalidArgumentException('Leash holder identity and runtime ID are inconsistent.');
+        }
+        if ($uniqueId !== null) {
+            $uniqueId = EntityUuid::validate($uniqueId);
+        }
+        if ($this->leashHolderUniqueId !== $uniqueId || $this->leashHolderRuntimeId !== $runtimeId
+            || $this->leashHolderType !== $type) {
+            $this->leashHolderUniqueId = $uniqueId;
+            $this->leashHolderRuntimeId = $runtimeId;
+            $this->leashHolderType = $type;
+            $this->markPresentationChanged();
+        }
     }
 
     final public function setBaby(bool $baby): void
@@ -139,7 +191,7 @@ abstract class BreedableAnimalEntity extends AnimalEntity implements Breedable
         $this->markChanged();
     }
 
-    /** @return array{baby: bool, babyGrowthTicks: int, breedingCooldownTicks: int, loveTicks: int} */
+    /** @return array{baby: bool, babyGrowthTicks: int, breedingCooldownTicks: int, loveTicks: int, leashHolderUniqueId: ?string, leashHolderType: ?string} */
     final protected function breedablePersistenceData(): array
     {
         return [
@@ -147,6 +199,8 @@ abstract class BreedableAnimalEntity extends AnimalEntity implements Breedable
             'babyGrowthTicks' => $this->babyGrowthTicks,
             'breedingCooldownTicks' => $this->breedingCooldownTicks,
             'loveTicks' => $this->loveTicks,
+            'leashHolderUniqueId' => $this->leashHolderUniqueId,
+            'leashHolderType' => $this->leashHolderType?->value,
         ];
     }
 
@@ -162,6 +216,17 @@ abstract class BreedableAnimalEntity extends AnimalEntity implements Breedable
             || !is_int($data['breedingCooldownTicks']) || !is_int($data['loveTicks'])) {
             throw new InvalidArgumentException('Persisted animal breeding data is malformed.');
         }
+        $holderUniqueId = $data['leashHolderUniqueId'] ?? null;
+        $holderType = $data['leashHolderType'] ?? ($holderUniqueId === null ? null : LeashHolderType::PLAYER->value);
+        if (($holderUniqueId !== null && !is_string($holderUniqueId))
+            || ($holderType !== null && !is_string($holderType))) {
+            throw new InvalidArgumentException('Persisted animal leash data is malformed.');
+        }
+        $resolvedHolderType = $holderType === null ? null : LeashHolderType::tryFrom($holderType);
+        if (($holderType !== null && $resolvedHolderType === null)
+            || (($holderUniqueId === null) !== ($resolvedHolderType === null))) {
+            throw new InvalidArgumentException('Persisted animal leash identity is inconsistent.');
+        }
         self::validateBreedableState(
             $data['baby'],
             $data['loveTicks'],
@@ -172,6 +237,11 @@ abstract class BreedableAnimalEntity extends AnimalEntity implements Breedable
         $this->babyGrowthTicks = $data['babyGrowthTicks'];
         $this->breedingCooldownTicks = $data['breedingCooldownTicks'];
         $this->loveTicks = $data['loveTicks'];
+        $this->leashHolderUniqueId = $holderUniqueId === null
+            ? null
+            : EntityUuid::validate($holderUniqueId);
+        $this->leashHolderRuntimeId = null;
+        $this->leashHolderType = $resolvedHolderType;
     }
 
     final protected function sizeMultiplier(): float

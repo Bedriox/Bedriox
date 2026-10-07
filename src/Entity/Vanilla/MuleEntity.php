@@ -22,12 +22,13 @@ namespace Bedriox\Server\Entity\Vanilla;
 
 use Bedriox\Api\Entity\Vanilla\Mule;
 use Bedriox\Server\Entity\EntityMotion;
+use Bedriox\Server\Entity\Mount\AnimalStorageInventoryOwner;
 use Bedriox\Server\Entity\Mount\MountEntityDefinitions;
 use Bedriox\Server\Entity\Mount\PersistentHorseFamilyEntity;
 use Bedriox\Server\Entity\Mount\State\ChestedHorseState;
 use Bedriox\Server\Simulation\Position;
 
-final class MuleEntity extends PersistentHorseFamilyEntity implements Mule
+final class MuleEntity extends PersistentHorseFamilyEntity implements AnimalStorageInventoryOwner, Mule
 {
     use ChestedHorseState;
 
@@ -74,7 +75,7 @@ final class MuleEntity extends PersistentHorseFamilyEntity implements Mule
             0.975,
             -0.2,
         );
-        $this->initializeChestedHorseState($chested);
+        $this->initializeChestedHorseState($uniqueId, $chested);
     }
 
     protected function mountSpeciesPersistenceData(): array

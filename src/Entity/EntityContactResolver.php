@@ -25,6 +25,7 @@ use Bedriox\Server\Entity\Ai\AiClock;
 use Bedriox\Server\Entity\Ai\SystemAiClock;
 use Bedriox\Server\Entity\Mount\MountLink;
 use Bedriox\Server\Entity\Mount\MountRegistry;
+use Bedriox\Server\Entity\Vanilla\Misc\LeashKnotEntity;
 
 /** Applies a bounded, deterministic horizontal soft push between overlapping actors. */
 final readonly class EntityContactResolver
@@ -75,7 +76,8 @@ final readonly class EntityContactResolver
                     break 2;
                 }
                 ++$pairs;
-                if ($this->sameMountAssembly($entity, $other) || !$this->overlapsVertically($entity, $other)) {
+                if ($entity instanceof LeashKnotEntity || $other instanceof LeashKnotEntity
+                    || $this->sameMountAssembly($entity, $other) || !$this->overlapsVertically($entity, $other)) {
                     continue;
                 }
                 $left = $entity->internalPosition();

@@ -21,6 +21,11 @@ declare(strict_types=1);
 namespace Bedriox\Api\Entity\Vanilla;
 
 use Bedriox\Api\Entity\Capability\Ageable;
+use Bedriox\Api\Entity\Capability\Angerable;
 use Bedriox\Api\Entity\Capability\Animal;
+use Bedriox\Api\Entity\Capability\FreezeImmune;
 
-interface PolarBear extends Ageable, Animal {}
+interface PolarBear extends Ageable, Angerable, Animal, FreezeImmune
+{
+    public function isStanding(): bool;
+}

@@ -834,7 +834,7 @@ final class WorldSimulationTest extends TestCase
         ));
     }
 
-    public function testDeathReturnsCraftingInputsToTheAuthoritativeInventory(): void
+    public function testDeathClearsCraftingInputsWithTheAuthoritativeInventory(): void
     {
         $data = BedrockDataSet::bundled();
         $registry = new BlockStateRegistry($data->blockStateRegistry()->states());
@@ -878,10 +878,7 @@ final class WorldSimulationTest extends TestCase
         $synced = $world->tick()->events[0];
 
         self::assertInstanceOf(InventoryStackRequestProcessed::class, $synced);
-        $restored = $synced->mainInventory[0];
-        self::assertNotNull($restored);
-        self::assertSame('minecraft:oak_planks', $restored->identifier);
-        self::assertSame(1, $restored->count);
+        self::assertNull($synced->mainInventory[0]);
         self::assertSame(array_fill(0, 4, null), $synced->craftingInventory);
     }
 
@@ -1099,7 +1096,8 @@ final class WorldSimulationTest extends TestCase
 
     public function testGrassPlacementUsesAuthoritativeServerInventoryAndDecrementsOnlyTheOwnersStack(): void
     {
-        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $data = BedrockDataSet::bundled();
+        $registry = new BlockStateRegistry($data->blockStateRegistry()->states());
         $palette = FixedFlatBlockPalette::fromRegistry($registry);
         $blocks = new World(
             new WorldMetadata('placement-test', 0),
@@ -1107,9 +1105,17 @@ final class WorldSimulationTest extends TestCase
             new ChunkRepository(4),
         );
         $factory = new SimulationCommandFactory();
-        $world = new WorldSimulation(blockWorld: $blocks, blockPalette: $palette);
+        $world = new WorldSimulation(
+            blockWorld: $blocks,
+            blockPalette: $palette,
+            itemCatalog: ItemCatalog::vanilla($data->itemNetworkRegistry()),
+            blockStateRegistry: $registry,
+        );
         self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
         self::assertTrue($world->enqueue($factory->join('two', 'identity-two', 'Two')));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->giveItem('one', 'minecraft:grass_block', 64)));
+        self::assertTrue($world->enqueue($factory->giveItem('two', 'minecraft:grass_block', 64)));
         $world->tick();
         $clicked = new BlockPosition(1, 63, 0);
         $breaking = new BlockPosition(3, 63, 0);
@@ -1179,14 +1185,14 @@ final class WorldSimulationTest extends TestCase
         ] as [$identifier, $state, $sequence]) {
             $world->enqueue($factory->giveItem('one', $identifier, 1));
             $world->tick();
-            $world->enqueue($factory->selectHotbarSlot('one', 1));
+            $world->enqueue($factory->selectHotbarSlot('one', 0));
             $world->tick();
             $world->enqueue($factory->placeBlock(
                 'one',
                 $sequence,
                 new BlockPosition($sequence + 1, 63, 0),
                 1,
-                1,
+                0,
                 0,
                 0.5,
                 1.0,
@@ -1201,7 +1207,8 @@ final class WorldSimulationTest extends TestCase
 
     public function testPlacementRejectsCollisionAndRepairsBothBlocksAndInventory(): void
     {
-        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $data = BedrockDataSet::bundled();
+        $registry = new BlockStateRegistry($data->blockStateRegistry()->states());
         $palette = FixedFlatBlockPalette::fromRegistry($registry);
         $blocks = new World(
             new WorldMetadata('placement-collision-test', 0),
@@ -1209,8 +1216,16 @@ final class WorldSimulationTest extends TestCase
             new ChunkRepository(4),
         );
         $factory = new SimulationCommandFactory();
-        $world = new WorldSimulation(blockWorld: $blocks, blockPalette: $palette);
+        $world = new WorldSimulation(
+            blockWorld: $blocks,
+            blockPalette: $palette,
+            itemCatalog: ItemCatalog::vanilla($data->itemNetworkRegistry()),
+            blockCatalog: BlockCatalog::vanilla(),
+            blockStateRegistry: $registry,
+        );
         self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->giveItem('one', 'minecraft:grass_block', 64)));
         $world->tick();
 
         self::assertTrue($world->enqueue($factory->placeBlock(
@@ -1245,7 +1260,12 @@ final class WorldSimulationTest extends TestCase
         );
         $factory = new SimulationCommandFactory();
         $world = new WorldSimulation(blockWorld: $blocks, blockPalette: $palette);
-        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        self::assertTrue($world->enqueue($factory->join(
+            'one',
+            'identity-one',
+            'One',
+            bootstrap: self::grassBootstrap('placement-faces-test'),
+        )));
         $world->tick();
         $cases = [
             [0, new BlockPosition(2, 65, 0), [2, 64, 0]],
@@ -1301,7 +1321,7 @@ final class WorldSimulationTest extends TestCase
         $world->tick();
         self::assertTrue($world->enqueue($factory->giveItem('one', 'minecraft:oak_log', 6)));
         $world->tick();
-        self::assertTrue($world->enqueue($factory->selectHotbarSlot('one', 1)));
+        self::assertTrue($world->enqueue($factory->selectHotbarSlot('one', 0)));
         $world->tick();
         $cases = [
             [0, 'y', new BlockPosition(2, 65, 0)],
@@ -1321,7 +1341,7 @@ final class WorldSimulationTest extends TestCase
                 $index + 1,
                 $clicked,
                 $face,
-                1,
+                0,
                 0,
                 0.5,
                 0.5,
@@ -1349,7 +1369,12 @@ final class WorldSimulationTest extends TestCase
         $blocks->setBlockState(3, 63, 0, $palette->air);
         $factory = new SimulationCommandFactory();
         $world = new WorldSimulation(blockWorld: $blocks, blockPalette: $palette);
-        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        self::assertTrue($world->enqueue($factory->join(
+            'one',
+            'identity-one',
+            'One',
+            bootstrap: self::grassBootstrap('placement-capacity-test'),
+        )));
         $world->tick();
         self::assertTrue($world->enqueue($factory->placeBlock(
             'one',
@@ -1437,7 +1462,12 @@ final class WorldSimulationTest extends TestCase
         );
         $factory = new SimulationCommandFactory();
         $world = new WorldSimulation(blockWorld: $blocks, blockPalette: $palette);
-        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        self::assertTrue($world->enqueue($factory->join(
+            'one',
+            'identity-one',
+            'One',
+            bootstrap: self::grassBootstrap('inventory-placement-test'),
+        )));
         self::assertTrue($world->enqueue($factory->join('two', 'identity-two', 'Two')));
         $world->tick();
 
@@ -1495,7 +1525,12 @@ final class WorldSimulationTest extends TestCase
         );
         $factory = new SimulationCommandFactory();
         $world = new WorldSimulation(blockWorld: $blocks, blockPalette: $palette);
-        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        self::assertTrue($world->enqueue($factory->join(
+            'one',
+            'identity-one',
+            'One',
+            bootstrap: self::grassBootstrap('legacy-inventory-placement-test'),
+        )));
         $world->tick();
 
         self::assertTrue($world->enqueue($factory->inventoryStackRequest('one', 0, [
@@ -1865,7 +1900,12 @@ final class WorldSimulationTest extends TestCase
             blockWorld: $blocks,
             blockPalette: $palette,
         );
-        $world->enqueue($factory->join('session', 'identity', 'Player'));
+        $world->enqueue($factory->join(
+            'session',
+            'identity',
+            'Player',
+            bootstrap: self::grassBootstrap('place-support-test', new Position(0.5, 65.0, 0.5), 'identity', 'Player'),
+        ));
         $world->tick();
         self::assertSame(VerticalState::AIRBORNE, $world->snapshot()->players[0]->verticalState);
         $world->enqueue($factory->placeBlock(
@@ -2540,7 +2580,12 @@ final class WorldSimulationTest extends TestCase
         $items = new ItemEntityRegistry(firstEntityId: 1_000_000_000);
         $world = new WorldSimulation(blockPalette: $palette, itemEntities: $items);
         $factory = new SimulationCommandFactory();
-        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        self::assertTrue($world->enqueue($factory->join(
+            'one',
+            'identity-one',
+            'One',
+            bootstrap: self::grassBootstrap('world'),
+        )));
         $world->tick();
         self::assertTrue($world->enqueue($factory->dropItem(
             'one',
@@ -2676,5 +2721,25 @@ final class WorldSimulationTest extends TestCase
                 $world->retainChunk(new ChunkPosition($chunkX, $chunkZ));
             }
         }
+    }
+
+    private static function grassBootstrap(
+        string $worldName,
+        Position $position = new Position(0.0, 64.0, 0.0),
+        string $identity = 'identity-one',
+        string $name = 'One',
+    ): PlayerBootstrap {
+        return new PlayerBootstrap(
+            new PlayerIdentity($identity, $name),
+            $worldName,
+            $position,
+            0.0,
+            0.0,
+            new PlayerInventoryState([
+                new PlayerInventoryEntry(0, new PlayerInventoryStackState('minecraft:grass_block', 64)),
+            ], 0),
+            1,
+            2,
+        );
     }
 }

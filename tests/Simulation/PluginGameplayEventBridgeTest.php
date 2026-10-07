@@ -25,14 +25,19 @@ use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Entity\EntityInteractionType;
 use Bedriox\Api\Entity\EntityTargetReason;
+use Bedriox\Api\Entity\Value\LeashDetachReason;
 use Bedriox\Api\Event\Block\BlockBreakEvent;
 use Bedriox\Api\Event\Block\BlockBrokenEvent;
 use Bedriox\Api\Event\Block\BlockPlaceEvent;
 use Bedriox\Api\Event\Entity\EntityEffectAddedEvent;
 use Bedriox\Api\Event\Entity\EntityEffectAddEvent;
 use Bedriox\Api\Event\Entity\EntityInteractedEvent;
+use Bedriox\Api\Event\Entity\EntityLeashedEvent;
+use Bedriox\Api\Event\Entity\EntityLeashEvent;
 use Bedriox\Api\Event\Entity\EntityTargetChangedEvent;
 use Bedriox\Api\Event\Entity\EntityTargetEvent;
+use Bedriox\Api\Event\Entity\EntityUnleashedEvent;
+use Bedriox\Api\Event\Entity\EntityUnleashEvent;
 use Bedriox\Api\Event\EventPriority;
 use Bedriox\Api\Event\Inventory\InventoryChangedEvent;
 use Bedriox\Api\Event\Inventory\InventoryChangeEvent;
@@ -74,6 +79,7 @@ use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Entity\EntityUuid;
+use Bedriox\Server\Entity\Vanilla\LlamaEntity;
 use Bedriox\Server\Entity\Vanilla\SheepEntity;
 use Bedriox\Server\Entity\Vanilla\SkeletonEntity;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
@@ -120,6 +126,112 @@ use Throwable;
 
 final class PluginGameplayEventBridgeTest extends TestCase
 {
+    public function testLeashLifecycleEventsPreserveCancellationAttributionAndPostOrdering(): void
+    {
+        $player = new Player(
+            'session',
+            1,
+            new PlayerIdentity('identity-one', 'One'),
+            new Position(0.0, 64.0, 0.0),
+            4,
+            0,
+            64.0,
+        );
+        $llama = new LlamaEntity(
+            EntityUuid::random(),
+            2,
+            'world',
+            new Position(1.0, 64.0, 0.0),
+        );
+
+        [$cancellingDispatcher, $cancellingBridge] = self::bridge();
+        $cancelledPostEvents = 0;
+        $cancellingDispatcher->register(
+            'Example',
+            EntityLeashEvent::class,
+            static function (EntityLeashEvent $event): void {
+                $event->cancel();
+            },
+        );
+        $cancellingDispatcher->register(
+            'Example',
+            EntityLeashedEvent::class,
+            static function () use (&$cancelledPostEvents): void {
+                ++$cancelledPostEvents;
+            },
+        );
+        self::assertFalse($cancellingBridge->allowLeash($llama, $player));
+        self::assertSame(0, $cancelledPostEvents);
+
+        [$dispatcher, $bridge] = self::bridge();
+        $order = [];
+        $dispatcher->register(
+            'Example',
+            EntityLeashEvent::class,
+            static function (EntityLeashEvent $event) use (&$order, $llama): void {
+                self::assertSame($llama, $event->entity);
+                self::assertInstanceOf(ApiPlayer::class, $event->holder);
+                self::assertSame('One', $event->holder->name);
+                $order[] = 'leash-pre';
+            },
+        );
+        $dispatcher->register(
+            'Example',
+            EntityLeashedEvent::class,
+            static function (EntityLeashedEvent $event) use (&$order, $llama): void {
+                self::assertSame($llama, $event->entity);
+                self::assertInstanceOf(ApiPlayer::class, $event->holder);
+                self::assertSame('One', $event->holder->name);
+                $order[] = 'leash-post';
+            },
+        );
+        $dispatcher->register(
+            'Example',
+            EntityUnleashEvent::class,
+            static function (EntityUnleashEvent $event) use (&$order, $llama): void {
+                self::assertSame($llama, $event->entity);
+                self::assertNull($event->holder);
+                self::assertSame(LeashDetachReason::HOLDER_UNAVAILABLE, $event->reason);
+                $order[] = 'unleash-pre';
+            },
+        );
+        $dispatcher->register(
+            'Example',
+            EntityUnleashedEvent::class,
+            static function (EntityUnleashedEvent $event) use (&$order, $llama): void {
+                self::assertSame($llama, $event->entity);
+                self::assertNull($event->holder);
+                self::assertSame(LeashDetachReason::HOLDER_UNAVAILABLE, $event->reason);
+                $order[] = 'unleash-post';
+            },
+        );
+
+        self::assertTrue($bridge->allowLeash($llama, $player));
+        $bridge->entityLeashed($llama, $player);
+        self::assertTrue($bridge->allowUnleash($llama, null, LeashDetachReason::HOLDER_UNAVAILABLE));
+        $bridge->entityUnleashed($llama, null, LeashDetachReason::HOLDER_UNAVAILABLE);
+        self::assertSame(['leash-pre', 'leash-post', 'unleash-pre', 'unleash-post'], $order);
+
+        [$unleashDispatcher, $unleashBridge] = self::bridge();
+        $unleashPostEvents = 0;
+        $unleashDispatcher->register(
+            'Example',
+            EntityUnleashEvent::class,
+            static function (EntityUnleashEvent $event): void {
+                $event->cancel();
+            },
+        );
+        $unleashDispatcher->register(
+            'Example',
+            EntityUnleashedEvent::class,
+            static function () use (&$unleashPostEvents): void {
+                ++$unleashPostEvents;
+            },
+        );
+        self::assertFalse($unleashBridge->allowUnleash($llama, $player, LeashDetachReason::INTERACTION));
+        self::assertSame(0, $unleashPostEvents);
+    }
+
     public function testJoinEventProvidesYellowDefaultAndAllowsReplacementOrSuppression(): void
     {
         [$dispatcher, $bridge] = self::bridge();

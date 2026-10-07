@@ -196,6 +196,8 @@ final class LandMobFoundationTest extends TestCase
                 'babyGrowthTicks' => SheepEntity::BABY_GROWTH_TICKS - 20,
                 'breedingCooldownTicks' => 0,
                 'loveTicks' => 0,
+                'leashHolderUniqueId' => null,
+                'leashHolderType' => null,
                 'sheared' => false,
             ],
             json_decode($restored->persistenceData(), true, flags: JSON_THROW_ON_ERROR),

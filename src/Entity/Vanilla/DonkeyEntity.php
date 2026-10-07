@@ -22,12 +22,13 @@ namespace Bedriox\Server\Entity\Vanilla;
 
 use Bedriox\Api\Entity\Vanilla\Donkey;
 use Bedriox\Server\Entity\EntityMotion;
+use Bedriox\Server\Entity\Mount\AnimalStorageInventoryOwner;
 use Bedriox\Server\Entity\Mount\MountEntityDefinitions;
 use Bedriox\Server\Entity\Mount\PersistentHorseFamilyEntity;
 use Bedriox\Server\Entity\Mount\State\ChestedHorseState;
 use Bedriox\Server\Simulation\Position;
 
-final class DonkeyEntity extends PersistentHorseFamilyEntity implements Donkey
+final class DonkeyEntity extends PersistentHorseFamilyEntity implements AnimalStorageInventoryOwner, Donkey
 {
     use ChestedHorseState;
 
@@ -74,7 +75,7 @@ final class DonkeyEntity extends PersistentHorseFamilyEntity implements Donkey
             0.925,
             -0.2,
         );
-        $this->initializeChestedHorseState($chested);
+        $this->initializeChestedHorseState($uniqueId, $chested);
     }
 
     protected function mountSpeciesPersistenceData(): array

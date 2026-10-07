@@ -23,6 +23,7 @@ namespace Bedriox\Server\Tests\World;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\World\BiomeRuntimeIdMap;
 use Bedriox\Server\World\Block\BlockStateRegistry;
+use Bedriox\Server\World\BlockEntity\SuspiciousSandBlockEntity;
 use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\DefaultWorldGenerator;
@@ -31,12 +32,12 @@ use PHPUnit\Framework\TestCase;
 
 final class DefaultWorldGeneratorTest extends TestCase
 {
-    public function testDefaultGeneratorIsOfficialVersionOne(): void
+    public function testDefaultGeneratorUsesCurrentVersion(): void
     {
         [$generator] = self::generator(0);
 
         self::assertSame('default', $generator->name());
-        self::assertSame(2, $generator->version());
+        self::assertSame(3, $generator->version());
     }
 
     /** @return iterable<string, array{int}> */
@@ -157,6 +158,58 @@ final class DefaultWorldGeneratorTest extends TestCase
         self::assertTrue(
             isset($stronghold['minecraft:mossy_stone_bricks'])
             || isset($stronghold['minecraft:cracked_stone_bricks']),
+        );
+    }
+
+    public function testWarmOceanRuinOwnsDeterministicBoundedArchaeologyLoot(): void
+    {
+        [$generator, $states] = self::generator(0);
+        $chunk = $generator->generate(new ChunkPosition(-2783, 1890));
+        $entities = array_values(array_filter(
+            $chunk->blockEntities(),
+            static fn(object $entity): bool => $entity instanceof SuspiciousSandBlockEntity,
+        ));
+
+        self::assertCount(3, $entities);
+        self::assertCount(1, array_filter(
+            $entities,
+            static fn(SuspiciousSandBlockEntity $entity): bool => $entity->hiddenItem->identifier === 'minecraft:sniffer_egg',
+        ));
+        foreach ($entities as $entity) {
+            self::assertSame(SuspiciousSandBlockEntity::WARM_OCEAN_RUIN_PROVENANCE, $entity->provenance);
+            self::assertSame(1, $entity->hiddenItem->count);
+            self::assertSame('minecraft:suspicious_sand', self::identifierAt(
+                $chunk,
+                $states,
+                (($entity->position->x % 16) + 16) % 16,
+                $entity->position->y,
+                (($entity->position->z % 16) + 16) % 16,
+            ));
+        }
+        self::assertSame(
+            array_map(
+                static fn(SuspiciousSandBlockEntity $entity): array => [
+                    $entity->position->x,
+                    $entity->position->y,
+                    $entity->position->z,
+                    $entity->hiddenItem->identifier,
+                    $entity->lootSeed,
+                ],
+                $entities,
+            ),
+            array_map(
+                static fn(SuspiciousSandBlockEntity $entity): array => [
+                    $entity->position->x,
+                    $entity->position->y,
+                    $entity->position->z,
+                    $entity->hiddenItem->identifier,
+                    $entity->lootSeed,
+                ],
+                array_values(array_filter(
+                    $generator->generate(new ChunkPosition(-2783, 1890))->blockEntities(),
+                    static fn(object $entity): bool => $entity instanceof SuspiciousSandBlockEntity,
+                )),
+            ),
         );
     }
 

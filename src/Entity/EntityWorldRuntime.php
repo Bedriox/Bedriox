@@ -21,6 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Entity;
 
 use Bedriox\Api\Entity\MobActivationState;
+use Bedriox\Api\Entity\Value\ArmadilloState;
 use Bedriox\Server\Entity\Ai\AiClock;
 use Bedriox\Server\Entity\Ai\AiScheduler;
 use Bedriox\Server\Entity\Ai\AiSchedulerMetrics;
@@ -31,6 +32,7 @@ use Bedriox\Server\Entity\Ai\SystemAiClock;
 use Bedriox\Server\Entity\Spawn\EntitySpawnOutcome;
 use Bedriox\Server\Entity\Spawn\EntitySpawnRequest;
 use Bedriox\Server\Entity\Spawn\EntitySpawnService;
+use Bedriox\Server\Entity\Vanilla\ArmadilloEntity;
 use Closure;
 use InvalidArgumentException;
 
@@ -79,6 +81,9 @@ final class EntityWorldRuntime
         $entity = $this->entities->getByRuntimeId($runtimeId);
         if (!$entity instanceof AbstractLivingEntity || !$entity->isAlive()) {
             return null;
+        }
+        if ($entity instanceof ArmadilloEntity && $entity->getState() !== ArmadilloState::UNROLLED) {
+            $amount = max(0.0, $amount - 1.0);
         }
         $applied = $entity->damage($amount);
 

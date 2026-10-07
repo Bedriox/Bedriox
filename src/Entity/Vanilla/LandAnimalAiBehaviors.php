@@ -21,15 +21,21 @@ declare(strict_types=1);
 namespace Bedriox\Server\Entity\Vanilla;
 
 use Bedriox\Server\Entity\Ai\AiBehaviorDefinition;
+use Bedriox\Server\Entity\Ai\Goal\AvoidUntrustedPlayerGoal;
 use Bedriox\Server\Entity\Ai\Goal\ChasePlayerGoal;
 use Bedriox\Server\Entity\Ai\Goal\FleeFromPlayerGoal;
 use Bedriox\Server\Entity\Ai\Goal\FollowOwnerGoal;
 use Bedriox\Server\Entity\Ai\Goal\MeleeAttackIntentGoal;
+use Bedriox\Server\Entity\Ai\Goal\PandaWanderGoal;
+use Bedriox\Server\Entity\Ai\Goal\PolarBearAttackGoal;
+use Bedriox\Server\Entity\Ai\Goal\PolarBearCubFleeGoal;
 use Bedriox\Server\Entity\Ai\Goal\TemptedByItemGoal;
 use Bedriox\Server\Entity\Ai\Goal\WanderGoal;
+use Bedriox\Server\Entity\Ai\Goal\WorriedPandaAvoidThreatGoal;
 use Bedriox\Server\Entity\Ai\Sensor\AngerTargetSensor;
 use Bedriox\Server\Entity\Ai\Sensor\HurtSensor;
 use Bedriox\Server\Entity\Ai\Sensor\NearestPlayerSensor;
+use Bedriox\Server\Entity\Ai\Sensor\PolarBearThreatSensor;
 use Bedriox\Server\Entity\Ai\Sensor\TemptingPlayerSensor;
 
 /** Basic bounded behavior used until each species' specialized goals are available. */
@@ -101,6 +107,58 @@ final class LandAnimalAiBehaviors
                 new FollowOwnerGoal('bedriox:wolf_follow_owner', 90, 6.0, 2.0, 0.14),
                 new TemptedByItemGoal('bedriox:wolf_follow_bone', 80, 2.0, 0.12),
                 new WanderGoal('bedriox:wolf_wander', 10, 40, 35, 0.09),
+            ],
+        );
+    }
+
+    public static function polarBear(): AiBehaviorDefinition
+    {
+        return self::$behaviors['polar_bear'] ??= new AiBehaviorDefinition(
+            sensors: [
+                new PolarBearThreatSensor(),
+                new HurtSensor('bedriox:polar_bear_hurt', 60),
+            ],
+            goals: [
+                new PolarBearAttackGoal(),
+                new PolarBearCubFleeGoal(),
+                new WanderGoal('bedriox:polar_bear_wander', 10, 40, 35, 0.08),
+            ],
+        );
+    }
+
+    public static function panda(): AiBehaviorDefinition
+    {
+        return self::$behaviors['panda'] ??= new AiBehaviorDefinition(
+            sensors: [
+                new AngerTargetSensor('bedriox:panda_anger_target'),
+                new NearestPlayerSensor('bedriox:panda_nearest_player', 5, 8.0, 20),
+                new TemptingPlayerSensor('bedriox:panda_food', 5, 10.0, ['minecraft:bamboo'], 10),
+                new HurtSensor('bedriox:panda_hurt', 60),
+            ],
+            goals: [
+                new WorriedPandaAvoidThreatGoal(),
+                new MeleeAttackIntentGoal('bedriox:panda_attack', 120, 1.8, 20, 6.0),
+                new ChasePlayerGoal('bedriox:panda_chase', 110, 1.5, 0.16),
+                new TemptedByItemGoal('bedriox:panda_follow_bamboo', 80, 2.0, 0.08),
+                new PandaWanderGoal(),
+            ],
+        );
+    }
+
+    /** @param list<string> $foods */
+    public static function cautious(string $species, array $foods, float $speed): AiBehaviorDefinition
+    {
+        return self::$behaviors['cautious:' . $species] ??= new AiBehaviorDefinition(
+            sensors: [
+                new NearestPlayerSensor("bedriox:{$species}_nearest_player", 5, 16.0, 20),
+                new TemptingPlayerSensor("bedriox:{$species}_food", 5, 10.0, $foods, 10),
+                new HurtSensor("bedriox:{$species}_hurt", 60),
+            ],
+            goals: [
+                new FleeFromPlayerGoal("bedriox:{$species}_hurt_flee", 120, max(0.22, $speed + 0.10)),
+                new AvoidUntrustedPlayerGoal("bedriox:{$species}_avoid_untrusted", 110, max(0.20, $speed + 0.08), 12.0),
+                new TemptedByItemGoal("bedriox:{$species}_follow_food", 115, 2.0, $speed),
+                new WanderGoal("bedriox:{$species}_wander", 10, 40, 35, $speed * 0.75),
             ],
         );
     }

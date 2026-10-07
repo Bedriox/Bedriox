@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Mount;
 
+use Bedriox\Server\Entity\Persistence\EntityPersistenceLimits;
 use Bedriox\Server\Entity\Persistence\IntrinsicEntityPersistence;
 use InvalidArgumentException;
 use JsonException;
@@ -36,12 +37,18 @@ abstract class PersistentUndeadHorseEntity extends UndeadHorseEntity implements 
     }
     final public function persistenceData(): string
     {
-        return json_encode($this->undeadHorsePersistenceData(), JSON_THROW_ON_ERROR);
+        $data = json_encode($this->undeadHorsePersistenceData(), JSON_THROW_ON_ERROR);
+        if (strlen($data) > EntityPersistenceLimits::MAX_CUSTOM_DATA_BYTES) {
+            throw new InvalidArgumentException('Persisted undead-horse state exceeds its supported size.');
+        }
+
+        return $data;
     }
 
     final public function restorePersistenceState(int|string|null $variant, int $schemaVersion, string $data): void
     {
-        if ($variant !== null || $schemaVersion !== 1 || strlen($data) > 256) {
+        if ($variant !== null || $schemaVersion !== 1
+            || strlen($data) > EntityPersistenceLimits::MAX_CUSTOM_DATA_BYTES) {
             throw new InvalidArgumentException('Persisted undead-horse state has an unsupported schema.');
         }
         try {

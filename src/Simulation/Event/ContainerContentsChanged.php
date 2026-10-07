@@ -46,13 +46,15 @@ final readonly class ContainerContentsChanged implements WorldEvent
         public ?ContainerLayout $layout = null,
     ) {
         $double = $containerType->isPaired();
-        $expectedSlots = $containerType === ContainerType::VIRTUAL ? $layout?->size() : $containerType->slotCount();
+        $expectedSlots = $containerType === ContainerType::VIRTUAL
+            ? $layout?->size()
+            : ($containerType === ContainerType::HORSE ? count($slots) : $containerType->slotCount());
         if ($windowId < 2 || $windowId > 99
-            || (($containerType === ContainerType::VIRTUAL || $containerType === ContainerType::CHEST_BOAT)
+            || ((in_array($containerType, [ContainerType::VIRTUAL, ContainerType::CHEST_BOAT, ContainerType::HORSE], true))
                 !== ($position === null))
             || ($containerType === ContainerType::VIRTUAL) !== ($layout !== null)
             || $double !== ($pairedPosition !== null)
-            || $expectedSlots === null
+            || $expectedSlots === null || ($containerType === ContainerType::HORSE && ($expectedSlots < 1 || $expectedSlots > 54))
             || count($slots) !== $expectedSlots) {
             throw new InvalidArgumentException('Storage-container content projection is invalid.');
         }

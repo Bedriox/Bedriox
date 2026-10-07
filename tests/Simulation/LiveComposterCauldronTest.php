@@ -80,12 +80,17 @@ final class LiveComposterCauldronTest extends TestCase
         self::assertTrue($simulation->enqueue($factory->join('one', 'identity-one', 'One')));
         $simulation->tick();
         self::assertTrue($simulation->enqueue($factory->giveItem('one', 'minecraft:cake', 1)));
-        self::assertTrue($simulation->enqueue($factory->selectHotbarSlot('one', 1)));
+        self::assertTrue($simulation->enqueue($factory->selectHotbarSlot('one', 0)));
         $simulation->tick();
+        self::assertSame('minecraft:cake', $simulation->snapshot()->players[0]->selectedStack?->identifier);
 
-        self::assertTrue($simulation->enqueue($factory->placeBlock('one', 1, $position, 1, 1, 0, 0.5, 0.5, 0.5)));
+        self::assertTrue($simulation->enqueue($factory->placeBlock('one', 1, $position, 1, 0, 0, 0.5, 0.5, 0.5)));
         $events = $simulation->tick()->events;
-        self::assertInstanceOf(BlockChanged::class, $events[0]);
+        self::assertInstanceOf(
+            BlockChanged::class,
+            $events[0],
+            $events[0] instanceof BlockPlacementCorrected ? $events[0]->reason : '',
+        );
         self::assertSame(7, self::properties($world, $states, $position)['composter_fill_level']);
         self::assertNull($simulation->snapshot()->players[0]->selectedStack);
 
@@ -96,7 +101,7 @@ final class LiveComposterCauldronTest extends TestCase
         $simulation->tick();
         self::assertSame(8, self::properties($world, $states, $position)['composter_fill_level']);
 
-        self::assertTrue($simulation->enqueue($factory->placeBlock('one', 2, $position, 1, 1, 0, 0.5, 0.5, 0.5)));
+        self::assertTrue($simulation->enqueue($factory->placeBlock('one', 2, $position, 1, 0, 0, 0.5, 0.5, 0.5)));
         $extracted = $simulation->tick()->events;
         self::assertInstanceOf(BlockChanged::class, $extracted[0]);
         self::assertSame(0, self::properties($world, $states, $position)['composter_fill_level']);
@@ -123,9 +128,9 @@ final class LiveComposterCauldronTest extends TestCase
         $simulation->enqueue($factory->join('one', 'identity-one', 'One'));
         $simulation->tick();
         $simulation->enqueue($factory->giveItem('one', 'minecraft:cake', 1));
-        $simulation->enqueue($factory->selectHotbarSlot('one', 1));
+        $simulation->enqueue($factory->selectHotbarSlot('one', 0));
         $simulation->tick();
-        $simulation->enqueue($factory->placeBlock('one', 1, $position, 1, 1, 0, 0.5, 0.5, 0.5));
+        $simulation->enqueue($factory->placeBlock('one', 1, $position, 1, 0, 0, 0.5, 0.5, 0.5));
 
         self::assertInstanceOf(BlockPlacementCorrected::class, $simulation->tick()->events[0]);
         self::assertSame(0, self::properties($world, $states, $position)['composter_fill_level']);
@@ -144,9 +149,9 @@ final class LiveComposterCauldronTest extends TestCase
         $simulation->enqueue($factory->join('one', 'identity-one', 'One'));
         $simulation->tick();
         $simulation->enqueue($factory->giveItem('one', 'minecraft:potion', 1, auxValue: 5));
-        $simulation->enqueue($factory->selectHotbarSlot('one', 1));
+        $simulation->enqueue($factory->selectHotbarSlot('one', 0));
         $simulation->tick();
-        $simulation->enqueue($factory->placeBlock('one', 1, $position, 1, 1, 0, 0.5, 0.5, 0.5));
+        $simulation->enqueue($factory->placeBlock('one', 1, $position, 1, 0, 0, 0.5, 0.5, 0.5));
 
         self::assertInstanceOf(BlockChanged::class, $simulation->tick()->events[0]);
         self::assertSame(2, self::properties($world, $states, $position)['fill_level']);
@@ -155,7 +160,7 @@ final class LiveComposterCauldronTest extends TestCase
         self::assertSame(5, $entity->potionAuxValue);
         self::assertSame('minecraft:glass_bottle', $simulation->snapshot()->players[0]->selectedStack?->identifier);
 
-        $simulation->enqueue($factory->placeBlock('one', 2, $position, 1, 1, 0, 0.5, 0.5, 0.5));
+        $simulation->enqueue($factory->placeBlock('one', 2, $position, 1, 0, 0, 0.5, 0.5, 0.5));
         $extracted = $simulation->tick()->events;
         self::assertInstanceOf(BlockChanged::class, $extracted[0]);
         self::assertSame(0, self::properties($world, $states, $position)['fill_level']);

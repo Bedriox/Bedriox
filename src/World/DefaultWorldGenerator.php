@@ -22,6 +22,8 @@ namespace Bedriox\Server\World;
 
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\InternalBlockStateId;
+use Bedriox\Server\World\BlockEntity\ContainerItemStack;
+use Bedriox\Server\World\BlockEntity\SuspiciousSandBlockEntity;
 use Bedriox\Server\World\Generation\GenerationBlockPalette;
 use Bedriox\Server\World\Generation\MutableChunkBuilder;
 use Bedriox\Server\World\Generation\OverworldBiomeResolver;
@@ -167,6 +169,7 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
             $surfaceBiomes[0],
             finalizationState: ChunkFinalizationState::Done,
             biomeStorages: $biomeStorages,
+            blockEntities: $builder->blockEntities(),
         );
     }
 
@@ -1087,7 +1090,13 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
                     $anchorZ,
                 );
                 if (str_contains($biome, 'ocean')) {
-                    $this->placeOceanRuin($builder, $anchorX, $anchorZ, $ground);
+                    $this->placeOceanRuin(
+                        $builder,
+                        $anchorX,
+                        $anchorZ,
+                        $ground,
+                        $biome === 'minecraft:warm_ocean',
+                    );
                 } elseif (str_contains($biome, 'desert') || str_contains($biome, 'mesa')) {
                     $this->placeDesertTemple($builder, $anchorX, $anchorZ, $ground);
                 } elseif (str_contains($biome, 'jungle') || str_contains($biome, 'bamboo')) {
@@ -1158,8 +1167,13 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
         }
     }
 
-    private function placeOceanRuin(MutableChunkBuilder $builder, int $centerX, int $centerZ, int $floor): void
-    {
+    private function placeOceanRuin(
+        MutableChunkBuilder $builder,
+        int $centerX,
+        int $centerZ,
+        int $floor,
+        bool $warm,
+    ): void {
         for ($z = -6; $z <= 6; ++$z) {
             for ($x = -6; $x <= 6; ++$x) {
                 if (abs($x) + abs($z) > 9) {
@@ -1181,6 +1195,32 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
                 }
             }
         }
+        if (!$warm) {
+            return;
+        }
+        foreach ([[-3, -2], [2, 3], [0, 0]] as $index => [$offsetX, $offsetZ]) {
+            $x = $centerX + $offsetX;
+            $z = $centerZ + $offsetZ;
+            $lootSeed = $this->archaeologySeed($x, $floor + 1, $z, $index);
+            $identifier = $this->noise->chance($x, $floor, $z, 9_739 + $index, 10_000) < 670
+                ? 'minecraft:sniffer_egg'
+                : ['minecraft:brick', 'minecraft:emerald', 'minecraft:wheat'][$index];
+            $builder->setWorld($x, $floor + 1, $z, $this->blocks->state('minecraft:suspicious_sand'));
+            $builder->addBlockEntity(new SuspiciousSandBlockEntity(
+                new BlockPosition($x, $floor + 1, $z),
+                new ContainerItemStack($identifier, 1),
+                $lootSeed,
+                SuspiciousSandBlockEntity::WARM_OCEAN_RUIN_PROVENANCE,
+            ));
+        }
+    }
+
+    private function archaeologySeed(int $x, int $y, int $z, int $index): int
+    {
+        $high = $this->noise->chance($x, $y, $z, 9_751 + $index, 0x7fffffff);
+        $low = $this->noise->chance($z, $y, $x, 9_761 + $index, 0x7fffffff);
+
+        return ($high << 31) ^ $low;
     }
 
     private function placeSwampHut(MutableChunkBuilder $builder, int $centerX, int $centerZ, int $ground): void

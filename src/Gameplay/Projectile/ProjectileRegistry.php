@@ -347,6 +347,48 @@ final class ProjectileRegistry
         return $projectile;
     }
 
+    public function spawnLlamaSpit(
+        string $ownerUuid,
+        int $ownerRuntimeEntityId,
+        Position $position,
+        Position $target,
+    ): Projectile {
+        if (count($this->projectiles) >= $this->capacity || $this->nextEntityId >= PHP_INT_MAX) {
+            throw new OverflowException('Projectile registry is exhausted.');
+        }
+        $dx = $target->x - $position->x;
+        $dy = $target->y - $position->y;
+        $dz = $target->z - $position->z;
+        $distance = hypot(hypot($dx, $dz), $dy);
+        if ($distance < 0.001 || !is_finite($distance)) {
+            throw new InvalidArgumentException('Llama spit target must differ from its origin.');
+        }
+        $speed = 0.9;
+        $id = $this->nextEntityId++;
+        $yaw = rad2deg(atan2(-$dx, $dz));
+        $pitch = rad2deg(-asin(max(-1.0, min(1.0, $dy / $distance))));
+        $projectile = new Projectile(
+            $id,
+            $id,
+            $ownerUuid,
+            PotionType::WATER,
+            false,
+            $position,
+            new EntityMotion($dx / $distance * $speed, $dy / $distance * $speed, $dz / $distance * $speed),
+            pickupAllowed: false,
+            damageBonus: 1.0,
+            knockbackStrength: 0.1,
+            type: ProjectileType::LLAMA_SPIT,
+            ownerRuntimeEntityId: $ownerRuntimeEntityId,
+            ownerType: ProjectileOwnerType::ENTITY,
+            yaw: $yaw,
+            pitch: $pitch,
+        );
+        $this->projectiles[$id] = $projectile;
+
+        return $projectile;
+    }
+
     public function spawnTrident(
         string $ownerUuid,
         int $ownerRuntimeEntityId,

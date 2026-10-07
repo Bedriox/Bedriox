@@ -42,12 +42,15 @@ abstract class AbstractLivingEntity extends AbstractEntity implements ApiLivingE
 {
     public const int MAXIMUM_FIRE_TICKS = 0x7fff;
     public const int MAXIMUM_AIR_SUPPLY_TICKS = 300;
+    public const int MAXIMUM_FREEZE_TICKS = 140;
 
     private float $health;
 
     private int $fireTicks = 0;
 
     private int $breathingAirSupplyTicks = self::MAXIMUM_AIR_SUPPLY_TICKS;
+
+    private int $freezeTicks = 0;
 
     private float $absorption = 0.0;
 
@@ -126,6 +129,37 @@ abstract class AbstractLivingEntity extends AbstractEntity implements ApiLivingE
             self::MAXIMUM_AIR_SUPPLY_TICKS,
             $this->breathingAirSupplyTicks + 4,
         );
+    }
+
+    /** @internal Current powder-snow exposure used for the Bedrock freezing overlay. */
+    final public function getFreezeTicks(): int
+    {
+        return $this->freezeTicks;
+    }
+
+    /** @internal Normalized current freezing overlay strength. */
+    final public function freezingEffectStrength(): float
+    {
+        return $this->freezeTicks / self::MAXIMUM_FREEZE_TICKS;
+    }
+
+    /** @internal Advances freezing and reports a vanilla two-second damage pulse. */
+    final public function advanceFreezingState(bool $inPowderSnow, bool $canFreeze, int $tick): bool
+    {
+        if ($tick < 0) {
+            throw new InvalidArgumentException('Entity freezing tick cannot be negative.');
+        }
+        $previous = $this->freezeTicks;
+        $this->freezeTicks = $inPowderSnow && $canFreeze
+            ? min(self::MAXIMUM_FREEZE_TICKS, $this->freezeTicks + 1)
+            : max(0, $this->freezeTicks - 2);
+        if ($this->freezeTicks !== $previous) {
+            $this->markPresentationChanged();
+        }
+
+        return $canFreeze
+            && $this->freezeTicks === self::MAXIMUM_FREEZE_TICKS
+            && $tick % 40 === 0;
     }
 
     /** @internal Applies an effect through authoritative staged controller work. */
@@ -335,9 +369,14 @@ abstract class AbstractLivingEntity extends AbstractEntity implements ApiLivingE
 
     final public function getMaximumHealth(): float
     {
-        return $this->definition->maximumHealth
+        return $this->baseMaximumHealth()
             + VanillaEffectBehavior::maximumHealth($this->effects->snapshot())
             - \Bedriox\Server\Player\PlayerVitals::MAX_HEALTH;
+    }
+
+    protected function baseMaximumHealth(): float
+    {
+        return $this->definition->maximumHealth;
     }
 
     final public function getAbsorption(): float

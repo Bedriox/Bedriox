@@ -33,7 +33,9 @@ use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Entity\Capability\Arthropod;
 use Bedriox\Api\Entity\Capability\Breedable;
+use Bedriox\Api\Entity\Capability\ChestedAnimal;
 use Bedriox\Api\Entity\Capability\FireImmune;
+use Bedriox\Api\Entity\Capability\FreezeImmune;
 use Bedriox\Api\Entity\Capability\Rideable;
 use Bedriox\Api\Entity\Capability\Tameable;
 use Bedriox\Api\Entity\Capability\Undead;
@@ -42,19 +44,25 @@ use Bedriox\Api\Entity\EntityCategory;
 use Bedriox\Api\Entity\EntityCombustionCause;
 use Bedriox\Api\Entity\EntityDamageCause as ApiEntityDamageCause;
 use Bedriox\Api\Entity\EntityTargetReason;
+use Bedriox\Api\Entity\EntityType;
 use Bedriox\Api\Entity\KnockbackCause as ApiKnockbackCause;
 use Bedriox\Api\Entity\KnockbackVector as ApiKnockbackVector;
 use Bedriox\Api\Entity\MobActivationState;
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\Value\BoatVariant;
 use Bedriox\Api\Entity\Value\EntityTransformReason;
+use Bedriox\Api\Entity\Value\LeashDetachReason;
+use Bedriox\Api\Entity\Value\LeashHolderType;
+use Bedriox\Api\Entity\Value\MooshroomStewEffect;
 use Bedriox\Api\Entity\Value\MooshroomVariant;
 use Bedriox\Api\Entity\Value\MountReason;
 use Bedriox\Api\Entity\Value\MountSeat;
+use Bedriox\Api\Entity\Value\PandaActivity;
 use Bedriox\Api\Entity\Value\PandaGene;
 use Bedriox\Api\Entity\Value\RabbitVariant;
 use Bedriox\Api\Entity\Value\SlimeSize;
 use Bedriox\Api\Entity\Value\WoolColor;
+use Bedriox\Api\Entity\Vanilla\Llama as ApiLlama;
 use Bedriox\Api\Entity\Vanilla\Skeleton as ApiSkeleton;
 use Bedriox\Api\Entity\Vanilla\Zombie as ApiZombie;
 use Bedriox\Api\Entity\VanillaEntityIdentifier;
@@ -88,9 +96,12 @@ use Bedriox\Api\TextFormat;
 use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\BlockFace as ApiBlockFace;
 use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
+use Bedriox\Api\World\Particle\StandardParticle;
+use Bedriox\Api\World\Particle\StandardParticleType;
 use Bedriox\Api\World\PortalType;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\WeatherState;
+use Bedriox\Api\World\WeatherType;
 use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BlockPropertyRegistry;
 use Bedriox\Data\CanonicalBlockState;
@@ -103,14 +114,17 @@ use Bedriox\Server\Entity\Ai\AiMeleeIntent;
 use Bedriox\Server\Entity\Ai\AiPlayerSnapshot;
 use Bedriox\Server\Entity\Ai\AiRangedIntent;
 use Bedriox\Server\Entity\Ai\AiSchedulerMetrics;
+use Bedriox\Server\Entity\Ai\HorizontalSteering;
 use Bedriox\Server\Entity\Ai\IndexedAiWorldView;
 use Bedriox\Server\Entity\Ai\Sensor\HoglinRepellentIndex;
 use Bedriox\Server\Entity\Ai\VanillaAiMemories;
 use Bedriox\Server\Entity\AquaticBucketRegistry;
 use Bedriox\Server\Entity\AquaticRuntimeState;
 use Bedriox\Server\Entity\BreedableAnimalEntity;
+use Bedriox\Server\Entity\Concern\IncomingDamageModifier;
 use Bedriox\Server\Entity\Concern\MutableAngerState;
 use Bedriox\Server\Entity\EntityContactResolver;
+use Bedriox\Server\Entity\EntityDamageResult;
 use Bedriox\Server\Entity\EntityDefinition;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\EntityDespawnPolicy;
@@ -118,6 +132,7 @@ use Bedriox\Server\Entity\EntityMotion;
 use Bedriox\Server\Entity\EntityPhysicsResolver;
 use Bedriox\Server\Entity\EntityRegistry;
 use Bedriox\Server\Entity\EntityWorldRuntime;
+use Bedriox\Server\Entity\Equipment\BodyEquipmentHolder;
 use Bedriox\Server\Entity\Equipment\EntityEquipmentTransition;
 use Bedriox\Server\Entity\Experience\ExperienceOrbCollisionResolver;
 use Bedriox\Server\Entity\Experience\ExperienceOrbMotion;
@@ -127,11 +142,16 @@ use Bedriox\Server\Entity\Item\DroppedItemCollisionResolver;
 use Bedriox\Server\Entity\Item\DroppedItemEntity;
 use Bedriox\Server\Entity\Item\ItemEntityMotion;
 use Bedriox\Server\Entity\Item\ItemEntityRegistry;
+use Bedriox\Server\Entity\Leash\LeashAttachmentRegistry;
 use Bedriox\Server\Entity\Loot\EntityLootResolver;
 use Bedriox\Server\Entity\Loot\EquippedLootItem;
 use Bedriox\Server\Entity\Loot\GameplayLootItemRegistry;
 use Bedriox\Server\Entity\Loot\LootContext;
+use Bedriox\Server\Entity\Mount\AnimalEquipmentSlotDeclaration;
+use Bedriox\Server\Entity\Mount\AnimalEquipmentSlotType;
+use Bedriox\Server\Entity\Mount\AnimalStorageInventoryOwner;
 use Bedriox\Server\Entity\Mount\HorseFamilyEntity;
+use Bedriox\Server\Entity\Mount\Inventory\HorseContainerInventory;
 use Bedriox\Server\Entity\Mount\MountLink;
 use Bedriox\Server\Entity\Mount\MountRegistry;
 use Bedriox\Server\Entity\Mount\UndeadHorseEntity;
@@ -172,8 +192,10 @@ use Bedriox\Server\Entity\Vanilla\End\ShulkerEntity;
 use Bedriox\Server\Entity\Vanilla\EndermanEntity;
 use Bedriox\Server\Entity\Vanilla\FoxEntity;
 use Bedriox\Server\Entity\Vanilla\GoatEntity;
+use Bedriox\Server\Entity\Vanilla\HorseEntity;
 use Bedriox\Server\Entity\Vanilla\LlamaEntity;
 use Bedriox\Server\Entity\Vanilla\MagmaCubeEntity;
+use Bedriox\Server\Entity\Vanilla\Misc\LeashKnotEntity;
 use Bedriox\Server\Entity\Vanilla\MooshroomEntity;
 use Bedriox\Server\Entity\Vanilla\MuleEntity;
 use Bedriox\Server\Entity\Vanilla\Nether\BlazeEntity;
@@ -188,6 +210,7 @@ use Bedriox\Server\Entity\Vanilla\Nether\ZombifiedPiglinEntity;
 use Bedriox\Server\Entity\Vanilla\OcelotEntity;
 use Bedriox\Server\Entity\Vanilla\PandaEntity;
 use Bedriox\Server\Entity\Vanilla\PigEntity;
+use Bedriox\Server\Entity\Vanilla\PolarBearEntity;
 use Bedriox\Server\Entity\Vanilla\RabbitEntity;
 use Bedriox\Server\Entity\Vanilla\SheepEntity;
 use Bedriox\Server\Entity\Vanilla\SkeletonHorseEntity;
@@ -306,6 +329,7 @@ use Bedriox\Server\Simulation\Command\AddPlayerEffect;
 use Bedriox\Server\Simulation\Command\ApplyInventoryStackRequest;
 use Bedriox\Server\Simulation\Command\AttackPlayer;
 use Bedriox\Server\Simulation\Command\BreakBlock;
+use Bedriox\Server\Simulation\Command\BrushBlock;
 use Bedriox\Server\Simulation\Command\ChangeGameMode;
 use Bedriox\Server\Simulation\Command\ClearPlayerEffects;
 use Bedriox\Server\Simulation\Command\CloseContainer;
@@ -373,6 +397,7 @@ use Bedriox\Server\Simulation\Event\EnderDragonBossBarChanged;
 use Bedriox\Server\Simulation\Event\EndGatewayTransferRequested;
 use Bedriox\Server\Simulation\Event\EndPortalTransferRequested;
 use Bedriox\Server\Simulation\Event\EntityActorAttackStarted;
+use Bedriox\Server\Simulation\Event\EntityActorBodyEquipmentChanged;
 use Bedriox\Server\Simulation\Event\EntityActorDamaged;
 use Bedriox\Server\Simulation\Event\EntityActorDied;
 use Bedriox\Server\Simulation\Event\EntityActorEffectChanged;
@@ -384,6 +409,7 @@ use Bedriox\Server\Simulation\Event\EntityActorRemoved;
 use Bedriox\Server\Simulation\Event\EntityActorSpawned;
 use Bedriox\Server\Simulation\Event\EntityExplosionPresented;
 use Bedriox\Server\Simulation\Event\EntityInteracted;
+use Bedriox\Server\Simulation\Event\EntityTotemConsumedPresented;
 use Bedriox\Server\Simulation\Event\ExperienceOrbMoved;
 use Bedriox\Server\Simulation\Event\ExperienceOrbPickedUp;
 use Bedriox\Server\Simulation\Event\ExperienceOrbRemoved;
@@ -434,6 +460,7 @@ use Bedriox\Server\World\BlockEntity\BlockEntityType;
 use Bedriox\Server\World\BlockEntity\ContainerBlockEntity;
 use Bedriox\Server\World\BlockEntity\ContainerItemStack;
 use Bedriox\Server\World\BlockEntity\SimpleBlockEntity;
+use Bedriox\Server\World\BlockEntity\SuspiciousSandBlockEntity;
 use Bedriox\Server\World\BlockPosition;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\Collision\AxisAlignedBox;
@@ -530,6 +557,10 @@ final class WorldSimulation
     private readonly ?EntityLootResolver $entityLoot;
 
     private readonly EntityWorldRuntime $entityRuntime;
+
+    private readonly EntityDefinitionRegistry $entityDefinitions;
+
+    private readonly LeashAttachmentRegistry $leashes;
 
     private readonly ?WorldEntityEnvironment $entityEnvironment;
 
@@ -636,8 +667,14 @@ final class WorldSimulation
     /** @var list<int> */
     private array $pendingItemDespawns = [];
 
+    /** @var list<Position> Guaranteed lead drops deferred only by item-entity capacity. */
+    private array $pendingLeadDrops = [];
+
     /** @var list<WorldEvent> */
     private array $deferredEvents = [];
+
+    /** @var list<WorldEvent> Dependency updates which must precede the current command's primary event. */
+    private array $precedingCommandEvents = [];
 
     /** @var array<string, true> session ID => pending autosave-cycle membership */
     private array $playerAutosaveQueue = [];
@@ -728,6 +765,12 @@ final class WorldSimulation
 
     /** @var array<string, array{position: BlockPosition, state: int, sequence: int, face: int, lastParticleTick: int, lastSwingTick: int}> */
     private array $breakingBlocks = [];
+
+    /** @var array<string, array{position: BlockPosition, sequence: int, face: int, startedAtTick: int, nextStageTick: int, stack: InventoryStack}> */
+    private array $brushingBlocks = [];
+
+    /** @var array<string, string> Block-position key to the one session currently brushing it. */
+    private array $brushingOwners = [];
 
     /** @var array<string, array{session: string, position: Position, acknowledge: bool}> */
     private array $pendingRespawns = [];
@@ -836,7 +879,7 @@ final class WorldSimulation
         $this->collisionResolver = $collisionQuery === null ? null : new PlayerCollisionResolver($collisionQuery);
         $this->itemCollisionResolver = $collisionQuery === null ? null : new DroppedItemCollisionResolver($collisionQuery);
         $this->experienceOrbCollisions = $collisionQuery === null ? null : new ExperienceOrbCollisionResolver($collisionQuery);
-        $definitions = $entityDefinitions ?? EntityDefinitionRegistry::baseline();
+        $definitions = $this->entityDefinitions = $entityDefinitions ?? EntityDefinitionRegistry::baseline();
         $this->entityEnvironment = $blockWorld !== null && $blockPalette !== null
             && $blockStateRegistry !== null && $blockCollisionRegistry !== null
             ? new WorldEntityEnvironment(
@@ -860,6 +903,10 @@ final class WorldSimulation
                     Position $position,
                     SpawnCause $cause,
                 ) use ($collisionQuery, $entityRegistry): bool {
+                    // A leash knot is intentionally embedded in its supporting fence and has no physical contact box.
+                    if ($definition->type === VanillaEntityType::LEASH_KNOT) {
+                        return true;
+                    }
                     $halfWidth = $definition->width / 2.0;
                     $candidate = new AxisAlignedBox(
                         $position->x - $halfWidth,
@@ -961,6 +1008,7 @@ final class WorldSimulation
             );
         }
         $this->entityRuntime = $entityRuntime;
+        $this->leashes = new LeashAttachmentRegistry($this->players, $this->entityRuntime->registry());
         $this->navigation = $collisionQuery !== null && $navigationWorkers !== null
             ? new AsyncNavigationCoordinator(
                 $this->entityRuntime->registry(),
@@ -1406,6 +1454,7 @@ final class WorldSimulation
             $this->queuedBytes -= $bytes;
             ++$processed;
             $event = $this->apply($command);
+            array_push($events, ...$this->drainPrecedingCommandEvents());
             if ($event !== null) {
                 $events[] = $event;
             }
@@ -1463,6 +1512,7 @@ final class WorldSimulation
         array_push($events, ...$this->advanceFurnaces());
         array_push($events, ...$this->advanceCampfires());
         array_push($events, ...$this->advanceComposters());
+        array_push($events, ...$this->advanceBrushingBlocks());
         array_push($events, ...$this->advanceBlockBreakParticles());
         $nextStageNanoseconds = hrtime(true);
         $stages['players'] = $nextStageNanoseconds - $stageCompletedNanoseconds;
@@ -1710,14 +1760,29 @@ final class WorldSimulation
 
         $this->removeQueuedCommandsForSession($sessionId);
         $this->removePendingMovement($key);
+        $this->deferBrushReset($key);
         unset(
             $this->breakingBlocks[$key],
+            $this->brushingBlocks[$key],
             $this->pendingRespawns[$key],
             $this->itemCooldowns[$key],
             $this->lastItemUseCompletionTicks[$key],
             $this->playerAutosaveQueue[$sessionId],
         );
         $deferredOffset = count($this->deferredEvents);
+        $remainingRecipients = $this->players->recipients($player->sessionId);
+        foreach ($this->leashes->attachmentsToPlayer($player) as $animal) {
+            if (!$this->detachAnimalLeash(
+                $animal,
+                $player,
+                LeashDetachReason::CROSS_WORLD,
+                true,
+                false,
+            )) {
+                continue;
+            }
+            $this->queueLeashMetadataChange($animal, $remainingRecipients, false);
+        }
         $this->forceDismountPlayer($player, MountReason::WORLD_CHANGE);
         $this->deferItemUseCancellation($player, ItemUseCancellationReason::TELEPORT);
         $closed = $this->closeContainer($player, ApiInventoryCloseReason::TELEPORT, true);
@@ -1741,7 +1806,7 @@ final class WorldSimulation
         foreach ($this->experienceOrbs->all() as $entity) {
             $events[] = new ExperienceOrbRemoved($entity->runtimeEntityId, [$player->sessionId]);
         }
-        foreach ($this->announcedEntities as $entity) {
+        foreach (self::leashProjectionOrder(array_values($this->announcedEntities)) as $entity) {
             if ($entity->isAlive()) {
                 $events[] = new EntityActorRemoved($entity, [$player->sessionId]);
             }
@@ -1814,7 +1879,7 @@ final class WorldSimulation
         foreach ($this->experienceOrbs->all() as $entity) {
             $events[] = new ExperienceOrbSpawned($entity, [$player->sessionId]);
         }
-        foreach ($this->announcedEntities as $entity) {
+        foreach (self::leashProjectionOrder(array_values($this->announcedEntities)) as $entity) {
             if ($entity->isAlive()) {
                 $events[] = new EntityActorSpawned(
                     $entity,
@@ -1837,6 +1902,9 @@ final class WorldSimulation
             }
             $this->announcedEntities[$outcome->entity->getRuntimeId()] = $outcome->entity;
             $outcome->entity->drainEquipmentChanges();
+            if ($outcome->entity instanceof BodyEquipmentHolder) {
+                $outcome->entity->drainBodyEquipmentChange();
+            }
             $outcome->entity->drainEffectChanges();
             $this->publishedEntityHealth[$outcome->entity->getRuntimeId()] = $outcome->entity->getHealth();
             $this->publishedEntityPresentationRevisions[$outcome->entity->getRuntimeId()] =
@@ -2330,6 +2398,9 @@ final class WorldSimulation
             $baseDamage = $cause === ApiEntityDamageCause::ATTACK
                 ? $this->entityArmorReducedDamage($entity, $amount)
                 : $amount;
+            if ($entity instanceof IncomingDamageModifier) {
+                $baseDamage = $entity->modifyIncomingDamage($baseDamage, $cause);
+            }
             if ($cause !== ApiEntityDamageCause::KILL) {
                 $baseDamage *= VanillaEffectBehavior::incomingDamageMultiplier(
                     $entity->effectState()->snapshot(),
@@ -2343,7 +2414,7 @@ final class WorldSimulation
             if ($damage <= 0.0) {
                 return;
             }
-            $result = $this->entityRuntime->damage($entity->getRuntimeId(), $damage);
+            $result = $this->damageLivingEntity($entity, $damage);
             if ($result === null || $result->appliedDamage <= 0.0) {
                 return;
             }
@@ -2595,6 +2666,9 @@ final class WorldSimulation
             }
             $this->announcedEntities[$entity->getRuntimeId()] = $entity;
             $entity->drainEquipmentChanges();
+            if ($entity instanceof BodyEquipmentHolder) {
+                $entity->drainBodyEquipmentChange();
+            }
             $entity->drainEffectChanges();
             $this->publishedEntityHealth[$entity->getRuntimeId()] = $entity->getHealth();
             $this->publishedEntityPresentationRevisions[$entity->getRuntimeId()] = $entity->presentationRevision();
@@ -2751,11 +2825,48 @@ final class WorldSimulation
         array_push($events, ...$this->advanceEntityEffects());
         array_push($events, ...$this->advanceEntityFire());
         array_push($events, ...$this->advanceLivingEntityBreathing());
+        array_push($events, ...$this->advanceLivingEntityFreezing());
         array_push($events, ...$this->advanceCreepers());
+        $this->reconcileLeashKnots();
         foreach ($this->entityRuntime->registry()->all() as $entity) {
             if ($entity instanceof BreedableAnimalEntity && $entity->isAlive()
                 && ($this->tick + $entity->getRuntimeId()) % 20 === 0) {
                 $entity->advanceSpeciesState(20);
+                if ($entity->isLeashed() && $entity->getLeashHolderUniqueId() !== null) {
+                    $knownHolder = $this->leashes->knownHolder($entity);
+                    $holder = $this->leashes->resolve($entity);
+                    if ($holder === null) {
+                        $this->detachAnimalLeash(
+                            $entity,
+                            $knownHolder,
+                            LeashDetachReason::HOLDER_UNAVAILABLE,
+                            true,
+                            false,
+                        );
+                    } elseif ($holder->worldName !== $entity->getWorldName()) {
+                        $this->detachAnimalLeash($entity, $holder->holder, LeashDetachReason::CROSS_WORLD, true, false);
+                    } else {
+                        $this->leashes->refreshRuntimeIdentity($entity, $holder);
+                        $distance = $entity->internalPosition()->distanceTo($holder->position);
+                        if ($distance > LeashAttachmentRegistry::MAXIMUM_ATTACHMENT_DISTANCE) {
+                            $this->detachAnimalLeash(
+                                $entity,
+                                $holder->holder,
+                                LeashDetachReason::DISTANCE,
+                                true,
+                                false,
+                            );
+                        } elseif ($distance > 6.0) {
+                            HorizontalSteering::toward(
+                                $entity,
+                                $holder->position,
+                                min(0.22, 0.08 + (($distance - 6.0) * 0.02)),
+                                $this->tick,
+                                $this->entityAiWorld,
+                            );
+                        }
+                    }
+                }
                 if ($entity instanceof SheepEntity && ($this->tick + $entity->getRuntimeId()) % 100 === 0) {
                     $this->trySheepEatGrass($entity);
                 }
@@ -2774,20 +2885,93 @@ final class WorldSimulation
                     }
                 }
                 if ($entity instanceof ArmadilloEntity && $entity->advanceScuteShedTimer(20)) {
-                    $entity->resetScuteShedTimer($this->dropRandom->integer(6_000, 12_000));
-                    $this->dropAnimalItem($entity, new ApiItemStack('minecraft:armadillo_scute', 1));
+                    if ($this->dropAnimalItem($entity, new ApiItemStack('minecraft:armadillo_scute', 1))) {
+                        $entity->resetScuteShedTimer($this->dropRandom->integer(6_000, 12_000));
+                    }
+                }
+                if ($entity instanceof ArmadilloEntity) {
+                    $entity->advanceDefensiveState(
+                        $this->armadilloIsThreatened($entity),
+                        20,
+                        $this->tick,
+                    );
                 }
                 if ($entity instanceof FoxEntity) {
+                    $entity->advanceTrustedDefense(20);
                     $time = $this->blockWorld?->timeOfDay() ?? 6_000;
                     $nearestPlayer = $this->entityAiWorld->nearestPlayerDistanceSquared($entity);
                     $entity->setSleeping(
                         $time < 12_000
                         && ($nearestPlayer === null || $nearestPlayer > 12.0 ** 2)
-                        && !$this->entityEnvironment->isTouchingWater($entity),
+                        && !$this->foxHasNearbyThreat($entity)
+                        && !$entity->isPouncing()
+                        && !$entity->isFaceplanted()
+                        && $entity->getTrustedDefenseTargetUniqueId() === null
+                        && !($this->entityEnvironment?->isTouchingWater($entity) ?? false),
                     );
-                    if ($entity->isSleeping()) {
+                    if ($entity->isSleeping() || $entity->isFaceplanted()) {
                         $entity->suppressAiMovementUntil($this->tick + 20);
                     }
+                    if (($this->tick + $entity->getRuntimeId()) % 100 === 0) {
+                        $this->consumeFoxHeldFood($entity);
+                    }
+                }
+                if ($entity instanceof LlamaEntity || $entity instanceof TraderLlamaEntity) {
+                    $entity->advanceLlamaCombatState(20);
+                    array_push($events, ...$this->advanceLlamaCombat($entity));
+                }
+                if ($entity instanceof PandaEntity) {
+                    $entity->advanceTraitActivity(
+                        $this->blockWorld?->weather()->weather->type === WeatherType::THUNDER,
+                        20,
+                        $this->tick,
+                    );
+                    if (($this->tick + $entity->getRuntimeId()) % 20 === 0) {
+                        array_push($events, ...$this->collectPandaBamboo($entity));
+                    }
+                }
+                if ($entity instanceof GoatEntity) {
+                    $entity->advanceRamTimers(20);
+                    if ($entity->canBeginRam()
+                        && ($this->tick + $entity->getRuntimeId()) % 200 === 0
+                        && ($target = $this->nearestGoatRamTarget($entity)) !== null) {
+                        if ($this->pluginEvents?->allowGoatRam($entity, $target) ?? true) {
+                            $entity->beginRam(
+                                $target instanceof Player ? $target->identity->uuid : $target->getUniqueId(),
+                                $target instanceof Player,
+                            );
+                        }
+                    }
+                }
+                if ($entity instanceof SnifferEntity) {
+                    $canDig = $this->snifferCanDig($entity);
+                    if ($entity->advanceSniffing(20, $canDig)) {
+                        $position = $entity->internalPosition();
+                        $dropped = $this->dropAnimalItem($entity, new ApiItemStack(
+                            $this->dropRandom->integer(0, 1) === 0
+                                ? 'minecraft:torchflower_seeds'
+                                : 'minecraft:pitcher_pod',
+                            1,
+                        ));
+                        if ($dropped) {
+                            $entity->rememberDigSite(
+                                (int) floor($position->x),
+                                (int) floor($position->y - 0.1),
+                                (int) floor($position->z),
+                            );
+                        } else {
+                            $entity->deferCompletedDig();
+                        }
+                    }
+                    if ($entity->isDigging()) {
+                        $entity->suppressAiMovementUntil($this->tick + 20);
+                    }
+                }
+            }
+            if ($entity instanceof PolarBearEntity && $entity->isAlive()) {
+                $entity->advanceGrowth(1);
+                if (!$entity->isBaby()) {
+                    $this->protectNearbyPolarBearCubs($entity);
                 }
             }
             if ($entity instanceof MutableAngerState && $entity->isAlive()
@@ -2795,6 +2979,12 @@ final class WorldSimulation
                 $entity->advanceAngerState(20);
             }
         }
+        if ($this->tick % 20 === 0) {
+            $this->advanceLlamaCaravans();
+        }
+        array_push($events, ...$this->advanceLandAnimalPredation());
+        $this->advanceFoxDefenseAndAvoidance();
+        array_push($events, ...$this->advanceGoatRams());
         $this->applyHoglinRepellentAvoidance();
         $entityRuntimeStartedNanoseconds = hrtime(true);
         $this->resolvePlayerEntityContacts();
@@ -2804,6 +2994,7 @@ final class WorldSimulation
             $this->entityAiEnabled,
         );
         $this->lastEntityRuntimeNanoseconds = hrtime(true) - $entityRuntimeStartedNanoseconds;
+        $this->reconcileFoxHuntingTransitions();
         /** @var array<int, AbstractEntity> $forcedMovedEntities */
         $forcedMovedEntities = [];
         foreach ($this->entityRuntime->registry()->all() as $entity) {
@@ -2831,6 +3022,7 @@ final class WorldSimulation
                     $passenger->getRuntimeId(),
                     null,
                     $this->players->recipients(),
+                    $this->resetsHorseJumpPresentation($link->vehicle),
                 );
                 continue;
             }
@@ -2878,12 +3070,15 @@ final class WorldSimulation
             $this->entityRuntime->remove($entity->getRuntimeId());
         }
         $recipients = $this->players->recipients();
-        foreach ($this->entityRuntime->registry()->all() as $entity) {
+        foreach (self::leashProjectionOrder($this->entityRuntime->registry()->all()) as $entity) {
             if (!$entity instanceof AbstractLivingEntity || isset($this->announcedEntities[$entity->getRuntimeId()])) {
                 continue;
             }
             $this->announcedEntities[$entity->getRuntimeId()] = $entity;
             $entity->drainEquipmentChanges();
+            if ($entity instanceof BodyEquipmentHolder) {
+                $entity->drainBodyEquipmentChange();
+            }
             $entity->drainEffectChanges();
             $this->publishedEntityHealth[$entity->getRuntimeId()] = $entity->getHealth();
             $this->publishedEntityPresentationRevisions[$entity->getRuntimeId()] = $entity->presentationRevision();
@@ -2908,6 +3103,9 @@ final class WorldSimulation
                     $equipmentChanges,
                     $recipients,
                 );
+            }
+            if ($entity instanceof BodyEquipmentHolder && $entity->drainBodyEquipmentChange()) {
+                $events[] = new EntityActorBodyEquipmentChanged($entity, $recipients);
             }
         }
         foreach ($this->announcedEntities as $entity) {
@@ -2942,6 +3140,11 @@ final class WorldSimulation
             $events[] = $health < $previous
                 ? new EntityActorDamaged($entity, $this->tick, $recipients)
                 : new EntityActorHealthChanged($entity, $this->tick, $recipients);
+        }
+        foreach ($this->announcedEntities as $entity) {
+            if ($entity instanceof FoxEntity && $entity->takeTotemPresentation()) {
+                $events[] = new EntityTotemConsumedPresented($entity, $recipients);
+            }
         }
         foreach ($tick->moved as $entity) {
             if ($this->entityRuntime->registry()->getByRuntimeId($entity->getRuntimeId()) !== $entity) {
@@ -3016,6 +3219,10 @@ final class WorldSimulation
                 continue;
             }
             unset($this->entityDeathRemovalTicks[$runtimeId]);
+            array_push(
+                $events,
+                ...$this->closeEntityContainers($runtimeId, ApiInventoryCloseReason::ENTITY_REMOVED),
+            );
             $entity = $this->entityRuntime->remove($runtimeId);
             if ($entity !== null) {
                 if ($entity instanceof PluginMobEntity) {
@@ -3035,6 +3242,837 @@ final class WorldSimulation
         $this->lastEntityPersistenceNanoseconds = hrtime(true) - $entityPersistenceStartedNanoseconds;
 
         return $events;
+    }
+
+    private function advanceLlamaCaravans(): void
+    {
+        /** @var array<string, LlamaEntity|TraderLlamaEntity> $llamas */
+        $llamas = [];
+        /** @var array<string, LlamaEntity|TraderLlamaEntity> $followerByLeader */
+        $followerByLeader = [];
+        foreach ($this->entityRuntime->registry()->all() as $entity) {
+            if (!($entity instanceof LlamaEntity || $entity instanceof TraderLlamaEntity) || !$entity->isAlive()) {
+                continue;
+            }
+            $llamas[$entity->getUniqueId()] = $entity;
+            $leaderId = $entity->getCaravanLeaderUniqueId();
+            if ($leaderId === null) {
+                continue;
+            }
+            if (isset($followerByLeader[$leaderId])) {
+                $entity->setCaravanLeaderUniqueId(null);
+                continue;
+            }
+            $followerByLeader[$leaderId] = $entity;
+        }
+
+        foreach ($llamas as $entity) {
+            $leaderId = $entity->getCaravanLeaderUniqueId();
+            if ($leaderId === null) {
+                continue;
+            }
+            $leader = $llamas[$leaderId] ?? null;
+            if ($leader === null || $leader->getWorldName() !== $entity->getWorldName()
+                || !$this->llamaCaravanHasLeashedRoot($entity)) {
+                unset($followerByLeader[$leaderId]);
+                $entity->setCaravanLeaderUniqueId(null);
+                continue;
+            }
+            $distance = $entity->internalPosition()->distanceTo($leader->internalPosition());
+            if ($distance > 12.0) {
+                unset($followerByLeader[$leaderId]);
+                $entity->setCaravanLeaderUniqueId(null);
+            } elseif ($distance > 2.0) {
+                HorizontalSteering::toward(
+                    $entity,
+                    $leader->internalPosition(),
+                    min(0.20, 0.10 + (($distance - 2.0) * 0.02)),
+                    $this->tick,
+                    $this->entityAiWorld,
+                );
+                $entity->suppressAiMovementUntil($this->tick + 20);
+            }
+        }
+
+        /** @var array<string, true> $reserved */
+        $reserved = [];
+        foreach ($llamas as $root) {
+            if (!$root->isLeashed()) {
+                continue;
+            }
+            $current = $root;
+            $reserved[$root->getUniqueId()] = true;
+            for ($index = 0; $index < 9; ++$index) {
+                $next = $followerByLeader[$current->getUniqueId()] ?? null;
+                if ($next === null) {
+                    foreach ($this->entityRuntime->registry()->nearby(
+                        $current->getWorldName(),
+                        $current->internalPosition(),
+                        10.0,
+                        16,
+                    ) as $candidate) {
+                        if (($candidate instanceof LlamaEntity || $candidate instanceof TraderLlamaEntity)
+                            && $candidate !== $current && !$candidate->isLeashed()
+                            && $candidate->getCaravanLeaderUniqueId() === null
+                            && !isset($reserved[$candidate->getUniqueId()])) {
+                            $next = $candidate;
+                            $next->setCaravanLeaderUniqueId($current->getUniqueId());
+                            $followerByLeader[$current->getUniqueId()] = $next;
+                            break;
+                        }
+                    }
+                }
+                if ($next === null || isset($reserved[$next->getUniqueId()])) {
+                    break;
+                }
+                $reserved[$next->getUniqueId()] = true;
+                $current = $next;
+            }
+            $overflow = $followerByLeader[$current->getUniqueId()] ?? null;
+            if ($overflow !== null) {
+                $overflow->setCaravanLeaderUniqueId(null);
+                unset($followerByLeader[$current->getUniqueId()]);
+            }
+        }
+    }
+
+    /** @return list<WorldEvent> */
+    private function advanceLlamaCombat(LlamaEntity|TraderLlamaEntity $llama): array
+    {
+        if (!$llama->canSpit() || !$llama->isAlive()) {
+            return [];
+        }
+        $targetUniqueId = $llama->getRetaliationTargetUniqueId();
+        $target = $targetUniqueId === null
+            ? null
+            : ($this->entityRuntime->registry()->getByUniqueId($targetUniqueId)
+                ?? $this->players->playerByIdentity($targetUniqueId));
+        if ($target === null) {
+            foreach ($this->entityRuntime->registry()->nearby(
+                $llama->getWorldName(),
+                $llama->internalPosition(),
+                10.0,
+                16,
+            ) as $candidate) {
+                if ($candidate instanceof WolfEntity && $candidate->isAlive() && !$candidate->isTamed()) {
+                    $target = $candidate;
+                    break;
+                }
+            }
+        }
+        $targetPosition = match (true) {
+            $target instanceof Player && $target->vitals->isAlive()
+                && $target->worldName() === $llama->getWorldName() => new Position(
+                    $target->movement->position->x,
+                    $target->movement->position->y + 0.9,
+                    $target->movement->position->z,
+                ),
+            $target instanceof AbstractLivingEntity && $target->isAlive()
+                && $target->getWorldName() === $llama->getWorldName() => new Position(
+                    $target->internalPosition()->x,
+                    $target->internalPosition()->y + ($target->collisionHeight() * 0.6),
+                    $target->internalPosition()->z,
+                ),
+            default => null,
+        };
+        if ($targetPosition === null) {
+            if ($targetUniqueId !== null) {
+                $llama->setRetaliationTargetUniqueId(null);
+            }
+
+            return [];
+        }
+        $from = $llama->internalPosition();
+        $distance = $from->distanceTo($targetPosition);
+        if ($distance < 2.0 || $distance > 15.0) {
+            return [];
+        }
+        $spawn = new Position($from->x, $from->y + ($llama->collisionHeight() * 0.72), $from->z);
+        try {
+            $projectile = $this->projectiles->spawnLlamaSpit(
+                $llama->getUniqueId(),
+                $llama->getRuntimeId(),
+                $spawn,
+                $targetPosition,
+            );
+        } catch (InvalidArgumentException|OverflowException) {
+            return [];
+        }
+        $admitted = $this->pluginEvents?->projectileLaunch(
+            $llama,
+            $projectile,
+            ProjectileType::LLAMA_SPIT->value,
+        ) ?? ($this->pluginEvents === null ? $projectile : null);
+        if ($admitted === null) {
+            $this->projectiles->remove($projectile->runtimeEntityId);
+
+            return [];
+        }
+        $this->projectiles->replace($admitted);
+        $llama->markSpat();
+        $this->pluginEvents?->projectileLaunched($llama, $admitted, ProjectileType::LLAMA_SPIT->value);
+        $this->projectileEntitiesDirty = true;
+
+        return [new ProjectileSpawned($admitted, $this->players->recipients())];
+    }
+
+    private function advanceFoxDefenseAndAvoidance(): void
+    {
+        if ($this->tick % 5 !== 0) {
+            return;
+        }
+        foreach ($this->entityRuntime->registry()->all() as $fox) {
+            if (!$fox instanceof FoxEntity || !$fox->isAlive() || $fox->isFaceplanted()) {
+                continue;
+            }
+            $targetId = $fox->getTrustedDefenseTargetUniqueId();
+            $target = $targetId === null
+                ? null
+                : ($this->entityRuntime->registry()->getByUniqueId($targetId)
+                    ?? $this->players->playerByIdentity($targetId));
+            $targetPosition = match (true) {
+                $target instanceof Player && $target->vitals->isAlive()
+                    && $target->worldName() === $fox->getWorldName() => $target->movement->position,
+                $target instanceof AbstractLivingEntity && $target->isAlive()
+                    && $target->getWorldName() === $fox->getWorldName() => $target->internalPosition(),
+                default => null,
+            };
+            if ($targetPosition !== null) {
+                $fox->setSleeping(false);
+                $fox->cancelPounce();
+                $distance = $fox->internalPosition()->distanceTo($targetPosition);
+                if ($distance > 1.8) {
+                    HorizontalSteering::toward($fox, $targetPosition, 0.22, $this->tick, $this->entityAiWorld);
+                    $fox->suppressAiMovementUntil($this->tick + 5);
+                } elseif ($this->tick > ($this->entityInvulnerableUntilTicks[
+                    $target instanceof Player ? $target->runtimeActorId : $target->getRuntimeId()
+                ] ?? -1)) {
+                    $this->applyFoxDefenseBite($fox, $target);
+                }
+                continue;
+            }
+            if ($targetId !== null) {
+                $fox->clearTrustedDefenseTarget();
+            }
+            foreach ($this->entityRuntime->registry()->nearby(
+                $fox->getWorldName(),
+                $fox->internalPosition(),
+                12.0,
+                16,
+            ) as $predator) {
+                if (($predator instanceof WolfEntity && !$predator->isTamed())
+                    || ($predator instanceof PolarBearEntity && !$predator->isBaby())) {
+                    $fox->setSleeping(false);
+                    $fox->cancelPounce();
+                    HorizontalSteering::away(
+                        $fox,
+                        $predator->internalPosition(),
+                        0.24,
+                        $this->tick,
+                        $this->entityAiWorld,
+                    );
+                    $fox->suppressAiMovementUntil($this->tick + 5);
+                    break;
+                }
+            }
+        }
+    }
+
+    private function foxHasNearbyThreat(FoxEntity $fox): bool
+    {
+        foreach ($this->entityRuntime->registry()->nearby(
+            $fox->getWorldName(),
+            $fox->internalPosition(),
+            12.0,
+            16,
+        ) as $candidate) {
+            if (($candidate instanceof WolfEntity && $candidate->isAlive() && !$candidate->isTamed())
+                || ($candidate instanceof PolarBearEntity && $candidate->isAlive() && !$candidate->isBaby())) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** Reconciles pounce presentation with the authoritative physics result of this tick. */
+    private function reconcileFoxHuntingTransitions(): void
+    {
+        foreach ($this->entityRuntime->registry()->all() as $fox) {
+            if (!$fox instanceof FoxEntity || !$fox->isAlive()) {
+                continue;
+            }
+            if ($fox->isPouncing()) {
+                if (!$fox->isOnGround()) {
+                    $fox->recordPounceAirborne();
+                } elseif ($fox->hasAirbornePounce()) {
+                    $fox->completePounce($this->foxLandedInSnow($fox));
+                    continue;
+                }
+            }
+            $fox->advanceHuntingState(1);
+        }
+    }
+
+    private function alertTrustedFoxes(Player $trustedPlayer, string $attackerUniqueId): void
+    {
+        foreach ($this->entityRuntime->registry()->nearby(
+            $trustedPlayer->worldName(),
+            $trustedPlayer->movement->position,
+            16.0,
+            32,
+        ) as $candidate) {
+            if ($candidate instanceof FoxEntity && $candidate->isAlive()
+                && $candidate->trustsPlayer($trustedPlayer->identity->uuid)
+                && $candidate->getUniqueId() !== $attackerUniqueId) {
+                $candidate->defendTrustedPlayerAgainst($attackerUniqueId);
+            }
+        }
+    }
+
+    private function applyFoxDefenseBite(FoxEntity $fox, Player|AbstractLivingEntity $target): void
+    {
+        $damage = $this->entityMeleeDamage($fox, 3.0);
+        if ($target instanceof Player) {
+            $event = $this->damage(
+                new DamagePlayer($target->sessionId, $damage, DamageCause::Attack),
+                $fox,
+            );
+            if (!$event instanceof CommandRejected) {
+                $this->deferredEvents[] = $event;
+            }
+
+            return;
+        }
+        $damageEvent = $this->pluginEvents?->entityDamage(
+            $target,
+            ApiEntityDamageCause::ATTACK,
+            $damage,
+            $fox,
+        );
+        if ($this->pluginEvents !== null && $damageEvent === null) {
+            return;
+        }
+        $result = $this->damageLivingEntity($target, $damageEvent?->damage() ?? $damage);
+        if ($result === null || $result->appliedDamage <= 0.0) {
+            return;
+        }
+        if ($damageEvent !== null) {
+            $this->entityLastDamageEvents[$target->getRuntimeId()] = $damageEvent;
+        }
+        $this->entityInvulnerableUntilTicks[$target->getRuntimeId()] =
+            $this->tick + CombatRules::DAMAGE_IMMUNITY_TICKS;
+        $this->deferredEvents[] = new EntityActorDamaged($target, $this->tick, $this->players->recipients());
+    }
+
+    private function foxLandedInSnow(FoxEntity $fox): bool
+    {
+        if ($this->blockWorld === null) {
+            return false;
+        }
+        $position = $fox->internalPosition();
+        foreach ([(int) floor($position->y), (int) floor($position->y - 0.1)] as $y) {
+            $identifier = $this->blockIdentifier($this->blockWorld->blockStateAt(
+                (int) floor($position->x),
+                $y,
+                (int) floor($position->z),
+            )->value);
+            if (in_array($identifier, ['minecraft:snow', 'minecraft:snow_layer', 'minecraft:powder_snow'], true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function llamaCaravanHasLeashedRoot(LlamaEntity|TraderLlamaEntity $llama): bool
+    {
+        $current = $llama;
+        $seen = [$current->getUniqueId() => true];
+        for ($depth = 0; $depth < 10; ++$depth) {
+            if ($current->isLeashed()) {
+                return true;
+            }
+            $leaderId = $current->getCaravanLeaderUniqueId();
+            if ($leaderId === null || isset($seen[$leaderId])) {
+                return false;
+            }
+            $seen[$leaderId] = true;
+            $leader = $this->entityRuntime->registry()->getByUniqueId($leaderId);
+            if (!($leader instanceof LlamaEntity || $leader instanceof TraderLlamaEntity)
+                || !$leader->isAlive() || $leader->getWorldName() !== $llama->getWorldName()) {
+                return false;
+            }
+            $current = $leader;
+        }
+
+        return false;
+    }
+
+    private function snifferCanDig(SnifferEntity $sniffer): bool
+    {
+        if ($this->blockWorld === null || ($this->entityEnvironment?->isTouchingWater($sniffer) ?? false)) {
+            return false;
+        }
+        $position = $sniffer->internalPosition();
+        $blockX = (int) floor($position->x);
+        $blockY = (int) floor($position->y - 0.1);
+        $blockZ = (int) floor($position->z);
+        if ($sniffer->hasDugAt($blockX, $blockY, $blockZ)) {
+            return false;
+        }
+        $state = $this->blockWorld->blockStateAt(
+            $blockX,
+            $blockY,
+            $blockZ,
+        );
+
+        return in_array($this->blockIdentifier($state->value), [
+            'minecraft:dirt',
+            'minecraft:grass_block',
+            'minecraft:podzol',
+            'minecraft:coarse_dirt',
+            'minecraft:rooted_dirt',
+            'minecraft:moss_block',
+            'minecraft:mud',
+            'minecraft:muddy_mangrove_roots',
+        ], true);
+    }
+
+    private function snifferEggStageDelay(BlockPosition $position): int
+    {
+        if ($this->blockWorld === null) {
+            return 8_000;
+        }
+        $below = $this->blockWorld->loadedBlockStateAt($position->x, $position->y - 1, $position->z);
+
+        return $below !== null && $this->blockIdentifier($below->value) === 'minecraft:moss_block'
+            ? 4_000
+            : 8_000;
+    }
+
+    private function consumeFoxHeldFood(FoxEntity $fox): void
+    {
+        if ($fox->isSleeping() || $fox->isPouncing() || $fox->isFaceplanted()) {
+            return;
+        }
+        $held = $fox->equipmentState()->getItem(ApiEquipmentSlot::MAIN_HAND);
+        if ($held === null || !in_array($held->identifier, [
+            'minecraft:sweet_berries',
+            'minecraft:glow_berries',
+            'minecraft:chicken',
+            'minecraft:cooked_chicken',
+            'minecraft:rabbit',
+            'minecraft:cooked_rabbit',
+            'minecraft:rotten_flesh',
+            'minecraft:pufferfish',
+        ], true)) {
+            return;
+        }
+        if (!($this->pluginEvents?->allowEntityItemConsume($fox, $held) ?? true)) {
+            return;
+        }
+        $fox->equipmentState()->setItem(ApiEquipmentSlot::MAIN_HAND, null);
+        $fox->equipmentState()->setDropChance(ApiEquipmentSlot::MAIN_HAND, 0.0);
+        $healed = $fox->heal(2.0);
+        if ($held->identifier === 'minecraft:pufferfish') {
+            $this->applyEffectToEntity($fox, new EffectInstance(EffectType::POISON, 1_200, 1), EffectCause::FOOD);
+        } elseif ($held->identifier === 'minecraft:rotten_flesh') {
+            $this->applyEffectToEntity($fox, new EffectInstance(EffectType::HUNGER, 600), EffectCause::FOOD);
+        }
+        if ($healed > 0.0) {
+            $this->deferredEvents[] = new EntityActorHealthChanged(
+                $fox,
+                $this->tick,
+                $this->players->recipients(),
+            );
+        }
+        $this->pluginEvents?->entityItemConsumed($fox, $held);
+    }
+
+    /** @return list<WorldEvent> */
+    private function collectPandaBamboo(PandaEntity $panda): array
+    {
+        if ($panda->getActivity() === PandaActivity::EATING) {
+            return [];
+        }
+        foreach ($this->itemEntities->nearbyPickupCandidates($panda->internalPosition(), 2.0, 4) as $item) {
+            if ($item->stack->identifier !== 'minecraft:bamboo') {
+                continue;
+            }
+            $count = $this->pluginEvents === null
+                ? 1
+                : $this->pluginEvents->entityPickupItem($panda, $item->stack);
+            if ($count === null || $count < 1) {
+                return [];
+            }
+            if ($item->stack->count > 1 && !$this->itemEntities->canRespawnAfterRemovingOne()) {
+                return [];
+            }
+            $pickup = $this->itemEntities->pickup($item->runtimeEntityId, 1);
+            if ($pickup === null) {
+                return [];
+            }
+            unset($this->itemPublishedMotions[$item->runtimeEntityId]);
+            $replacement = null;
+            if ($pickup->remaining !== null) {
+                $this->itemEntities->remove($item->runtimeEntityId);
+                $replacement = $this->itemEntities->spawn(
+                    $pickup->remaining,
+                    $item->position,
+                    $item->motion,
+                    despawnAfterTicks: $item->despawnAfterTicks === null
+                        ? null
+                        : max(1, $item->despawnAfterTicks - $item->ageTicks),
+                );
+            }
+            $panda->beginEating($this->tick);
+            $this->pluginEvents?->entityPickedUpItem($panda, $pickup->pickedUp);
+            $events = [new ItemEntityPickedUp(
+                $item->runtimeEntityId,
+                $panda->getRuntimeId(),
+                $pickup->pickedUp,
+                null,
+                true,
+                [],
+                $this->players->recipients(),
+            )];
+            if ($replacement !== null) {
+                $events[] = new ItemEntitySpawned($replacement, $this->players->recipients());
+            }
+
+            return $events;
+        }
+
+        return [];
+    }
+
+    private function protectNearbyPolarBearCubs(PolarBearEntity $adult): void
+    {
+        if (($this->tick + $adult->getRuntimeId()) % 10 !== 0) {
+            return;
+        }
+        $cubNearby = false;
+        foreach ($this->entityRuntime->registry()->nearby(
+            $adult->getWorldName(),
+            $adult->internalPosition(),
+            8.0,
+            16,
+        ) as $candidate) {
+            if ($candidate instanceof PolarBearEntity && $candidate->isAlive() && $candidate->isBaby()) {
+                $cubNearby = true;
+                break;
+            }
+        }
+        if (!$cubNearby) {
+            return;
+        }
+        $snapshot = $this->entityAiWorld->nearestPlayer($adult, 16.0);
+        if ($snapshot === null) {
+            return;
+        }
+        $player = $this->players->playerByIdentity($snapshot->playerId);
+        if ($player !== null && $player->vitals->isAlive() && $player->gameMode()->takesDamage()) {
+            $this->provokePolarBearGroup($adult, $player);
+        }
+    }
+
+    /** @return list<WorldEvent> */
+    private function advanceLandAnimalPredation(): array
+    {
+        if ($this->tick % 5 !== 0) {
+            return [];
+        }
+        $events = [];
+        foreach ($this->entityRuntime->registry()->all() as $predator) {
+            if (!($predator instanceof FoxEntity || $predator instanceof OcelotEntity
+                || $predator instanceof PolarBearEntity) || !$predator->isAlive()) {
+                continue;
+            }
+            if ($predator instanceof PolarBearEntity
+                && ($predator->getRemainingAngerTicks() > 0 || $predator->getAngerTargetUniqueId() !== null)) {
+                continue;
+            }
+            if ($predator instanceof FoxEntity && $predator->isPouncing()) {
+                continue;
+            }
+            $prey = null;
+            $damage = 0.0;
+            foreach ($this->entityRuntime->registry()->nearby(
+                $predator->getWorldName(),
+                $predator->internalPosition(),
+                12.0,
+                16,
+            ) as $candidate) {
+                $valid = match (true) {
+                    $predator instanceof FoxEntity => !$predator->isSleeping() && !$predator->isFaceplanted()
+                        && ($candidate instanceof ChickenEntity || $candidate instanceof RabbitEntity),
+                    $predator instanceof OcelotEntity => $candidate instanceof ChickenEntity
+                        || ($candidate instanceof TurtleEntity && $candidate->isBaby()),
+                    default => !$predator->isBaby() && $candidate instanceof FoxEntity,
+                };
+                if ($valid && $candidate instanceof AbstractLivingEntity && $candidate->isAlive()) {
+                    $prey = $candidate;
+                    $damage = $predator instanceof PolarBearEntity ? 6.0 : 3.0;
+                    break;
+                }
+            }
+            if (!$prey instanceof AbstractLivingEntity) {
+                continue;
+            }
+            $distance = $predator->internalPosition()->distanceTo($prey->internalPosition());
+            if ($distance > 1.8) {
+                if ($predator instanceof FoxEntity && !$predator->isPouncing()
+                    && $predator->isOnGround() && $distance <= 6.0) {
+                    $from = $predator->internalPosition();
+                    $to = $prey->internalPosition();
+                    $horizontal = max(0.000_001, hypot($to->x - $from->x, $to->z - $from->z));
+                    $predator->beginPounce();
+                    $predator->setMotion(new EntityMotion(
+                        (($to->x - $from->x) / $horizontal) * 0.42,
+                        0.52,
+                        (($to->z - $from->z) / $horizontal) * 0.42,
+                    ));
+                    $predator->suppressAiMovementUntil($this->tick + 20);
+                    continue;
+                }
+                HorizontalSteering::toward(
+                    $predator,
+                    $prey->internalPosition(),
+                    $predator instanceof FoxEntity ? 0.22 : 0.16,
+                    $this->tick,
+                    $this->entityAiWorld,
+                );
+                $predator->suppressAiMovementUntil($this->tick + 5);
+                continue;
+            }
+            if ($this->tick <= ($this->entityInvulnerableUntilTicks[$prey->getRuntimeId()] ?? -1)) {
+                continue;
+            }
+            $damageEvent = $this->pluginEvents?->entityDamage(
+                $prey,
+                ApiEntityDamageCause::ATTACK,
+                $this->entityMeleeDamage($predator, $damage),
+                $predator,
+            );
+            if ($this->pluginEvents !== null && $damageEvent === null) {
+                continue;
+            }
+            $result = $this->damageLivingEntity(
+                $prey,
+                $damageEvent?->damage() ?? $this->entityMeleeDamage($predator, $damage),
+            );
+            if ($result === null || $result->appliedDamage <= 0.0) {
+                continue;
+            }
+            if ($damageEvent !== null) {
+                $this->entityLastDamageEvents[$prey->getRuntimeId()] = $damageEvent;
+            }
+            $this->entityInvulnerableUntilTicks[$prey->getRuntimeId()] =
+                $this->tick + CombatRules::DAMAGE_IMMUNITY_TICKS;
+            $events[] = new EntityActorDamaged($prey, $this->tick, $this->players->recipients());
+        }
+
+        return $events;
+    }
+
+    private function armadilloIsThreatened(ArmadilloEntity $armadillo): bool
+    {
+        if ($armadillo->aiRuntime()->memory()->contains(VanillaAiMemories::hurt(), $this->tick)) {
+            return true;
+        }
+        $position = $armadillo->internalPosition();
+        foreach ($this->players->snapshots() as $player) {
+            if (!$player->alive || $player->gameMode === GameMode::SPECTATOR
+                || (!$player->sprinting && !$player->riding)
+                || $player->position->distanceTo($position) > 7.0) {
+                continue;
+            }
+            return true;
+        }
+        foreach ($this->entityRuntime->registry()->nearby(
+            $armadillo->getWorldName(),
+            $position,
+            7.0,
+            32,
+        ) as $candidate) {
+            if ($candidate !== $armadillo && $candidate instanceof Undead
+                && $candidate instanceof AbstractLivingEntity && $candidate->isAlive()) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** @return list<WorldEvent> */
+    private function advanceGoatRams(): array
+    {
+        if ($this->tick % 5 !== 0) {
+            return [];
+        }
+        $events = [];
+        foreach ($this->entityRuntime->registry()->all() as $goat) {
+            if (!$goat instanceof GoatEntity || !$goat->isAlive() || !$goat->isRamming()) {
+                continue;
+            }
+            $targetId = $goat->getRamTargetUniqueId();
+            $target = $targetId === null
+                ? null
+                : ($goat->isRamTargetPlayer()
+                    ? $this->players->playerByIdentity($targetId)
+                    : $this->entityRuntime->registry()->getByUniqueId($targetId));
+            if (!($target instanceof Player || $target instanceof AbstractLivingEntity)
+                || ($target instanceof Player ? !$target->vitals->isAlive() : !$target->isAlive())) {
+                $goat->finishRam();
+                continue;
+            }
+            $targetPosition = $target instanceof Player
+                ? $target->movement->position
+                : $target->internalPosition();
+            $distance = $goat->internalPosition()->distanceTo($targetPosition);
+            if ($distance <= 2.0) {
+                $damageEvents = $target instanceof Player
+                    ? $this->applyEntityMeleeIntent(
+                        $goat,
+                        new AiMeleeIntent($targetId, $this->tick, 2.0, $goat->isScreaming() ? 3.0 : 2.0),
+                    )
+                    : $this->applyGoatRamToEntity($goat, $target);
+                if ($damageEvents !== []) {
+                    array_push($events, ...$damageEvents);
+                    $this->pluginEvents?->goatRammed($goat, $target);
+                    $goat->finishRam();
+                }
+                continue;
+            }
+            HorizontalSteering::toward(
+                $goat,
+                $targetPosition,
+                0.26,
+                $this->tick,
+                $this->entityAiWorld,
+            );
+            $goat->suppressAiMovementUntil($this->tick + 5);
+            if ($this->goatFacesHardRamBlock($goat)) {
+                if (($goat->hasLeftHorn() || $goat->hasRightHorn())
+                    && $this->dropAnimalItem($goat, new ApiItemStack('minecraft:goat_horn', 1))) {
+                    $goat->loseHorn();
+                }
+                $goat->finishRam();
+            }
+        }
+
+        return $events;
+    }
+
+    private function nearestGoatRamTarget(GoatEntity $goat): Player|AbstractLivingEntity|null
+    {
+        $nearest = null;
+        $nearestDistance = 10.0 ** 2;
+        foreach ($this->players->players() as $player) {
+            if (!$player->vitals->isAlive() || !$player->gameMode()->takesDamage()) {
+                continue;
+            }
+            $distance = $goat->internalPosition()->distanceTo($player->movement->position) ** 2;
+            if ($distance <= $nearestDistance) {
+                $nearest = $player;
+                $nearestDistance = $distance;
+            }
+        }
+        foreach ($this->entityRuntime->registry()->nearby(
+            $goat->getWorldName(),
+            $goat->internalPosition(),
+            10.0,
+            32,
+        ) as $candidate) {
+            if (!$candidate instanceof AbstractLivingEntity || !$candidate->isAlive()
+                || $candidate instanceof GoatEntity) {
+                continue;
+            }
+            $distance = $goat->internalPosition()->distanceTo($candidate->internalPosition()) ** 2;
+            if ($distance < $nearestDistance) {
+                $nearest = $candidate;
+                $nearestDistance = $distance;
+            }
+        }
+
+        return $nearest;
+    }
+
+    /** @return list<WorldEvent> */
+    private function applyGoatRamToEntity(GoatEntity $goat, AbstractLivingEntity $target): array
+    {
+        if ($this->tick <= ($this->entityInvulnerableUntilTicks[$target->getRuntimeId()] ?? -1)) {
+            return [];
+        }
+        $damage = $goat->isScreaming() ? 3.0 : 2.0;
+        $damageEvent = $this->pluginEvents?->entityDamage(
+            $target,
+            ApiEntityDamageCause::ATTACK,
+            $damage,
+            $goat,
+        );
+        if ($this->pluginEvents !== null && $damageEvent === null) {
+            return [];
+        }
+        $result = $this->damageLivingEntity($target, $damageEvent?->damage() ?? $damage);
+        if ($result === null || $result->appliedDamage <= 0.0) {
+            return [];
+        }
+        if ($damageEvent !== null) {
+            $this->entityLastDamageEvents[$target->getRuntimeId()] = $damageEvent;
+        }
+        $this->entityInvulnerableUntilTicks[$target->getRuntimeId()] =
+            $this->tick + CombatRules::DAMAGE_IMMUNITY_TICKS;
+        $from = $goat->internalPosition();
+        $to = $target->internalPosition();
+        $length = max(0.000_001, hypot($to->x - $from->x, $to->z - $from->z));
+        $motion = new ApiKnockbackVector(
+            (($to->x - $from->x) / $length) * 0.65,
+            0.35,
+            (($to->z - $from->z) / $length) * 0.65,
+        );
+        $motion = $this->pluginEvents?->knockback(
+            $target,
+            $goat,
+            ApiKnockbackCause::MELEE,
+            $motion,
+        ) ?? ($this->pluginEvents === null ? $motion : null);
+        if ($motion !== null) {
+            $target->setMotion(new EntityMotion($motion->x, $motion->y, $motion->z));
+            $this->pluginEvents?->knockedBack($target, $goat, ApiKnockbackCause::MELEE, $motion);
+        }
+
+        return [new EntityActorDamaged($target, $this->tick, $this->players->recipients())];
+    }
+
+    private function goatFacesHardRamBlock(GoatEntity $goat): bool
+    {
+        if ($this->blockWorld === null) {
+            return false;
+        }
+        $motion = $goat->getMotion();
+        $length = hypot($motion->x, $motion->z);
+        if ($length < 0.05) {
+            return false;
+        }
+        $position = $goat->internalPosition();
+        $state = $this->blockWorld->blockStateAt(
+            (int) floor($position->x + ($motion->x / $length)),
+            (int) floor($position->y + 0.5),
+            (int) floor($position->z + ($motion->z / $length)),
+        );
+        $identifier = $this->blockIdentifier($state->value);
+
+        return str_ends_with($identifier, '_log')
+            || in_array($identifier, [
+                'minecraft:stone',
+                'minecraft:packed_ice',
+                'minecraft:iron_ore',
+                'minecraft:coal_ore',
+                'minecraft:copper_ore',
+                'minecraft:emerald_ore',
+            ], true);
     }
 
     private function reconcileShulkerAttachment(ShulkerEntity $shulker): bool
@@ -3185,8 +4223,29 @@ final class WorldSimulation
 
             return $drops;
         }
+        $attachedStorageDrops = [];
+        if ($entity instanceof BreedableAnimalEntity && $entity->isLeashed()) {
+            $holder = $this->leashes->knownHolder($entity);
+            $this->detachAnimalLeash($entity, $holder, LeashDetachReason::ENTITY_DEATH, false, false);
+            $attachedStorageDrops[] = new ApiItemStack('minecraft:lead', 1);
+        }
+        if ($entity instanceof AnimalStorageInventoryOwner) {
+            array_push($attachedStorageDrops, ...$entity->drainStorageItems());
+            if ($entity->hasChest()) {
+                $attachedStorageDrops[] = new ApiItemStack('minecraft:chest', 1);
+                $entity->setChested(false);
+            }
+            if (($entity instanceof LlamaEntity || $entity instanceof TraderLlamaEntity)
+                && $entity->getCarpetColor() !== null) {
+                $attachedStorageDrops[] = new ApiItemStack(
+                    'minecraft:' . $entity->getCarpetColor()->value . '_carpet',
+                    1,
+                );
+                $entity->setCarpetColor(null);
+            }
+        }
         if ($this->entityLoot === null) {
-            return [];
+            return $attachedStorageDrops;
         }
         $killer = $lastDamage instanceof EntityDamageByEntityEvent ? $lastDamage->damager : null;
         $lootingLevel = $killer instanceof \Bedriox\Api\Player\Player
@@ -3207,7 +4266,7 @@ final class WorldSimulation
             }
         }
 
-        return $this->entityLoot->prepare(new LootContext(
+        return [...$this->entityLoot->prepare(new LootContext(
             $entity->getType(),
             $lastDamage,
             $killer,
@@ -3217,7 +4276,7 @@ final class WorldSimulation
             $this->blockWorld?->difficulty() ?? 2,
             $lootingLevel,
             $entity,
-        ))->drops();
+        ))->drops(), ...$attachedStorageDrops];
     }
 
     /**
@@ -3263,6 +4322,11 @@ final class WorldSimulation
             if (!$entity instanceof CreeperEntity || !$entity->isAlive()) {
                 continue;
             }
+            if ($this->creeperRepelledByFeline($entity)) {
+                if ($entity->cancelProximityFuse() || !$entity->isIgnited()) {
+                    continue;
+                }
+            }
             $position = $entity->internalPosition();
             $nearestDistance = INF;
             foreach ($this->players->players() as $player) {
@@ -3285,6 +4349,23 @@ final class WorldSimulation
         }
 
         return $events;
+    }
+
+    private function creeperRepelledByFeline(CreeperEntity $creeper): bool
+    {
+        foreach ($this->entityRuntime->registry()->nearby(
+            $creeper->getWorldName(),
+            $creeper->internalPosition(),
+            6.0,
+            12,
+        ) as $candidate) {
+            if (($candidate instanceof CatEntity || $candidate instanceof OcelotEntity)
+                && $candidate->isAlive()) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /** @return list<WorldEvent> */
@@ -3334,7 +4415,7 @@ final class WorldSimulation
             if ($this->pluginEvents !== null && $damageEvent === null) {
                 continue;
             }
-            $result = $this->entityRuntime->damage($entity->getRuntimeId(), $damageEvent?->damage() ?? $damage);
+            $result = $this->damageLivingEntity($entity, $damageEvent?->damage() ?? $damage);
             if ($result !== null && $result->appliedDamage > 0.0) {
                 $affectedActors[] = $entity;
             }
@@ -3495,10 +4576,51 @@ final class WorldSimulation
             if ($this->pluginEvents !== null && $damageEvent === null) {
                 continue;
             }
-            $result = $this->entityRuntime->damage(
-                $entity->getRuntimeId(),
+            $result = $this->damageLivingEntity(
+                $entity,
                 $damageEvent?->damage() ?? self::DROWNING_DAMAGE,
             );
+            if ($result !== null && $result->appliedDamage > 0.0) {
+                if ($damageEvent !== null) {
+                    $this->entityLastDamageEvents[$entity->getRuntimeId()] = $damageEvent;
+                }
+                $this->publishedEntityHealth[$entity->getRuntimeId()] = $entity->getHealth();
+                $events[] = new EntityActorDamaged($entity, $this->tick, $recipients);
+            }
+        }
+
+        return $events;
+    }
+
+    /** @return list<WorldEvent> */
+    private function advanceLivingEntityFreezing(): array
+    {
+        if ($this->entityEnvironment === null) {
+            return [];
+        }
+        $events = [];
+        $recipients = $this->players->recipients();
+        foreach ($this->entityRuntime->registry()->all() as $entity) {
+            if (!$entity instanceof AbstractLivingEntity || !$entity->isAlive()) {
+                continue;
+            }
+            $damageDue = $entity->advanceFreezingState(
+                $this->entityEnvironment->isTouchingPowderSnow($entity),
+                !$entity instanceof FreezeImmune,
+                $this->tick,
+            );
+            if (!$damageDue) {
+                continue;
+            }
+            $damageEvent = $this->pluginEvents?->entityDamage(
+                $entity,
+                ApiEntityDamageCause::FREEZING,
+                1.0,
+            );
+            if ($this->pluginEvents !== null && $damageEvent === null) {
+                continue;
+            }
+            $result = $this->damageLivingEntity($entity, $damageEvent?->damage() ?? 1.0);
             if ($result !== null && $result->appliedDamage > 0.0) {
                 if ($damageEvent !== null) {
                     $this->entityLastDamageEvents[$entity->getRuntimeId()] = $damageEvent;
@@ -3548,7 +4670,7 @@ final class WorldSimulation
                 if ($this->pluginEvents === null || $damageEvent !== null) {
                     $damage = $damageEvent?->damage() ?? self::FIRE_TICK_DAMAGE;
                     $result = $damage > 0.0
-                        ? $this->entityRuntime->damage($entity->getRuntimeId(), $damage)
+                        ? $this->damageLivingEntity($entity, $damage)
                         : null;
                     if ($result !== null && $result->appliedDamage > 0.0) {
                         if ($damageEvent !== null) {
@@ -3593,7 +4715,7 @@ final class WorldSimulation
                 && ($rainVulnerable || $this->entityEnvironment->isTouchingWater($entity))) {
                 $damageEvent = $this->pluginEvents?->entityDamage($entity, ApiEntityDamageCause::DROWNING, 1.0);
                 if ($this->pluginEvents === null || $damageEvent !== null) {
-                    $result = $this->entityRuntime->damage($entity->getRuntimeId(), $damageEvent?->damage() ?? 1.0);
+                    $result = $this->damageLivingEntity($entity, $damageEvent?->damage() ?? 1.0);
                     if ($result !== null && $result->appliedDamage > 0.0) {
                         $events[] = new EntityActorDamaged($entity, $this->tick, $recipients);
                     }
@@ -3856,6 +4978,9 @@ final class WorldSimulation
             );
         }
         $this->pluginEvents?->damaged($target, DamageCause::Attack, $applied);
+        if ($applied > 0.0) {
+            $this->alertTrustedFoxes($target, $attacker->getUniqueId());
+        }
 
         if ($applied > 0.0 && $target->vitals->isAlive() && $attacker instanceof CaveSpiderEntity) {
             $duration = match ($this->blockWorld?->difficulty() ?? 2) {
@@ -4087,6 +5212,7 @@ final class WorldSimulation
             $this->queuedBytes -= $bytes;
             ++$processed;
             $event = $this->apply($command);
+            array_push($events, ...$this->drainPrecedingCommandEvents());
             if ($event !== null) {
                 $events[] = $event;
             }
@@ -4945,6 +6071,7 @@ final class WorldSimulation
             $command instanceof PerformEmote => $this->emote($command),
             $command instanceof SwingArm => $this->swingArm($command),
             $command instanceof BreakBlock => $this->breakBlock($command),
+            $command instanceof BrushBlock => $this->brushBlock($command),
             $command instanceof PlaceBlock => $this->placeBlock($command),
             $command instanceof ApplyInventoryStackRequest => $this->inventoryStackRequest($command),
             $command instanceof DropItem => $this->dropItem($command),
@@ -5997,7 +7124,8 @@ final class WorldSimulation
                 self::vehicleTravelYaw($controlledMotion, $vehicleControlYaw),
                 $command->pitch,
             );
-        } elseif ($vehicle instanceof Rideable && $vehicle instanceof Tameable && $vehicle instanceof AbstractMobEntity
+        } elseif (!($vehicle instanceof LlamaEntity || $vehicle instanceof TraderLlamaEntity)
+            && $vehicle instanceof Rideable && $vehicle instanceof Tameable && $vehicle instanceof AbstractMobEntity
             && ($vehicle->isSaddled() || $vehicle instanceof SkeletonHorseEntity)
             && $vehicle->isTamed() && $link->seat->controlsVehicle()) {
             $vehicle->suppressAiMovementUntil($this->tick + 2);
@@ -6287,7 +7415,7 @@ final class WorldSimulation
         if ($damage <= 0.0) {
             return new CommandRejected($command->source, 'plugin_cancelled');
         }
-        $result = $this->entityRuntime->damage($target->getRuntimeId(), $damage);
+        $result = $this->damageLivingEntity($target, $damage);
         if ($result === null || $result->appliedDamage <= 0.0) {
             return new CommandRejected($command->source, 'target_unavailable');
         }
@@ -6430,6 +7558,9 @@ final class WorldSimulation
 
         $this->pluginEvents?->damaged($target, DamageCause::Attack, $applied);
         $this->pluginEvents?->attacked($attacker, $target, $applied);
+        if ($applied > 0.0) {
+            $this->alertTrustedFoxes($target, $attacker->identity->uuid);
+        }
         if ($knockback !== null) {
             $this->deferredEvents[] = new PlayerKnockedBack(
                 $target->sessionId,
@@ -6571,6 +7702,31 @@ final class WorldSimulation
             return new CommandRejected($command->session, $reason);
         }
 
+        if ($target instanceof LeashKnotEntity) {
+            $damageEvent = $this->pluginEvents?->entityDamage(
+                $target,
+                ApiEntityDamageCause::ATTACK,
+                1.0,
+                $this->pluginEvents->playerView($attacker),
+            );
+            if (($this->pluginEvents !== null && $damageEvent === null)
+                || !$this->removeLeashKnot(
+                    $target,
+                    true,
+                    true,
+                    LeashDetachReason::INTERACTION,
+                    false,
+                )) {
+                return new CommandRejected($command->session, 'plugin_cancelled');
+            }
+            $swing = $this->armSwingEvent($attacker, ArmSwingSource::Attack);
+            if ($swing !== null) {
+                $this->deferredEvents[] = $swing;
+            }
+
+            return new EntityActorRemoved($target, $this->players->recipients());
+        }
+
         if ($target instanceof \Bedriox\Server\Entity\Vanilla\End\EndCrystalEntity && $target->isInvulnerable()) {
             return new CommandRejected($command->session, 'target_invulnerable');
         }
@@ -6629,7 +7785,7 @@ final class WorldSimulation
         if ($damage <= 0.0) {
             return new CommandRejected($command->session, 'plugin_cancelled');
         }
-        $result = $this->entityRuntime->damage($target->getRuntimeId(), $damage);
+        $result = $this->damageLivingEntity($target, $damage);
         if ($result === null || $result->appliedDamage <= 0.0) {
             return new CommandRejected($command->session, 'target_unavailable');
         }
@@ -6640,11 +7796,19 @@ final class WorldSimulation
             $this->entityLastDamageEvents[$target->getRuntimeId()] = $damageEvent;
         }
         if ($target instanceof MutableAngerState
+            && !($target instanceof PolarBearEntity && $target->isBaby())
+            && !($target instanceof PandaEntity && $target->getExpressedGene() !== PandaGene::AGGRESSIVE)
             && (!($target instanceof Tameable) || $target->getOwnerUniqueId() !== $attacker->identity->uuid)) {
             $target->setAngerTargetUniqueId($attacker->identity->uuid, $this->dropRandom->integer(400, 800));
             if ($target instanceof NetherAngerableEntity) {
                 $this->provokeNetherGroup($target, $attacker);
             }
+        }
+        if ($target instanceof PolarBearEntity) {
+            $this->provokePolarBearGroup($target, $attacker);
+        }
+        if ($target instanceof LlamaEntity || $target instanceof TraderLlamaEntity) {
+            $target->setRetaliationTargetUniqueId($attacker->identity->uuid);
         }
         $this->entityInvulnerableUntilTicks[$target->getRuntimeId()] =
             $this->tick + CombatRules::DAMAGE_IMMUNITY_TICKS;
@@ -6776,7 +7940,7 @@ final class WorldSimulation
             );
             $damage = $damageEvent?->damage() ?? ($this->pluginEvents === null ? $proposedDamage : 0.0);
             $result = $damage > 0.0
-                ? $this->entityRuntime->damage($entity->getRuntimeId(), $damage)
+                ? $this->damageLivingEntity($entity, $damage)
                 : null;
             if ($result !== null && $result->appliedDamage > 0.0) {
                 if ($damageEvent !== null) {
@@ -6841,6 +8005,61 @@ final class WorldSimulation
         }
     }
 
+    private function provokePolarBearGroup(PolarBearEntity $provoked, Player $attacker): void
+    {
+        foreach ($this->entityRuntime->registry()->nearby(
+            $provoked->getWorldName(),
+            $provoked->internalPosition(),
+            20.0,
+            32,
+        ) as $candidate) {
+            if (!$candidate instanceof PolarBearEntity || !$candidate->isAlive() || $candidate->isBaby()) {
+                continue;
+            }
+            if ($candidate->getAngerTargetUniqueId() === $attacker->identity->uuid
+                && $candidate->getRemainingAngerTicks() > 20) {
+                $candidate->setStanding(true);
+                continue;
+            }
+            if ($this->pluginEvents !== null) {
+                $attackerView = $this->pluginEvents->playerView($attacker);
+                $previous = $this->entityTargets[$candidate->getRuntimeId()] ?? null;
+                $event = $this->pluginEvents->entityTarget(
+                    $candidate,
+                    $previous,
+                    $attackerView,
+                    EntityTargetReason::GROUP_PROVOCATION,
+                );
+                if ($event->isCancelled() || $event->target() !== $attackerView) {
+                    continue;
+                }
+                $this->entityTargets[$candidate->getRuntimeId()] = $attackerView;
+                $this->pluginEvents->entityTargetChanged(
+                    $candidate,
+                    $previous,
+                    $attackerView,
+                    EntityTargetReason::GROUP_PROVOCATION,
+                );
+            }
+            $candidate->setAngerTargetUniqueId(
+                $attacker->identity->uuid,
+                $this->dropRandom->integer(400, 800),
+            );
+            $candidate->setStanding(true);
+            $candidate->aiRuntime()->memory()->put(
+                VanillaAiMemories::nearestPlayer(),
+                new AiPlayerSnapshot(
+                    $attacker->identity->uuid,
+                    $this->worldId,
+                    $attacker->movement->position,
+                    true,
+                    $attacker->inventory->selectedStack()?->identifier,
+                ),
+                $this->tick + 30,
+            );
+        }
+    }
+
     private function interactEntity(InteractEntity $command): WorldEvent
     {
         $player = $this->players->player($command->session);
@@ -6866,7 +8085,43 @@ final class WorldSimulation
             return new CommandRejected($command->session, 'plugin_cancelled');
         }
         $heldBefore = $player->inventory->selectedStack();
+        if ($target instanceof LeashKnotEntity) {
+            if (!$this->removeLeashKnot($target, true, true, LeashDetachReason::INTERACTION)) {
+                return new CommandRejected($command->session, 'leash_knot_busy');
+            }
+            $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
+
+            return new EntityInteracted($command->session, $target->getRuntimeId(), $command->interaction);
+        }
         $pigWasSaddled = $target instanceof PigEntity && $target->isSaddled();
+        if ($target instanceof BreedableAnimalEntity) {
+            if (!$target->isLeashed() && $heldBefore?->identifier === 'minecraft:lead') {
+                if ($target instanceof OcelotEntity && !$target->isTrusting()) {
+                    return new CommandRejected($command->session, 'entity_not_trusting');
+                }
+                if (!($this->pluginEvents?->allowLeash($target, $player) ?? true)) {
+                    return new CommandRejected($command->session, 'plugin_cancelled');
+                }
+                if (!$this->leashes->attachToPlayer($target, $player)) {
+                    return new CommandRejected($command->session, 'leash_holder');
+                }
+                $this->consumeSelectedItem($player);
+                $this->pluginEvents?->entityLeashed($target, $player);
+                $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
+
+                return new EntityInteracted($command->session, $target->getRuntimeId(), $command->interaction);
+            }
+            if ($target->isLeashed() && $player->movement->sneaking
+                && $target->getLeashHolderType() === LeashHolderType::PLAYER
+                && $target->getLeashHolderUniqueId() === $player->identity->uuid) {
+                if (!$this->detachAnimalLeash($target, $player, LeashDetachReason::INTERACTION, true)) {
+                    return new CommandRejected($command->session, 'plugin_cancelled');
+                }
+                $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
+
+                return new EntityInteracted($command->session, $target->getRuntimeId(), $command->interaction);
+            }
+        }
         if ($target instanceof PiglinEntity && !$target->isAdmiring()
             && $heldBefore?->identifier === 'minecraft:gold_ingot') {
             $target->equipmentState()->setItem(
@@ -6883,7 +8138,9 @@ final class WorldSimulation
             ? AquaticBucketRegistry::bucketForType($target->getType())
         : null;
         if ($bucketResult !== null) {
-            $this->replaceConsumedContainer($player, $bucketResult);
+            if (!$this->replaceConsumedContainer($player, $bucketResult)) {
+                return new CommandRejected($command->session, 'item_capacity');
+            }
             $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
             $this->entityPersistence?->forgetEntity($target->getUniqueId());
             $this->entityRuntime->remove($target->getRuntimeId());
@@ -6905,21 +8162,44 @@ final class WorldSimulation
             return new EntityInteracted($command->session, $target->getRuntimeId(), $command->interaction);
         }
         if ($target instanceof ArmadilloEntity && $heldBefore?->identifier === 'minecraft:brush') {
-            $this->damageHeldItem($player, ApiItemDamageCause::ITEM_USE, 1);
-            $this->dropAnimalItem($target, new ApiItemStack('minecraft:armadillo_scute', 1));
+            if (!$target->canBeBrushed($this->tick)) {
+                return new EntityInteracted($command->session, $target->getRuntimeId(), $command->interaction);
+            }
+            if (!$this->itemEntities->canSpawn()) {
+                return new CommandRejected($command->session, 'item_entity_capacity');
+            }
+            $drop = new ApiItemStack('minecraft:armadillo_scute', 1);
+            if (!($this->pluginEvents?->allowBrush($player, $target, $heldBefore, $drop) ?? true)) {
+                return new CommandRejected($command->session, 'plugin_cancelled');
+            }
+            if (!$this->dropAnimalItem($target, $drop)) {
+                return new CommandRejected($command->session, 'item_entity_capacity');
+            }
+            $target->recordBrushed($this->tick);
+            if ($player->gameMode()->consumesItems()) {
+                $this->damageHeldItem($player, ApiItemDamageCause::ITEM_USE, 16);
+            }
+            $this->pluginEvents?->entityBrushed($player, $target, $heldBefore, $drop);
             $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
 
             return new EntityInteracted($command->session, $target->getRuntimeId(), $command->interaction);
         }
         if ($target instanceof OcelotEntity && !$target->isTrusting()
             && in_array($heldBefore?->identifier, ['minecraft:cod', 'minecraft:salmon'], true)) {
+            $succeeded = $this->dropRandom->integer(1, 3) === 1;
+            if ($succeeded && !($this->pluginEvents?->allowTrust($target, $player) ?? true)) {
+                return new CommandRejected($command->session, 'plugin_cancelled');
+            }
             $this->consumeSelectedItem($player);
-            if ($this->dropRandom->integer(1, 3) === 1
-                && ($this->pluginEvents?->allowTrust($target, $player) ?? true)) {
+            if ($succeeded) {
                 $target->setTrustedPlayerUniqueId($player->identity->uuid);
-                $this->deferredEvents[] = new TameAttemptPresented($target, true, $this->players->recipients());
                 $this->pluginEvents?->entityTrusted($target, $player);
             }
+            $this->deferredEvents[] = new TameAttemptPresented(
+                $target,
+                $succeeded,
+                $this->players->recipients(),
+            );
             $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
 
             return new EntityInteracted($command->session, $target->getRuntimeId(), $command->interaction);
@@ -6928,16 +8208,31 @@ final class WorldSimulation
             && $target->isTamed() && $heldBefore !== null) {
             if (!$target->hasChest() && $heldBefore->identifier === 'minecraft:chest'
                 && $player->movement->sneaking) {
+                if (!($this->pluginEvents?->allowAnimalStorageAttach($target, $player) ?? true)) {
+                    return new CommandRejected($command->session, 'plugin_cancelled');
+                }
                 $target->setChested(true);
                 $this->consumeSelectedItem($player);
+                $this->pluginEvents?->animalStorageAttached($target, $player);
                 $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
 
                 return new EntityInteracted($command->session, $target->getRuntimeId(), $command->interaction);
             }
             $carpetColor = $this->woolColorFromCarpet($heldBefore->identifier);
             if ($carpetColor !== null) {
+                $previousCarpet = $target->getCarpetColor();
                 $target->setCarpetColor($carpetColor);
-                $this->consumeSelectedItem($player);
+                if ($previousCarpet === null) {
+                    $this->consumeSelectedItem($player);
+                } else {
+                    if (!$this->replaceConsumedContainer(
+                        $player,
+                        'minecraft:' . $previousCarpet->value . '_carpet',
+                    )) {
+                        $target->setCarpetColor($previousCarpet);
+                        return new CommandRejected($command->session, 'item_capacity');
+                    }
+                }
                 $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
 
                 return new EntityInteracted($command->session, $target->getRuntimeId(), $command->interaction);
@@ -6946,11 +8241,55 @@ final class WorldSimulation
         if (($target instanceof DonkeyEntity || $target instanceof MuleEntity)
             && $target->isTamed() && !$target->hasChest()
             && $heldBefore?->identifier === 'minecraft:chest' && $player->movement->sneaking) {
+            if (!($this->pluginEvents?->allowAnimalStorageAttach($target, $player) ?? true)) {
+                return new CommandRejected($command->session, 'plugin_cancelled');
+            }
             $target->setChested(true);
             $this->consumeSelectedItem($player);
+            $this->pluginEvents?->animalStorageAttached($target, $player);
             $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
 
             return new EntityInteracted($command->session, $target->getRuntimeId(), $command->interaction);
+        }
+        if (($target instanceof HorseEntity || $target instanceof ZombieHorseEntity)
+            && $target->isTamed() && $heldBefore !== null
+            && in_array($heldBefore->identifier, $target::supportedHorseArmorIdentifiers(), true)) {
+            if ($target->getHorseArmor() === null) {
+                $target->setHorseArmor(new ApiItemStack(
+                    $heldBefore->identifier,
+                    1,
+                    $heldBefore->damage,
+                    $heldBefore->nbt,
+                    $heldBefore->auxValue,
+                ));
+                $this->consumeSelectedItem($player);
+            }
+            $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
+
+            return new EntityInteracted($command->session, $target->getRuntimeId(), $command->interaction);
+        }
+        if (($target instanceof HorseFamilyEntity || $target instanceof UndeadHorseEntity)
+            && $target->isTamed() && $player->movement->sneaking) {
+            $equipmentSlots = $this->animalEquipmentSlotDeclarations($target);
+            if ($equipmentSlots === []) {
+                return new CommandRejected($player->sessionId, 'container_unavailable');
+            }
+            $result = $this->openContainerInventory(
+                $player,
+                ApiContainerType::HORSE,
+                new HorseContainerInventory(
+                    $target,
+                    $equipmentSlots,
+                    $target instanceof AnimalStorageInventoryOwner ? $target : null,
+                ),
+                entityRuntimeId: $target->getRuntimeId(),
+                animalEquipmentSlots: $equipmentSlots,
+            );
+            if ($result instanceof ContainerOpened) {
+                $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
+            }
+
+            return $result;
         }
         if ($target instanceof WolfEntity || $target instanceof CatEntity) {
             $taming = $this->interactWithTameableAnimal($player, $target);
@@ -7151,6 +8490,7 @@ final class WorldSimulation
             $player->runtimeActorId,
             $player->snapshot(),
             $this->players->recipients(),
+            $this->resetsHorseJumpPresentation($link->vehicle),
         );
     }
 
@@ -7174,6 +8514,7 @@ final class WorldSimulation
             $player->runtimeActorId,
             $player->snapshot(),
             $this->players->recipients(),
+            $this->resetsHorseJumpPresentation($link->vehicle),
         );
     }
 
@@ -7242,7 +8583,18 @@ final class WorldSimulation
             $passenger->getRuntimeId(),
             null,
             $this->players->recipients(),
+            $this->resetsHorseJumpPresentation($link->vehicle),
         );
+    }
+
+    private function resetsHorseJumpPresentation(ApiEntity $vehicle): bool
+    {
+        if ($vehicle instanceof CamelEntity || $vehicle instanceof LlamaEntity || $vehicle instanceof TraderLlamaEntity) {
+            return false;
+        }
+
+        return $vehicle instanceof SkeletonHorseEntity
+            || (($vehicle instanceof HorseFamilyEntity || $vehicle instanceof UndeadHorseEntity) && $vehicle->isSaddled());
     }
 
     private function syncMountedPlayer(Player $player, MountLink $link): void
@@ -7410,28 +8762,35 @@ final class WorldSimulation
                     return false;
                 }
             }
+            if ($this->itemEntities->spawnableCapacity() < count($drops)) {
+                return false;
+            }
+            $preparedDrops = [];
+            try {
+                foreach ($drops as $drop) {
+                    $preparedDrops[] = $this->inventoryStackFromApi($drop);
+                }
+            } catch (InvalidArgumentException) {
+                return false;
+            }
             $sheep->setSheared(true);
             $this->damageHeldItem($player, ApiItemDamageCause::ITEM_USE, 1);
-            foreach ($drops as $drop) {
-                try {
-                    $item = $this->itemEntities->spawn(
-                        $this->inventoryStackFromApi($drop),
-                        new Position(
-                            $sheep->internalPosition()->x,
-                            $sheep->internalPosition()->y + 0.5,
-                            $sheep->internalPosition()->z,
-                        ),
-                        new ItemEntityMotion(
-                            $this->dropRandom->integer(-10, 10) / 100.0,
-                            0.15,
-                            $this->dropRandom->integer(-10, 10) / 100.0,
-                        ),
-                        10,
-                    );
-                    $this->deferredEvents[] = new ItemEntitySpawned($item, $this->players->recipients());
-                } catch (InvalidArgumentException|OverflowException) {
-                    // Invalid plugin-modified drops are isolated from the simulation tick.
-                }
+            foreach ($preparedDrops as $drop) {
+                $item = $this->itemEntities->spawn(
+                    $drop,
+                    new Position(
+                        $sheep->internalPosition()->x,
+                        $sheep->internalPosition()->y + 0.5,
+                        $sheep->internalPosition()->z,
+                    ),
+                    new ItemEntityMotion(
+                        $this->dropRandom->integer(-10, 10) / 100.0,
+                        0.15,
+                        $this->dropRandom->integer(-10, 10) / 100.0,
+                    ),
+                    10,
+                );
+                $this->deferredEvents[] = new ItemEntitySpawned($item, $this->players->recipients());
             }
             $this->pluginEvents?->entitySheared($player, $sheep, $held, $drops);
 
@@ -7458,11 +8817,29 @@ final class WorldSimulation
         }
         if (($animal instanceof CowEntity || $animal instanceof GoatEntity || $animal instanceof MooshroomEntity)
             && !$animal->isBaby() && $held->identifier === 'minecraft:bucket') {
-            $this->replaceConsumedContainer($player, 'minecraft:milk_bucket');
+            return $this->replaceConsumedContainer($player, 'minecraft:milk_bucket');
+        }
+        if ($animal instanceof MooshroomEntity && !$animal->isBaby()
+            && $animal->getVariant() === MooshroomVariant::BROWN
+            && $animal->getStewEffect() === null
+            && ($stewEffect = MooshroomStewEffect::fromFlower($held->identifier)) !== null) {
+            $animal->setStewEffect($stewEffect);
+            $this->consumeSelectedItem($player);
             return true;
         }
         if ($animal instanceof MooshroomEntity && !$animal->isBaby() && $held->identifier === 'minecraft:bowl') {
-            $this->replaceConsumedContainer($player, 'minecraft:mushroom_stew');
+            $stewEffect = $animal->getStewEffect();
+            if (!$this->replaceConsumedContainerWithStack($player, new InventoryStack(
+                $stewEffect === null ? 'minecraft:mushroom_stew' : 'minecraft:suspicious_stew',
+                1,
+                1,
+                damage: $stewEffect === null ? 0 : $stewEffect->value,
+            ))) {
+                return false;
+            }
+            if ($stewEffect !== null) {
+                $animal->takeStewEffect();
+            }
             return true;
         }
         if ($animal instanceof PigEntity && !$animal->isBaby() && !$animal->isSaddled()
@@ -7480,17 +8857,30 @@ final class WorldSimulation
         if (!in_array($held->identifier, $this->breedingFoods($animal), true)) {
             return true;
         }
+        if ($animal instanceof PandaEntity && !$this->pandaHasBreedingBamboo($animal)) {
+            return true;
+        }
         if ($animal instanceof Tameable && !$animal->isTamed()) {
             return true;
         }
         if ($animal->isBaby()) {
+            if ($animal instanceof PandaEntity && $held->identifier === 'minecraft:bamboo') {
+                $animal->beginEating($this->tick);
+            }
+            if (!$this->consumeBreedingFood($player, $held->identifier)) {
+                return false;
+            }
             $animal->accelerateGrowth(2_400);
-            $this->consumeBreedingFood($player, $held->identifier);
             return true;
         }
         if ($animal->getLoveTicks() === 0) {
+            if ($animal instanceof PandaEntity && $held->identifier === 'minecraft:bamboo') {
+                $animal->beginEating($this->tick);
+            }
+            if (!$this->consumeBreedingFood($player, $held->identifier)) {
+                return false;
+            }
             $animal->setLoveTicks(BreedableAnimalEntity::MAXIMUM_LOVE_TICKS);
-            $this->consumeBreedingFood($player, $held->identifier);
             $this->deferredEvents[] = new AnimalLovePresented($animal, $this->players->recipients());
         }
         if (!$animal->isReadyToBreed()) {
@@ -7499,7 +8889,7 @@ final class WorldSimulation
         $partner = null;
         foreach ($this->entityRuntime->registry()->nearby($animal->getWorldName(), $animal->internalPosition(), 8.0, 16) as $candidate) {
             if ($candidate !== $animal && $candidate instanceof BreedableAnimalEntity
-                && $candidate->getType() === $animal->getType() && $candidate->isReadyToBreed()) {
+                && self::canBreedTogether($animal, $candidate) && $candidate->isReadyToBreed()) {
                 $partner = $candidate;
                 break;
             }
@@ -7519,7 +8909,22 @@ final class WorldSimulation
             min($animal->internalPosition()->y, $partner->internalPosition()->y),
             ($animal->internalPosition()->z + $partner->internalPosition()->z) / 2.0,
         );
-        $outcome = $this->spawnEntity(new EntitySpawnRequest($animal->getType(), SpawnCause::BREEDING, $animal->getWorldName(), $position));
+        if ($animal instanceof SnifferEntity && $partner instanceof SnifferEntity) {
+            if (!$this->dropAnimalItem($animal, new ApiItemStack('minecraft:sniffer_egg', 1))) {
+                return true;
+            }
+            $animal->beginBreedingCooldown();
+            $partner->beginBreedingCooldown();
+            array_push($this->deferredEvents, ...$this->spawnExperienceOrbs($experience, $position));
+
+            return true;
+        }
+        $outcome = $this->spawnEntity(new EntitySpawnRequest(
+            self::offspringType($animal, $partner),
+            SpawnCause::BREEDING,
+            $animal->getWorldName(),
+            $position,
+        ));
         if (!$outcome->entity instanceof BreedableAnimalEntity) {
             return true;
         }
@@ -7531,8 +8936,25 @@ final class WorldSimulation
         if ($child instanceof RabbitEntity && $animal instanceof RabbitEntity && $partner instanceof RabbitEntity) {
             $child->setVariant($this->dropRandom->integer(0, 1) === 0 ? $animal->getVariant() : $partner->getVariant());
         }
-        if ($child instanceof FoxEntity) {
+        if ($child instanceof MooshroomEntity && $animal instanceof MooshroomEntity && $partner instanceof MooshroomEntity) {
+            if ($animal->getVariant() === $partner->getVariant()
+                && $this->dropRandom->integer(1, 1_024) === 1) {
+                $child->setVariant($animal->getVariant() === MooshroomVariant::RED
+                    ? MooshroomVariant::BROWN
+                    : MooshroomVariant::RED);
+            } else {
+                $child->setVariant($this->dropRandom->integer(0, 1) === 0
+                    ? $animal->getVariant()
+                    : $partner->getVariant());
+            }
+        }
+        if ($child instanceof FoxEntity && $animal instanceof FoxEntity && $partner instanceof FoxEntity) {
             $child->addTrustedPlayerUniqueId($player->identity->uuid);
+            $child->setVariant($this->dropRandom->integer(0, 1) === 0 ? $animal->getVariant() : $partner->getVariant());
+        }
+        if ($child instanceof OcelotEntity && $animal instanceof OcelotEntity && $partner instanceof OcelotEntity
+            && ($animal->trustsPlayer($player->identity->uuid) || $partner->trustsPlayer($player->identity->uuid))) {
+            $child->setTrustedPlayerUniqueId($player->identity->uuid);
         }
         if ($child instanceof PandaEntity && $animal instanceof PandaEntity && $partner instanceof PandaEntity) {
             $mainGene = $this->dropRandom->integer(0, 1) === 0
@@ -7550,6 +8972,16 @@ final class WorldSimulation
             }
             $child->setGenes($mainGene, $hiddenGene);
         }
+        if (($child instanceof LlamaEntity || $child instanceof TraderLlamaEntity)
+            && ($animal instanceof LlamaEntity || $animal instanceof TraderLlamaEntity)
+            && ($partner instanceof LlamaEntity || $partner instanceof TraderLlamaEntity)) {
+            $child->setVariant($this->dropRandom->integer(0, 1) === 0
+                ? $animal->getVariant()
+                : $partner->getVariant());
+            $maximumInheritedStrength = max($animal->getStrength(), $partner->getStrength());
+            $child->setStrength(min(5, $this->dropRandom->integer(1, $maximumInheritedStrength)
+                + ($this->dropRandom->integer(1, 100) <= 3 ? 1 : 0)));
+        }
         if ($child instanceof TameableAnimalEntity && $animal instanceof TameableAnimalEntity
             && $partner instanceof TameableAnimalEntity
             && $animal->getOwnerUniqueId() !== null
@@ -7561,6 +8993,27 @@ final class WorldSimulation
         array_push($this->deferredEvents, ...$this->spawnExperienceOrbs($experience, $position));
         $this->pluginEvents?->entitiesBred($animal, $partner, $child, $experience);
         return true;
+    }
+
+    private static function canBreedTogether(
+        BreedableAnimalEntity $first,
+        BreedableAnimalEntity $second,
+    ): bool {
+        if ($first->getType() === $second->getType()) {
+            return true;
+        }
+
+        return ($first instanceof HorseEntity && $second instanceof DonkeyEntity)
+            || ($first instanceof DonkeyEntity && $second instanceof HorseEntity);
+    }
+
+    private static function offspringType(
+        BreedableAnimalEntity $first,
+        BreedableAnimalEntity $second,
+    ): EntityType {
+        return self::canBreedTogether($first, $second) && $first->getType() !== $second->getType()
+            ? VanillaEntityType::MULE
+            : $first->getType();
     }
 
     private function shearMooshroom(Player $player, MooshroomEntity $mooshroom, InventoryStack $held): bool
@@ -7588,6 +9041,23 @@ final class WorldSimulation
         } else {
             $targetType = VanillaEntityType::COW;
         }
+        $targetDefinition = $this->entityDefinitions->get($targetType);
+        if ($targetDefinition === null
+            || $targetDefinition->definition->category === EntityCategory::MISCELLANEOUS) {
+            return false;
+        }
+        if (!$this->entityRuntime->registry()->canSpawn()
+            || $this->itemEntities->spawnableCapacity() < count($drops)) {
+            return false;
+        }
+        $preparedDrops = [];
+        try {
+            foreach ($drops as $drop) {
+                $preparedDrops[] = $this->inventoryStackFromApi($drop);
+            }
+        } catch (InvalidArgumentException) {
+            return false;
+        }
         $outcome = $this->spawnEntity(new EntitySpawnRequest(
             $targetType,
             SpawnCause::TRANSFORMATION,
@@ -7603,26 +9073,22 @@ final class WorldSimulation
         $healthRatio = $mooshroom->getHealth() / $mooshroom->getMaximumHealth();
         $transformed->damage(max(0.0, $transformed->getMaximumHealth() * (1.0 - $healthRatio)));
         $this->damageHeldItem($player, ApiItemDamageCause::ITEM_USE, 1);
-        foreach ($drops as $drop) {
-            try {
-                $item = $this->itemEntities->spawn(
-                    $this->inventoryStackFromApi($drop),
-                    new Position(
-                        $mooshroom->internalPosition()->x,
-                        $mooshroom->internalPosition()->y + 0.5,
-                        $mooshroom->internalPosition()->z,
-                    ),
-                    new ItemEntityMotion(
-                        $this->dropRandom->integer(-10, 10) / 100.0,
-                        0.15,
-                        $this->dropRandom->integer(-10, 10) / 100.0,
-                    ),
-                    10,
-                );
-                $this->deferredEvents[] = new ItemEntitySpawned($item, $this->players->recipients());
-            } catch (InvalidArgumentException|OverflowException) {
-                // Invalid plugin-modified drops are isolated from the simulation tick.
-            }
+        foreach ($preparedDrops as $drop) {
+            $item = $this->itemEntities->spawn(
+                $drop,
+                new Position(
+                    $mooshroom->internalPosition()->x,
+                    $mooshroom->internalPosition()->y + 0.5,
+                    $mooshroom->internalPosition()->z,
+                ),
+                new ItemEntityMotion(
+                    $this->dropRandom->integer(-10, 10) / 100.0,
+                    0.15,
+                    $this->dropRandom->integer(-10, 10) / 100.0,
+                ),
+                10,
+            );
+            $this->deferredEvents[] = new ItemEntitySpawned($item, $this->players->recipients());
         }
         $this->entityPersistence?->forgetEntity($mooshroom->getUniqueId());
         $this->entityRuntime->remove($mooshroom->getRuntimeId());
@@ -7633,7 +9099,7 @@ final class WorldSimulation
         return true;
     }
 
-    private function dropAnimalItem(AbstractLivingEntity $entity, ApiItemStack $drop): void
+    private function dropAnimalItem(AbstractLivingEntity $entity, ApiItemStack $drop): bool
     {
         try {
             $item = $this->itemEntities->spawn(
@@ -7651,9 +9117,154 @@ final class WorldSimulation
                 10,
             );
             $this->deferredEvents[] = new ItemEntitySpawned($item, $this->players->recipients());
+            return true;
         } catch (InvalidArgumentException|OverflowException) {
             // Capacity pressure delays natural output and never fails the world tick.
+            return false;
         }
+    }
+
+    private function detachAnimalLeash(
+        BreedableAnimalEntity $entity,
+        Player|ApiEntity|null $holder,
+        LeashDetachReason $reason,
+        bool $dropLead,
+        bool $cancellable = true,
+    ): bool {
+        if (!$entity->isLeashed()) {
+            return true;
+        }
+        if ($cancellable && !($this->pluginEvents?->allowUnleash($entity, $holder, $reason) ?? true)) {
+            return false;
+        }
+        if ($dropLead && !$this->dropAnimalItem($entity, new ApiItemStack('minecraft:lead', 1))) {
+            if ($cancellable) {
+                return false;
+            }
+            $position = $entity->internalPosition();
+            $this->pendingLeadDrops[] = new Position($position->x, $position->y + 0.5, $position->z);
+        }
+        $this->leashes->detach($entity);
+        $this->pluginEvents?->entityUnleashed($entity, $holder, $reason);
+
+        return true;
+    }
+
+    private function reconcileLeashKnots(): void
+    {
+        if ($this->blockWorld === null) {
+            return;
+        }
+        foreach ($this->leashes->knots() as $knot) {
+            $position = $knot->fencePosition();
+            $state = $this->blockWorld->loadedBlockStateAt($position->x, $position->y, $position->z);
+            if ($state === null || self::isFenceBlock($this->blockIdentifier($state->value))) {
+                continue;
+            }
+            $this->removeLeashKnot($knot, true, false, LeashDetachReason::HOLDER_UNAVAILABLE);
+        }
+    }
+
+    private function removeLeashKnot(
+        LeashKnotEntity $knot,
+        bool $dropLeads,
+        bool $cancellable,
+        LeashDetachReason $reason,
+        bool $deferRemoval = true,
+    ): bool {
+        $attachments = $this->leashes->attachmentsToEntity($knot);
+        if ($dropLeads && $this->itemEntities->spawnableCapacity() < count($attachments)) {
+            return false;
+        }
+        if ($cancellable) {
+            foreach ($attachments as $animal) {
+                if (!($this->pluginEvents?->allowUnleash(
+                    $animal,
+                    $knot,
+                    $reason,
+                ) ?? true)) {
+                    return false;
+                }
+            }
+        }
+        foreach ($attachments as $animal) {
+            if (!$this->detachAnimalLeash(
+                $animal,
+                $knot,
+                $reason,
+                $dropLeads,
+                false,
+            )) {
+                return false;
+            }
+            $this->queueLeashMetadataChange(
+                $animal,
+                $this->players->recipients(),
+                !$deferRemoval,
+            );
+        }
+        $this->entityPersistence?->forgetEntity($knot->getUniqueId());
+        $removed = $this->entityRuntime->remove($knot->getRuntimeId());
+        if ($removed === null) {
+            return false;
+        }
+        unset(
+            $this->announcedEntities[$knot->getRuntimeId()],
+            $this->publishedEntityHealth[$knot->getRuntimeId()],
+            $this->publishedEntityPresentationRevisions[$knot->getRuntimeId()],
+        );
+        $this->pluginEvents?->entityDespawned($knot, 'leash_knot_removed');
+        if ($deferRemoval) {
+            $this->deferredEvents[] = new EntityActorRemoved($knot, $this->players->recipients());
+        }
+
+        return true;
+    }
+
+    /** @param list<string> $recipients */
+    private function queueLeashMetadataChange(
+        BreedableAnimalEntity $animal,
+        array $recipients,
+        bool $beforeCommandResult,
+    ): void {
+        $this->publishedEntityPresentationRevisions[$animal->getRuntimeId()] = $animal->presentationRevision();
+        $event = new EntityActorMetadataChanged(
+            $animal,
+            $this->tick,
+            $recipients,
+            !$this->entityAiEnabled || !$animal->isAiEnabled(),
+        );
+        if ($beforeCommandResult) {
+            $this->precedingCommandEvents[] = $event;
+        } else {
+            $this->deferredEvents[] = $event;
+        }
+    }
+
+    private static function isFenceBlock(string $identifier): bool
+    {
+        return $identifier === 'minecraft:fence'
+            || (str_starts_with($identifier, 'minecraft:') && str_ends_with($identifier, '_fence'));
+    }
+
+    /**
+     * Holders must be visible before an animal publishes LEAD_HOLDER_EID to a joining client.
+     *
+     * @template T of AbstractEntity
+     * @param list<T> $entities
+     * @return list<T>
+     */
+    private static function leashProjectionOrder(array $entities): array
+    {
+        usort($entities, static fn(AbstractEntity $left, AbstractEntity $right): int => [
+            $left instanceof LeashKnotEntity ? 0 : 1,
+            $left->getRuntimeId(),
+        ] <=> [
+            $right instanceof LeashKnotEntity ? 0 : 1,
+            $right->getRuntimeId(),
+        ]);
+
+        return $entities;
     }
 
     /** True means the interaction was consumed, false means a plugin cancelled it, and null means continue. */
@@ -7683,17 +9294,18 @@ final class WorldSimulation
         if ($tamingItem === null || $held?->identifier !== $tamingItem) {
             return null;
         }
+        $succeeded = $this->dropRandom->integer(1, 3) === 1;
+        if ($succeeded && $this->pluginEvents !== null && !$this->pluginEvents->allowTame($animal, $player)) {
+            return false;
+        }
         $this->consumeSelectedItem($player);
-        if ($this->dropRandom->integer(1, 3) !== 1) {
+        if (!$succeeded) {
             $this->deferredEvents[] = new TameAttemptPresented(
                 $animal,
                 false,
                 $this->players->recipients(),
             );
             return true;
-        }
-        if ($this->pluginEvents !== null && !$this->pluginEvents->allowTame($animal, $player)) {
-            return false;
         }
         $animal->setOwnerUniqueId($player->identity->uuid);
         $animal->setSitting(true);
@@ -7792,6 +9404,7 @@ final class WorldSimulation
             $animal instanceof PandaEntity => ['minecraft:bamboo'],
             $animal instanceof ArmadilloEntity => ['minecraft:spider_eye'],
             $animal instanceof SnifferEntity => ['minecraft:torchflower_seeds'],
+            $animal instanceof LlamaEntity, $animal instanceof TraderLlamaEntity => ['minecraft:hay_block'],
             $animal instanceof HorseFamilyEntity => ['minecraft:golden_carrot', 'minecraft:golden_apple'],
             $animal instanceof TurtleEntity => ['minecraft:seagrass'],
             $animal instanceof AxolotlEntity => ['minecraft:tropical_fish_bucket'],
@@ -7799,17 +9412,52 @@ final class WorldSimulation
         };
     }
 
-    private function replaceConsumedContainer(Player $player, string $resultIdentifier): void
+    private function pandaHasBreedingBamboo(PandaEntity $panda): bool
+    {
+        if ($this->blockWorld === null) {
+            return false;
+        }
+        $position = $panda->internalPosition();
+        $originX = (int) floor($position->x);
+        $originY = (int) floor($position->y);
+        $originZ = (int) floor($position->z);
+        $found = 0;
+        for ($y = $originY - 1; $y <= $originY + 2; ++$y) {
+            for ($z = $originZ - 5; $z <= $originZ + 5; ++$z) {
+                for ($x = $originX - 5; $x <= $originX + 5; ++$x) {
+                    $state = $this->blockWorld->blockStateAt($x, $y, $z);
+                    if ($this->blockIdentifier($state->value) === 'minecraft:bamboo' && ++$found >= 8) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private function replaceConsumedContainer(Player $player, string $resultIdentifier): bool
+    {
+        if ($this->itemCatalog === null || !$this->itemCatalog->has($resultIdentifier)) {
+            return false;
+        }
+        return $this->replaceConsumedContainerWithStack($player, new InventoryStack($resultIdentifier, 1, 1));
+    }
+
+    private function replaceConsumedContainerWithStack(Player $player, InventoryStack $result): bool
     {
         if (!$player->gameMode()->consumesItems()) {
-            return;
+            return true;
         }
         $slot = $player->inventory->selectedHotbarSlot();
         $held = $player->inventory->selectedStack();
-        if ($held === null || $this->itemCatalog === null || !$this->itemCatalog->has($resultIdentifier)) {
-            return;
+        if ($held === null || $this->itemCatalog === null || !$this->itemCatalog->has($result->identifier)) {
+            return false;
         }
-        $result = new InventoryStack($resultIdentifier, 1, 1);
+        if ($held->count > 1 && $player->inventory->addableQuantity($result) < $result->count
+            && !$this->itemEntities->canSpawn()) {
+            return false;
+        }
         if ($held->count === 1) {
             $player->inventory->replaceSlot($slot, $result);
         } else {
@@ -7829,16 +9477,18 @@ final class WorldSimulation
             $this->players->recipients($player->sessionId),
             ownerSlotCorrection: true,
         );
+
+        return true;
     }
 
-    private function consumeBreedingFood(Player $player, string $identifier): void
+    private function consumeBreedingFood(Player $player, string $identifier): bool
     {
         if ($identifier === 'minecraft:tropical_fish_bucket') {
-            $this->replaceConsumedContainer($player, 'minecraft:water_bucket');
-
-            return;
+            return $this->replaceConsumedContainer($player, 'minecraft:water_bucket');
         }
         $this->consumeSelectedItem($player);
+
+        return true;
     }
 
     private function woolColorFromDye(string $identifier): ?WoolColor
@@ -7859,6 +9509,45 @@ final class WorldSimulation
         }
 
         return WoolColor::tryFrom(substr($identifier, strlen('minecraft:'), -strlen('_carpet')));
+    }
+
+    /** @return list<AnimalEquipmentSlotDeclaration> */
+    private function animalEquipmentSlotDeclarations(HorseFamilyEntity|UndeadHorseEntity $entity): array
+    {
+        if ($entity instanceof ApiLlama) {
+            return [new AnimalEquipmentSlotDeclaration(
+                1,
+                AnimalEquipmentSlotType::CARPET,
+                array_map(
+                    static fn(WoolColor $color): string => 'minecraft:' . $color->value . '_carpet',
+                    WoolColor::cases(),
+                ),
+                $entity->getCarpetColor() === null
+                    ? null
+                    : 'minecraft:' . $entity->getCarpetColor()->value . '_carpet',
+            )];
+        }
+
+        if ($entity instanceof SkeletonHorseEntity) {
+            return [];
+        }
+
+        $slots = [new AnimalEquipmentSlotDeclaration(
+            0,
+            AnimalEquipmentSlotType::SADDLE,
+            ['minecraft:saddle'],
+            $entity->isSaddled() ? 'minecraft:saddle' : null,
+        )];
+        if ($entity instanceof HorseEntity || $entity instanceof ZombieHorseEntity) {
+            $slots[] = new AnimalEquipmentSlotDeclaration(
+                1,
+                AnimalEquipmentSlotType::HORSE_ARMOR,
+                $entity::supportedHorseArmorIdentifiers(),
+                $entity->getHorseArmor()?->identifier,
+            );
+        }
+
+        return $slots;
     }
 
     private function trySheepEatGrass(SheepEntity $sheep): void
@@ -8395,6 +10084,15 @@ final class WorldSimulation
         return $events;
     }
 
+    /** @return list<WorldEvent> */
+    private function drainPrecedingCommandEvents(): array
+    {
+        $events = $this->precedingCommandEvents;
+        $this->precedingCommandEvents = [];
+
+        return $events;
+    }
+
     private function chat(SendChat $command): WorldEvent
     {
         $player = $this->players->player($command->session);
@@ -8480,11 +10178,25 @@ final class WorldSimulation
     private function disconnect(DisconnectPlayer $command): WorldEvent
     {
         $key = self::sessionKey($command->session);
-        unset($this->breakingBlocks[$key], $this->pendingRespawns[$key]);
+        $this->deferBrushReset($key);
+        unset($this->breakingBlocks[$key], $this->brushingBlocks[$key], $this->pendingRespawns[$key]);
         $this->portalContacts->forget($command->session);
         $player = $this->players->player($command->session);
         if ($player === null) {
             return new CommandRejected($command->session, 'not_joined');
+        }
+        $remainingRecipients = $this->players->recipients($player->sessionId);
+        foreach ($this->leashes->attachmentsToPlayer($player) as $animal) {
+            if (!$this->detachAnimalLeash(
+                $animal,
+                $player,
+                LeashDetachReason::HOLDER_UNAVAILABLE,
+                true,
+                false,
+            )) {
+                continue;
+            }
+            $this->queueLeashMetadataChange($animal, $remainingRecipients, true);
         }
         $this->forceDismountPlayer($player, MountReason::DISCONNECT);
         $this->deferItemUseCancellation($player, ItemUseCancellationReason::DISCONNECTED);
@@ -8595,6 +10307,13 @@ final class WorldSimulation
                 ),
                 $command instanceof DisconnectPlayer => $this->validator->disconnect($command->session),
                 $command instanceof BreakBlock => $this->validator->breakBlock(
+                    $command->session,
+                    $command->sequence,
+                    $command->action,
+                    $command->position,
+                    $command->face,
+                ),
+                $command instanceof BrushBlock => $this->validator->brushBlock(
                     $command->session,
                     $command->sequence,
                     $command->action,
@@ -8909,6 +10628,242 @@ final class WorldSimulation
         }
 
         return $this->nextRuntimeActorId;
+    }
+
+    /** @return list<WorldEvent> */
+    private function advanceBrushingBlocks(): array
+    {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null || $this->blockPalette === null) {
+            $this->brushingBlocks = [];
+            $this->brushingOwners = [];
+
+            return [];
+        }
+        $events = [];
+        foreach ($this->brushingBlocks as $key => $active) {
+            $player = $this->players->player(substr($key, strlen('session:')));
+            $position = $active['position'];
+            $entity = $this->blockWorld->blockEntityAt($position);
+            $held = $player?->inventory->selectedStack();
+            $state = $this->blockWorld->loadedBlockStateAt($position->x, $position->y, $position->z);
+            if ($player === null || !$player->vitals->isAlive()
+                || !$this->blockIsReachable($player->snapshot(), $position)
+                || !self::sameInventoryStack($held, $active['stack'])
+                || $held?->identifier !== 'minecraft:brush'
+                || !$entity instanceof SuspiciousSandBlockEntity
+                || $state === null || $this->blockIdentifier($state->value) !== 'minecraft:suspicious_sand') {
+                $this->clearBrushSession($key);
+                if ($entity instanceof SuspiciousSandBlockEntity && $state !== null) {
+                    $events[] = $this->resetSuspiciousSandProgress($entity, $state);
+                }
+                continue;
+            }
+            if ($this->tick < $active['nextStageTick']) {
+                continue;
+            }
+            if ($entity->progress < SuspiciousSandBlockEntity::MAXIMUM_PROGRESS) {
+                $progress = $entity->progress + 1;
+                $canonical = $this->blockStateRegistry->state($state);
+                $properties = $canonical->properties();
+                $properties['brushed_progress'] = $progress;
+                $next = $this->blockStateRegistry->internalId(CanonicalBlockState::from(
+                    'minecraft:suspicious_sand',
+                    $properties,
+                ));
+                $this->setBlockStateAndSchedule($position, $next, false);
+                $this->blockWorld->setBlockEntity($entity->withProgress($progress));
+                $this->brushingBlocks[$key]['nextStageTick'] = $this->tick + 10;
+                $events[] = new BlockChanged('server', $position, $next, $this->players->recipients(), false, $state);
+                $events[] = new ParticleSpawned(
+                    new Position($position->x + 0.5, $position->y + 0.5, $position->z + 0.5),
+                    new StandardParticle(StandardParticleType::BRUSH_DUST),
+                    $this->players->recipients(),
+                    $this->dimension,
+                );
+                continue;
+            }
+            if ($this->itemEntities->remainingCapacity() < 1) {
+                $this->brushingBlocks[$key]['nextStageTick'] = $this->tick + 1;
+                continue;
+            }
+            $sand = $this->blockStateRegistry->internalId(CanonicalBlockState::from('minecraft:sand'));
+            $this->setBlockStateAndSchedule($position, $sand, false);
+            $this->blockWorld->removeBlockEntity($position);
+            $this->clearBrushSession($key);
+            [$faceX, $faceY, $faceZ] = self::brushFaceOffset($active['face']);
+            $drop = $this->itemEntities->spawn(
+                $this->inventoryStackFromContainerItem($entity->hiddenItem),
+                new Position(
+                    $position->x + 0.5 + ($faceX * 0.55),
+                    $position->y + 0.5 + ($faceY * 0.55),
+                    $position->z + 0.5 + ($faceZ * 0.55),
+                ),
+                new ItemEntityMotion($faceX * 0.1, 0.05 + ($faceY * 0.1), $faceZ * 0.1),
+                10,
+            );
+            $this->pluginEvents?->itemUsed(
+                $player,
+                $active['stack'],
+                ApiItemUseKind::BRUSH,
+                max(0, $this->tick - $active['startedAtTick']),
+            );
+            if ($player->gameMode() !== GameMode::CREATIVE) {
+                $this->damageHeldItem($player, ApiItemDamageCause::ITEM_USE, 1);
+            }
+            $events[] = new BlockChanged('server', $position, $sand, $this->players->recipients(), false, $state);
+            $events[] = new ItemEntitySpawned($drop, $this->players->recipients());
+        }
+
+        return $events;
+    }
+
+    private function brushBlock(BrushBlock $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        if ($player === null || $this->blockWorld === null || $this->blockPalette === null) {
+            return new CommandRejected($command->session, 'block_world_unavailable');
+        }
+        $key = self::sessionKey($command->session);
+        $active = $this->brushingBlocks[$key] ?? null;
+        if ($command->action === BrushAction::STOP) {
+            $this->clearBrushSession($key);
+            if ($active === null) {
+                return new CommandRejected($command->session, 'block_brush_not_active');
+            }
+            $state = $this->blockWorld->loadedBlockStateAt(
+                $active['position']->x,
+                $active['position']->y,
+                $active['position']->z,
+            );
+            $entity = $this->blockWorld->blockEntityAt($active['position']);
+            if ($state !== null && $entity instanceof SuspiciousSandBlockEntity) {
+                return $this->resetSuspiciousSandProgress($entity, $state);
+            }
+
+            return new CommandRejected($command->session, 'block_brush_stopped');
+        }
+        $position = $command->position;
+        $held = $player->inventory->selectedStack();
+        if ($position === null || !$this->blockIsReachable($player->snapshot(), $position)
+            || $player->gameMode() === GameMode::SPECTATOR || $held?->identifier !== 'minecraft:brush') {
+            return new CommandRejected($command->session, 'block_brush_invalid');
+        }
+        $state = $this->blockWorld->loadedBlockStateAt($position->x, $position->y, $position->z);
+        $entity = $this->blockWorld->blockEntityAt($position);
+        if ($state === null || $this->blockIdentifier($state->value) !== 'minecraft:suspicious_sand'
+            || !$entity instanceof SuspiciousSandBlockEntity) {
+            return new BlockChanged($command->session, $position, $state ?? $this->blockPalette->air, [$command->session]);
+        }
+        if ($active !== null && $command->sequence <= $active['sequence']) {
+            return new BlockChanged($command->session, $position, $state, [$command->session]);
+        }
+        if ($active !== null && $active['position']->equals($position) && self::sameInventoryStack($held, $active['stack'])) {
+            $this->brushingBlocks[$key]['sequence'] = $command->sequence;
+
+            return new BlockChanged($command->session, $position, $state, [$command->session]);
+        }
+        if ($active !== null) {
+            $previousState = $this->blockWorld->loadedBlockStateAt(
+                $active['position']->x,
+                $active['position']->y,
+                $active['position']->z,
+            );
+            $previousEntity = $this->blockWorld->blockEntityAt($active['position']);
+            if ($previousState !== null && $previousEntity instanceof SuspiciousSandBlockEntity) {
+                $this->deferredEvents[] = $this->resetSuspiciousSandProgress($previousEntity, $previousState);
+            }
+            $this->clearBrushSession($key);
+        }
+        $positionKey = self::brushPositionKey($position);
+        $owner = $this->brushingOwners[$positionKey] ?? null;
+        if ($owner !== null && $owner !== $key) {
+            return new BlockChanged($command->session, $position, $state, [$command->session]);
+        }
+        if ($this->pluginEvents !== null && !$this->pluginEvents->allowItemUse(
+            $player,
+            $held,
+            ApiItemUseKind::BRUSH,
+            (SuspiciousSandBlockEntity::MAXIMUM_PROGRESS + 1 - $entity->progress) * 10,
+        )) {
+            return new BlockChanged($command->session, $position, $state, [$command->session]);
+        }
+        $this->brushingBlocks[$key] = [
+            'position' => $position,
+            'sequence' => $command->sequence,
+            'face' => $command->face,
+            'startedAtTick' => $this->tick,
+            'nextStageTick' => $this->tick + 10,
+            'stack' => $held,
+        ];
+        $this->brushingOwners[$positionKey] = $key;
+
+        return new BlockChanged($command->session, $position, $state, [$command->session]);
+    }
+
+    private function resetSuspiciousSandProgress(
+        SuspiciousSandBlockEntity $entity,
+        InternalBlockStateId $state,
+    ): BlockChanged {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null || $entity->progress === 0) {
+            return new BlockChanged('server', $entity->position, $state, $this->players->recipients());
+        }
+        $properties = $this->blockStateRegistry->state($state)->properties();
+        $properties['brushed_progress'] = 0;
+        $reset = $this->blockStateRegistry->internalId(CanonicalBlockState::from('minecraft:suspicious_sand', $properties));
+        $this->setBlockStateAndSchedule($entity->position, $reset, false);
+        $this->blockWorld->setBlockEntity($entity->withProgress(0));
+
+        return new BlockChanged('server', $entity->position, $reset, $this->players->recipients(), false, $state);
+    }
+
+    private function deferBrushReset(string $sessionKey): void
+    {
+        $active = $this->brushingBlocks[$sessionKey] ?? null;
+        if ($active === null || $this->blockWorld === null) {
+            return;
+        }
+        $state = $this->blockWorld->loadedBlockStateAt(
+            $active['position']->x,
+            $active['position']->y,
+            $active['position']->z,
+        );
+        $entity = $this->blockWorld->blockEntityAt($active['position']);
+        if ($state !== null && $entity instanceof SuspiciousSandBlockEntity) {
+            $this->deferredEvents[] = $this->resetSuspiciousSandProgress($entity, $state);
+        }
+        $this->clearBrushSession($sessionKey);
+    }
+
+    private function clearBrushSession(string $sessionKey): void
+    {
+        $active = $this->brushingBlocks[$sessionKey] ?? null;
+        if ($active === null) {
+            return;
+        }
+        $positionKey = self::brushPositionKey($active['position']);
+        if (($this->brushingOwners[$positionKey] ?? null) === $sessionKey) {
+            unset($this->brushingOwners[$positionKey]);
+        }
+        unset($this->brushingBlocks[$sessionKey]);
+    }
+
+    private static function brushPositionKey(BlockPosition $position): string
+    {
+        return $position->x . ':' . $position->y . ':' . $position->z;
+    }
+
+    /** @return array{float, float, float} */
+    private static function brushFaceOffset(int $face): array
+    {
+        return match ($face) {
+            0 => [0.0, -1.0, 0.0],
+            1 => [0.0, 1.0, 0.0],
+            2 => [0.0, 0.0, -1.0],
+            3 => [0.0, 0.0, 1.0],
+            4 => [-1.0, 0.0, 0.0],
+            5 => [1.0, 0.0, 0.0],
+            default => throw new \LogicException('Admitted brush face is outside the canonical range.'),
+        };
     }
 
     /** @return list<WorldEvent> */
@@ -9249,13 +11204,44 @@ final class WorldSimulation
             }
             $entity = $this->entityRuntime->registry()->getByRuntimeId($session->entityRuntimeId);
             $reason = null;
-            if (!$entity instanceof BoatEntity || $entity->isRemoved()) {
+            $validEntityContainer = ($entity instanceof BoatEntity
+                    && $entity->chestInventory() === $session->inventory)
+                || ($entity instanceof AnimalStorageInventoryOwner
+                    && ($entity->storageInventory() === $session->inventory
+                        || ($session->inventory instanceof HorseContainerInventory
+                            && ($entity instanceof HorseFamilyEntity || $entity instanceof UndeadHorseEntity)
+                            && $session->inventory->belongsTo($entity))))
+                || (($entity instanceof HorseFamilyEntity || $entity instanceof UndeadHorseEntity)
+                    && $session->inventory instanceof HorseContainerInventory
+                    && $session->inventory->belongsTo($entity));
+            if (!$validEntityContainer || $entity->isRemoved()) {
                 $reason = ApiInventoryCloseReason::ENTITY_REMOVED;
             } elseif ($entity->getWorldName() !== $this->worldId
                 || $player->movement->position->distanceTo($entity->internalPosition()) > self::MAXIMUM_BLOCK_REACH) {
                 $reason = ApiInventoryCloseReason::OUT_OF_RANGE;
             }
             if ($reason === null) {
+                continue;
+            }
+            $closed = $this->closeContainer($player, $reason, true);
+            if ($closed !== null) {
+                $events[] = $closed;
+            }
+        }
+
+        return $events;
+    }
+
+    /** @return list<ContainerClosed> */
+    private function closeEntityContainers(int $runtimeId, ApiInventoryCloseReason $reason): array
+    {
+        $events = [];
+        foreach ($this->openContainers as $key => $session) {
+            if ($session->entityRuntimeId !== $runtimeId) {
+                continue;
+            }
+            $player = $this->players->player(substr($key, strlen('session:')));
+            if ($player === null) {
                 continue;
             }
             $closed = $this->closeContainer($player, $reason, true);
@@ -10285,6 +12271,10 @@ final class WorldSimulation
                     static fn(\Bedriox\Server\Gameplay\Potion\PotionEffectDose $dose): EffectInstance => $dose->effect,
                     (new PotionEffectProjector())->drink($potion->type),
                 );
+        }
+        if ($definition->resolveSuspiciousStewAuxiliaryValue) {
+            $variant = MooshroomStewEffect::tryFrom($consumed->damage);
+            $effects = $variant?->consumptionEffects() ?? [];
         }
         $approved = [];
         foreach ($effects as $effect) {
@@ -11534,7 +13524,7 @@ final class WorldSimulation
                     );
                     $actualDamage = $damageEvent?->damage() ?? ($this->pluginEvents === null ? $proposedDamage : 0.0);
                     if ($actualDamage > 0.0) {
-                        $this->entityRuntime->damage($directEntity->getRuntimeId(), $actualDamage);
+                        $this->damageLivingEntity($directEntity, $actualDamage);
                         $horizontal = hypot($projectile->motion->x, $projectile->motion->z);
                         if ($horizontal > 0.000_001 && $directEntity->isAlive()) {
                             $entityMotion = $directEntity->getMotion();
@@ -11616,7 +13606,7 @@ final class WorldSimulation
                     );
                     $actualDamage = $damageEvent?->damage() ?? ($this->pluginEvents === null ? $fireballDamage : 0.0);
                     if ($actualDamage > 0.0) {
-                        $this->entityRuntime->damage($directEntity->getRuntimeId(), $actualDamage);
+                        $this->damageLivingEntity($directEntity, $actualDamage);
                         if (!$directEntity instanceof FireImmune) {
                             $combust = $this->pluginEvents?->combust(
                                 $directEntity,
@@ -11672,7 +13662,7 @@ final class WorldSimulation
                     $actualDamage = $damageEvent?->damage()
                         ?? ($this->pluginEvents === null ? $projectile->damageBonus : 0.0);
                     if ($actualDamage > 0.0) {
-                        $this->entityRuntime->damage($directEntity->getRuntimeId(), $actualDamage);
+                        $this->damageLivingEntity($directEntity, $actualDamage);
                         if ($directEntity->isAlive()) {
                             $this->applyEffectToEntity(
                                 $directEntity,
@@ -11688,6 +13678,42 @@ final class WorldSimulation
                     }
                 }
                 unset($this->shulkerBulletTargets[$projectile->runtimeEntityId]);
+            } elseif ($projectile->type === ProjectileType::LLAMA_SPIT) {
+                if ($direct !== null) {
+                    $damage = $this->damage(
+                        new DamagePlayer(
+                            $direct->sessionId,
+                            $projectile->damageBonus,
+                            DamageCause::Projectile,
+                        ),
+                        $shooter instanceof AbstractLivingEntity ? $shooter : null,
+                    );
+                    if ($damage instanceof PlayerDamaged) {
+                        $events[] = $damage;
+                    }
+                } elseif ($directEntity !== null) {
+                    $damageEvent = $this->pluginEvents?->entityDamage(
+                        $directEntity,
+                        ApiEntityDamageCause::PROJECTILE,
+                        $projectile->damageBonus,
+                        $apiShooter,
+                    );
+                    $actualDamage = $damageEvent?->damage()
+                        ?? ($this->pluginEvents === null ? $projectile->damageBonus : 0.0);
+                    if ($actualDamage > 0.0) {
+                        $result = $this->damageLivingEntity($directEntity, $actualDamage);
+                        if ($result !== null && $result->appliedDamage > 0.0) {
+                            if ($damageEvent !== null) {
+                                $this->entityLastDamageEvents[$directEntity->getRuntimeId()] = $damageEvent;
+                            }
+                            $events[] = new EntityActorDamaged(
+                                $directEntity,
+                                $this->tick,
+                                $this->players->recipients(),
+                            );
+                        }
+                    }
+                }
             } elseif ($projectile->type === ProjectileType::ARROW) {
                 $arrowDamage = max(1.0, round(hypot(
                     hypot($projectile->motion->x, $projectile->motion->z),
@@ -11787,7 +13813,7 @@ final class WorldSimulation
                     );
                     $actualDamage = $damageEvent?->damage() ?? ($this->pluginEvents === null ? $arrowDamage : 0.0);
                     if ($actualDamage > 0.0) {
-                        $this->entityRuntime->damage($directEntity->getRuntimeId(), $actualDamage);
+                        $this->damageLivingEntity($directEntity, $actualDamage);
                     }
                     $horizontal = hypot($projectile->motion->x, $projectile->motion->z);
                     if ($actualDamage > 0.0 && $horizontal > 0.000_001) {
@@ -12109,7 +14135,7 @@ final class WorldSimulation
             if ($this->pluginEvents !== null && $damageEvent === null) {
                 continue;
             }
-            $result = $this->entityRuntime->damage($entity->getRuntimeId(), $damageEvent?->damage() ?? $damage);
+            $result = $this->damageLivingEntity($entity, $damageEvent?->damage() ?? $damage);
             if ($result !== null && $result->appliedDamage > 0.0) {
                 $affectedActors[] = $entity;
                 $events[] = new EntityActorDamaged($entity, $this->tick, $this->players->recipients());
@@ -12334,6 +14360,38 @@ final class WorldSimulation
             $cause,
             $dose->intensity,
         ));
+    }
+
+    private function damageLivingEntity(AbstractLivingEntity $entity, float $amount): ?EntityDamageResult
+    {
+        if ($entity instanceof FoxEntity && $amount >= $entity->getHealth()) {
+            $totem = $entity->equipmentState()->getItem(ApiEquipmentSlot::MAIN_HAND);
+            if ($totem?->identifier === 'minecraft:totem_of_undying'
+                && ($this->pluginEvents?->allowEntityItemConsume($entity, $totem) ?? true)) {
+                $entity->equipmentState()->setItem(ApiEquipmentSlot::MAIN_HAND, null);
+                $entity->equipmentState()->setDropChance(ApiEquipmentSlot::MAIN_HAND, 0.0);
+                foreach ($entity->effectState()->snapshot() as $effect) {
+                    $this->removeEffectFromEntity($entity, $effect->type, EffectCause::TOTEM);
+                }
+                $result = $this->entityRuntime->damage(
+                    $entity->getRuntimeId(),
+                    max(0.0, $entity->getHealth() - 1.0),
+                );
+                if ($result === null) {
+                    return null;
+                }
+                $this->applyEffectToEntity($entity, new EffectInstance(EffectType::REGENERATION, 900, 1), EffectCause::TOTEM);
+                $this->applyEffectToEntity($entity, new EffectInstance(EffectType::ABSORPTION, 100, 1), EffectCause::TOTEM);
+                $this->applyEffectToEntity($entity, new EffectInstance(EffectType::FIRE_RESISTANCE, 800), EffectCause::TOTEM);
+                $entity->extinguish();
+                $entity->markTotemConsumed();
+                $this->pluginEvents?->entityItemConsumed($entity, $totem);
+
+                return $result;
+            }
+        }
+
+        return $this->entityRuntime->damage($entity->getRuntimeId(), $amount);
     }
 
     private function applyEffectToEntity(
@@ -13380,7 +15438,8 @@ final class WorldSimulation
             $interesting = [];
             foreach ($storage->palette() as $paletteIndex => $state) {
                 $identifier = $this->blockStateRegistry->state($state)->identifier();
-                if ($identifier === 'minecraft:dried_ghast' || HoglinRepellentIndex::isRepellent($identifier)) {
+                if ($identifier === 'minecraft:dried_ghast' || $identifier === 'minecraft:sniffer_egg'
+                    || HoglinRepellentIndex::isRepellent($identifier)) {
                     $interesting[$paletteIndex] = $identifier;
                 }
             }
@@ -13401,6 +15460,13 @@ final class WorldSimulation
                 $this->updateHoglinRepellent($position, $identifier);
                 if ($identifier === 'minecraft:dried_ghast') {
                     $this->scheduleDriedGhastHydration($position);
+                } elseif ($identifier === 'minecraft:sniffer_egg' && $this->environmentTicks !== null) {
+                    $this->environmentTicks->schedule(
+                        $position,
+                        EnvironmentTickType::SNIFFER_EGG,
+                        $this->tick,
+                        $this->snifferEggStageDelay($position),
+                    );
                 }
             }
         }
@@ -13433,13 +15499,87 @@ final class WorldSimulation
     /** @return list<WorldEvent> */
     private function advanceEnvironmentalBlocks(): array
     {
-        if ($this->environmentTicks === null || $this->fluidFlow === null || $this->fluidWorld === null
-            || $this->blockWorld === null || $this->blockStateRegistry === null) {
+        if ($this->environmentTicks === null || $this->blockWorld === null
+            || $this->blockStateRegistry === null || $this->blockPalette === null) {
             return [];
         }
         $drain = $this->environmentTicks->drain($this->tick, 256, 1_500);
         $events = [];
         foreach ($drain->ticks as $scheduled) {
+            if ($scheduled->type === EnvironmentTickType::SNIFFER_EGG) {
+                $current = $this->blockWorld->loadedBlockStateAt(
+                    $scheduled->position->x,
+                    $scheduled->position->y,
+                    $scheduled->position->z,
+                );
+                if ($current === null || $this->blockIdentifier($current->value) !== 'minecraft:sniffer_egg') {
+                    continue;
+                }
+                $canonical = $this->blockStateRegistry->state($current);
+                $crackedState = $canonical->properties()['cracked_state'] ?? 'no_cracks';
+                if ($crackedState !== 'max_cracked') {
+                    $properties = $canonical->properties();
+                    $properties['cracked_state'] = $crackedState === 'cracked' ? 'max_cracked' : 'cracked';
+                    $next = $this->blockStateRegistry->internalId(CanonicalBlockState::from(
+                        'minecraft:sniffer_egg',
+                        $properties,
+                    ));
+                    $this->setBlockStateAndSchedule($scheduled->position, $next, false);
+                    $events[] = new BlockChanged(
+                        'server',
+                        $scheduled->position,
+                        $next,
+                        $this->players->recipients(),
+                        false,
+                        $current,
+                    );
+                    $this->environmentTicks->schedule(
+                        $scheduled->position,
+                        EnvironmentTickType::SNIFFER_EGG,
+                        $this->tick,
+                        $this->snifferEggStageDelay($scheduled->position),
+                    );
+                    continue;
+                }
+                $this->setBlockStateAndSchedule($scheduled->position, $this->blockPalette->air, false);
+                $outcome = $this->spawnEntity(new EntitySpawnRequest(
+                    VanillaEntityType::SNIFFER,
+                    SpawnCause::NATURAL,
+                    $this->worldId,
+                    new Position(
+                        $scheduled->position->x + 0.5,
+                        $scheduled->position->y,
+                        $scheduled->position->z + 0.5,
+                    ),
+                ));
+                if (!$outcome->entity instanceof SnifferEntity) {
+                    $this->setBlockStateAndSchedule(
+                        $scheduled->position,
+                        new InternalBlockStateId($current->value),
+                        false,
+                    );
+                    $this->environmentTicks->schedule(
+                        $scheduled->position,
+                        EnvironmentTickType::SNIFFER_EGG,
+                        $this->tick,
+                        20,
+                    );
+                    continue;
+                }
+                $outcome->entity->setBaby(true);
+                $events[] = new BlockChanged(
+                    'server',
+                    $scheduled->position,
+                    $this->blockPalette->air,
+                    $this->players->recipients(),
+                    false,
+                    $current,
+                );
+                continue;
+            }
+            if ($this->fluidFlow === null || $this->fluidWorld === null) {
+                continue;
+            }
             if ($scheduled->type === EnvironmentTickType::DRIED_GHAST) {
                 if ($this->driedGhastHydration === null) {
                     continue;
@@ -16105,6 +18245,9 @@ final class WorldSimulation
             $entity = $this->entityRuntime->registry()->getByRuntimeId($session->entityRuntimeId);
             if ($entity instanceof BoatEntity && $entity->chestInventory() === $session->inventory) {
                 $entity->markChestInventoryChanged();
+            } elseif ($entity instanceof AnimalStorageInventoryOwner
+                && $entity->storageInventory() === $session->inventory) {
+                $entity->markStorageInventoryChanged();
             }
         }
     }
@@ -16344,6 +18487,18 @@ final class WorldSimulation
         $activeBreak = $this->breakingBlocks[$key] ?? null;
         unset($this->breakingBlocks[$key]);
         $held = $player->inventory->selectedStack();
+        if (self::isFenceBlock($clickedIdentifier)) {
+            $leashAttachment = $this->attachLeashesToFence(
+                $player,
+                $command,
+                $clickedState,
+                $held,
+                $activeBreak['position'] ?? null,
+            );
+            if ($leashAttachment !== null) {
+                return $leashAttachment;
+            }
+        }
         if ($held?->identifier === 'minecraft:end_crystal') {
             return $this->useEndCrystal(
                 $player,
@@ -16521,6 +18676,19 @@ final class WorldSimulation
         $placedIdentifier = $bucketFluid === null
             ? $heldType?->placedBlockState?->identifier() ?? $held->identifier
             : $bucketFluid->value;
+        if ($placedIdentifier === 'minecraft:sniffer_egg' && $this->environmentTicks !== null) {
+            $below = $this->blockWorld->blockStateAt(
+                $placedPosition->x,
+                $placedPosition->y - 1,
+                $placedPosition->z,
+            );
+            $this->environmentTicks->schedule(
+                $placedPosition,
+                EnvironmentTickType::SNIFFER_EGG,
+                $this->tick,
+                $this->snifferEggStageDelay($placedPosition),
+            );
+        }
         if ($storageEntity !== null) {
             $this->installStorageBlockEntity($player, $storageEntity, $placedIdentifier);
         }
@@ -17007,6 +19175,77 @@ final class WorldSimulation
             $remaining,
             $stoppedBreakingPosition,
             'boat_used',
+        );
+    }
+
+    private function attachLeashesToFence(
+        Player $player,
+        PlaceBlock $command,
+        InternalBlockStateId $clickedState,
+        ?InventoryStack $held,
+        ?BlockPosition $stoppedBreakingPosition,
+    ): ?WorldEvent {
+        $candidates = $this->leashes->transferableFromPlayer(
+            $player,
+            LeashKnotEntity::anchorPosition($command->clickedPosition),
+        );
+        if ($candidates === []) {
+            return null;
+        }
+        $failure = match (true) {
+            $player->gameMode() === GameMode::SPECTATOR => 'gamemode',
+            $command->sequence <= $player->placementSequence => 'stale_sequence',
+            $command->hotbarSlot !== $player->inventory->selectedHotbarSlot() => 'selected_slot',
+            !$this->blockIsReachable($player->snapshot(), $command->clickedPosition) => 'reach',
+            default => null,
+        };
+        if ($command->sequence > $player->placementSequence) {
+            $player->placementSequence = $command->sequence;
+        }
+        $knot = $failure === null
+            ? $this->leashes->knotAt($this->worldId, $command->clickedPosition)
+            : null;
+        $candidates = $failure === null ? $candidates : [];
+        $created = false;
+        if ($failure === null && $candidates !== [] && $knot === null) {
+            $outcome = $this->spawnEntity(new EntitySpawnRequest(
+                VanillaEntityType::LEASH_KNOT,
+                SpawnCause::ITEM,
+                $this->worldId,
+                LeashKnotEntity::anchorPosition($command->clickedPosition),
+            ));
+            if (!$outcome->entity instanceof LeashKnotEntity) {
+                $failure = $outcome->failure ?? 'entity_capacity';
+            } else {
+                $knot = $outcome->entity;
+                $created = true;
+            }
+        }
+        $attached = 0;
+        if ($failure === null && $knot !== null) {
+            foreach ($candidates as $animal) {
+                if (!($this->pluginEvents?->allowLeash($animal, $knot) ?? true)
+                    || !$this->leashes->attachToEntity($animal, $knot)) {
+                    continue;
+                }
+                ++$attached;
+                $this->pluginEvents?->entityLeashed($animal, $knot);
+            }
+        }
+        if ($created && $attached === 0) {
+            $this->removeLeashKnot($knot, false, false, LeashDetachReason::HOLDER_UNAVAILABLE);
+        }
+
+        return new BlockPlacementCorrected(
+            $player->sessionId,
+            $command->clickedPosition,
+            $clickedState,
+            $command->clickedPosition,
+            $clickedState,
+            $player->inventory->selectedHotbarSlot(),
+            $held,
+            $stoppedBreakingPosition,
+            $failure ?? ($attached > 0 ? 'leash_knot_attached' : 'leash_knot_unchanged'),
         );
     }
 
@@ -17603,6 +19842,7 @@ final class WorldSimulation
         );
     }
 
+    /** @param list<AnimalEquipmentSlotDeclaration> $animalEquipmentSlots */
     private function openContainerInventory(
         Player $player,
         ApiContainerType $type,
@@ -17615,6 +19855,7 @@ final class WorldSimulation
         bool $playerOwnedEnderChest = false,
         ?string $owningPlugin = null,
         ?int $entityRuntimeId = null,
+        array $animalEquipmentSlots = [],
     ): WorldEvent {
         $key = self::sessionKey($player->sessionId);
         if (isset($this->openContainers[$key])) {
@@ -17645,6 +19886,7 @@ final class WorldSimulation
                 playerOwnedEnderChest: $playerOwnedEnderChest,
                 owningPlugin: $owningPlugin,
                 entityRuntimeId: $entityRuntimeId,
+                animalEquipmentSlots: $animalEquipmentSlots,
             );
             $view = $this->containerView($session, [$player->identity->uuid]);
             if ($this->pluginEvents !== null && !$this->pluginEvents->allowContainerOpen($player, $view)) {
@@ -17701,6 +19943,7 @@ final class WorldSimulation
                 $session->title,
                 $session->layout,
                 $session->entityRuntimeId,
+                $session->animalEquipmentSlots,
             );
         } catch (InvalidArgumentException|OverflowException) {
             return new CommandRejected($player->sessionId, 'container_projection');
@@ -18752,11 +20995,22 @@ final class WorldSimulation
     /** @return list<WorldEvent> */
     private function advanceItemEntities(): array
     {
-        if ($this->itemEntities->count() === 0) {
-            return [];
-        }
         $recipients = $this->players->recipients();
         $events = [];
+        for ($count = 0; $count < 64 && $this->pendingLeadDrops !== []
+            && $this->itemEntities->canSpawn(); ++$count) {
+            $position = array_shift($this->pendingLeadDrops);
+            $item = $this->itemEntities->spawn(
+                new InventoryStack('minecraft:lead', 1, 1),
+                $position,
+                new ItemEntityMotion(0.0, 0.15, 0.0),
+                10,
+            );
+            $events[] = new ItemEntitySpawned($item, $recipients);
+        }
+        if ($this->itemEntities->count() === 0) {
+            return $events;
+        }
         $previousPositions = [];
         $previousMotions = [];
         foreach ($this->itemEntities->all() as $entity) {
@@ -18836,6 +21090,14 @@ final class WorldSimulation
                     $allowedCount,
                     $entity->stack->stackNetworkId,
                 );
+                $projectedAccepted = min(
+                    $candidate->count,
+                    $player->inventory->addableQuantity($candidate),
+                );
+                if ($projectedAccepted < $entity->stack->count
+                    && !$this->itemEntities->canRespawnAfterRemovingOne()) {
+                    continue;
+                }
                 $beforeCount = $candidate->count;
                 $remainder = $player->inventory->add($candidate);
                 $accepted = $beforeCount - ($remainder->count ?? 0);
@@ -18966,7 +21228,11 @@ final class WorldSimulation
                 if ($count === null) {
                     continue;
                 }
-                $pickup = $this->itemEntities->pickup($item->runtimeEntityId, min(1, $count));
+                $accepted = min(1, $count);
+                if ($accepted < $item->stack->count && !$this->itemEntities->canRespawnAfterRemovingOne()) {
+                    continue;
+                }
+                $pickup = $this->itemEntities->pickup($item->runtimeEntityId, $accepted);
                 if ($pickup === null) {
                     continue;
                 }
@@ -19015,18 +21281,32 @@ final class WorldSimulation
         $recipients = $this->players->recipients();
         foreach ($this->entityRuntime->registry()->all() as $entity) {
             if (!$entity instanceof FoxEntity || !$entity->isAlive()
-                || $entity->equipmentState()->getItem(ApiEquipmentSlot::MAIN_HAND) !== null
+                || $entity->isSleeping() || $entity->isPouncing() || $entity->isFaceplanted()
                 || ($this->tick + $entity->getRuntimeId()) % 10 !== 0) {
                 continue;
             }
+            $held = $entity->equipmentState()->getItem(ApiEquipmentSlot::MAIN_HAND);
             foreach ($this->itemEntities->nearbyPickupCandidates($entity->internalPosition(), 2.0, 4) as $item) {
+                if ($held !== null
+                    && self::foxItemPreference($item->stack->identifier) <= self::foxItemPreference($held->identifier)) {
+                    continue;
+                }
+                $entitiesRequiredAfterPickup = ($item->stack->count > 1 ? 1 : 0) + ($held === null ? 0 : 1);
+                if ($entitiesRequiredAfterPickup > $this->itemEntities->remainingCapacity() + 1
+                    || $entitiesRequiredAfterPickup > $this->itemEntities->remainingRuntimeIdCapacity()) {
+                    continue;
+                }
                 $count = $this->pluginEvents === null
                     ? 1
                     : $this->pluginEvents->entityPickupItem($entity, $item->stack);
                 if ($count === null) {
                     continue;
                 }
-                $pickup = $this->itemEntities->pickup($item->runtimeEntityId, min(1, $count));
+                $accepted = min(1, $count);
+                if ($accepted < $item->stack->count && !$this->itemEntities->canRespawnAfterRemovingOne()) {
+                    continue;
+                }
+                $pickup = $this->itemEntities->pickup($item->runtimeEntityId, $accepted);
                 if ($pickup === null) {
                     continue;
                 }
@@ -19053,6 +21333,10 @@ final class WorldSimulation
                         $pickup->pickedUp->auxValue,
                     ),
                 );
+                $entity->equipmentState()->setDropChance(ApiEquipmentSlot::MAIN_HAND, 1.0);
+                if ($held !== null) {
+                    $this->dropAnimalItem($entity, $held);
+                }
                 $this->pluginEvents?->entityPickedUpItem($entity, $pickup->pickedUp);
                 $events[] = new ItemEntityPickedUp(
                     $item->runtimeEntityId,
@@ -19071,6 +21355,25 @@ final class WorldSimulation
         }
 
         return $events;
+    }
+
+    private static function foxItemPreference(string $identifier): int
+    {
+        return match (true) {
+            $identifier === 'minecraft:totem_of_undying' => 1_000,
+            str_ends_with($identifier, '_sword') => 800,
+            in_array($identifier, [
+                'minecraft:sweet_berries',
+                'minecraft:glow_berries',
+                'minecraft:chicken',
+                'minecraft:cooked_chicken',
+                'minecraft:rabbit',
+                'minecraft:cooked_rabbit',
+                'minecraft:rotten_flesh',
+                'minecraft:pufferfish',
+            ], true) => 600,
+            default => 100,
+        };
     }
 
     private function piglinBarterOutput(): InventoryStack

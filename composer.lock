@@ -88,7 +88,7 @@
                     "phpunit"
                 ],
                 "analyse": [
-                    "phpstan analyse --no-progress"
+                    "phpstan analyse --no-progress --memory-limit=1G"
                 ],
                 "check:ci": [
                     "composer validate --strict",
