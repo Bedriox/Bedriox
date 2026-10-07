@@ -2773,6 +2773,18 @@ final class WorldSimulation
                     $entity->resetScuteShedTimer($this->dropRandom->integer(6_000, 12_000));
                     $this->dropAnimalItem($entity, new ApiItemStack('minecraft:armadillo_scute', 1));
                 }
+                if ($entity instanceof FoxEntity) {
+                    $time = $this->blockWorld?->timeOfDay() ?? 6_000;
+                    $nearestPlayer = $this->entityAiWorld->nearestPlayerDistanceSquared($entity);
+                    $entity->setSleeping(
+                        $time < 12_000
+                        && ($nearestPlayer === null || $nearestPlayer > 12.0 ** 2)
+                        && !$this->entityEnvironment->isTouchingWater($entity),
+                    );
+                    if ($entity->isSleeping()) {
+                        $entity->suppressAiMovementUntil($this->tick + 20);
+                    }
+                }
             }
             if ($entity instanceof MutableAngerState && $entity->isAlive()
                 && ($this->tick + $entity->getRuntimeId()) % 20 === 0) {
@@ -7480,6 +7492,9 @@ final class WorldSimulation
         }
         if ($child instanceof RabbitEntity && $animal instanceof RabbitEntity && $partner instanceof RabbitEntity) {
             $child->setVariant($this->dropRandom->integer(0, 1) === 0 ? $animal->getVariant() : $partner->getVariant());
+        }
+        if ($child instanceof FoxEntity) {
+            $child->addTrustedPlayerUniqueId($player->identity->uuid);
         }
         if ($child instanceof TameableAnimalEntity && $animal instanceof TameableAnimalEntity
             && $partner instanceof TameableAnimalEntity
@@ -18741,6 +18756,7 @@ final class WorldSimulation
             $events[] = new ItemEntityDespawned($runtimeId, $recipients);
         }
         array_push($events, ...$this->collectPiglinBarterPayments());
+        array_push($events, ...$this->collectFoxItems());
         foreach ($this->players->players() as $player) {
             if (!$player->vitals->isAlive() || $player->gameMode() === GameMode::SPECTATOR) {
                 continue;
@@ -18909,6 +18925,71 @@ final class WorldSimulation
                     new ApiItemStack('minecraft:gold_ingot', 1),
                 );
                 $entity->beginAdmiring();
+                $this->pluginEvents?->entityPickedUpItem($entity, $pickup->pickedUp);
+                $events[] = new ItemEntityPickedUp(
+                    $item->runtimeEntityId,
+                    $entity->getRuntimeId(),
+                    $pickup->pickedUp,
+                    null,
+                    true,
+                    [],
+                    $recipients,
+                );
+                if ($replacement !== null) {
+                    $events[] = new ItemEntitySpawned($replacement, $recipients);
+                }
+                break;
+            }
+        }
+
+        return $events;
+    }
+
+    /** @return list<WorldEvent> */
+    private function collectFoxItems(): array
+    {
+        $events = [];
+        $recipients = $this->players->recipients();
+        foreach ($this->entityRuntime->registry()->all() as $entity) {
+            if (!$entity instanceof FoxEntity || !$entity->isAlive()
+                || $entity->equipmentState()->getItem(ApiEquipmentSlot::MAIN_HAND) !== null
+                || ($this->tick + $entity->getRuntimeId()) % 10 !== 0) {
+                continue;
+            }
+            foreach ($this->itemEntities->nearbyPickupCandidates($entity->internalPosition(), 2.0, 4) as $item) {
+                $count = $this->pluginEvents === null
+                    ? 1
+                    : $this->pluginEvents->entityPickupItem($entity, $item->stack);
+                if ($count === null) {
+                    continue;
+                }
+                $pickup = $this->itemEntities->pickup($item->runtimeEntityId, min(1, $count));
+                if ($pickup === null) {
+                    continue;
+                }
+                unset($this->itemPublishedMotions[$item->runtimeEntityId]);
+                $replacement = null;
+                if ($pickup->remaining !== null) {
+                    $this->itemEntities->remove($item->runtimeEntityId);
+                    $replacement = $this->itemEntities->spawn(
+                        $pickup->remaining,
+                        $item->position,
+                        $item->motion,
+                        despawnAfterTicks: $item->despawnAfterTicks === null
+                            ? null
+                            : max(1, $item->despawnAfterTicks - $item->ageTicks),
+                    );
+                }
+                $entity->equipmentState()->setItem(
+                    ApiEquipmentSlot::MAIN_HAND,
+                    new ApiItemStack(
+                        $pickup->pickedUp->identifier,
+                        1,
+                        $pickup->pickedUp->damage,
+                        $pickup->pickedUp->nbt,
+                        $pickup->pickedUp->auxValue,
+                    ),
+                );
                 $this->pluginEvents?->entityPickedUpItem($entity, $pickup->pickedUp);
                 $events[] = new ItemEntityPickedUp(
                     $item->runtimeEntityId,

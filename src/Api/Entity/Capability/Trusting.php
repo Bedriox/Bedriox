@@ -18,15 +18,13 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api\Entity\Vanilla;
+namespace Bedriox\Api\Entity\Capability;
 
-use Bedriox\Api\Entity\Capability\Animal;
-use Bedriox\Api\Entity\Capability\Breedable;
-use Bedriox\Api\Entity\Capability\Trusting;
+use Bedriox\Api\Entity\Mob;
 
-interface Ocelot extends Animal, Breedable, Trusting
+interface Trusting extends Mob
 {
     public function isTrusting(): bool;
 
-    public function getTrustedPlayerUniqueId(): ?string;
+    public function trustsPlayer(string $playerUniqueId): bool;
 }

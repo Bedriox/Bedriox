@@ -29,6 +29,7 @@ use Bedriox\Protocol\Packet\ActorMetadata;
 use Bedriox\Server\Entity\EntityUuid;
 use Bedriox\Server\Entity\Vanilla\CatEntity;
 use Bedriox\Server\Entity\Vanilla\CreeperEntity;
+use Bedriox\Server\Entity\Vanilla\FoxEntity;
 use Bedriox\Server\Entity\Vanilla\MagmaCubeEntity;
 use Bedriox\Server\Entity\Vanilla\OcelotEntity;
 use Bedriox\Server\Entity\Vanilla\SheepEntity;
@@ -156,6 +157,22 @@ final class LandMobActorMetadataTest extends TestCase
         $flags2 = self::integer((new BedrockLivingActorProjector())->metadata($ocelot), 92);
 
         self::assertNotSame(0, $flags2 & ActorFlag::Trusting->mask());
+    }
+
+    public function testSleepingTrustedFoxProjectsBothSecondWordFlags(): void
+    {
+        $fox = new FoxEntity(
+            EntityUuid::random(),
+            10,
+            'world',
+            new Position(0.0, 64.0, 0.0),
+            primaryTrustedPlayerUniqueId: EntityUuid::random(),
+            sleeping: true,
+        );
+        $flags2 = self::integer((new BedrockLivingActorProjector())->metadata($fox), 92);
+
+        self::assertNotSame(0, $flags2 & ActorFlag::Trusting->mask());
+        self::assertNotSame(0, $flags2 & ActorFlag::Sleeping->mask());
     }
 
     /** @param list<ActorMetadata> $metadata */

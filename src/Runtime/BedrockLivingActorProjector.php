@@ -29,11 +29,11 @@ use Bedriox\Api\Entity\Capability\Rideable;
 use Bedriox\Api\Entity\Capability\Shearable;
 use Bedriox\Api\Entity\Capability\Sittable;
 use Bedriox\Api\Entity\Capability\Tameable;
+use Bedriox\Api\Entity\Capability\Trusting;
 use Bedriox\Api\Entity\Value\WoolColor;
 use Bedriox\Api\Entity\Vanilla\Cat;
 use Bedriox\Api\Entity\Vanilla\Creeper;
 use Bedriox\Api\Entity\Vanilla\Fox;
-use Bedriox\Api\Entity\Vanilla\Ocelot;
 use Bedriox\Api\Entity\Vanilla\Pig;
 use Bedriox\Api\Entity\Vanilla\Rabbit;
 use Bedriox\Api\Entity\Vanilla\Sheep;
@@ -233,8 +233,11 @@ final class BedrockLivingActorProjector
     public function flags2Metadata(AbstractLivingEntity $entity): ActorMetadata
     {
         $flags = 0;
-        if ($entity instanceof Ocelot && $entity->isTrusting()) {
+        if ($entity instanceof Trusting && $entity->isTrusting()) {
             $flags |= ActorFlag::Trusting->mask();
+        }
+        if ($entity instanceof Fox && $entity->isSleeping()) {
+            $flags |= ActorFlag::Sleeping->mask();
         }
 
         return ActorMetadata::long(92, $flags);

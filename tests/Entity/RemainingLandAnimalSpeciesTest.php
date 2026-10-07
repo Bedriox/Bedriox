@@ -107,11 +107,23 @@ final class RemainingLandAnimalSpeciesTest extends TestCase
     {
         $position = new Position(0.0, 64.0, 0.0);
 
-        $fox = new FoxEntity(EntityUuid::random(), 21, 'world', $position, baby: true, variant: FoxVariant::SNOW);
+        $foxTrust = EntityUuid::random();
+        $fox = new FoxEntity(
+            EntityUuid::random(),
+            21,
+            'world',
+            $position,
+            baby: true,
+            variant: FoxVariant::SNOW,
+            primaryTrustedPlayerUniqueId: $foxTrust,
+            sleeping: true,
+        );
         $restoredFox = new FoxEntity(EntityUuid::random(), 22, 'world', $position);
         $restoredFox->restorePersistenceState($fox->persistenceVariant(), $fox->persistenceSchemaVersion(), $fox->persistenceData());
         self::assertTrue($restoredFox->isBaby());
         self::assertSame(FoxVariant::SNOW, $restoredFox->getVariant());
+        self::assertTrue($restoredFox->trustsPlayer($foxTrust));
+        self::assertTrue($restoredFox->isSleeping());
 
         $goat = new GoatEntity(EntityUuid::random(), 23, 'world', $position, screaming: true, leftHorn: false);
         $restoredGoat = new GoatEntity(EntityUuid::random(), 24, 'world', $position);

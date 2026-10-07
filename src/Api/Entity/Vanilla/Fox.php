@@ -22,9 +22,15 @@ namespace Bedriox\Api\Entity\Vanilla;
 
 use Bedriox\Api\Entity\Capability\Animal;
 use Bedriox\Api\Entity\Capability\Breedable;
+use Bedriox\Api\Entity\Capability\Trusting;
 use Bedriox\Api\Entity\Value\FoxVariant;
 
-interface Fox extends Animal, Breedable
+interface Fox extends Animal, Breedable, Trusting
 {
     public function getVariant(): FoxVariant;
+
+    public function isSleeping(): bool;
+
+    /** @return list<string> */
+    public function getTrustedPlayerUniqueIds(): array;
 }

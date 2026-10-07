@@ -84,7 +84,7 @@ abstract class LandBreedableAnimalEntity extends BreedableAnimalEntity implement
         return null;
     }
 
-    /** @return array<string, bool|int|string> */
+    /** @return array<string, bool|int|string|null> */
     protected function speciesPersistenceData(): array
     {
         return [];

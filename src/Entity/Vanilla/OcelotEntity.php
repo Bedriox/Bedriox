@@ -59,6 +59,12 @@ final class OcelotEntity extends LandBreedableAnimalEntity implements Ocelot
         return $this->trustedPlayerUniqueId;
     }
 
+    public function trustsPlayer(string $playerUniqueId): bool
+    {
+        return $this->trustedPlayerUniqueId !== null
+            && strtolower($this->trustedPlayerUniqueId) === strtolower(EntityUuid::validate($playerUniqueId));
+    }
+
     /** @internal Authoritative trust mutation. */
     public function setTrustedPlayerUniqueId(?string $playerUniqueId): void
     {
