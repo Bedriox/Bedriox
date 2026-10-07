@@ -42,6 +42,10 @@ final readonly class SimulationLimits
         public int $maximumChatBytes = 1024,
         public int $chatBucketCapacity = 4,
         public int $chatRefillTicks = 20,
+        public bool $movementSecurityEnabled = true,
+        public bool $correctInvalidMovement = true,
+        public bool $kickRepeatedMovementViolations = true,
+        public int $movementViolationKickScore = 8,
     ) {
         if (
             $this->ticksPerSecond < 1
@@ -62,6 +66,7 @@ final readonly class SimulationLimits
             || $this->maximumChatBytes < 1
             || $this->chatBucketCapacity < 1
             || $this->chatRefillTicks < 1
+            || $this->movementViolationKickScore < 2
         ) {
             throw new InvalidArgumentException('Simulation limits must be positive and finite.');
         }

@@ -320,6 +320,23 @@ final readonly class StatusCommand implements BuiltinCommand
         self::send($sender, TextFormat::GRAY, $status->chunkStreaming === null
             ? 'Session queues: unavailable'
             : sprintf('Session queues: %d outgoing payloads', $status->chunkStreaming->outgoingQueued));
+        if ($status->transportSecurity !== null) {
+            self::send($sender, TextFormat::AQUA, sprintf(
+                'Admission: %d datagrams (%s), %d dropped, %d malformed',
+                $status->transportSecurity->receivedDatagrams,
+                self::bytes($status->transportSecurity->receivedBytes),
+                $status->transportSecurity->droppedDatagrams,
+                $status->transportSecurity->malformedDatagrams,
+            ));
+            self::send($sender, TextFormat::GRAY, sprintf(
+                'Protection: %d active blocks, %d blocks issued, %d rate-limit hits',
+                $status->transportSecurity->activeBlocks,
+                $status->transportSecurity->temporaryBlocks,
+                $status->transportSecurity->rateLimitedEndpoints,
+            ));
+        } else {
+            self::send($sender, TextFormat::GRAY, 'Admission protection metrics: awaiting transport snapshot');
+        }
 
         self::section($sender, 'Average Tick Cost');
         foreach (

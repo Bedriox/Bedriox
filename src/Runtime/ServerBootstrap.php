@@ -178,6 +178,9 @@ final class ServerBootstrap
             maximumPlayers: $config->maximumPlayers,
             maximumQueuedLifecycleCommands: $config->maximumPlayers,
             maximumQueuedLifecycleBytes: max(65_536, $config->maximumPlayers * 144),
+            movementSecurityEnabled: $config->movementSecurityEnabled,
+            correctInvalidMovement: $config->correctInvalidMovement,
+            kickRepeatedMovementViolations: $config->kickRepeatedMovementViolations,
         );
         $data = BedrockDataSet::bundled();
         // Admitted data accessors validate and materialize their immutable registries. Keep the
@@ -605,6 +608,7 @@ final class ServerBootstrap
                 maximumSessionEvents: max($config->maximumPlayers, 1_024),
                 socketReceiveBufferBytes: 67_108_864,
                 socketSendBufferBytes: 67_108_864,
+                security: $config->transportSecurityPolicy,
             );
             $discovery = ProcessDiscoveryServerTransport::start(
                 $transportConfig,

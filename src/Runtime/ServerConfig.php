@@ -21,8 +21,10 @@ declare(strict_types=1);
 namespace Bedriox\Server\Runtime;
 
 use Bedriox\Api\Player\GameMode;
+use Bedriox\RakNet\Security\TransportSecurityPolicy;
 use Bedriox\Server\Login\AuthenticationMode;
 use Bedriox\Server\Observability\LogLevel;
+use Bedriox\Server\Security\NetworkSecurityProfile;
 use Bedriox\Server\Worker\WorkerCoreCount;
 use InvalidArgumentException;
 
@@ -71,6 +73,22 @@ final readonly class ServerConfig
         'players.autosave-interval-ticks' => '6000',
         'players.save-per-tick' => '8',
         'movement.rewind-history-size' => '40',
+        'security.network.enabled' => 'true',
+        'security.network.automatic-blocking' => 'true',
+        'security.network.profile' => 'balanced',
+        'security.network.block-base-seconds' => '10',
+        'security.network.block-maximum-seconds' => '1800',
+        'security.network.block-escalation-window-seconds' => '300',
+        'security.network.custom.unauthenticated-datagrams-per-second' => '2000',
+        'security.network.custom.unauthenticated-datagram-burst' => '400',
+        'security.network.custom.connected-datagrams-per-second' => '12000',
+        'security.network.custom.connected-datagram-burst' => '240',
+        'security.network.custom.handshakes-per-second' => '250',
+        'security.network.custom.handshake-burst' => '128',
+        'security.network.custom.malformed-threshold' => '3',
+        'security.movement.enabled' => 'true',
+        'security.movement.correct-invalid-movement' => 'true',
+        'security.movement.kick-repeated-violations' => 'true',
         'entities.ai.enabled' => 'true',
         'updates.enabled' => 'true',
         'updates.notify-operators' => 'true',
@@ -127,6 +145,22 @@ final readonly class ServerConfig
         'players.autosave-interval-ticks' => true,
         'players.save-per-tick' => true,
         'movement.rewind-history-size' => true,
+        'security.network.enabled' => true,
+        'security.network.automatic-blocking' => true,
+        'security.network.profile' => true,
+        'security.network.block-base-seconds' => true,
+        'security.network.block-maximum-seconds' => true,
+        'security.network.block-escalation-window-seconds' => true,
+        'security.network.custom.unauthenticated-datagrams-per-second' => true,
+        'security.network.custom.unauthenticated-datagram-burst' => true,
+        'security.network.custom.connected-datagrams-per-second' => true,
+        'security.network.custom.connected-datagram-burst' => true,
+        'security.network.custom.handshakes-per-second' => true,
+        'security.network.custom.handshake-burst' => true,
+        'security.network.custom.malformed-threshold' => true,
+        'security.movement.enabled' => true,
+        'security.movement.correct-invalid-movement' => true,
+        'security.movement.kick-repeated-violations' => true,
         'entities.ai.enabled' => true,
         'updates.enabled' => true,
         'updates.notify-operators' => true,
@@ -241,6 +275,11 @@ final readonly class ServerConfig
         public bool $entityAiEnabled = true,
         public bool $updatesEnabled = true,
         public bool $updateOperatorNotifications = true,
+        public NetworkSecurityProfile $networkSecurityProfile = NetworkSecurityProfile::BALANCED,
+        public ?TransportSecurityPolicy $transportSecurityPolicy = null,
+        public bool $movementSecurityEnabled = true,
+        public bool $correctInvalidMovement = true,
+        public bool $kickRepeatedMovementViolations = true,
     ) {
         if (filter_var($this->bindAddress, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
             throw new InvalidArgumentException('Bind address must be a literal IPv4 address.');
@@ -390,6 +429,35 @@ final readonly class ServerConfig
         $chunkCacheLimit = $values['chunk-cache.limit'] === 'auto'
             ? max(2_048, $maximumRetainedChunks)
             : self::integer($values['chunk-cache.limit'], 'chunk-cache.limit', 16, 65_536);
+        $networkProfile = NetworkSecurityProfile::tryFrom($values['security.network.profile'])
+            ?? throw new InvalidArgumentException('Network security profile must be lenient, balanced, strict, or custom.');
+        $baseBlockSeconds = self::integer(
+            $values['security.network.block-base-seconds'],
+            'security.network.block-base-seconds',
+            1,
+            300,
+        );
+        $maximumBlockSeconds = self::integer(
+            $values['security.network.block-maximum-seconds'],
+            'security.network.block-maximum-seconds',
+            $baseBlockSeconds,
+            86_400,
+        );
+        $escalationWindowSeconds = self::integer(
+            $values['security.network.block-escalation-window-seconds'],
+            'security.network.block-escalation-window-seconds',
+            30,
+            3_600,
+        );
+        $transportSecurity = self::networkSecurityPolicy(
+            $networkProfile,
+            self::boolean($values['security.network.enabled'], 'security.network.enabled'),
+            self::boolean($values['security.network.automatic-blocking'], 'security.network.automatic-blocking'),
+            $baseBlockSeconds,
+            $maximumBlockSeconds,
+            $escalationWindowSeconds,
+            $values,
+        );
 
         return new self(
             bindAddress: $values['server-ip'],
@@ -483,6 +551,58 @@ final readonly class ServerConfig
                 $values['updates.notify-operators'],
                 'updates.notify-operators',
             ),
+            networkSecurityProfile: $networkProfile,
+            transportSecurityPolicy: $transportSecurity,
+            movementSecurityEnabled: self::boolean($values['security.movement.enabled'], 'security.movement.enabled'),
+            correctInvalidMovement: self::boolean(
+                $values['security.movement.correct-invalid-movement'],
+                'security.movement.correct-invalid-movement',
+            ),
+            kickRepeatedMovementViolations: self::boolean(
+                $values['security.movement.kick-repeated-violations'],
+                'security.movement.kick-repeated-violations',
+            ),
+        );
+    }
+
+    /** @param array<string, string> $values */
+    private static function networkSecurityPolicy(
+        NetworkSecurityProfile $profile,
+        bool $enabled,
+        bool $automaticBlocking,
+        int $baseBlockSeconds,
+        int $maximumBlockSeconds,
+        int $escalationWindowSeconds,
+        array $values,
+    ): TransportSecurityPolicy {
+        $limits = match ($profile) {
+            NetworkSecurityProfile::LENIENT => [4_000, 800, 16_000, 400, 500, 256, 5],
+            NetworkSecurityProfile::BALANCED => [2_000, 400, 12_000, 240, 250, 128, 3],
+            NetworkSecurityProfile::STRICT => [1_000, 200, 8_000, 160, 100, 64, 2],
+            NetworkSecurityProfile::CUSTOM => [
+                self::integer($values['security.network.custom.unauthenticated-datagrams-per-second'], 'security.network.custom.unauthenticated-datagrams-per-second', 100, 100_000),
+                self::integer($values['security.network.custom.unauthenticated-datagram-burst'], 'security.network.custom.unauthenticated-datagram-burst', 20, 20_000),
+                self::integer($values['security.network.custom.connected-datagrams-per-second'], 'security.network.custom.connected-datagrams-per-second', 500, 100_000),
+                self::integer($values['security.network.custom.connected-datagram-burst'], 'security.network.custom.connected-datagram-burst', 40, 20_000),
+                self::integer($values['security.network.custom.handshakes-per-second'], 'security.network.custom.handshakes-per-second', 10, 10_000),
+                self::integer($values['security.network.custom.handshake-burst'], 'security.network.custom.handshake-burst', 5, 2_000),
+                self::integer($values['security.network.custom.malformed-threshold'], 'security.network.custom.malformed-threshold', 1, 20),
+            ],
+        };
+
+        return new TransportSecurityPolicy(
+            enabled: $enabled,
+            automaticBlocking: $automaticBlocking,
+            unauthenticatedDatagramsPerSecond: $limits[0],
+            unauthenticatedDatagramBurst: $limits[1],
+            connectedDatagramsPerSecond: $limits[2],
+            connectedDatagramBurst: $limits[3],
+            handshakesPerSecond: $limits[4],
+            handshakeBurst: $limits[5],
+            malformedThreshold: $limits[6],
+            baseBlockSeconds: $baseBlockSeconds,
+            maximumBlockSeconds: $maximumBlockSeconds,
+            escalationWindowSeconds: $escalationWindowSeconds,
         );
     }
 

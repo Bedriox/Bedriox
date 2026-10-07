@@ -20,12 +20,11 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\Event\Player;
 
-enum PlayerKickCause: string
+use Bedriox\Api\Event\Event;
+use Bedriox\Api\Event\PostEvent;
+use Bedriox\Api\Player\Player;
+
+final class PlayerMovementCorrectedEvent extends Event implements PostEvent
 {
-    case PLUGIN = 'plugin';
-    case OPERATOR = 'operator';
-    case BAN = 'ban';
-    case WHITELIST = 'whitelist';
-    case SERVER_POLICY = 'server_policy';
-    case MOVEMENT_VIOLATION = 'movement_violation';
+    public function __construct(public readonly Player $player, public readonly string $reason) {}
 }

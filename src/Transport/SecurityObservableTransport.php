@@ -18,14 +18,11 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api\Event\Player;
+namespace Bedriox\Server\Transport;
 
-enum PlayerKickCause: string
+use Bedriox\RakNet\Security\TransportSecuritySnapshot;
+
+interface SecurityObservableTransport
 {
-    case PLUGIN = 'plugin';
-    case OPERATOR = 'operator';
-    case BAN = 'ban';
-    case WHITELIST = 'whitelist';
-    case SERVER_POLICY = 'server_policy';
-    case MOVEMENT_VIOLATION = 'movement_violation';
+    public function securitySnapshot(): ?TransportSecuritySnapshot;
 }

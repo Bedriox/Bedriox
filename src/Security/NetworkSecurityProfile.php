@@ -18,14 +18,12 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api\Event\Player;
+namespace Bedriox\Server\Security;
 
-enum PlayerKickCause: string
+enum NetworkSecurityProfile: string
 {
-    case PLUGIN = 'plugin';
-    case OPERATOR = 'operator';
-    case BAN = 'ban';
-    case WHITELIST = 'whitelist';
-    case SERVER_POLICY = 'server_policy';
-    case MOVEMENT_VIOLATION = 'movement_violation';
+    case LENIENT = 'lenient';
+    case BALANCED = 'balanced';
+    case STRICT = 'strict';
+    case CUSTOM = 'custom';
 }

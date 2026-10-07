@@ -27,6 +27,7 @@ use Bedriox\RakNet\ConnectedHandshakeStage;
 use Bedriox\RakNet\DiscoveryStatus;
 use Bedriox\RakNet\Protocol\Reliability;
 use Bedriox\RakNet\ReceivedPayload;
+use Bedriox\RakNet\Security\TransportSecuritySnapshot;
 use Bedriox\RakNet\SessionClosedEvent;
 use Bedriox\RakNet\SessionCloseReason;
 use Bedriox\RakNet\SessionInfo;
@@ -46,7 +47,7 @@ use RuntimeException;
 use Throwable;
 
 /** Bridges the simulation process to a dedicated RakNet/UDP process. */
-final class ProcessDiscoveryServerTransport implements ConnectedTransport
+final class ProcessDiscoveryServerTransport implements ConnectedTransport, SecurityObservableTransport
 {
     private const int MAXIMUM_BUFFERED_BYTES = 67_108_864;
     private const int READ_BYTES_PER_POLL = 4_194_304;
@@ -73,6 +74,7 @@ final class ProcessDiscoveryServerTransport implements ConnectedTransport
     private bool $closed = false;
     private string $localAddress = '';
     private int $localPort = 0;
+    private ?TransportSecuritySnapshot $securitySnapshot = null;
 
     private function __construct(
         private readonly int $maximumSessionEvents,
@@ -115,6 +117,11 @@ final class ProcessDiscoveryServerTransport implements ConnectedTransport
     public function localPort(): int
     {
         return $this->localPort;
+    }
+
+    public function securitySnapshot(): ?TransportSecuritySnapshot
+    {
+        return $this->securitySnapshot;
     }
 
     public function poll(int $maximumDatagrams): int
@@ -306,6 +313,22 @@ final class ProcessDiscoveryServerTransport implements ConnectedTransport
 
     private function acceptFrame(TransportProcessFrame $frame): void
     {
+        if ($frame->kind === TransportProcessFrameKind::SECURITY_SNAPSHOT) {
+            $values = [];
+            foreach ([
+                'receivedDatagrams', 'receivedBytes', 'droppedDatagrams', 'rateLimitedEndpoints',
+                'malformedDatagrams', 'temporaryBlocks', 'activeBlocks', 'trackedAddresses', 'trackedEndpoints',
+            ] as $name) {
+                $value = $frame->metadata[$name] ?? null;
+                if (!is_int($value) || $value < 0) {
+                    return;
+                }
+                $values[] = $value;
+            }
+            $this->securitySnapshot = new TransportSecuritySnapshot(...$values);
+
+            return;
+        }
         if ($frame->kind === TransportProcessFrameKind::SESSION_OPENED) {
             $session = $this->decodeOpenedSession($frame);
             if (count($this->sessionEvents) >= $this->maximumSessionEvents) {

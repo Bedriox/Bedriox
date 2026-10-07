@@ -55,8 +55,8 @@ $approvedProduction = [
         'license' => 'GPL-3.0-only',
     ],
     'bedriox/raknet' => [
-        'version' => '0.1.0-alpha.1',
-        'reference' => '6a9059994182335c431a75a77e5f5da08d8f58c1',
+        'version' => '0.1.0-alpha.2',
+        'reference' => 'a7171819cb6cc6bdc46726364ca4967df8216340',
         'license' => 'GPL-3.0-only',
     ],
     'symfony/deprecation-contracts' => [

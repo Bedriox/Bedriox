@@ -25,7 +25,7 @@ use Bedriox\RakNet\Protocol\Reliability;
 use Bedriox\Server\Runtime\RuntimeDiagnostics;
 
 /** Production adapter for the RakNet discovery and connected transport. */
-final readonly class DiscoveryServerTransport implements ConnectedTransport
+final readonly class DiscoveryServerTransport implements ConnectedTransport, SecurityObservableTransport
 {
     private RakNetHandshakeDiagnosticReporter $diagnosticReporter;
 
@@ -72,5 +72,10 @@ final readonly class DiscoveryServerTransport implements ConnectedTransport
     public function close(): void
     {
         $this->server->close();
+    }
+
+    public function securitySnapshot(): \Bedriox\RakNet\Security\TransportSecuritySnapshot
+    {
+        return $this->server->securitySnapshot();
     }
 }

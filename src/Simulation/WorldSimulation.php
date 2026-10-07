@@ -427,6 +427,7 @@ use Bedriox\Server\Simulation\Event\ItemEntitySpawned;
 use Bedriox\Server\Simulation\Event\ItemUseCancelled;
 use Bedriox\Server\Simulation\Event\ItemUseStarted;
 use Bedriox\Server\Simulation\Event\MovementCorrected;
+use Bedriox\Server\Simulation\Event\MovementViolationLimitReached;
 use Bedriox\Server\Simulation\Event\NutritionChanged;
 use Bedriox\Server\Simulation\Event\ParticleSpawned;
 use Bedriox\Server\Simulation\Event\PlayerBecameHidden;
@@ -6153,6 +6154,9 @@ final class WorldSimulation
         $previous = $player->setGameMode($requested);
         $this->deferItemUseCancellation($player, ItemUseCancellationReason::GAME_MODE_CHANGED);
         $player->movement->fallDistance = 0.0;
+        $player->movement->flying = $requested === GameMode::SPECTATOR;
+        $player->movement->violationScore = 0;
+        $player->movement->lastViolationTick = -1;
         if ($requested === GameMode::SPECTATOR) {
             $player->movement->verticalState = VerticalState::AIRBORNE;
         } elseif ($this->collisionResolver !== null) {
@@ -6798,6 +6802,39 @@ final class WorldSimulation
         if ($mount !== null) {
             return $this->acceptMountedMovement($player, $mount, $command);
         }
+        if ($this->limits->movementSecurityEnabled && $command->flying && !$player->gameMode()->allowsFlight()) {
+            if ($movement->lastViolationTick < 0 || $this->tick - $movement->lastViolationTick >= 5) {
+                if ($movement->lastViolationTick >= 0) {
+                    $elapsedViolationTicks = $this->tick - $movement->lastViolationTick;
+                    $movement->violationScore = max(
+                        0,
+                        $movement->violationScore - intdiv($elapsedViolationTicks, $this->limits->ticksPerSecond),
+                    );
+                }
+                $movement->violationScore += 2;
+                $movement->lastViolationTick = $this->tick;
+                $this->pluginEvents?->movementViolation($player, 'unauthorized_flight', $movement->violationScore);
+            }
+            if ($this->limits->kickRepeatedMovementViolations
+                && $movement->violationScore >= $this->limits->movementViolationKickScore) {
+                return new MovementViolationLimitReached(
+                    $player->sessionId,
+                    'unauthorized_flight',
+                    $movement->violationScore,
+                );
+            }
+
+            return $this->limits->correctInvalidMovement
+                ? new MovementCorrected($player->snapshot(), 'unauthorized_flight', clientTick: $command->clientTick)
+                : new CommandRejected($player->sessionId, 'unauthorized_flight');
+        }
+        $requestedFlying = $command->flying || $player->gameMode() === GameMode::SPECTATOR;
+        if ($movement->flying !== $requestedFlying) {
+            if ($this->pluginEvents !== null && !$this->pluginEvents->allowFlightToggle($player, $requestedFlying)) {
+                return new MovementCorrected($player->snapshot(), 'plugin_cancelled', clientTick: $command->clientTick);
+            }
+            $movement->flying = $requestedFlying;
+        }
         $previousPosition = $movement->position;
         if ($movement->budgetTick !== $this->tick) {
             $movement->budgetTick = $this->tick;
@@ -6818,8 +6855,7 @@ final class WorldSimulation
 
         $wasGrounded = $movement->verticalState === VerticalState::GROUNDED;
         $this->movementGroundedInputs += (int) $wasGrounded;
-        $flying = ($command->flying && $player->gameMode()->allowsFlight())
-            || $player->gameMode() === GameMode::SPECTATOR;
+        $flying = $movement->flying;
         $collidedVertically = false;
         $terrainConstrained = false;
         if ($flying) {

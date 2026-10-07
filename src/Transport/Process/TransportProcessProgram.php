@@ -24,6 +24,7 @@ use Bedriox\RakNet\ConnectedHandshakeDiagnosticBatch;
 use Bedriox\RakNet\DiscoveryServer;
 use Bedriox\RakNet\DiscoveryStatus;
 use Bedriox\RakNet\Protocol\Reliability;
+use Bedriox\RakNet\Security\TransportSecurityPolicy;
 use Bedriox\RakNet\SessionClosedEvent;
 use Bedriox\RakNet\SessionInfo;
 use Bedriox\RakNet\SessionOpenedEvent;
@@ -52,6 +53,7 @@ final class TransportProcessProgram
     private array $sessionsById = [];
     private int $nextSessionId = 1;
     private bool $stopping = false;
+    private int $nextSecuritySnapshotNanoseconds = 0;
 
     private function __construct(
         private readonly string $parentEndpoint,
@@ -85,7 +87,10 @@ final class TransportProcessProgram
     ): string {
         try {
             $json = json_encode([
-                'transport' => get_object_vars($config),
+                'transport' => [
+                    ...get_object_vars($config),
+                    'security' => get_object_vars($config->security),
+                ],
                 'server_guid' => (string) $serverGuid,
                 'status' => base64_encode($status->payload),
                 'accepting' => $status->acceptingConnections,
@@ -157,6 +162,26 @@ final class TransportProcessProgram
                     $work = true;
                 }
                 $this->queueDiagnostics($server->drainHandshakeDiagnostics());
+                $now = hrtime(true);
+                if ($now >= $this->nextSecuritySnapshotNanoseconds) {
+                    $snapshot = $server->securitySnapshot();
+                    $this->queue(new TransportProcessFrame(
+                        TransportProcessFrameKind::SECURITY_SNAPSHOT,
+                        metadata: [
+                            'receivedDatagrams' => $snapshot->receivedDatagrams,
+                            'receivedBytes' => $snapshot->receivedBytes,
+                            'droppedDatagrams' => $snapshot->droppedDatagrams,
+                            'rateLimitedEndpoints' => $snapshot->rateLimitedEndpoints,
+                            'malformedDatagrams' => $snapshot->malformedDatagrams,
+                            'temporaryBlocks' => $snapshot->temporaryBlocks,
+                            'activeBlocks' => $snapshot->activeBlocks,
+                            'trackedAddresses' => $snapshot->trackedAddresses,
+                            'trackedEndpoints' => $snapshot->trackedEndpoints,
+                        ],
+                    ));
+                    $this->nextSecuritySnapshotNanoseconds = $now + 1_000_000_000;
+                    $work = true;
+                }
                 $work = $this->flushOutgoing() || $work;
                 if (!is_resource($this->stream) || feof($this->stream)) {
                     break;
@@ -450,6 +475,7 @@ final class TransportProcessProgram
             maximumHandshakeDiagnosticEvents: $integer('maximumHandshakeDiagnosticEvents'),
             socketReceiveBufferBytes: $integer('socketReceiveBufferBytes'),
             socketSendBufferBytes: $integer('socketSendBufferBytes'),
+            security: self::decodeSecurityPolicy($transport['security'] ?? null),
         );
         $statusPayload = base64_decode($data['status'], true);
         if (!is_string($statusPayload)) {
@@ -462,5 +488,53 @@ final class TransportProcessProgram
         }
 
         return [$config, $serverGuid, new DiscoveryStatus($statusPayload, $data['accepting'])];
+    }
+
+    private static function decodeSecurityPolicy(mixed $value): TransportSecurityPolicy
+    {
+        if (!is_array($value)) {
+            throw new RuntimeException('Transport process security policy is invalid.');
+        }
+        $boolean = static function (string $key) use ($value): bool {
+            $setting = $value[$key] ?? null;
+            if (!is_bool($setting)) {
+                throw new RuntimeException('Transport process security boolean is invalid.');
+            }
+
+            return $setting;
+        };
+        $integer = static function (string $key) use ($value): int {
+            $setting = $value[$key] ?? null;
+            if (!is_int($setting)) {
+                throw new RuntimeException('Transport process security integer is invalid.');
+            }
+
+            return $setting;
+        };
+
+        return new TransportSecurityPolicy(
+            enabled: $boolean('enabled'),
+            automaticBlocking: $boolean('automaticBlocking'),
+            globalDatagramsPerSecond: $integer('globalDatagramsPerSecond'),
+            globalDatagramBurst: $integer('globalDatagramBurst'),
+            globalBytesPerSecond: $integer('globalBytesPerSecond'),
+            globalByteBurst: $integer('globalByteBurst'),
+            unauthenticatedDatagramsPerSecond: $integer('unauthenticatedDatagramsPerSecond'),
+            unauthenticatedDatagramBurst: $integer('unauthenticatedDatagramBurst'),
+            unauthenticatedBytesPerSecond: $integer('unauthenticatedBytesPerSecond'),
+            unauthenticatedByteBurst: $integer('unauthenticatedByteBurst'),
+            connectedDatagramsPerSecond: $integer('connectedDatagramsPerSecond'),
+            connectedDatagramBurst: $integer('connectedDatagramBurst'),
+            connectedBytesPerSecond: $integer('connectedBytesPerSecond'),
+            connectedByteBurst: $integer('connectedByteBurst'),
+            handshakesPerSecond: $integer('handshakesPerSecond'),
+            handshakeBurst: $integer('handshakeBurst'),
+            malformedThreshold: $integer('malformedThreshold'),
+            baseBlockSeconds: $integer('baseBlockSeconds'),
+            maximumBlockSeconds: $integer('maximumBlockSeconds'),
+            escalationWindowSeconds: $integer('escalationWindowSeconds'),
+            maximumTrackedAddresses: $integer('maximumTrackedAddresses'),
+            maximumTrackedEndpoints: $integer('maximumTrackedEndpoints'),
+        );
     }
 }

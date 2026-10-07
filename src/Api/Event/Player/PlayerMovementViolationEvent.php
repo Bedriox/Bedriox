@@ -20,12 +20,15 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\Event\Player;
 
-enum PlayerKickCause: string
+use Bedriox\Api\Event\Event;
+use Bedriox\Api\Player\Player;
+
+/** Informational security event; listeners cannot authorize rejected movement. */
+final class PlayerMovementViolationEvent extends Event
 {
-    case PLUGIN = 'plugin';
-    case OPERATOR = 'operator';
-    case BAN = 'ban';
-    case WHITELIST = 'whitelist';
-    case SERVER_POLICY = 'server_policy';
-    case MOVEMENT_VIOLATION = 'movement_violation';
+    public function __construct(
+        public readonly Player $player,
+        public readonly string $reason,
+        public readonly int $score,
+    ) {}
 }

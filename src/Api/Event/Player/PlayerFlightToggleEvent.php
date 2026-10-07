@@ -20,12 +20,11 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\Event\Player;
 
-enum PlayerKickCause: string
+use Bedriox\Api\Event\CancellableEvent;
+use Bedriox\Api\Player\Player;
+
+/** Cancellable intent emitted only after the server has authorized flight. */
+final class PlayerFlightToggleEvent extends CancellableEvent
 {
-    case PLUGIN = 'plugin';
-    case OPERATOR = 'operator';
-    case BAN = 'ban';
-    case WHITELIST = 'whitelist';
-    case SERVER_POLICY = 'server_policy';
-    case MOVEMENT_VIOLATION = 'movement_violation';
+    public function __construct(public readonly Player $player, public readonly bool $flying) {}
 }

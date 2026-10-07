@@ -63,6 +63,7 @@ use Bedriox\Server\Simulation\Event\ItemEntityDespawned;
 use Bedriox\Server\Simulation\Event\ItemEntityMoved;
 use Bedriox\Server\Simulation\Event\ItemEntitySpawned;
 use Bedriox\Server\Simulation\Event\MovementCorrected;
+use Bedriox\Server\Simulation\Event\MovementViolationLimitReached;
 use Bedriox\Server\Simulation\Event\NutritionChanged;
 use Bedriox\Server\Simulation\Event\PlayerDisconnected;
 use Bedriox\Server\Simulation\Event\PlayerExperienceChanged;
@@ -1747,6 +1748,40 @@ final class WorldSimulationTest extends TestCase
         $stale = $staleEvents[0];
         self::assertInstanceOf(CommandRejected::class, $stale);
         self::assertSame('stale_sequence', $stale->reason);
+    }
+
+    public function testRepeatedUnauthorizedFlightIsCorrectedBeforeItIsDisconnected(): void
+    {
+        $limits = new SimulationLimits(movementViolationKickScore: 8);
+        $factory = new SimulationCommandFactory($limits);
+        $world = new WorldSimulation($limits);
+        self::assertTrue($world->enqueue($factory->join('session', 'identity', 'Player')));
+        $world->tick();
+
+        for ($sequence = 1; $sequence <= 4; ++$sequence) {
+            self::assertTrue($world->enqueue($factory->move(
+                'session',
+                $sequence,
+                0.0,
+                64.0,
+                0.0,
+                0.0,
+                0.0,
+                MovementMode::STOPPED,
+                flying: true,
+            )));
+            $event = $world->tick()->events[0];
+            if ($sequence < 4) {
+                self::assertInstanceOf(MovementCorrected::class, $event);
+                self::assertSame('unauthorized_flight', $event->reason);
+            } else {
+                self::assertInstanceOf(MovementViolationLimitReached::class, $event);
+                self::assertSame(8, $event->score);
+            }
+            for ($tick = 0; $tick < 5; ++$tick) {
+                $world->tick();
+            }
+        }
     }
 
     public function testMovementSafetyBoundRejectsBeforeLoadingRemoteCollisionTerrain(): void

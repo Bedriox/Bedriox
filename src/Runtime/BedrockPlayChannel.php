@@ -134,6 +134,7 @@ use Bedriox\Server\Player\InventorySlotReference;
 use Bedriox\Server\Player\InventoryStackRequestAction;
 use Bedriox\Server\Player\InventoryStackRequestActionType;
 use Bedriox\Server\Player\PlayerInventory;
+use Bedriox\Server\Security\GameplayTrafficGuard;
 use Bedriox\Server\Simulation\ArmSwingSource;
 use Bedriox\Server\Simulation\BlockBreakAction;
 use Bedriox\Server\Simulation\BrushAction;
@@ -239,6 +240,7 @@ final class BedrockPlayChannel
     private readonly RuntimeDiagnostics $diagnostics;
     private readonly int $protocolVersion;
     private readonly ?OrderedOutboundCompressionQueue $outboundCompression;
+    private readonly GameplayTrafficGuard $trafficGuard;
 
     /** @var array<int, array{packets: int, bytes: int}> */
     private array $traceInboundPackets = [];
@@ -305,6 +307,7 @@ final class BedrockPlayChannel
         $this->generatedChunks = new SplQueue();
         $this->deferredCompressionBatches = new SplQueue();
         $this->traceWindowStartedNanoseconds = hrtime(true);
+        $this->trafficGuard = new GameplayTrafficGuard(startedNanoseconds: $this->traceWindowStartedNanoseconds);
         $this->batchLimits = new BatchLimits(maximumPackets: $this->limits->maximumPacketsPerPayload);
         $this->outboundCompression = $compressionWorkers === null ? null : new OrderedOutboundCompressionQueue(
             $compressionWorkers,
@@ -375,6 +378,12 @@ final class BedrockPlayChannel
             || $event->orderingChannel !== 0) {
             return $this->fail('invalid_transport');
         }
+        $receivedNanoseconds = hrtime(true);
+        if (!$this->trafficGuard->admitEnvelope(strlen($event->payload), $receivedNanoseconds)) {
+            $this->diagnostics->record('play.security_rate_limited', ['scope' => 'envelope']);
+
+            return $this->fail('input_rate_limit');
+        }
         $packetId = null;
         try {
             ++$this->traceInboundEnvelopes;
@@ -392,6 +401,11 @@ final class BedrockPlayChannel
             $this->traceInboundBatchNanoseconds += $nextStageNanoseconds - $stageCompletedNanoseconds;
             if (count($batch->packets) > $this->limits->maximumCommandsPerPayload) {
                 return $this->fail('command_limit');
+            }
+            if (!$this->trafficGuard->admitPackets(count($batch->packets), $receivedNanoseconds)) {
+                $this->diagnostics->record('play.security_rate_limited', ['scope' => 'packet']);
+
+                return $this->fail('input_rate_limit');
             }
             foreach ($batch->packets as $frame) {
                 $packetId = $frame->header->packetId;

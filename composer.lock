@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "18ed14e4066e6a3821f4e39c644fa2df",
+    "content-hash": "ae5f227272001313687fee8546fb3266",
     "packages": [
         {
             "name": "bedriox/data",
@@ -60,7 +60,7 @@
             "dist": {
                 "type": "path",
                 "url": "../Protocol",
-                "reference": "e20665f0ef0f1085996634d57b4a84579a229082"
+                "reference": "aa36a3d8f8a318356429dab7bfdcc9163eeebe9a"
             },
             "require": {
                 "ext-openssl": "*",
@@ -112,11 +112,11 @@
         },
         {
             "name": "bedriox/raknet",
-            "version": "0.1.0-alpha.1",
+            "version": "0.1.0-alpha.2",
             "dist": {
                 "type": "path",
                 "url": "../RakNet",
-                "reference": "6a9059994182335c431a75a77e5f5da08d8f58c1"
+                "reference": "a7171819cb6cc6bdc46726364ca4967df8216340"
             },
             "require": {
                 "ext-sockets": "*",

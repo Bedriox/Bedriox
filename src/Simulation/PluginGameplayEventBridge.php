@@ -171,6 +171,7 @@ use Bedriox\Api\Event\Player\PlayerExperienceChangeEvent;
 use Bedriox\Api\Event\Player\PlayerFishedEvent;
 use Bedriox\Api\Event\Player\PlayerFishEvent;
 use Bedriox\Api\Event\Player\PlayerFishState;
+use Bedriox\Api\Event\Player\PlayerFlightToggleEvent;
 use Bedriox\Api\Event\Player\PlayerFoodLevelChangedEvent;
 use Bedriox\Api\Event\Player\PlayerFoodLevelChangeEvent;
 use Bedriox\Api\Event\Player\PlayerGameModeChangedEvent;
@@ -190,6 +191,8 @@ use Bedriox\Api\Event\Player\PlayerLoginEvent;
 use Bedriox\Api\Event\Player\PlayerMissSwingEvent;
 use Bedriox\Api\Event\Player\PlayerMovedEvent;
 use Bedriox\Api\Event\Player\PlayerMoveEvent;
+use Bedriox\Api\Event\Player\PlayerMovementCorrectedEvent;
+use Bedriox\Api\Event\Player\PlayerMovementViolationEvent;
 use Bedriox\Api\Event\Player\PlayerPickedUpItemEvent;
 use Bedriox\Api\Event\Player\PlayerPickupItemEvent;
 use Bedriox\Api\Event\Player\PlayerPortalTravelEvent;
@@ -1117,6 +1120,24 @@ final readonly class PluginGameplayEventBridge
         $this->events->dispatch($event);
 
         return !$event->isCancelled();
+    }
+
+    public function allowFlightToggle(Player $player, bool $flying): bool
+    {
+        $event = new PlayerFlightToggleEvent($this->playerView($player), $flying);
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function movementViolation(Player $player, string $reason, int $score): void
+    {
+        $this->events->dispatch(new PlayerMovementViolationEvent($this->playerView($player), $reason, $score));
+    }
+
+    public function movementCorrected(Player $player, string $reason): void
+    {
+        $this->events->dispatch(new PlayerMovementCorrectedEvent($this->playerView($player), $reason));
     }
 
     public function moved(Player $player): void

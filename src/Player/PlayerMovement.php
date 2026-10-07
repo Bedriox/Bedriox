@@ -42,6 +42,9 @@ final class PlayerMovement
     public float $distanceThisTick = 0.0;
     public int $jumpAuthorizedUntilTick = -1;
     public float $fallDistance = 0.0;
+    public bool $flying = false;
+    public int $violationScore = 0;
+    public int $lastViolationTick = -1;
 
     public function __construct(
         public Position $position,

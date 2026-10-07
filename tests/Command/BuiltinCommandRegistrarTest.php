@@ -30,6 +30,7 @@ use Bedriox\Api\Player\PlayerConnection;
 use Bedriox\Api\World\Position;
 use Bedriox\Api\World\WorldDifficulty;
 use Bedriox\Protocol\Packet\Packet;
+use Bedriox\RakNet\Security\TransportSecuritySnapshot;
 use Bedriox\Server\Access\BanManager;
 use Bedriox\Server\Command\BuiltinCommandRegistrar;
 use Bedriox\Server\Command\Default\GarbageCollectionStatus;
@@ -437,6 +438,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
                 playerPersistence: new PersistenceQueueSnapshot(1, 0, 2, 2_048, 3, 4, 5),
                 preparedChunkCache: new PreparedChunkCacheSnapshot(12, 24_576, 3, 6_144, 80, 20, 2, 4, 1),
                 entityRuntime: new EntityRuntimeMetrics(40, 12, 10, 28, 2, 1, 8, 3, 1_250_000, true),
+                transportSecurity: new TransportSecuritySnapshot(500, 32_768, 81, 1, 3, 1, 0, 1, 0),
             ),
         ))->register();
 
@@ -469,6 +471,8 @@ final class BuiltinCommandRegistrarTest extends TestCase
         self::assertContains('Prepared chunk lookups: hits 80, misses 20, evictions 2, invalidations 4, failures 1, hit ratio 80.0%', $advanced->messages);
         self::assertContains('Asynchronous tasks: 2 pending, 64 completions per tick maximum', $advanced->messages);
         self::assertContains('Session queues: 5 outgoing payloads', $advanced->messages);
+        self::assertContains('Admission: 500 datagrams (32.0 KiB), 81 dropped, 3 malformed', $advanced->messages);
+        self::assertContains('Protection: 0 active blocks, 1 blocks issued, 1 rate-limit hits', $advanced->messages);
         self::assertContains('World persistence: 2 queued, 1 in flight, 3 completions (4.0 KiB)', $advanced->messages);
         self::assertContains('Player persistence totals: 3 coalesced, 4 saturated, 5 failed', $advanced->messages);
         self::assertContains('Core workers: unavailable', $advanced->messages);

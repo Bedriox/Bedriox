@@ -31,4 +31,5 @@ enum TransportProcessFrameKind: int
     case RECEIVED_PAYLOAD = 7;
     case HANDSHAKE_DIAGNOSTICS = 8;
     case FAILURE = 9;
+    case SECURITY_SNAPSHOT = 10;
 }

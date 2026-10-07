@@ -411,6 +411,7 @@ final class Bedriox
                         entityAi: $runtime?->entityAiMetrics(),
                         entityRuntime: $runtime?->entityRuntimeMetrics(),
                         entityNavigation: $runtime?->entityNavigationMetrics(),
+                        transportSecurity: $runtime?->transportSecuritySnapshot(),
                     );
                 },
                 static fn(

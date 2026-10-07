@@ -18,14 +18,14 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api\Event\Player;
+namespace Bedriox\Server\Simulation\Event;
 
-enum PlayerKickCause: string
+final readonly class MovementViolationLimitReached implements WorldEvent
 {
-    case PLUGIN = 'plugin';
-    case OPERATOR = 'operator';
-    case BAN = 'ban';
-    case WHITELIST = 'whitelist';
-    case SERVER_POLICY = 'server_policy';
-    case MOVEMENT_VIOLATION = 'movement_violation';
+    public function __construct(public string $sessionId, public string $reason, public int $score) {}
+
+    public function recipients(): array
+    {
+        return [$this->sessionId];
+    }
 }

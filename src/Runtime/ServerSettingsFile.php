@@ -110,6 +110,42 @@ players.autosave-interval-ticks=6000
 players.save-per-tick=8
 movement.rewind-history-size=40
 
+# Network protection. Changes take effect after restart.
+# enabled: true or false. Keep true for every public server.
+security.network.enabled=true
+# automatic-blocking: true temporarily blocks abusive source addresses; false only drops over-limit traffic.
+security.network.automatic-blocking=true
+# profile: lenient, balanced, strict, or custom.
+# balanced is recommended. Lenient permits larger bursts; strict is for smaller controlled deployments.
+# custom reads the security.network.custom.* values below.
+security.network.profile=balanced
+# Initial block duration in seconds. Accepted range: 1 through 300.
+security.network.block-base-seconds=10
+# Maximum block duration in seconds. Accepted range: the base duration through 86400.
+security.network.block-maximum-seconds=1800
+# Repeated offenses inside this window increase the block duration. Accepted range: 30 through 3600 seconds.
+security.network.block-escalation-window-seconds=300
+# Custom-profile limits. These are ignored by lenient, balanced, and strict profiles.
+# Unauthenticated datagram rate: 100 through 100000; burst: 20 through 20000.
+security.network.custom.unauthenticated-datagrams-per-second=2000
+security.network.custom.unauthenticated-datagram-burst=400
+# Connected endpoint datagram rate: 500 through 100000; burst: 40 through 20000.
+security.network.custom.connected-datagrams-per-second=12000
+security.network.custom.connected-datagram-burst=240
+# Handshake rate: 10 through 10000; burst: 5 through 2000.
+security.network.custom.handshakes-per-second=250
+security.network.custom.handshake-burst=128
+# Malformed datagrams from one address before a temporary block. Accepted range: 1 through 20.
+security.network.custom.malformed-threshold=3
+
+# Movement authority. These switches never make client positions authoritative.
+# enabled records high-confidence violations such as unauthorized survival flight.
+security.movement.enabled=true
+# correct-invalid-movement returns the player to authoritative state. Keep true for normal gameplay.
+security.movement.correct-invalid-movement=true
+# kick-repeated-violations disconnects only after repeated violations reach the internal confidence threshold.
+security.movement.kick-repeated-violations=true
+
 # Entity simulation
 entities.ai.enabled=true
 

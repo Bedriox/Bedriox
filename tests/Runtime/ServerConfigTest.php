@@ -23,6 +23,7 @@ namespace Bedriox\Server\Tests\Runtime;
 use Bedriox\Server\Login\AuthenticationMode;
 use Bedriox\Server\Observability\LogLevel;
 use Bedriox\Server\Runtime\ServerConfig;
+use Bedriox\Server\Security\NetworkSecurityProfile;
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -61,6 +62,12 @@ final class ServerConfigTest extends TestCase
         self::assertTrue($defaults->spawnMonsters);
         self::assertTrue($defaults->updatesEnabled);
         self::assertTrue($defaults->updateOperatorNotifications);
+        self::assertSame(NetworkSecurityProfile::BALANCED, $defaults->networkSecurityProfile);
+        self::assertNotNull($defaults->transportSecurityPolicy);
+        self::assertSame(2_000, $defaults->transportSecurityPolicy->unauthenticatedDatagramsPerSecond);
+        self::assertTrue($defaults->movementSecurityEnabled);
+        self::assertTrue($defaults->correctInvalidMovement);
+        self::assertTrue($defaults->kickRepeatedMovementViolations);
 
         $config = ServerConfig::fromArguments([
             '--bind=127.0.0.1',
@@ -126,6 +133,53 @@ final class ServerConfigTest extends TestCase
         self::assertFalse($streaming->pvp);
         self::assertFalse($streaming->spawnAnimals);
         self::assertFalse($streaming->spawnMonsters);
+    }
+
+    public function testNetworkSecurityProfilesAndCustomLimitsAreValidated(): void
+    {
+        $properties = tempnam(sys_get_temp_dir(), 'bedriox-properties-');
+        $settings = tempnam(sys_get_temp_dir(), 'bedriox-settings-');
+        self::assertIsString($properties);
+        self::assertIsString($settings);
+        try {
+            file_put_contents($properties, '');
+            file_put_contents($settings, "security.network.profile=strict\n");
+            $strict = ServerConfig::fromConfigurationFiles($properties, $settings, []);
+            self::assertSame(NetworkSecurityProfile::STRICT, $strict->networkSecurityProfile);
+            $strictPolicy = $strict->transportSecurityPolicy ?? throw new \LogicException('Strict policy is missing.');
+            self::assertSame(1_000, $strictPolicy->unauthenticatedDatagramsPerSecond);
+            self::assertSame(2, $strictPolicy->malformedThreshold);
+
+            file_put_contents($settings, implode("\n", [
+                'security.network.profile=custom',
+                'security.network.custom.unauthenticated-datagrams-per-second=3000',
+                'security.network.custom.unauthenticated-datagram-burst=500',
+                'security.network.custom.connected-datagrams-per-second=14000',
+                'security.network.custom.connected-datagram-burst=300',
+                'security.network.custom.handshakes-per-second=300',
+                'security.network.custom.handshake-burst=160',
+                'security.network.custom.malformed-threshold=4',
+                'security.network.block-base-seconds=20',
+                'security.network.block-maximum-seconds=600',
+                'security.network.block-escalation-window-seconds=120',
+                'security.movement.enabled=false',
+                'security.movement.correct-invalid-movement=false',
+                'security.movement.kick-repeated-violations=false',
+            ]) . "\n");
+            $custom = ServerConfig::fromConfigurationFiles($properties, $settings, []);
+            self::assertSame(NetworkSecurityProfile::CUSTOM, $custom->networkSecurityProfile);
+            $customPolicy = $custom->transportSecurityPolicy ?? throw new \LogicException('Custom policy is missing.');
+            self::assertSame(3_000, $customPolicy->unauthenticatedDatagramsPerSecond);
+            self::assertSame(14_000, $customPolicy->connectedDatagramsPerSecond);
+            self::assertSame(4, $customPolicy->malformedThreshold);
+            self::assertSame(20, $customPolicy->baseBlockSeconds);
+            self::assertFalse($custom->movementSecurityEnabled);
+            self::assertFalse($custom->correctInvalidMovement);
+            self::assertFalse($custom->kickRepeatedMovementViolations);
+        } finally {
+            @unlink($properties);
+            @unlink($settings);
+        }
     }
 
     /** @return iterable<string, array{list<string>}> */

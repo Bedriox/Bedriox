@@ -130,6 +130,7 @@ use Bedriox\Server\Simulation\Event\ItemEntityMoved;
 use Bedriox\Server\Simulation\Event\ItemEntityPickedUp;
 use Bedriox\Server\Simulation\Event\ItemEntitySpawned;
 use Bedriox\Server\Simulation\Event\MovementCorrected;
+use Bedriox\Server\Simulation\Event\MovementViolationLimitReached;
 use Bedriox\Server\Simulation\Event\NutritionChanged;
 use Bedriox\Server\Simulation\Event\PlayerBecameHidden;
 use Bedriox\Server\Simulation\Event\PlayerBecameVisible;
@@ -159,6 +160,7 @@ use Bedriox\Server\Simulation\VerticalState;
 use Bedriox\Server\Simulation\WorldSimulation;
 use Bedriox\Server\Transport\ConnectedTransport;
 use Bedriox\Server\Transport\NetworkCompressionPolicy;
+use Bedriox\Server\Transport\SecurityObservableTransport;
 use Bedriox\Server\Worker\Chunk\PreparedChunkCache;
 use Bedriox\Server\Worker\Chunk\PreparedChunkCacheSnapshot;
 use Bedriox\Server\World\Block\BlockStateRegistry;
@@ -387,6 +389,13 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
 
         return array_map($this->playerConnections->attach(...), $players);
+    }
+
+    public function transportSecuritySnapshot(): ?\Bedriox\RakNet\Security\TransportSecuritySnapshot
+    {
+        return $this->transport instanceof SecurityObservableTransport
+            ? $this->transport->securitySnapshot()
+            : null;
     }
 
     public function enforceWhitelist(): void
@@ -1564,6 +1573,31 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                         }
                         if ($event instanceof MovementCorrected) {
                             $this->recordMovementCorrectionTrace($event);
+                            $runtimeSession = $this->sessionsById[$event->authoritativePlayer->sessionId] ?? null;
+                            $simulation = $runtimeSession === null ? null : $this->simulationForSession($runtimeSession);
+                            $player = $simulation?->authoritativePlayer($event->authoritativePlayer->identity);
+                            if ($player !== null) {
+                                $this->pluginEvents?->movementCorrected($player, $event->reason);
+                            }
+                        }
+                        if ($event instanceof MovementViolationLimitReached) {
+                            $key = $this->sessionEndpoints[$event->sessionId] ?? null;
+                            $session = $key === null ? null : ($this->sessions[$key] ?? null);
+                            if ($key !== null && $session !== null) {
+                                $this->diagnostics->record('play.movement_violation_limit', [
+                                    'reason' => $event->reason,
+                                    'score' => $event->score,
+                                ]);
+                                $this->kickPlayer(
+                                    $key,
+                                    $session,
+                                    'Movement validation failed repeatedly.',
+                                    null,
+                                    'Disconnected: invalid movement.',
+                                    PlayerKickCause::MOVEMENT_VIOLATION,
+                                );
+                            }
+                            continue;
                         }
                         if (($event instanceof PlayerJoined || $event instanceof PlayerMoved || $event instanceof PlayerRespawned)
                             && !$this->updateAuthoritativeChunkView($event->player)) {

@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Observability;
 
+use Bedriox\RakNet\Security\TransportSecuritySnapshot;
 use Bedriox\Server\Entity\Ai\AiSchedulerMetrics;
 use Bedriox\Server\Entity\EntityRuntimeMetrics;
 use Bedriox\Server\Entity\Navigation\EntityNavigationMetrics;
@@ -85,5 +86,6 @@ final readonly class PerformanceSnapshot
         public ?AiSchedulerMetrics $entityAi = null,
         public ?EntityRuntimeMetrics $entityRuntime = null,
         public ?EntityNavigationMetrics $entityNavigation = null,
+        public ?TransportSecuritySnapshot $transportSecurity = null,
     ) {}
 }

@@ -1,5 +1,8 @@
 # Changelog
 
+- Add bounded RakNet admission profiles, malformed-input escalation, expiring address blocks, shared-address-safe connected limits, and `/status advanced` security metrics.
+- Bound sustained authenticated play traffic and correct repeated unauthorized flight before isolated movement-policy disconnection.
+- Add plugin events for authorized flight toggles, movement violations, and committed movement corrections.
 - Complete authoritative land-animal interactions for llamas, foxes, pandas,
   goats, polar bears, mooshrooms, armadillos, sniffers, ocelots, donkeys,
   mules, trader llamas, skeleton horses, and zombie horses.
