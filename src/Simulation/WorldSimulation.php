@@ -48,6 +48,7 @@ use Bedriox\Api\Entity\MobActivationState;
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\Value\BoatVariant;
 use Bedriox\Api\Entity\Value\EntityTransformReason;
+use Bedriox\Api\Entity\Value\MooshroomVariant;
 use Bedriox\Api\Entity\Value\MountReason;
 use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\Entity\Value\RabbitVariant;
@@ -6869,6 +6870,14 @@ final class WorldSimulation
             && !$this->interactWithSheep($player, $target)) {
             return new CommandRejected($command->session, 'plugin_cancelled');
         }
+        if ($target instanceof MooshroomEntity && $heldBefore?->identifier === 'minecraft:shears') {
+            if (!$this->shearMooshroom($player, $target, $heldBefore)) {
+                return new CommandRejected($command->session, 'plugin_cancelled');
+            }
+            $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
+
+            return new EntityInteracted($command->session, $target->getRuntimeId(), $command->interaction);
+        }
         if ($target instanceof WolfEntity || $target instanceof CatEntity) {
             $taming = $this->interactWithTameableAnimal($player, $target);
             if ($taming === false) {
@@ -7458,6 +7467,76 @@ final class WorldSimulation
         $partner->beginBreedingCooldown();
         array_push($this->deferredEvents, ...$this->spawnExperienceOrbs($experience, $position));
         $this->pluginEvents?->entitiesBred($animal, $partner, $child, $experience);
+        return true;
+    }
+
+    private function shearMooshroom(Player $player, MooshroomEntity $mooshroom, InventoryStack $held): bool
+    {
+        if ($mooshroom->isBaby()) {
+            return true;
+        }
+        $mushroom = $mooshroom->getVariant() === MooshroomVariant::BROWN
+            ? 'minecraft:brown_mushroom'
+            : 'minecraft:red_mushroom';
+        $drops = [new ApiItemStack($mushroom, 5)];
+        if ($this->pluginEvents !== null) {
+            $drops = $this->pluginEvents->shearEntity($player, $mooshroom, $held, $drops);
+            if ($drops === null) {
+                return false;
+            }
+            $targetType = $this->pluginEvents->transformEntity(
+                $mooshroom,
+                VanillaEntityType::COW,
+                EntityTransformReason::SHEARING,
+            );
+            if ($targetType === null) {
+                return false;
+            }
+        } else {
+            $targetType = VanillaEntityType::COW;
+        }
+        $outcome = $this->spawnEntity(new EntitySpawnRequest(
+            $targetType,
+            SpawnCause::TRANSFORMATION,
+            $mooshroom->getWorldName(),
+            $mooshroom->internalPosition(),
+            $mooshroom->getYaw(),
+            $mooshroom->getPitch(),
+        ));
+        if (!$outcome->entity instanceof AbstractLivingEntity) {
+            return false;
+        }
+        $transformed = $outcome->entity;
+        $healthRatio = $mooshroom->getHealth() / $mooshroom->getMaximumHealth();
+        $transformed->damage(max(0.0, $transformed->getMaximumHealth() * (1.0 - $healthRatio)));
+        $this->damageHeldItem($player, ApiItemDamageCause::ITEM_USE, 1);
+        foreach ($drops as $drop) {
+            try {
+                $item = $this->itemEntities->spawn(
+                    $this->inventoryStackFromApi($drop),
+                    new Position(
+                        $mooshroom->internalPosition()->x,
+                        $mooshroom->internalPosition()->y + 0.5,
+                        $mooshroom->internalPosition()->z,
+                    ),
+                    new ItemEntityMotion(
+                        $this->dropRandom->integer(-10, 10) / 100.0,
+                        0.15,
+                        $this->dropRandom->integer(-10, 10) / 100.0,
+                    ),
+                    10,
+                );
+                $this->deferredEvents[] = new ItemEntitySpawned($item, $this->players->recipients());
+            } catch (InvalidArgumentException|OverflowException) {
+                // Invalid plugin-modified drops are isolated from the simulation tick.
+            }
+        }
+        $this->entityPersistence?->forgetEntity($mooshroom->getUniqueId());
+        $this->entityRuntime->remove($mooshroom->getRuntimeId());
+        $this->deferredEvents[] = new EntityActorRemoved($mooshroom, $this->players->recipients());
+        $this->pluginEvents?->entitySheared($player, $mooshroom, $held, $drops);
+        $this->pluginEvents?->entityTransformed($mooshroom, $transformed, EntityTransformReason::SHEARING);
+
         return true;
     }
 

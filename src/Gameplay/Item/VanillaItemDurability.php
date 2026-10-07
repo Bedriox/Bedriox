@@ -35,6 +35,7 @@ final class VanillaItemDurability
             'minecraft:flint_and_steel' => 65,
             'minecraft:mace' => 501,
             'minecraft:shield' => 337,
+            'minecraft:shears' => 239,
             'minecraft:trident' => 251,
             'minecraft:warped_fungus_on_a_stick' => 101,
             'minecraft:wolf_armor' => 64,

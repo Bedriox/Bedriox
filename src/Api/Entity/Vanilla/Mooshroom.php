@@ -22,9 +22,10 @@ namespace Bedriox\Api\Entity\Vanilla;
 
 use Bedriox\Api\Entity\Capability\Animal;
 use Bedriox\Api\Entity\Capability\Breedable;
+use Bedriox\Api\Entity\Capability\Shearable;
 use Bedriox\Api\Entity\Value\MooshroomVariant;
 
-interface Mooshroom extends Animal, Breedable
+interface Mooshroom extends Animal, Breedable, Shearable
 {
     public function getVariant(): MooshroomVariant;
 }

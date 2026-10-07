@@ -26,5 +26,6 @@ enum EntityTransformReason: string
     case INFECTION = 'infection';
     case CURE = 'cure';
     case LIGHTNING = 'lightning';
+    case SHEARING = 'shearing';
     case PLUGIN = 'plugin';
 }

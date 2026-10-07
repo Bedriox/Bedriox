@@ -51,6 +51,11 @@ final class MooshroomEntity extends LandBreedableAnimalEntity implements Mooshro
         return $this->variant;
     }
 
+    public function isSheared(): bool
+    {
+        return false;
+    }
+
     /** @internal Authoritative species-state mutation. */
     public function setVariant(MooshroomVariant $variant): void
     {
