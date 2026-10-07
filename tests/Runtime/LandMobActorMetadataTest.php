@@ -32,6 +32,7 @@ use Bedriox\Server\Entity\EntityUuid;
 use Bedriox\Server\Entity\Vanilla\CatEntity;
 use Bedriox\Server\Entity\Vanilla\CreeperEntity;
 use Bedriox\Server\Entity\Vanilla\FoxEntity;
+use Bedriox\Server\Entity\Vanilla\LlamaEntity;
 use Bedriox\Server\Entity\Vanilla\MagmaCubeEntity;
 use Bedriox\Server\Entity\Vanilla\OcelotEntity;
 use Bedriox\Server\Entity\Vanilla\PandaEntity;
@@ -193,6 +194,25 @@ final class LandMobActorMetadataTest extends TestCase
 
         self::assertSame(PandaGene::BROWN->value, self::integer($metadata, 2));
         self::assertNotSame(0, self::integer($metadata, 92) & ActorFlag::Rolling->mask());
+    }
+
+    public function testLlamaProjectsCarpetStrengthAndChestedState(): void
+    {
+        $llama = new LlamaEntity(
+            EntityUuid::random(),
+            12,
+            'world',
+            new Position(0.0, 64.0, 0.0),
+            strength: 4,
+            chested: true,
+            carpetColor: WoolColor::LIME,
+        );
+        $metadata = (new BedrockLivingActorProjector())->metadata($llama);
+
+        self::assertSame(5, self::integer($metadata, 3));
+        self::assertSame(4, self::integer($metadata, 75));
+        self::assertSame(5, self::integer($metadata, 76));
+        self::assertNotSame(0, self::integer($metadata, 0) & ActorFlag::Chested->mask());
     }
 
     /** @param list<ActorMetadata> $metadata */

@@ -36,12 +36,12 @@ abstract class PersistentHorseFamilyEntity extends HorseFamilyEntity implements 
     }
     final public function persistenceData(): string
     {
-        return json_encode($this->horseFamilyPersistenceData(), JSON_THROW_ON_ERROR);
+        return json_encode([...$this->horseFamilyPersistenceData(), ...$this->mountSpeciesPersistenceData()], JSON_THROW_ON_ERROR);
     }
 
     final public function restorePersistenceState(int|string|null $variant, int $schemaVersion, string $data): void
     {
-        if ($variant !== null || $schemaVersion !== 1 || strlen($data) > 512) {
+        if ($variant !== null || $schemaVersion !== 1 || strlen($data) > 4_096) {
             throw new InvalidArgumentException('Persisted horse-family state has an unsupported schema.');
         }
         try {
@@ -49,9 +49,20 @@ abstract class PersistentHorseFamilyEntity extends HorseFamilyEntity implements 
         } catch (JsonException $error) {
             throw new InvalidArgumentException('Persisted horse-family state is malformed.', previous: $error);
         }
-        if (!is_array($decoded)) {
+        $expectedKeys = array_keys([...$this->horseFamilyPersistenceData(), ...$this->mountSpeciesPersistenceData()]);
+        if (!is_array($decoded) || array_keys($decoded) !== $expectedKeys) {
             throw new InvalidArgumentException('Persisted horse-family state is malformed.');
         }
         $this->restoreHorseFamilyPersistenceData($decoded);
+        $this->restoreMountSpeciesPersistenceData($decoded);
     }
+
+    /** @return array<string, bool|int|string|null> */
+    protected function mountSpeciesPersistenceData(): array
+    {
+        return [];
+    }
+
+    /** @param array<mixed> $data */
+    protected function restoreMountSpeciesPersistenceData(array $data): void {}
 }

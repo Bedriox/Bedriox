@@ -18,8 +18,13 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Api\Entity\Vanilla;
+namespace Bedriox\Api\Entity\Capability;
 
-use Bedriox\Api\Entity\Capability\ChestedAnimal;
+use Bedriox\Api\Entity\Mob;
 
-interface Mule extends Horse, ChestedAnimal {}
+interface ChestedAnimal extends Mob
+{
+    public function hasChest(): bool;
+
+    public function getStorageSlotCount(): int;
+}

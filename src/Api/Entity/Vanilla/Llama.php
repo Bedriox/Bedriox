@@ -20,4 +20,12 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\Entity\Vanilla;
 
-interface Llama extends Horse {}
+use Bedriox\Api\Entity\Capability\ChestedAnimal;
+use Bedriox\Api\Entity\Value\WoolColor;
+
+interface Llama extends Horse, ChestedAnimal
+{
+    public function getStrength(): int;
+
+    public function getCarpetColor(): ?WoolColor;
+}

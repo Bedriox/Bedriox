@@ -20,14 +20,18 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Vanilla;
 
+use Bedriox\Api\Entity\Value\WoolColor;
 use Bedriox\Api\Entity\Vanilla\TraderLlama;
 use Bedriox\Server\Entity\EntityMotion;
 use Bedriox\Server\Entity\Mount\MountEntityDefinitions;
 use Bedriox\Server\Entity\Mount\PersistentHorseFamilyEntity;
+use Bedriox\Server\Entity\Mount\State\LlamaEquipmentState;
 use Bedriox\Server\Simulation\Position;
 
 final class TraderLlamaEntity extends PersistentHorseFamilyEntity implements TraderLlama
 {
+    use LlamaEquipmentState;
+
     public function __construct(
         string $uniqueId,
         int $runtimeId,
@@ -45,6 +49,9 @@ final class TraderLlamaEntity extends PersistentHorseFamilyEntity implements Tra
         bool $saddled = false,
         int $temper = 0,
         bool $sitting = false,
+        int $strength = 1,
+        bool $chested = false,
+        ?WoolColor $carpetColor = WoolColor::BLUE,
     ) {
         parent::__construct(
             $uniqueId,
@@ -70,5 +77,16 @@ final class TraderLlamaEntity extends PersistentHorseFamilyEntity implements Tra
             1.17,
             -0.3,
         );
+        $this->initializeLlamaEquipmentState($strength, $chested, $carpetColor);
+    }
+
+    protected function mountSpeciesPersistenceData(): array
+    {
+        return $this->llamaEquipmentPersistenceData();
+    }
+
+    protected function restoreMountSpeciesPersistenceData(array $data): void
+    {
+        $this->restoreLlamaEquipmentPersistenceData($data);
     }
 }

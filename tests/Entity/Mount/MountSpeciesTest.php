@@ -24,6 +24,7 @@ use Bedriox\Api\Entity\Capability\Breedable;
 use Bedriox\Api\Entity\Capability\Rideable;
 use Bedriox\Api\Entity\Capability\Undead;
 use Bedriox\Api\Entity\Value\MountSeat;
+use Bedriox\Api\Entity\Value\WoolColor;
 use Bedriox\Api\Entity\VanillaEntityType;
 use Bedriox\Server\Entity\EntityUuid;
 use Bedriox\Server\Entity\Vanilla\CamelEntity;
@@ -109,5 +110,31 @@ final class MountSpeciesTest extends TestCase
         self::assertSame($owner, $restoredSkeleton->getOwnerUniqueId());
         self::assertTrue($restoredSkeleton->isSaddled());
         self::assertSame(35, $restoredSkeleton->getTemper());
+    }
+
+    public function testChestedMountAndLlamaEquipmentStateRoundTrips(): void
+    {
+        $position = new Position(0.0, 64.0, 0.0);
+        $donkey = new DonkeyEntity(EntityUuid::random(), 15, 'world', $position, chested: true);
+        $restoredDonkey = new DonkeyEntity(EntityUuid::random(), 16, 'world', $position);
+        $restoredDonkey->restorePersistenceState(null, 1, $donkey->persistenceData());
+        self::assertTrue($restoredDonkey->hasChest());
+        self::assertSame(15, $restoredDonkey->getStorageSlotCount());
+
+        $llama = new LlamaEntity(
+            EntityUuid::random(),
+            17,
+            'world',
+            $position,
+            strength: 5,
+            chested: true,
+            carpetColor: WoolColor::LIME,
+        );
+        $restoredLlama = new LlamaEntity(EntityUuid::random(), 18, 'world', $position);
+        $restoredLlama->restorePersistenceState(null, 1, $llama->persistenceData());
+        self::assertSame(5, $restoredLlama->getStrength());
+        self::assertTrue($restoredLlama->hasChest());
+        self::assertSame(15, $restoredLlama->getStorageSlotCount());
+        self::assertSame(WoolColor::LIME, $restoredLlama->getCarpetColor());
     }
 }

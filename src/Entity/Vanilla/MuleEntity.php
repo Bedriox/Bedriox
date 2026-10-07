@@ -24,10 +24,13 @@ use Bedriox\Api\Entity\Vanilla\Mule;
 use Bedriox\Server\Entity\EntityMotion;
 use Bedriox\Server\Entity\Mount\MountEntityDefinitions;
 use Bedriox\Server\Entity\Mount\PersistentHorseFamilyEntity;
+use Bedriox\Server\Entity\Mount\State\ChestedHorseState;
 use Bedriox\Server\Simulation\Position;
 
 final class MuleEntity extends PersistentHorseFamilyEntity implements Mule
 {
+    use ChestedHorseState;
+
     public function __construct(
         string $uniqueId,
         int $runtimeId,
@@ -45,6 +48,7 @@ final class MuleEntity extends PersistentHorseFamilyEntity implements Mule
         bool $saddled = false,
         int $temper = 0,
         bool $sitting = false,
+        bool $chested = false,
     ) {
         parent::__construct(
             $uniqueId,
@@ -70,5 +74,16 @@ final class MuleEntity extends PersistentHorseFamilyEntity implements Mule
             0.975,
             -0.2,
         );
+        $this->initializeChestedHorseState($chested);
+    }
+
+    protected function mountSpeciesPersistenceData(): array
+    {
+        return $this->chestedHorsePersistenceData();
+    }
+
+    protected function restoreMountSpeciesPersistenceData(array $data): void
+    {
+        $this->restoreChestedHorsePersistenceData($data);
     }
 }

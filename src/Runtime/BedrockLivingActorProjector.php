@@ -23,6 +23,7 @@ namespace Bedriox\Server\Runtime;
 use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Entity\Capability\Ageable;
 use Bedriox\Api\Entity\Capability\Angerable;
+use Bedriox\Api\Entity\Capability\ChestedAnimal;
 use Bedriox\Api\Entity\Capability\Climbing;
 use Bedriox\Api\Entity\Capability\FireImmune;
 use Bedriox\Api\Entity\Capability\Rideable;
@@ -35,6 +36,7 @@ use Bedriox\Api\Entity\Value\WoolColor;
 use Bedriox\Api\Entity\Vanilla\Cat;
 use Bedriox\Api\Entity\Vanilla\Creeper;
 use Bedriox\Api\Entity\Vanilla\Fox;
+use Bedriox\Api\Entity\Vanilla\Llama as ApiLlama;
 use Bedriox\Api\Entity\Vanilla\Panda;
 use Bedriox\Api\Entity\Vanilla\Pig;
 use Bedriox\Api\Entity\Vanilla\Rabbit;
@@ -123,6 +125,7 @@ final class BedrockLivingActorProjector
             ActorMetadata::byte(3, match (true) {
                 $entity instanceof Sheep => self::woolColorIndex($entity->getWoolColor()),
                 $entity instanceof Cat, $entity instanceof Wolf => self::woolColorIndex($entity->getCollarColor()),
+                $entity instanceof ApiLlama && $entity->getCarpetColor() !== null => self::woolColorIndex($entity->getCarpetColor()),
                 default => 0,
             }),
             ActorMetadata::string(4, $entity->nameTag()),
@@ -147,6 +150,10 @@ final class BedrockLivingActorProjector
             )] : []),
             ActorMetadata::float(53, $entity->collisionWidth()),
             ActorMetadata::float(54, $entity->collisionHeight()),
+            ...($entity instanceof ApiLlama ? [
+                ActorMetadata::int(75, $entity->getStrength()),
+                ActorMetadata::int(76, 5),
+            ] : []),
             ...($entity instanceof Creeper ? [ActorMetadata::int(55, 30)] : []),
             ...($entity instanceof Shulker ? ShulkerActorMetadata::presentation(
                 $entity->getPeekAmount(),
@@ -180,6 +187,9 @@ final class BedrockLivingActorProjector
         }
         if ($entity instanceof FireImmune) {
             $flags |= ActorFlag::FireImmune->mask();
+        }
+        if ($entity instanceof ChestedAnimal && $entity->hasChest()) {
+            $flags |= ActorFlag::Chested->mask();
         }
         if ($entity->isGravityEnabled()) {
             $flags |= ActorFlag::HasGravity->mask();

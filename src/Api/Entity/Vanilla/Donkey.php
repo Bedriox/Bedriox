@@ -20,4 +20,6 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\Entity\Vanilla;
 
-interface Donkey extends Horse {}
+use Bedriox\Api\Entity\Capability\ChestedAnimal;
+
+interface Donkey extends Horse, ChestedAnimal {}

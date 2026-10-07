@@ -165,6 +165,7 @@ use Bedriox\Server\Entity\Vanilla\CaveSpiderEntity;
 use Bedriox\Server\Entity\Vanilla\ChickenEntity;
 use Bedriox\Server\Entity\Vanilla\CowEntity;
 use Bedriox\Server\Entity\Vanilla\CreeperEntity;
+use Bedriox\Server\Entity\Vanilla\DonkeyEntity;
 use Bedriox\Server\Entity\Vanilla\End\EnderDragonEntity;
 use Bedriox\Server\Entity\Vanilla\End\ShulkerAttachmentResolver;
 use Bedriox\Server\Entity\Vanilla\End\ShulkerEntity;
@@ -174,6 +175,7 @@ use Bedriox\Server\Entity\Vanilla\GoatEntity;
 use Bedriox\Server\Entity\Vanilla\LlamaEntity;
 use Bedriox\Server\Entity\Vanilla\MagmaCubeEntity;
 use Bedriox\Server\Entity\Vanilla\MooshroomEntity;
+use Bedriox\Server\Entity\Vanilla\MuleEntity;
 use Bedriox\Server\Entity\Vanilla\Nether\BlazeEntity;
 use Bedriox\Server\Entity\Vanilla\Nether\GhastEntity;
 use Bedriox\Server\Entity\Vanilla\Nether\HappyGhastEntity;
@@ -6915,6 +6917,34 @@ final class WorldSimulation
 
             return new EntityInteracted($command->session, $target->getRuntimeId(), $command->interaction);
         }
+        if (($target instanceof LlamaEntity || $target instanceof TraderLlamaEntity)
+            && $target->isTamed() && $heldBefore !== null) {
+            if (!$target->hasChest() && $heldBefore->identifier === 'minecraft:chest'
+                && $player->movement->sneaking) {
+                $target->setChested(true);
+                $this->consumeSelectedItem($player);
+                $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
+
+                return new EntityInteracted($command->session, $target->getRuntimeId(), $command->interaction);
+            }
+            $carpetColor = $this->woolColorFromCarpet($heldBefore->identifier);
+            if ($carpetColor !== null) {
+                $target->setCarpetColor($carpetColor);
+                $this->consumeSelectedItem($player);
+                $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
+
+                return new EntityInteracted($command->session, $target->getRuntimeId(), $command->interaction);
+            }
+        }
+        if (($target instanceof DonkeyEntity || $target instanceof MuleEntity)
+            && $target->isTamed() && !$target->hasChest()
+            && $heldBefore?->identifier === 'minecraft:chest' && $player->movement->sneaking) {
+            $target->setChested(true);
+            $this->consumeSelectedItem($player);
+            $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
+
+            return new EntityInteracted($command->session, $target->getRuntimeId(), $command->interaction);
+        }
         if ($target instanceof WolfEntity || $target instanceof CatEntity) {
             $taming = $this->interactWithTameableAnimal($player, $target);
             if ($taming === false) {
@@ -7813,6 +7843,15 @@ final class WorldSimulation
         }
 
         return null;
+    }
+
+    private function woolColorFromCarpet(string $identifier): ?WoolColor
+    {
+        if (!str_starts_with($identifier, 'minecraft:') || !str_ends_with($identifier, '_carpet')) {
+            return null;
+        }
+
+        return WoolColor::tryFrom(substr($identifier, strlen('minecraft:'), -strlen('_carpet')));
     }
 
     private function trySheepEatGrass(SheepEntity $sheep): void
