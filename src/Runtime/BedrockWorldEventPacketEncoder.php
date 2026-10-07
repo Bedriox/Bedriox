@@ -140,6 +140,7 @@ use Bedriox\Server\Player\InventoryContainer;
 use Bedriox\Server\Player\InventoryResponseMode;
 use Bedriox\Server\Simulation\Event\ActorDismounted;
 use Bedriox\Server\Simulation\Event\ActorMounted;
+use Bedriox\Server\Simulation\Event\AnimalLovePresented;
 use Bedriox\Server\Simulation\Event\AreaEffectCloudRemoved;
 use Bedriox\Server\Simulation\Event\AreaEffectCloudSpawned;
 use Bedriox\Server\Simulation\Event\AreaEffectCloudUpdated;
@@ -389,6 +390,7 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             $event instanceof EntityActorHealthChanged => $this->entityActorHealthChanged($event),
             $event instanceof EntityActorMetadataChanged => $this->entityActorMetadataChanged($event),
             $event instanceof TameAttemptPresented => $this->tameAttempt($event),
+            $event instanceof AnimalLovePresented => $this->animalLove($event),
             $event instanceof EntityActorMoved => $this->entityActorMoved($event),
             $event instanceof EntityActorAttackStarted => $this->entityActorAttackStarted($event),
             $event instanceof EntityActorDamaged => $this->entityActorDamaged($event),
@@ -2571,6 +2573,20 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
         $packet = new ActorEventPacket(
             UnsignedLong::fromInt($event->entity->getRuntimeId()),
             $event->succeeded ? ActorEventType::TameSucceeded : ActorEventType::TameFailed,
+        );
+
+        return array_map(
+            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
+            $event->recipientSessionIds,
+        );
+    }
+
+    /** @return list<DirectedPacket> */
+    private function animalLove(AnimalLovePresented $event): array
+    {
+        $packet = new ActorEventPacket(
+            UnsignedLong::fromInt($event->animal->getRuntimeId()),
+            ActorEventType::InLoveHearts,
         );
 
         return array_map(

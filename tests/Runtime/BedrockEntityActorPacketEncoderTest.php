@@ -54,6 +54,7 @@ use Bedriox\Server\Entity\Vehicle\BoatEntity;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Runtime\BedrockInventoryPacketProjector;
 use Bedriox\Server\Runtime\BedrockWorldEventPacketEncoder;
+use Bedriox\Server\Simulation\Event\AnimalLovePresented;
 use Bedriox\Server\Simulation\Event\EntityActorAttackStarted;
 use Bedriox\Server\Simulation\Event\EntityActorDamaged;
 use Bedriox\Server\Simulation\Event\EntityActorDied;
@@ -242,6 +243,26 @@ final class BedrockEntityActorPacketEncoderTest extends TestCase
             self::assertSame($type, $packets[0]->packet->event);
             self::assertTrue($packets[0]->packet->runtimeEntityId->equals(UnsignedLong::fromInt(204)));
         }
+    }
+
+    public function testAnimalLoveUsesTheCurrentBedrockActorEvent(): void
+    {
+        $cow = new CowEntity(
+            '00000000-0000-4000-8000-000000000205',
+            205,
+            'world',
+            new Position(0.0, 64.0, 0.0),
+        );
+        $packets = (new BedrockWorldEventPacketEncoder())->encode(
+            new AnimalLovePresented($cow, ['viewer']),
+            [],
+        );
+
+        self::assertCount(1, $packets);
+        self::assertSame('viewer', $packets[0]->sessionId);
+        self::assertInstanceOf(ActorEventPacket::class, $packets[0]->packet);
+        self::assertSame(ActorEventType::InLoveHearts, $packets[0]->packet->event);
+        self::assertTrue($packets[0]->packet->runtimeEntityId->equals(UnsignedLong::fromInt(205)));
     }
 
     public function testEntityMovementPacketsPreserveRecipientOrderAndShareProjectionObjects(): void

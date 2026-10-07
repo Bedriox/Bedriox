@@ -340,6 +340,7 @@ use Bedriox\Server\Simulation\Command\WorkstationRequest;
 use Bedriox\Server\Simulation\Command\WorldCommand;
 use Bedriox\Server\Simulation\Event\ActorDismounted;
 use Bedriox\Server\Simulation\Event\ActorMounted;
+use Bedriox\Server\Simulation\Event\AnimalLovePresented;
 use Bedriox\Server\Simulation\Event\AreaEffectCloudRemoved;
 use Bedriox\Server\Simulation\Event\AreaEffectCloudSpawned;
 use Bedriox\Server\Simulation\Event\AreaEffectCloudUpdated;
@@ -7407,6 +7408,7 @@ final class WorldSimulation
         if ($animal->getLoveTicks() === 0) {
             $animal->setLoveTicks(BreedableAnimalEntity::MAXIMUM_LOVE_TICKS);
             $this->consumeBreedingFood($player, $held->identifier);
+            $this->deferredEvents[] = new AnimalLovePresented($animal, $this->players->recipients());
         }
         if (!$animal->isReadyToBreed()) {
             return true;
