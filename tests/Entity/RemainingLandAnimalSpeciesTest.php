@@ -85,6 +85,9 @@ final class RemainingLandAnimalSpeciesTest extends TestCase
         $armadillo = new ArmadilloEntity(EntityUuid::random(), 14, 'world', $position);
         $armadillo->setState(ArmadilloState::ROLLED_UP_PEEKING);
         self::assertSame(ArmadilloState::ROLLED_UP_PEEKING, $armadillo->getState());
+        $armadillo->resetScuteShedTimer(40);
+        self::assertFalse($armadillo->advanceScuteShedTimer(20));
+        self::assertTrue($armadillo->advanceScuteShedTimer(20));
 
         $mooshroom = new MooshroomEntity(EntityUuid::random(), 15, 'world', $position);
         $mooshroom->setVariant(MooshroomVariant::BROWN);
@@ -126,6 +129,7 @@ final class RemainingLandAnimalSpeciesTest extends TestCase
         $restoredArmadillo = new ArmadilloEntity(EntityUuid::random(), 28, 'world', $position);
         $restoredArmadillo->restorePersistenceState($armadillo->persistenceVariant(), $armadillo->persistenceSchemaVersion(), $armadillo->persistenceData());
         self::assertSame(ArmadilloState::ROLLED_UP_RELAXING, $restoredArmadillo->getState());
+        self::assertSame($armadillo->getScuteShedTicks(), $restoredArmadillo->getScuteShedTicks());
 
         $mooshroom = new MooshroomEntity(EntityUuid::random(), 29, 'world', $position, variant: MooshroomVariant::BROWN);
         $restoredMooshroom = new MooshroomEntity(EntityUuid::random(), 30, 'world', $position);

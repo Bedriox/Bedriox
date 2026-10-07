@@ -2769,6 +2769,10 @@ final class WorldSimulation
                         // Capacity pressure defers the next bounded egg cycle instead of failing the world tick.
                     }
                 }
+                if ($entity instanceof ArmadilloEntity && $entity->advanceScuteShedTimer(20)) {
+                    $entity->resetScuteShedTimer($this->dropRandom->integer(6_000, 12_000));
+                    $this->dropAnimalItem($entity, new ApiItemStack('minecraft:armadillo_scute', 1));
+                }
             }
             if ($entity instanceof MutableAngerState && $entity->isAlive()
                 && ($this->tick + $entity->getRuntimeId()) % 20 === 0) {
@@ -6878,6 +6882,13 @@ final class WorldSimulation
 
             return new EntityInteracted($command->session, $target->getRuntimeId(), $command->interaction);
         }
+        if ($target instanceof ArmadilloEntity && $heldBefore?->identifier === 'minecraft:brush') {
+            $this->damageHeldItem($player, ApiItemDamageCause::ITEM_USE, 1);
+            $this->dropAnimalItem($target, new ApiItemStack('minecraft:armadillo_scute', 1));
+            $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
+
+            return new EntityInteracted($command->session, $target->getRuntimeId(), $command->interaction);
+        }
         if ($target instanceof WolfEntity || $target instanceof CatEntity) {
             $taming = $this->interactWithTameableAnimal($player, $target);
             if ($taming === false) {
@@ -7538,6 +7549,29 @@ final class WorldSimulation
         $this->pluginEvents?->entityTransformed($mooshroom, $transformed, EntityTransformReason::SHEARING);
 
         return true;
+    }
+
+    private function dropAnimalItem(AbstractLivingEntity $entity, ApiItemStack $drop): void
+    {
+        try {
+            $item = $this->itemEntities->spawn(
+                $this->inventoryStackFromApi($drop),
+                new Position(
+                    $entity->internalPosition()->x,
+                    $entity->internalPosition()->y + 0.5,
+                    $entity->internalPosition()->z,
+                ),
+                new ItemEntityMotion(
+                    $this->dropRandom->integer(-10, 10) / 100.0,
+                    0.15,
+                    $this->dropRandom->integer(-10, 10) / 100.0,
+                ),
+                10,
+            );
+            $this->deferredEvents[] = new ItemEntitySpawned($item, $this->players->recipients());
+        } catch (InvalidArgumentException|OverflowException) {
+            // Capacity pressure delays natural output and never fails the world tick.
+        }
     }
 
     /** True means the interaction was consumed, false means a plugin cancelled it, and null means continue. */

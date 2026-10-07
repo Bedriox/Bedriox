@@ -27,4 +27,6 @@ use Bedriox\Api\Entity\Value\ArmadilloState;
 interface Armadillo extends Animal, Breedable
 {
     public function getState(): ArmadilloState;
+
+    public function getScuteShedTicks(): int;
 }
