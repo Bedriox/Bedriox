@@ -28,6 +28,7 @@ use Bedriox\Api\Command\CommandResult;
 use Bedriox\Api\Command\PlayerCommandSender;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\Player\Player;
+use Bedriox\Api\TextFormat;
 use Closure;
 
 final readonly class GamemodeCommand implements BuiltinCommand
@@ -68,12 +69,26 @@ final readonly class GamemodeCommand implements BuiltinCommand
             return CommandResult::failure('A player target is required when running this command from the console.');
         }
         if ($target->getGameMode() === $gameMode) {
-            return CommandResult::success("{$target->name} is already in {$gameMode->value} mode.");
+            return CommandResult::warning($target->uuid === ($context->sender() instanceof PlayerCommandSender
+                ? $context->sender()->player()->uuid
+                : null)
+                ? 'You are already in ' . self::displayName($gameMode) . ' mode.'
+                : "{$target->name} is already in " . self::displayName($gameMode) . ' mode.');
         }
         if ($this->changeGameMode === null || !($this->changeGameMode)($target, $gameMode)) {
             return CommandResult::failure('Unable to change the player game mode.');
         }
-        return CommandResult::success("Set {$target->name}'s game mode to {$gameMode->value}.");
+        $self = $context->sender() instanceof PlayerCommandSender
+            && $context->sender()->player()->uuid === $target->uuid;
+        if (!$self) {
+            $target->sendMessage(
+                TextFormat::GRAY . 'Your game mode has been changed to ' . self::displayName($gameMode) . '.' . TextFormat::RESET,
+            );
+        }
+
+        return CommandResult::administrativeSuccess($self
+            ? 'Set your game mode to ' . self::displayName($gameMode) . '.'
+            : "Set {$target->name}'s game mode to " . self::displayName($gameMode) . '.');
     }
 
     public static function parse(string $value): ?GameMode
@@ -85,5 +100,10 @@ final readonly class GamemodeCommand implements BuiltinCommand
             '3', 'sp', 'spectator' => GameMode::SPECTATOR,
             default => null,
         };
+    }
+
+    private static function displayName(GameMode $gameMode): string
+    {
+        return ucfirst($gameMode->value);
     }
 }

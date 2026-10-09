@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Command;
 
+use Bedriox\Api\Command\CommandResultType;
 use Bedriox\Api\Command\CommandSender;
 use Bedriox\Api\Command\CommandSenderType;
 use Bedriox\Api\TextFormat;
@@ -27,6 +28,16 @@ use Bedriox\Api\TextFormat;
 /** Applies consistent Bedrock formatting without leaking formatting codes into console output. */
 final class CommandFeedback
 {
+    public static function result(CommandSender $sender, CommandResultType $type, string $message): string
+    {
+        return match ($type) {
+            CommandResultType::SUCCESS => self::success($sender, $message),
+            CommandResultType::INFORMATION => self::normal($sender, $message),
+            CommandResultType::WARNING => self::warning($sender, $message),
+            CommandResultType::FAILURE => self::error($sender, $message),
+        };
+    }
+
     public static function normal(CommandSender $sender, string $message): string
     {
         return self::line($sender, TextFormat::GRAY, $message);

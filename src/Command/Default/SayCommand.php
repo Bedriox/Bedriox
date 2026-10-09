@@ -43,6 +43,6 @@ final readonly class SayCommand implements BuiltinCommand
     {
         $message = '[Server] ' . $context->values()->message('message');
         $recipients = ($this->broadcast)($message);
-        return CommandResult::success("Message sent to {$recipients} players.");
+        return CommandResult::information("Message sent to {$recipients} players.");
     }
 }

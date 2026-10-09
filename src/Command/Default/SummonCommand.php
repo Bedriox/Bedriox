@@ -80,7 +80,7 @@ final readonly class SummonCommand implements BuiltinCommand
             return CommandResult::failure('Unable to summon the entity.');
         }
 
-        return CommandResult::success(sprintf(
+        return CommandResult::administrativeSuccess(sprintf(
             'Summoned %s at %.2f, %.2f, %.2f.',
             $identifier,
             $position->x,

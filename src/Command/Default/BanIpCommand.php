@@ -63,6 +63,6 @@ final readonly class BanIpCommand implements BuiltinCommand
             throw new \UnexpectedValueException('Address kick callback must return an integer.');
         }
 
-        return CommandResult::success("Banned {$address}; disconnected {$kicked} matching player(s).");
+        return CommandResult::administrativeSuccess("Banned {$address}; disconnected {$kicked} matching player(s).");
     }
 }

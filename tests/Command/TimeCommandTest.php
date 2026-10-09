@@ -43,7 +43,7 @@ final class TimeCommandTest extends TestCase
         ));
         self::assertTrue($named->isSuccess());
         self::assertSame(13_000, $time);
-        self::assertSame('Set the world time to 13000 (night).', $named->message());
+        self::assertSame('Set the world time to Night (13000).', $named->message());
 
         $numeric = $command->execute(new CommandContext(
             $sender,

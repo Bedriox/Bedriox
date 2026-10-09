@@ -83,7 +83,7 @@ final readonly class TeleportCommand implements BuiltinCommand
                 return CommandResult::failure('Unable to teleport the player.');
             }
 
-            return CommandResult::success("Teleported {$subject->name} to {$destinationPlayer->name}.");
+            return CommandResult::administrativeSuccess("Teleported {$subject->name} to {$destinationPlayer->name}.");
         }
 
         $position = $values->position('destination');
@@ -96,7 +96,7 @@ final readonly class TeleportCommand implements BuiltinCommand
             return CommandResult::failure('Unable to teleport the player.');
         }
 
-        return CommandResult::success(sprintf(
+        return CommandResult::administrativeSuccess(sprintf(
             'Teleported %s to %.2f, %.2f, %.2f.',
             $subject->name,
             $position->x,

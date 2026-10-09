@@ -68,7 +68,7 @@ final readonly class PermissionCommand implements BuiltinCommand
         $player = $values->player('player');
         if ($values->has('list')) {
             $grants = $this->permissions->grants($player->uuid);
-            return CommandResult::success("Permissions for {$player->name}: " . ($grants === [] ? 'none' : implode(', ', $grants)));
+            return CommandResult::information("Permissions for {$player->name}: " . ($grants === [] ? 'none' : implode(', ', $grants)));
         }
         $changed = $values->has('grant')
             ? $this->permissions->grant($player->uuid, $player->name, $values->string('node'))
@@ -76,6 +76,10 @@ final readonly class PermissionCommand implements BuiltinCommand
         if ($changed && $this->authorityChanged !== null) {
             ($this->authorityChanged)($player, false);
         }
-        return CommandResult::success($changed ? 'Permission assignment updated.' : 'Permission assignment was already unchanged.');
+        if (!$changed) {
+            return CommandResult::warning('The permission assignment is already unchanged.');
+        }
+
+        return CommandResult::administrativeSuccess('Updated the permission assignment for ' . $player->name . '.');
     }
 }

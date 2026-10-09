@@ -43,6 +43,7 @@ final readonly class SetBlockCommand implements BuiltinCommand
         $id = str_contains($id, ':') ? $id : 'minecraft:' . $id;
         $world = $context->sender() instanceof \Bedriox\Api\Command\PlayerCommandSender ? $context->sender()->player()->position->world : null;
         return preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $id) === 1 && ($this->setBlock)($context->values()->blockPosition('position'), $id, $world)
-            ? CommandResult::success('Block changed to ' . $id . '.') : CommandResult::failure('Unable to set that block.');
+            ? CommandResult::administrativeSuccess('Changed the block to ' . CommandDisplayName::identifier($id) . '.')
+            : CommandResult::failure('Unable to set that block.');
     }
 }

@@ -75,7 +75,9 @@ final readonly class GiveCommand implements BuiltinCommand
         if ($this->giveItem === null || !($this->giveItem)($player, $identifier, $amount)) {
             return CommandResult::failure('Unable to give the item.');
         }
-        return CommandResult::success("Gave {$amount} {$identifier} to {$player->name}.");
+        return CommandResult::administrativeSuccess(
+            'Gave ' . $amount . ' ' . CommandDisplayName::identifier($identifier) . " to {$player->name}.",
+        );
     }
 
     private static function canonicalIdentifier(string $value): ?string

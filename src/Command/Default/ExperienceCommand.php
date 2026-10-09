@@ -67,7 +67,7 @@ final readonly class ExperienceCommand implements BuiltinCommand
         $experience = $player->getExperience();
         $current = $experience->getSnapshot();
         if ($values->has('query')) {
-            return CommandResult::success(sprintf(
+            return CommandResult::information(sprintf(
                 '%s has %d experience points (level %d, %.1f%% progress).',
                 $player->name,
                 $current->totalPoints,
@@ -96,6 +96,6 @@ final readonly class ExperienceCommand implements BuiltinCommand
             return CommandResult::failure('The player is no longer available.');
         }
 
-        return CommandResult::success("Set {$player->name}'s experience to {$points} points.");
+        return CommandResult::administrativeSuccess("Set {$player->name}'s experience to {$points} points.");
     }
 }

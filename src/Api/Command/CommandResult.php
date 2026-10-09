@@ -25,8 +25,9 @@ use InvalidArgumentException;
 final readonly class CommandResult
 {
     private function __construct(
-        private bool $successful,
+        private CommandResultType $type,
         private ?string $message,
+        private bool $administrative,
     ) {
         if ($message !== null && ($message === '' || strlen($message) > 1_024 || preg_match('//u', $message) !== 1 || str_contains($message, "\0"))) {
             throw new InvalidArgumentException('A command result message must be valid, bounded text.');
@@ -35,21 +36,46 @@ final readonly class CommandResult
 
     public static function success(?string $message = null): self
     {
-        return new self(true, $message);
+        return new self(CommandResultType::SUCCESS, $message, false);
+    }
+
+    public static function information(?string $message = null): self
+    {
+        return new self(CommandResultType::INFORMATION, $message, false);
+    }
+
+    public static function warning(string $message): self
+    {
+        return new self(CommandResultType::WARNING, $message, false);
+    }
+
+    public static function administrativeSuccess(string $message): self
+    {
+        return new self(CommandResultType::SUCCESS, $message, true);
     }
 
     public static function failure(string $message): self
     {
-        return new self(false, $message);
+        return new self(CommandResultType::FAILURE, $message, false);
     }
 
     public function isSuccess(): bool
     {
-        return $this->successful;
+        return $this->type !== CommandResultType::FAILURE;
+    }
+
+    public function type(): CommandResultType
+    {
+        return $this->type;
     }
 
     public function message(): ?string
     {
         return $this->message;
+    }
+
+    public function isAdministrative(): bool
+    {
+        return $this->administrative;
     }
 }

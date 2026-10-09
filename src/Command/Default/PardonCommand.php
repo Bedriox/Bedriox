@@ -42,7 +42,7 @@ final readonly class PardonCommand implements BuiltinCommand
     {
         $name = $context->values()->string('player');
         return $this->bans->pardonPlayer($name)
-            ? CommandResult::success("Pardoned {$name}.")
+            ? CommandResult::administrativeSuccess("Pardoned {$name}.")
             : CommandResult::failure('That player is not banned or the change was cancelled.');
     }
 }

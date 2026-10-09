@@ -89,6 +89,38 @@ final class CommandRegistryTest extends TestCase
         self::assertSame(['tools:build', 'Another', 2], $seen[1]);
     }
 
+    public function testResultTypesControlPlayerFormattingAndAdministrativeDelivery(): void
+    {
+        $administrative = [];
+        [$registry] = $this->registry(
+            administrativeFeedback: static function (CommandSender $sender, string $message) use (&$administrative): void {
+                $administrative[] = [$sender->name(), $message];
+            },
+        );
+        $registry->register('Tools', new TestCommand(
+            new CommandDefinition('feedback', 'Exercises command feedback.'),
+            CommandArguments::create()->addArgument(CommandParameter::choice('type', ['success', 'info', 'warning'])),
+            static fn(CommandContext $context): CommandResult => match ($context->values()->choice('type')) {
+                'success' => CommandResult::administrativeSuccess('Setting changed.'),
+                'info' => CommandResult::information('Current setting.'),
+                'warning' => CommandResult::warning('Setting was already unchanged.'),
+                default => throw new \LogicException('Unexpected feedback type.'),
+            },
+        ));
+        $sender = new RecordingCommandSender(CommandSenderType::PLAYER);
+
+        $registry->dispatch($sender, 'feedback success');
+        $registry->dispatch($sender, 'feedback info');
+        $registry->dispatch($sender, 'feedback warning');
+
+        self::assertSame([
+            TextFormat::GREEN . 'Setting changed.' . TextFormat::RESET,
+            TextFormat::GRAY . 'Current setting.' . TextFormat::RESET,
+            TextFormat::YELLOW . 'Setting was already unchanged.' . TextFormat::RESET,
+        ], $sender->messages);
+        self::assertSame([['test', 'Setting changed.']], $administrative);
+    }
+
     public function testBindingFailureSendsGeneratedUsageAndSkipsPluginCode(): void
     {
         [$registry] = $this->registry();
@@ -474,6 +506,7 @@ final class CommandRegistryTest extends TestCase
         int $maximumListenersPerDispatch = 1024,
         ?Closure $onlinePlayers = null,
         ?Closure $failureReporter = null,
+        ?Closure $administrativeFeedback = null,
     ): array {
         $plugins = new RecordingPluginControl();
         $ownership = new PluginOwnershipRegistry();
@@ -498,6 +531,7 @@ final class CommandRegistryTest extends TestCase
                 maximumCommandsPerPlugin: $maximumCommands,
                 onlinePlayers: $onlinePlayers,
                 failureReporter: $failureReporter,
+                administrativeFeedback: $administrativeFeedback,
             ),
             $events,
             $plugins,

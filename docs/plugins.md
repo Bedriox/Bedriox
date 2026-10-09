@@ -315,7 +315,7 @@ public function onEnable(): void
 }
 ```
 
-The example generates `/playerinfo show <player> [detail:summary|full]` and `/playerinfo self [detail:summary|full]`. Invalid input is rejected before `execute()`, and Bedriox sends the binding error followed by every generated usage form. A message carried by `CommandResult::success()` or `CommandResult::failure()` is sent to the command sender.
+The example generates `/playerinfo show <player> [detail:summary|full]` and `/playerinfo self [detail:summary|full]`. Invalid input is rejected before `execute()`, and Bedriox sends the binding error followed by every generated usage form. A message carried by `CommandResult::success()`, `information()`, `warning()`, or `failure()` is sent to the command sender with consistent success, informational, warning, or error formatting. `CommandResult::administrativeSuccess()` additionally publishes a muted audit message to the console and online players with `bedriox.command.broadcast.admin`; use it only for operator-visible state changes, never for private or sensitive command output.
 
 For a command with one form, use `CommandArguments::create()->addArgument(...)` directly. Available parameter factories are `string`, `integer`, `float`, `boolean`, `onlinePlayer`, `players`, `entity`, `entities`, `choice`, backed `enum`, registered `softEnum`, `position`, `blockPosition`, `message`, `json`, `rawText`, and `literal`. Numeric parameters support `minimum()` and `maximum()`; non-literal parameters support `optional()` with an optional typed default. Required parameters cannot follow optional parameters, and greedy `message`, `json`, or `rawText` parameters must be last.
 

@@ -85,14 +85,14 @@ final readonly class TimeCommand implements BuiltinCommand
 
             return $time === null
                 ? CommandResult::failure('World time is unavailable.')
-                : CommandResult::success("Set the world time to {$time} ({$preset->value}).");
+                : CommandResult::administrativeSuccess('Set the world time to ' . ucfirst($preset->value) . " ({$time}).");
         }
         if ($values->has('ticks')) {
             $time = ($this->setTime)($values->integer('ticks'));
 
             return $time === null
                 ? CommandResult::failure('World time is unavailable.')
-                : CommandResult::success("Set the world time to {$time}.");
+                : CommandResult::administrativeSuccess("Set the world time to {$time}.");
         }
         if ($values->has('amount')) {
             $amount = $values->integer('amount');
@@ -100,21 +100,21 @@ final readonly class TimeCommand implements BuiltinCommand
 
             return $time === null
                 ? CommandResult::failure('World time is unavailable.')
-                : CommandResult::success("Added {$amount} ticks. The world time is now {$time}.");
+                : CommandResult::administrativeSuccess("Added {$amount} ticks. The world time is now {$time}.");
         }
         if ($values->has('start')) {
             $time = ($this->setRunning)(true);
 
             return $time === null
                 ? CommandResult::failure('World time is unavailable.')
-                : CommandResult::success("The daylight cycle is running from time {$time}.");
+                : CommandResult::administrativeSuccess("Started the daylight cycle at time {$time}.");
         }
         if ($values->has('stop')) {
             $time = ($this->setRunning)(false);
 
             return $time === null
                 ? CommandResult::failure('World time is unavailable.')
-                : CommandResult::success("The daylight cycle is stopped at time {$time}.");
+                : CommandResult::administrativeSuccess("Stopped the daylight cycle at time {$time}.");
         }
 
         $time = ($this->currentTime)();
@@ -122,7 +122,7 @@ final readonly class TimeCommand implements BuiltinCommand
             return CommandResult::failure('World time is unavailable.');
         }
 
-        return CommandResult::success(sprintf(
+        return CommandResult::information(sprintf(
             'World time is %d (day %d, daytime %d).',
             $time,
             WorldTimeRules::day($time),

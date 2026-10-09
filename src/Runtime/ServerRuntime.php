@@ -2942,9 +2942,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                         continue;
                     }
                     if ($messageCount === 0 && $result->message() !== null) {
-                        $sender->sendMessage($result->isSuccess()
-                            ? CommandFeedback::normal($sender, $result->message())
-                            : CommandFeedback::error($sender, $result->message()));
+                        $sender->sendMessage(CommandFeedback::result($sender, $result->type(), $result->message()));
                     }
                 } else {
                     if (!$session->play->queuePacket(new SystemTextPacket(

@@ -60,7 +60,7 @@ final readonly class ClearCommand implements BuiltinCommand
             $removed = count(array_filter($inventory->getContents()));
             $inventory->clearAll();
 
-            return CommandResult::success("Cleared {$removed} occupied inventory slots for {$player->name}.");
+            return CommandResult::administrativeSuccess("Cleared {$removed} occupied inventory slots from {$player->name}'s inventory.");
         }
         $identifier = strtolower($context->values()->string('item'));
         $identifier = str_contains($identifier, ':') ? $identifier : 'minecraft:' . $identifier;
@@ -90,7 +90,7 @@ final readonly class ClearCommand implements BuiltinCommand
         }
 
         return $removed > 0
-            ? CommandResult::success("Removed {$removed} {$identifier} from {$player->name}.")
+            ? CommandResult::administrativeSuccess('Removed ' . $removed . ' ' . CommandDisplayName::identifier($identifier) . " from {$player->name}'s inventory.")
             : CommandResult::failure("{$player->name} does not have that item.");
     }
 }

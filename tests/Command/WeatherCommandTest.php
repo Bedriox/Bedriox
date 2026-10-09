@@ -61,7 +61,7 @@ final class WeatherCommandTest extends TestCase
         ));
 
         self::assertTrue($result->isSuccess());
-        self::assertSame('Set the weather to rain.', $result->message());
+        self::assertSame('Set the weather to Rain.', $result->message());
         self::assertSame([null], $requestedWorlds);
         self::assertSame([WeatherType::RAIN], $requestedTypes);
         self::assertSame([null], $requestedDurations);
@@ -95,7 +95,7 @@ final class WeatherCommandTest extends TestCase
         ));
 
         self::assertTrue($result->isSuccess());
-        self::assertSame('Set the weather to thunder for 120 seconds.', $result->message());
+        self::assertSame('Set the weather to Thunder for 120 seconds.', $result->message());
         self::assertSame([$world], $requestedWorlds);
         self::assertSame([WeatherType::THUNDER], $requestedTypes);
         self::assertSame([120], $requestedDurations);
@@ -132,7 +132,7 @@ final class WeatherCommandTest extends TestCase
         ));
 
         self::assertTrue($result->isSuccess());
-        self::assertSame('The weather is clear with 60 seconds remaining.', $result->message());
+        self::assertSame('The weather is Clear with 60 seconds remaining.', $result->message());
         self::assertSame([$world], $queriedWorlds);
     }
 

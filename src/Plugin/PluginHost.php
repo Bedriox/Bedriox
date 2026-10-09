@@ -70,6 +70,7 @@ final class PluginHost
         ?Closure $onlinePlayers = null,
         ?Closure $commandEntities = null,
         ?Closure $commandSelectorOrigin = null,
+        ?Closure $administrativeCommandFeedback = null,
     ) {
         $this->ownership = new PluginOwnershipRegistry();
         $onlinePlayers ??= static fn(): array => [];
@@ -110,6 +111,7 @@ final class PluginHost
                     $failure::class,
                 ), 'Command');
             },
+            administrativeFeedback: $administrativeCommandFeedback,
         );
         $this->scheduler = new MainThreadPluginScheduler(
             $this->manager,

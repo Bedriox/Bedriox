@@ -53,7 +53,7 @@ final readonly class KickCommand implements BuiltinCommand
             cause: PlayerKickCause::OPERATOR,
             actor: $context->sender()->name(),
         )
-            ? CommandResult::success('Kicked ' . $player->name . '.')
+            ? CommandResult::administrativeSuccess('Kicked ' . $player->name . ': ' . $reason)
             : CommandResult::failure('Unable to kick that player.');
     }
 }

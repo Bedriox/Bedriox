@@ -1,5 +1,6 @@
 # Changelog
 
+- Distinguish successful, informational, warning, and failed command feedback; notify affected players of game-mode and operator changes; and publish successful administrative actions to the console and authorized operators.
 - Reuse admitted immutable registries during startup, trust persisted world spawn metadata, and defer full spawn-chunk generation to the bounded worker pipeline.
 - Add startup-stage timing diagnostics that separate catalog preparation, world storage opening, runtime composition, and time to network readiness.
 - Replace same-dimension world views progressively from the destination center before teleporting, and tear down source actors per viewer without removing them from the source world.

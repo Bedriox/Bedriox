@@ -45,7 +45,7 @@ final readonly class PardonIpCommand implements BuiltinCommand
             return CommandResult::failure('A valid IPv4 address is required.');
         }
         return $this->bans->pardonAddress($address)
-            ? CommandResult::success("Pardoned {$address}.")
+            ? CommandResult::administrativeSuccess("Pardoned {$address}.")
             : CommandResult::failure('That address is not banned or the change was cancelled.');
     }
 }

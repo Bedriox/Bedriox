@@ -24,6 +24,7 @@ use Bedriox\Api\Command\AbstractCommand;
 use Bedriox\Api\Command\AllowedCommandSenders;
 use Bedriox\Api\Command\CommandContext;
 use Bedriox\Api\Command\CommandResult;
+use Bedriox\Api\Command\CommandResultType;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 
@@ -45,11 +46,19 @@ final class AbstractCommandTest extends TestCase
     public function testResultFactoriesCarryStatusAndOptionalOutput(): void
     {
         $success = CommandResult::success('Done');
+        $information = CommandResult::information('Details');
+        $warning = CommandResult::warning('Nothing changed');
+        $administrative = CommandResult::administrativeSuccess('Changed setting');
         $failure = CommandResult::failure('Unable to complete the command.');
 
         self::assertTrue($success->isSuccess());
         self::assertSame('Done', $success->message());
+        self::assertSame(CommandResultType::SUCCESS, $success->type());
+        self::assertSame(CommandResultType::INFORMATION, $information->type());
+        self::assertSame(CommandResultType::WARNING, $warning->type());
+        self::assertTrue($administrative->isAdministrative());
         self::assertFalse($failure->isSuccess());
+        self::assertSame(CommandResultType::FAILURE, $failure->type());
         self::assertSame('Unable to complete the command.', $failure->message());
     }
 

@@ -38,6 +38,6 @@ final readonly class SaveCommand implements BuiltinCommand
     public function execute(CommandContext $context): CommandResult
     {
         $count = ($this->save)();
-        return CommandResult::success("Saved {$count} loaded worlds.");
+        return CommandResult::administrativeSuccess("Saved {$count} loaded worlds.");
     }
 }

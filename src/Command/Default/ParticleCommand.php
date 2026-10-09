@@ -77,7 +77,7 @@ final readonly class ParticleCommand implements BuiltinCommand
             return CommandResult::failure('The player world is no longer available.');
         }
 
-        return CommandResult::success(sprintf(
+        return CommandResult::administrativeSuccess(sprintf(
             'Spawned %s at %.2f, %.2f, %.2f.',
             $type->value,
             $position->x,

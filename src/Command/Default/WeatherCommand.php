@@ -77,9 +77,9 @@ final readonly class WeatherCommand implements BuiltinCommand
                 return CommandResult::failure('World weather is unavailable.');
             }
 
-            return CommandResult::success($durationSeconds === null
-                ? "Set the weather to {$weather->type->value}."
-                : "Set the weather to {$weather->type->value} for {$durationSeconds} seconds.");
+            return CommandResult::administrativeSuccess($durationSeconds === null
+                ? 'Set the weather to ' . ucfirst($weather->type->value) . '.'
+                : 'Set the weather to ' . ucfirst($weather->type->value) . " for {$durationSeconds} seconds.");
         }
 
         $weather = ($this->currentWeather)($world);
@@ -87,9 +87,9 @@ final readonly class WeatherCommand implements BuiltinCommand
             return CommandResult::failure('World weather is unavailable.');
         }
 
-        return CommandResult::success(sprintf(
+        return CommandResult::information(sprintf(
             'The weather is %s with %d seconds remaining.',
-            $weather->type->value,
+            ucfirst($weather->type->value),
             intdiv($weather->remainingTicks, WeatherState::TICKS_PER_SECOND),
         ));
     }

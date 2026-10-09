@@ -83,10 +83,10 @@ final readonly class KillCommand implements BuiltinCommand
             return CommandResult::failure('None of the selected entities could be killed.');
         }
         if (count($accepted) <= 5) {
-            return CommandResult::success('Kill requested for ' . implode(', ', $accepted) . '.');
+            return CommandResult::administrativeSuccess('Kill requested for ' . implode(', ', $accepted) . '.');
         }
 
-        return CommandResult::success(sprintf('Kill requested for %d entities.', count($accepted)));
+        return CommandResult::administrativeSuccess(sprintf('Kill requested for %d entities.', count($accepted)));
     }
 
     private static function displayName(Player|Entity $target): string

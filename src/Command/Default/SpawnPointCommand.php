@@ -64,7 +64,13 @@ final readonly class SpawnPointCommand implements BuiltinCommand
             : new Position($target->position->x, $target->position->y, $target->position->z, world: $target->position->world);
 
         return ($this->change)($target, $position)
-            ? CommandResult::success("Set {$target->name}'s spawn point.")
+            ? CommandResult::administrativeSuccess(sprintf(
+                "Set %s's spawn point to %.2f, %.2f, %.2f.",
+                $target->name,
+                $position->x,
+                $position->y,
+                $position->z,
+            ))
             : CommandResult::failure('Unable to change that spawn point.');
     }
 }

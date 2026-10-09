@@ -24,6 +24,8 @@ use Bedriox\Api\Command\CommandArguments;
 use Bedriox\Api\Command\CommandContext;
 use Bedriox\Api\Command\CommandParameter;
 use Bedriox\Api\Command\CommandResult;
+use Bedriox\Api\Command\PlayerCommandSender;
+use Bedriox\Api\TextFormat;
 use Bedriox\Server\Permission\PermissionStore;
 use Closure;
 
@@ -48,8 +50,21 @@ abstract readonly class OperatorCommand implements BuiltinCommand
         if ($changed && $this->authorityChanged !== null) {
             ($this->authorityChanged)($player, true);
         }
-        return CommandResult::success($changed
-            ? ($this->operator ? "{$player->name} is now an operator." : "{$player->name} is no longer an operator.")
-            : ($this->operator ? "{$player->name} is already an operator." : "{$player->name} is not an operator."));
+        if (!$changed) {
+            return CommandResult::warning($this->operator
+                ? "{$player->name} is already an operator."
+                : "{$player->name} is not an operator.");
+        }
+        $self = $context->sender() instanceof PlayerCommandSender
+            && $context->sender()->player()->uuid === $player->uuid;
+        if (!$self) {
+            $player->sendMessage(TextFormat::GRAY . ($this->operator
+                ? 'You are now a server operator.'
+                : 'You are no longer a server operator.') . TextFormat::RESET);
+        }
+
+        return CommandResult::administrativeSuccess($this->operator
+            ? "Made {$player->name} a server operator."
+            : "Removed server operator status from {$player->name}.");
     }
 }

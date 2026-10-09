@@ -46,7 +46,7 @@ final readonly class SaveToggleCommand implements BuiltinCommand
     public function execute(CommandContext $context): CommandResult
     {
         return ($this->change)($this->enabled)
-            ? CommandResult::success('Automatic saving is now ' . ($this->enabled ? 'enabled.' : 'disabled.'))
-            : CommandResult::success('Automatic saving was already ' . ($this->enabled ? 'enabled.' : 'disabled.'));
+            ? CommandResult::administrativeSuccess('Automatic saving is now ' . ($this->enabled ? 'enabled.' : 'disabled.'))
+            : CommandResult::warning('Automatic saving is already ' . ($this->enabled ? 'enabled.' : 'disabled.'));
     }
 }

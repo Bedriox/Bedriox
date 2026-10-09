@@ -66,7 +66,7 @@ final readonly class SetWorldSpawnCommand implements BuiltinCommand
         }
 
         return ($this->change)($world, $position)
-            ? CommandResult::success("Set the world spawn to {$position->x}, {$position->y}, {$position->z}.")
+            ? CommandResult::administrativeSuccess("Set the world spawn to {$position->x}, {$position->y}, {$position->z}.")
             : CommandResult::failure('Unable to change the world spawn.');
     }
 }

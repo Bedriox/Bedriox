@@ -70,6 +70,6 @@ final readonly class BanCommand implements BuiltinCommand
             actor: $context->sender()->name(),
         );
 
-        return CommandResult::success('Banned ' . $resolvedName . '.');
+        return CommandResult::administrativeSuccess('Banned ' . $resolvedName . ': ' . $reason);
     }
 }

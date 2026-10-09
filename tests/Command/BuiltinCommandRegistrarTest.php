@@ -271,21 +271,21 @@ final class BuiltinCommandRegistrarTest extends TestCase
         self::assertSame('There are 2 players online.', $sender->messages[0]);
         self::assertSame('Players: Amy, zed', $sender->messages[1]);
         self::assertTrue(($registry->dispatch($sender, 'op aMY'))->isSuccess());
-        self::assertSame('Amy is now an operator.', array_pop($sender->messages));
+        self::assertSame('Made Amy a server operator.', array_pop($sender->messages));
         self::assertTrue($permissions->isOperator($amy->uuid));
         self::assertTrue(($registry->dispatch($sender, 'op Amy'))->isSuccess());
         self::assertSame('Amy is already an operator.', array_pop($sender->messages));
         self::assertTrue(($registry->dispatch($sender, 'deop AMY'))->isSuccess());
-        self::assertSame('Amy is no longer an operator.', array_pop($sender->messages));
+        self::assertSame('Removed server operator status from Amy.', array_pop($sender->messages));
         self::assertFalse($permissions->isOperator($amy->uuid));
 
         self::assertTrue(($registry->dispatch($sender, 'perm grant amy example.use'))->isSuccess());
-        self::assertSame('Permission assignment updated.', array_pop($sender->messages));
+        self::assertSame('Updated the permission assignment for Amy.', array_pop($sender->messages));
         self::assertTrue($permissions->hasPermission($amy->uuid, 'example.use'));
         self::assertTrue(($registry->dispatch($sender, 'permission list Amy'))->isSuccess());
         self::assertSame('Permissions for Amy: example.use', array_pop($sender->messages));
         self::assertTrue(($registry->dispatch($sender, 'permission revoke Amy example.use'))->isSuccess());
-        self::assertSame('Permission assignment updated.', array_pop($sender->messages));
+        self::assertSame('Updated the permission assignment for Amy.', array_pop($sender->messages));
         self::assertFalse($permissions->hasPermission($amy->uuid, 'example.use'));
 
         self::assertFalse(($registry->dispatch($sender, 'op Missing'))->isSuccess());

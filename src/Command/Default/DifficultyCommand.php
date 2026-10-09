@@ -58,18 +58,18 @@ final readonly class DifficultyCommand implements BuiltinCommand
 
             return $current === null
                 ? CommandResult::failure('The world difficulty is unavailable.')
-                : CommandResult::success("The difficulty is {$current->value}.");
+                : CommandResult::information('The difficulty is ' . ucfirst($current->value) . '.');
         }
         $difficulty = self::parse($context->values()->string('difficulty'));
         if ($difficulty === null) {
             return CommandResult::failure('Unknown difficulty.');
         }
         if (($this->current)($world) === $difficulty) {
-            return CommandResult::success("The difficulty is already {$difficulty->value}.");
+            return CommandResult::warning('The difficulty is already ' . ucfirst($difficulty->value) . '.');
         }
 
         return ($this->change)($world, $difficulty)
-            ? CommandResult::success("Set the difficulty to {$difficulty->value}.")
+            ? CommandResult::administrativeSuccess('Set the difficulty to ' . ucfirst($difficulty->value) . '.')
             : CommandResult::failure('Unable to change the difficulty.');
     }
 

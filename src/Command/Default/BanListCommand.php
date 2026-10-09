@@ -51,7 +51,7 @@ final readonly class BanListCommand implements BuiltinCommand
         $entries = $ips ? $this->bans->addressBans() : $this->bans->playerBans();
         $names = array_map(static fn(BanEntry $entry): string => $entry->target, $entries);
 
-        return CommandResult::success($names === []
+        return CommandResult::information($names === []
             ? 'There are no banned ' . ($ips ? 'IP addresses.' : 'players.')
             : 'Banned ' . ($ips ? 'IP addresses' : 'players') . ' (' . count($names) . '): ' . implode(', ', $names));
     }

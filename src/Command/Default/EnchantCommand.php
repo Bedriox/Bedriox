@@ -43,7 +43,9 @@ final readonly class EnchantCommand implements BuiltinCommand
         $id = str_contains($id, ':') ? $id : 'minecraft:' . $id;
         $level = $context->values()->integer('level');
         return ($this->enchant)($player, $id, $level)
-            ? CommandResult::success("Enchanted {$player->name}'s selected item with {$id} {$level}.")
+            ? CommandResult::administrativeSuccess(
+                "Enchanted {$player->name}'s selected item with " . CommandDisplayName::identifier($id) . " {$level}.",
+            )
             : CommandResult::failure('The enchantment is unknown, incompatible, conflicting, or above its maximum level.');
     }
 }

@@ -88,11 +88,13 @@ final readonly class EffectCommand implements BuiltinCommand
                     $effect = self::effect($values->choice('clearEffect'));
                     $player->getEffects()->remove($effect, EffectCause::COMMAND);
 
-                    return CommandResult::success("Removed {$effect->value} from {$player->name}.");
+                    return CommandResult::administrativeSuccess(
+                        'Removed ' . CommandDisplayName::identifier($effect->value) . " from {$player->name}.",
+                    );
                 }
                 $player->getEffects()->clear(EffectCause::COMMAND);
 
-                return CommandResult::success("Cleared all effects from {$player->name}.");
+                return CommandResult::administrativeSuccess("Cleared all effects from {$player->name}.");
             }
 
             $effect = self::effect($values->choice('effect'));
@@ -108,14 +110,14 @@ final readonly class EffectCommand implements BuiltinCommand
                 infinite: $infinite,
             ), EffectCause::COMMAND);
 
-            return CommandResult::success($infinite ? sprintf(
+            return CommandResult::administrativeSuccess($infinite ? sprintf(
                 'Applied %s %d to %s indefinitely.',
-                $effect->value,
+                CommandDisplayName::identifier($effect->value),
                 $amplifier + 1,
                 $player->name,
             ) : sprintf(
                 'Applied %s %d to %s for %d seconds.',
-                $effect->value,
+                CommandDisplayName::identifier($effect->value),
                 $amplifier + 1,
                 $player->name,
                 $seconds,

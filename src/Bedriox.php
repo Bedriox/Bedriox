@@ -340,6 +340,30 @@ final class Bedriox
 
                     return new \Bedriox\Api\World\Position($spawn->x + 0.5, $spawn->y, $spawn->z + 0.5);
                 },
+                administrativeCommandFeedback: static function (
+                    \Bedriox\Api\Command\CommandSender $source,
+                    string $message,
+                ) use ($composition, $permissionStore, $logger): void {
+                    $formatted = '[' . $source->name() . ': ' . $message . ']';
+                    if ($source->type() !== \Bedriox\Api\Command\CommandSenderType::CONSOLE) {
+                        $logger->info($formatted, 'Command');
+                    }
+                    $sourceUuid = $source instanceof \Bedriox\Api\Command\PlayerCommandSender
+                        ? $source->player()->uuid
+                        : null;
+                    foreach ($composition->server?->runtime->onlinePlayers() ?? [] as $player) {
+                        if ($player->uuid === $sourceUuid
+                            || !$permissionStore->hasPermission($player->uuid, 'bedriox.command.broadcast.admin')) {
+                            continue;
+                        }
+                        $player->sendMessage(
+                            \Bedriox\Api\TextFormat::GRAY
+                            . \Bedriox\Api\TextFormat::ITALIC
+                            . $formatted
+                            . \Bedriox\Api\TextFormat::RESET,
+                        );
+                    }
+                },
             );
             $composition->host = $pluginHost;
             $definitionBridge = new PluginEntityDefinitionBridge($entityDefinitions, $pluginHost->entities());

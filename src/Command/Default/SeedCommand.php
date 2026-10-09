@@ -40,6 +40,6 @@ final readonly class SeedCommand implements BuiltinCommand
     {
         $world = $context->sender() instanceof \Bedriox\Api\Command\PlayerCommandSender ? $context->sender()->player()->position->world : null;
         $seed = ($this->seed)($world);
-        return $seed === null ? CommandResult::failure('World seed is unavailable.') : CommandResult::success('Seed: ' . $seed);
+        return $seed === null ? CommandResult::failure('World seed is unavailable.') : CommandResult::information('Seed: ' . $seed);
     }
 }

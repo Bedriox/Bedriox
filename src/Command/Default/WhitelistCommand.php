@@ -57,7 +57,7 @@ final readonly class WhitelistCommand implements BuiltinCommand
     {
         $values = $context->values();
         if ($values->all() === []) {
-            return CommandResult::success('Whitelist is ' . ($this->whitelist->isEnabled() ? 'enabled.' : 'disabled.'));
+            return CommandResult::information('Whitelist is ' . ($this->whitelist->isEnabled() ? 'enabled.' : 'disabled.'));
         }
         foreach (['status', 'on', 'off', 'list', 'add', 'remove', 'reload'] as $action) {
             if (!$values->has($action)) {
@@ -67,14 +67,12 @@ final readonly class WhitelistCommand implements BuiltinCommand
                 return CommandResult::failure('You do not have permission to use this whitelist action.');
             }
             return match ($action) {
-                'status' => CommandResult::success('Whitelist is ' . ($this->whitelist->isEnabled() ? 'enabled.' : 'disabled.')),
+                'status' => CommandResult::information('Whitelist is ' . ($this->whitelist->isEnabled() ? 'enabled.' : 'disabled.')),
                 'on' => $this->toggle(true),
                 'off' => $this->toggle(false),
                 'list' => $this->list(),
-                'add' => CommandResult::success($this->whitelist->add($values->string('player'))
-                    ? 'Player added to the whitelist.' : 'Player is already whitelisted.'),
-                'remove' => CommandResult::success($this->whitelist->remove($values->string('player'))
-                    ? 'Player removed from the whitelist.' : 'Player was not whitelisted.'),
+                'add' => $this->add($values->string('player')),
+                'remove' => $this->remove($values->string('player')),
                 'reload' => $this->reload(),
             };
         }
@@ -87,13 +85,17 @@ final readonly class WhitelistCommand implements BuiltinCommand
         if ($enabled && $this->enforce !== null) {
             ($this->enforce)();
         }
-        return CommandResult::success($changed ? 'Whitelist setting updated.' : 'Whitelist setting was already unchanged.');
+        if (!$changed) {
+            return CommandResult::warning('The whitelist is already ' . ($enabled ? 'enabled.' : 'disabled.'));
+        }
+
+        return CommandResult::administrativeSuccess($enabled ? 'Enabled the whitelist.' : 'Disabled the whitelist.');
     }
 
     private function list(): CommandResult
     {
         $names = array_map(static fn($entry): string => $entry->lastKnownName, $this->whitelist->entries());
-        return CommandResult::success($names === [] ? 'The whitelist is empty.' : 'Whitelisted players: ' . implode(', ', $names));
+        return CommandResult::information($names === [] ? 'The whitelist is empty.' : 'Whitelisted players: ' . implode(', ', $names));
     }
 
     private function reload(): CommandResult
@@ -102,6 +104,20 @@ final readonly class WhitelistCommand implements BuiltinCommand
         if ($this->whitelist->isEnabled() && $this->enforce !== null) {
             ($this->enforce)();
         }
-        return CommandResult::success('Whitelist reloaded.');
+        return CommandResult::administrativeSuccess('Reloaded the whitelist.');
+    }
+
+    private function add(string $name): CommandResult
+    {
+        return $this->whitelist->add($name)
+            ? CommandResult::administrativeSuccess("Added {$name} to the whitelist.")
+            : CommandResult::warning("{$name} is already whitelisted.");
+    }
+
+    private function remove(string $name): CommandResult
+    {
+        return $this->whitelist->remove($name)
+            ? CommandResult::administrativeSuccess("Removed {$name} from the whitelist.")
+            : CommandResult::warning("{$name} is not whitelisted.");
     }
 }

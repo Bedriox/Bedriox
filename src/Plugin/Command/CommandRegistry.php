@@ -71,6 +71,8 @@ final class CommandRegistry
     private readonly CommandArgumentBinder $binder;
     /** @var null|Closure(Throwable, string, ?string, ?string): void */
     private readonly ?Closure $failureReporter;
+    /** @var null|Closure(CommandSender, string): void */
+    private readonly ?Closure $administrativeFeedback;
 
     public function __construct(
         private readonly PluginRuntimeControl $plugins,
@@ -89,6 +91,7 @@ final class CommandRegistry
         ?Closure $selectorRandomIndex = null,
         ?Closure $selectorOrigin = null,
         ?Closure $failureReporter = null,
+        ?Closure $administrativeFeedback = null,
     ) {
         if ($maximumCommands < 1 || $maximumCommands > 4096
             || $maximumCommandsPerPlugin < 1 || $maximumCommandsPerPlugin > $maximumCommands
@@ -104,6 +107,7 @@ final class CommandRegistry
             $selectorOrigin,
         );
         $this->failureReporter = $failureReporter;
+        $this->administrativeFeedback = $administrativeFeedback;
     }
 
     public function register(string $plugin, Command $command): CommandSubscription
@@ -392,9 +396,10 @@ final class CommandRegistry
         }
         $operation = 'command result delivery';
         if ($result->message() !== null) {
-            $sender->sendMessage($result->isSuccess()
-                ? CommandFeedback::normal($sender, $result->message())
-                : CommandFeedback::error($sender, $result->message()));
+            $sender->sendMessage(CommandFeedback::result($sender, $result->type(), $result->message()));
+            if ($result->isAdministrative() && $this->administrativeFeedback !== null) {
+                ($this->administrativeFeedback)($sender, $result->message());
+            }
         }
         $operation = 'post-dispatch event';
         $this->events->dispatch(new CommandDispatchedEvent(

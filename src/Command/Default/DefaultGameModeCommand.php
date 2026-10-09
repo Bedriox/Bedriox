@@ -52,11 +52,11 @@ final readonly class DefaultGameModeCommand implements BuiltinCommand
             return CommandResult::failure('Unknown game mode.');
         }
         if (($this->current)() === $mode) {
-            return CommandResult::success("The default game mode is already {$mode->value}.");
+            return CommandResult::warning('The default game mode is already ' . ucfirst($mode->value) . '.');
         }
 
         return ($this->change)($mode)
-            ? CommandResult::success("Set the default game mode to {$mode->value}.")
+            ? CommandResult::administrativeSuccess('Set the default game mode to ' . ucfirst($mode->value) . '.')
             : CommandResult::failure('Unable to change the default game mode.');
     }
 }

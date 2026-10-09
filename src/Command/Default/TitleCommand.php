@@ -61,6 +61,8 @@ final readonly class TitleCommand implements BuiltinCommand
             $values->has('times') => $player->setTitleTimes(new TitleTimes($values->integer('fadeIn'), $values->integer('stay'), $values->integer('fadeOut'))),
             default => false,
         };
-        return $sent ? CommandResult::success('Updated title presentation for ' . $player->name . '.') : CommandResult::failure('Unable to update that player title.');
+        return $sent
+            ? CommandResult::administrativeSuccess('Updated title presentation for ' . $player->name . '.')
+            : CommandResult::failure('Unable to update that player title.');
     }
 }

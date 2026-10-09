@@ -29,7 +29,11 @@ use Bedriox\Api\Command\PlayerCommandSender;
 use Bedriox\Api\Inventory\Inventory;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\Player\Player;
+use Bedriox\Api\Player\PlayerConnection;
+use Bedriox\Api\TextFormat;
 use Bedriox\Api\World\Position;
+use Bedriox\Protocol\Packet\Packet;
+use Bedriox\Protocol\Packet\TextPacket;
 use Bedriox\Server\Command\Default\GamemodeCommand;
 use Bedriox\Server\Command\Default\GiveCommand;
 use Bedriox\Server\Command\Default\TeleportCommand;
@@ -69,7 +73,8 @@ final class BuiltinGameplayCommandTest extends TestCase
         ));
 
         self::assertTrue($result->isSuccess());
-        self::assertSame("Set Target's game mode to {$expected->value}.", $result->message());
+        self::assertSame("Set Target's game mode to " . ucfirst($expected->value) . '.', $result->message());
+        self::assertTrue($result->isAdministrative());
         self::assertSame([[$player->uuid, $expected]], $changes);
         self::assertSame('bedriox.command.gamemode', $command->definition()->permission);
         self::assertSame(
@@ -124,7 +129,45 @@ final class BuiltinGameplayCommandTest extends TestCase
 
         self::assertTrue($result->isSuccess());
         self::assertSame(0, $mutations);
-        self::assertSame('Target is already in creative mode.', $result->message());
+        self::assertSame('Target is already in Creative mode.', $result->message());
+    }
+
+    public function testGamemodeNotifiesAnotherAffectedPlayerWithoutDuplicatingSelfFeedback(): void
+    {
+        $packets = [];
+        $target = new Player(
+            'Target',
+            '00000000-0000-0000-0000-000000000002',
+            new Position(0.0, 64.0, 0.0),
+            0.0,
+            0.0,
+            false,
+            false,
+            new Inventory(array_fill(0, 36, null), 0),
+            playerConnection: new PlayerConnection(
+                static fn(): bool => true,
+                static function (Packet $packet, bool $immediate) use (&$packets): bool {
+                    $packets[] = $packet;
+
+                    return true;
+                },
+            ),
+        );
+        $command = new GamemodeCommand(static fn(Player $player, GameMode $mode): bool => true);
+
+        $result = $command->execute(new CommandContext(
+            new GameplayConsoleSender(),
+            'gamemode',
+            new CommandValues(['mode' => 'creative', 'player' => $target]),
+        ));
+
+        self::assertTrue($result->isSuccess());
+        self::assertCount(1, $packets);
+        self::assertInstanceOf(TextPacket::class, $packets[0]);
+        self::assertSame(
+            TextFormat::GRAY . 'Your game mode has been changed to Creative.' . TextFormat::RESET,
+            $packets[0]->message,
+        );
     }
 
     public function testGiveUsesTypedPlayerAndDefaultOrExplicitAmounts(): void
