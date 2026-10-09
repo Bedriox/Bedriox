@@ -42,6 +42,14 @@ canonical block states, translation availability, authentication dependencies,
 protocol authority, and transport construction. A failure leaves no partially
 running server and never falls back to ambient PHP.
 
+Existing worlds use their persisted generator and spawn metadata without
+regenerating terrain during startup. A new default world calculates only a
+deterministic spawn candidate synchronously. The spawn chunk and surrounding
+terrain then follow the same bounded worker generation, storage lookup, and
+revision-validation path used by player chunk streaming. Protocol-trace startup
+diagnostics report catalog preparation, world storage opening, runtime
+composition, and time to network readiness separately.
+
 After bind, the runtime polls bounded amounts of socket, session, packet, command, chunk-streaming, persistence, and simulation work. Scheduled world autosave is limited by `chunk-saving.per-tick`; `level.autosave-interval-ticks` controls how often that bounded work is scheduled. Released chunk leases enter a grace queue and are examined under count and elapsed-time budgets. Clean chunks unload directly; dirty chunks remain resident until the exact submitted revision is durably acknowledged.
 
 ## Diagnostics
@@ -67,6 +75,8 @@ Routine file output is sent to one bounded background writer. Console output rem
 `spawn-animals=true` and `spawn-monsters=true` are user-facing `server.properties` controls for natural spawning. Spawn eggs, `/summon`, and plugin-created entities remain available when either natural-spawn category is disabled. Peaceful difficulty prevents natural monster spawning regardless of the monster setting. Candidate planning rotates through the configured player population within fixed per-pass candidate, attempt, spawn, and elapsed-time budgets. Candidates sample loaded vertical columns so eligible cave, water, and dimension-specific habitats are considered instead of only the highest surface. Species rules use exact dimension and biome identities; structure-owned populations such as guardians, cave spiders, and wither skeletons remain closed until the candidate can prove ownership by the required structure. Category caps scale with deduplicated eligible player spawn regions instead of applying one fixed whole-world count; the hostile local-density limit remains four per candidate chunk. Naturally owned hostile mobs beyond 32 blocks have a bounded randomized despawn opportunity, while the deterministic hard-distance boundary remains 128 blocks. With no eligible players, spawning stops and distance cleanup defers to normal chunk unloading so persisted actors can become dormant instead of being deleted. Natural-distance ownership is persisted with each actor; explicit command, spawn-egg, and plugin origins are never adopted by that cleanup policy after a chunk reload or restart.
 
 Core workers handle missing-chunk generation, complete revision-specific chunk packet preparation, and sufficiently large non-chunk outbound batch compression. Chunk preparation transfers canonical palettes with pre-packed word arrays, translates each palette once, and performs `LevelChunk` framing and zlib compression without expanding every block and biome cell. Compatible sessions share one bounded in-flight request and compressed clear-envelope cache; only revision validation, session encryption, ordering, and transport remain on the server process. Plugin asynchronous tasks use a separate worker pool so plugin work cannot consume core capacity.
+
+Same-dimension world transfers first narrow the client's published terrain area, deliver the destination center chunk, and only then publish the teleport. The published radius expands as complete destination rings arrive, so cached terrain from another world is never treated as the active view and no player movement is required to finish streaming. Source-world players, mobs, items, projectiles, experience orbs, and effect clouds are removed only from the transferring client; their authoritative source-world ownership and visibility to players who remain there are preserved.
 
 Fan-out reuses immutable packet and frame objects for identical chat, combat, posture, and non-player movement projections. Compatible sessions can therefore share one bounded clear compressed envelope instead of repeating packet encoding and zlib work for every recipient. Session encryption counters, delivery ordering, congestion state, and RakNet ownership remain private to each connection and never cross the reuse boundary.
 

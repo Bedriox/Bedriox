@@ -878,9 +878,49 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         if ($player === null || ($source !== $target && !$target->simulation->canAcceptTransferredPlayer($player))) {
             return false;
         }
+        $directedCount = 0;
+        $this->processingWorldId = self::runtimePollKey($transfer->sourceWorldId, $transfer->sourceDimension);
+        if (!$this->teardownTransientActorViewsForTransfer($session->id, $directedCount)) {
+            $this->processingWorldId = null;
+
+            return false;
+        }
         $departure = $source->simulation->detachPlayerForTransfer($session->id);
         if ($departure === null) {
+            $this->processingWorldId = null;
+
             return false;
+        }
+        if ($departure->previousPeers !== [] && !$session->play?->queuePacket(new PlayerListRemovePacket(array_map(
+            static fn(\Bedriox\Server\Simulation\PlayerSnapshot $peer): string => $peer->identity,
+            $departure->previousPeers,
+        )))) {
+            $source->simulation->attachTransferredPlayer(
+                $departure->player,
+                $transfer->sourceWorldId,
+                $transfer->from,
+                $transfer->fromYaw,
+                $transfer->fromPitch,
+            );
+            $this->processingWorldId = null;
+
+            return false;
+        }
+        foreach ($departure->events as $event) {
+            if ($event instanceof PlayerDisconnected) {
+                foreach ($this->actorVisibility->remove($event->sessionId) as $visibilityEvent) {
+                    if (!$this->dispatchWorldEvent($visibilityEvent, $directedCount)) {
+                        $this->processingWorldId = null;
+
+                        return false;
+                    }
+                }
+            }
+            if (!$this->dispatchWorldEvent($event, $directedCount)) {
+                $this->processingWorldId = null;
+
+                return false;
+            }
         }
         try {
             $session->worldId = $target->handle->id();
@@ -905,32 +945,13 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 $transfer->fromYaw,
                 $transfer->fromPitch,
             );
+            $this->processingWorldId = null;
 
             return false;
         }
 
-        $directedCount = 0;
         $transferCommitted = false;
         try {
-            if ($departure->previousPeers !== [] && !$session->play?->queuePacket(new PlayerListRemovePacket(array_map(
-                static fn(\Bedriox\Server\Simulation\PlayerSnapshot $peer): string => $peer->identity,
-                $departure->previousPeers,
-            )))) {
-                return false;
-            }
-            $this->processingWorldId = self::runtimePollKey($transfer->sourceWorldId, $transfer->sourceDimension);
-            foreach ($departure->events as $event) {
-                if ($event instanceof PlayerDisconnected) {
-                    foreach ($this->actorVisibility->remove($event->sessionId) as $visibilityEvent) {
-                        if (!$this->dispatchWorldEvent($visibilityEvent, $directedCount)) {
-                            return false;
-                        }
-                    }
-                }
-                if (!$this->dispatchWorldEvent($event, $directedCount)) {
-                    return false;
-                }
-            }
             if (!$session->play?->commitWorldSwitch($transfer->decision->yaw, $transfer->decision->pitch)) {
                 return false;
             }
@@ -986,6 +1007,37 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 $this->rollbackPlayerWorldTransfer($session, $source, $target, $transfer);
             }
         }
+    }
+
+    private function teardownTransientActorViewsForTransfer(string $sessionId, int &$directedCount): bool
+    {
+        $worldId = $this->processingWorldId ?? 'world';
+        foreach ($this->projectileViewers[$worldId] ?? [] as $runtimeId => $viewers) {
+            if (!isset($viewers[$sessionId])) {
+                continue;
+            }
+            foreach ($this->reconcileProjectileEvent(new ProjectileRemoved($runtimeId, [$sessionId], false)) as $event) {
+                if (!$this->dispatchWorldEvent($event, $directedCount)) {
+                    return false;
+                }
+            }
+        }
+        foreach ($this->areaEffectCloudViewers[$worldId] ?? [] as $runtimeId => $viewers) {
+            if (!isset($viewers[$sessionId])) {
+                continue;
+            }
+            foreach ($this->reconcileAreaEffectCloudEvent(new AreaEffectCloudRemoved(
+                $runtimeId,
+                [$sessionId],
+                false,
+            )) as $event) {
+                if (!$this->dispatchWorldEvent($event, $directedCount)) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
     private function rollbackPlayerWorldTransfer(
@@ -3794,6 +3846,18 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             )];
         }
         if ($event instanceof ItemEntityDespawned) {
+            if (!$event->authoritative) {
+                $recipients = array_values(array_unique($event->recipientSessionIds));
+                foreach ($recipients as $recipient) {
+                    unset($this->itemActorViewers[$worldId][$event->runtimeActorId][$recipient]);
+                }
+
+                return $recipients === [] ? [] : [new ItemEntityDespawned(
+                    $event->runtimeActorId,
+                    $recipients,
+                    false,
+                )];
+            }
             $viewers = array_keys($this->itemActorViewers[$worldId][$event->runtimeActorId] ?? []);
             $this->diagnostics->record('world.item_actor.protocol_trace', [
                 'action' => 'expired',
@@ -3879,6 +3943,18 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     ): array {
         $worldId = $this->processingWorldId ?? 'world';
         if ($event instanceof ProjectileRemoved) {
+            if (!$event->authoritative) {
+                $recipients = array_values(array_unique($event->recipientSessionIds));
+                foreach ($recipients as $recipient) {
+                    unset($this->projectileViewers[$worldId][$event->runtimeEntityId][$recipient]);
+                }
+
+                return $recipients === [] ? [] : [new ProjectileRemoved(
+                    $event->runtimeEntityId,
+                    $recipients,
+                    false,
+                )];
+            }
             $viewers = array_keys($this->projectileViewers[$worldId][$event->runtimeEntityId] ?? []);
             unset(
                 $this->projectileActors[$worldId][$event->runtimeEntityId],
@@ -3936,6 +4012,18 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     ): array {
         $worldId = $this->processingWorldId ?? 'world';
         if ($event instanceof AreaEffectCloudRemoved) {
+            if (!$event->authoritative) {
+                $recipients = array_values(array_unique($event->recipientSessionIds));
+                foreach ($recipients as $recipient) {
+                    unset($this->areaEffectCloudViewers[$worldId][$event->runtimeEntityId][$recipient]);
+                }
+
+                return $recipients === [] ? [] : [new AreaEffectCloudRemoved(
+                    $event->runtimeEntityId,
+                    $recipients,
+                    false,
+                )];
+            }
             $viewers = array_keys($this->areaEffectCloudViewers[$worldId][$event->runtimeEntityId] ?? []);
             unset(
                 $this->areaEffectCloudActors[$worldId][$event->runtimeEntityId],
@@ -4042,6 +4130,14 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         $entity = $event->entity;
         $runtimeId = $entity->getRuntimeId();
         if ($event instanceof EntityActorRemoved) {
+            if (!$event->authoritative) {
+                $recipients = array_values(array_unique($event->recipientSessionIds));
+                foreach ($recipients as $recipient) {
+                    unset($this->entityActorViewers[$worldId][$runtimeId][$recipient]);
+                }
+
+                return $recipients === [] ? [] : [new EntityActorRemoved($entity, $recipients, false)];
+            }
             $viewers = array_keys($this->entityActorViewers[$worldId][$runtimeId] ?? []);
             unset(
                 $this->entityActors[$worldId][$runtimeId],

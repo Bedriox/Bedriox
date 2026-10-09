@@ -159,14 +159,18 @@ use Bedriox\Server\Runtime\ServerRuntime;
 use Bedriox\Server\Runtime\WorldEventPacketEncoder;
 use Bedriox\Server\Runtime\WorldRuntimeManager;
 use Bedriox\Server\Simulation\ClientInputTick;
+use Bedriox\Server\Simulation\Event\AreaEffectCloudRemoved;
 use Bedriox\Server\Simulation\Event\ChatBroadcast;
 use Bedriox\Server\Simulation\Event\EntityActorMoved;
+use Bedriox\Server\Simulation\Event\EntityActorRemoved;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
+use Bedriox\Server\Simulation\Event\ItemEntityDespawned;
 use Bedriox\Server\Simulation\Event\PlayerJoined;
 use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
 use Bedriox\Server\Simulation\Event\PlayerMotionChanged;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
+use Bedriox\Server\Simulation\Event\ProjectileRemoved;
 use Bedriox\Server\Simulation\Event\WorldEvent;
 use Bedriox\Server\Simulation\FixedRateWorldLoop;
 use Bedriox\Server\Simulation\MovementMode;
@@ -194,6 +198,89 @@ use Throwable;
 
 final class ServerRuntimeTest extends TestCase
 {
+    public function testViewerOnlyActorTeardownPreservesSourceWorldActorOwnership(): void
+    {
+        $transport = new FakeConnectedTransport();
+        $simulation = new WorldSimulation();
+        $runtime = new ServerRuntime(
+            $transport,
+            new RuntimeLoginFactory(),
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $simulation,
+            new FixedRateWorldLoop($simulation, new RuntimeTestClock()),
+            new RecordingEventEncoder(),
+        );
+        $entity = new ZombieEntity(
+            '00000000-0000-4000-8000-000000000901',
+            901,
+            'world',
+            new Position(0.0, 64.0, 0.0),
+        );
+
+        try {
+            $this->setRuntimeProperty($runtime, 'processingWorldId', 'world');
+            $this->setRuntimeProperty($runtime, 'entityActors', ['world' => [901 => $entity]]);
+            $this->setRuntimeProperty($runtime, 'entityActorViewers', [
+                'world' => [901 => ['leaving' => true, 'remaining' => true]],
+            ]);
+            $this->setRuntimeProperty($runtime, 'itemActors', ['world' => [902 => new \stdClass()]]);
+            $this->setRuntimeProperty($runtime, 'itemActorViewers', [
+                'world' => [902 => ['leaving' => true, 'remaining' => true]],
+            ]);
+            $this->setRuntimeProperty($runtime, 'projectileActors', ['world' => [903 => new \stdClass()]]);
+            $this->setRuntimeProperty($runtime, 'projectileViewers', [
+                'world' => [903 => ['leaving' => true, 'remaining' => true]],
+            ]);
+            $this->setRuntimeProperty($runtime, 'areaEffectCloudActors', ['world' => [904 => new \stdClass()]]);
+            $this->setRuntimeProperty($runtime, 'areaEffectCloudViewers', [
+                'world' => [904 => ['leaving' => true, 'remaining' => true]],
+            ]);
+
+            $entityEvents = $this->invokeRuntimeReconciler(
+                $runtime,
+                'reconcileEntityActorEvent',
+                new EntityActorRemoved($entity, ['leaving'], false),
+            );
+            $itemEvents = $this->invokeRuntimeReconciler(
+                $runtime,
+                'reconcileItemEvent',
+                new ItemEntityDespawned(902, ['leaving'], false),
+            );
+            $projectileEvents = $this->invokeRuntimeReconciler(
+                $runtime,
+                'reconcileProjectileEvent',
+                new ProjectileRemoved(903, ['leaving'], false),
+            );
+            $cloudEvents = $this->invokeRuntimeReconciler(
+                $runtime,
+                'reconcileAreaEffectCloudEvent',
+                new AreaEffectCloudRemoved(904, ['leaving'], false),
+            );
+
+            self::assertSame(['leaving'], $entityEvents[0]->recipients());
+            self::assertSame(['leaving'], $itemEvents[0]->recipients());
+            self::assertSame(['leaving'], $projectileEvents[0]->recipients());
+            self::assertSame(['leaving'], $cloudEvents[0]->recipients());
+            $entityActors = $this->runtimeArrayProperty($runtime, 'entityActors')['world'] ?? null;
+            $itemActors = $this->runtimeArrayProperty($runtime, 'itemActors')['world'] ?? null;
+            $projectileActors = $this->runtimeArrayProperty($runtime, 'projectileActors')['world'] ?? null;
+            $cloudActors = $this->runtimeArrayProperty($runtime, 'areaEffectCloudActors')['world'] ?? null;
+            $entityViewers = $this->runtimeArrayProperty($runtime, 'entityActorViewers')['world'] ?? null;
+            self::assertIsArray($entityActors);
+            self::assertIsArray($itemActors);
+            self::assertIsArray($projectileActors);
+            self::assertIsArray($cloudActors);
+            self::assertIsArray($entityViewers);
+            self::assertArrayHasKey(901, $entityActors);
+            self::assertArrayHasKey(902, $itemActors);
+            self::assertArrayHasKey(903, $projectileActors);
+            self::assertArrayHasKey(904, $cloudActors);
+            self::assertSame(['remaining' => true], $entityViewers[901]);
+        } finally {
+            $runtime->close();
+        }
+    }
+
     public function testSameDimensionWorldTransferTeleportsOwnerBeforePublishingOnlyDestinationChunks(): void
     {
         $data = BedrockDataSet::bundled();
@@ -303,11 +390,12 @@ final class ServerRuntimeTest extends TestCase
                 new \Bedriox\Api\World\Position(160.5, 70.0, -79.5, 135.0, -30.0, $destinationRuntime->handle),
             ));
             $packets = [];
-            for ($poll = 0; $poll < 4; ++$poll) {
+            for ($poll = 0; $poll < 8; ++$poll) {
                 self::assertTrue($runtime->poll());
                 array_push($packets, ...$this->decodeEncryptedPackets($transport->sent, $decryptor));
                 $transport->sent = [];
-                if (array_any($packets, static fn(Packet $packet): bool => $packet instanceof LevelChunkPacket)) {
+                if (array_any($packets, static fn(Packet $packet): bool => $packet instanceof LevelChunkPacket)
+                    && array_any($packets, static fn(Packet $packet): bool => $packet instanceof MovePlayerPacket)) {
                     break;
                 }
                 $clock->advance(50_000_000);
@@ -323,12 +411,12 @@ final class ServerRuntimeTest extends TestCase
 
             self::assertNotEmpty($transferPackets);
             $moveIndex = self::packetIndex($transferPackets, MovePlayerPacket::class);
-            $timeIndex = $moveIndex - 2;
-            $difficultyIndex = $moveIndex - 1;
+            $timeIndex = self::packetIndex($transferPackets, SetTimePacket::class);
+            $difficultyIndex = self::packetIndex($transferPackets, SetDifficultyPacket::class);
             $publisherIndex = self::packetIndex($transferPackets, NetworkChunkPublisherUpdatePacket::class);
             self::assertLessThan($moveIndex, $timeIndex);
             self::assertLessThan($moveIndex, $difficultyIndex);
-            self::assertLessThan($publisherIndex, $moveIndex);
+            self::assertGreaterThan($publisherIndex, $moveIndex);
 
             $time = $transferPackets[$timeIndex];
             self::assertInstanceOf(SetTimePacket::class, $time);
@@ -356,7 +444,9 @@ final class ServerRuntimeTest extends TestCase
                 static fn(Packet $packet): bool => $packet instanceof LevelChunkPacket,
             ));
             self::assertNotEmpty($chunks);
-            self::assertGreaterThan($publisherIndex, self::packetIndex($transferPackets, LevelChunkPacket::class));
+            $firstChunkIndex = self::packetIndex($transferPackets, LevelChunkPacket::class);
+            self::assertGreaterThan($publisherIndex, $firstChunkIndex);
+            self::assertGreaterThan($firstChunkIndex, $moveIndex);
             foreach ($chunks as $packet) {
                 self::assertInstanceOf(LevelChunkPacket::class, $packet);
                 self::assertGreaterThanOrEqual(9, $packet->chunkX, 'A source-world chunk crossed the transfer boundary.');
@@ -2554,6 +2644,34 @@ final class ServerRuntimeTest extends TestCase
         $commands->registerServer(new RuntimeAuthorityCommand('verbose', 'Verbose command', verbose: true));
 
         return $commands;
+    }
+
+    private function setRuntimeProperty(ServerRuntime $runtime, string $name, mixed $value): void
+    {
+        (new \ReflectionProperty(ServerRuntime::class, $name))->setValue($runtime, $value);
+    }
+
+    /** @return array<mixed> */
+    private function runtimeArrayProperty(ServerRuntime $runtime, string $name): array
+    {
+        $value = (new \ReflectionProperty(ServerRuntime::class, $name))->getValue($runtime);
+        self::assertIsArray($value);
+
+        return $value;
+    }
+
+    /** @return list<WorldEvent> */
+    private function invokeRuntimeReconciler(ServerRuntime $runtime, string $method, WorldEvent $event): array
+    {
+        $result = (new \ReflectionMethod(ServerRuntime::class, $method))->invoke($runtime, $event);
+        self::assertIsArray($result);
+        $events = [];
+        foreach ($result as $resultEvent) {
+            self::assertInstanceOf(WorldEvent::class, $resultEvent);
+            $events[] = $resultEvent;
+        }
+
+        return $events;
     }
 
     private static function craftingCatalog(): CraftingCatalog

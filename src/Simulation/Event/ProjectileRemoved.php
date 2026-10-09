@@ -23,7 +23,11 @@ namespace Bedriox\Server\Simulation\Event;
 final readonly class ProjectileRemoved implements WorldEvent
 {
     /** @param list<string> $recipientSessionIds */
-    public function __construct(public int $runtimeEntityId, public array $recipientSessionIds) {}
+    public function __construct(
+        public int $runtimeEntityId,
+        public array $recipientSessionIds,
+        public bool $authoritative = true,
+    ) {}
     public function recipients(): array
     {
         return $this->recipientSessionIds;

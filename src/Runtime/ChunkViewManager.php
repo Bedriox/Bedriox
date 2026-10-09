@@ -199,6 +199,25 @@ final class ChunkViewManager
         return count($this->sent);
     }
 
+    /** Returns the largest complete square radius delivered around the current center, or -1 before the center. */
+    public function completeSentRadius(): int
+    {
+        if ($this->centerX === null || $this->centerZ === null) {
+            return -1;
+        }
+        for ($radius = 0; $radius <= $this->radius; ++$radius) {
+            for ($x = $this->centerX - $radius; $x <= $this->centerX + $radius; ++$x) {
+                for ($z = $this->centerZ - $radius; $z <= $this->centerZ + $radius; ++$z) {
+                    if (!isset($this->sent[self::key($x, $z)])) {
+                        return $radius - 1;
+                    }
+                }
+            }
+        }
+
+        return $this->radius;
+    }
+
     public function pendingCount(): int
     {
         return count($this->pending);

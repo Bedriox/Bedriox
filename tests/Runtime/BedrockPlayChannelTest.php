@@ -2050,15 +2050,11 @@ final class BedrockPlayChannelTest extends TestCase
             new BatchLimits(),
             NetworkCompressionPolicy::THRESHOLD_BYTES,
         );
-        self::assertCount(4, $transition->packets);
-        self::assertSame(PacketIds::MOVE_PLAYER, $transition->packets[2]->header->packetId);
-        $move = BedrockPacketCodec::decode(PacketIds::MOVE_PLAYER, $transition->packets[2]->payload);
-        self::assertInstanceOf(MovePlayerPacket::class, $move);
-        self::assertSame(MovePlayerMode::TELEPORT, $move->mode);
-        self::assertSame(PacketIds::NETWORK_CHUNK_PUBLISHER_UPDATE, $transition->packets[3]->header->packetId);
+        self::assertCount(3, $transition->packets);
+        self::assertSame(PacketIds::NETWORK_CHUNK_PUBLISHER_UPDATE, $transition->packets[2]->header->packetId);
         $publisher = BedrockPacketCodec::decode(
             PacketIds::NETWORK_CHUNK_PUBLISHER_UPDATE,
-            $transition->packets[3]->payload,
+            $transition->packets[2]->payload,
         );
         self::assertInstanceOf(NetworkChunkPublisherUpdatePacket::class, $publisher);
         self::assertSame(160, $publisher->x);
@@ -2078,6 +2074,11 @@ final class BedrockPlayChannelTest extends TestCase
             self::assertGreaterThanOrEqual(-6, $packet->chunkZ);
             self::assertLessThanOrEqual(-4, $packet->chunkZ);
         }
+        $movementPayloads = $channel->drainOutgoing();
+        self::assertCount(1, $movementPayloads);
+        $move = $this->decode($server->decryptEnvelope($movementPayloads[0]->payload));
+        self::assertInstanceOf(MovePlayerPacket::class, $move);
+        self::assertSame(MovePlayerMode::TELEPORT, $move->mode);
     }
 
     public function testWorldSwitchGatesEarlyMovementAndHarmlessTeleportAcknowledgementTiming(): void

@@ -216,12 +216,19 @@ final class BedrockPlayChannel
     private bool $spawnStatusQueued = false;
     private ?NetworkChunkPublisherUpdatePacket $pendingChunkPublisherUpdate = null;
     private ?PendingWorldSwitch $pendingWorldSwitch = null;
+    private bool $worldSwitchReadyForCommit = false;
     private bool $worldSwitchInputGated = false;
     private bool $worldSwitchTeleportAcknowledged = false;
     private bool $worldSwitchCenterQueued = false;
     private bool $worldSwitchCenterDrained = false;
     private int $worldSwitchGateTicks = 0;
     private ?string $worldSwitchCenterKey = null;
+    private ?MovePlayerPacket $pendingWorldSwitchMovement = null;
+    private bool $progressiveWorldSwitchPublisher = false;
+    private int $publishedWorldSwitchRadius = 0;
+    private int $worldSwitchPublisherX = 0;
+    private int $worldSwitchPublisherY = 0;
+    private int $worldSwitchPublisherZ = 0;
     /** @var array<string, true> Chunk keys whose sent visibility changed since the last projection pass. */
     private array $chunkVisibilityChanges = [];
     private ?ChunkViewManager $chunkView = null;
@@ -854,6 +861,7 @@ final class BedrockPlayChannel
         }
         if ($values !== [] && $this->worldSwitchCenterQueued) {
             $this->worldSwitchCenterDrained = true;
+            $this->queuePendingWorldSwitchMovement();
             $this->releaseWorldSwitchGateIfReady();
         }
 
@@ -986,8 +994,13 @@ final class BedrockPlayChannel
             (int) floor($x),
             (int) floor($y),
             (int) floor($z),
-            $view->radius() * 16,
+            $this->progressiveWorldSwitchPublisher
+                ? max(1, $view->completeSentRadius()) * 16
+                : $view->radius() * 16,
         );
+        $this->worldSwitchPublisherX = (int) floor($x);
+        $this->worldSwitchPublisherY = (int) floor($y);
+        $this->worldSwitchPublisherZ = (int) floor($z);
 
         return $this->flushPendingChunkPublisherUpdate();
     }
@@ -1024,6 +1037,7 @@ final class BedrockPlayChannel
             min($this->spawnRadius, $radius),
         );
         $this->worldSwitchInputGated = true;
+        $this->worldSwitchReadyForCommit = false;
         $this->worldSwitchTeleportAcknowledged = false;
         $this->worldSwitchCenterQueued = false;
         $this->worldSwitchCenterDrained = false;
@@ -1077,7 +1091,12 @@ final class BedrockPlayChannel
             return false;
         }
 
-        return $this->worldSwitchOutputIsQuiescent();
+        if (!$this->worldSwitchOutputIsQuiescent()) {
+            return false;
+        }
+        $this->worldSwitchReadyForCommit = true;
+
+        return true;
     }
 
     private function worldSwitchOutputIsQuiescent(): bool
@@ -1095,8 +1114,7 @@ final class BedrockPlayChannel
     public function commitWorldSwitch(float $yaw, float $pitch): bool
     {
         $transition = $this->pendingWorldSwitch;
-        if (!$transition instanceof PendingWorldSwitch || !$transition->isReady()
-            || !$this->worldSwitchOutputIsQuiescent()
+        if (!$transition instanceof PendingWorldSwitch || !$transition->isReady() || !$this->worldSwitchReadyForCommit
             || !is_finite($yaw) || !is_finite($pitch)) {
             return false;
         }
@@ -1104,26 +1122,42 @@ final class BedrockPlayChannel
         $packets = [
             new SetTimePacket($transition->worldTime),
             new SetDifficultyPacket($transition->difficulty),
-            new MovePlayerPacket(
-                $this->runtimeEntityId,
-                $transition->x,
-                PlayerPositionProjection::feetToWireY($transition->y),
-                $transition->z,
-                $pitch,
-                $yaw,
-                $yaw,
-                MovePlayerMode::TELEPORT,
-                false,
-                UnsignedLong::fromInt(0),
-                UnsignedLong::fromInt(0),
-            ),
-            new NetworkChunkPublisherUpdatePacket(
+        ];
+        $movement = new MovePlayerPacket(
+            $this->runtimeEntityId,
+            $transition->x,
+            PlayerPositionProjection::feetToWireY($transition->y),
+            $transition->z,
+            $pitch,
+            $yaw,
+            $yaw,
+            MovePlayerMode::TELEPORT,
+            false,
+            UnsignedLong::fromInt(0),
+            UnsignedLong::fromInt(0),
+        );
+        if ($transition->dimension === null) {
+            $packets[] = new NetworkChunkPublisherUpdatePacket(
+                (int) floor($transition->x),
+                (int) floor($transition->y),
+                (int) floor($transition->z),
+                16,
+            );
+            $this->pendingWorldSwitchMovement = $movement;
+            $this->progressiveWorldSwitchPublisher = true;
+            $this->publishedWorldSwitchRadius = 1;
+            $this->worldSwitchPublisherX = (int) floor($transition->x);
+            $this->worldSwitchPublisherY = (int) floor($transition->y);
+            $this->worldSwitchPublisherZ = (int) floor($transition->z);
+        } else {
+            $packets[] = $movement;
+            $packets[] = new NetworkChunkPublisherUpdatePacket(
                 (int) floor($transition->x),
                 (int) floor($transition->y),
                 (int) floor($transition->z),
                 $radius * 16,
-            ),
-        ];
+            );
+        }
         if ($transition->dimension !== null) {
             array_unshift($packets, new ChangeDimensionPacket(
                 $transition->dimension,
@@ -1168,6 +1202,7 @@ final class BedrockPlayChannel
         );
         $this->worldSwitchCenterKey = $center->key();
         $this->pendingWorldSwitch = null;
+        $this->worldSwitchReadyForCommit = false;
         $this->spawnStatusQueued = true;
 
         return true;
@@ -1177,12 +1212,16 @@ final class BedrockPlayChannel
     {
         $this->pendingWorldSwitch?->release();
         $this->pendingWorldSwitch = null;
+        $this->worldSwitchReadyForCommit = false;
         $this->worldSwitchInputGated = false;
         $this->worldSwitchTeleportAcknowledged = false;
         $this->worldSwitchCenterQueued = false;
         $this->worldSwitchCenterDrained = false;
         $this->worldSwitchGateTicks = 0;
         $this->worldSwitchCenterKey = null;
+        $this->pendingWorldSwitchMovement = null;
+        $this->progressiveWorldSwitchPublisher = false;
+        $this->publishedWorldSwitchRadius = 0;
     }
 
     /** Immediate compatibility path used only when destination preparation is already complete. */
@@ -1230,6 +1269,7 @@ final class BedrockPlayChannel
         $this->closed = true;
         $this->pendingWorldSwitch?->release();
         $this->pendingWorldSwitch = null;
+        $this->worldSwitchReadyForCommit = false;
         $this->outboundCompression?->close();
         $this->outgoing = new SplQueue();
         $this->deferredCompressionBatches = new SplQueue();
@@ -1267,6 +1307,9 @@ final class BedrockPlayChannel
         $this->worldSwitchCenterDrained = false;
         $this->worldSwitchGateTicks = 0;
         $this->worldSwitchCenterKey = null;
+        $this->pendingWorldSwitchMovement = null;
+        $this->progressiveWorldSwitchPublisher = false;
+        $this->publishedWorldSwitchRadius = 0;
         $this->bootstrapSent = false;
         $this->spawnAcknowledged = false;
         $this->admissionReleased = false;
@@ -3283,6 +3326,7 @@ final class BedrockPlayChannel
             if ($key === $this->worldSwitchCenterKey) {
                 $this->worldSwitchCenterQueued = true;
             }
+            $this->expandWorldSwitchPublisherIfReady();
             $this->chunkVisibilityChanges[$position->key()] = true;
             ++$sent;
             $spawnChunkX = (int) floor($this->spawnX / 16.0);
@@ -3353,6 +3397,7 @@ final class BedrockPlayChannel
     {
         if (!$this->worldSwitchInputGated || $this->pendingWorldSwitch !== null
             || !$this->worldSwitchCenterDrained
+            || $this->pendingWorldSwitchMovement !== null
             || (!$this->worldSwitchTeleportAcknowledged && $this->worldSwitchGateTicks < 40)) {
             return;
         }
@@ -3362,6 +3407,41 @@ final class BedrockPlayChannel
         $this->worldSwitchCenterDrained = false;
         $this->worldSwitchGateTicks = 0;
         $this->worldSwitchCenterKey = null;
+    }
+
+    private function queuePendingWorldSwitchMovement(): void
+    {
+        $movement = $this->pendingWorldSwitchMovement;
+        if ($movement !== null && $this->queuePacket($movement)) {
+            $this->pendingWorldSwitchMovement = null;
+        }
+    }
+
+    private function expandWorldSwitchPublisherIfReady(): void
+    {
+        $view = $this->chunkView;
+        if (!$this->progressiveWorldSwitchPublisher || $view === null) {
+            return;
+        }
+        $completeRadius = $view->completeSentRadius();
+        if ($completeRadius >= $view->radius() && $completeRadius <= $this->publishedWorldSwitchRadius) {
+            $this->progressiveWorldSwitchPublisher = false;
+
+            return;
+        }
+        if ($completeRadius <= $this->publishedWorldSwitchRadius) {
+            return;
+        }
+        $this->publishedWorldSwitchRadius = $completeRadius;
+        $this->pendingChunkPublisherUpdate = new NetworkChunkPublisherUpdatePacket(
+            $this->worldSwitchPublisherX,
+            $this->worldSwitchPublisherY,
+            $this->worldSwitchPublisherZ,
+            $completeRadius * 16,
+        );
+        if ($completeRadius >= $view->radius()) {
+            $this->progressiveWorldSwitchPublisher = false;
+        }
     }
 
     private function queuePreparedChunk(PreparedChunk $prepared): bool

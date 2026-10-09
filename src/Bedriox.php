@@ -218,17 +218,24 @@ final class Bedriox
                     CoreWorkerTaskCatalog::PLUGIN_ASYNC_TASK,
                 );
             }
+            $startupStartedAt = hrtime(true);
             $logger->info('Starting ' . $this->displayName());
             $logger->info(sprintf('Loading world "%s" using %s generator', $config->levelName, $config->levelGenerator));
-            $logger->info('Preparing spawn terrain; the first start may take a moment');
+            $logger->info('Loading server data and world metadata');
             $composition = new PluginComposition();
             $performance = new PerformanceMonitor($config->ticksPerSecond);
             $stop = false;
             $permissionStore = new PermissionStore($workingDirectory . DIRECTORY_SEPARATOR . 'permissions.json');
             $data = \Bedriox\Data\BedrockDataSet::bundled();
             $generatorRegistry = WorldGeneratorFactory::builtIns();
+            $worldFactory = new PersistentWorldFactory(
+                $workingDirectory,
+                new ProcessWorldProviderFactory(self::VERSION),
+                $generatorRegistry,
+            );
+            $internalStates = $worldFactory->internalStates($data);
             $blockCatalog = \Bedriox\Server\Gameplay\Block\BlockCatalog::vanilla(
-                new \Bedriox\Server\World\Block\BlockStateRegistry($data->blockStateRegistry()->states()),
+                $internalStates,
                 $data->blockItemMappingRegistry(),
             );
             $itemCatalog = \Bedriox\Server\Gameplay\Item\ItemCatalog::vanilla(
@@ -238,6 +245,7 @@ final class Bedriox
                 blockItems: $data->blockItemMappingRegistry(),
             );
             $entityDefinitions = EntityDefinitionRegistry::fromData($data->entityTypeRegistry());
+            $startupCatalogsReadyAt = hrtime(true);
             $itemCommandEnum = null;
             $pluginHost = new PluginHost(
                 $workingDirectory . DIRECTORY_SEPARATOR . 'plugins',
@@ -648,12 +656,9 @@ final class Bedriox
                 latestUpdate: static fn(): ?\Bedriox\Api\Update\UpdateInfo =>
                     $composition->updates?->latestAvailable(),
             ))->register();
+            $startupCompositionStartedAt = hrtime(true);
             $server = (new ServerBootstrap(
-                new PersistentWorldFactory(
-                    $workingDirectory,
-                    new ProcessWorldProviderFactory(self::VERSION),
-                    $generatorRegistry,
-                ),
+                $worldFactory,
                 playerDataDirectory: $workingDirectory . DIRECTORY_SEPARATOR . 'player_data',
                 playerDataStore: $playerStore,
             ))->create(
@@ -674,7 +679,17 @@ final class Bedriox
                 whitelist: $whitelist,
                 bans: $bans,
                 playerLifecycleLogger: new PlayerLifecycleLogger($logger),
+                data: $data,
+                internalStates: $internalStates,
+                blockCatalog: $blockCatalog,
             );
+            $startupCompositionReadyAt = hrtime(true);
+            $diagnostics->record('runtime.startup.protocol_trace', [
+                'catalogs_us' => intdiv($startupCatalogsReadyAt - $startupStartedAt, 1_000),
+                'application_wiring_us' => intdiv($startupCompositionStartedAt - $startupCatalogsReadyAt, 1_000),
+                'server_composition_us' => intdiv($startupCompositionReadyAt - $startupCompositionStartedAt, 1_000),
+                'time_to_listen_us' => intdiv($startupCompositionReadyAt - $startupStartedAt, 1_000),
+            ]);
             $composition->server = $server;
             $updates = new UpdateManager(
                 self::VERSION,
@@ -715,6 +730,7 @@ final class Bedriox
                 $logger->warning($server->securityWarning);
             }
             $logger->info(sprintf('Bedriox is listening on %s:%d', $server->localAddress, $server->localPort));
+            $logger->info('Preparing spawn area in the background...');
             if (function_exists('pcntl_async_signals') && function_exists('pcntl_signal')) {
                 pcntl_async_signals(true);
                 foreach (['SIGINT', 'SIGTERM'] as $name) {

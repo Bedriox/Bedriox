@@ -26,7 +26,11 @@ use Bedriox\Server\Entity\AbstractEntity;
 final readonly class EntityActorRemoved implements WorldEvent
 {
     /** @param list<string> $recipientSessionIds */
-    public function __construct(public AbstractEntity $entity, public array $recipientSessionIds) {}
+    public function __construct(
+        public AbstractEntity $entity,
+        public array $recipientSessionIds,
+        public bool $authoritative = true,
+    ) {}
 
     public function recipients(): array
     {

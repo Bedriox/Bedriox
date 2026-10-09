@@ -1,5 +1,8 @@
 # Changelog
 
+- Reuse admitted immutable registries during startup, trust persisted world spawn metadata, and defer full spawn-chunk generation to the bounded worker pipeline.
+- Add startup-stage timing diagnostics that separate catalog preparation, world storage opening, runtime composition, and time to network readiness.
+- Replace same-dimension world views progressively from the destination center before teleporting, and tear down source actors per viewer without removing them from the source world.
 - Add bounded RakNet admission profiles, malformed-input escalation, expiring address blocks, shared-address-safe connected limits, and `/status advanced` security metrics.
 - Bound sustained authenticated play traffic and correct repeated unauthorized flight before isolated movement-policy disconnection.
 - Add plugin events for authorized flight toggles, movement violations, and committed movement corrections.

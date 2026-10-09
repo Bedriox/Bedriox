@@ -175,45 +175,7 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
 
     public function defaultSpawn(): SpawnPosition
     {
-        if ($this->spawn !== null) {
-            return $this->spawn;
-        }
-        $candidate = $this->spawnCandidate();
-        $air = $this->blocks->state('minecraft:air')->value;
-        $water = $this->blocks->state('minecraft:water')->value;
-        $lava = $this->blocks->state('minecraft:lava')->value;
-        $baseChunkX = self::floorDiv($candidate->x, 16);
-        $baseChunkZ = self::floorDiv($candidate->z, 16);
-        for ($radius = 0; $radius <= 2; ++$radius) {
-            for ($offsetZ = -$radius; $offsetZ <= $radius; ++$offsetZ) {
-                for ($offsetX = -$radius; $offsetX <= $radius; ++$offsetX) {
-                    if ($radius !== 0 && abs($offsetX) !== $radius && abs($offsetZ) !== $radius) {
-                        continue;
-                    }
-                    $chunkX = $baseChunkX + $offsetX;
-                    $chunkZ = $baseChunkZ + $offsetZ;
-                    $chunk = $this->generate(new ChunkPosition($chunkX, $chunkZ));
-                    for ($localZ = 0; $localZ < 16; $localZ += 2) {
-                        for ($localX = 0; $localX < 16; $localX += 2) {
-                            for ($y = min(240, Chunk::MAX_Y - 2); $y >= self::SEA_LEVEL + 1; --$y) {
-                                $state = $chunk->blockStateAt($localX, $y, $localZ)->value;
-                                if ($state !== $air && $state !== $water && $state !== $lava
-                                    && $chunk->blockStateAt($localX, $y + 1, $localZ)->value === $air
-                                    && $chunk->blockStateAt($localX, $y + 2, $localZ)->value === $air) {
-                                    return $this->spawn = new SpawnPosition(
-                                        $chunkX * 16 + $localX,
-                                        $y + 1,
-                                        $chunkZ * 16 + $localZ,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        return $this->spawn = $candidate;
+        return $this->spawn ??= $this->spawnCandidate();
     }
 
     private function spawnCandidate(): SpawnPosition
@@ -237,13 +199,42 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
                         ], true)) {
                         continue;
                     }
+                    if (!$this->isSpawnVegetationClear($x, $z)) {
+                        continue;
+                    }
+                    $surface = $this->densitySurfaceHeightAt($x, $z);
+                    if ($surface <= self::SEA_LEVEL) {
+                        continue;
+                    }
 
-                    return $this->candidateSpawn = new SpawnPosition($x, $sample->surfaceHeight + 2, $z);
+                    return $this->candidateSpawn = new SpawnPosition(
+                        $x,
+                        $surface + 1,
+                        $z,
+                    );
                 }
             }
         }
 
-        return $this->candidateSpawn = new SpawnPosition(0, $this->terrain->heightAt(0, 0) + 2, 0);
+        return $this->candidateSpawn = new SpawnPosition(0, $this->densitySurfaceHeightAt(0, 0) + 1, 0);
+    }
+
+    private function isSpawnVegetationClear(int $x, int $z): bool
+    {
+        if ($this->noise->chance($x, 0, $z, 8_401, 96) < 34) {
+            return false;
+        }
+        for ($treeZ = $z - 3; $treeZ <= $z + 3; ++$treeZ) {
+            for ($treeX = $x - 3; $treeX <= $x + 3; ++$treeX) {
+                $biome = $this->biomes->resolve($this->terrain->sample($treeX, $treeZ))->identifier;
+                [$frequency] = $this->treeRule($biome);
+                if ($frequency > 0 && $this->noise->chance($treeX, 0, $treeZ, 8_101, $frequency) === 0) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
     public function surfaceHeight(int $x, int $z, ?Biome $biome = null): int

@@ -31,12 +31,14 @@ use Bedriox\Server\Runtime\PersistentWorldFactory;
 use Bedriox\Server\Runtime\ServerConfig;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\ChunkPosition;
+use Bedriox\Server\World\Generator\BuiltInGeneratorDefinitions;
 use Bedriox\Server\World\Provider\ChunkSaveData;
 use Bedriox\Server\World\Provider\LoadedChunkData;
 use Bedriox\Server\World\Provider\WorldData;
 use Bedriox\Server\World\Provider\WorldProviderFactory;
 use Bedriox\Server\World\Provider\WritableWorldProvider;
 use Bedriox\Server\World\SpawnPosition;
+use Bedriox\Server\World\WorldGeneratorFactory;
 use Bedriox\Server\World\WorldMetadata;
 use PHPUnit\Framework\TestCase;
 
@@ -105,13 +107,19 @@ final class PersistentWorldFactoryTest extends TestCase
         self::assertTrue(mkdir($path, 0775, true));
         $providers = new RecordingWorldProviderFactory(new WorldData(
             new WorldMetadata('Stored Display Name', 8128),
-            'flat',
+            'default',
             new SpawnPosition(17, 72, -4),
             22_000,
+            generatorVersion: 3,
         ));
 
-        $opened = (new PersistentWorldFactory($this->workingDirectory, $providers))->open(
-            self::config(levelName: 'world', levelSeed: 1),
+        $generators = WorldGeneratorFactory::builtIns();
+        self::assertTrue($generators->unregister(
+            BuiltInGeneratorDefinitions::FLAT,
+            BuiltInGeneratorDefinitions::OWNER,
+        ));
+        $opened = (new PersistentWorldFactory($this->workingDirectory, $providers, $generators))->open(
+            self::config(levelName: 'world', levelSeed: 1, generator: 'flat'),
             BedrockDataSet::bundled(),
         );
 
@@ -299,6 +307,7 @@ final class PersistentWorldFactoryTest extends TestCase
         int $levelSeed = 0,
         ?SpawnPosition $spawn = null,
         string $difficulty = 'normal',
+        string $generator = 'default',
     ): ServerConfig {
         return new ServerConfig(
             bindAddress: '127.0.0.1',
@@ -308,6 +317,7 @@ final class PersistentWorldFactoryTest extends TestCase
             authenticationMode: AuthenticationMode::SELF_SIGNED,
             levelName: $levelName,
             levelSeed: $levelSeed,
+            levelGenerator: $generator,
             difficulty: $difficulty,
             chunkCacheLimit: 86,
             chunkLoadingPrefetchRadius: 0,

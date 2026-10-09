@@ -43,6 +43,29 @@ final class ChunkViewManagerTest extends TestCase
         self::assertSame(0, $view->pendingCount());
     }
 
+    public function testCompleteSentRadiusAdvancesOnlyAfterAWholeRingIsDelivered(): void
+    {
+        $view = new ChunkViewManager(2);
+        $view->centerOnChunk(0, 0);
+        self::assertSame(-1, $view->completeSentRadius());
+
+        $view->markPrepared(0, 0);
+        $view->markSent(0, 0);
+        self::assertSame(0, $view->completeSentRadius());
+
+        foreach ($view->pending(8) as $chunk) {
+            $view->markPrepared($chunk['x'], $chunk['z']);
+            $view->markSent($chunk['x'], $chunk['z']);
+        }
+        self::assertSame(1, $view->completeSentRadius());
+
+        foreach ($view->pending(16) as $chunk) {
+            $view->markPrepared($chunk['x'], $chunk['z']);
+            $view->markSent($chunk['x'], $chunk['z']);
+        }
+        self::assertSame(2, $view->completeSentRadius());
+    }
+
     public function testCrossingOneChunkLoadsAndReleasesOneEdge(): void
     {
         $view = new ChunkViewManager(4);

@@ -307,22 +307,22 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
             $config->spawnY ?? 64,
             $config->spawnZ ?? 0,
         ) : null;
-        $seed ??= $config->levelSeed;
-        $generatorName ??= $config->levelGenerator;
-        $generatorOptions ??= new GeneratorOptions();
-        $difficulty ??= self::difficulty($config->difficulty);
-        $configuredGenerator = WorldGeneratorFactory::create(
-            $generatorName,
-            $seed,
-            $internalStates,
-            $generatorOptions,
-            registry: $this->generators,
-        );
-        $defaultSpawn = $configuredSpawn ?? $configuredGenerator->defaultSpawn();
-
-        $provider = $exists
-            ? $this->providers->open($worldPath, $internalStates, $persistentStates)
-            : $this->providers->create(
+        if ($exists) {
+            $provider = $this->providers->open($worldPath, $internalStates, $persistentStates);
+        } else {
+            $seed ??= $config->levelSeed;
+            $generatorName ??= $config->levelGenerator;
+            $generatorOptions ??= new GeneratorOptions();
+            $difficulty ??= self::difficulty($config->difficulty);
+            $configuredGenerator = WorldGeneratorFactory::create(
+                $generatorName,
+                $seed,
+                $internalStates,
+                $generatorOptions,
+                registry: $this->generators,
+            );
+            $defaultSpawn = $configuredSpawn ?? $configuredGenerator->defaultSpawn();
+            $provider = $this->providers->create(
                 $worldPath,
                 new WorldData(
                     new WorldMetadata($displayName ?? $worldId, $seed),
@@ -336,6 +336,7 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
                 $internalStates,
                 $persistentStates,
             );
+        }
 
         try {
             return $this->compose($config, $provider, $internalStates, $configuredSpawn);

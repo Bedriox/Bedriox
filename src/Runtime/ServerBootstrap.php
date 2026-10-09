@@ -130,7 +130,11 @@ final class ServerBootstrap
         ?WhitelistManager $whitelist = null,
         ?BanManager $bans = null,
         ?PlayerLifecycleLogger $playerLifecycleLogger = null,
+        ?BedrockDataSet $data = null,
+        ?BlockStateRegistry $internalStates = null,
+        ?BlockCatalog $blockCatalog = null,
     ): BootstrappedServer {
+        $startupStartedAt = hrtime(true);
         $diagnostics ??= RuntimeDiagnostics::disabled();
         $authenticationClock = new SystemAuthenticationClock();
         $authenticator = $this->authenticator($config->authenticationMode, $authenticationClock);
@@ -143,6 +147,7 @@ final class ServerBootstrap
         // A listener that cannot complete Bedrock's P-384 handshake is not joinable.
         // Qualify the exact production key factory before opening the world or binding UDP.
         $ephemeralKeys->generate();
+        $startupCryptoReadyAt = hrtime(true);
         $garbageCollector = new GarbageCollector(new PhpGarbageCollectorBackend());
         $memoryManager = $config->memoryManagementEnabled
             ? new MemoryManager(
@@ -182,17 +187,17 @@ final class ServerBootstrap
             correctInvalidMovement: $config->correctInvalidMovement,
             kickRepeatedMovementViolations: $config->kickRepeatedMovementViolations,
         );
-        $data = BedrockDataSet::bundled();
+        $data ??= BedrockDataSet::bundled();
         // Admitted data accessors validate and materialize their immutable registries. Keep the
         // resulting instances for every world instead of rebuilding them during a live tick.
         $entityTypes = $data->entityTypeRegistry();
         $blockProperties = $data->blockPropertyRegistry();
         $entityDefinitions ??= EntityDefinitionRegistry::fromData($entityTypes);
         $networkStates = $data->blockStateRegistry();
-        $internalStates = $this->worldFactory instanceof PersistentWorldFactory
+        $internalStates ??= $this->worldFactory instanceof PersistentWorldFactory
             ? $this->worldFactory->internalStates($data)
             : new BlockStateRegistry($networkStates->states());
-        $blockCatalog = BlockCatalog::vanilla($internalStates, $data->blockItemMappingRegistry());
+        $blockCatalog ??= BlockCatalog::vanilla($internalStates, $data->blockItemMappingRegistry());
         $itemCatalog ??= ItemCatalog::vanilla(
             $data->itemNetworkRegistry(),
             $blockCatalog,
@@ -224,8 +229,10 @@ final class ServerBootstrap
             GenerationBlockPalette::fromRegistry($internalStates),
         );
         $chunkProjectionRegistryHash = ChunkProjectionIdentity::registryHash($data, $networkStates);
+        $startupCatalogsReadyAt = hrtime(true);
         $openedWorld = $this->worldFactory?->open($config, $data)
             ?? $this->ephemeralWorld($config, $internalStates);
+        $startupWorldOpenedAt = hrtime(true);
         $flatWorld = $openedWorld->world;
         $runtimeWorldActions = new RuntimeWorldActions($blockCatalog, $internalStates, $pluginActions);
         $worldActions = $runtimeWorldActions->actions();
@@ -616,6 +623,7 @@ final class ServerBootstrap
                 $status,
                 $diagnostics,
             );
+            $startupTransportReadyAt = hrtime(true);
             $runtime = new ServerRuntime(
                 $discovery,
                 new ConfiguredLoginChannelFactory(
@@ -721,6 +729,16 @@ final class ServerBootstrap
             }
             throw $exception;
         }
+
+        $startupCompletedAt = hrtime(true);
+        $diagnostics->record('runtime.bootstrap.protocol_trace', [
+            'crypto_us' => intdiv($startupCryptoReadyAt - $startupStartedAt, 1_000),
+            'catalogs_us' => intdiv($startupCatalogsReadyAt - $startupCryptoReadyAt, 1_000),
+            'world_open_us' => intdiv($startupWorldOpenedAt - $startupCatalogsReadyAt, 1_000),
+            'runtime_wiring_us' => intdiv($startupTransportReadyAt - $startupWorldOpenedAt, 1_000),
+            'runtime_finalize_us' => intdiv($startupCompletedAt - $startupTransportReadyAt, 1_000),
+            'total_us' => intdiv($startupCompletedAt - $startupStartedAt, 1_000),
+        ]);
 
         return new BootstrappedServer(
             $runtime,

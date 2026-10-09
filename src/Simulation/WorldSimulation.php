@@ -1802,14 +1802,14 @@ final class WorldSimulation
             $events[] = new PlayerBecameHidden($peer->sessionId, $peer->runtimeActorId, $player->sessionId);
         }
         foreach ($this->itemEntities->all() as $entity) {
-            $events[] = new ItemEntityDespawned($entity->runtimeEntityId, [$player->sessionId]);
+            $events[] = new ItemEntityDespawned($entity->runtimeEntityId, [$player->sessionId], false);
         }
         foreach ($this->experienceOrbs->all() as $entity) {
             $events[] = new ExperienceOrbRemoved($entity->runtimeEntityId, [$player->sessionId]);
         }
         foreach (self::leashProjectionOrder(array_values($this->announcedEntities)) as $entity) {
             if ($entity->isAlive()) {
-                $events[] = new EntityActorRemoved($entity, [$player->sessionId]);
+                $events[] = new EntityActorRemoved($entity, [$player->sessionId], false);
             }
         }
         $events[] = new PlayerDisconnected(
