@@ -36,6 +36,7 @@ use Bedriox\Protocol\Packet\AnimatePacket;
 use Bedriox\Protocol\Packet\AutoCraftRecipeItemStackRequestAction;
 use Bedriox\Protocol\Packet\BasicInventoryTransaction;
 use Bedriox\Protocol\Packet\BedrockPacketCodec;
+use Bedriox\Protocol\Packet\BlockPickRequestPacket;
 use Bedriox\Protocol\Packet\BlockPosition;
 use Bedriox\Protocol\Packet\BossEventAction;
 use Bedriox\Protocol\Packet\BossEventPacket;
@@ -59,6 +60,7 @@ use Bedriox\Protocol\Packet\CraftRecipeOptionalItemStackRequestAction;
 use Bedriox\Protocol\Packet\CraftRepairAndDisenchantItemStackRequestAction;
 use Bedriox\Protocol\Packet\CraftResultsItemStackRequestAction;
 use Bedriox\Protocol\Packet\CreateItemStackRequestAction;
+use Bedriox\Protocol\Packet\DestroyItemStackRequestAction;
 use Bedriox\Protocol\Packet\DimensionId;
 use Bedriox\Protocol\Packet\DropItemStackRequestAction;
 use Bedriox\Protocol\Packet\EmoteListPacket;
@@ -729,6 +731,12 @@ final class BedrockPlayChannel
     {
         if ($packet instanceof UpdateAbilitiesPacket) {
             $this->authoritativeAbilities = $packet;
+            if (!self::abilitiesEnable($packet, Ability::MayFly)
+                || !self::abilitiesEnable($packet, Ability::Flying)) {
+                $this->lastRequestedFlyingState = false;
+            } else {
+                $this->lastRequestedFlyingState = true;
+            }
         }
         if ($packet instanceof ContainerOpenPacket
             && $packet->containerType !== ContainerType::Workbench) {
@@ -1356,6 +1364,7 @@ final class BedrockPlayChannel
             if ($packet instanceof InventoryTransactionPacket
                 || $packet instanceof ItemStackRequestPacket
                 || $packet instanceof PlayerActionPacket
+                || $packet instanceof BlockPickRequestPacket
                 || $packet instanceof InteractPacket
                 || $packet instanceof MobEquipmentPacket
                 || $packet instanceof MobArmorEquipmentPacket
@@ -1501,7 +1510,7 @@ final class BedrockPlayChannel
             }
             if ($packet->action === PlayerActionType::StartFlying
                 || $packet->action === PlayerActionType::StopFlying) {
-                return $this->queueAuthoritativeAbilities($packet->action === PlayerActionType::StartFlying);
+                return $this->requestFlightState($packet->action === PlayerActionType::StartFlying);
             }
             if ($packet->action === PlayerActionType::Respawn) {
                 if ($this->commands->count() >= $this->limits->maximumCommandsPerPayload) {
@@ -1549,6 +1558,19 @@ final class BedrockPlayChannel
                     $packet->action === PlayerActionType::StopDestroyBlock ? null : $packet->face,
                 )]);
             }
+
+            return true;
+        }
+        if ($packet instanceof BlockPickRequestPacket) {
+            if (!$this->initialized || !$this->hasLoadedBlock($packet->position)
+                || $this->commands->count() >= $this->limits->maximumCommandsPerPayload) {
+                return $this->initialized;
+            }
+            $this->commands->enqueue($this->commandFactory->pickBlock(
+                $this->sessionId,
+                new WorldBlockPosition($packet->position->x, $packet->position->y, $packet->position->z),
+                $packet->addUserData,
+            ));
 
             return true;
         }
@@ -1722,7 +1744,7 @@ final class BedrockPlayChannel
             ));
         }
         if ($packet instanceof RequestAbilityPacket) {
-            return $this->initialized && $this->queueAuthoritativeAbilities(
+            return $this->initialized && $this->requestFlightState(
                 $packet->ability === Ability::Flying->value ? $packet->boolValue : null,
             );
         }
@@ -2660,6 +2682,26 @@ final class BedrockPlayChannel
                         $source,
                         $destination,
                     );
+                } elseif ($action instanceof DestroyItemStackRequestAction) {
+                    $this->diagnostics->record('play.inventory_request.protocol_trace', [
+                        'request_id' => $request->requestId,
+                        'action' => 'destroy',
+                        'amount' => $action->amount,
+                        'source_container' => $action->source->containerName->containerNameId,
+                        'source_slot' => $action->source->slot,
+                        'source_stack_id' => $action->source->stackNetworkId,
+                    ]);
+                    $source = self::inventorySlotReference($action->source);
+                    if ($source === null || $source->container === InventoryContainer::CreatedOutput) {
+                        $rejectionReason = 'unsupported_container';
+                        break;
+                    }
+                    $actions[] = new InventoryStackRequestAction(
+                        InventoryStackRequestActionType::Destroy,
+                        $source,
+                        $source,
+                        $action->amount,
+                    );
                 } elseif ($action instanceof MineBlockItemStackRequestAction) {
                     $this->diagnostics->record('play.inventory_request.protocol_trace', [
                         'request_id' => $request->requestId,
@@ -2969,6 +3011,29 @@ final class BedrockPlayChannel
         )));
     }
 
+    private function requestFlightState(?bool $flying): bool
+    {
+        if ($flying === null) {
+            return $this->queueAuthoritativeAbilities();
+        }
+        $allowed = $flying && $this->authoritativeAbilities !== null
+            && self::abilitiesEnable($this->authoritativeAbilities, Ability::MayFly);
+        $this->lastRequestedFlyingState = $allowed;
+
+        return $this->queueAuthoritativeAbilities($allowed);
+    }
+
+    private static function abilitiesEnable(UpdateAbilitiesPacket $packet, Ability $ability): bool
+    {
+        foreach ($packet->abilities->layers as $layer) {
+            if ($layer->enabled($ability)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function handleFlightFlags(PlayerAuthInputPacket $packet): bool
     {
         $start = $packet->hasInput(PlayerAuthInputFlag::StartFlying);
@@ -2976,9 +3041,7 @@ final class BedrockPlayChannel
         if ($start === $stop || $this->lastRequestedFlyingState === $start) {
             return true;
         }
-        $this->lastRequestedFlyingState = $start;
-
-        return $this->queueAuthoritativeAbilities($start);
+        return $this->requestFlightState($start);
     }
 
     private function fail(string $reason, ?int $packetId = null, ?Throwable $exception = null): bool

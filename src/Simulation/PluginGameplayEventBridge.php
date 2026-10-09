@@ -153,6 +153,7 @@ use Bedriox\Api\Event\Inventory\InventoryTransactionCommittedEvent;
 use Bedriox\Api\Event\Inventory\InventoryTransactionEvent;
 use Bedriox\Api\Event\Player\PlayerAttackedEvent;
 use Bedriox\Api\Event\Player\PlayerAttackEvent;
+use Bedriox\Api\Event\Player\PlayerBlockPickEvent;
 use Bedriox\Api\Event\Player\PlayerChatBroadcastEvent;
 use Bedriox\Api\Event\Player\PlayerChatEvent;
 use Bedriox\Api\Event\Player\PlayerCraftedItemEvent;
@@ -1669,6 +1670,24 @@ final readonly class PluginGameplayEventBridge
         $this->events->dispatch($event);
 
         return !$event->isCancelled();
+    }
+
+    public function blockPick(
+        Player $player,
+        BlockPosition $position,
+        string $identifier,
+        InventoryStack $item,
+        bool $userDataRequested,
+    ): ?ApiItemStack {
+        $event = new PlayerBlockPickEvent(
+            $this->playerView($player),
+            self::block($position, $identifier),
+            new ApiItemStack($item->identifier, $item->count, $item->damage, $item->nbt, $item->auxValue),
+            $userDataRequested,
+        );
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->item();
     }
 
     /**

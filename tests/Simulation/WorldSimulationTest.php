@@ -1608,6 +1608,95 @@ final class WorldSimulationTest extends TestCase
         self::assertSame(16, $accepted->mainInventory[1]?->count);
     }
 
+    public function testCreativeDestroyIsRejectedInSurvivalAndCommittedInCreative(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation(blockPalette: $palette);
+        self::assertTrue($world->enqueue($factory->join(
+            'one',
+            'identity-one',
+            'One',
+            bootstrap: self::grassBootstrap('world'),
+        )));
+        $world->tick();
+        $source = new InventorySlotReference(InventoryContainer::Main, 0, 1);
+        $action = new InventoryStackRequestAction(
+            InventoryStackRequestActionType::Destroy,
+            $source,
+            $source,
+            4,
+        );
+
+        self::assertTrue($world->enqueue($factory->inventoryStackRequest('one', -31, [$action])));
+        $rejected = $world->tick()->events[0];
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $rejected);
+        self::assertFalse($rejected->success);
+        self::assertSame('destroy_requires_creative_mode', $rejected->reason);
+        self::assertSame(64, $rejected->mainInventory[0]?->count);
+
+        self::assertTrue($world->enqueue($factory->changeGameMode('one', GameMode::CREATIVE)));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->inventoryStackRequest('one', -32, [$action])));
+        $accepted = $world->tick()->events[0];
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $accepted);
+        self::assertTrue($accepted->success, $accepted->reason);
+        self::assertSame(60, $accepted->mainInventory[0]?->count);
+    }
+
+    public function testCreativePickBlockCreatesAndSelectsTheAuthoritativeItem(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $registry = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $blocks = new World(
+            new WorldMetadata('pick-block-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+        );
+        $blockCatalog = BlockCatalog::vanilla($registry, $data->blockItemMappingRegistry());
+        $itemCatalog = ItemCatalog::vanilla(
+            $data->itemNetworkRegistry(),
+            $blockCatalog,
+            $data->creativeInventoryRegistry(),
+            $data->blockItemMappingRegistry(),
+        );
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation(
+            blockWorld: $blocks,
+            blockPalette: $palette,
+            itemCatalog: $itemCatalog,
+            blockCatalog: $blockCatalog,
+            blockStateRegistry: $registry,
+        );
+        self::assertTrue($world->enqueue($factory->join(
+            'one',
+            'identity-one',
+            'One',
+            bootstrap: self::grassBootstrap('pick-block-test'),
+        )));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->changeGameMode('one', GameMode::CREATIVE)));
+        $world->tick();
+
+        self::assertTrue($world->enqueue($factory->pickBlock(
+            'one',
+            new BlockPosition(0, 62, 0),
+            false,
+        )));
+        $picked = $world->tick()->events[0];
+
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $picked);
+        self::assertTrue($picked->success);
+        self::assertSame(0, $picked->selectedHotbarSlot);
+        self::assertNotNull($picked->selectedStack);
+        self::assertSame('minecraft:dirt', $picked->selectedStack->identifier);
+        self::assertNotNull($picked->selectedStack->placedBlockState);
+        self::assertSame($palette->dirt->value, $picked->selectedStack->placedBlockState->value);
+        self::assertNotNull($picked->mainInventory[1]);
+    }
+
     public function testJoinPublishesDeterministicPeerVisibilityAndFixedSpawn(): void
     {
         $factory = new SimulationCommandFactory();

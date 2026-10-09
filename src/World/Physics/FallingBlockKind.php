@@ -18,15 +18,12 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Server\World\Environment;
+namespace Bedriox\Server\World\Physics;
 
-enum EnvironmentTickType: string
+enum FallingBlockKind: string
 {
-    case FLUID = 'fluid';
-    case FIRE = 'fire';
-    case RANDOM_BLOCK = 'random_block';
-    case FROSTED_ICE = 'frosted_ice';
-    case DRIED_GHAST = 'dried_ghast';
-    case SNIFFER_EGG = 'sniffer_egg';
-    case BLOCK_PHYSICS = 'block_physics';
+    case ORDINARY = 'ordinary';
+    case CONCRETE_POWDER = 'concrete_powder';
+    case ANVIL = 'anvil';
+    case DRAGON_EGG = 'dragon_egg';
 }

@@ -47,6 +47,7 @@ use Bedriox\Protocol\Packet\ActorFlag;
 use Bedriox\Protocol\Packet\ActorLink;
 use Bedriox\Protocol\Packet\ActorLinkType;
 use Bedriox\Protocol\Packet\ActorMetadata;
+use Bedriox\Protocol\Packet\ActorProperties;
 use Bedriox\Protocol\Packet\AddActorPacket;
 use Bedriox\Protocol\Packet\AddItemActorPacket;
 use Bedriox\Protocol\Packet\AddPlayerPacket;
@@ -55,6 +56,7 @@ use Bedriox\Protocol\Packet\AreaEffectCloudActorMetadata;
 use Bedriox\Protocol\Packet\BlockActorDataPacket;
 use Bedriox\Protocol\Packet\BlockEventPacket;
 use Bedriox\Protocol\Packet\BlockPosition as ProtocolBlockPosition;
+use Bedriox\Protocol\Packet\BlockSyncType;
 use Bedriox\Protocol\Packet\BossEventAction;
 use Bedriox\Protocol\Packet\BossEventPacket;
 use Bedriox\Protocol\Packet\BrewingStandProperty;
@@ -130,10 +132,12 @@ use Bedriox\Protocol\Packet\TranslatedTextPacket;
 use Bedriox\Protocol\Packet\UpdateAttributesPacket;
 use Bedriox\Protocol\Packet\UpdateBlockFlag;
 use Bedriox\Protocol\Packet\UpdateBlockPacket;
+use Bedriox\Protocol\Packet\UpdateBlockSyncedPacket;
 use Bedriox\Protocol\Packet\UpdateEquipPacket;
 use Bedriox\Protocol\Packet\UpdatePlayerGameTypePacket;
 use Bedriox\Protocol\Value\BuildPlatform;
 use Bedriox\Protocol\Value\UnsignedLong;
+use Bedriox\Server\Entity\Block\FallingBlockEntity;
 use Bedriox\Server\Entity\Vanilla\End\EnderDragonEntity;
 use Bedriox\Server\Entity\Vehicle\BoatEntity;
 use Bedriox\Server\Gameplay\Enchanting\VanillaEnchantmentIdMap;
@@ -183,6 +187,10 @@ use Bedriox\Server\Simulation\Event\ExperienceOrbMoved;
 use Bedriox\Server\Simulation\Event\ExperienceOrbPickedUp;
 use Bedriox\Server\Simulation\Event\ExperienceOrbRemoved;
 use Bedriox\Server\Simulation\Event\ExperienceOrbSpawned;
+use Bedriox\Server\Simulation\Event\FallingBlockActorMoved;
+use Bedriox\Server\Simulation\Event\FallingBlockActorRemoved;
+use Bedriox\Server\Simulation\Event\FallingBlockActorSettled;
+use Bedriox\Server\Simulation\Event\FallingBlockActorSpawned;
 use Bedriox\Server\Simulation\Event\FurnaceUpdated;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InventorySlotChanged;
@@ -370,6 +378,10 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
                 $event->recipientSessionIds,
             ),
             $event instanceof ItemEntitySpawned => $this->itemEntitySpawned($event),
+            $event instanceof FallingBlockActorSpawned => $this->fallingBlockActorSpawned($event),
+            $event instanceof FallingBlockActorMoved => $this->fallingBlockActorMoved($event),
+            $event instanceof FallingBlockActorSettled => $this->fallingBlockActorSettled($event),
+            $event instanceof FallingBlockActorRemoved => $this->fallingBlockActorRemoved($event),
             $event instanceof ItemEntityMoved => $this->itemEntityMoved($event),
             $event instanceof ItemEntityPickedUp => $this->itemEntityPickedUp($event),
             $event instanceof ItemEntityDespawned => array_map(
@@ -2449,6 +2461,133 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
     }
 
     /** @return list<DirectedPacket> */
+    private function fallingBlockActorSpawned(FallingBlockActorSpawned $event): array
+    {
+        if ($this->chunks === null) {
+            throw new \LogicException('Falling-block projection requires the block translator.');
+        }
+        $entity = $event->entity;
+        $position = $entity->internalPosition();
+        $motion = $entity->getMotion();
+        $runtimeId = $entity->getRuntimeId();
+        $networkId = $this->chunks->networkRuntimeIdForCanonicalState(
+            $entity->getBlockIdentifier(),
+            $entity->getBlockProperties(),
+        );
+        $spawn = new AddActorPacket(
+            $runtimeId,
+            UnsignedLong::fromInt($runtimeId),
+            $entity->definition()->networkIdentifier,
+            $position->x,
+            $position->y + 0.49,
+            $position->z,
+            $motion->x,
+            $motion->y,
+            $motion->z,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            [],
+            FallingBlockActorMetadata::baseline($networkId, !$entity->isSettled()),
+            new ActorProperties(),
+            [],
+        );
+
+        $sourceUpdate = $event->sourcePosition !== null && $event->replacementState !== null
+            ? new UpdateBlockSyncedPacket(
+                new ProtocolBlockPosition(
+                    $event->sourcePosition->x,
+                    $event->sourcePosition->y,
+                    $event->sourcePosition->z,
+                ),
+                $this->chunks->networkRuntimeId($event->replacementState),
+                [UpdateBlockFlag::Network, UpdateBlockFlag::Priority],
+                0,
+                UnsignedLong::fromInt($runtimeId),
+                BlockSyncType::CREATE,
+            )
+            : null;
+        $packets = [];
+        foreach ($event->recipientSessionIds as $recipient) {
+            if ($sourceUpdate !== null) {
+                $packets[] = new DirectedPacket($recipient, $sourceUpdate);
+            }
+            $packets[] = new DirectedPacket($recipient, $spawn);
+        }
+
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function fallingBlockActorMoved(FallingBlockActorMoved $event): array
+    {
+        $shared = $this->entityMovementPackets(new EntityActorMoved(
+            $event->entity,
+            $event->tick,
+            $event->recipientSessionIds,
+            $event->motionChanged,
+        ));
+        $packets = [];
+        foreach ($event->recipientSessionIds as $recipient) {
+            foreach ($shared as $packet) {
+                $packets[] = new DirectedPacket($recipient, $packet);
+            }
+        }
+
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function fallingBlockActorSettled(FallingBlockActorSettled $event): array
+    {
+        if ($this->chunks === null) {
+            throw new \LogicException('Falling-block projection requires the block translator.');
+        }
+        $runtimeId = UnsignedLong::fromInt($event->entity->getRuntimeId());
+        $movement = $this->entityMovementPackets(new EntityActorMoved(
+            $event->entity,
+            $event->entity->ageTicks(),
+            $event->recipientSessionIds,
+            true,
+        ));
+        $block = new UpdateBlockSyncedPacket(
+            new ProtocolBlockPosition($event->position->x, $event->position->y, $event->position->z),
+            $this->chunks->networkRuntimeId($event->state),
+            [UpdateBlockFlag::Network, UpdateBlockFlag::Priority],
+            0,
+            $runtimeId,
+            BlockSyncType::DESTROY,
+        );
+        $metadata = new SetActorDataPacket(
+            $runtimeId,
+            UnsignedLong::fromInt(max(0, $event->entity->ageTicks())),
+            [FallingBlockActorMetadata::flags(false)],
+        );
+        $packets = [];
+        foreach ($event->recipientSessionIds as $recipient) {
+            foreach ($movement as $packet) {
+                $packets[] = new DirectedPacket($recipient, $packet);
+            }
+            $packets[] = new DirectedPacket($recipient, $block);
+            $packets[] = new DirectedPacket($recipient, $metadata);
+        }
+
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function fallingBlockActorRemoved(FallingBlockActorRemoved $event): array
+    {
+        $packet = new RemoveActorPacket($event->entity->getRuntimeId());
+
+        return array_map(
+            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
+            $event->recipientSessionIds,
+        );
+    }
+
+    /** @return list<DirectedPacket> */
     private function entityActorEffectChanged(EntityActorEffectChanged $event): array
     {
         $packet = $event->effect === null
@@ -2499,7 +2638,11 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
     {
         $entity = $event->entity;
         $position = $entity->internalPosition();
-        $networkY = $position->y + ($entity instanceof BoatEntity ? $entity->bedrockPositionOffsetY() : 0.0);
+        $networkY = $position->y + match (true) {
+            $entity instanceof BoatEntity => $entity->bedrockPositionOffsetY(),
+            $entity instanceof FallingBlockEntity => 0.49,
+            default => 0.0,
+        };
         $motion = $entity->getMotion();
         $runtimeId = UnsignedLong::fromInt($entity->getRuntimeId());
         $packets = [new MoveActorAbsolutePacket(

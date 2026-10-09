@@ -30,6 +30,7 @@ use Bedriox\Api\Command\PlayerCommandSender;
 use Bedriox\Api\World\World as PublicWorld;
 use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BedrockDataSet;
+use Bedriox\Data\CanonicalBlockState;
 use Bedriox\Protocol\Batch\BatchLimits;
 use Bedriox\Protocol\Batch\BedrockBatch;
 use Bedriox\Protocol\Batch\BedrockBatchCodec;
@@ -107,8 +108,10 @@ use Bedriox\RakNet\SessionClosedEvent;
 use Bedriox\RakNet\SessionCloseReason;
 use Bedriox\RakNet\SessionInfo;
 use Bedriox\RakNet\SessionOpenedEvent;
+use Bedriox\Server\Entity\Block\FallingBlockEntity;
 use Bedriox\Server\Entity\EntityMotion;
 use Bedriox\Server\Entity\Vanilla\ZombieEntity;
+use Bedriox\Server\Entity\VanillaEntityDefinitions;
 use Bedriox\Server\Gameplay\Crafting\CraftingCatalog;
 use Bedriox\Server\Gameplay\Crafting\RecipeIngredient;
 use Bedriox\Server\Gameplay\Crafting\RecipeOutput;
@@ -163,6 +166,7 @@ use Bedriox\Server\Simulation\Event\AreaEffectCloudRemoved;
 use Bedriox\Server\Simulation\Event\ChatBroadcast;
 use Bedriox\Server\Simulation\Event\EntityActorMoved;
 use Bedriox\Server\Simulation\Event\EntityActorRemoved;
+use Bedriox\Server\Simulation\Event\FallingBlockActorRemoved;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
 use Bedriox\Server\Simulation\Event\ItemEntityDespawned;
@@ -216,6 +220,14 @@ final class ServerRuntimeTest extends TestCase
             'world',
             new Position(0.0, 64.0, 0.0),
         );
+        $fallingBlock = new FallingBlockEntity(
+            '00000000-0000-4000-8000-000000000905',
+            905,
+            VanillaEntityDefinitions::fallingBlock(),
+            'world',
+            new Position(0.5, 70.0, 0.5),
+            CanonicalBlockState::from('minecraft:sand'),
+        );
 
         try {
             $this->setRuntimeProperty($runtime, 'processingWorldId', 'world');
@@ -234,6 +246,10 @@ final class ServerRuntimeTest extends TestCase
             $this->setRuntimeProperty($runtime, 'areaEffectCloudActors', ['world' => [904 => new \stdClass()]]);
             $this->setRuntimeProperty($runtime, 'areaEffectCloudViewers', [
                 'world' => [904 => ['leaving' => true, 'remaining' => true]],
+            ]);
+            $this->setRuntimeProperty($runtime, 'fallingBlockActors', ['world' => [905 => $fallingBlock]]);
+            $this->setRuntimeProperty($runtime, 'fallingBlockActorViewers', [
+                'world' => [905 => ['leaving' => true, 'remaining' => true]],
             ]);
 
             $entityEvents = $this->invokeRuntimeReconciler(
@@ -256,26 +272,41 @@ final class ServerRuntimeTest extends TestCase
                 'reconcileAreaEffectCloudEvent',
                 new AreaEffectCloudRemoved(904, ['leaving'], false),
             );
+            $fallingBlockEvents = $this->invokeRuntimeReconciler(
+                $runtime,
+                'reconcileFallingBlockEvent',
+                new FallingBlockActorRemoved($fallingBlock, ['leaving'], false),
+            );
 
             self::assertSame(['leaving'], $entityEvents[0]->recipients());
             self::assertSame(['leaving'], $itemEvents[0]->recipients());
             self::assertSame(['leaving'], $projectileEvents[0]->recipients());
             self::assertSame(['leaving'], $cloudEvents[0]->recipients());
+            self::assertSame(['leaving'], $fallingBlockEvents[0]->recipients());
             $entityActors = $this->runtimeArrayProperty($runtime, 'entityActors')['world'] ?? null;
             $itemActors = $this->runtimeArrayProperty($runtime, 'itemActors')['world'] ?? null;
             $projectileActors = $this->runtimeArrayProperty($runtime, 'projectileActors')['world'] ?? null;
             $cloudActors = $this->runtimeArrayProperty($runtime, 'areaEffectCloudActors')['world'] ?? null;
+            $fallingBlockActors = $this->runtimeArrayProperty($runtime, 'fallingBlockActors')['world'] ?? null;
+            $fallingBlockViewers = $this->runtimeArrayProperty($runtime, 'fallingBlockActorViewers')['world'] ?? null;
             $entityViewers = $this->runtimeArrayProperty($runtime, 'entityActorViewers')['world'] ?? null;
             self::assertIsArray($entityActors);
             self::assertIsArray($itemActors);
             self::assertIsArray($projectileActors);
             self::assertIsArray($cloudActors);
+            self::assertIsArray($fallingBlockActors);
+            self::assertIsArray($fallingBlockViewers);
             self::assertIsArray($entityViewers);
             self::assertArrayHasKey(901, $entityActors);
             self::assertArrayHasKey(902, $itemActors);
             self::assertArrayHasKey(903, $projectileActors);
             self::assertArrayHasKey(904, $cloudActors);
+            self::assertArrayHasKey(905, $fallingBlockActors);
             self::assertSame(['remaining' => true], $entityViewers[901]);
+            self::assertSame(
+                ['remaining' => true],
+                $fallingBlockViewers[905],
+            );
         } finally {
             $runtime->close();
         }

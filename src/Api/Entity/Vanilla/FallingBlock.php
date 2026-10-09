@@ -18,15 +18,18 @@
 
 declare(strict_types=1);
 
-namespace Bedriox\Server\World\Environment;
+namespace Bedriox\Api\Entity\Vanilla;
 
-enum EnvironmentTickType: string
+use Bedriox\Api\Entity\Entity;
+
+interface FallingBlock extends Entity
 {
-    case FLUID = 'fluid';
-    case FIRE = 'fire';
-    case RANDOM_BLOCK = 'random_block';
-    case FROSTED_ICE = 'frosted_ice';
-    case DRIED_GHAST = 'dried_ghast';
-    case SNIFFER_EGG = 'sniffer_egg';
-    case BLOCK_PHYSICS = 'block_physics';
+    public function getBlockIdentifier(): string;
+
+    /** @return array<string, int|string> */
+    public function getBlockProperties(): array;
+
+    public function getFallDistance(): float;
+
+    public function dropsAsItem(): bool;
 }

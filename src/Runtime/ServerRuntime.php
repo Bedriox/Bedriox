@@ -73,6 +73,7 @@ use Bedriox\Server\Access\WhitelistManager;
 use Bedriox\Server\Command\CommandFeedback;
 use Bedriox\Server\Entity\AbstractLivingEntity;
 use Bedriox\Server\Entity\Ai\AiSchedulerMetrics;
+use Bedriox\Server\Entity\Block\FallingBlockEntity;
 use Bedriox\Server\Entity\EntityRuntimeMetrics;
 use Bedriox\Server\Entity\Item\DroppedItemEntity;
 use Bedriox\Server\Entity\Navigation\EntityNavigationMetrics;
@@ -123,6 +124,10 @@ use Bedriox\Server\Simulation\Event\EntityActorMoved;
 use Bedriox\Server\Simulation\Event\EntityActorRemoved;
 use Bedriox\Server\Simulation\Event\EntityActorSpawned;
 use Bedriox\Server\Simulation\Event\EntityInteracted;
+use Bedriox\Server\Simulation\Event\FallingBlockActorMoved;
+use Bedriox\Server\Simulation\Event\FallingBlockActorRemoved;
+use Bedriox\Server\Simulation\Event\FallingBlockActorSettled;
+use Bedriox\Server\Simulation\Event\FallingBlockActorSpawned;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
 use Bedriox\Server\Simulation\Event\ItemEntityDespawned;
@@ -315,6 +320,12 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
 
     /** @var array<string, array<int, array<string, true>>> */
     private array $areaEffectCloudViewers = [];
+
+    /** @var array<string, array<int, FallingBlockEntity>> */
+    private array $fallingBlockActors = [];
+
+    /** @var array<string, array<int, array<string, true>>> */
+    private array $fallingBlockActorViewers = [];
 
     public function __construct(
         private readonly ConnectedTransport $transport,
@@ -977,6 +988,10 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     $event instanceof AreaEffectCloudSpawned,
                     $event instanceof AreaEffectCloudUpdated,
                     $event instanceof AreaEffectCloudRemoved => $this->reconcileAreaEffectCloudEvent($event),
+                    $event instanceof FallingBlockActorSpawned,
+                    $event instanceof FallingBlockActorMoved,
+                    $event instanceof FallingBlockActorSettled,
+                    $event instanceof FallingBlockActorRemoved => $this->reconcileFallingBlockEvent($event),
                     default => [$event],
                 };
                 foreach ($events as $projected) {
@@ -1557,6 +1572,11 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                                 return false;
                             }
                         }
+                        foreach ($this->reconcileTransientActorsForViewer($session->id, $changedChunkSet) as $visibilityEvent) {
+                            if (!$this->dispatchWorldEvent($visibilityEvent, $directedCount)) {
+                                return false;
+                            }
+                        }
                     }
                     if (!$this->drainActorVisibilityReconciliations($directedCount)) {
                         return false;
@@ -1715,6 +1735,15 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                             || $event instanceof AreaEffectCloudRemoved) {
                             foreach ($this->reconcileAreaEffectCloudEvent($event) as $cloudEvent) {
                                 if (!$this->dispatchWorldEvent($cloudEvent, $directedCount)) {
+                                    return false;
+                                }
+                            }
+                            continue;
+                        }
+                        if ($event instanceof FallingBlockActorSpawned || $event instanceof FallingBlockActorMoved
+                            || $event instanceof FallingBlockActorSettled || $event instanceof FallingBlockActorRemoved) {
+                            foreach ($this->reconcileFallingBlockEvent($event) as $fallingBlockEvent) {
+                                if (!$this->dispatchWorldEvent($fallingBlockEvent, $directedCount)) {
                                     return false;
                                 }
                             }
@@ -4069,8 +4098,85 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     }
 
     /**
+     * @return list<FallingBlockActorSpawned|FallingBlockActorMoved|FallingBlockActorSettled|FallingBlockActorRemoved>
+     */
+    private function reconcileFallingBlockEvent(
+        FallingBlockActorSpawned|FallingBlockActorMoved|FallingBlockActorSettled|FallingBlockActorRemoved $event,
+    ): array {
+        $worldId = $this->processingWorldId ?? 'world';
+        $entity = $event->entity;
+        $runtimeId = $entity->getRuntimeId();
+        if ($event instanceof FallingBlockActorRemoved) {
+            if (!$event->authoritative) {
+                $recipients = array_values(array_unique($event->recipientSessionIds));
+                foreach ($recipients as $recipient) {
+                    unset($this->fallingBlockActorViewers[$worldId][$runtimeId][$recipient]);
+                }
+
+                return $recipients === [] ? [] : [new FallingBlockActorRemoved($entity, $recipients, false)];
+            }
+            $viewers = array_keys($this->fallingBlockActorViewers[$worldId][$runtimeId] ?? []);
+            unset(
+                $this->fallingBlockActors[$worldId][$runtimeId],
+                $this->fallingBlockActorViewers[$worldId][$runtimeId],
+            );
+
+            return $viewers === [] ? [] : [new FallingBlockActorRemoved($entity, $viewers)];
+        }
+
+        $this->fallingBlockActors[$worldId][$runtimeId] = $entity;
+        $old = $this->fallingBlockActorViewers[$worldId][$runtimeId] ?? [];
+        $eligible = $old;
+        foreach (array_keys($eligible) as $recipient) {
+            if (!$this->transientActorViewerCanSee($recipient, $worldId, $entity->internalPosition())) {
+                unset($eligible[$recipient]);
+            }
+        }
+        foreach (array_values(array_unique($event->recipientSessionIds)) as $recipient) {
+            if ($this->transientActorViewerCanSee($recipient, $worldId, $entity->internalPosition())) {
+                $eligible[$recipient] = true;
+            } else {
+                unset($eligible[$recipient]);
+            }
+        }
+        $this->fallingBlockActorViewers[$worldId][$runtimeId] = $eligible;
+        $appeared = array_keys(array_diff_key($eligible, $old));
+        $disappeared = array_keys(array_diff_key($old, $eligible));
+        $events = [];
+        if ($disappeared !== []) {
+            $events[] = new FallingBlockActorRemoved($entity, $disappeared, false);
+        }
+        if ($appeared !== []) {
+            $events[] = new FallingBlockActorSpawned(
+                $entity,
+                $event instanceof FallingBlockActorSpawned ? $event->sourcePosition : null,
+                $event instanceof FallingBlockActorSpawned ? $event->replacementState : null,
+                $appeared,
+            );
+        }
+        $continuing = array_keys(array_intersect_key($eligible, $old));
+        if ($event instanceof FallingBlockActorMoved && $continuing !== []) {
+            $events[] = new FallingBlockActorMoved(
+                $entity,
+                $event->tick,
+                $continuing,
+                $event->motionChanged,
+            );
+        } elseif ($event instanceof FallingBlockActorSettled && $eligible !== []) {
+            $events[] = new FallingBlockActorSettled(
+                $entity,
+                $event->position,
+                $event->state,
+                array_keys($eligible),
+            );
+        }
+
+        return $events;
+    }
+
+    /**
      * @param null|array<string, true> $chunkKeys
-     * @return list<ProjectileSpawned|ProjectileRemoved|AreaEffectCloudSpawned|AreaEffectCloudRemoved>
+     * @return list<ProjectileSpawned|ProjectileRemoved|AreaEffectCloudSpawned|AreaEffectCloudRemoved|FallingBlockActorSpawned|FallingBlockActorRemoved>
      */
     private function reconcileTransientActorsForViewer(string $sessionId, ?array $chunkKeys = null): array
     {
@@ -4098,6 +4204,19 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             }
             foreach ($this->reconcileAreaEffectCloudEvent(new AreaEffectCloudSpawned($cloud, [$sessionId])) as $event) {
                 if ($event instanceof AreaEffectCloudSpawned || $event instanceof AreaEffectCloudRemoved) {
+                    $events[] = $event;
+                }
+            }
+        }
+        foreach ($this->fallingBlockActors[$worldId] ?? [] as $entity) {
+            $position = $entity->internalPosition();
+            if ($chunkKeys !== null && !isset($chunkKeys[self::positionChunkKey($position->x, $position->z)])) {
+                continue;
+            }
+            foreach ($this->reconcileFallingBlockEvent(
+                new FallingBlockActorSpawned($entity, null, null, [$sessionId]),
+            ) as $event) {
+                if ($event instanceof FallingBlockActorSpawned || $event instanceof FallingBlockActorRemoved) {
                     $events[] = $event;
                 }
             }
@@ -4780,7 +4899,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             || $event instanceof PlayerKnockedBack
             || $event instanceof PlayerMotionChanged
             || $event instanceof EntityActorDied
-            || $event instanceof EntityActorRemoved;
+            || $event instanceof EntityActorRemoved
+            || $event instanceof FallingBlockActorSettled
+            || $event instanceof FallingBlockActorRemoved;
     }
 
     private function shouldBroadcastPeerMovement(PlayerMoved $event, int $tick): bool

@@ -783,7 +783,10 @@ final class PlayerInventory
                 return new InventoryStackRequestResult(false, reason: $reason);
             }
             if ($action->source->key() === $action->destination->key()) {
-                if ($action->type !== InventoryStackRequestActionType::Consume) {
+                if (!in_array($action->type, [
+                    InventoryStackRequestActionType::Consume,
+                    InventoryStackRequestActionType::Destroy,
+                ], true)) {
                     return new InventoryStackRequestResult(false, reason: 'same_slot');
                 }
             }
@@ -796,15 +799,33 @@ final class PlayerInventory
                 $mutated[$action->destination->key()] = $action->destination;
             }
 
-            if ($action->type === InventoryStackRequestActionType::Consume) {
+            if ($action->type === InventoryStackRequestActionType::Consume
+                || $action->type === InventoryStackRequestActionType::Destroy) {
+                if ($action->type === InventoryStackRequestActionType::Destroy
+                    && $action->source->container === InventoryContainer::CreatedOutput) {
+                    return new InventoryStackRequestResult(false, reason: 'destroy_created_output');
+                }
                 if (!in_array(
                     $action->source->container,
-                    $allowMainConsumption
+                    $action->type === InventoryStackRequestActionType::Destroy
+                        ? [
+                            InventoryContainer::Main,
+                            InventoryContainer::Cursor,
+                            InventoryContainer::Armor,
+                            InventoryContainer::Offhand,
+                            InventoryContainer::CraftingInput,
+                        ]
+                        : ($allowMainConsumption
                         ? [InventoryContainer::Main, InventoryContainer::CraftingInput]
-                        : [InventoryContainer::CraftingInput],
+                        : [InventoryContainer::CraftingInput]),
                     true,
                 ) || $action->count < 1) {
-                    return new InventoryStackRequestResult(false, reason: 'crafting_consume');
+                    return new InventoryStackRequestResult(
+                        false,
+                        reason: $action->type === InventoryStackRequestActionType::Destroy
+                            ? 'destroy_source'
+                            : 'crafting_consume',
+                    );
                 }
                 $source = self::readSlot(
                     $action->source,

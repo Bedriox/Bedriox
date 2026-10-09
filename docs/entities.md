@@ -51,6 +51,8 @@ Movement helpers express bounded steering, not a persistent pathfinding script. 
 
 Capabilities such as `Ageable`, `Breedable`, `Shearable`, `Undead`, and `RangedMob` live under `Api\Entity\Capability`; mutation gateways live under `Api\Entity\Controller`; read-only built-in species contracts live under `Api\Entity\Vanilla`. Concrete built-in entity implementations remain internal under `Server\Entity\Vanilla`.
 
+`Api\Entity\Vanilla\FallingBlock` exposes the exact canonical block identifier and properties, fall distance, and item-drop policy for a live gravity-driven block actor. Its departure from the source cell and its eventual landing both pass through `EntityBlockChangeEvent` with the `FALL` reason; cancellation prevents that individual authoritative transition without bypassing validation or scheduling.
+
 `Aquatic` exposes immutable water-survival state through
 `canBreatheUnderwater()`, `requiresWater()`, `getAirSupplyTicks()`, and
 `getMaximumAirSupplyTicks()`. Cod, salmon, tropical fish, pufferfish, squid,

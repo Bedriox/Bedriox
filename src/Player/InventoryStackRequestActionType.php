@@ -26,6 +26,7 @@ enum InventoryStackRequestActionType
     case Place;
     case Swap;
     case Consume;
+    case Destroy;
     case SelectCraftingResult;
     case MineBlock;
 }

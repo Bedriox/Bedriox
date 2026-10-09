@@ -23,7 +23,9 @@ namespace Bedriox\Server\Entity;
 use Bedriox\Api\Entity\EntityCategory;
 use Bedriox\Api\Entity\Value\SlimeSize;
 use Bedriox\Api\Entity\VanillaEntityType;
+use Bedriox\Data\CanonicalBlockState;
 use Bedriox\Data\EntityTypeRegistry;
+use Bedriox\Server\Entity\Block\FallingBlockEntity;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceRecord;
 use Bedriox\Server\Entity\Vanilla\AxolotlEntity;
 use Bedriox\Server\Entity\Vanilla\BoggedEntity;
@@ -78,6 +80,7 @@ final class VanillaEntityDefinitions
     private static ?EntityDefinition $sheep = null;
     private static ?EntityDefinition $skeleton = null;
     private static ?EntityDefinition $zombie = null;
+    private static ?EntityDefinition $fallingBlock = null;
 
     /** @var array<string, EntityDefinition> */
     private static array $hostiles = [];
@@ -87,6 +90,20 @@ final class VanillaEntityDefinitions
 
     /** @var array<string, EntityDefinition> */
     private static array $passive = [];
+
+    public static function fallingBlock(): EntityDefinition
+    {
+        return self::$fallingBlock ??= new EntityDefinition(
+            VanillaEntityType::FALLING_BLOCK,
+            EntityCategory::MISCELLANEOUS,
+            VanillaEntityType::FALLING_BLOCK->value,
+            0.98,
+            0.98,
+            1.0,
+            gravity: 0.04,
+            drag: 0.02,
+        );
+    }
 
     public static function cow(): EntityDefinition
     {
@@ -423,6 +440,28 @@ final class VanillaEntityDefinitions
     public static function registrations(): array
     {
         return [
+            new RegisteredEntityDefinition(
+                self::fallingBlock(),
+                static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): FallingBlockEntity =>
+                    new FallingBlockEntity(
+                        $uuid,
+                        $runtimeId,
+                        self::fallingBlock(),
+                        $world,
+                        $position,
+                        CanonicalBlockState::from('minecraft:sand'),
+                    ),
+                persistenceFactory: static fn(string $uuid, int $runtimeId, EntityPersistenceRecord $record): FallingBlockEntity =>
+                    new FallingBlockEntity(
+                        $uuid,
+                        $runtimeId,
+                        self::fallingBlock(),
+                        $record->worldName(),
+                        $record->position,
+                        CanonicalBlockState::from('minecraft:sand'),
+                        motion: $record->motion,
+                    ),
+            ),
             new RegisteredEntityDefinition(
                 VehicleEntityDefinitions::boat(),
                 static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): BoatEntity =>

@@ -60,6 +60,7 @@ use Bedriox\Server\Simulation\Command\JoinPlayer;
 use Bedriox\Server\Simulation\Command\MountPlayer;
 use Bedriox\Server\Simulation\Command\MovePlayer;
 use Bedriox\Server\Simulation\Command\PerformEmote;
+use Bedriox\Server\Simulation\Command\PickBlock;
 use Bedriox\Server\Simulation\Command\PlaceBlock;
 use Bedriox\Server\Simulation\Command\ReleaseItem;
 use Bedriox\Server\Simulation\Command\RemovePlayerEffect;
@@ -690,6 +691,16 @@ final readonly class SimulationCommandFactory
         }
 
         return new SelectHotbarSlot($session, $hotbarSlot);
+    }
+
+    public function pickBlock(
+        string $session,
+        BlockPosition $position,
+        bool $addUserData,
+    ): PickBlock {
+        $this->assertOpaqueId($session, 128, 'session');
+
+        return new PickBlock($session, $position, $addUserData);
     }
 
     public function useItem(string $session, int $hotbarSlot): UseItem

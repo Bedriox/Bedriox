@@ -23,6 +23,7 @@ namespace Bedriox\Server\Entity;
 use Bedriox\Api\Entity\MobActivationState;
 use Bedriox\Server\Entity\Ai\AiClock;
 use Bedriox\Server\Entity\Ai\SystemAiClock;
+use Bedriox\Server\Entity\Block\FallingBlockEntity;
 use Bedriox\Server\Entity\Mount\MountLink;
 use Bedriox\Server\Entity\Mount\MountRegistry;
 use Bedriox\Server\Entity\Vanilla\Misc\LeashKnotEntity;
@@ -48,7 +49,7 @@ final readonly class EntityContactResolver
         $exhausted = false;
 
         foreach ($this->entities->all() as $entity) {
-            if ($entity->isRemoved()) {
+            if ($entity->isRemoved() || $entity instanceof FallingBlockEntity) {
                 continue;
             }
             $radius = $entity->collisionWidth() + self::QUERY_RADIUS_PADDING;
@@ -59,7 +60,7 @@ final readonly class EntityContactResolver
                 $budget->maximumContactCandidates,
             ) as $other) {
                 ++$candidates;
-                if ($entity === $other || $other->isRemoved()) {
+                if ($entity === $other || $other->isRemoved() || $other instanceof FallingBlockEntity) {
                     continue;
                 }
                 $low = min($entity->getRuntimeId(), $other->getRuntimeId());

@@ -21,6 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Tests\Runtime;
 
 use Bedriox\Api\Entity\EntityInteractionType;
+use Bedriox\Api\Player\GameMode;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Batch\BatchLimits;
 use Bedriox\Protocol\Batch\BedrockBatch;
@@ -35,6 +36,7 @@ use Bedriox\Protocol\Packet\ActorEventType;
 use Bedriox\Protocol\Packet\AnimatePacket;
 use Bedriox\Protocol\Packet\BasicInventoryTransaction;
 use Bedriox\Protocol\Packet\BedrockPacketCodec;
+use Bedriox\Protocol\Packet\BlockPickRequestPacket;
 use Bedriox\Protocol\Packet\BlockPosition;
 use Bedriox\Protocol\Packet\BossEventAction;
 use Bedriox\Protocol\Packet\BossEventPacket;
@@ -54,6 +56,7 @@ use Bedriox\Protocol\Packet\CraftRecipeItemStackRequestAction;
 use Bedriox\Protocol\Packet\CraftRecipeOptionalItemStackRequestAction;
 use Bedriox\Protocol\Packet\CreateItemStackRequestAction;
 use Bedriox\Protocol\Packet\DeathInfoPacket;
+use Bedriox\Protocol\Packet\DestroyItemStackRequestAction;
 use Bedriox\Protocol\Packet\DimensionId;
 use Bedriox\Protocol\Packet\DropItemStackRequestAction;
 use Bedriox\Protocol\Packet\EmoteFlag;
@@ -135,6 +138,7 @@ use Bedriox\Server\Runtime\BedrockChunkPacketSerializer;
 use Bedriox\Server\Runtime\BedrockInventoryPacketProjector;
 use Bedriox\Server\Runtime\BedrockPlayChannel;
 use Bedriox\Server\Runtime\BedrockWorldEventPacketEncoder;
+use Bedriox\Server\Runtime\GameModePacketProjector;
 use Bedriox\Server\Runtime\RuntimeDiagnostics;
 use Bedriox\Server\Runtime\RuntimeLimits;
 use Bedriox\Server\Simulation\ArmSwingSource;
@@ -151,6 +155,7 @@ use Bedriox\Server\Simulation\Command\DropItem;
 use Bedriox\Server\Simulation\Command\InteractEntity;
 use Bedriox\Server\Simulation\Command\MovePlayer;
 use Bedriox\Server\Simulation\Command\PerformEmote;
+use Bedriox\Server\Simulation\Command\PickBlock;
 use Bedriox\Server\Simulation\Command\PlaceBlock;
 use Bedriox\Server\Simulation\Command\ReleaseItem;
 use Bedriox\Server\Simulation\Command\RespawnPlayer;
@@ -1170,8 +1175,51 @@ final class BedrockPlayChannelTest extends TestCase
             Reliability::ReliableOrdered,
             0,
         )));
-        self::assertSame([], $channel->drainOutgoing(), 'A repeated flight state must not amplify output.');
-        self::assertCount(1, $channel->drainCommands(), 'Ordinary movement must continue after rejecting flight.');
+        $repeatedCorrection = $channel->drainOutgoing();
+        self::assertCount(1, $repeatedCorrection, 'A denied flight request remains an authoritative correction.');
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands, 'Ordinary movement must continue after rejecting flight.');
+        self::assertInstanceOf(MovePlayer::class, $commands[0]);
+        self::assertFalse($commands[0]->flying, 'Denied flight intent must never contaminate movement authority.');
+        self::assertFalse($channel->isClosed());
+    }
+
+    public function testSurvivalAbilityUpdateClearsAnActiveCreativeFlightIntent(): void
+    {
+        $creative = (new GameModePacketProjector())->abilities(GameMode::CREATIVE, 7, false);
+        [$channel, $client, $server, $entityId] = $this->channel([$creative]);
+        foreach ($channel->drainOutgoing() as $payload) {
+            $server->decryptEnvelope($payload->payload);
+        }
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([
+                new SetLocalPlayerAsInitializedPacket($entityId),
+                $this->flightInput(UnsignedLong::fromInt(71)),
+            ])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $flying = $channel->drainCommands();
+        self::assertCount(1, $flying);
+        self::assertInstanceOf(MovePlayer::class, $flying[0]);
+        self::assertTrue($flying[0]->flying);
+        foreach ($channel->drainOutgoing() as $payload) {
+            $server->decryptEnvelope($payload->payload);
+        }
+
+        self::assertTrue($channel->queuePacket(UpdateAbilitiesPacket::survival(7)));
+        foreach ($channel->drainOutgoing() as $payload) {
+            $server->decryptEnvelope($payload->payload);
+        }
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([$this->movementPacket(UnsignedLong::fromInt(72), y: 75.0)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $survival = $channel->drainCommands();
+        self::assertCount(1, $survival);
+        self::assertInstanceOf(MovePlayer::class, $survival[0]);
+        self::assertFalse($survival[0]->flying);
         self::assertFalse($channel->isClosed());
     }
 
@@ -3179,6 +3227,37 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertSame(32, $commands[0]->actions[0]->count);
     }
 
+    public function testCreativeTrashRequestBecomesAnAuthoritativeDestroyAction(): void
+    {
+        [$channel, $clientEncryptor, , $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $request = new ItemStackRequest(-21, [new DestroyItemStackRequestAction(
+            12,
+            new ItemStackRequestSlot(new FullContainerName(FullContainerName::HOTBAR), 3, 44),
+        )]);
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([$request])])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(ApplyInventoryStackRequest::class, $commands[0]);
+        self::assertNull($commands[0]->rejectionReason);
+        self::assertCount(1, $commands[0]->actions);
+        self::assertSame(InventoryStackRequestActionType::Destroy, $commands[0]->actions[0]->type);
+        self::assertSame(InventoryContainer::Main, $commands[0]->actions[0]->source->container);
+        self::assertSame(3, $commands[0]->actions[0]->source->slot);
+        self::assertSame(44, $commands[0]->actions[0]->source->expectedStackNetworkId);
+        self::assertSame(12, $commands[0]->actions[0]->count);
+    }
+
     public function testOffhandRequestUsesInternalSlotZeroAndPreservesTheClientResponseSlot(): void
     {
         [$channel, $clientEncryptor, , $entityId] = $this->channel();
@@ -3431,6 +3510,24 @@ final class BedrockPlayChannelTest extends TestCase
             Reliability::ReliableOrdered,
             0,
         )));
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new BlockPickRequestPacket(
+                new BlockPosition(1, 63, -2),
+                false,
+                255,
+            )])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $pickCommands = $channel->drainCommands();
+        self::assertCount(1, $pickCommands);
+        self::assertInstanceOf(PickBlock::class, $pickCommands[0]);
+        self::assertSame([1, 63, -2], [
+            $pickCommands[0]->position->x,
+            $pickCommands[0]->position->y,
+            $pickCommands[0]->position->z,
+        ]);
 
         $grassBefore = $world->chunk(new ChunkPosition(0, -1))->blockStateAt(1, 63, 14);
         self::assertSame($palette->grassBlock->value, $grassBefore->value);

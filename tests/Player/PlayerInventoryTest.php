@@ -159,6 +159,42 @@ final class PlayerInventoryTest extends TestCase
         self::assertSame('minecraft:oak_planks', $inventory->craftingStack(0)?->identifier);
     }
 
+    public function testDestroyRequestRemovesOnlyTheAuthoritativeRequestedCount(): void
+    {
+        $inventory = PlayerInventory::empty();
+        $inventory->replaceSlot(2, new InventoryStack('minecraft:stone', 20, 1));
+        $stack = $inventory->stackAt(2);
+        self::assertNotNull($stack);
+        $source = new InventorySlotReference(
+            InventoryContainer::Main,
+            2,
+            $stack->stackNetworkId,
+            FullContainerName::HOTBAR,
+            responseSlot: 2,
+        );
+
+        $result = $inventory->applyStackRequest(41, [new InventoryStackRequestAction(
+            InventoryStackRequestActionType::Destroy,
+            $source,
+            $source,
+            7,
+        )]);
+
+        self::assertTrue($result->success, $result->reason);
+        self::assertSame(13, $inventory->stackAt(2)?->count);
+        self::assertCount(1, $result->affectedSlots);
+
+        $stale = $inventory->applyStackRequest(42, [new InventoryStackRequestAction(
+            InventoryStackRequestActionType::Destroy,
+            $source,
+            $source,
+            1,
+        )]);
+        self::assertFalse($stale->success);
+        self::assertSame('stack_network_id', $stale->reason);
+        self::assertSame(13, $inventory->stackAt(2)->count);
+    }
+
     public function testIncompleteCraftingOutputRollsBackConsumedIngredients(): void
     {
         $inventory = PlayerInventory::empty();

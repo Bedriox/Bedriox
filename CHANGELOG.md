@@ -1,5 +1,8 @@
 # Changelog
 
+- Add authoritative creative block picking and inventory trash actions, including cancellable block-pick and inventory-change plugin interception.
+- Clear stale flight intent when game-mode abilities revoke flight so airborne creative-to-survival transitions fall normally instead of accumulating invalid-movement violations.
+- Add bounded, scheduled falling-block physics for sand, red sand, gravel, concrete powder, anvils, and dragon eggs, including cascades, water hardening, landing damage, persistence, plugin block-change events, and current-client actor projection.
 - Distinguish successful, informational, warning, and failed command feedback; notify affected players of game-mode and operator changes; and publish successful administrative actions to the console and authorized operators.
 - Reuse admitted immutable registries during startup, trust persisted world spawn metadata, and defer full spawn-chunk generation to the bounded worker pipeline.
 - Add startup-stage timing diagnostics that separate catalog preparation, world storage opening, runtime composition, and time to network readiness.
