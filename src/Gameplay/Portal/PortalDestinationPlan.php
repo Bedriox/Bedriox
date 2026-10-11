@@ -20,16 +20,18 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Gameplay\Portal;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
+use Bedriox\Api\World\World;
 use Bedriox\Server\Simulation\Position;
 
 final readonly class PortalDestinationPlan
 {
     public function __construct(
-        public WorldDimension $sourceDimension,
-        public WorldDimension $targetDimension,
+        public DimensionType $sourceDimension,
+        public DimensionType $targetDimension,
         public Position $projectedPosition,
         public int $searchRadius,
         public PortalAxis $preferredAxis,
+        public ?World $targetWorld = null,
     ) {}
 }

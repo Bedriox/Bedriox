@@ -23,7 +23,7 @@ namespace Bedriox\Server\Tests\Entity\Spawn\Natural;
 use Bedriox\Api\Entity\EntityCategory;
 use Bedriox\Api\Entity\VanillaEntityIdentifier;
 use Bedriox\Api\Entity\VanillaEntityType;
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\Entity\Spawn\Natural\AquaticSpeciesNaturalSpawnRule;
 use Bedriox\Server\Entity\Spawn\Natural\CaveSpiderNaturalSpawnRule;
 use Bedriox\Server\Entity\Spawn\Natural\CreeperNaturalSpawnRule;
@@ -47,7 +47,7 @@ final class SpecialHostileSpawnRuleTest extends TestCase
             self::assertTrue($rule->allows(self::context('minecraft:spider', light: 7)));
             self::assertFalse($rule->allows(self::context('minecraft:spider', light: 8)));
             self::assertFalse($rule->allows(self::context('minecraft:spider', light: 7, medium: NaturalSpawnMedium::WATER)));
-            self::assertFalse($rule->allows(self::context('minecraft:spider', light: 7, dimension: WorldDimension::NETHER)));
+            self::assertFalse($rule->allows(self::context('minecraft:spider', light: 7, dimension: DimensionType::NETHER)));
         }
         self::assertFalse((new CaveSpiderNaturalSpawnRule())->allows(self::context('minecraft:cave_spider', light: 0)));
     }
@@ -64,9 +64,9 @@ final class SpecialHostileSpawnRuleTest extends TestCase
         self::assertTrue($magma->allows(self::context(
             'minecraft:magma_cube',
             biome: 'minecraft:hell',
-            dimension: WorldDimension::NETHER,
+            dimension: DimensionType::NETHER,
         )));
-        self::assertFalse($magma->allows(self::context('minecraft:magma_cube', dimension: WorldDimension::NETHER)));
+        self::assertFalse($magma->allows(self::context('minecraft:magma_cube', dimension: DimensionType::NETHER)));
         self::assertFalse($magma->allows(self::context('minecraft:magma_cube')));
     }
 
@@ -74,7 +74,7 @@ final class SpecialHostileSpawnRuleTest extends TestCase
     {
         $rule = new EndermanNaturalSpawnRule();
         self::assertTrue($rule->allows(self::context('minecraft:enderman', light: 7)));
-        self::assertTrue($rule->allows(self::context('minecraft:enderman', light: 7, dimension: WorldDimension::END)));
+        self::assertTrue($rule->allows(self::context('minecraft:enderman', light: 7, dimension: DimensionType::END)));
         self::assertFalse($rule->allows(self::context('minecraft:enderman', light: 8)));
     }
 
@@ -146,7 +146,7 @@ final class SpecialHostileSpawnRuleTest extends TestCase
         float $y = 64.0,
         int $light = 0,
         string $biome = 'minecraft:plains',
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
         NaturalSpawnMedium $medium = NaturalSpawnMedium::GROUND,
     ): NaturalSpawnContext {
         return new NaturalSpawnContext(

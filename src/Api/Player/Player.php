@@ -37,8 +37,9 @@ use Bedriox\Api\Inventory\OffHandInventory;
 use Bedriox\Api\Inventory\PlayerInventory;
 use Bedriox\Api\Inventory\PlayerInventoryActions;
 use Bedriox\Api\TranslatableMessage;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\Position;
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\World;
 use Bedriox\Protocol\Packet\SetTitlePacket;
 use Bedriox\Protocol\Packet\TextPacket;
 use Bedriox\Protocol\Packet\ToastRequestPacket;
@@ -111,9 +112,15 @@ final readonly class Player
         return $this->gameMode;
     }
 
-    public function getDimension(): WorldDimension
+    public function getDimension(): DimensionType
     {
-        return $this->position->dimension ?? WorldDimension::OVERWORLD;
+        return $this->getWorld()->getDimensionType();
+    }
+
+    public function getWorld(): World
+    {
+        return $this->position->world
+            ?? throw new \LogicException('This player snapshot does not contain a resolved world.');
     }
 
     public function getSkin(): Skin

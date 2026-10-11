@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Worker\Chunk;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\ProtocolVersion;
 use Bedriox\Server\Worker\Chunk\ChunkPreparationRequestCodec;
@@ -164,7 +164,7 @@ final class PreparedChunkCacheTest extends TestCase
 
     #[DataProvider('nonOverworldDimensions')]
     public function testWorkerRequestPreservesTheCacheDimension(
-        WorldDimension $dimension,
+        DimensionType $dimension,
         int $wireDimension,
         int $minimumSectionY,
         int $maximumSectionY,
@@ -199,11 +199,11 @@ final class PreparedChunkCacheTest extends TestCase
         self::assertCount($maximumSectionY - $minimumSectionY + 1, $column->biomes);
     }
 
-    /** @return iterable<string, array{WorldDimension, int, int, int}> */
+    /** @return iterable<string, array{DimensionType, int, int, int}> */
     public static function nonOverworldDimensions(): iterable
     {
-        yield 'nether' => [WorldDimension::NETHER, 1, 0, 7];
-        yield 'end' => [WorldDimension::END, 2, 0, 15];
+        yield 'nether' => [DimensionType::NETHER, 1, 0, 7];
+        yield 'end' => [DimensionType::END, 2, 0, 15];
     }
 
     /** @return array{PreparedChunkCache, FakePreparationWorkerDispatcher, \Bedriox\Server\World\Chunk, FixedFlatBlockPalette} */

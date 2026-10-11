@@ -26,6 +26,7 @@ use Bedriox\Api\Inventory\ItemStack as ApiItemStack;
 use Bedriox\Api\Processing\EnchantingOption;
 use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\BlockFace;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\Particle\BlockParticle;
 use Bedriox\Api\World\Particle\BlockParticleType;
 use Bedriox\Api\World\Particle\ColoredParticle;
@@ -44,7 +45,6 @@ use Bedriox\Api\World\Particle\StandardParticle;
 use Bedriox\Api\World\Particle\StandardParticleType;
 use Bedriox\Api\World\WeatherState;
 use Bedriox\Api\World\WeatherType;
-use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Encryption\BedrockDecryptor;
 use Bedriox\Protocol\Encryption\BedrockEncryptor;
@@ -377,7 +377,7 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
                 new Position(1.5, 65.0, 2.5),
                 $particle,
                 ['visible', 'hidden'],
-                WorldDimension::NETHER,
+                DimensionType::NETHER,
             ),
             ['visible' => $visible, 'hidden' => $hidden],
         );

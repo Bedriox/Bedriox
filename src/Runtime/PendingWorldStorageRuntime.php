@@ -23,19 +23,19 @@ namespace Bedriox\Server\Runtime;
 use Closure;
 
 /** @internal Composes simulation state only after asynchronous storage startup is ready. */
-final class PendingManagedWorldRuntime
+final class PendingWorldStorageRuntime
 {
-    private ?ManagedWorldRuntime $runtime = null;
+    private ?WorldStorageRuntime $runtime = null;
 
-    /** @param Closure(OpenedWorld): ManagedWorldRuntime $compose */
+    /** @param Closure(OpenedWorld): WorldStorageRuntime $compose */
     public function __construct(
         private readonly PendingOpenedWorld $opened,
         private readonly Closure $compose,
     ) {}
 
-    public function poll(): ?ManagedWorldRuntime
+    public function poll(): ?WorldStorageRuntime
     {
-        if ($this->runtime instanceof ManagedWorldRuntime) {
+        if ($this->runtime instanceof WorldStorageRuntime) {
             return $this->runtime;
         }
         $opened = $this->opened->poll();
@@ -48,7 +48,7 @@ final class PendingManagedWorldRuntime
 
     public function cancel(): void
     {
-        if (!$this->runtime instanceof ManagedWorldRuntime) {
+        if (!$this->runtime instanceof WorldStorageRuntime) {
             $this->opened->cancel();
         }
     }

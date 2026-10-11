@@ -22,6 +22,7 @@ namespace Bedriox\Server\Tests\Entity;
 
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\VanillaEntityType;
+use Bedriox\Api\World\World as ApiWorld;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Entity\AbstractLivingEntity;
 use Bedriox\Server\Entity\AbstractMobEntity;
@@ -69,6 +70,7 @@ final class EntityWorldRuntimeTest extends TestCase
             new Position(0.5, 64.0, 0.5),
             motion: new EntityMotion(0.05, 0.0, 0.0),
         );
+        $entity->bindPublicWorld(new ApiWorld('world', 1));
         $entity->setOnGround(true);
         $resolver = new EntityPhysicsResolver(new class implements LoadedCollisionBoxQuery {
             public function boxesIntersecting(AxisAlignedBox $area): array

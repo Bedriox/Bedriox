@@ -17,6 +17,15 @@ Block and item data follow the same ownership rule. `Data` supplies canonical im
 
 The server assigns dense process-local `InternalBlockStateId` values independently of network identity, uses those IDs inside world logic, and translates only the states needed by outgoing packets through `BlockNetworkTranslator`. The translator returns a typed signed 32-bit network hash; Protocol alone chooses its signed or unsigned VarInt projection for each packet field. Internal IDs are intentionally unstable across process starts and must never become packet values, persistence keys, configuration, or plugin API. LevelDB persistence stores canonical state identity and rebuilds local IDs on load.
 
+A public `World` handle identifies one exact loaded dimension. Its identity is the
+named world ID, load generation, and `DimensionType`; blocks, entities, weather,
+simulation, streaming, and plugin mutations therefore always have an unambiguous
+dimension owner. A `Position` carries that exact `World` when resolved rather
+than storing a second dimension field. Sibling dimensions are selected through
+`World::getDimension()` or `WorldManager::get()`. Internally, the three
+dimension runtimes of a named world share one native LevelDB owner while keeping
+their runtime state isolated.
+
 See the accepted architecture RFCs in `RFCs` for rationale and alternatives.
 
 The bounded protocol-2193 pre-spawn state machine is documented in [`login-session.md`](login-session.md).

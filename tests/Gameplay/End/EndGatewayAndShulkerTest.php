@@ -57,7 +57,7 @@ final class EndGatewayAndShulkerTest extends TestCase
             new \Bedriox\Server\World\WorldMetadata('end', 42),
             new \Bedriox\Server\World\EndWorldGenerator(42, $states),
             new \Bedriox\Server\World\ChunkRepository(64),
-            dimension: \Bedriox\Api\World\WorldDimension::END,
+            dimension: \Bedriox\Api\World\DimensionType::END,
         );
         $world->retainChunk(new \Bedriox\Server\World\ChunkPosition(0, 0));
         $simulation = new \Bedriox\Server\Simulation\WorldSimulation(
@@ -67,7 +67,7 @@ final class EndGatewayAndShulkerTest extends TestCase
             blockStateRegistry: $states,
             entityAiEnabled: false,
             worldId: 'end',
-            dimension: \Bedriox\Api\World\WorldDimension::END,
+            dimension: \Bedriox\Api\World\DimensionType::END,
         );
         $commands = new \Bedriox\Server\Simulation\SimulationCommandFactory();
         $simulation->enqueue($commands->join('first', 'identity-one', 'One'));
@@ -133,7 +133,7 @@ final class EndGatewayAndShulkerTest extends TestCase
             new \Bedriox\Server\World\WorldMetadata('end-projectiles', 42),
             new \Bedriox\Server\World\EndWorldGenerator(42, $states),
             new \Bedriox\Server\World\ChunkRepository(64),
-            dimension: \Bedriox\Api\World\WorldDimension::END,
+            dimension: \Bedriox\Api\World\DimensionType::END,
         );
         $world->retainChunk(new \Bedriox\Server\World\ChunkPosition(0, 0));
         $simulation = new \Bedriox\Server\Simulation\WorldSimulation(
@@ -143,7 +143,7 @@ final class EndGatewayAndShulkerTest extends TestCase
             blockStateRegistry: $states,
             entityAiEnabled: false,
             worldId: 'end-projectiles',
-            dimension: \Bedriox\Api\World\WorldDimension::END,
+            dimension: \Bedriox\Api\World\DimensionType::END,
         );
         $commands = new \Bedriox\Server\Simulation\SimulationCommandFactory();
         $simulation->enqueue($commands->join('viewer', 'identity-one', 'One'));

@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\World\Provider;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Data\KnownPersistentBlockState;
 use Bedriox\Data\LittleEndianBlockStateNbtCodec;
@@ -72,7 +72,7 @@ final class LevelDbWorldProviderTest extends TestCase
         $generator = new FlatWorldGenerator(FixedFlatBlockPalette::fromRegistry($registry));
         $chunk = $generator->generate($position);
 
-        foreach (WorldDimension::cases() as $dimension) {
+        foreach (DimensionType::cases() as $dimension) {
             $provider->saveChunk(new ChunkSaveData($chunk), $dimension);
             self::assertArrayHasKey(LevelDbChunkKey::version(4, -3, $dimension), $database->records);
         }
@@ -81,7 +81,7 @@ final class LevelDbWorldProviderTest extends TestCase
             array_keys($database->records),
             static fn(string $key): bool => str_ends_with($key, LevelDbChunkKey::VERSION),
         ));
-        foreach (WorldDimension::cases() as $dimension) {
+        foreach (DimensionType::cases() as $dimension) {
             self::assertNotNull($provider->loadChunk($position, $dimension));
         }
     }

@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World\Provider;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Data\LittleEndianBlockStateNbtCodec;
 use Bedriox\Data\PersistentBlockStateRegistry;
 use Bedriox\Protocol\ProtocolVersion;
@@ -228,7 +228,7 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
 
     public function loadChunk(
         ChunkPosition $position,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): ?LoadedChunkData {
         $this->assertOpen();
         try {
@@ -311,12 +311,14 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
     {
         $this->assertOpen();
         $root = $this->levelDat->root;
+        $overworld = $worldData->dimension(DimensionType::OVERWORLD);
         $root['LevelName'] = LittleEndianNbtTag::string($worldData->metadata->name);
         $root['RandomSeed'] = LittleEndianNbtTag::long($worldData->metadata->seed);
-        $root['generatorName'] = LittleEndianNbtTag::string($worldData->generatorName);
-        $root['Generator'] = LittleEndianNbtTag::int(self::legacyGeneratorId($worldData->generatorName));
-        $root['BedrioxGeneratorVersion'] = LittleEndianNbtTag::int($worldData->generatorVersion);
-        $root['generatorOptions'] = LittleEndianNbtTag::string($worldData->generatorOptions);
+        $root['generatorName'] = LittleEndianNbtTag::string($overworld->generatorName);
+        $root['Generator'] = LittleEndianNbtTag::int(self::legacyGeneratorId($overworld->generatorName));
+        $root['BedrioxGeneratorVersion'] = LittleEndianNbtTag::int($overworld->generatorVersion);
+        $root['generatorOptions'] = LittleEndianNbtTag::string($overworld->generatorOptions);
+        $root['BedrioxDimensions'] = self::dimensionMetadataTag($worldData);
         $root['SpawnX'] = LittleEndianNbtTag::int($worldData->spawn->x);
         $root['SpawnY'] = LittleEndianNbtTag::int($worldData->spawn->y);
         $root['SpawnZ'] = LittleEndianNbtTag::int($worldData->spawn->z);
@@ -350,7 +352,7 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
 
     public function saveChunk(
         ChunkSaveData $chunkData,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): void {
         $this->assertOpen();
         $chunk = $chunkData->chunk;
@@ -394,7 +396,7 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
 
     public function loadEntityChunk(
         ChunkPosition $position,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): ?EntityChunkSnapshot {
         $this->assertOpen();
 
@@ -403,7 +405,7 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
 
     public function saveEntityChunk(
         EntityChunkSnapshot $snapshot,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): void {
         $this->assertOpen();
         $this->entities->saveEntityChunk($snapshot, $dimension);
@@ -411,7 +413,7 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
 
     public function transferEntityOwnership(
         EntityOwnershipTransfer $transfer,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): EntityOwnershipTransferResult {
         $this->assertOpen();
 
@@ -432,7 +434,7 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
         $this->closed = true;
     }
 
-    private function hasOrphanedChunkData(ChunkPosition $position, WorldDimension $dimension): bool
+    private function hasOrphanedChunkData(ChunkPosition $position, DimensionType $dimension): bool
     {
         if ($this->database->get(LevelDbChunkKey::data3d($position->x, $position->z, $dimension)) !== null
             || $this->database->get(LevelDbChunkKey::finalization($position->x, $position->z, $dimension)) !== null
@@ -494,6 +496,17 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
                 // Bedrock uses 32767 to request a top-down safe-spawn search.
                 $spawnY = Chunk::MAX_Y - 1;
             }
+            $dimensions = [];
+            foreach ($metadata->dimensionGenerators() ?? [] as $identifier => $dimension) {
+                $dimensions[$identifier] = new DimensionWorldData(
+                    $dimension['generator'],
+                    $dimension['seed'],
+                    new SpawnPosition(...$dimension['spawn']),
+                    $dimension['version'],
+                    $dimension['options'],
+                    $dimension['declared'],
+                );
+            }
             return new WorldData(
                 new WorldMetadata($metadata->levelName(), $metadata->seed()),
                 $metadata->generatorName(),
@@ -505,6 +518,7 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
                 $metadata->weather(),
                 $metadata->weatherCycleEnabled(),
                 $metadata->hasBedrioxGeneratorVersion(),
+                $dimensions,
             );
         } catch (UnsupportedWorldDataException $error) {
             throw new UnsupportedWorldFormatException($error->getMessage(), previous: $error);
@@ -519,15 +533,18 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
             throw new InvalidArgumentException('World creation time must be a non-negative Unix timestamp.');
         }
 
+        $overworld = $data->dimension(DimensionType::OVERWORLD);
+
         return new LevelDatMetadata(LevelDatCodec::CURRENT_STORAGE_VERSION, [
             'StorageVersion' => LittleEndianNbtTag::int(LevelDatCodec::CURRENT_STORAGE_VERSION),
             'NetworkVersion' => LittleEndianNbtTag::int(self::CURRENT_NETWORK_VERSION),
             'LevelName' => LittleEndianNbtTag::string($data->metadata->name),
             'RandomSeed' => LittleEndianNbtTag::long($data->metadata->seed),
-            'generatorName' => LittleEndianNbtTag::string($data->generatorName),
-            'Generator' => LittleEndianNbtTag::int(self::legacyGeneratorId($data->generatorName)),
-            'BedrioxGeneratorVersion' => LittleEndianNbtTag::int($data->generatorVersion),
-            'generatorOptions' => LittleEndianNbtTag::string($data->generatorOptions),
+            'generatorName' => LittleEndianNbtTag::string($overworld->generatorName),
+            'Generator' => LittleEndianNbtTag::int(self::legacyGeneratorId($overworld->generatorName)),
+            'BedrioxGeneratorVersion' => LittleEndianNbtTag::int($overworld->generatorVersion),
+            'generatorOptions' => LittleEndianNbtTag::string($overworld->generatorOptions),
+            'BedrioxDimensions' => self::dimensionMetadataTag($data),
             'GameType' => LittleEndianNbtTag::int(0),
             'LastPlayed' => LittleEndianNbtTag::long($createdAt),
             'DayCycleStopTime' => LittleEndianNbtTag::int(-1),
@@ -583,5 +600,25 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
             'flat' => 2,
             default => 1,
         };
+    }
+
+    private static function dimensionMetadataTag(WorldData $data): LittleEndianNbtTag
+    {
+        $dimensions = [];
+        foreach (DimensionType::cases() as $type) {
+            $dimension = $data->dimension($type);
+            $dimensions[$type->value] = LittleEndianNbtTag::compound([
+                'Generator' => LittleEndianNbtTag::string($dimension->generatorName),
+                'Version' => LittleEndianNbtTag::int($dimension->generatorVersion),
+                'VersionDeclared' => LittleEndianNbtTag::byte($dimension->bedrioxGeneratorVersionDeclared ? 1 : 0),
+                'Options' => LittleEndianNbtTag::string($dimension->generatorOptions),
+                'Seed' => LittleEndianNbtTag::long($dimension->seed),
+                'SpawnX' => LittleEndianNbtTag::int($dimension->spawn->x),
+                'SpawnY' => LittleEndianNbtTag::int($dimension->spawn->y),
+                'SpawnZ' => LittleEndianNbtTag::int($dimension->spawn->z),
+            ]);
+        }
+
+        return LittleEndianNbtTag::compound($dimensions);
     }
 }

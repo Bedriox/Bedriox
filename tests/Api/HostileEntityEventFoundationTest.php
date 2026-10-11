@@ -33,6 +33,7 @@ use Bedriox\Api\Event\Entity\EntityTransformEvent;
 use Bedriox\Api\Event\PostEvent;
 use Bedriox\Api\World\Block;
 use Bedriox\Api\World\BlockPosition;
+use Bedriox\Api\World\World;
 use Bedriox\Server\Entity\Vanilla\CowEntity;
 use Bedriox\Server\Entity\Vanilla\ZombieEntity;
 use Bedriox\Server\Simulation\Position;
@@ -173,21 +174,27 @@ final class HostileEntityEventFoundationTest extends TestCase
 
     private static function cow(): CowEntity
     {
-        return new CowEntity(
+        $entity = new CowEntity(
             '00000000-0000-4000-8000-000000000101',
             101,
             'world',
             new Position(0.0, 64.0, 0.0),
         );
+        $entity->bindPublicWorld(new World('world', 1));
+
+        return $entity;
     }
 
     private static function zombie(): ZombieEntity
     {
-        return new ZombieEntity(
+        $entity = new ZombieEntity(
             '00000000-0000-4000-8000-000000000102',
             102,
             'world',
             new Position(1.0, 64.0, 0.0),
         );
+        $entity->bindPublicWorld(new World('world', 1));
+
+        return $entity;
     }
 }

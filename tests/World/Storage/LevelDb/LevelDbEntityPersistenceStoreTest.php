@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\World\Storage\LevelDb;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\Entity\EntityMotion;
 use Bedriox\Server\Entity\Persistence\CorruptEntityPersistenceException;
 use Bedriox\Server\Entity\Persistence\DormantEntityRecord;
@@ -47,14 +47,14 @@ final class LevelDbEntityPersistenceStoreTest extends TestCase
         $store = new LevelDbEntityPersistenceStore($database, EntityPersistenceCodec::vanilla(), 'world');
         $position = new ChunkPosition(2, -3);
 
-        foreach (WorldDimension::cases() as $index => $dimension) {
+        foreach (DimensionType::cases() as $index => $dimension) {
             $snapshot = new EntityChunkSnapshot('world', $position, $index + 1, [
                 self::record(self::UUID, $position, $index + 1),
             ]);
             $store->saveEntityChunk($snapshot, $dimension);
         }
 
-        foreach (WorldDimension::cases() as $index => $dimension) {
+        foreach (DimensionType::cases() as $index => $dimension) {
             self::assertSame($index + 1, $store->loadEntityChunk($position, $dimension)?->chunkRevision);
             self::assertArrayHasKey(BedrioxEntityKey::chunk(2, -3, $dimension), $database->records);
         }

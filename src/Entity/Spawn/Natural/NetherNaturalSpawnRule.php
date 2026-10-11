@@ -21,7 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Entity\Spawn\Natural;
 
 use Bedriox\Api\Entity\VanillaEntityType;
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 
 final readonly class NetherNaturalSpawnRule implements NaturalSpawnRule
 {
@@ -29,7 +29,7 @@ final readonly class NetherNaturalSpawnRule implements NaturalSpawnRule
 
     public function allows(NaturalSpawnContext $context): bool
     {
-        if ($context->dimension !== WorldDimension::NETHER) {
+        if ($context->dimension !== DimensionType::NETHER) {
             return false;
         }
         if ($this->type === VanillaEntityType::STRIDER) {

@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World\Provider;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\Provider\Exception\CorruptChunkException;
 use Bedriox\Server\World\Provider\Exception\CorruptWorldDataException;
@@ -41,7 +41,7 @@ interface WorldProvider
      */
     public function loadChunk(
         ChunkPosition $position,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): ?LoadedChunkData;
 
     /**

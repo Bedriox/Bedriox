@@ -22,7 +22,7 @@ namespace Bedriox\Server\Simulation;
 
 use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Player\GameMode;
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\Player\InventoryStack;
 
 final readonly class PlayerSnapshot
@@ -62,7 +62,7 @@ final readonly class PlayerSnapshot
         public int $airTicks = 300,
         public int $fireTicks = 0,
         public int $totalExperience = 0,
-        public WorldDimension $dimension = WorldDimension::OVERWORLD,
+        public DimensionType $dimension = DimensionType::OVERWORLD,
         public bool $riding = false,
         public string $nameTag = '',
         public bool $nameTagVisible = true,

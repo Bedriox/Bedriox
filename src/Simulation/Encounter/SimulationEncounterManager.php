@@ -22,8 +22,8 @@ namespace Bedriox\Server\Simulation\Encounter;
 
 use Bedriox\Api\Encounter\EncounterManager;
 use Bedriox\Api\Encounter\EnderDragonEncounter;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\World;
-use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Plugin\PluginException;
 use Bedriox\Server\Plugin\PluginRuntimeControl;
 use Bedriox\Server\Simulation\WorldSimulation;
@@ -42,8 +42,11 @@ final readonly class SimulationEncounterManager implements EncounterManager
     public function getEnderDragonEncounter(World $world): ?EnderDragonEncounter
     {
         $this->assertEnabled();
+        if ($world->getDimensionType() !== DimensionType::END) {
+            return null;
+        }
         foreach (($this->simulations)() as $simulation) {
-            if ($simulation->worldId() !== $world->id() || $simulation->dimension() !== WorldDimension::END) {
+            if ($simulation->worldId() !== $world->id() || $simulation->dimension() !== DimensionType::END) {
                 continue;
             }
             $encounter = $simulation->endEncounterView();

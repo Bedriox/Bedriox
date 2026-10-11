@@ -3,7 +3,7 @@
 
 declare(strict_types=1);
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Data\PersistentBlockStateRegistry;
 use Bedriox\Server\Entity\Persistence\CorruptEntityPersistenceException;
 use Bedriox\Server\Entity\Persistence\EntityChunkSnapshot;
@@ -71,7 +71,7 @@ exit(WorldStorageProcessProgram::run(
 
             public function loadChunk(
                 ChunkPosition $position,
-                WorldDimension $dimension = WorldDimension::OVERWORLD,
+                DimensionType $dimension = DimensionType::OVERWORLD,
             ): ?LoadedChunkData {
                 if ($this->delayLoads) {
                     usleep(500_000);
@@ -87,7 +87,7 @@ exit(WorldStorageProcessProgram::run(
 
             public function saveChunk(
                 ChunkSaveData $chunkData,
-                WorldDimension $dimension = WorldDimension::OVERWORLD,
+                DimensionType $dimension = DimensionType::OVERWORLD,
             ): void {
                 if ($this->delaySaves) {
                     usleep(500_000);
@@ -97,7 +97,7 @@ exit(WorldStorageProcessProgram::run(
 
             public function loadEntityChunk(
                 ChunkPosition $position,
-                WorldDimension $dimension = WorldDimension::OVERWORLD,
+                DimensionType $dimension = DimensionType::OVERWORLD,
             ): ?EntityChunkSnapshot {
                 if ($this->corruptEntities && $position->x === 0 && $position->z === 0) {
                     throw new CorruptEntityPersistenceException($position);
@@ -108,7 +108,7 @@ exit(WorldStorageProcessProgram::run(
 
             public function saveEntityChunk(
                 EntityChunkSnapshot $snapshot,
-                WorldDimension $dimension = WorldDimension::OVERWORLD,
+                DimensionType $dimension = DimensionType::OVERWORLD,
             ): void {
                 $key = $dimension->value . ':' . $snapshot->chunk->key();
                 $current = $this->entitySnapshots[$key] ?? null;
@@ -120,7 +120,7 @@ exit(WorldStorageProcessProgram::run(
 
             public function transferEntityOwnership(
                 EntityOwnershipTransfer $transfer,
-                WorldDimension $dimension = WorldDimension::OVERWORLD,
+                DimensionType $dimension = DimensionType::OVERWORLD,
             ): EntityOwnershipTransferResult {
                 $prefix = $dimension->value . ':';
                 $source = $this->entitySnapshots[$prefix . $transfer->sourceAfter->chunk->key()] ?? null;

@@ -20,15 +20,15 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Spawn\Natural;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 
 /** Ground admission for darkness-spawned overworld skeletons. */
 final readonly class SkeletonNaturalSpawnRule implements NaturalSpawnRule
 {
     public function allows(NaturalSpawnContext $context): bool
     {
-        $eligibleDimension = $context->dimension === WorldDimension::OVERWORLD
-            || ($context->dimension === WorldDimension::NETHER && $context->biome === 'minecraft:soulsand_valley');
+        $eligibleDimension = $context->dimension === DimensionType::OVERWORLD
+            || ($context->dimension === DimensionType::NETHER && $context->biome === 'minecraft:soulsand_valley');
 
         return $eligibleDimension
             && $context->medium === NaturalSpawnMedium::GROUND

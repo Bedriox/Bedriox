@@ -34,7 +34,6 @@ final readonly class Position
         public ?float $yaw = null,
         public ?float $pitch = null,
         public ?World $world = null,
-        public ?WorldDimension $dimension = null,
     ) {}
 
     public function isResolved(): bool
@@ -47,7 +46,6 @@ final readonly class Position
         World $currentWorld,
         float $currentYaw,
         float $currentPitch,
-        WorldDimension $currentDimension = WorldDimension::OVERWORLD,
     ): self {
         $resolved = new self(
             $this->x,
@@ -56,7 +54,6 @@ final readonly class Position
             $this->yaw ?? $currentYaw,
             $this->pitch ?? $currentPitch,
             $this->world ?? $currentWorld,
-            $this->dimension ?? $currentDimension,
         );
         $resolved->validate();
 

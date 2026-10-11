@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Gameplay\Portal;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\Gameplay\Portal\PortalAxis;
 use Bedriox\Server\Gameplay\Portal\PortalContactTracker;
 use Bedriox\Server\Gameplay\Portal\PortalDestinationPlanner;
@@ -34,8 +34,8 @@ final class PortalDestinationPlannerTest extends TestCase
     public function testCoordinatesScaleEightToOneAndBackWithVanillaSearchBounds(): void
     {
         $planner = new PortalDestinationPlanner();
-        $nether = $planner->plan(WorldDimension::OVERWORLD, new Position(80.0, 70.0, -40.0), PortalAxis::X);
-        self::assertSame(WorldDimension::NETHER, $nether->targetDimension);
+        $nether = $planner->plan(DimensionType::OVERWORLD, new Position(80.0, 70.0, -40.0), PortalAxis::X);
+        self::assertSame(DimensionType::NETHER, $nether->targetDimension);
         self::assertSame([10.0, 70.0, -5.0], [
             $nether->projectedPosition->x,
             $nether->projectedPosition->y,
@@ -43,8 +43,8 @@ final class PortalDestinationPlannerTest extends TestCase
         ]);
         self::assertSame(16, $nether->searchRadius);
 
-        $overworld = $planner->plan(WorldDimension::NETHER, new Position(10.0, 70.0, -5.0), PortalAxis::Z);
-        self::assertSame(WorldDimension::OVERWORLD, $overworld->targetDimension);
+        $overworld = $planner->plan(DimensionType::NETHER, new Position(10.0, 70.0, -5.0), PortalAxis::Z);
+        self::assertSame(DimensionType::OVERWORLD, $overworld->targetDimension);
         self::assertSame([80.0, 70.0, -40.0], [
             $overworld->projectedPosition->x,
             $overworld->projectedPosition->y,
@@ -56,7 +56,7 @@ final class PortalDestinationPlannerTest extends TestCase
     public function testNearestPortalAndBuildOriginAreDeterministic(): void
     {
         $planner = new PortalDestinationPlanner();
-        $plan = $planner->plan(WorldDimension::OVERWORLD, new Position(80.0, 70.0, -40.0), PortalAxis::X);
+        $plan = $planner->plan(DimensionType::OVERWORLD, new Position(80.0, 70.0, -40.0), PortalAxis::X);
 
         self::assertEquals(new BlockPosition(9, 60, -5), $planner->nearest($plan, [
             new BlockPosition(11, 80, -5),
@@ -82,7 +82,7 @@ final class PortalDestinationPlannerTest extends TestCase
     public function testNetherBuildSearchCanFindAValidCavernOutsideTheOldVerticalWindow(): void
     {
         $planner = new PortalDestinationPlanner();
-        $plan = $planner->plan(WorldDimension::OVERWORLD, new Position(80.0, 110.0, -40.0), PortalAxis::X);
+        $plan = $planner->plan(DimensionType::OVERWORLD, new Position(80.0, 110.0, -40.0), PortalAxis::X);
 
         $origin = $planner->buildOrigin(
             $plan,
@@ -97,7 +97,7 @@ final class PortalDestinationPlannerTest extends TestCase
     public function testNetherFallbackCannotOverwriteTheBedrockRoof(): void
     {
         $plan = (new PortalDestinationPlanner())->plan(
-            WorldDimension::OVERWORLD,
+            DimensionType::OVERWORLD,
             new Position(0.0, 319.0, 0.0),
             PortalAxis::X,
         );
@@ -109,7 +109,7 @@ final class PortalDestinationPlannerTest extends TestCase
     {
         $this->expectException(InvalidArgumentException::class);
         (new PortalDestinationPlanner())->plan(
-            WorldDimension::END,
+            DimensionType::END,
             new Position(0.0, 64.0, 0.0),
             PortalAxis::X,
         );

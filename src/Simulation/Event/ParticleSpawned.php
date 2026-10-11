@@ -20,8 +20,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Simulation\Event;
 
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\Particle\Particle;
-use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Simulation\Position;
 
 final readonly class ParticleSpawned implements WorldEvent
@@ -31,7 +31,7 @@ final readonly class ParticleSpawned implements WorldEvent
         public Position $position,
         public Particle $particle,
         public array $recipientSessionIds,
-        public WorldDimension $dimension = WorldDimension::OVERWORLD,
+        public DimensionType $dimension = DimensionType::OVERWORLD,
     ) {}
 
     public function recipients(): array

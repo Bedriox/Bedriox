@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Data\CanonicalBlockState;
 use Bedriox\Protocol\Packet\ChunkColumnData;
 use Bedriox\Protocol\Packet\ChunkSectionData;
@@ -31,8 +31,8 @@ use Bedriox\Protocol\Packet\PackedPalettedStorage;
 use Bedriox\Server\World\BiomeRuntimeIdMap;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Chunk;
+use Bedriox\Server\World\DimensionTypeBounds;
 use Bedriox\Server\World\Storage\LevelDb\PersistentBlockEntityCodec;
-use Bedriox\Server\World\WorldDimensionBounds;
 use InvalidArgumentException;
 
 /** Translates Bedriox-owned world state into the current Bedrock full-column wire model. */
@@ -65,7 +65,7 @@ final class BedrockChunkPacketSerializer
 
     public function serialize(
         Chunk $chunk,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): LevelChunkPacket {
         $cached = ($this->cache[$chunk] ?? [])[$dimension->value] ?? null;
         if ($cached instanceof LevelChunkPacket) {
@@ -74,8 +74,8 @@ final class BedrockChunkPacketSerializer
             return $cached;
         }
         ++$this->cacheMisses;
-        $minimumSectionY = WorldDimensionBounds::minimumSectionY($dimension);
-        $maximumSectionY = WorldDimensionBounds::maximumSectionY($dimension);
+        $minimumSectionY = DimensionTypeBounds::minimumSectionY($dimension);
+        $maximumSectionY = DimensionTypeBounds::maximumSectionY($dimension);
         $highestSectionY = $minimumSectionY;
         foreach ($chunk->populatedSections() as $section) {
             if ($section->sectionY >= $minimumSectionY && $section->sectionY <= $maximumSectionY) {
@@ -131,9 +131,9 @@ final class BedrockChunkPacketSerializer
             $chunk->position->x,
             $chunk->position->z,
             match ($dimension) {
-                WorldDimension::OVERWORLD => DimensionId::Overworld->value,
-                WorldDimension::NETHER => DimensionId::Nether->value,
-                WorldDimension::END => DimensionId::End->value,
+                DimensionType::OVERWORLD => DimensionId::Overworld->value,
+                DimensionType::NETHER => DimensionId::Nether->value,
+                DimensionType::END => DimensionId::End->value,
             },
             $minimumSectionY,
             $maximumSectionY,

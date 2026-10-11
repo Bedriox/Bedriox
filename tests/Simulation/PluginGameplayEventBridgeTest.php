@@ -75,8 +75,8 @@ use Bedriox\Api\Player\Player as ApiPlayer;
 use Bedriox\Api\Player\PlayerInteractionType;
 use Bedriox\Api\TextFormat;
 use Bedriox\Api\TranslatableMessage;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\Position as ApiPosition;
-use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Entity\EntityUuid;
 use Bedriox\Server\Entity\Vanilla\LlamaEntity;
@@ -1140,9 +1140,14 @@ final class PluginGameplayEventBridgeTest extends TestCase
     public function testPlayerProjectionCarriesResolvedWorldAndOrientation(): void
     {
         [, $bridge] = self::bridge();
-        $handle = new \Bedriox\Api\World\World('world', 3);
+        $handle = new \Bedriox\Api\World\World(
+            'world',
+            3,
+            dimensionType: DimensionType::END,
+        );
         $bridge = $bridge->withWorldResolver(
-            static fn(string $worldId): ?\Bedriox\Api\World\World => $worldId === 'world' ? $handle : null,
+            static fn(string $worldId, DimensionType $dimension): ?\Bedriox\Api\World\World =>
+                $worldId === 'world' && $dimension === DimensionType::END ? $handle : null,
         );
         $player = new \Bedriox\Server\Player\Player(
             'session',
@@ -1153,7 +1158,7 @@ final class PluginGameplayEventBridgeTest extends TestCase
             0,
             64.0,
             worldName: 'world',
-            dimension: WorldDimension::END,
+            dimension: DimensionType::END,
         );
         $player->movement->yaw = 120.0;
         $player->movement->pitch = -25.0;
@@ -1167,10 +1172,75 @@ final class PluginGameplayEventBridgeTest extends TestCase
         self::assertSame($handle, $view->position->world);
         self::assertSame(120.0, $view->position->yaw);
         self::assertSame(-25.0, $view->position->pitch);
-        self::assertSame(WorldDimension::END, $view->position->dimension);
+        self::assertSame(DimensionType::END, $view->getDimension());
         self::assertSame(0.25, $view->getMotion()->x);
         self::assertSame(-0.5, $view->getMotion()->y);
         self::assertSame(0.75, $view->getMotion()->z);
+    }
+
+    public function testPortalTravelMaySelectAnotherNamedWorldOfThePairedDimension(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $source = new \Bedriox\Api\World\World(
+            'world',
+            1,
+            dimensionType: DimensionType::OVERWORLD,
+        );
+        $defaultNether = new \Bedriox\Api\World\World(
+            'world',
+            1,
+            dimensionType: DimensionType::NETHER,
+        );
+        $customNether = new \Bedriox\Api\World\World(
+            'hellscape',
+            4,
+            dimensionType: DimensionType::NETHER,
+        );
+        $bridge = $bridge->withWorldResolver(
+            static fn(string $worldId, DimensionType $dimension): ?\Bedriox\Api\World\World => match (true) {
+                $worldId === 'world' && $dimension === DimensionType::OVERWORLD => $source,
+                $worldId === 'world' && $dimension === DimensionType::NETHER => $defaultNether,
+                default => null,
+            },
+        );
+        $dispatcher->register(
+            'Example',
+            \Bedriox\Api\Event\Player\PlayerPortalTravelEvent::class,
+            static function (\Bedriox\Api\Event\Player\PlayerPortalTravelEvent $event) use ($customNether): void {
+                $event->setDestination(new \Bedriox\Api\World\Position(
+                    40.5,
+                    72.0,
+                    -20.5,
+                    45.0,
+                    -10.0,
+                    $customNether,
+                ));
+            },
+        );
+        $player = new \Bedriox\Server\Player\Player(
+            'session',
+            1,
+            new \Bedriox\Server\Player\PlayerIdentity('identity-one', 'One'),
+            new Position(8.0, 64.0, 8.0),
+            4,
+            0,
+            64.0,
+            worldName: 'world',
+        );
+
+        $destination = $bridge->portalTravel(
+            $player,
+            \Bedriox\Api\World\PortalType::NETHER,
+            DimensionType::OVERWORLD,
+            DimensionType::NETHER,
+            new Position(1.0, 64.0, 1.0),
+        );
+
+        self::assertNotNull($destination);
+        self::assertSame($customNether, $destination->world);
+        self::assertSame(DimensionType::NETHER, $destination->world->getDimensionType());
+        self::assertSame(40.5, $destination->x);
+        self::assertSame(45.0, $destination->yaw);
     }
 
     public function testEndEncounterRewardEventsPreserveOrderingModificationAndListenerIsolation(): void

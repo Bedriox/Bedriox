@@ -23,7 +23,7 @@ namespace Bedriox\Server\Tests\Entity\Spawn\Natural;
 use Bedriox\Api\Entity\EntityCategory;
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\VanillaEntityType;
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Entity\AbstractMobEntity;
 use Bedriox\Server\Entity\Ai\AiWorldView;
@@ -173,7 +173,7 @@ final class WorldNaturalSpawnRuntimeTest extends TestCase
     {
         [$world, $states, $palette, $shapes, $query, $entities, $definitions] = self::dependencies(
             metadataName: 'Display Name',
-            dimension: WorldDimension::NETHER,
+            dimension: DimensionType::NETHER,
         );
         $generation = GenerationBlockPalette::fromRegistry($states);
         $runtime = WorldNaturalSpawnRuntime::baseline(
@@ -194,7 +194,7 @@ final class WorldNaturalSpawnRuntimeTest extends TestCase
             new NaturalSpawnPlayer('world-default', new Position(0.5, 64.0, 0.5)),
         ]);
 
-        self::assertSame(WorldDimension::NETHER, $world->dimension());
+        self::assertSame(DimensionType::NETHER, $world->dimension());
         self::assertSame([], $result->removed());
     }
 
@@ -202,7 +202,7 @@ final class WorldNaturalSpawnRuntimeTest extends TestCase
     {
         [$world, $states, $palette, $shapes, $query, $entities, $definitions] = self::dependencies(
             loadRadius: 4,
-            dimension: WorldDimension::NETHER,
+            dimension: DimensionType::NETHER,
             useDimensionGenerator: true,
         );
         $generation = GenerationBlockPalette::fromRegistry($states);
@@ -354,13 +354,13 @@ final class WorldNaturalSpawnRuntimeTest extends TestCase
     private static function dependencies(
         int $loadRadius = 7,
         string $metadataName = 'world',
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
         bool $useDimensionGenerator = false,
     ): array {
         $states = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
         $palette = FixedFlatBlockPalette::fromRegistry($states);
         $generation = GenerationBlockPalette::fromRegistry($states);
-        $generator = $useDimensionGenerator && $dimension === WorldDimension::NETHER
+        $generator = $useDimensionGenerator && $dimension === DimensionType::NETHER
             ? new NetherWorldGenerator(12345, $states)
             : new FlatWorldGenerator($palette);
         $world = new World(

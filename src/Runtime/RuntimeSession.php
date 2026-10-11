@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\RakNet\SessionInfo;
 use Bedriox\Server\Login\BedrockLoginChannel;
@@ -35,7 +35,7 @@ final class RuntimeSession
     public int $craftingCatalogRevision = 0;
     public ?PlayerBootstrap $bootstrap = null;
     public string $worldId;
-    public WorldDimension $dimension;
+    public DimensionType $dimension;
 
     public function __construct(
         public readonly SessionInfo $transport,
@@ -43,7 +43,7 @@ final class RuntimeSession
         public readonly UnsignedLong $runtimeEntityId,
         public ?BedrockLoginChannel $login,
         string $worldId = 'world',
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ) {
         $this->worldId = WorldRuntimeManager::canonicalId($worldId);
         $this->dimension = $dimension;

@@ -21,7 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Tests\Runtime;
 
 use Bedriox\Api\Inventory\ItemDefinition;
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Identity\VerifiedClientData;
 use Bedriox\Protocol\Packet\AvailableActorIdentifiersPacket;
@@ -182,7 +182,7 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
         self::assertSame(13_000, $packets[8]->time);
     }
 
-    public function testInitializationProjectsTheActiveWorldDimension(): void
+    public function testInitializationProjectsTheActiveDimensionType(): void
     {
         $packets = self::packets(BedrockPlayInitializationFactory::forWorld(
             BedrockDataSet::bundled(),
@@ -193,7 +193,7 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
                 new SpawnPosition(0, 64, 0),
                 0,
             ),
-            dimension: WorldDimension::NETHER,
+            dimension: DimensionType::NETHER,
         )->create($this->login(), UnsignedLong::fromInt(7)));
 
         self::assertInstanceOf(StartGamePacket::class, $packets[2]);

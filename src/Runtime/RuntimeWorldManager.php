@@ -29,6 +29,7 @@ use Bedriox\Api\Event\World\WorldSavedEvent;
 use Bedriox\Api\Event\World\WorldSaveEvent;
 use Bedriox\Api\Event\World\WorldUnloadedEvent;
 use Bedriox\Api\Event\World\WorldUnloadEvent;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\World;
 use Bedriox\Api\World\WorldCreationOptions;
 use Bedriox\Api\World\WorldInfo;
@@ -54,8 +55,8 @@ final class RuntimeWorldManager implements WorldManager
     private array $pending = [];
 
     /**
-     * @param Closure(World, WorldCreationOptions): (ManagedWorldRuntime|PendingManagedWorldRuntime) $createRuntime
-     * @param Closure(World): (ManagedWorldRuntime|PendingManagedWorldRuntime)                       $loadRuntime
+     * @param Closure(World, WorldCreationOptions): (WorldStorageRuntime|PendingWorldStorageRuntime) $createRuntime
+     * @param Closure(World): (WorldStorageRuntime|PendingWorldStorageRuntime)                       $loadRuntime
      * @param null|Closure(Event): Event                                                            $dispatchEvent
      */
     public function __construct(
@@ -70,14 +71,14 @@ final class RuntimeWorldManager implements WorldManager
         }
     }
 
-    public function getDefault(): World
+    public function getDefault(DimensionType $dimension = DimensionType::OVERWORLD): World
     {
-        return $this->runtimes->default()->handle;
+        return $this->runtimes->default($dimension)->handle;
     }
 
-    public function get(string $worldId): ?World
+    public function get(string $worldId, DimensionType $dimension = DimensionType::OVERWORLD): ?World
     {
-        return $this->runtimes->get($worldId)?->handle;
+        return $this->runtimes->get($worldId, $dimension)?->handle;
     }
 
     public function getLoaded(): array
@@ -92,12 +93,13 @@ final class RuntimeWorldManager implements WorldManager
 
     public function info(World $world): WorldInfo
     {
-        $runtime = $this->runtimes->get($world->id())
+        $runtime = $this->runtimes->get($world->id(), $world->getDimensionType())
             ?? throw new LogicException('World is not loaded.');
         if (!$runtime->handle->isSameLoad($world)) {
             throw new LogicException('World handle belongs to an earlier load generation.');
         }
         $internal = $runtime->opened->world;
+        $dimensionData = $runtime->opened->data->dimension($world->getDimensionType());
         $spawn = $internal->spawn();
         $difficulty = match ($runtime->opened->data->difficulty) {
             0 => \Bedriox\Api\World\WorldDifficulty::PEACEFUL,
@@ -106,26 +108,11 @@ final class RuntimeWorldManager implements WorldManager
             3 => \Bedriox\Api\World\WorldDifficulty::HARD,
             default => throw new LogicException('Loaded world difficulty is invalid.'),
         };
-        $dimensionSpawns = [];
-        foreach ($runtime->dimensions() as $dimensionRuntime) {
-            $dimension = $dimensionRuntime->opened->world->dimension();
-            $dimensionSpawn = $dimensionRuntime->opened->world->spawn();
-            $dimensionSpawns[$dimension->value] = new \Bedriox\Api\World\Position(
-                (float) $dimensionSpawn->x,
-                (float) $dimensionSpawn->y,
-                (float) $dimensionSpawn->z,
-                0.0,
-                0.0,
-                $runtime->handle,
-                $dimension,
-            );
-        }
-
         return new WorldInfo(
             $runtime->handle,
             $internal->metadata->name,
-            $runtime->opened->data->generatorName,
-            $internal->metadata->seed,
+            $dimensionData->generatorName,
+            $dimensionData->seed,
             $difficulty,
             $internal->time(),
             new \Bedriox\Api\World\Position(
@@ -137,8 +124,6 @@ final class RuntimeWorldManager implements WorldManager
                 $runtime->handle,
             ),
             $runtime->playerCount(),
-            $runtime->handle->getDimensions(),
-            $dimensionSpawns,
         );
     }
 
@@ -161,18 +146,18 @@ final class RuntimeWorldManager implements WorldManager
             try {
                 $handle = $this->runtimes->reserve($id);
                 $prepared = ($this->createRuntime)($handle, $options);
-                if ($prepared instanceof PendingManagedWorldRuntime) {
+                if ($prepared instanceof PendingWorldStorageRuntime) {
                     return new CallbackPolledWorldOperationExecutor(function () use ($id, $handle, $prepared, $options): ?WorldOperationResult {
                         try {
                             $runtime = $prepared->poll();
-                            if (!$runtime instanceof ManagedWorldRuntime) {
+                            if (!$runtime instanceof WorldStorageRuntime) {
                                 return null;
                             }
                             $this->runtimes->attach($handle, $runtime);
                             $this->states[$id] = WorldLifecycleState::LOADED;
-                            $this->dispatch(new WorldCreatedEvent($runtime->handle, $options));
+                            $this->dispatch(new WorldCreatedEvent($runtime->root()->handle, $options));
 
-                            return $this->success(WorldOperationType::CREATE, $runtime->handle);
+                            return $this->success(WorldOperationType::CREATE, $runtime->root()->handle);
                         } catch (Throwable $error) {
                             $this->cancelFailedPreparation($prepared);
                             $this->runtimes->abortReservation($handle);
@@ -184,9 +169,9 @@ final class RuntimeWorldManager implements WorldManager
                 }
                 $runtime = $this->runtimes->attach($handle, $prepared);
                 $this->states[$id] = WorldLifecycleState::LOADED;
-                $this->dispatch(new WorldCreatedEvent($runtime->handle, $options));
+                $this->dispatch(new WorldCreatedEvent($runtime->root()->handle, $options));
 
-                return $this->success(WorldOperationType::CREATE, $runtime->handle);
+                return $this->success(WorldOperationType::CREATE, $runtime->root()->handle);
             } catch (Throwable $error) {
                 if (isset($handle)) {
                     $this->runtimes->abortReservation($handle);
@@ -217,18 +202,18 @@ final class RuntimeWorldManager implements WorldManager
             try {
                 $handle = $this->runtimes->reserve($id);
                 $prepared = ($this->loadRuntime)($handle);
-                if ($prepared instanceof PendingManagedWorldRuntime) {
+                if ($prepared instanceof PendingWorldStorageRuntime) {
                     return new CallbackPolledWorldOperationExecutor(function () use ($id, $handle, $prepared): ?WorldOperationResult {
                         try {
                             $runtime = $prepared->poll();
-                            if (!$runtime instanceof ManagedWorldRuntime) {
+                            if (!$runtime instanceof WorldStorageRuntime) {
                                 return null;
                             }
                             $this->runtimes->attach($handle, $runtime);
                             $this->states[$id] = WorldLifecycleState::LOADED;
-                            $this->dispatch(new WorldLoadedEvent($runtime->handle));
+                            $this->dispatch(new WorldLoadedEvent($runtime->root()->handle));
 
-                            return $this->success(WorldOperationType::LOAD, $runtime->handle);
+                            return $this->success(WorldOperationType::LOAD, $runtime->root()->handle);
                         } catch (Throwable $error) {
                             $this->cancelFailedPreparation($prepared);
                             $this->runtimes->abortReservation($handle);
@@ -240,9 +225,9 @@ final class RuntimeWorldManager implements WorldManager
                 }
                 $runtime = $this->runtimes->attach($handle, $prepared);
                 $this->states[$id] = WorldLifecycleState::LOADED;
-                $this->dispatch(new WorldLoadedEvent($runtime->handle));
+                $this->dispatch(new WorldLoadedEvent($runtime->root()->handle));
 
-                return $this->success(WorldOperationType::LOAD, $runtime->handle);
+                return $this->success(WorldOperationType::LOAD, $runtime->root()->handle);
             } catch (Throwable $error) {
                 if (isset($handle)) {
                     $this->runtimes->abortReservation($handle);
@@ -396,10 +381,21 @@ final class RuntimeWorldManager implements WorldManager
             default => WorldOperationFailureCode::STORAGE,
         };
 
-        return $this->failure($type, $id, $code, 'World operation could not be completed.', $world);
+        $message = match ($code) {
+            WorldOperationFailureCode::DEFAULT_WORLD => 'The default world cannot be unloaded.',
+            WorldOperationFailureCode::OCCUPIED => 'The world still has players in it.',
+            WorldOperationFailureCode::BUSY => 'Another operation is already running for this world.',
+            WorldOperationFailureCode::NOT_FOUND => 'The world does not exist.',
+            WorldOperationFailureCode::ALREADY_EXISTS => 'The world already exists or is already loaded.',
+            WorldOperationFailureCode::CAPACITY => 'The loaded world limit has been reached.',
+            WorldOperationFailureCode::STALE_HANDLE => 'The world reference is no longer current.',
+            default => 'World storage could not complete the operation.',
+        };
+
+        return $this->failure($type, $id, $code, $message, $world);
     }
 
-    private function cancelFailedPreparation(PendingManagedWorldRuntime $prepared): void
+    private function cancelFailedPreparation(PendingWorldStorageRuntime $prepared): void
     {
         try {
             $prepared->cancel();

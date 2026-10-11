@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Persistence;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\World\ChunkPosition;
 use InvalidArgumentException;
 
@@ -33,7 +33,7 @@ final readonly class EntityChunkSaveCompletion
         public bool $successful,
         public ?string $failureCode = null,
         public ?string $failureDetail = null,
-        public WorldDimension $dimension = WorldDimension::OVERWORLD,
+        public DimensionType $dimension = DimensionType::OVERWORLD,
     ) {
         if ($revision < 1) {
             throw new InvalidArgumentException('Entity chunk save completion revision must be positive.');

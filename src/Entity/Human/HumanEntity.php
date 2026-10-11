@@ -28,7 +28,6 @@ use Bedriox\Api\Entity\Value\EmoteId;
 use Bedriox\Api\Entity\Value\Motion;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\World;
-use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Entity\AbstractMobEntity;
 use Bedriox\Server\Entity\Ai\AiBehaviorDefinition;
 use Bedriox\Server\Entity\EntityDefinition;
@@ -50,8 +49,7 @@ final class HumanEntity extends AbstractMobEntity implements Human
         Position $position,
         private readonly string $name,
         private Skin $skin,
-        private readonly World $world,
-        private readonly WorldDimension $dimension,
+        World $world,
         EntityMotion $motion = new EntityMotion(),
         float $yaw = 0.0,
         float $pitch = 0.0,
@@ -72,6 +70,7 @@ final class HumanEntity extends AbstractMobEntity implements Human
             $pitch,
             $health,
         );
+        $this->bindPublicWorld($world);
         $this->setAiEnabled(false);
     }
 
@@ -205,9 +204,11 @@ final class HumanEntity extends AbstractMobEntity implements Human
     /** @internal Resolves a navigation intent against this human's authoritative world context. */
     public function resolveNavigationTarget(ApiPosition $target): ApiPosition
     {
-        $resolved = $target->resolve($this->world, $this->getYaw(), $this->getPitch(), $this->dimension);
-        if (!$resolved->world?->isSameLoad($this->world) || $resolved->dimension !== $this->dimension) {
-            throw new InvalidArgumentException('Human navigation target must belong to the same world and dimension.');
+        $world = $this->getPosition()->world
+            ?? throw new \LogicException('Human entity does not have an exact loaded world.');
+        $resolved = $target->resolve($world, $this->getYaw(), $this->getPitch());
+        if (!$resolved->world?->isSameLoad($world)) {
+            throw new InvalidArgumentException('Human navigation target must belong to the same world.');
         }
 
         return $resolved;

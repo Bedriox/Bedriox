@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\World;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Persistence\PersistenceEnqueueResult;
 use Bedriox\Server\Persistence\PersistenceSubmission;
@@ -291,7 +291,7 @@ final class AsynchronousWorldPersistenceTest extends TestCase
             new ChunkRepository(4),
             provider: $provider,
             asyncChunks: new AsyncChunkGenerator($workers, 2, 'flat', 1, 7, $states),
-            dimension: WorldDimension::NETHER,
+            dimension: DimensionType::NETHER,
         );
         $position = new ChunkPosition(2, -3);
         $provider->completeMissingAfterRequest = true;
@@ -304,7 +304,7 @@ final class AsynchronousWorldPersistenceTest extends TestCase
 
         self::assertSame(1, $world->autosave(1));
         self::assertSame(['chunk:NETHER:2:-3'], $provider->submittedKeys);
-        $provider->completeSave($position, 1, WorldDimension::NETHER);
+        $provider->completeSave($position, 1, DimensionType::NETHER);
         $world->pollAsynchronousCompletions();
         self::assertSame(0, $world->dirtyChunkCount());
     }
@@ -543,7 +543,7 @@ final class FakeAsynchronousWorldProvider implements AsynchronousWorldProvider
         return $this->data;
     }
 
-    public function loadChunk(ChunkPosition $position, WorldDimension $dimension = WorldDimension::OVERWORLD): ?LoadedChunkData
+    public function loadChunk(ChunkPosition $position, DimensionType $dimension = DimensionType::OVERWORLD): ?LoadedChunkData
     {
         ++$this->synchronousLoadCalls;
 
@@ -556,12 +556,12 @@ final class FakeAsynchronousWorldProvider implements AsynchronousWorldProvider
         $this->data = $worldData;
     }
 
-    public function saveChunk(ChunkSaveData $chunkData, WorldDimension $dimension = WorldDimension::OVERWORLD): void
+    public function saveChunk(ChunkSaveData $chunkData, DimensionType $dimension = DimensionType::OVERWORLD): void
     {
         throw new LogicException('The asynchronous world path performed a synchronous chunk save.');
     }
 
-    public function requestChunkLoad(ChunkPosition $position, WorldDimension $dimension = WorldDimension::OVERWORLD): bool
+    public function requestChunkLoad(ChunkPosition $position, DimensionType $dimension = DimensionType::OVERWORLD): bool
     {
         $key = $position->key();
         if (isset($this->pendingLoads[$key])) {
@@ -581,7 +581,7 @@ final class FakeAsynchronousWorldProvider implements AsynchronousWorldProvider
         $this->loadCompletions[] = new ChunkLoadCompletion($position, null, true);
     }
 
-    public function pollChunkLoads(int $maximumCompletions = 256, ?WorldDimension $dimension = null): array
+    public function pollChunkLoads(int $maximumCompletions = 256, ?DimensionType $dimension = null): array
     {
         $completions = array_splice($this->loadCompletions, 0, $maximumCompletions);
         foreach ($completions as $completion) {
@@ -591,12 +591,12 @@ final class FakeAsynchronousWorldProvider implements AsynchronousWorldProvider
         return $completions;
     }
 
-    public function enqueueChunkSave(ChunkSaveData $chunkData, WorldDimension $dimension = WorldDimension::OVERWORLD): PersistenceEnqueueResult
+    public function enqueueChunkSave(ChunkSaveData $chunkData, DimensionType $dimension = DimensionType::OVERWORLD): PersistenceEnqueueResult
     {
         if ($this->enqueueDelayMicroseconds > 0) {
             usleep($this->enqueueDelayMicroseconds);
         }
-        $key = 'chunk:' . ($dimension === WorldDimension::OVERWORLD ? '' : $dimension->name . ':')
+        $key = 'chunk:' . ($dimension === DimensionType::OVERWORLD ? '' : $dimension->name . ':')
             . $chunkData->chunk->position->key();
         $existing = $this->pendingSaves[$key] ?? null;
         if ($existing instanceof ChunkSaveData && $existing->revision >= $chunkData->revision) {
@@ -619,9 +619,9 @@ final class FakeAsynchronousWorldProvider implements AsynchronousWorldProvider
     public function completeSave(
         ChunkPosition $position,
         int $revision,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): void {
-        $key = 'chunk:' . ($dimension === WorldDimension::OVERWORLD ? '' : $dimension->name . ':') . $position->key();
+        $key = 'chunk:' . ($dimension === DimensionType::OVERWORLD ? '' : $dimension->name . ':') . $position->key();
         unset($this->pendingSaves[$key]);
         $this->saveCompletions[] = new PersistenceWriteCompletion(
             $this->nextRequestId++,
@@ -643,12 +643,12 @@ final class FakeAsynchronousWorldProvider implements AsynchronousWorldProvider
         );
     }
 
-    public function pollChunkSaves(int $maximumCompletions = 256, ?WorldDimension $dimension = null): array
+    public function pollChunkSaves(int $maximumCompletions = 256, ?DimensionType $dimension = null): array
     {
         return array_splice($this->saveCompletions, 0, $maximumCompletions);
     }
 
-    public function drainChunkSaves(int $timeoutMilliseconds, ?WorldDimension $dimension = null): array
+    public function drainChunkSaves(int $timeoutMilliseconds, ?DimensionType $dimension = null): array
     {
         $this->lifecycle[] = 'drain';
         if ($this->completeDrainedSaves) {

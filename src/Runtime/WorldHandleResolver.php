@@ -20,20 +20,23 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\World;
+use WeakReference;
 
 /** @internal Mutable composition bridge populated once the default runtime has been assembled. */
 final class WorldHandleResolver
 {
-    private ?WorldRuntimeManager $worlds = null;
+    /** @var null|WeakReference<WorldRuntimeManager> */
+    private ?WeakReference $worlds = null;
 
     public function attach(WorldRuntimeManager $worlds): void
     {
-        $this->worlds = $worlds;
+        $this->worlds = WeakReference::create($worlds);
     }
 
-    public function resolve(string $worldId): ?World
+    public function resolve(string $worldId, DimensionType $dimension = DimensionType::OVERWORLD): ?World
     {
-        return $this->worlds?->get($worldId)?->handle;
+        return $this->worlds?->get()?->get($worldId, $dimension)?->handle;
     }
 }

@@ -20,15 +20,23 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Runtime;
 
+use Bedriox\Api\World\DimensionCreationOptions;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\WorldCreationOptions;
 use Bedriox\Api\World\WorldDifficulty;
-use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Data\PersistentBlockStateRegistry;
 use Bedriox\Server\Login\AuthenticationMode;
+use Bedriox\Server\Persistence\World\ProcessWorldProviderFactory;
 use Bedriox\Server\Runtime\PersistentWorldFactory;
 use Bedriox\Server\Runtime\ServerConfig;
+use Bedriox\Server\Worker\WorkerDispatcher;
+use Bedriox\Server\Worker\WorkerPoolSnapshot;
+use Bedriox\Server\Worker\WorkerReceipt;
+use Bedriox\Server\Worker\WorkerSubmission;
+use Bedriox\Server\Worker\World\WorldPreparationCodec;
+use Bedriox\Server\Worker\World\WorldPreparationRequest;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\Generator\BuiltInGeneratorDefinitions;
@@ -94,8 +102,8 @@ final class PersistentWorldFactoryTest extends TestCase
         self::assertSame(3, $opened->data->generatorVersion);
         self::assertSame('default', $opened->world->generatorName());
         self::assertCount(3, $opened->dimensions());
-        self::assertSame(WorldDimension::NETHER, $opened->dimension(WorldDimension::NETHER)?->world->dimension());
-        self::assertSame(WorldDimension::END, $opened->dimension(WorldDimension::END)?->world->dimension());
+        self::assertSame(DimensionType::NETHER, $opened->dimension(DimensionType::NETHER)?->world->dimension());
+        self::assertSame(DimensionType::END, $opened->dimension(DimensionType::END)?->world->dimension());
         self::assertGreaterThanOrEqual(63, $opened->world->spawn()->y);
         $opened->world->close();
         self::assertTrue($providers->provider?->closed);
@@ -263,6 +271,68 @@ final class PersistentWorldFactoryTest extends TestCase
         self::assertSame([8, 70, -4], [$opened->data->spawn->x, $opened->data->spawn->y, $opened->data->spawn->z]);
     }
 
+    public function testCreatesAndComposesIndependentDimensionGenerators(): void
+    {
+        $providers = new RecordingWorldProviderFactory();
+        $opened = (new PersistentWorldFactory($this->workingDirectory, $providers))->createNamed(
+            self::config(),
+            BedrockDataSet::bundled(),
+            'custom-nether',
+            new WorldCreationOptions(
+                seed: 11,
+                dimensions: [
+                    DimensionType::NETHER->value => new DimensionCreationOptions(
+                        'flat',
+                        seed: 42,
+                        generatorOptions: ['preset' => 'nether-test'],
+                        spawn: new ApiPosition(9.0, 70.0, -3.0),
+                    ),
+                ],
+            ),
+        );
+
+        $stored = $providers->provider?->worldData();
+        self::assertNotNull($stored);
+        self::assertSame('default', $stored->dimension(DimensionType::OVERWORLD)->generatorName);
+        self::assertSame('flat', $stored->dimension(DimensionType::NETHER)->generatorName);
+        self::assertSame(42, $stored->dimension(DimensionType::NETHER)->seed);
+        self::assertSame('{"preset":"nether-test"}', $stored->dimension(DimensionType::NETHER)->generatorOptions);
+        self::assertSame(
+            [9, 70, -3],
+            [
+                $opened->dimension(DimensionType::NETHER)?->world->spawn()->x,
+                $opened->dimension(DimensionType::NETHER)?->world->spawn()->y,
+                $opened->dimension(DimensionType::NETHER)?->world->spawn()->z,
+            ],
+        );
+        self::assertSame('flat', $opened->dimension(DimensionType::NETHER)?->data->generatorName);
+    }
+
+    public function testAsynchronousPreparationUsesTheOverworldSeedOverride(): void
+    {
+        $workers = new CapturingWorldPreparationDispatcher();
+        $factory = new PersistentWorldFactory(
+            $this->workingDirectory,
+            new ProcessWorldProviderFactory('test'),
+        );
+        $factory->useWorldPreparationWorker($workers, 7);
+
+        $pending = $factory->beginCreateNamed(
+            self::config(),
+            BedrockDataSet::bundled(),
+            'seeded',
+            new WorldCreationOptions(
+                seed: 11,
+                dimensions: [
+                    DimensionType::OVERWORLD->value => new DimensionCreationOptions('default', seed: 42),
+                ],
+            ),
+        );
+
+        self::assertSame(42, $workers->request?->seed);
+        $pending->cancel();
+    }
+
     public function testNamedLoadDoesNotCreateAWorldWhenStorageIsMissing(): void
     {
         $providers = new RecordingWorldProviderFactory();
@@ -347,6 +417,42 @@ final class PersistentWorldFactoryTest extends TestCase
     }
 }
 
+final class CapturingWorldPreparationDispatcher implements WorkerDispatcher
+{
+    public ?WorldPreparationRequest $request = null;
+
+    public function submit(
+        int $taskTypeId,
+        string $payload,
+        \Closure $completion,
+        ?int $deadlineNanoseconds = null,
+    ): WorkerSubmission {
+        $this->request = (new WorldPreparationCodec())->decodeRequest($payload);
+
+        return WorkerSubmission::accepted(new WorkerReceipt(
+            str_repeat('w', 16),
+            1,
+            $taskTypeId,
+            'world-preparation',
+            hrtime(true) + 1_000_000_000,
+        ));
+    }
+
+    public function cancel(WorkerReceipt $receipt): bool
+    {
+        return $receipt->taskId === 1;
+    }
+
+    public function poll(int $maximumCompletions = 256): void {}
+
+    public function snapshot(): WorkerPoolSnapshot
+    {
+        return new WorkerPoolSnapshot('', 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, true);
+    }
+
+    public function shutdown(): void {}
+}
+
 final class RecordingWorldProviderFactory implements WorldProviderFactory
 {
     public ?string $openedPath = null;
@@ -392,7 +498,7 @@ final class RecordingWritableWorldProvider implements WritableWorldProvider
         return $this->data;
     }
 
-    public function loadChunk(ChunkPosition $position, WorldDimension $dimension = WorldDimension::OVERWORLD): ?LoadedChunkData
+    public function loadChunk(ChunkPosition $position, DimensionType $dimension = DimensionType::OVERWORLD): ?LoadedChunkData
     {
         return null;
     }
@@ -402,7 +508,7 @@ final class RecordingWritableWorldProvider implements WritableWorldProvider
         $this->data = $worldData;
     }
 
-    public function saveChunk(ChunkSaveData $chunkData, WorldDimension $dimension = WorldDimension::OVERWORLD): void {}
+    public function saveChunk(ChunkSaveData $chunkData, DimensionType $dimension = DimensionType::OVERWORLD): void {}
 
     public function close(): void
     {

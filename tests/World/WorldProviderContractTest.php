@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\World;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\World\Block\InternalBlockStateId;
 use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkPosition;
@@ -92,7 +92,7 @@ final class InMemoryContractProvider implements WritableWorldProvider
         return $this->data;
     }
 
-    public function loadChunk(ChunkPosition $position, WorldDimension $dimension = WorldDimension::OVERWORLD): ?LoadedChunkData
+    public function loadChunk(ChunkPosition $position, DimensionType $dimension = DimensionType::OVERWORLD): ?LoadedChunkData
     {
         $this->assertOpen();
 
@@ -105,7 +105,7 @@ final class InMemoryContractProvider implements WritableWorldProvider
         $this->data = $worldData;
     }
 
-    public function saveChunk(ChunkSaveData $chunkData, WorldDimension $dimension = WorldDimension::OVERWORLD): void
+    public function saveChunk(ChunkSaveData $chunkData, DimensionType $dimension = DimensionType::OVERWORLD): void
     {
         $this->assertOpen();
         $this->chunks[$chunkData->chunk->position->key()] = new LoadedChunkData($chunkData->chunk);

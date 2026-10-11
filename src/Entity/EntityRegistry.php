@@ -22,6 +22,7 @@ namespace Bedriox\Server\Entity;
 
 use Bedriox\Api\Entity\EntityCategory;
 use Bedriox\Api\Entity\EntityType;
+use Bedriox\Api\World\World;
 use Bedriox\Server\Simulation\Position;
 use Closure;
 use InvalidArgumentException;
@@ -47,6 +48,9 @@ final class EntityRegistry
     private array $typeCounts = [];
 
     private readonly EntitySpatialIndex $spatialIndex;
+
+    /** @var null|Closure(string): ?\Bedriox\Api\World\World */
+    private ?Closure $publicWorldResolver = null;
 
     private int $nextRuntimeId;
 
@@ -99,6 +103,15 @@ final class EntityRegistry
         return array_values($this->byRuntimeId);
     }
 
+    /** @param Closure(string): ?\Bedriox\Api\World\World $resolver */
+    public function configurePublicWorldResolver(Closure $resolver): void
+    {
+        $this->publicWorldResolver = $resolver;
+        foreach ($this->byRuntimeId as $entity) {
+            $entity->bindPublicWorldResolver($resolver);
+        }
+    }
+
     /**
      * @param Closure(string, int): AbstractEntity $factory Receives canonical UUID, then runtime ID.
      */
@@ -124,6 +137,11 @@ final class EntityRegistry
         if ($entity->isRemoved()) {
             throw new LogicException('Removed entities cannot be admitted to the registry.');
         }
+        if ($this->publicWorldResolver !== null) {
+            $entity->bindPublicWorldResolver($this->publicWorldResolver);
+        } else {
+            $entity->bindPublicWorld(new World($entity->getWorldName(), 1));
+        }
 
         $this->spatialIndex->add($entity);
         $this->byRuntimeId[$runtimeId] = $entity;
@@ -147,6 +165,11 @@ final class EntityRegistry
             || $existing->getType()->identifier() !== $entity->getType()->identifier()
             || $existing->getCategory() !== $entity->getCategory()) {
             throw new LogicException('Entity replacement must preserve identity, type, and category.');
+        }
+        if ($this->publicWorldResolver !== null) {
+            $entity->bindPublicWorldResolver($this->publicWorldResolver);
+        } else {
+            $entity->bindPublicWorld(new World($entity->getWorldName(), 1));
         }
 
         $this->spatialIndex->replace($entity);

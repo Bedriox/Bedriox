@@ -21,7 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Api\World;
 
 /** Stable dimension identity independent from Bedrock's current numeric wire IDs. */
-enum WorldDimension: string
+enum DimensionType: string
 {
     case OVERWORLD = 'minecraft:overworld';
     case NETHER = 'minecraft:nether';

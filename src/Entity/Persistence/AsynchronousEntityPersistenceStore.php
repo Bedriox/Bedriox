@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Persistence;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\Persistence\PersistenceEnqueueResult;
 
 /** Non-blocking entity ownership persistence used by the simulation thread. */
@@ -29,25 +29,25 @@ interface AsynchronousEntityPersistenceStore extends EntityPersistenceStore
     /** Queues one immutable owner-chunk snapshot without waiting for storage I/O. */
     public function enqueueEntityChunkSave(
         EntityChunkSnapshot $snapshot,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): PersistenceEnqueueResult;
 
     /** @return list<EntityChunkSaveCompletion> */
     public function pollEntityChunkSaves(
         int $maximumCompletions = 256,
-        ?WorldDimension $dimension = null,
+        ?DimensionType $dimension = null,
     ): array;
 
     /** @return list<EntityChunkSaveCompletion> */
     public function drainEntityChunkSaves(
         int $timeoutMilliseconds,
-        ?WorldDimension $dimension = null,
+        ?DimensionType $dimension = null,
     ): array;
 
     /** Returns false when the bounded submission queue cannot accept the transfer. */
     public function enqueueEntityOwnershipTransfer(
         EntityOwnershipTransfer $transfer,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): bool;
 
     /**
@@ -55,7 +55,7 @@ interface AsynchronousEntityPersistenceStore extends EntityPersistenceStore
      */
     public function pollEntityOwnershipTransfers(
         int $maximumCompletions = 256,
-        ?WorldDimension $dimension = null,
+        ?DimensionType $dimension = null,
     ): array;
 
     /**
@@ -63,6 +63,6 @@ interface AsynchronousEntityPersistenceStore extends EntityPersistenceStore
      */
     public function drainEntityOwnershipTransfers(
         int $timeoutMilliseconds,
-        ?WorldDimension $dimension = null,
+        ?DimensionType $dimension = null,
     ): array;
 }

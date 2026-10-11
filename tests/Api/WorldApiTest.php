@@ -32,6 +32,8 @@ use Bedriox\Api\Event\World\WorldUnloadedEvent;
 use Bedriox\Api\Event\World\WorldUnloadEvent;
 use Bedriox\Api\World\Block;
 use Bedriox\Api\World\BlockPosition;
+use Bedriox\Api\World\DimensionCreationOptions;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\Particle\Particle;
 use Bedriox\Api\World\Particle\ParticleType;
 use Bedriox\Api\World\Particle\SimpleParticle;
@@ -41,6 +43,8 @@ use Bedriox\Api\World\WeatherType;
 use Bedriox\Api\World\World;
 use Bedriox\Api\World\WorldActions;
 use Bedriox\Api\World\WorldCreationOptions;
+use Bedriox\Api\World\WorldDifficulty;
+use Bedriox\Api\World\WorldInfo;
 use Bedriox\Api\World\WorldOperationFailure;
 use Bedriox\Api\World\WorldOperationFailureCode;
 use Bedriox\Api\World\WorldOperationResult;
@@ -54,17 +58,46 @@ use PHPUnit\Framework\TestCase;
 
 final class WorldApiTest extends TestCase
 {
-    public function testWorldHandleCarriesOnlyStableLoadIdentity(): void
+    public function testWorldHandleCarriesExactDimensionAndStableLoadIdentity(): void
     {
-        $first = new World('minigames', 7);
-        $same = new World('minigames', 7);
-        $reloaded = new World('minigames', 8);
+        $first = new World('minigames', 7, dimensionType: DimensionType::NETHER);
+        $same = new World('minigames', 7, dimensionType: DimensionType::NETHER);
+        $overworld = new World('minigames', 7);
+        $reloaded = new World('minigames', 8, dimensionType: DimensionType::NETHER);
 
         self::assertSame('minigames', $first->id());
         self::assertSame(7, $first->loadGeneration());
+        self::assertSame(DimensionType::NETHER, $first->getDimensionType());
         self::assertTrue($first->isSameLoad($same));
+        self::assertFalse($first->isSameLoad($overworld));
         self::assertFalse($first->isSameLoad($reloaded));
         self::assertTrue($first->isSameWorld($reloaded));
+        self::assertFalse($first->isSameWorld($overworld));
+    }
+
+    public function testWorldResolvesOnlyCanonicalDimensionsFromItsLoadedWorld(): void
+    {
+        $overworld = null;
+        $nether = null;
+        $resolver = static function (World $source, DimensionType $dimension) use (&$overworld, &$nether): ?World {
+            return match ($dimension) {
+                DimensionType::OVERWORLD => $overworld,
+                DimensionType::NETHER => $nether,
+                DimensionType::END => null,
+            };
+        };
+        $overworld = new World('survival', 4, dimensionResolver: $resolver);
+        $nether = new World(
+            'survival',
+            4,
+            dimensionType: DimensionType::NETHER,
+            dimensionResolver: $resolver,
+        );
+
+        self::assertSame($overworld, $overworld->getDimension(DimensionType::OVERWORLD));
+        self::assertSame($nether, $overworld->getDimension(DimensionType::NETHER));
+        self::assertSame($overworld, $nether->getDimension(DimensionType::OVERWORLD));
+        self::assertNull($overworld->getDimension(DimensionType::END));
     }
 
     #[DataProvider('invalidWorldHandleProvider')]
@@ -92,6 +125,7 @@ final class WorldApiTest extends TestCase
 
         self::assertTrue($resolved->isResolved());
         self::assertSame($current, $resolved->world);
+        self::assertSame(DimensionType::OVERWORLD, $resolved->world->getDimensionType());
         self::assertSame(135.0, $resolved->yaw);
         self::assertSame(-30.0, $resolved->pitch);
 
@@ -100,6 +134,59 @@ final class WorldApiTest extends TestCase
         self::assertSame($other, $explicit->world);
         self::assertSame(90.0, $explicit->yaw);
         self::assertSame(20.0, $explicit->pitch);
+    }
+
+    public function testBlockPositionContainsCoordinatesWithoutDimensionIdentity(): void
+    {
+        $position = new BlockPosition(4, 70, -8);
+
+        self::assertSame(4, $position->x);
+        self::assertSame(70, $position->y);
+        self::assertSame(-8, $position->z);
+        $constructor = (new \ReflectionClass(BlockPosition::class))->getConstructor();
+        self::assertNotNull($constructor);
+        self::assertNotContains(
+            'dimension',
+            array_map(static fn(\ReflectionParameter $parameter): string => $parameter->getName(), $constructor->getParameters()),
+        );
+    }
+
+    public function testWorldInfoDescribesOneExactDimension(): void
+    {
+        $nether = new World('survival', 2, dimensionType: DimensionType::NETHER);
+        $spawn = new Position(0.5, 64.0, 0.5, 0.0, 0.0, $nether);
+        $info = new WorldInfo(
+            $nether,
+            'Survival Nether',
+            'default',
+            42,
+            WorldDifficulty::NORMAL,
+            18_000,
+            $spawn,
+            3,
+        );
+
+        self::assertSame($nether, $info->world);
+        self::assertSame($spawn, $info->spawn);
+        self::assertSame(DimensionType::NETHER, $info->world->getDimensionType());
+    }
+
+    public function testWorldInfoRejectsSpawnFromAnotherDimension(): void
+    {
+        $nether = new World('survival', 2, dimensionType: DimensionType::NETHER);
+        $overworld = new World('survival', 2);
+
+        $this->expectException(InvalidArgumentException::class);
+        new WorldInfo(
+            $nether,
+            'Survival Nether',
+            'default',
+            42,
+            WorldDifficulty::NORMAL,
+            18_000,
+            new Position(0.5, 64.0, 0.5, 0.0, 0.0, $overworld),
+            0,
+        );
     }
 
     public function testPositionRequiresCompleteBoundedStateWhenAuthoritative(): void
@@ -140,6 +227,41 @@ final class WorldApiTest extends TestCase
         self::assertSame(42, $options->seed);
         self::assertSame(8, $options->generatorOptions['tile_size']);
         self::assertSame('Checkerboard', $options->displayName);
+    }
+
+    public function testCreationOptionsResolveIndependentDimensionGenerators(): void
+    {
+        $netherSpawn = new Position(8.5, 72.0, -4.5, 90.0, 0.0);
+        $options = new WorldCreationOptions(
+            generator: 'default',
+            seed: 42,
+            dimensions: [
+                DimensionType::NETHER->value => new DimensionCreationOptions(
+                    'testfeatures:hellscape',
+                    99,
+                    ['lava_sea_height' => 48],
+                    $netherSpawn,
+                ),
+            ],
+        );
+
+        $overworld = $options->dimension(DimensionType::OVERWORLD);
+        $nether = $options->dimension(DimensionType::NETHER);
+        self::assertSame('default', $overworld->generator);
+        self::assertSame(42, $overworld->seed);
+        self::assertSame('testfeatures:hellscape', $nether->generator);
+        self::assertSame(99, $nether->seed);
+        self::assertSame(48, $nether->generatorOptions['lava_sea_height']);
+        self::assertSame($netherSpawn, $nether->spawn);
+    }
+
+    public function testCreationOptionsRejectUnknownDimensionKey(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+
+        new WorldCreationOptions(dimensions: [
+            'moon' => new DimensionCreationOptions('default'),
+        ]);
     }
 
     public function testCreationOptionsRejectUnnamespacedCustomGenerator(): void

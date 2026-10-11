@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Simulation;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Persistence\PersistenceEnqueueResult;
 use Bedriox\Server\Persistence\PersistenceSubmission;
@@ -53,7 +53,7 @@ final class PlayerAutosaveCycleTest extends TestCase
         $world = new WorldSimulation(
             blockPalette: $palette,
             playerPersistence: $persistence,
-            dimension: WorldDimension::NETHER,
+            dimension: DimensionType::NETHER,
         );
         $factory = new SimulationCommandFactory();
         self::assertTrue($world->enqueue($factory->join('session-one', 'identity-one', 'One')));
@@ -76,7 +76,7 @@ final class PlayerAutosaveCycleTest extends TestCase
             $world->autosavePlayers(1),
         );
         self::assertCount(1, $store->submittedRevisions);
-        self::assertSame([WorldDimension::NETHER], $store->submittedDimensions);
+        self::assertSame([DimensionType::NETHER], $store->submittedDimensions);
         $firstRevision = $store->submittedRevisions[0];
 
         self::assertTrue($world->enqueue($factory->move(
@@ -114,7 +114,7 @@ final class AutosaveCycleDataStore implements AsynchronousPlayerDataStore
     /** @var list<int> */
     public array $submittedRevisions = [];
 
-    /** @var list<WorldDimension> */
+    /** @var list<DimensionType> */
     public array $submittedDimensions = [];
 
     /** @var array<int, PersistenceWriteRequest> */

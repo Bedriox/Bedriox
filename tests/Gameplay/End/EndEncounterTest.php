@@ -22,7 +22,7 @@ namespace Bedriox\Server\Tests\Gameplay\End;
 
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\VanillaEntityType;
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\EntityRegistry;
@@ -138,13 +138,13 @@ final class EndEncounterTest extends TestCase
             new WorldMetadata('world', 42),
             new EndWorldGenerator(42, $states),
             new ChunkRepository(32),
-            dimension: WorldDimension::END,
+            dimension: DimensionType::END,
         );
         $simulation = new WorldSimulation(
             blockWorld: $world,
             blockStateRegistry: $states,
             worldId: 'world',
-            dimension: WorldDimension::END,
+            dimension: DimensionType::END,
         );
         $encounter = $simulation->endEncounter();
         self::assertNotNull($encounter);

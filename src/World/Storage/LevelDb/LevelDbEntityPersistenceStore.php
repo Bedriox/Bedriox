@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World\Storage\LevelDb;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\Entity\Persistence\CorruptEntityPersistenceException;
 use Bedriox\Server\Entity\Persistence\EntityChunkSnapshot;
 use Bedriox\Server\Entity\Persistence\EntityOwnershipTransfer;
@@ -48,7 +48,7 @@ final readonly class LevelDbEntityPersistenceStore implements EntityPersistenceS
 
     public function loadEntityChunk(
         ChunkPosition $position,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): ?EntityChunkSnapshot {
         try {
             $document = $this->database->get(BedrioxEntityKey::chunk($position->x, $position->z, $dimension));
@@ -64,7 +64,7 @@ final readonly class LevelDbEntityPersistenceStore implements EntityPersistenceS
 
     public function saveEntityChunk(
         EntityChunkSnapshot $snapshot,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): void {
         $this->assertWorld($snapshot);
         $key = BedrioxEntityKey::chunk($snapshot->chunk->x, $snapshot->chunk->z, $dimension);
@@ -88,7 +88,7 @@ final readonly class LevelDbEntityPersistenceStore implements EntityPersistenceS
 
     public function transferEntityOwnership(
         EntityOwnershipTransfer $transfer,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): EntityOwnershipTransferResult {
         $requestedSource = $transfer->sourceAfter;
         $requestedDestination = $transfer->destinationAfter;

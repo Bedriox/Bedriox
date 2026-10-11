@@ -20,13 +20,13 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Spawn\Natural;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 
 final readonly class SlimeNaturalSpawnRule implements NaturalSpawnRule
 {
     public function allows(NaturalSpawnContext $context): bool
     {
-        if ($context->dimension !== WorldDimension::OVERWORLD || $context->medium !== NaturalSpawnMedium::GROUND) {
+        if ($context->dimension !== DimensionType::OVERWORLD || $context->medium !== NaturalSpawnMedium::GROUND) {
             return false;
         }
         if ($context->position->y < 40.0) {

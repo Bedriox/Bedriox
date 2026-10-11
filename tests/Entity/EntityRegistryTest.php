@@ -22,6 +22,8 @@ namespace Bedriox\Server\Tests\Entity;
 
 use Bedriox\Api\Entity\EntityCategory;
 use Bedriox\Api\Entity\VanillaEntityType;
+use Bedriox\Api\World\DimensionType;
+use Bedriox\Api\World\World;
 use Bedriox\Server\Entity\EntityRegistry;
 use Bedriox\Server\Entity\Vanilla\CowEntity;
 use Bedriox\Server\Entity\Vanilla\ZombieEntity;
@@ -117,6 +119,33 @@ final class EntityRegistryTest extends TestCase
         $entity = $registry->spawn(static fn(string $uuid, int $runtimeId): CowEntity =>
             new CowEntity($uuid, $runtimeId, 'world', new Position(0.0, 64.0, 0.0)));
         self::assertSame(11, $entity->getRuntimeId());
+    }
+
+    public function testPublicPositionFollowsTheExactWorldResolvedAfterMovement(): void
+    {
+        $world = new World('world', 4, dimensionType: DimensionType::NETHER);
+        $other = new World('other', 2, dimensionType: DimensionType::NETHER);
+        $registry = new EntityRegistry();
+        $registry->configurePublicWorldResolver(
+            static fn(string $worldId): ?World => match ($worldId) {
+                'world' => $world,
+                'other' => $other,
+                default => null,
+            },
+        );
+        $cow = $registry->spawn(static fn(string $uuid, int $runtimeId): CowEntity =>
+            new CowEntity($uuid, $runtimeId, 'world', new Position(1.0, 64.0, 2.0), yaw: 35.0, pitch: -10.0));
+
+        self::assertSame($world, $cow->getPosition()->world);
+        self::assertSame(35.0, $cow->getPosition()->yaw);
+        self::assertSame(-10.0, $cow->getPosition()->pitch);
+
+        $registry->move($cow->getRuntimeId(), 'other', new Position(8.0, 70.0, 9.0), 90.0, 5.0);
+
+        self::assertSame($other, $cow->getPosition()->world);
+        self::assertSame(DimensionType::NETHER, $cow->getPosition()->world->getDimensionType());
+        self::assertSame(90.0, $cow->getPosition()->yaw);
+        self::assertSame(5.0, $cow->getPosition()->pitch);
     }
 
     public function testDuplicateUuidAndTypeChangingReplacementAreRejected(): void

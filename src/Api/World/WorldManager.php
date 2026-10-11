@@ -22,11 +22,11 @@ namespace Bedriox\Api\World;
 
 interface WorldManager
 {
-    public function getDefault(): World;
+    public function getDefault(DimensionType $dimension = DimensionType::OVERWORLD): World;
 
-    public function get(string $worldId): ?World;
+    public function get(string $worldId, DimensionType $dimension = DimensionType::OVERWORLD): ?World;
 
-    /** @return list<World> */
+    /** @return list<World> Canonical Overworld handle for each loaded named world. */
     public function getLoaded(): array;
 
     public function getState(string $worldId): ?WorldLifecycleState;

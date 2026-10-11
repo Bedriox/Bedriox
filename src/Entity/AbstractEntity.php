@@ -31,6 +31,7 @@ use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\Visibility\Visibility;
 use Bedriox\Api\Visibility\VisibilityPolicy;
 use Bedriox\Api\World\Position as ApiPosition;
+use Bedriox\Api\World\World as ApiWorld;
 use Bedriox\Server\Entity\Mount\MountSeatOffset;
 use Bedriox\Server\Plugin\PluginActionBuffer;
 use Bedriox\Server\Simulation\Position;
@@ -91,6 +92,11 @@ abstract class AbstractEntity implements ApiEntity
     /** @var null|Closure(string, Position, float, float): void */
     private ?Closure $controllerTransformHandler = null;
 
+    private ?ApiWorld $publicWorld = null;
+
+    /** @var null|Closure(string): ?ApiWorld */
+    private ?Closure $publicWorldResolver = null;
+
     public function __construct(
         string $uniqueId,
         private readonly int $runtimeId,
@@ -144,7 +150,39 @@ abstract class AbstractEntity implements ApiEntity
 
     final public function getPosition(): ApiPosition
     {
-        return new ApiPosition($this->position->x, $this->position->y, $this->position->z);
+        $world = $this->publicWorldResolver === null
+            ? $this->publicWorld
+            : ($this->publicWorldResolver)($this->worldName) ?? $this->publicWorld;
+        if ($world === null) {
+            throw new LogicException('Entity position is unavailable without its exact loaded world.');
+        }
+        if ($world->id() !== $this->worldName) {
+            throw new LogicException('Entity world resolver returned a handle for another world.');
+        }
+
+        return new ApiPosition(
+            $this->position->x,
+            $this->position->y,
+            $this->position->z,
+            $this->yaw,
+            $this->pitch,
+            $world,
+        );
+    }
+
+    /** @internal Binds a canonical loaded-world handle to this entity projection. */
+    final public function bindPublicWorld(ApiWorld $world): void
+    {
+        if ($world->id() !== $this->worldName) {
+            throw new InvalidArgumentException('Entity world handle must match its authoritative world name.');
+        }
+        $this->publicWorld = $world;
+    }
+
+    /** @internal Resolves the canonical handle again when authoritative world ownership changes. */
+    final public function bindPublicWorldResolver(Closure $resolver): void
+    {
+        $this->publicWorldResolver = $resolver;
     }
 
     final public function internalPosition(): Position
@@ -496,8 +534,12 @@ abstract class AbstractEntity implements ApiEntity
         self::validatePosition($position);
         self::validateRotation($yaw, $pitch);
         $yaw = self::normalizeYaw($yaw);
-        if ($this->worldName !== $worldName || $this->position != $position
+        $worldChanged = $this->worldName !== $worldName;
+        if ($worldChanged || $this->position != $position
             || $this->yaw !== $yaw || $this->pitch !== $pitch) {
+            if ($worldChanged) {
+                $this->publicWorld = null;
+            }
             $this->worldName = $worldName;
             $this->position = $position;
             $this->yaw = $yaw;

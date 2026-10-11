@@ -25,7 +25,7 @@ use Bedriox\Api\World\Particle\Particle;
 use Closure;
 use LogicException;
 
-/** @internal Server-owned authoritative action path attached to one loaded-world handle. */
+/** @internal Server-owned authoritative action path attached to one exact loaded dimension handle. */
 final readonly class WorldActions
 {
     /**

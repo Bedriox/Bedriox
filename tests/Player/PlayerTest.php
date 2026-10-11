@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Player;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\Player\Player;
 use Bedriox\Server\Player\PlayerBootstrap;
 use Bedriox\Server\Player\PlayerIdentity;
@@ -127,12 +127,12 @@ final class PlayerTest extends TestCase
             64.0,
         );
 
-        self::assertSame(WorldDimension::OVERWORLD, $player->dimension());
-        self::assertSame(WorldDimension::OVERWORLD, $player->changeWorldDimension(WorldDimension::NETHER));
-        self::assertSame(WorldDimension::NETHER, $player->dimension());
-        self::assertSame(WorldDimension::NETHER, $player->snapshot()->dimension);
+        self::assertSame(DimensionType::OVERWORLD, $player->dimension());
+        self::assertSame(DimensionType::OVERWORLD, $player->changeDimensionType(DimensionType::NETHER));
+        self::assertSame(DimensionType::NETHER, $player->dimension());
+        self::assertSame(DimensionType::NETHER, $player->snapshot()->dimension);
         self::assertSame(1, $player->stateRevision());
-        self::assertSame(WorldDimension::NETHER, $player->changeWorldDimension(WorldDimension::NETHER));
+        self::assertSame(DimensionType::NETHER, $player->changeDimensionType(DimensionType::NETHER));
         self::assertSame(1, $player->stateRevision());
     }
 

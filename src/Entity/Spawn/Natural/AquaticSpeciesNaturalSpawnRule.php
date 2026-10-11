@@ -21,7 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Entity\Spawn\Natural;
 
 use Bedriox\Api\Entity\VanillaEntityType;
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 
 /** Species-specific water admission; structure-owned aquatic mobs are intentionally excluded. */
 final readonly class AquaticSpeciesNaturalSpawnRule implements NaturalSpawnRule
@@ -31,7 +31,7 @@ final readonly class AquaticSpeciesNaturalSpawnRule implements NaturalSpawnRule
     public function allows(NaturalSpawnContext $context): bool
     {
         if ($context->type->identifier() !== $this->type->value
-            || $context->dimension !== WorldDimension::OVERWORLD
+            || $context->dimension !== DimensionType::OVERWORLD
             || $context->medium !== NaturalSpawnMedium::WATER) {
             return false;
         }

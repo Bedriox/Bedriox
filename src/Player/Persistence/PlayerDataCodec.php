@@ -23,7 +23,7 @@ namespace Bedriox\Server\Player\Persistence;
 use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Inventory\ItemNbt;
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\Effect\ActiveEffectPersistenceState;
 use Bedriox\Server\Player\Persistence\Exception\CorruptPlayerDataException;
 use Bedriox\Server\Player\Persistence\Exception\PlayerDataWriteException;
@@ -272,8 +272,8 @@ final readonly class PlayerDataCodec
             $name = self::string($root['LastKnownName'], 'LastKnownName');
             self::validateIdentity($uuid, $xuid, $name);
             $dimension = isset($root['Dimension'])
-                ? WorldDimension::tryFrom(self::string($root['Dimension'], 'Dimension'))
-                : WorldDimension::OVERWORLD;
+                ? DimensionType::tryFrom(self::string($root['Dimension'], 'Dimension'))
+                : DimensionType::OVERWORLD;
             if ($dimension === null) {
                 throw new CorruptPlayerDataException('Player dimension is unsupported.');
             }

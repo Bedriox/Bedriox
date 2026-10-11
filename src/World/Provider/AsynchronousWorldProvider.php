@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World\Provider;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\Persistence\PersistenceEnqueueResult;
 use Bedriox\Server\Persistence\PersistenceWriteCompletion;
 use Bedriox\Server\Persistence\World\ChunkLoadCompletion;
@@ -31,29 +31,29 @@ interface AsynchronousWorldProvider extends WritableWorldProvider
 {
     public function requestChunkLoad(
         ChunkPosition $position,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): bool;
 
     /** @return list<ChunkLoadCompletion> */
     public function pollChunkLoads(
         int $maximumCompletions = 256,
-        ?WorldDimension $dimension = null,
+        ?DimensionType $dimension = null,
     ): array;
 
     public function enqueueChunkSave(
         ChunkSaveData $chunkData,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): PersistenceEnqueueResult;
 
     /** @return list<PersistenceWriteCompletion> */
     public function pollChunkSaves(
         int $maximumCompletions = 256,
-        ?WorldDimension $dimension = null,
+        ?DimensionType $dimension = null,
     ): array;
 
     /** @return list<PersistenceWriteCompletion> */
     public function drainChunkSaves(
         int $timeoutMilliseconds,
-        ?WorldDimension $dimension = null,
+        ?DimensionType $dimension = null,
     ): array;
 }

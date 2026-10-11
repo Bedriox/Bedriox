@@ -34,9 +34,9 @@ use Bedriox\Api\Inventory\Inventory;
 use Bedriox\Api\Player\Player;
 use Bedriox\Api\Visibility\VisibilityMode;
 use Bedriox\Api\Visibility\VisibilityPolicy;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\Position;
 use Bedriox\Api\World\World;
-use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Plugin\Display\DisplayChange;
 use Bedriox\Server\Plugin\Display\DisplayRegistry;
 use Bedriox\Server\Plugin\PluginException;
@@ -353,7 +353,6 @@ final class DisplayRegistryTest extends TestCase
             0.0,
             0.0,
             new World('world', 1),
-            WorldDimension::OVERWORLD,
         );
     }
 

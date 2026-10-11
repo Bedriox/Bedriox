@@ -25,7 +25,6 @@ use Bedriox\Api\Entity\Skin;
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\VanillaEntityType;
 use Bedriox\Api\World\World;
-use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Entity\EntityDefinition;
 use Bedriox\Server\Entity\EntityDespawnPolicy;
 use Bedriox\Server\Simulation\Position;
@@ -43,7 +42,6 @@ final class HumanEntityFactory
         float $yaw = 0.0,
         float $pitch = 0.0,
         ?World $world = null,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
     ): HumanEntity {
         $world ??= new World($worldName, 1);
         $human = new HumanEntity(
@@ -55,7 +53,6 @@ final class HumanEntityFactory
             $name,
             $skin,
             $world,
-            $dimension,
             yaw: $yaw,
             pitch: $pitch,
         );

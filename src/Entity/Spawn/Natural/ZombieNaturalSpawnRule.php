@@ -20,14 +20,14 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Spawn\Natural;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 
 /** First hostile surface rule; candidates remain rejected while sky light is above the hostile threshold. */
 final readonly class ZombieNaturalSpawnRule implements NaturalSpawnRule
 {
     public function allows(NaturalSpawnContext $context): bool
     {
-        return $context->dimension === WorldDimension::OVERWORLD
+        return $context->dimension === DimensionType::OVERWORLD
             && $context->medium === NaturalSpawnMedium::GROUND
             && $context->lightLevel <= 7;
     }

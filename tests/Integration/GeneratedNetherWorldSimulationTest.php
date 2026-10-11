@@ -22,7 +22,7 @@ namespace Bedriox\Server\Tests\Integration;
 
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\VanillaEntityType;
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
@@ -50,7 +50,7 @@ final class GeneratedNetherWorldSimulationTest extends TestCase
             new WorldMetadata('nether', 42),
             $generator,
             new ChunkRepository(64),
-            dimension: WorldDimension::NETHER,
+            dimension: DimensionType::NETHER,
         );
         $spawnChunkX = 0;
         $spawnChunkZ = 0;
@@ -93,7 +93,7 @@ final class GeneratedNetherWorldSimulationTest extends TestCase
             spawnAnimals: true,
             spawnMonsters: true,
             worldId: 'nether',
-            dimension: WorldDimension::NETHER,
+            dimension: DimensionType::NETHER,
             naturalSpawnClock: new class implements \Bedriox\Server\Entity\Spawn\Natural\NaturalSpawnClock {
                 public function nowNanoseconds(): int
                 {

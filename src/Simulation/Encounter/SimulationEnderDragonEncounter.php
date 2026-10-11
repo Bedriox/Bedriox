@@ -28,7 +28,6 @@ use Bedriox\Api\Encounter\EnderDragonRespawnStage;
 use Bedriox\Api\Entity\Vanilla\EndCrystal;
 use Bedriox\Api\Entity\Vanilla\EnderDragon;
 use Bedriox\Api\World\BlockPosition;
-use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Entity\Vanilla\End\EndCrystalEntity;
 use Bedriox\Server\Entity\Vanilla\End\EnderDragonEntity;
 use Bedriox\Server\Gameplay\End\EndEncounterCoordinator;
@@ -83,7 +82,7 @@ final readonly class SimulationEnderDragonEncounter implements EnderDragonEncoun
     public function getExitPortalPosition(): ?BlockPosition
     {
         return $this->encounter->state()->exitPortalActive
-            ? new BlockPosition(0, 69, 0, WorldDimension::END)
+            ? new BlockPosition(0, 69, 0)
             : null;
     }
 

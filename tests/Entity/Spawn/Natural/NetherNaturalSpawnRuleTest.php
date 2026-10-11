@@ -22,7 +22,7 @@ namespace Bedriox\Server\Tests\Entity\Spawn\Natural;
 
 use Bedriox\Api\Entity\EntityCategory;
 use Bedriox\Api\Entity\VanillaEntityType;
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\Entity\Spawn\Natural\MagmaCubeNaturalSpawnRule;
 use Bedriox\Server\Entity\Spawn\Natural\NaturalSpawnContext;
 use Bedriox\Server\Entity\Spawn\Natural\NaturalSpawnMedium;
@@ -62,7 +62,7 @@ final class NetherNaturalSpawnRuleTest extends TestCase
             self::context(VanillaEntityType::HOGLIN, biome: 'minecraft:crimson_forest'),
         ));
         self::assertFalse((new NetherNaturalSpawnRule(VanillaEntityType::HOGLIN))->allows(
-            self::context(VanillaEntityType::HOGLIN, dimension: WorldDimension::OVERWORLD),
+            self::context(VanillaEntityType::HOGLIN, dimension: DimensionType::OVERWORLD),
         ));
         self::assertTrue((new WitherSkeletonNaturalSpawnRule())->allows(
             self::context(VanillaEntityType::WITHER_SKELETON, structure: NetherStructureType::FORTRESS),
@@ -87,7 +87,7 @@ final class NetherNaturalSpawnRuleTest extends TestCase
 
     private static function context(
         VanillaEntityType $type,
-        WorldDimension $dimension = WorldDimension::NETHER,
+        DimensionType $dimension = DimensionType::NETHER,
         string $biome = 'minecraft:hell',
         NaturalSpawnMedium $medium = NaturalSpawnMedium::GROUND,
         ?string $supportBlock = 'minecraft:netherrack',

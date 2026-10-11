@@ -20,14 +20,14 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Spawn\Natural;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 
 /** Conservative overworld surface admission for the first naturally spawning animal. */
 final readonly class CowNaturalSpawnRule implements NaturalSpawnRule
 {
     public function allows(NaturalSpawnContext $context): bool
     {
-        if ($context->dimension !== WorldDimension::OVERWORLD
+        if ($context->dimension !== DimensionType::OVERWORLD
             || $context->medium !== NaturalSpawnMedium::GROUND || $context->lightLevel < 9) {
             return false;
         }

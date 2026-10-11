@@ -22,7 +22,7 @@ namespace Bedriox\Server\Tests\Integration;
 
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\VanillaEntityType;
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Entity\EntityDefinition;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
@@ -330,7 +330,7 @@ final class NaturalOwnershipPersistenceStore implements EntityPersistenceStore
 
     public function loadEntityChunk(
         ChunkPosition $position,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): ?EntityChunkSnapshot {
         $document = $this->documents[$dimension->value . ':' . $position->key()] ?? null;
 
@@ -339,7 +339,7 @@ final class NaturalOwnershipPersistenceStore implements EntityPersistenceStore
 
     public function saveEntityChunk(
         EntityChunkSnapshot $snapshot,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): void {
         $key = $dimension->value . ':' . $snapshot->chunk->key();
         $this->documents[$key] = $this->codec->encode($snapshot);
@@ -348,7 +348,7 @@ final class NaturalOwnershipPersistenceStore implements EntityPersistenceStore
 
     public function transferEntityOwnership(
         EntityOwnershipTransfer $transfer,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): EntityOwnershipTransferResult {
         $this->saveEntityChunk($transfer->sourceAfter, $dimension);
         $this->saveEntityChunk($transfer->destinationAfter, $dimension);

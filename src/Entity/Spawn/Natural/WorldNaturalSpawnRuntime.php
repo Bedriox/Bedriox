@@ -22,7 +22,7 @@ namespace Bedriox\Server\Entity\Spawn\Natural;
 
 use Bedriox\Api\Entity\EntityCategory;
 use Bedriox\Api\Entity\VanillaEntityType;
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\Entity\AbstractLivingEntity;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\EntityDespawnPolicy;
@@ -130,7 +130,7 @@ final class WorldNaturalSpawnRuntime
         $entries = [];
         $dimension = $world->dimension();
         if ($spawnAnimals) {
-            if ($dimension === WorldDimension::NETHER && $definitions->get(VanillaEntityType::STRIDER) !== null) {
+            if ($dimension === DimensionType::NETHER && $definitions->get(VanillaEntityType::STRIDER) !== null) {
                 $entries[] = new NaturalSpawnEntry(
                     VanillaEntityType::STRIDER,
                     EntityCategory::ANIMAL,
@@ -138,7 +138,7 @@ final class WorldNaturalSpawnRuntime
                     8,
                     NaturalSpawnMedium::LAVA,
                 );
-            } elseif ($dimension === WorldDimension::OVERWORLD) {
+            } elseif ($dimension === DimensionType::OVERWORLD) {
                 $entries[] = new NaturalSpawnEntry(
                     VanillaEntityType::COW,
                     EntityCategory::ANIMAL,
@@ -209,7 +209,7 @@ final class WorldNaturalSpawnRuntime
             }
         }
         if ($spawnMonsters && $world->difficulty() > 0) {
-            if ($dimension === WorldDimension::NETHER) {
+            if ($dimension === DimensionType::NETHER) {
                 foreach ([
                     [VanillaEntityType::BLAZE, 4],
                     [VanillaEntityType::GHAST, 3],
@@ -246,7 +246,7 @@ final class WorldNaturalSpawnRuntime
                         $entries[] = new NaturalSpawnEntry($type, EntityCategory::MONSTER, $rule, $weight);
                     }
                 }
-            } elseif ($dimension === WorldDimension::OVERWORLD) {
+            } elseif ($dimension === DimensionType::OVERWORLD) {
                 $entries[] = new NaturalSpawnEntry(
                     VanillaEntityType::ZOMBIE,
                     EntityCategory::MONSTER,

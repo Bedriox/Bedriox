@@ -50,8 +50,10 @@ final class FallingBlockEntity extends AbstractEntity implements FallingBlock, I
         private float $damagePerBlock = 0.0,
         private float $maximumDamage = 0.0,
         EntityMotion $motion = new EntityMotion(),
+        float $yaw = 0.0,
+        float $pitch = 0.0,
     ) {
-        parent::__construct($uniqueId, $runtimeId, $definition, $worldName, $position, $motion);
+        parent::__construct($uniqueId, $runtimeId, $definition, $worldName, $position, $motion, $yaw, $pitch);
         self::validateDamage($damagePerBlock, $maximumDamage);
         $this->highestY = $position->y;
         $this->controller = new BasicEntityController($this);

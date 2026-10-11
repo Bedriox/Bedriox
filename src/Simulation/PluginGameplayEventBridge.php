@@ -281,10 +281,10 @@ use Bedriox\Api\TextFormat;
 use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\Block as ApiBlock;
 use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\PortalType;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\WeatherState;
-use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Entity\AbstractLivingEntity;
 use Bedriox\Server\Entity\AbstractMobEntity;
 use Bedriox\Server\Entity\EntityMotion;
@@ -309,7 +309,7 @@ final readonly class PluginGameplayEventBridge
      * @param null|Closure(string): (Closure(ApiItemStack): int) $maximumStackSize
      * @param null|Closure(string): EffectActions $playerEffectActions
      * @param null|Closure(string): (Closure(int, ExperienceChangeCause): void) $playerExperienceActions
-     * @param null|Closure(string): ?\Bedriox\Api\World\World $worldResolver
+     * @param null|Closure(string, DimensionType): ?\Bedriox\Api\World\World $worldResolver
      * @param null|Closure(string): ?Skin $playerSkins
      */
     public function __construct(
@@ -328,6 +328,12 @@ final readonly class PluginGameplayEventBridge
     public function dispatch(Event $event): Event
     {
         return $this->events->dispatch($event);
+    }
+
+    /** @internal Resolves one exact dimension-specific world for entity and event projection. */
+    public function resolveWorld(string $worldId, DimensionType $dimension): ?\Bedriox\Api\World\World
+    {
+        return $this->worldResolver === null ? null : ($this->worldResolver)($worldId, $dimension);
     }
 
     public function enderDragonPhaseChange(
@@ -585,7 +591,7 @@ final readonly class PluginGameplayEventBridge
         return new self($this->events, $playerConnections, $this->worldResolver, $this->playerActions, $this->playerInventoryActions, $this->maximumStackSize, $this->playerEffectActions, $this->playerExperienceActions, $this->playerSkins);
     }
 
-    /** @param Closure(string): ?\Bedriox\Api\World\World $worldResolver */
+    /** @param Closure(string, DimensionType): ?\Bedriox\Api\World\World $worldResolver */
     public function withWorldResolver(Closure $worldResolver): self
     {
         return new self($this->events, $this->playerConnections, $worldResolver, $this->playerActions, $this->playerInventoryActions, $this->maximumStackSize, $this->playerEffectActions, $this->playerExperienceActions, $this->playerSkins);
@@ -1214,8 +1220,8 @@ final readonly class PluginGameplayEventBridge
     public function portalTravel(
         Player $player,
         PortalType $portalType,
-        WorldDimension $sourceDimension,
-        WorldDimension $targetDimension,
+        DimensionType $sourceDimension,
+        DimensionType $targetDimension,
         Position $destination,
     ): ?ApiPosition {
         $event = new PlayerPortalTravelEvent(
@@ -1253,7 +1259,7 @@ final readonly class PluginGameplayEventBridge
     {
         $event = new EndPortalActivateEvent(
             $this->playerView($player),
-            new ApiBlockPosition($center->x, $center->y, $center->z, $player->dimension()),
+            new ApiBlockPosition($center->x, $center->y, $center->z),
         );
         $this->events->dispatch($event);
 
@@ -1264,7 +1270,7 @@ final readonly class PluginGameplayEventBridge
     {
         $this->events->dispatch(new EndPortalActivatedEvent(
             $this->playerView($player),
-            new ApiBlockPosition($center->x, $center->y, $center->z, $player->dimension()),
+            new ApiBlockPosition($center->x, $center->y, $center->z),
         ));
     }
 
@@ -1652,19 +1658,19 @@ final readonly class PluginGameplayEventBridge
         ));
     }
 
-    public function experienceOrbSpawn(Position $position, int $value): ?int
+    public function experienceOrbSpawn(ApiPosition $position, int $value): ?int
     {
-        $event = new ExperienceOrbSpawnEvent(self::position($position), $value);
+        $event = new ExperienceOrbSpawnEvent($position, $value);
         $this->events->dispatch($event);
 
         return $event->isCancelled() ? null : $event->value();
     }
 
-    public function experienceOrbSpawned(int $runtimeEntityId, Position $position, int $value): void
+    public function experienceOrbSpawned(int $runtimeEntityId, ApiPosition $position, int $value): void
     {
         $this->events->dispatch(new ExperienceOrbSpawnedEvent(
             $runtimeEntityId,
-            self::position($position),
+            $position,
             $value,
         ));
     }
@@ -1806,11 +1812,14 @@ final readonly class PluginGameplayEventBridge
 
     public function allowWeatherChange(
         string $worldName,
+        DimensionType $dimension,
         WeatherState $previous,
         WeatherState $weather,
         WeatherChangeCause $cause,
     ): ?WeatherState {
-        $world = $this->worldResolver === null ? null : ($this->worldResolver)($worldName);
+        $world = $this->worldResolver === null
+            ? null
+            : ($this->worldResolver)($worldName, $dimension);
         if ($world === null) {
             return $weather;
         }
@@ -1822,11 +1831,14 @@ final readonly class PluginGameplayEventBridge
 
     public function weatherChanged(
         string $worldName,
+        DimensionType $dimension,
         WeatherState $previous,
         WeatherState $weather,
         WeatherChangeCause $cause,
     ): void {
-        $world = $this->worldResolver === null ? null : ($this->worldResolver)($worldName);
+        $world = $this->worldResolver === null
+            ? null
+            : ($this->worldResolver)($worldName, $dimension);
         if ($world !== null) {
             $this->events->dispatch(new WeatherChangedEvent($world, $previous, $weather, $cause));
         }
@@ -2721,12 +2733,13 @@ final readonly class PluginGameplayEventBridge
         Player|AbstractLivingEntity $shooter,
         Projectile $projectile,
         string $identifier,
+        ApiPosition $position,
     ): ?Projectile {
         $event = new ProjectileLaunchEvent(
             $shooter instanceof Player ? $this->playerView($shooter) : $shooter,
             $projectile->runtimeEntityId,
             $identifier,
-            self::position($projectile->position),
+            $position,
             new Vector3($projectile->motion->x, $projectile->motion->y, $projectile->motion->z),
         );
         $this->events->dispatch($event);
@@ -2746,12 +2759,13 @@ final readonly class PluginGameplayEventBridge
         Player|AbstractLivingEntity $shooter,
         Projectile $projectile,
         string $identifier,
+        ApiPosition $position,
     ): void {
         $this->events->dispatch(new ProjectileLaunchedEvent(
             $shooter instanceof Player ? $this->playerView($shooter) : $shooter,
             $projectile->runtimeEntityId,
             $identifier,
-            self::position($projectile->position),
+            $position,
             new Vector3($projectile->motion->x, $projectile->motion->y, $projectile->motion->z),
         ));
     }
@@ -2762,13 +2776,15 @@ final readonly class PluginGameplayEventBridge
         ?Player $playerTarget = null,
         ?AbstractLivingEntity $entityTarget = null,
         ?BlockPosition $blockTarget = null,
+        ?ApiPosition $position = null,
     ): bool {
+        $position ??= new ApiPosition($projectile->position->x, $projectile->position->y, $projectile->position->z);
         $target = $playerTarget === null ? $entityTarget : $this->playerView($playerTarget);
         $generic = new ProjectileImpactEvent(
             $projectile->runtimeEntityId,
             $shooter instanceof Player ? $this->playerView($shooter) : $shooter,
             $projectile->type->value,
-            self::position($projectile->position),
+            $position,
             $target,
             $blockTarget === null ? null : new ApiBlockPosition($blockTarget->x, $blockTarget->y, $blockTarget->z),
         );
@@ -2784,7 +2800,7 @@ final readonly class PluginGameplayEventBridge
             $projectile->runtimeEntityId,
             $projectile->ownerUuid,
             $projectile->potionType,
-            self::position($projectile->position),
+            $position,
             $projectile->lingering,
             $projectile->tippedArrow,
         );
@@ -2799,13 +2815,15 @@ final readonly class PluginGameplayEventBridge
         ?Player $playerTarget = null,
         ?AbstractLivingEntity $entityTarget = null,
         ?BlockPosition $blockTarget = null,
+        ?ApiPosition $position = null,
     ): void {
+        $position ??= new ApiPosition($projectile->position->x, $projectile->position->y, $projectile->position->z);
         $target = $playerTarget === null ? $entityTarget : $this->playerView($playerTarget);
         $this->events->dispatch(new ProjectileImpactedEvent(
             $projectile->runtimeEntityId,
             $shooter instanceof Player ? $this->playerView($shooter) : $shooter,
             $projectile->type->value,
-            self::position($projectile->position),
+            $position,
             $target,
             $blockTarget === null ? null : new ApiBlockPosition($blockTarget->x, $blockTarget->y, $blockTarget->z),
         ));
@@ -2817,7 +2835,7 @@ final readonly class PluginGameplayEventBridge
             $projectile->runtimeEntityId,
             $projectile->ownerUuid,
             $projectile->potionType,
-            self::position($projectile->position),
+            $position,
             $projectile->lingering,
             $projectile->tippedArrow,
         ));
@@ -2922,14 +2940,23 @@ final readonly class PluginGameplayEventBridge
             );
     }
 
-    public static function detachedPlayerView(Player $player, ?PlayerInventory $inventory = null): ApiPlayer
-    {
+    public static function detachedPlayerView(
+        Player $player,
+        ?PlayerInventory $inventory = null,
+        ?ApiPosition $position = null,
+    ): ApiPlayer {
         $snapshot = $player->snapshot();
 
         return new ApiPlayer(
             $snapshot->displayName,
             $snapshot->identity,
-            self::position($snapshot->position),
+            $position ?? new ApiPosition(
+                $snapshot->position->x,
+                $snapshot->position->y,
+                $snapshot->position->z,
+                $snapshot->yaw,
+                $snapshot->pitch,
+            ),
             $snapshot->yaw,
             $snapshot->pitch,
             $snapshot->sneaking,
@@ -3010,19 +3037,16 @@ final readonly class PluginGameplayEventBridge
         };
     }
 
-    private static function position(Position $position): ApiPosition
-    {
-        return new ApiPosition($position->x, $position->y, $position->z);
-    }
-
     private function positionFor(
         Player $player,
         Position $position,
         ?float $yaw = null,
         ?float $pitch = null,
-        ?WorldDimension $dimension = null,
+        ?DimensionType $dimension = null,
     ): ApiPosition {
-        $world = $this->worldResolver === null ? null : ($this->worldResolver)($player->worldName());
+        $world = $this->worldResolver === null
+            ? null
+            : ($this->worldResolver)($player->worldName(), $dimension ?? $player->dimension());
 
         return new ApiPosition(
             $position->x,
@@ -3031,7 +3055,6 @@ final readonly class PluginGameplayEventBridge
             $yaw ?? $player->movement->yaw,
             $pitch ?? $player->movement->pitch,
             $world,
-            $dimension ?? $player->dimension(),
         );
     }
 

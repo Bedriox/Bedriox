@@ -20,12 +20,12 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\World\Provider\WorldData;
 use Bedriox\Server\World\World;
 use LogicException;
 
-/** One named world family rooted in the Overworld and backed by one provider owner. */
+/** One named world's opened dimensions backed by one provider owner. */
 final readonly class OpenedWorld
 {
     /** @var array<string, self> */
@@ -40,22 +40,22 @@ final readonly class OpenedWorld
         $root = $world->dimension();
         $dimensions = [$root->value => $this];
         foreach ($additionalDimensions as $opened) {
-            if ($root !== WorldDimension::OVERWORLD) {
-                throw new LogicException('Only an Overworld can root a named world family.');
+            if ($root !== DimensionType::OVERWORLD) {
+                throw new LogicException('Only an Overworld can root a named world storage set.');
             }
             if ($opened->dimensions !== [$opened->world->dimension()->value => $opened]) {
                 throw new LogicException('Nested opened-world families are not supported.');
             }
             $dimension = $opened->world->dimension();
-            if ($dimension === WorldDimension::OVERWORLD || isset($dimensions[$dimension->value])) {
-                throw new LogicException('Opened world family contains a duplicate dimension.');
+            if ($dimension === DimensionType::OVERWORLD || isset($dimensions[$dimension->value])) {
+                throw new LogicException('Opened world storage contains a duplicate dimension.');
             }
             $dimensions[$dimension->value] = $opened;
         }
         $this->dimensions = $dimensions;
     }
 
-    public function dimension(WorldDimension $dimension = WorldDimension::OVERWORLD): ?self
+    public function dimension(DimensionType $dimension = DimensionType::OVERWORLD): ?self
     {
         return $this->dimensions[$dimension->value] ?? null;
     }

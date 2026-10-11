@@ -22,7 +22,7 @@ namespace Bedriox\Server\Tests\Entity\Spawn\Natural;
 
 use Bedriox\Api\Entity\EntityCategory;
 use Bedriox\Api\Entity\VanillaEntityIdentifier;
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\Entity\Spawn\Natural\BoggedNaturalSpawnRule;
 use Bedriox\Server\Entity\Spawn\Natural\HuskNaturalSpawnRule;
 use Bedriox\Server\Entity\Spawn\Natural\NaturalSpawnContext;
@@ -84,7 +84,7 @@ final class HostileFamilySpawnRuleTest extends TestCase
             new VanillaEntityIdentifier($identifier),
             EntityCategory::MONSTER,
             new Position(0.0, $y, 0.0),
-            WorldDimension::OVERWORLD,
+            DimensionType::OVERWORLD,
             $biome,
             $medium,
             $light,

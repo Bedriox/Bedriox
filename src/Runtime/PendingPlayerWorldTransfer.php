@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\Simulation\PlayerTeleportDecision;
 use Bedriox\Server\Simulation\Position;
 
@@ -31,9 +31,9 @@ final readonly class PendingPlayerWorldTransfer
         public string $identity,
         public string $sessionId,
         public string $sourceWorldId,
-        public WorldDimension $sourceDimension,
+        public DimensionType $sourceDimension,
         public string $targetWorldId,
-        public WorldDimension $targetDimension,
+        public DimensionType $targetDimension,
         public PlayerTeleportDecision $decision,
         public Position $from,
         public float $fromYaw,

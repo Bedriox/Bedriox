@@ -33,6 +33,7 @@ use Bedriox\Server\Runtime\OpenedWorld;
 use Bedriox\Server\Runtime\RuntimeWorldManager;
 use Bedriox\Server\Runtime\WorldOperationQueue;
 use Bedriox\Server\Runtime\WorldRuntimeManager;
+use Bedriox\Server\Runtime\WorldStorageRuntime;
 use Bedriox\Server\Simulation\FixedRateWorldLoop;
 use Bedriox\Server\Simulation\SimulationClock;
 use Bedriox\Server\Simulation\WorldSimulation;
@@ -112,6 +113,7 @@ final class RuntimeWorldManagerTest extends TestCase
         self::assertSame(1, $queue->poll());
 
         self::assertSame(WorldOperationFailureCode::ALREADY_EXISTS, $create->result()?->failure?->code);
+        self::assertSame('The world already exists or is already loaded.', $create->result()->failure->message);
         self::assertSame(WorldOperationFailureCode::ALREADY_EXISTS, $load->result()?->failure?->code);
         self::assertSame(WorldOperationFailureCode::DEFAULT_WORLD, $unload->result()?->failure?->code);
         self::assertSame(WorldOperationFailureCode::STALE_HANDLE, $save->result()?->failure?->code);
@@ -140,19 +142,19 @@ final class RuntimeWorldManagerTest extends TestCase
     ): RuntimeWorldManager {
         $runtimes = new WorldRuntimeManager(
             'world',
-            self::runtime(new PublicWorld('world', 1)),
+            self::storage(new PublicWorld('world', 1)),
             $maximumLoadedWorlds,
         );
 
         return new RuntimeWorldManager(
             $runtimes,
             $queue,
-            static function (PublicWorld $handle, WorldCreationOptions $options) use (&$created): ManagedWorldRuntime {
+            static function (PublicWorld $handle, WorldCreationOptions $options) use (&$created): WorldStorageRuntime {
                 ++$created;
 
-                return self::runtime($handle);
+                return self::storage($handle);
             },
-            static fn(PublicWorld $handle): ManagedWorldRuntime => self::runtime($handle),
+            static fn(PublicWorld $handle): WorldStorageRuntime => self::storage($handle),
             static function (Event $event) use (&$events): Event {
                 $events[] = $event::class;
 
@@ -174,6 +176,11 @@ final class RuntimeWorldManagerTest extends TestCase
             $simulation,
             new FixedRateWorldLoop($simulation, new RuntimeWorldManagerClock()),
         );
+    }
+
+    private static function storage(PublicWorld $handle): WorldStorageRuntime
+    {
+        return new WorldStorageRuntime([self::runtime($handle)]);
     }
 }
 

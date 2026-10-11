@@ -32,9 +32,9 @@ use Bedriox\Api\Event\Player\PlayerSkinChangeEvent;
 use Bedriox\Api\Inventory\Inventory;
 use Bedriox\Api\Inventory\ItemStack;
 use Bedriox\Api\Player\Player;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\World;
-use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Entity\Human\HumanEntityFactory;
 use Bedriox\Server\Plugin\PluginActionBuffer;
 use Bedriox\Server\Simulation\Position;
@@ -60,6 +60,7 @@ final class HumanEntityApiTest extends TestCase
         self::assertFalse($human->isPersistent());
         self::assertSame('Shopkeeper', $human->getName());
         self::assertSame('one', $human->getSkin()->id);
+        self::assertSame(DimensionType::OVERWORLD, $human->getPosition()->world?->getDimensionType());
     }
 
     public function testControllerSharesMotionAnimationAndNavigationCapabilities(): void
@@ -84,7 +85,7 @@ final class HumanEntityApiTest extends TestCase
         self::assertSame(0.2, $human->getMotion()->x);
         self::assertTrue($controller->isNavigating());
         self::assertEquals(
-            new ApiPosition(20.0, 64.0, 20.0, 0.0, 0.0, $world, WorldDimension::OVERWORLD),
+            new ApiPosition(20.0, 64.0, 20.0, 0.0, 0.0, $world),
             $controller->getNavigationTarget(),
         );
         self::assertCount(2, $human->drainAnimationRequests());
@@ -203,7 +204,6 @@ final class HumanEntityApiTest extends TestCase
             30.0,
             10.0,
             $world,
-            WorldDimension::OVERWORLD,
         );
         $actions = new PluginActionBuffer();
         $human->attachController($actions);
@@ -213,7 +213,7 @@ final class HumanEntityApiTest extends TestCase
         $actions->commit();
 
         self::assertEquals(
-            new ApiPosition(20.0, 64.0, 20.0, 30.0, 10.0, $world, WorldDimension::OVERWORLD),
+            new ApiPosition(20.0, 64.0, 20.0, 30.0, 10.0, $world),
             $human->getController()->getNavigationTarget(),
         );
 
@@ -243,8 +243,13 @@ final class HumanEntityApiTest extends TestCase
         );
 
         foreach ([
-            new ApiPosition(2.0, 64.0, 2.0, world: new World('world', 8), dimension: WorldDimension::OVERWORLD),
-            new ApiPosition(2.0, 64.0, 2.0, world: $world, dimension: WorldDimension::NETHER),
+            new ApiPosition(2.0, 64.0, 2.0, world: new World('world', 8)),
+            new ApiPosition(
+                2.0,
+                64.0,
+                2.0,
+                world: new World('world', 7, dimensionType: DimensionType::NETHER),
+            ),
         ] as $target) {
             try {
                 $human->navigateTo($target, 0.3);

@@ -22,10 +22,12 @@ namespace Bedriox\Api\World;
 
 use Bedriox\Api\Player\Player;
 use Bedriox\Api\World\Particle\Particle;
+use Closure;
 use InvalidArgumentException;
+use LogicException;
 
 /**
- * Lightweight identity for one loaded generation of a world.
+ * Lightweight identity for one dimension of a loaded world generation.
  *
  * The server reuses one handle instance for a loaded world. This value never
  * owns chunks, entities, storage, generators, or other runtime state, so a
@@ -33,15 +35,13 @@ use InvalidArgumentException;
  */
 final readonly class World
 {
-    /** @var list<WorldDimension> */
-    private array $dimensions;
-
-    /** @param list<WorldDimension> $dimensions */
+    /** @param Closure(World, DimensionType): ?World|null $dimensionResolver */
     public function __construct(
         private string $id,
         private int $loadGeneration,
         private ?WorldActions $actions = null,
-        array $dimensions = [WorldDimension::OVERWORLD, WorldDimension::NETHER, WorldDimension::END],
+        private DimensionType $dimensionType = DimensionType::OVERWORLD,
+        private ?Closure $dimensionResolver = null,
     ) {
         if (preg_match('/^[a-z0-9][a-z0-9._-]{0,63}$/D', $id) !== 1 || $id === '.' || $id === '..') {
             throw new InvalidArgumentException('World ID must be a canonical lowercase identifier of 1-64 characters.');
@@ -49,17 +49,6 @@ final readonly class World
         if ($loadGeneration < 1) {
             throw new InvalidArgumentException('World load generation must be positive.');
         }
-        if ($dimensions === [] || !in_array(WorldDimension::OVERWORLD, $dimensions, true)) {
-            throw new InvalidArgumentException('A world must contain an Overworld dimension.');
-        }
-        $unique = [];
-        foreach ($dimensions as $dimension) {
-            if (isset($unique[$dimension->value])) {
-                throw new InvalidArgumentException('World dimensions must be unique.');
-            }
-            $unique[$dimension->value] = $dimension;
-        }
-        $this->dimensions = array_values($unique);
     }
 
     public function id(): string
@@ -72,27 +61,44 @@ final readonly class World
         return $this->loadGeneration;
     }
 
-    /** @return list<WorldDimension> */
-    public function getDimensions(): array
+    public function getDimensionType(): DimensionType
     {
-        return $this->dimensions;
+        return $this->dimensionType;
     }
 
-    public function hasDimension(WorldDimension $dimension): bool
+    public function getDimension(DimensionType $dimension): ?self
     {
-        return in_array($dimension, $this->dimensions, true);
+        if ($dimension === $this->dimensionType) {
+            return $this;
+        }
+
+        $resolved = ($this->dimensionResolver) !== null
+            ? ($this->dimensionResolver)($this, $dimension)
+            : null;
+        if ($resolved === null) {
+            return null;
+        }
+        if ($resolved->id !== $this->id
+            || $resolved->loadGeneration !== $this->loadGeneration
+            || $resolved->dimensionType !== $dimension) {
+            throw new LogicException('Dimension resolver returned a world outside the requested loaded world.');
+        }
+
+        return $resolved;
     }
 
     /** True only for the same logical world and the same loaded runtime generation. */
     public function isSameLoad(self $other): bool
     {
-        return $this->id === $other->id && $this->loadGeneration === $other->loadGeneration;
+        return $this->id === $other->id
+            && $this->loadGeneration === $other->loadGeneration
+            && $this->dimensionType === $other->dimensionType;
     }
 
     /** True for the same logical world even if the other handle belongs to an older load. */
     public function isSameWorld(self $other): bool
     {
-        return $this->id === $other->id;
+        return $this->id === $other->id && $this->dimensionType === $other->dimensionType;
     }
 
     public function getBlock(BlockPosition $position): Block

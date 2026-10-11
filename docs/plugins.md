@@ -111,6 +111,57 @@ Natural regeneration enters `PlayerRegainHealthEvent` before health changes. A l
 
 `PluginContext::server()` is the global discovery surface: `broadcastMessage()`, `getWorldManager()`, `getWhitelist()`, `getOnlinePlayers()`, `getPlayerByUuid()`, and exact case-insensitive `getPlayerByName()`. `broadcastMessage()` accepts raw or translated text and returns the number of connected recipients. Authoritative behavior belongs to the object it affects. `Player` sends messages, teleports, takes damage, changes game mode, exposes its authoritative inventory views, and owns a generation-bound effect manager. `World` reads and changes canonical blocks, exposes immutable weather through `getWeather()`, requests typed weather changes through `setWeather()`, and emits bounded typed particles to eligible chunk viewers. These operations enter the same authoritative paths as built-in causes. Mutations requested by an event listener are staged until that listener returns successfully, then enter the authoritative simulation queue for validation and synchronization. Stale player sessions and unloaded-world generations fail closed. See [particles](particles.md) for particle types, audiences, variables, and delivery limits, and [effects, potions, and brewing](effects-and-potions.md) for effect managers and lifecycle events.
 
+### Worlds and dimensions
+
+A public `World` always represents one exact loaded dimension. Use
+`World::getDimensionType()` to inspect it and `World::getDimension()` to resolve
+a sibling of the same named world and load generation. `WorldManager::get()`
+and `getDefault()` accept an optional `DimensionType` and default to the
+Overworld. `getLoaded()` returns one Overworld handle per loaded named world;
+resolve another exact dimension from that handle or request it directly:
+
+```php
+use Bedriox\Api\World\DimensionType;
+
+$worlds = $this->context()->server()->getWorldManager();
+$overworld = $worlds->getDefault();
+$nether = $overworld->getDimension(DimensionType::NETHER);
+$customEnd = $worlds->get('adventure', DimensionType::END);
+```
+
+`Position` contains coordinates, optional rotation, and one optional exact
+`World`. Omitted world and rotation values resolve against the affected entity;
+once resolved, no separate dimension value is needed. `BlockPosition` remains
+coordinate-only because the `World` receiving the block operation supplies the
+dimension.
+
+New named worlds may override generation independently for each dimension.
+Overrides are keyed by the stable `DimensionType` string value and are persisted
+with their generator, seed, bounded options, and optional spawn:
+
+```php
+use Bedriox\Api\World\DimensionCreationOptions;
+use Bedriox\Api\World\DimensionType;
+use Bedriox\Api\World\WorldCreationOptions;
+
+$operation = $worlds->create('adventure', new WorldCreationOptions(
+    generator: 'default',
+    seed: 4815162342,
+    dimensions: [
+        DimensionType::NETHER->value => new DimensionCreationOptions(
+            generator: 'myplugin:nether',
+            seed: 108,
+        ),
+    ],
+));
+```
+
+`PlayerPortalTravelEvent` exposes a resolved destination `Position`. A listener
+may replace it with an exact world from another named world when its
+`DimensionType` is compatible with that portal. Bedriox retains authority for
+destination preparation, the client dimension transition, and rollback; the
+plugin supplies only the destination.
+
 The plugin-bound logger prefixes every record with the plugin name and supports `debug()`, `info()`, `notice()`, `warning()`, `error()`, and `critical()`.
 
 `PluginContext::updates()` exposes the automatically selected update channel and the latest validated `UpdateInfo`, when a newer release is known. `UpdateAvailableEvent` is emitted once when a newly discovered version becomes available. Plugins may use this metadata for presentation, but Bedriox does not download or install updates automatically.

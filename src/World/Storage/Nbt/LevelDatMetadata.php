@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World\Storage\Nbt;
 
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\WeatherState;
 use Bedriox\Api\World\WeatherType;
 use Bedriox\Server\World\Storage\Exception\CorruptWorldDataException;
@@ -125,6 +126,57 @@ final readonly class LevelDatMetadata
     public function hasBedrioxGeneratorVersion(): bool
     {
         return isset($this->root['BedrioxGeneratorVersion']);
+    }
+
+    /**
+     * @return null|array<string, array{generator: string, seed: int, spawn: array{int, int, int}, version: int, options: string, declared: bool}>
+     */
+    public function dimensionGenerators(): ?array
+    {
+        $tag = $this->root['BedrioxDimensions'] ?? null;
+        if ($tag === null) {
+            return null;
+        }
+        if ($tag->type !== LittleEndianNbtTag::COMPOUND || !is_array($tag->value)) {
+            throw new CorruptWorldDataException("Invalid 'BedrioxDimensions' tag in level.dat.");
+        }
+        $dimensions = [];
+        foreach (DimensionType::cases() as $dimension) {
+            $entry = $tag->value[$dimension->value] ?? null;
+            if (!$entry instanceof LittleEndianNbtTag || $entry->type !== LittleEndianNbtTag::COMPOUND
+                || !is_array($entry->value)) {
+                throw new CorruptWorldDataException("Missing or invalid '{$dimension->value}' dimension metadata in level.dat.");
+            }
+            $value = self::dimensionCompound($entry, $dimension);
+            $generator = self::dimensionString($value, 'Generator', $dimension);
+            if ($generator === '' || strlen($generator) > 128
+                || preg_match('/^[A-Za-z0-9._-]+(?::[A-Za-z0-9._\/-]+)?$/D', $generator) !== 1) {
+                throw new CorruptWorldDataException("Invalid '{$dimension->value}' dimension generator in level.dat.");
+            }
+            $options = self::dimensionString($value, 'Options', $dimension);
+            $version = self::dimensionInteger($value, 'Version', LittleEndianNbtTag::INT, $dimension);
+            $seed = self::dimensionInteger($value, 'Seed', LittleEndianNbtTag::LONG, $dimension);
+            $spawnX = self::dimensionInteger($value, 'SpawnX', LittleEndianNbtTag::INT, $dimension);
+            $spawnY = self::dimensionInteger($value, 'SpawnY', LittleEndianNbtTag::INT, $dimension);
+            $spawnZ = self::dimensionInteger($value, 'SpawnZ', LittleEndianNbtTag::INT, $dimension);
+            $declared = self::dimensionInteger($value, 'VersionDeclared', LittleEndianNbtTag::BYTE, $dimension);
+            if ($version < 1 || ($declared !== 0 && $declared !== 1)) {
+                throw new CorruptWorldDataException("Invalid '{$dimension->value}' dimension generator contract in level.dat.");
+            }
+            $dimensions[$dimension->value] = [
+                'generator' => $generator,
+                'seed' => $seed,
+                'spawn' => [$spawnX, $spawnY, $spawnZ],
+                'version' => $version,
+                'options' => $options,
+                'declared' => $declared === 1,
+            ];
+        }
+        if (count($tag->value) !== count($dimensions)) {
+            throw new CorruptWorldDataException("Invalid unexpected dimension metadata in level.dat.");
+        }
+
+        return $dimensions;
     }
 
     public function spawnX(): int
@@ -264,5 +316,48 @@ final readonly class LevelDatMetadata
         }
 
         return $tag;
+    }
+
+    /** @param array<string, LittleEndianNbtTag> $value */
+    private static function dimensionString(array $value, string $name, DimensionType $dimension): string
+    {
+        $tag = $value[$name] ?? null;
+        if (!$tag instanceof LittleEndianNbtTag || $tag->type !== LittleEndianNbtTag::STRING || !is_string($tag->value)) {
+            throw new CorruptWorldDataException("Invalid '{$dimension->value}' dimension '$name' metadata in level.dat.");
+        }
+
+        return $tag->value;
+    }
+
+    /** @return array<string, LittleEndianNbtTag> */
+    private static function dimensionCompound(LittleEndianNbtTag $entry, DimensionType $dimension): array
+    {
+        if ($entry->type !== LittleEndianNbtTag::COMPOUND || !is_array($entry->value)) {
+            throw new CorruptWorldDataException("Invalid '{$dimension->value}' dimension metadata in level.dat.");
+        }
+        $compound = [];
+        foreach ($entry->value as $name => $tag) {
+            if (!is_string($name) || !$tag instanceof LittleEndianNbtTag) {
+                throw new CorruptWorldDataException("Invalid '{$dimension->value}' dimension metadata in level.dat.");
+            }
+            $compound[$name] = $tag;
+        }
+
+        return $compound;
+    }
+
+    /** @param array<string, LittleEndianNbtTag> $value */
+    private static function dimensionInteger(
+        array $value,
+        string $name,
+        int $type,
+        DimensionType $dimension,
+    ): int {
+        $tag = $value[$name] ?? null;
+        if (!$tag instanceof LittleEndianNbtTag || $tag->type !== $type || !is_int($tag->value)) {
+            throw new CorruptWorldDataException("Invalid '{$dimension->value}' dimension '$name' metadata in level.dat.");
+        }
+
+        return $tag->value;
     }
 }

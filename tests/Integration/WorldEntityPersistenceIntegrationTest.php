@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Integration;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\EntityRegistry;
@@ -157,7 +157,7 @@ final class EntityIntegrationPersistenceStore implements EntityPersistenceStore
 
     public bool $failOwnershipTransfers = false;
 
-    public function loadEntityChunk(ChunkPosition $position, WorldDimension $dimension = WorldDimension::OVERWORLD): ?EntityChunkSnapshot
+    public function loadEntityChunk(ChunkPosition $position, DimensionType $dimension = DimensionType::OVERWORLD): ?EntityChunkSnapshot
     {
         $key = $position->key();
         $this->loadCalls[$key] = ($this->loadCalls[$key] ?? 0) + 1;
@@ -165,12 +165,12 @@ final class EntityIntegrationPersistenceStore implements EntityPersistenceStore
         return $this->snapshots[$key] ?? null;
     }
 
-    public function saveEntityChunk(EntityChunkSnapshot $snapshot, WorldDimension $dimension = WorldDimension::OVERWORLD): void
+    public function saveEntityChunk(EntityChunkSnapshot $snapshot, DimensionType $dimension = DimensionType::OVERWORLD): void
     {
         $this->snapshots[$snapshot->chunk->key()] = $snapshot;
     }
 
-    public function transferEntityOwnership(EntityOwnershipTransfer $transfer, WorldDimension $dimension = WorldDimension::OVERWORLD): EntityOwnershipTransferResult
+    public function transferEntityOwnership(EntityOwnershipTransfer $transfer, DimensionType $dimension = DimensionType::OVERWORLD): EntityOwnershipTransferResult
     {
         if ($this->failOwnershipTransfers) {
             throw new EntityPersistenceConflictException('Injected recoverable ownership conflict.');

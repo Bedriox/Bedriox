@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\World;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\Provider\ChunkSaveData;
@@ -63,10 +63,10 @@ final class InMemoryWorldProvider implements WritableWorldProvider
 
     public function loadChunk(
         ChunkPosition $position,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): ?LoadedChunkData {
         $this->ensureOpen();
-        $key = $dimension === WorldDimension::OVERWORLD
+        $key = $dimension === DimensionType::OVERWORLD
             ? $position->key()
             : $dimension->value . ':' . $position->key();
         if (isset($this->corruptChunks[$key])) {
@@ -87,11 +87,11 @@ final class InMemoryWorldProvider implements WritableWorldProvider
 
     public function saveChunk(
         ChunkSaveData $chunkData,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): void {
         $this->ensureWritable();
         $this->savedRevisions[] = $chunkData->revision;
-        $key = $dimension === WorldDimension::OVERWORLD
+        $key = $dimension === DimensionType::OVERWORLD
             ? $chunkData->chunk->position->key()
             : $dimension->value . ':' . $chunkData->chunk->position->key();
         $this->chunks[$key] = $chunkData->chunk->withPersistedRevision(

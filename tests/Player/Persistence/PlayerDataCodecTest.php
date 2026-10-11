@@ -23,7 +23,7 @@ namespace Bedriox\Server\Tests\Player\Persistence;
 use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Inventory\ItemNbt;
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\Effect\ActiveEffectCollection;
 use Bedriox\Server\Player\Persistence\Exception\CorruptPlayerDataException;
 use Bedriox\Server\Player\Persistence\Exception\UnsupportedPlayerDataException;
@@ -52,17 +52,17 @@ final class PlayerDataCodecTest extends TestCase
             $profile->inventory,
             $profile->firstPlayedAt,
             $profile->lastPlayedAt,
-            dimension: WorldDimension::NETHER,
+            dimension: DimensionType::NETHER,
         );
         $codec = new PlayerDataCodec();
 
-        self::assertSame(WorldDimension::NETHER, $codec->decode($codec->encode($profile))->dimension);
+        self::assertSame(DimensionType::NETHER, $codec->decode($codec->encode($profile))->dimension);
 
         $legacy = self::root();
         $legacy['SchemaVersion'] = LittleEndianNbtTag::int(12);
         unset($legacy['Dimension']);
         self::assertSame(
-            WorldDimension::OVERWORLD,
+            DimensionType::OVERWORLD,
             $codec->decode((new LittleEndianNbtCodec())->encodeRootCompound($legacy))->dimension,
         );
     }

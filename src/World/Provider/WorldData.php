@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World\Provider;
 
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\World\Generator\GeneratorOptions;
 use Bedriox\Server\World\SpawnPosition;
 use Bedriox\Server\World\WeatherCycle;
@@ -33,6 +34,10 @@ final readonly class WorldData
 {
     public WeatherCycleState $weather;
 
+    /** @var array<string, DimensionWorldData> */
+    public array $dimensions;
+
+    /** @param array<array-key, mixed> $dimensions */
     public function __construct(
         public WorldMetadata $metadata,
         public string $generatorName,
@@ -44,6 +49,7 @@ final readonly class WorldData
         ?WeatherCycleState $weather = null,
         public bool $weatherCycleEnabled = true,
         public bool $bedrioxGeneratorVersionDeclared = true,
+        array $dimensions = [],
     ) {
         if (
             $generatorName === ''
@@ -61,5 +67,35 @@ final readonly class WorldData
         }
         GeneratorOptions::fromJson($this->generatorOptions);
         $this->weather = $weather ?? WeatherCycle::initial($metadata->seed);
+        $normalizedDimensions = [];
+        if ($dimensions === []) {
+            foreach (DimensionType::cases() as $dimension) {
+                $normalizedDimensions[$dimension->value] = new DimensionWorldData(
+                    $generatorName,
+                    $metadata->seed,
+                    $spawn,
+                    $generatorVersion,
+                    $generatorOptions,
+                    $bedrioxGeneratorVersionDeclared,
+                );
+            }
+        } else {
+            if (count($dimensions) !== count(DimensionType::cases())) {
+                throw new InvalidArgumentException('World dimension metadata must contain every supported dimension.');
+            }
+            foreach (DimensionType::cases() as $dimensionType) {
+                $dimension = $dimensions[$dimensionType->value] ?? null;
+                if (!$dimension instanceof DimensionWorldData) {
+                    throw new InvalidArgumentException('World dimension metadata contains an invalid entry.');
+                }
+                $normalizedDimensions[$dimensionType->value] = $dimension;
+            }
+        }
+        $this->dimensions = $normalizedDimensions;
+    }
+
+    public function dimension(DimensionType $dimension): DimensionWorldData
+    {
+        return $this->dimensions[$dimension->value];
     }
 }

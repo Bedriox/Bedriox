@@ -23,12 +23,12 @@ namespace Bedriox\Server\Runtime;
 use Bedriox\Api\Event\World\WeatherChangeCause;
 use Bedriox\Api\World\Block;
 use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\Particle\Particle;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\WeatherState;
 use Bedriox\Api\World\World;
 use Bedriox\Api\World\WorldActions;
-use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Gameplay\Block\BlockCatalog;
 use Bedriox\Server\Plugin\PluginActionBuffer;
 use Bedriox\Server\World\Block\BlockStateRegistry;
@@ -63,14 +63,14 @@ final class RuntimeWorldActions
             function (World $world, ApiPosition $position, Particle $particle, ?array $players): void {
                 $this->spawnParticle($world, $position, $particle, $players);
             },
-            fn(World $world): WeatherState => $this->runtime($world)->opened->world->weather()->weather,
+            fn(World $world): WeatherState => $this->weatherRuntime($world)->opened->world->weather()->weather,
             fn(World $world, WeatherState $weather): bool => $this->setWeather($world, $weather),
         );
     }
 
     private function getBlock(World $world, ApiBlockPosition $position): Block
     {
-        $runtime = $this->runtime($world, $position->dimension);
+        $runtime = $this->runtime($world);
         $state = $runtime->opened->world->blockStateAt($position->x, $position->y, $position->z);
         $identifier = $this->blocks->typeForInternalId($state, $this->states)->identifier();
 
@@ -82,7 +82,7 @@ final class RuntimeWorldActions
         if (preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $identifier) !== 1) {
             throw new InvalidArgumentException('Block identifier must be canonical and namespaced.');
         }
-        $runtime = $this->runtime($world, $position->dimension);
+        $runtime = $this->runtime($world);
         $action = static function () use ($runtime, $position, $identifier): void {
             if (!$runtime->simulation->enqueuePluginBlock(
                 'api',
@@ -112,20 +112,19 @@ final class RuntimeWorldActions
         if ($players !== null && count($players) > 128) {
             throw new InvalidArgumentException('Particle audience exceeds the supported capacity.');
         }
-        $dimension = $position->dimension ?? WorldDimension::OVERWORLD;
         $identities = null;
         if ($players !== null) {
             $identities = [];
             foreach ($players as $player) {
                 if ($player->position->world === null || !$player->position->world->isSameLoad($world)
-                    || $player->getDimension() !== $dimension) {
+                    || !$player->getWorld()->isSameLoad($world)) {
                     throw new InvalidArgumentException('Particle audience contains a player outside this world load.');
                 }
                 $identities[$player->uuid] = true;
             }
             $identities = array_keys($identities);
         }
-        $runtime = $this->runtime($world, $dimension);
+        $runtime = $this->runtime($world);
         $action = static function () use ($runtime, $position, $particle, $identities): void {
             if (!$runtime->simulation->enqueuePluginParticle(
                 'api',
@@ -145,7 +144,7 @@ final class RuntimeWorldActions
 
     private function setWeather(World $world, WeatherState $weather): bool
     {
-        $runtime = $this->runtime($world);
+        $runtime = $this->weatherRuntime($world);
         $changed = false;
         $action = static function () use ($runtime, $weather, &$changed): void {
             $changed = $runtime->simulation->setWeather($weather, WeatherChangeCause::PLUGIN);
@@ -160,13 +159,18 @@ final class RuntimeWorldActions
         return $changed;
     }
 
-    private function runtime(
-        World $world,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
-    ): ManagedWorldRuntime {
+    private function runtime(World $world): ManagedWorldRuntime
+    {
         return ($this->worlds ?? throw new LogicException('World actions are not attached to the runtime.'))
-            ->assertCurrent($world)
-            ->dimension($dimension)
-            ?? throw new LogicException('World does not expose the requested dimension runtime.');
+            ->assertCurrent($world);
+    }
+
+    private function weatherRuntime(World $world): ManagedWorldRuntime
+    {
+        if ($world->getDimensionType() !== DimensionType::OVERWORLD) {
+            throw new LogicException('Weather is only available in an Overworld dimension.');
+        }
+
+        return $this->runtime($world);
     }
 }

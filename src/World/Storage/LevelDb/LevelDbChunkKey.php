@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World\Storage\LevelDb;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use InvalidArgumentException;
 
 /** Binary Mojang LevelDB keys for a chunk in one native Bedrock dimension. */
@@ -37,33 +37,33 @@ final class LevelDbChunkKey
     public static function prefix(
         int $chunkX,
         int $chunkZ,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): string {
         $prefix = self::signedLittleEndian32($chunkX) . self::signedLittleEndian32($chunkZ);
 
         return match ($dimension) {
-            WorldDimension::OVERWORLD => $prefix,
-            WorldDimension::NETHER => $prefix . self::signedLittleEndian32(1),
-            WorldDimension::END => $prefix . self::signedLittleEndian32(2),
+            DimensionType::OVERWORLD => $prefix,
+            DimensionType::NETHER => $prefix . self::signedLittleEndian32(1),
+            DimensionType::END => $prefix . self::signedLittleEndian32(2),
         };
     }
 
-    public static function version(int $chunkX, int $chunkZ, WorldDimension $dimension = WorldDimension::OVERWORLD): string
+    public static function version(int $chunkX, int $chunkZ, DimensionType $dimension = DimensionType::OVERWORLD): string
     {
         return self::prefix($chunkX, $chunkZ, $dimension) . self::VERSION;
     }
 
-    public static function data3d(int $chunkX, int $chunkZ, WorldDimension $dimension = WorldDimension::OVERWORLD): string
+    public static function data3d(int $chunkX, int $chunkZ, DimensionType $dimension = DimensionType::OVERWORLD): string
     {
         return self::prefix($chunkX, $chunkZ, $dimension) . self::DATA_3D;
     }
 
-    public static function finalization(int $chunkX, int $chunkZ, WorldDimension $dimension = WorldDimension::OVERWORLD): string
+    public static function finalization(int $chunkX, int $chunkZ, DimensionType $dimension = DimensionType::OVERWORLD): string
     {
         return self::prefix($chunkX, $chunkZ, $dimension) . self::FINALIZATION;
     }
 
-    public static function blockEntities(int $chunkX, int $chunkZ, WorldDimension $dimension = WorldDimension::OVERWORLD): string
+    public static function blockEntities(int $chunkX, int $chunkZ, DimensionType $dimension = DimensionType::OVERWORLD): string
     {
         return self::prefix($chunkX, $chunkZ, $dimension) . self::BLOCK_ENTITIES;
     }
@@ -72,7 +72,7 @@ final class LevelDbChunkKey
         int $chunkX,
         int $chunkZ,
         int $sectionY,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): string {
         if ($sectionY < -128 || $sectionY > 127) {
             throw new InvalidArgumentException('LevelDB subchunk Y must fit a signed byte.');

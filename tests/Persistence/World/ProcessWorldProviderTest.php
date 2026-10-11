@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Persistence\World;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Entity\EntityMotion;
 use Bedriox\Server\Entity\Persistence\CorruptEntityPersistenceException;
@@ -50,6 +50,7 @@ use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\VanillaBlockStates;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\Provider\ChunkSaveData;
+use Bedriox\Server\World\Provider\DimensionWorldData;
 use Bedriox\Server\World\Provider\Exception\CorruptChunkException;
 use Bedriox\Server\World\Provider\Exception\WorldProviderClosedException;
 use Bedriox\Server\World\Provider\Exception\WorldStorageException;
@@ -75,6 +76,32 @@ final class ProcessWorldProviderTest extends TestCase
             bedrioxGeneratorVersionDeclared: false,
         );
         self::assertEquals($native, $worldCodec->decode($worldCodec->encode($native)));
+        $dimensionData = new WorldData(
+            new WorldMetadata('Dimension IPC', 17),
+            'default',
+            new SpawnPosition(0, 70, 0),
+            dimensions: [
+                DimensionType::OVERWORLD->value => new DimensionWorldData(
+                    'default',
+                    17,
+                    new SpawnPosition(0, 70, 0),
+                    3,
+                ),
+                DimensionType::NETHER->value => new DimensionWorldData(
+                    'flat',
+                    71,
+                    new SpawnPosition(9, 66, -4),
+                    1,
+                    '{"preset":"ipc"}',
+                ),
+                DimensionType::END->value => new DimensionWorldData(
+                    'void',
+                    -11,
+                    new SpawnPosition(0, 80, 0),
+                ),
+            ],
+        );
+        self::assertEquals($dimensionData, $worldCodec->decode($worldCodec->encode($dimensionData)));
 
         $startup = new WorldStorageStartup('create', 'C:\\worlds\\test', $data, 1234);
         $startupCodec = new WorldStorageStartupCodec();
@@ -91,9 +118,9 @@ final class ProcessWorldProviderTest extends TestCase
             entryPoint: self::FIXTURE,
         );
         $chunk = WorldGeneratorFactory::create('flat', 42, $states)->generate(new ChunkPosition(-2, 3));
-        $provider->saveChunk(new ChunkSaveData($chunk), WorldDimension::NETHER);
+        $provider->saveChunk(new ChunkSaveData($chunk), DimensionType::NETHER);
         self::assertNull($provider->loadChunk($chunk->position));
-        self::assertNotNull($provider->loadChunk($chunk->position, WorldDimension::NETHER));
+        self::assertNotNull($provider->loadChunk($chunk->position, DimensionType::NETHER));
         $provider->saveChunk(new ChunkSaveData($chunk));
         $loaded = $provider->loadChunk($chunk->position);
 

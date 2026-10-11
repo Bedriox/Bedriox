@@ -30,6 +30,7 @@ final readonly class WorldCreationOptions
 
     /**
      * @param array<string|int, array<array-key, mixed>|bool|float|int|string|null> $generatorOptions
+     * @param array<array-key, mixed>                                               $dimensions
      */
     public function __construct(
         public string $generator = 'default',
@@ -39,6 +40,7 @@ final readonly class WorldCreationOptions
         public WorldDifficulty $difficulty = WorldDifficulty::NORMAL,
         public int $initialTime = 0,
         public ?Position $spawn = null,
+        array $dimensions = [],
     ) {
         self::validateGeneratorIdentifier($generator);
         self::validateDisplayName($displayName);
@@ -51,11 +53,37 @@ final readonly class WorldCreationOptions
             }
             $spawn->validate();
         }
-        $values = 0;
-        self::validateGeneratorOptions($generatorOptions, 0, $values);
+        self::validateBoundedGeneratorOptions($generatorOptions);
+        if (count($dimensions) > count(DimensionType::cases())) {
+            throw new InvalidArgumentException('Dimension creation options exceed the supported dimension count.');
+        }
+        $normalizedDimensions = [];
+        foreach ($dimensions as $identifier => $options) {
+            if (!is_string($identifier) || DimensionType::tryFrom($identifier) === null) {
+                throw new InvalidArgumentException('Dimension creation option keys must identify a supported dimension type.');
+            }
+            if (!$options instanceof DimensionCreationOptions) {
+                throw new InvalidArgumentException('Dimension creation options must contain DimensionCreationOptions values.');
+            }
+            $normalizedDimensions[$identifier] = $options;
+        }
+        $this->dimensions = $normalizedDimensions;
     }
 
-    private static function validateGeneratorIdentifier(string $generator): void
+    /** @var array<string, DimensionCreationOptions> */
+    public array $dimensions;
+
+    public function dimension(DimensionType $dimension): DimensionCreationOptions
+    {
+        return $this->dimensions[$dimension->value] ?? new DimensionCreationOptions(
+            $this->generator,
+            $this->seed,
+            $this->generatorOptions,
+            $dimension === DimensionType::OVERWORLD ? $this->spawn : null,
+        );
+    }
+
+    public static function validateGeneratorIdentifier(string $generator): void
     {
         if (strlen($generator) > 128 || preg_match('/^[a-z0-9_.-]+(?::[a-z0-9_.\/-]+)?$/D', $generator) !== 1) {
             throw new InvalidArgumentException('Generator identifier must be canonical, bounded, and optionally namespaced.');
@@ -63,6 +91,13 @@ final readonly class WorldCreationOptions
         if (!str_contains($generator, ':') && !in_array($generator, ['default', 'flat', 'void'], true)) {
             throw new InvalidArgumentException('Custom generator identifiers must be namespaced.');
         }
+    }
+
+    /** @param array<array-key, mixed> $options */
+    public static function validateBoundedGeneratorOptions(array $options): void
+    {
+        $values = 0;
+        self::validateGeneratorOptions($options, 0, $values);
     }
 
     private static function validateDisplayName(?string $displayName): void

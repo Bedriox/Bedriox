@@ -1,5 +1,6 @@
 # Changelog
 
+- Represent each loaded dimension as an exact public world, make resolved positions carry that world directly, persist per-dimension generator settings, and allow portal events to target compatible dimensions in other named worlds while retaining one native LevelDB per named world.
 - Give distinct wire enum identities to literal command alternatives that share an argument name, preventing command projection from rejecting player admission.
 - Admit the current entity-pick request without disconnecting creative clients that middle-click an actor.
 - Expand the named Bedrock emote catalog to 103 validated content identifiers and correct the Simple Clap identifier.

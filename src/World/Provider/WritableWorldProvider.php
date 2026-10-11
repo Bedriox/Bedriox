@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World\Provider;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\World\Provider\Exception\UnsupportedWorldFormatException;
 use Bedriox\Server\World\Provider\Exception\WorldProviderClosedException;
 use Bedriox\Server\World\Provider\Exception\WorldStorageException;
@@ -33,6 +33,6 @@ interface WritableWorldProvider extends WorldProvider
     /** @throws WorldProviderClosedException|WorldStorageException|UnsupportedWorldFormatException */
     public function saveChunk(
         ChunkSaveData $chunkData,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): void;
 }

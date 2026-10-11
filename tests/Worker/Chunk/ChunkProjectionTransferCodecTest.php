@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Worker\Chunk;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Packet\ChunkSerializer;
 use Bedriox\Server\Runtime\BedrockChunkPacketSerializer;
@@ -136,7 +136,7 @@ final class ChunkProjectionTransferCodecTest extends TestCase
 
     #[DataProvider('dimensionBounds')]
     public function testProjectionCarriesDimensionSpecificHeightAndBiomeBounds(
-        WorldDimension $dimension,
+        DimensionType $dimension,
         int $wireDimension,
         int $minimumSectionY,
         int $maximumSectionY,
@@ -163,11 +163,11 @@ final class ChunkProjectionTransferCodecTest extends TestCase
         }
     }
 
-    /** @return iterable<string, array{WorldDimension, int, int, int}> */
+    /** @return iterable<string, array{DimensionType, int, int, int}> */
     public static function dimensionBounds(): iterable
     {
-        yield 'overworld' => [WorldDimension::OVERWORLD, 0, -4, 19];
-        yield 'nether' => [WorldDimension::NETHER, 1, 0, 7];
-        yield 'end' => [WorldDimension::END, 2, 0, 15];
+        yield 'overworld' => [DimensionType::OVERWORLD, 0, -4, 19];
+        yield 'nether' => [DimensionType::NETHER, 1, 0, 7];
+        yield 'end' => [DimensionType::END, 2, 0, 15];
     }
 }

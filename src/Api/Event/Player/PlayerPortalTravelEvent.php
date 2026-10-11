@@ -22,9 +22,9 @@ namespace Bedriox\Api\Event\Player;
 
 use Bedriox\Api\Event\CancellableEvent;
 use Bedriox\Api\Player\Player;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\PortalType;
 use Bedriox\Api\World\Position;
-use Bedriox\Api\World\WorldDimension;
 use InvalidArgumentException;
 
 /** Runs after portal contact has matured and before a dimension transfer is scheduled. */
@@ -67,23 +67,25 @@ final class PlayerPortalTravelEvent extends CancellableEvent
 
     private function validateDestination(Position $destination): void
     {
-        $destination->validate();
+        $this->from->validateResolved();
+        $destination->validateResolved();
+        $sourceDimension = $this->from->world?->getDimensionType()
+            ?? throw new InvalidArgumentException('A portal source must contain a resolved world.');
         $expected = match ($this->portalType) {
-            PortalType::NETHER => match ($this->from->dimension) {
-                WorldDimension::OVERWORLD => WorldDimension::NETHER,
-                WorldDimension::NETHER => WorldDimension::OVERWORLD,
+            PortalType::NETHER => match ($sourceDimension) {
+                DimensionType::OVERWORLD => DimensionType::NETHER,
+                DimensionType::NETHER => DimensionType::OVERWORLD,
                 default => null,
             },
-            PortalType::END => match ($this->from->dimension) {
-                WorldDimension::OVERWORLD => WorldDimension::END,
-                WorldDimension::END => WorldDimension::OVERWORLD,
+            PortalType::END => match ($sourceDimension) {
+                DimensionType::OVERWORLD => DimensionType::END,
+                DimensionType::END => DimensionType::OVERWORLD,
                 default => null,
             },
         };
-        if ($expected === null || $destination->dimension !== $expected
-            || $destination->world !== $this->from->world) {
+        if ($expected === null || $destination->world?->getDimensionType() !== $expected) {
             throw new InvalidArgumentException(
-                'A portal destination must select the portal type paired dimension in the same named world.',
+                'A portal destination must select the portal type paired dimension.',
             );
         }
     }

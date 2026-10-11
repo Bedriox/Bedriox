@@ -4,7 +4,7 @@ Bedriox generates authoritative world state independently from the Bedrock netwo
 
 ## Generation and ownership
 
-`WorldMetadata` identifies the logical level and seed. `WorldSpawnResolver` supplies the level's safe spawn unless all three configured spawn coordinates override it. A provider-backed `World` owns a `WorldGenerator`, bounded `ChunkRepository`, and `WorldProvider`. Immutable cell replacement creates a new authoritative chunk revision and marks it dirty. Providerless worlds retain the bounded process-local override store only as an explicit ephemeral compatibility path.
+`WorldMetadata` identifies the named world and the exact dimension runtime. `WorldSpawnResolver` supplies that dimension's safe spawn unless all three configured spawn coordinates override it. A provider-backed `World` owns one dimension's `WorldGenerator` and bounded `ChunkRepository` while sharing its named world's storage owner. Immutable cell replacement creates a new authoritative chunk revision and marks it dirty. Providerless worlds retain the bounded process-local override store only as an explicit ephemeral compatibility path.
 
 `WorldGeneratorFactory` resolves the persisted `default` or `flat` identity. Both generators can generate any requested coordinate deterministically. They resolve canonical states through `BlockStateRegistry` and store dense process-local `InternalBlockStateId` values in `SubChunk` and `Chunk` objects. Those IDs have no stable meaning outside the process and must never be persisted, configured, logged as a public contract, or written directly to the wire. The LevelDB provider persists canonical block-state name and property NBT and resolves fresh process-local IDs while loading.
 
@@ -20,7 +20,7 @@ The default profile combines deterministic warped climate fields with interpolat
 
 The provider is consulted before generation. An existing chunk is decoded and cached; only a definite missing result invokes the configured generator. Corrupt, unsupported, or unreadable data fails explicitly and is never treated as an empty coordinate that may be regenerated.
 
-`LevelDbWorldProvider` stores Mojang-compatible `level.dat` metadata, a repairable `levelname.txt` display-name mirror, and Bedrock LevelDB chunk records. `level.dat` is authoritative if the mirror is absent or stale. Persistent palettes use canonical block-state NBT, while chunk keys, subchunk records, biome palettes, height maps, and finalization state follow the supported Bedrock storage contract. Disk XZY palette order is translated explicitly to the world's internal coordinate order.
+`LevelDbWorldProvider` stores Mojang-compatible `level.dat` metadata, a repairable `levelname.txt` display-name mirror, and Bedrock LevelDB chunk records. `level.dat` is authoritative if the mirror is absent or stale. Bedriox records each dimension's selected generator, seed, options, spawn, and generator version so a named world can reopen with the same exact dimension contracts. Worlds without the per-dimension compound inherit their admitted top-level generator metadata across the three dimensions. Persistent palettes use canonical block-state NBT, while dimension-qualified chunk keys, subchunk records, biome palettes, height maps, and finalization state follow the supported Bedrock storage contract. Disk XZY palette order is translated explicitly to the world's internal coordinate order.
 
 Generated and changed chunks remain dirty until their exact immutable revision is acknowledged by a successful provider write. Autosave scans past revisions already queued or in flight, so one slow coordinate cannot starve later dirty chunks. Autosave processes the oldest eligible dirty chunks first with the configured `chunk-saving.per-tick` bound whenever `level.autosave-interval-ticks` elapses. A dirty eviction candidate is saved before removal; a failed write or newer in-memory revision leaves it resident and dirty. Graceful close flushes every remaining dirty chunk and world metadata before closing the provider.
 
@@ -43,6 +43,12 @@ The configured spawn-radius square is delivered before `PlayerSpawn`. Remaining 
 ## Same-dimension world transfers
 
 A transfer between two loaded Overworld instances does not use `ChangeDimension`; consequently it does not invoke Bedrock's dimension loading screen. The destination's central configured spawn-radius square is retained and prepared before authoritative player ownership moves. Source terrain admission stops during this preparation, while already ordered compression and encrypted output drains normally. Encrypted payloads are never discarded because doing so would create a cipher-counter hole.
+
+Cross-dimension transfers target an exact destination `World`. Built-in portals
+resolve the paired sibling through `DimensionType`; a plugin may replace a
+`PlayerPortalTravelEvent` destination with an exact compatible dimension in a
+different named world. The runtime still performs the complete dimension
+transition, destination preparation, actor teardown, and rollback path.
 
 After the ordered source boundary is empty, Bedriox removes source-world visibility, synchronizes destination time and difficulty, sends the owner `MovePlayer` in teleport mode, publishes the destination chunk center, and delivers the prepared destination columns nearest-first. Destination items and actors remain hidden until their containing chunks have entered that player's sent view. Early movement and interaction input during the transition is accepted as a bounded no-op instead of disconnecting the session. Normal gameplay resumes after the central destination chunk enters reliable delivery and the client acknowledges the teleport; a bounded fallback prevents a missing acknowledgement from leaving the session permanently gated.
 

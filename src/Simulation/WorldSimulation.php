@@ -104,13 +104,13 @@ use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\Block as ApiBlock;
 use Bedriox\Api\World\BlockFace as ApiBlockFace;
 use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\Particle\StandardParticle;
 use Bedriox\Api\World\Particle\StandardParticleType;
 use Bedriox\Api\World\PortalType;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\WeatherState;
 use Bedriox\Api\World\WeatherType;
-use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BlockPropertyRegistry;
 use Bedriox\Data\CanonicalBlockState;
 use Bedriox\Data\EntityTypeRegistry;
@@ -824,6 +824,8 @@ final class WorldSimulation
 
     private readonly string $worldId;
 
+    private readonly \Bedriox\Api\World\World $fallbackPublicWorld;
+
     private readonly MountRegistry $mounts;
 
     private readonly ?AsyncNavigationCoordinator $navigation;
@@ -870,7 +872,7 @@ final class WorldSimulation
         ?string $worldId = null,
         ?BrewingRecipeCatalog $brewingRecipes = null,
         ?FurnaceRecipeCatalog $furnaceRecipes = null,
-        private readonly WorldDimension $dimension = WorldDimension::OVERWORLD,
+        private readonly DimensionType $dimension = DimensionType::OVERWORLD,
         private readonly ?TransientWorkstationProcessor $transientWorkstations = null,
         ?MountRegistry $mounts = null,
         private readonly ?NaturalSpawnClock $naturalSpawnClock = null,
@@ -1073,6 +1075,16 @@ final class WorldSimulation
             );
         }
         $this->entityRuntime = $entityRuntime;
+        $this->fallbackPublicWorld = new \Bedriox\Api\World\World(
+            $this->worldId,
+            1,
+            dimensionType: $this->dimension,
+        );
+        $this->entityRuntime->registry()->configurePublicWorldResolver(
+            fn(string $worldName): ?\Bedriox\Api\World\World =>
+                $this->pluginEvents?->resolveWorld($worldName, $this->dimension)
+                ?? ($worldName === $this->worldId ? $this->fallbackPublicWorld : null),
+        );
         $this->leashes = new LeashAttachmentRegistry($this->players, $this->entityRuntime->registry());
         $this->navigation = $collisionQuery !== null && $navigationWorkers !== null
             ? new AsyncNavigationCoordinator(
@@ -1143,7 +1155,7 @@ final class WorldSimulation
             )
             : null;
         $bastionStore = $blockWorld?->transientEntityPersistenceStore();
-        if ($this->dimension === WorldDimension::NETHER && $blockWorld !== null) {
+        if ($this->dimension === DimensionType::NETHER && $blockWorld !== null) {
             $bastionRepository = $bastionStore === null
                 ? null
                 : new BastionBrutePopulationStateRepository($bastionStore);
@@ -1156,7 +1168,7 @@ final class WorldSimulation
         } else {
             $this->bastionBrutePopulation = null;
         }
-        if ($this->dimension === WorldDimension::END && $blockWorld !== null) {
+        if ($this->dimension === DimensionType::END && $blockWorld !== null) {
             $endCityRepository = $bastionStore === null
                 ? null
                 : new EndCityShulkerPopulationStateRepository($bastionStore);
@@ -1211,14 +1223,14 @@ final class WorldSimulation
             ? null
             : new BlockPlacementStateResolver($blockStateRegistry);
         $encounterStore = $blockWorld?->transientEntityPersistenceStore();
-        $this->endGateways = $this->dimension === WorldDimension::END
+        $this->endGateways = $this->dimension === DimensionType::END
             ? new \Bedriox\Server\Gameplay\End\EndGatewayRuntime(
                 $encounterStore === null
                     ? null
                     : new \Bedriox\Server\Gameplay\End\EndGatewayStateRepository($encounterStore),
             )
             : null;
-        $this->endGatewayStructures = $this->dimension === WorldDimension::END
+        $this->endGatewayStructures = $this->dimension === DimensionType::END
             && $blockStateRegistry !== null
             ? new \Bedriox\Server\Gameplay\End\EndGatewayStructureBuilder(
                 $blockStateRegistry,
@@ -1236,7 +1248,7 @@ final class WorldSimulation
                 },
             )
             : null;
-        $this->endEncounter = $this->dimension === WorldDimension::END
+        $this->endEncounter = $this->dimension === DimensionType::END
             ? new \Bedriox\Server\Gameplay\End\EndEncounterCoordinator(
                 $this->worldId,
                 $blockWorld?->metadata->seed ?? 0,
@@ -1309,11 +1321,11 @@ final class WorldSimulation
                     }
                     $accepted = $this->pluginEvents->endGatewayCreate(
                         $view,
-                        new ApiBlockPosition($position->x, $position->y, $position->z, WorldDimension::END),
+                        new ApiBlockPosition($position->x, $position->y, $position->z),
                         $index,
                     );
 
-                    return $accepted === null || $accepted->dimension !== WorldDimension::END
+                    return $accepted === null
                         ? null
                         : new BlockPosition($accepted->x, $accepted->y, $accepted->z);
                 },
@@ -1669,7 +1681,6 @@ final class WorldSimulation
                                 $createdGatewayPosition->x,
                                 $createdGatewayPosition->y,
                                 $createdGatewayPosition->z,
-                                WorldDimension::END,
                             ),
                             $createdGatewayIndex,
                         );
@@ -1720,7 +1731,7 @@ final class WorldSimulation
      */
     private function advanceEndArenaTicket(): bool
     {
-        if ($this->blockWorld === null || $this->dimension !== WorldDimension::END) {
+        if ($this->blockWorld === null || $this->dimension !== DimensionType::END) {
             return false;
         }
 
@@ -1932,7 +1943,7 @@ final class WorldSimulation
             ? VerticalState::GROUNDED
             : VerticalState::AIRBORNE;
         $player->changeWorld($worldId);
-        $player->changeWorldDimension($this->dimension);
+        $player->changeDimensionType($this->dimension);
         $movement = $player->movement;
         $movement->position = $position;
         $movement->yaw = $yaw;
@@ -2031,7 +2042,7 @@ final class WorldSimulation
     ): Human {
         $position->validateResolved();
         if ($position->world?->id() !== $this->worldId
-            || ($position->dimension ?? WorldDimension::OVERWORLD) !== $this->dimension) {
+            || $position->world->getDimensionType() !== $this->dimension) {
             throw new InvalidArgumentException('Human spawn position does not belong to this simulation.');
         }
         if (!is_finite($yaw) || !is_finite($pitch) || $pitch < -90.0 || $pitch > 90.0) {
@@ -2049,7 +2060,6 @@ final class WorldSimulation
                 $yaw,
                 $pitch,
                 $position->world,
-                $this->dimension,
             ),
         );
         if (!$entity instanceof HumanEntity) {
@@ -2197,7 +2207,7 @@ final class WorldSimulation
     }
 
     /** @internal Dimension identity used by API adapters. */
-    public function dimension(): WorldDimension
+    public function dimension(): DimensionType
     {
         return $this->dimension;
     }
@@ -2555,9 +2565,17 @@ final class WorldSimulation
     private function apiBlock(BlockPosition $position, string $identifier): ApiBlock
     {
         return new ApiBlock(
-            new ApiBlockPosition($position->x, $position->y, $position->z, $this->dimension),
+            new ApiBlockPosition($position->x, $position->y, $position->z),
             $identifier,
         );
+    }
+
+    private function apiPosition(Position $position, float $yaw = 0.0, float $pitch = 0.0): ApiPosition
+    {
+        $world = $this->pluginEvents?->resolveWorld($this->worldId, $this->dimension)
+            ?? $this->fallbackPublicWorld;
+
+        return new ApiPosition($position->x, $position->y, $position->z, $yaw, $pitch, $world);
     }
 
     private function canonicalStateForIdentifier(string $identifier): ?CanonicalBlockState
@@ -4067,6 +4085,7 @@ final class WorldSimulation
             $llama,
             $projectile,
             ProjectileType::LLAMA_SPIT->value,
+            $this->apiPosition($projectile->position),
         ) ?? ($this->pluginEvents === null ? $projectile : null);
         if ($admitted === null) {
             $this->projectiles->remove($projectile->runtimeEntityId);
@@ -4075,7 +4094,12 @@ final class WorldSimulation
         }
         $this->projectiles->replace($admitted);
         $llama->markSpat();
-        $this->pluginEvents?->projectileLaunched($llama, $admitted, ProjectileType::LLAMA_SPIT->value);
+        $this->pluginEvents?->projectileLaunched(
+            $llama,
+            $admitted,
+            ProjectileType::LLAMA_SPIT->value,
+            $this->apiPosition($admitted->position),
+        );
         $this->projectileEntitiesDirty = true;
 
         return [new ProjectileSpawned($admitted, $this->players->recipients())];
@@ -5038,7 +5062,7 @@ final class WorldSimulation
     {
         $position = $creeper->internalPosition();
         $radius = $creeper->isCharged() ? 6.0 : 3.0;
-        $apiPosition = new ApiPosition($position->x, $position->y, $position->z);
+        $apiPosition = $creeper->getPosition();
         $prime = $this->pluginEvents?->primeExplosion($creeper, $apiPosition, $radius, true, 0.0);
         if ($this->pluginEvents !== null && $prime === null) {
             $creeper->setIgnited(false);
@@ -5397,7 +5421,7 @@ final class WorldSimulation
         if ($this->blockWorld === null) {
             return [];
         }
-        $outsideNether = $this->blockWorld->dimension() !== WorldDimension::NETHER;
+        $outsideNether = $this->blockWorld->dimension() !== DimensionType::NETHER;
         foreach ($this->entityRuntime->registry()->all() as $entity) {
             $targetType = match (true) {
                 $entity instanceof HoglinEntity && $entity->advanceZombification($outsideNether) => VanillaEntityType::ZOGLIN,
@@ -5808,7 +5832,12 @@ final class WorldSimulation
             ),
         };
         $projectileIdentifier = $projectile->type->value;
-        $admitted = $this->pluginEvents?->projectileLaunch($shooter, $projectile, $projectileIdentifier)
+        $admitted = $this->pluginEvents?->projectileLaunch(
+            $shooter,
+            $projectile,
+            $projectileIdentifier,
+            $this->apiPosition($projectile->position),
+        )
             ?? ($this->pluginEvents === null ? $projectile : null);
         if ($admitted === null) {
             $this->projectiles->remove($projectile->runtimeEntityId);
@@ -5822,7 +5851,12 @@ final class WorldSimulation
                 $shooter->setPeekAmount(100);
             }
         }
-        $this->pluginEvents?->projectileLaunched($shooter, $admitted, $projectileIdentifier);
+        $this->pluginEvents?->projectileLaunched(
+            $shooter,
+            $admitted,
+            $projectileIdentifier,
+            $this->apiPosition($admitted->position),
+        );
 
         $recipients = $this->players->recipients();
 
@@ -5895,7 +5929,14 @@ final class WorldSimulation
             $player = $this->players->player($snapshot->sessionId);
             if ($player !== null) {
                 $views[] = $this->pluginEvents?->playerView($player)
-                    ?? PluginGameplayEventBridge::detachedPlayerView($player);
+                    ?? PluginGameplayEventBridge::detachedPlayerView(
+                        $player,
+                        position: $this->apiPosition(
+                            $player->movement->position,
+                            $player->movement->yaw,
+                            $player->movement->pitch,
+                        ),
+                    );
             }
         }
 
@@ -5997,7 +6038,7 @@ final class WorldSimulation
         $projection = $this->displayProjections[$key] ?? null;
         $belongsHere = !$display->isRemoved()
             && $display->getPosition()->world?->id() === $this->worldId
-            && ($display->getPosition()->dimension ?? WorldDimension::OVERWORLD) === $this->dimension;
+            && $display->getPosition()->world->getDimensionType() === $this->dimension;
         if (!$belongsHere) {
             if ($projection instanceof TextDisplayProjection) {
                 $this->deferredEvents[] = new TextDisplayActorRemoved(
@@ -6089,7 +6130,14 @@ final class WorldSimulation
         $viewers = [];
         foreach ($this->players->players() as $player) {
             $view = $this->pluginEvents?->playerView($player)
-                ?? PluginGameplayEventBridge::detachedPlayerView($player);
+                ?? PluginGameplayEventBridge::detachedPlayerView(
+                    $player,
+                    position: $this->apiPosition(
+                        $player->movement->position,
+                        $player->movement->yaw,
+                        $player->movement->pitch,
+                    ),
+                );
             if ($only !== null && strcasecmp($only->uuid, $view->uuid) !== 0) {
                 continue;
             }
@@ -6125,7 +6173,14 @@ final class WorldSimulation
     {
         $events = [];
         $view = $this->pluginEvents?->playerView($player)
-            ?? PluginGameplayEventBridge::detachedPlayerView($player);
+            ?? PluginGameplayEventBridge::detachedPlayerView(
+                $player,
+                position: $this->apiPosition(
+                    $player->movement->position,
+                    $player->movement->yaw,
+                    $player->movement->pitch,
+                ),
+            );
         foreach ($this->displayProjections as $projection) {
             $display = $projection->display;
             $position = $display->getPosition();
@@ -6241,7 +6296,14 @@ final class WorldSimulation
         $player = $this->players->playerByIdentity($identity);
 
         return $player === null ? null : ($this->pluginEvents?->playerView($player)
-            ?? PluginGameplayEventBridge::detachedPlayerView($player));
+            ?? PluginGameplayEventBridge::detachedPlayerView(
+                $player,
+                position: $this->apiPosition(
+                    $player->movement->position,
+                    $player->movement->yaw,
+                    $player->movement->pitch,
+                ),
+            ));
     }
 
     /** Returns the world-owned aggregate for main-thread orchestration only. */
@@ -6270,7 +6332,7 @@ final class WorldSimulation
     public function authorizePortalTravel(
         Player $player,
         PortalType $portalType,
-        WorldDimension $targetDimension,
+        DimensionType $targetDimension,
         Position $destination,
     ): ?ApiPosition {
         if ($this->pluginEvents === null) {
@@ -6281,7 +6343,6 @@ final class WorldSimulation
                 $player->movement->yaw,
                 $player->movement->pitch,
                 null,
-                $targetDimension,
             );
         }
 
@@ -9027,7 +9088,14 @@ final class WorldSimulation
             return new CommandRejected($player->sessionId, 'reach');
         }
         $view = $this->pluginEvents?->playerView($player)
-            ?? PluginGameplayEventBridge::detachedPlayerView($player);
+            ?? PluginGameplayEventBridge::detachedPlayerView(
+                $player,
+                position: $this->apiPosition(
+                    $player->movement->position,
+                    $player->movement->yaw,
+                    $player->movement->pitch,
+                ),
+            );
         if (!$this->displayRegistry->dispatchInteraction(
             $interactionUniqueId,
             $view,
@@ -12512,7 +12580,12 @@ final class WorldSimulation
         Projectile $projectile,
         string $identifier,
     ): ?Projectile {
-        $admitted = $this->pluginEvents?->projectileLaunch($player, $projectile, $identifier)
+        $admitted = $this->pluginEvents?->projectileLaunch(
+            $player,
+            $projectile,
+            $identifier,
+            $this->apiPosition($projectile->position),
+        )
             ?? ($this->pluginEvents === null ? $projectile : null);
         if ($admitted === null) {
             $this->projectiles->remove($projectile->runtimeEntityId);
@@ -12520,7 +12593,12 @@ final class WorldSimulation
             return null;
         }
         $this->projectiles->replace($admitted);
-        $this->pluginEvents?->projectileLaunched($player, $admitted, $identifier);
+        $this->pluginEvents?->projectileLaunched(
+            $player,
+            $admitted,
+            $identifier,
+            $this->apiPosition($admitted->position),
+        );
 
         return $admitted;
     }
@@ -14543,6 +14621,7 @@ final class WorldSimulation
                 $direct,
                 $directEntity,
                 $impactBlock,
+                $this->apiPosition($projectile->position),
             )) {
                 $this->projectiles->remove($projectile->runtimeEntityId);
                 $events[] = new ProjectileRemoved($projectile->runtimeEntityId, $this->players->recipients());
@@ -15131,6 +15210,7 @@ final class WorldSimulation
                 $direct,
                 $directEntity,
                 $impactBlock,
+                $this->apiPosition($projectile->position),
             );
             if ($projectile->state === ProjectileState::RETURNING) {
                 $this->projectiles->replace($projectile);
@@ -15268,7 +15348,7 @@ final class WorldSimulation
         $radius = 1.0;
         $breaksBlocks = true;
         $fireChance = 0.0;
-        $apiPosition = new ApiPosition($position->x, $position->y, $position->z);
+        $apiPosition = $this->apiPosition($position);
         if ($shooter instanceof AbstractLivingEntity && $this->pluginEvents !== null) {
             $prime = $this->pluginEvents->primeExplosion($shooter, $apiPosition, $radius, $breaksBlocks, $fireChance);
             if ($prime === null) {
@@ -16470,6 +16550,7 @@ final class WorldSimulation
             ? $proposed
             : $this->pluginEvents->allowWeatherChange(
                 $this->worldId,
+                $this->dimension,
                 $previous,
                 $proposed,
                 WeatherChangeCause::NATURAL,
@@ -16484,6 +16565,7 @@ final class WorldSimulation
         }
         $this->pluginEvents?->weatherChanged(
             $this->worldId,
+            $this->dimension,
             $previous,
             $accepted,
             WeatherChangeCause::NATURAL,
@@ -16500,12 +16582,24 @@ final class WorldSimulation
         $previous = $this->blockWorld->weather()->weather;
         $accepted = $this->pluginEvents === null
             ? $weather
-            : $this->pluginEvents->allowWeatherChange($this->worldId, $previous, $weather, $cause);
+            : $this->pluginEvents->allowWeatherChange(
+                $this->worldId,
+                $this->dimension,
+                $previous,
+                $weather,
+                $cause,
+            );
         if ($accepted === null) {
             return false;
         }
         $this->blockWorld->setCurrentWeather($accepted);
-        $this->pluginEvents?->weatherChanged($this->worldId, $previous, $accepted, $cause);
+        $this->pluginEvents?->weatherChanged(
+            $this->worldId,
+            $this->dimension,
+            $previous,
+            $accepted,
+            $cause,
+        );
         $this->deferredEvents[] = new WeatherChanged($previous, $accepted, $this->players->recipients());
 
         return true;
@@ -17220,9 +17314,9 @@ final class WorldSimulation
         }
         if ($portalIdentifier === 'minecraft:end_portal') {
             $target = match ($this->dimension) {
-                WorldDimension::OVERWORLD => WorldDimension::END,
-                WorldDimension::END => WorldDimension::OVERWORLD,
-                WorldDimension::NETHER => null,
+                DimensionType::OVERWORLD => DimensionType::END,
+                DimensionType::END => DimensionType::OVERWORLD,
+                DimensionType::NETHER => null,
             };
             if ($target === null || !$this->portalContacts->contact(
                 $player->sessionId,
@@ -17235,7 +17329,7 @@ final class WorldSimulation
 
             return new EndPortalTransferRequested($player->sessionId, $entry, $this->dimension, $target);
         }
-        if ($this->netherPortals === null || $this->dimension === WorldDimension::END) {
+        if ($this->netherPortals === null || $this->dimension === DimensionType::END) {
             $this->portalContacts->leave($player->sessionId);
 
             return null;
@@ -17269,6 +17363,7 @@ final class WorldSimulation
                 new Position($destination->x, $destination->y, $destination->z),
                 $plan->searchRadius,
                 $plan->preferredAxis,
+                $destination->world,
             );
         }
 
@@ -20268,7 +20363,7 @@ final class WorldSimulation
         $support = $this->blockIdentifier($clickedState->value);
         $target = $this->blockWorld?->loadedBlockStateAt($position->x, $position->y, $position->z);
         $failure = match (true) {
-            $this->dimension !== WorldDimension::END => 'dimension',
+            $this->dimension !== DimensionType::END => 'dimension',
             $command->face !== 1 => 'block_face',
             !in_array($support, ['minecraft:bedrock', 'minecraft:obsidian'], true) => 'support_block',
             $target === null || $target->value !== $this->blockPalette?->air->value => 'occupied',
@@ -22294,7 +22389,8 @@ final class WorldSimulation
         $events = [];
         $recipients = $this->players->recipients();
         foreach ($values as $value) {
-            $value = $this->pluginEvents?->experienceOrbSpawn($position, $value) ?? ($this->pluginEvents === null ? $value : null);
+            $value = $this->pluginEvents?->experienceOrbSpawn($this->apiPosition($position), $value)
+                ?? ($this->pluginEvents === null ? $value : null);
             if ($value === null) {
                 continue;
             }
@@ -22305,7 +22401,11 @@ final class WorldSimulation
                 pickupDelayTicks: 10,
             );
             $events[] = new ExperienceOrbSpawned($entity, $recipients);
-            $this->pluginEvents?->experienceOrbSpawned($entity->runtimeEntityId, $entity->position, $entity->value);
+            $this->pluginEvents?->experienceOrbSpawned(
+                $entity->runtimeEntityId,
+                $this->apiPosition($entity->position),
+                $entity->value,
+            );
         }
 
         return $events;

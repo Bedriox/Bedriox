@@ -22,7 +22,7 @@ namespace Bedriox\Server\Entity\Spawn\Natural;
 
 use Bedriox\Api\Entity\EntityCategory;
 use Bedriox\Api\Entity\EntityType;
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\EntityRegistry;
 use Bedriox\Server\Simulation\Position;
@@ -34,8 +34,8 @@ use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\Collision\AxisAlignedBox;
 use Bedriox\Server\World\Collision\BlockCollisionQuery;
 use Bedriox\Server\World\Collision\BlockCollisionRegistry;
+use Bedriox\Server\World\DimensionTypeBounds;
 use Bedriox\Server\World\World;
-use Bedriox\Server\World\WorldDimensionBounds;
 use InvalidArgumentException;
 use RuntimeException;
 
@@ -97,7 +97,7 @@ final class WorldNaturalSpawnEnvironment implements NaturalSpawnEnvironment
             && $this->world->chunk($chunk)->finalizationState === ChunkFinalizationState::Done;
     }
 
-    public function dimension(string $worldName): WorldDimension
+    public function dimension(string $worldName): DimensionType
     {
         $this->requireWorld($worldName);
 
@@ -135,8 +135,8 @@ final class WorldNaturalSpawnEnvironment implements NaturalSpawnEnvironment
         }
         $localX = self::localCoordinate((int) floor($x));
         $localZ = self::localCoordinate((int) floor($z));
-        $minimumY = WorldDimensionBounds::minimumY($this->world->dimension());
-        $maximumY = WorldDimensionBounds::maximumY($this->world->dimension());
+        $minimumY = DimensionTypeBounds::minimumY($this->world->dimension());
+        $maximumY = DimensionTypeBounds::maximumY($this->world->dimension());
         $height = $maximumY - $minimumY + 1;
         $startY = $minimumY + min($height - 1, (int) floor($verticalSelector * $height));
         if ($medium === NaturalSpawnMedium::AIR) {
@@ -223,7 +223,7 @@ final class WorldNaturalSpawnEnvironment implements NaturalSpawnEnvironment
         if ($chunk === null) {
             return 0;
         }
-        if ($this->world->dimension() !== WorldDimension::OVERWORLD) {
+        if ($this->world->dimension() !== DimensionType::OVERWORLD) {
             // The Nether and End have no Overworld skylight cycle. Their visible
             // ambient lighting must not make hostile-spawn checks read as daytime.
             return 0;
@@ -245,7 +245,7 @@ final class WorldNaturalSpawnEnvironment implements NaturalSpawnEnvironment
     {
         $this->requireWorld($worldName);
 
-        return $this->world->dimension() === WorldDimension::NETHER
+        return $this->world->dimension() === DimensionType::NETHER
             ? $this->netherStructures->at($position)
             : null;
     }

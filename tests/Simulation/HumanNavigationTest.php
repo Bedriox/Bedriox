@@ -23,7 +23,6 @@ namespace Bedriox\Server\Tests\Simulation;
 use Bedriox\Api\Entity\Skin;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\World;
-use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Simulation\WorldSimulation;
 use PHPUnit\Framework\TestCase;
 
@@ -34,7 +33,7 @@ final class HumanNavigationTest extends TestCase
         $simulation = new WorldSimulation(worldId: 'world');
         $world = new World('world', 1);
         $human = $simulation->spawnHuman(
-            new ApiPosition(0.0, 64.0, 0.0, 0.0, 0.0, $world, WorldDimension::OVERWORLD),
+            new ApiPosition(0.0, 64.0, 0.0, 0.0, 0.0, $world),
             'Guide',
             new Skin(
                 'guide',
@@ -45,7 +44,7 @@ final class HumanNavigationTest extends TestCase
             ),
         );
         $human->navigateTo(
-            new ApiPosition(1.0, 64.0, 0.0, 0.0, 0.0, $world, WorldDimension::OVERWORLD),
+            new ApiPosition(1.0, 64.0, 0.0, 0.0, 0.0, $world),
             0.25,
         );
 

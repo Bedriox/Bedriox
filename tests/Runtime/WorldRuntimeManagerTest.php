@@ -20,11 +20,14 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Runtime;
 
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\World as PublicWorld;
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Server\Persistence\PersistenceQueueSnapshot;
+use Bedriox\Server\Persistence\PersistenceQueueStatusProvider;
 use Bedriox\Server\Runtime\ManagedWorldRuntime;
 use Bedriox\Server\Runtime\OpenedWorld;
 use Bedriox\Server\Runtime\WorldRuntimeManager;
+use Bedriox\Server\Runtime\WorldStorageRuntime;
 use Bedriox\Server\Simulation\FixedRateWorldLoop;
 use Bedriox\Server\Simulation\SimulationClock;
 use Bedriox\Server\Simulation\WorldSimulation;
@@ -45,12 +48,12 @@ final class WorldRuntimeManagerTest extends TestCase
 {
     public function testLoadedRuntimeIsCanonicalAndDuplicateLoadsAreCoalesced(): void
     {
-        $manager = new WorldRuntimeManager('world', self::runtime(new PublicWorld('world', 1)));
+        $manager = new WorldRuntimeManager('world', self::storage(new PublicWorld('world', 1)));
         $loads = 0;
-        $mines = $manager->load('mines', static function (PublicWorld $handle) use (&$loads): ManagedWorldRuntime {
+        $mines = $manager->load('mines', static function (PublicWorld $handle) use (&$loads): WorldStorageRuntime {
             ++$loads;
 
-            return self::runtime($handle);
+            return self::storage($handle);
         });
         $again = $manager->load('MINES', static function () use (&$loads): never {
             ++$loads;
@@ -68,15 +71,15 @@ final class WorldRuntimeManagerTest extends TestCase
 
     public function testUnloadProtectsDefaultAndRejectsStaleHandlesAfterReload(): void
     {
-        $manager = new WorldRuntimeManager('world', self::runtime(new PublicWorld('world', 1)));
+        $manager = new WorldRuntimeManager('world', self::storage(new PublicWorld('world', 1)));
 
         $this->expectException(LogicException::class);
         try {
             $manager->unload($manager->default()->handle);
         } finally {
-            $first = $manager->load('mines', self::runtime(...));
+            $first = $manager->load('mines', self::storage(...));
             $manager->unload($first->handle);
-            $second = $manager->load('mines', self::runtime(...));
+            $second = $manager->load('mines', self::storage(...));
             self::assertSame(2, $second->handle->loadGeneration());
             try {
                 $manager->save($first->handle);
@@ -90,8 +93,8 @@ final class WorldRuntimeManagerTest extends TestCase
     public function testWorldPollingUsesOneCadenceAndFairOrdering(): void
     {
         $clock = new RuntimeManagerClock();
-        $manager = new WorldRuntimeManager('world', self::runtime(new PublicWorld('world', 1), $clock));
-        $manager->load('mines', static fn(PublicWorld $handle): ManagedWorldRuntime => self::runtime($handle, $clock));
+        $manager = new WorldRuntimeManager('world', self::storage(new PublicWorld('world', 1), $clock));
+        $manager->load('mines', static fn(PublicWorld $handle): WorldStorageRuntime => self::storage($handle, $clock));
 
         self::assertSame(50_000_000, $manager->nanosecondsUntilNextTick());
         $clock->nanoseconds += 50_000_000;
@@ -108,21 +111,20 @@ final class WorldRuntimeManagerTest extends TestCase
         self::assertSame(1, $manager->get('mines')?->simulation->snapshot()->tick);
     }
 
-    public function testNamedWorldFamilyExposesAndPollsEveryDimension(): void
+    public function testNamedWorldStorageExposesAndPollsEveryDimension(): void
     {
         $clock = new RuntimeManagerClock();
-        $handle = new PublicWorld('world', 1);
-        $nether = self::runtime($handle, $clock, WorldDimension::NETHER);
-        $end = self::runtime($handle, $clock, WorldDimension::END);
-        $overworld = self::runtime($handle, $clock, WorldDimension::OVERWORLD, [$nether, $end]);
-        $manager = new WorldRuntimeManager('world', $overworld);
+        $overworld = self::runtime(new PublicWorld('world', 1), $clock);
+        $nether = self::runtime(new PublicWorld('world', 1, dimensionType: DimensionType::NETHER), $clock, DimensionType::NETHER);
+        $end = self::runtime(new PublicWorld('world', 1, dimensionType: DimensionType::END), $clock, DimensionType::END);
+        $manager = new WorldRuntimeManager('world', new WorldStorageRuntime([$overworld, $nether, $end]));
 
         self::assertSame(1, $manager->count());
         self::assertSame([$overworld], $manager->loaded());
         self::assertSame([$overworld, $nether, $end], $manager->loadedDimensions());
         self::assertSame($overworld, $manager->default());
-        self::assertSame($nether, $manager->get('world', WorldDimension::NETHER));
-        self::assertSame($end, $manager->default(WorldDimension::END));
+        self::assertSame($nether, $manager->get('world', DimensionType::NETHER));
+        self::assertSame($end, $manager->default(DimensionType::END));
 
         $overworld->opened->world->chunk(new ChunkPosition(0, 0));
         $nether->opened->world->chunk(new ChunkPosition(1, 0));
@@ -140,7 +142,44 @@ final class WorldRuntimeManagerTest extends TestCase
         self::assertSame($end, $manager->runtimeForPollKey('world@end'));
     }
 
-    public function testClosingNamedWorldFamilyClosesEveryDimension(): void
+    public function testReservedHandlesRemainCanonicalAfterEveryDimensionIsAttached(): void
+    {
+        $manager = new WorldRuntimeManager('world', self::storage(new PublicWorld('world', 1)));
+        $overworldHandle = $manager->reserve('arena');
+        $netherHandle = $overworldHandle->getDimension(DimensionType::NETHER);
+        $endHandle = $overworldHandle->getDimension(DimensionType::END);
+
+        self::assertNotNull($netherHandle);
+        self::assertNotNull($endHandle);
+        $storage = new WorldStorageRuntime([
+            self::runtime($overworldHandle),
+            self::runtime($netherHandle, dimension: DimensionType::NETHER),
+            self::runtime($endHandle, dimension: DimensionType::END),
+        ]);
+        $manager->attach($overworldHandle, $storage);
+
+        self::assertSame($overworldHandle, $manager->get('arena')?->handle);
+        self::assertSame($netherHandle, $manager->get('arena', DimensionType::NETHER)?->handle);
+        self::assertSame($endHandle, $manager->get('arena', DimensionType::END)?->handle);
+        self::assertSame($netherHandle, $overworldHandle->getDimension(DimensionType::NETHER));
+        self::assertSame($overworldHandle, $netherHandle->getDimension(DimensionType::OVERWORLD));
+    }
+
+    public function testRetainedPublicHandleDoesNotKeepRuntimeManagerAlive(): void
+    {
+        $manager = new WorldRuntimeManager('world', self::storage(new PublicWorld('world', 1)));
+        $handle = $manager->reserve('temporary');
+        $manager->abortReservation($handle);
+        $managerReference = \WeakReference::create($manager);
+
+        unset($manager);
+        gc_collect_cycles();
+
+        self::assertNull($managerReference->get());
+        self::assertNull($handle->getDimension(DimensionType::NETHER));
+    }
+
+    public function testClosingNamedWorldStorageClosesEveryDimension(): void
     {
         $handle = new PublicWorld('world', 1);
         $metadata = new WorldMetadata($handle->id(), 0);
@@ -149,15 +188,11 @@ final class WorldRuntimeManagerTest extends TestCase
             'test',
             new SpawnPosition(0, 64, 0),
         ));
-        $nether = self::runtime($handle, dimension: WorldDimension::NETHER, provider: $provider);
-        $end = self::runtime($handle, dimension: WorldDimension::END, provider: $provider);
-        $overworld = self::runtime(
-            $handle,
-            dimension: WorldDimension::OVERWORLD,
-            additionalDimensions: [$nether, $end],
-            provider: $provider,
-        );
-        $overworld->close(false);
+        $nether = self::runtime(new PublicWorld('world', 1, dimensionType: DimensionType::NETHER), dimension: DimensionType::NETHER, provider: $provider);
+        $end = self::runtime(new PublicWorld('world', 1, dimensionType: DimensionType::END), dimension: DimensionType::END, provider: $provider);
+        $overworld = self::runtime($handle, provider: $provider);
+        $storage = new WorldStorageRuntime([$overworld, $nether, $end]);
+        $storage->close(false);
 
         self::assertTrue($overworld->isClosed());
         self::assertTrue($nether->isClosed());
@@ -165,11 +200,47 @@ final class WorldRuntimeManagerTest extends TestCase
         self::assertSame(1, $provider->closeCalls);
     }
 
+    public function testSharedMetadataSavePreservesEachDimensionsCurrentSpawn(): void
+    {
+        $handle = new PublicWorld('world', 1);
+        $metadata = new WorldMetadata('world', 0);
+        $provider = new InMemoryWorldProvider(new WorldData(
+            $metadata,
+            'test',
+            new SpawnPosition(0, 64, 0),
+        ));
+        $overworld = self::runtime($handle, provider: $provider);
+        $nether = self::runtime(
+            new PublicWorld('world', 1, dimensionType: DimensionType::NETHER),
+            dimension: DimensionType::NETHER,
+            provider: $provider,
+        );
+        $end = self::runtime(
+            new PublicWorld('world', 1, dimensionType: DimensionType::END),
+            dimension: DimensionType::END,
+            provider: $provider,
+        );
+        $storage = new WorldStorageRuntime([$overworld, $nether, $end]);
+        $nether->opened->world->setSpawn(new SpawnPosition(19, 72, -8));
+        $end->opened->world->setSpawn(new SpawnPosition(-4, 66, 31));
+
+        $storage->save();
+
+        self::assertEquals(
+            new SpawnPosition(19, 72, -8),
+            $provider->data->dimension(DimensionType::NETHER)->spawn,
+        );
+        self::assertEquals(
+            new SpawnPosition(-4, 66, 31),
+            $provider->data->dimension(DimensionType::END)->spawn,
+        );
+    }
+
     public function testSchedulerBoundaryRunsOnceBeforeEveryWorldTick(): void
     {
         $clock = new RuntimeManagerClock();
-        $manager = new WorldRuntimeManager('world', self::runtime(new PublicWorld('world', 1), $clock));
-        $manager->load('mines', static fn(PublicWorld $handle): ManagedWorldRuntime => self::runtime($handle, $clock));
+        $manager = new WorldRuntimeManager('world', self::storage(new PublicWorld('world', 1), $clock));
+        $manager->load('mines', static fn(PublicWorld $handle): WorldStorageRuntime => self::storage($handle, $clock));
         $observed = [];
         $clock->nanoseconds += 50_000_000;
 
@@ -187,7 +258,7 @@ final class WorldRuntimeManagerTest extends TestCase
 
     public function testCapacityAndInvalidIdsFailBeforeLoading(): void
     {
-        $manager = new WorldRuntimeManager('world', self::runtime(new PublicWorld('world', 1)), 1);
+        $manager = new WorldRuntimeManager('world', self::storage(new PublicWorld('world', 1)), 1);
         $called = false;
 
         try {
@@ -207,8 +278,8 @@ final class WorldRuntimeManagerTest extends TestCase
     public function testChunkAccountingAggregatesEveryLoadedWorld(): void
     {
         $default = self::runtime(new PublicWorld('world', 1));
-        $manager = new WorldRuntimeManager('world', $default);
-        $mines = $manager->load('mines', self::runtime(...));
+        $manager = new WorldRuntimeManager('world', new WorldStorageRuntime([$default]));
+        $mines = $manager->load('mines', self::storage(...));
 
         $default->opened->world->chunk(new ChunkPosition(0, 0));
         $mines->opened->world->chunk(new ChunkPosition(2, 3));
@@ -223,12 +294,57 @@ final class WorldRuntimeManagerTest extends TestCase
         self::assertSame(3, $snapshot->misses);
     }
 
-    /** @param list<ManagedWorldRuntime> $additionalDimensions */
+    public function testSharedPersistenceQueueIsCountedOncePerNamedWorld(): void
+    {
+        $handle = new PublicWorld('world', 1);
+        $provider = new RuntimeManagerPersistenceProvider(new PersistenceQueueSnapshot(2, 1, 3, 4_096, 4, 5, 6));
+        $manager = new WorldRuntimeManager('world', new WorldStorageRuntime([
+            self::runtime($handle, provider: $provider),
+            self::runtime(
+                new PublicWorld('world', 1, dimensionType: DimensionType::NETHER),
+                dimension: DimensionType::NETHER,
+                provider: $provider,
+            ),
+            self::runtime(
+                new PublicWorld('world', 1, dimensionType: DimensionType::END),
+                dimension: DimensionType::END,
+                provider: $provider,
+            ),
+        ]));
+
+        self::assertEquals($provider->snapshot, $manager->persistenceQueueSnapshot());
+    }
+
+    public function testChunkUnloadMaintenanceCoversEveryDimension(): void
+    {
+        $overworld = self::runtime(new PublicWorld('world', 1));
+        $nether = self::runtime(
+            new PublicWorld('world', 1, dimensionType: DimensionType::NETHER),
+            dimension: DimensionType::NETHER,
+        );
+        $end = self::runtime(
+            new PublicWorld('world', 1, dimensionType: DimensionType::END),
+            dimension: DimensionType::END,
+        );
+        $manager = new WorldRuntimeManager('world', new WorldStorageRuntime([$overworld, $nether, $end]));
+        foreach ([$overworld, $nether, $end] as $index => $runtime) {
+            $position = new ChunkPosition($index, 0);
+            $runtime->opened->world->retainChunk($position);
+            $runtime->opened->world->releaseChunk($position, true);
+        }
+
+        self::assertSame(3, $manager->pendingChunkUnloadCount());
+        $result = $manager->processChunkUnloads(3, 5_000);
+        self::assertSame(3, $result->examined);
+        self::assertSame(3, $result->evicted);
+        self::assertSame(0, $result->remainingQueued);
+        self::assertSame(0, $manager->pendingChunkUnloadCount());
+    }
+
     private static function runtime(
         PublicWorld $handle,
         ?RuntimeManagerClock $clock = null,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
-        array $additionalDimensions = [],
+        DimensionType $dimension = DimensionType::OVERWORLD,
         ?WorldProvider $provider = null,
     ): ManagedWorldRuntime {
         $metadata = new WorldMetadata($handle->id(), 0);
@@ -248,8 +364,14 @@ final class WorldRuntimeManagerTest extends TestCase
             $opened,
             $simulation,
             new FixedRateWorldLoop($simulation, $clock ?? new RuntimeManagerClock()),
-            additionalDimensions: $additionalDimensions,
         );
+    }
+
+    private static function storage(
+        PublicWorld $handle,
+        ?RuntimeManagerClock $clock = null,
+    ): WorldStorageRuntime {
+        return new WorldStorageRuntime([self::runtime($handle, $clock)]);
     }
 }
 
@@ -278,5 +400,42 @@ final readonly class RuntimeManagerGenerator implements WorldGenerator
     public function defaultSpawn(): SpawnPosition
     {
         return new SpawnPosition(0, 64, 0);
+    }
+}
+
+final class RuntimeManagerPersistenceProvider implements WorldProvider, PersistenceQueueStatusProvider
+{
+    private bool $closed = false;
+
+    public function __construct(public readonly PersistenceQueueSnapshot $snapshot) {}
+
+    public function worldData(): WorldData
+    {
+        if ($this->closed) {
+            throw new LogicException('Provider is closed.');
+        }
+
+        return new WorldData(new WorldMetadata('world', 0), 'test', new SpawnPosition(0, 64, 0));
+    }
+
+    public function loadChunk(
+        ChunkPosition $position,
+        DimensionType $dimension = DimensionType::OVERWORLD,
+    ): ?\Bedriox\Server\World\Provider\LoadedChunkData {
+        if ($this->closed) {
+            throw new LogicException('Provider is closed.');
+        }
+
+        return null;
+    }
+
+    public function close(): void
+    {
+        $this->closed = true;
+    }
+
+    public function persistenceQueueSnapshot(): PersistenceQueueSnapshot
+    {
+        return $this->snapshot;
     }
 }

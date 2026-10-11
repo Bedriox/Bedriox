@@ -28,9 +28,9 @@ use Bedriox\Api\Command\CommandResult;
 use Bedriox\Api\Command\CommandSoftEnum;
 use Bedriox\Api\Command\PlayerCommandSender;
 use Bedriox\Api\Entity\Skin;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\World as PublicWorld;
-use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Data\CanonicalBlockState;
 use Bedriox\Protocol\Batch\BatchLimits;
@@ -166,6 +166,7 @@ use Bedriox\Server\Runtime\ServerRuntime;
 use Bedriox\Server\Runtime\SessionPhase;
 use Bedriox\Server\Runtime\WorldEventPacketEncoder;
 use Bedriox\Server\Runtime\WorldRuntimeManager;
+use Bedriox\Server\Runtime\WorldStorageRuntime;
 use Bedriox\Server\Simulation\ClientInputTick;
 use Bedriox\Server\Simulation\Event\AreaEffectCloudRemoved;
 use Bedriox\Server\Simulation\Event\ChatBroadcast;
@@ -520,22 +521,24 @@ final class ServerRuntimeTest extends TestCase
             $sourceSimulation,
             new FixedRateWorldLoop($sourceSimulation, $clock, maximumTicksPerPoll: 1),
         );
-        $worlds = new WorldRuntimeManager('world', $sourceRuntime);
-        $destinationRuntime = $worlds->load('arena', static fn(PublicWorld $handle): ManagedWorldRuntime => new ManagedWorldRuntime(
-            $handle,
-            new OpenedWorld(
-                $destinationWorld,
-                new WorldData(
-                    $destinationWorld->metadata,
-                    'flat',
-                    new SpawnPosition(160, 70, -80),
-                    time: 12_345,
-                    difficulty: 2,
+        $worlds = new WorldRuntimeManager('world', new WorldStorageRuntime([$sourceRuntime]));
+        $destinationRuntime = $worlds->load('arena', static fn(PublicWorld $handle): WorldStorageRuntime => new WorldStorageRuntime([
+            new ManagedWorldRuntime(
+                $handle,
+                new OpenedWorld(
+                    $destinationWorld,
+                    new WorldData(
+                        $destinationWorld->metadata,
+                        'flat',
+                        new SpawnPosition(160, 70, -80),
+                        time: 12_345,
+                        difficulty: 2,
+                    ),
                 ),
+                $destinationSimulation,
+                new FixedRateWorldLoop($destinationSimulation, $clock, maximumTicksPerPoll: 1),
             ),
-            $destinationSimulation,
-            new FixedRateWorldLoop($destinationSimulation, $clock, maximumTicksPerPoll: 1),
-        ));
+        ]));
         $serializer = new BedrockChunkPacketSerializer(new BlockNetworkTranslator($internal, $network));
         $transport = new FakeConnectedTransport();
         $loginFactory = new RuntimeLoginFactory();
@@ -706,13 +709,15 @@ final class ServerRuntimeTest extends TestCase
             $sourceSimulation,
             new FixedRateWorldLoop($sourceSimulation, $clock, maximumTicksPerPoll: 1),
         );
-        $worlds = new WorldRuntimeManager('world', $sourceRuntime);
-        $targetRuntime = $worlds->load('arena', static fn(PublicWorld $handle): ManagedWorldRuntime => new ManagedWorldRuntime(
-            $handle,
-            new OpenedWorld($targetWorld, new WorldData($targetWorld->metadata, 'flat', new SpawnPosition(32, 64, 32))),
-            $targetSimulation,
-            new FixedRateWorldLoop($targetSimulation, $clock, maximumTicksPerPoll: 1),
-        ));
+        $worlds = new WorldRuntimeManager('world', new WorldStorageRuntime([$sourceRuntime]));
+        $targetRuntime = $worlds->load('arena', static fn(PublicWorld $handle): WorldStorageRuntime => new WorldStorageRuntime([
+            new ManagedWorldRuntime(
+                $handle,
+                new OpenedWorld($targetWorld, new WorldData($targetWorld->metadata, 'flat', new SpawnPosition(32, 64, 32))),
+                $targetSimulation,
+                new FixedRateWorldLoop($targetSimulation, $clock, maximumTicksPerPoll: 1),
+            ),
+        ]));
         $transport = new FakeConnectedTransport();
         $loginFactory = new RuntimeLoginFactory();
         $events = new RecordingEventEncoder(failOnPlayerJoinedX: 32.5);
@@ -770,7 +775,8 @@ final class ServerRuntimeTest extends TestCase
         $network = $data->blockStateRegistry();
         $internal = new BlockStateRegistry($network->states());
         $palette = FixedFlatBlockPalette::fromRegistry($internal);
-        $handle = new PublicWorld('world', 1);
+        $overworldHandle = new PublicWorld('world', 1);
+        $netherHandle = new PublicWorld('world', 1, dimensionType: DimensionType::NETHER);
         $clock = new RuntimeTestClock();
         $overworld = new World(
             new WorldMetadata('world', 1),
@@ -781,28 +787,27 @@ final class ServerRuntimeTest extends TestCase
             new WorldMetadata('world', 1),
             new FlatWorldGenerator($palette),
             new ChunkRepository(32),
-            dimension: WorldDimension::NETHER,
+            dimension: DimensionType::NETHER,
         );
         $overworldSimulation = new WorldSimulation(blockWorld: $overworld, blockPalette: $palette);
         $netherSimulation = new WorldSimulation(
             blockWorld: $nether,
             blockPalette: $palette,
-            dimension: WorldDimension::NETHER,
+            dimension: DimensionType::NETHER,
         );
         $netherRuntime = new ManagedWorldRuntime(
-            $handle,
+            $netherHandle,
             new OpenedWorld($nether, new WorldData($nether->metadata, 'flat', new SpawnPosition(8, 64, 8))),
             $netherSimulation,
             new FixedRateWorldLoop($netherSimulation, $clock, maximumTicksPerPoll: 1),
         );
         $overworldRuntime = new ManagedWorldRuntime(
-            $handle,
+            $overworldHandle,
             new OpenedWorld($overworld, new WorldData($overworld->metadata, 'flat', new SpawnPosition(0, 64, 0))),
             $overworldSimulation,
             new FixedRateWorldLoop($overworldSimulation, $clock, maximumTicksPerPoll: 1),
-            additionalDimensions: [$netherRuntime],
         );
-        $worlds = new WorldRuntimeManager('world', $overworldRuntime);
+        $worlds = new WorldRuntimeManager('world', new WorldStorageRuntime([$overworldRuntime, $netherRuntime]));
         $serializer = new BedrockChunkPacketSerializer(new BlockNetworkTranslator($internal, $network));
         $transport = new FakeConnectedTransport();
         $loginFactory = new RuntimeLoginFactory();
@@ -852,8 +857,7 @@ final class ServerRuntimeTest extends TestCase
                     8.5,
                     64.0,
                     8.5,
-                    world: $handle,
-                    dimension: WorldDimension::NETHER,
+                    world: $netherHandle,
                 ),
             ));
             $packets = [];
@@ -893,7 +897,7 @@ final class ServerRuntimeTest extends TestCase
             $defaultSimulation,
             $clock,
         );
-        $worlds = new WorldRuntimeManager('world', $defaultRuntime);
+        $worlds = new WorldRuntimeManager('world', new WorldStorageRuntime([$defaultRuntime]));
         $boundaryTicks = [];
         $monitor = new PerformanceMonitor();
         $scheduler = new MainThreadPluginScheduler(
@@ -924,8 +928,8 @@ final class ServerRuntimeTest extends TestCase
             self::assertSame(41, $defaultSimulation->snapshot()->tick);
             self::assertSame(1, $monitor->snapshot()->tickSamples);
 
-            $worlds->load('mines', static fn(PublicWorld $handle): ManagedWorldRuntime =>
-                self::managedWorldRuntime($handle, new WorldSimulation(), $clock));
+            $worlds->load('mines', static fn(PublicWorld $handle): WorldStorageRuntime =>
+                new WorldStorageRuntime([self::managedWorldRuntime($handle, new WorldSimulation(), $clock)]));
             $clock->advance(50_000_000);
 
             self::assertTrue($runtime->poll());
@@ -948,12 +952,20 @@ final class ServerRuntimeTest extends TestCase
         $defaultRuntime->opened->world->chunk(new ChunkPosition(1, 0));
         $defaultRuntime->opened->world->chunk(new ChunkPosition(2, 0));
 
-        [$minesRuntime, $minesProvider] = self::persistentManagedWorldRuntime(
-            new PublicWorld('mines', 1),
+        $minesRuntime = null;
+        $minesProvider = null;
+        $worlds = new WorldRuntimeManager('world', new WorldStorageRuntime([$defaultRuntime]));
+        $worlds->load('mines', static function (PublicWorld $handle) use (
             $clock,
-        );
-        $worlds = new WorldRuntimeManager('world', $defaultRuntime);
-        $worlds->load('mines', static fn(): ManagedWorldRuntime => $minesRuntime);
+            &$minesRuntime,
+            &$minesProvider,
+        ): WorldStorageRuntime {
+            [$minesRuntime, $minesProvider] = self::persistentManagedWorldRuntime($handle, $clock);
+
+            return new WorldStorageRuntime([$minesRuntime]);
+        });
+        self::assertInstanceOf(ManagedWorldRuntime::class, $minesRuntime);
+        self::assertInstanceOf(InMemoryWorldProvider::class, $minesProvider);
         $runtime = new ServerRuntime(
             new FakeConnectedTransport(),
             new RuntimeLoginFactory(),
@@ -1016,6 +1028,7 @@ final class ServerRuntimeTest extends TestCase
                 'world',
                 new Position(1.0, 64.0, 2.0),
             );
+            $entity->bindPublicWorld(new PublicWorld('world', 1));
             $entity->applyMotion(new EntityMotion(0.1, 0.0, -0.2));
             $firstId = '41@127.0.0.1:20001';
             $secondId = '42@127.0.0.1:20002';
@@ -2393,7 +2406,6 @@ final class ServerRuntimeTest extends TestCase
                 0.0,
                 0.0,
                 new PublicWorld('world', 1),
-                WorldDimension::OVERWORLD,
             ),
             'Guide',
             new Skin(

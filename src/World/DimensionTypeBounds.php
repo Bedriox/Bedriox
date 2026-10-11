@@ -20,36 +20,36 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 
 /** Vanilla vertical section bounds used by generation, storage projection, and the Bedrock wire. */
-final class WorldDimensionBounds
+final class DimensionTypeBounds
 {
     private function __construct() {}
 
-    public static function minimumSectionY(WorldDimension $dimension): int
+    public static function minimumSectionY(DimensionType $dimension): int
     {
         return match ($dimension) {
-            WorldDimension::OVERWORLD => -4,
-            WorldDimension::NETHER, WorldDimension::END => 0,
+            DimensionType::OVERWORLD => -4,
+            DimensionType::NETHER, DimensionType::END => 0,
         };
     }
 
-    public static function maximumSectionY(WorldDimension $dimension): int
+    public static function maximumSectionY(DimensionType $dimension): int
     {
         return match ($dimension) {
-            WorldDimension::OVERWORLD => 19,
-            WorldDimension::NETHER => 7,
-            WorldDimension::END => 15,
+            DimensionType::OVERWORLD => 19,
+            DimensionType::NETHER => 7,
+            DimensionType::END => 15,
         };
     }
 
-    public static function minimumY(WorldDimension $dimension): int
+    public static function minimumY(DimensionType $dimension): int
     {
         return self::minimumSectionY($dimension) * 16;
     }
 
-    public static function maximumY(WorldDimension $dimension): int
+    public static function maximumY(DimensionType $dimension): int
     {
         return (self::maximumSectionY($dimension) * 16) + 15;
     }

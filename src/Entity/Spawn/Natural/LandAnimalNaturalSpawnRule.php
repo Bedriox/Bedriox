@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Spawn\Natural;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use InvalidArgumentException;
 
 /** Bounded biome-family rule for expanded overworld land animals. */
@@ -50,7 +50,7 @@ final readonly class LandAnimalNaturalSpawnRule implements NaturalSpawnRule
 
     public function allows(NaturalSpawnContext $context): bool
     {
-        if ($context->dimension !== WorldDimension::OVERWORLD
+        if ($context->dimension !== DimensionType::OVERWORLD
             || $context->medium !== NaturalSpawnMedium::GROUND
             || $context->lightLevel < $this->minimumLight) {
             return false;

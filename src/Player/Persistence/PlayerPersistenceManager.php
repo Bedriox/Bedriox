@@ -21,7 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Player\Persistence;
 
 use Bedriox\Api\Player\GameMode;
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Login\AuthenticatedLogin;
 use Bedriox\Server\Player\Player;
@@ -107,7 +107,7 @@ final class PlayerPersistenceManager
             $savedAlive ? $saved->effectPersistenceState : null,
             $savedAlive ? $saved->totalExperience : 0,
             $saved->spawnPoint,
-            $restoreLocation ? $saved->dimension : WorldDimension::OVERWORLD,
+            $restoreLocation ? $saved->dimension : DimensionType::OVERWORLD,
         );
     }
 

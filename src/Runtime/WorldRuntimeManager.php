@@ -20,19 +20,24 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\World;
 use Bedriox\Api\World\WorldActions;
-use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Persistence\PersistenceQueueSnapshot;
+use Bedriox\Server\Persistence\PersistenceSubmission;
 use Bedriox\Server\World\ChunkRepositorySnapshot;
+use Bedriox\Server\World\ChunkUnloadResult;
 use InvalidArgumentException;
 use LogicException;
+use WeakReference;
 
 /** Main-thread owner of the one canonical runtime for each loaded world. */
 final class WorldRuntimeManager
 {
-    /** @var array<string, ManagedWorldRuntime> */
+    /** @var array<string, WorldStorageRuntime> */
     private array $loaded = [];
+    /** @var array<string, array<string, World>> */
+    private array $reservedHandles = [];
     /** @var array<string, true> */
     private array $loading = [];
     /** @var array<string, int> */
@@ -41,25 +46,22 @@ final class WorldRuntimeManager
 
     public function __construct(
         private readonly string $defaultWorldId,
-        ManagedWorldRuntime $default,
+        WorldStorageRuntime $default,
         private readonly int $maximumLoadedWorlds = 64,
         private readonly ?WorldActions $actions = null,
     ) {
         $canonicalDefault = self::canonicalId($defaultWorldId);
-        if ($canonicalDefault !== $default->handle->id()) {
+        if ($canonicalDefault !== $default->root()->handle->id()) {
             throw new InvalidArgumentException('Default world runtime does not match the configured default ID.');
-        }
-        if ($default->opened->world->dimension() !== WorldDimension::OVERWORLD) {
-            throw new InvalidArgumentException('Default named world runtime must be rooted in its Overworld dimension.');
         }
         if ($maximumLoadedWorlds < 1 || $maximumLoadedWorlds > 1_024) {
             throw new InvalidArgumentException('Loaded world capacity must be between 1 and 1024.');
         }
         $this->loaded[$canonicalDefault] = $default;
-        $this->loadGenerations[$canonicalDefault] = $default->handle->loadGeneration();
+        $this->loadGenerations[$canonicalDefault] = $default->root()->handle->loadGeneration();
     }
 
-    public function default(WorldDimension $dimension = WorldDimension::OVERWORLD): ManagedWorldRuntime
+    public function default(DimensionType $dimension = DimensionType::OVERWORLD): ManagedWorldRuntime
     {
         return $this->get($this->defaultWorldId, $dimension)
             ?? throw new LogicException('The default world does not expose the requested dimension.');
@@ -67,7 +69,7 @@ final class WorldRuntimeManager
 
     public function get(
         string $worldId,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): ?ManagedWorldRuntime {
         $runtime = $this->loaded[self::canonicalId($worldId)] ?? null;
 
@@ -77,15 +79,18 @@ final class WorldRuntimeManager
     /** @return list<ManagedWorldRuntime> */
     public function loaded(): array
     {
-        return array_values($this->loaded);
+        return array_map(
+            static fn(WorldStorageRuntime $storage): ManagedWorldRuntime => $storage->root(),
+            array_values($this->loaded),
+        );
     }
 
     /** @return list<ManagedWorldRuntime> */
     public function loadedDimensions(): array
     {
         $dimensions = [];
-        foreach ($this->loaded as $runtime) {
-            array_push($dimensions, ...$runtime->dimensions());
+        foreach ($this->loaded as $storage) {
+            array_push($dimensions, ...$storage->dimensions());
         }
 
         return $dimensions;
@@ -120,6 +125,46 @@ final class WorldRuntimeManager
         ));
     }
 
+    public function pendingChunkUnloadCount(): int
+    {
+        return array_sum(array_map(
+            static fn(ManagedWorldRuntime $runtime): int => $runtime->opened->world->pendingChunkUnloadCount(),
+            $this->loadedDimensions(),
+        ));
+    }
+
+    public function processChunkUnloads(int $maximumChunks, int $timeBudgetMicroseconds): ChunkUnloadResult
+    {
+        $dimensions = $this->loadedDimensions();
+        $remainingChunks = max(1, $maximumChunks);
+        $remainingMicroseconds = max(1, $timeBudgetMicroseconds);
+        $totals = [0, 0, 0];
+        $saturated = false;
+        $remainingQueued = 0;
+        $remainingDimensions = count($dimensions);
+        foreach ($dimensions as $runtime) {
+            $chunkBudget = max(1, intdiv($remainingChunks, max(1, $remainingDimensions)));
+            $timeBudget = max(1, intdiv($remainingMicroseconds, max(1, $remainingDimensions)));
+            $result = $runtime->opened->world->processChunkUnloads($chunkBudget, $timeBudget);
+            $totals[0] += $result->examined;
+            $totals[1] += $result->evicted;
+            $totals[2] += $result->saveSubmissions;
+            $saturated = $saturated || $result->persistenceSaturated;
+            $remainingQueued += $result->remainingQueued;
+            $remainingChunks = max(0, $remainingChunks - $chunkBudget);
+            $remainingMicroseconds = max(0, $remainingMicroseconds - $timeBudget);
+            --$remainingDimensions;
+        }
+
+        return new ChunkUnloadResult(
+            $totals[0],
+            $totals[1],
+            $totals[2],
+            $saturated,
+            $remainingQueued,
+        );
+    }
+
     public function chunkRepositorySnapshot(): ChunkRepositorySnapshot
     {
         $totals = [0, 0, 0, 0, 0, 0, 0, 0];
@@ -142,8 +187,8 @@ final class WorldRuntimeManager
     {
         $totals = [0, 0, 0, 0, 0, 0, 0];
         $available = false;
-        foreach ($this->loadedDimensions() as $runtime) {
-            $snapshot = $runtime->opened->world->persistenceQueueSnapshot();
+        foreach ($this->loaded as $storage) {
+            $snapshot = $storage->root()->opened->world->persistenceQueueSnapshot();
             if ($snapshot === null) {
                 continue;
             }
@@ -171,7 +216,7 @@ final class WorldRuntimeManager
      * The loading marker prevents a recursive or duplicate owner from opening a second provider.
      * The public asynchronous operation layer should coalesce callers before invoking this method.
      *
-     * @param callable(World): ManagedWorldRuntime $loader
+     * @param callable(World): WorldStorageRuntime $loader
      */
     public function load(string $worldId, callable $loader): ManagedWorldRuntime
     {
@@ -181,8 +226,8 @@ final class WorldRuntimeManager
         }
         $handle = $this->reserve($worldId);
         try {
-            $runtime = $loader($handle);
-            return $this->attach($handle, $runtime);
+            $storage = $loader($handle);
+            return $this->attach($handle, $storage)->root();
         } finally {
             $this->abortReservation($handle);
         }
@@ -192,10 +237,26 @@ final class WorldRuntimeManager
     public function reserve(string $worldId): World
     {
         $id = $this->assertReservable($worldId);
-        $handle = new World($id, ($this->loadGenerations[$id] ?? 0) + 1, $this->actions);
+        $generation = ($this->loadGenerations[$id] ?? 0) + 1;
+        $manager = WeakReference::create($this);
+        $handles = [];
+        foreach (DimensionType::cases() as $dimension) {
+            $handles[$dimension->value] = new World(
+                $id,
+                $generation,
+                $this->actions,
+                $dimension,
+                static fn(World $_source, DimensionType $target): ?World => $manager->get()?->resolveHandle(
+                    $id,
+                    $generation,
+                    $target,
+                ),
+            );
+        }
+        $this->reservedHandles[$id] = $handles;
         $this->loading[$id] = true;
 
-        return $handle;
+        return $handles[DimensionType::OVERWORLD->value];
     }
 
     /** Validates load/create ownership before plugin pre-events are dispatched. */
@@ -222,13 +283,13 @@ final class WorldRuntimeManager
     }
 
     /** Validates every core unload rule before plugin pre-events are dispatched. */
-    public function assertUnloadable(World $handle): ManagedWorldRuntime
+    public function assertUnloadable(World $handle): WorldStorageRuntime
     {
         $id = $handle->id();
         if ($id === self::canonicalId($this->defaultWorldId)) {
             throw new LogicException('The default world cannot be unloaded.');
         }
-        $runtime = $this->runtimeForHandle($handle);
+        $runtime = $this->runtimeStorageForHandle($handle);
         if ($runtime->playerCount() !== 0) {
             throw new LogicException('An occupied world cannot be unloaded.');
         }
@@ -237,20 +298,24 @@ final class WorldRuntimeManager
     }
 
     /** Publishes a completely prepared runtime on the authoritative thread. */
-    public function attach(World $handle, ManagedWorldRuntime $runtime): ManagedWorldRuntime
+    public function attach(World $handle, WorldStorageRuntime $runtime): WorldStorageRuntime
     {
         $id = $handle->id();
         if (!isset($this->loading[$id])) {
             $runtime->close(false);
             throw new LogicException('World load reservation is no longer active.');
         }
-        if (!$runtime->handle->isSameLoad($handle)) {
+        if (!$runtime->root()->handle->isSameLoad($handle)) {
             $runtime->close(false);
             throw new LogicException('World loader returned a runtime for a different identity or generation.');
         }
-        if ($runtime->opened->world->dimension() !== WorldDimension::OVERWORLD) {
-            $runtime->close(false);
-            throw new LogicException('World loader returned a named world without an Overworld root.');
+        $reserved = $this->reservedHandles[$id] ?? [];
+        foreach ($runtime->dimensions() as $dimensionRuntime) {
+            $dimension = $dimensionRuntime->handle->getDimensionType();
+            if (($reserved[$dimension->value] ?? null) !== $dimensionRuntime->handle) {
+                $runtime->close(false);
+                throw new LogicException('World loader returned a non-canonical dimension handle.');
+            }
         }
         if ($runtime->isClosed()) {
             throw new LogicException('World loader returned a closed runtime.');
@@ -258,6 +323,7 @@ final class WorldRuntimeManager
         $this->loaded[$id] = $runtime;
         $this->loadGenerations[$id] = $handle->loadGeneration();
         unset($this->loading[$id]);
+        unset($this->reservedHandles[$id]);
 
         return $runtime;
     }
@@ -266,19 +332,25 @@ final class WorldRuntimeManager
     {
         if (!isset($this->loaded[$handle->id()])) {
             unset($this->loading[$handle->id()]);
+            unset($this->reservedHandles[$handle->id()]);
         }
     }
 
     public function save(World $handle): void
     {
-        $this->runtimeForHandle($handle)->save();
+        $this->runtimeStorageForHandle($handle)->save();
+    }
+
+    public function scheduleWorldDataSave(World $handle): PersistenceSubmission
+    {
+        return $this->runtimeStorageForHandle($handle)->scheduleWorldDataSave();
     }
 
     public function unload(World $handle, bool $save = true): void
     {
         $id = $handle->id();
-        $runtime = $this->assertUnloadable($handle);
-        $runtime->close($save);
+        $this->assertUnloadable($handle);
+        $this->runtimeStorageForHandle($handle)->close($save);
         unset($this->loaded[$id]);
         $this->pollCursor = min($this->pollCursor, max(0, count($this->loaded) - 1));
     }
@@ -336,13 +408,13 @@ final class WorldRuntimeManager
     {
         $failure = null;
         $runtimes = array_reverse($this->loaded, true);
-        foreach ($runtimes as $id => $runtime) {
-            if ($runtime->playerCount() !== 0) {
+        foreach ($runtimes as $id => $storage) {
+            if ($storage->playerCount() !== 0) {
                 $failure ??= new LogicException("World '$id' still contains players during shutdown.");
                 continue;
             }
             try {
-                $runtime->close(true);
+                $storage->close(true);
                 unset($this->loaded[$id]);
             } catch (\Throwable $error) {
                 $failure ??= $error;
@@ -366,11 +438,12 @@ final class WorldRuntimeManager
 
     private function runtimeForHandle(World $handle): ManagedWorldRuntime
     {
-        $runtime = $this->loaded[$handle->id()] ?? null;
-        if ($runtime === null) {
+        $storage = $this->loaded[$handle->id()] ?? null;
+        if ($storage === null) {
             throw new LogicException('World is not loaded.');
         }
-        if (!$runtime->handle->isSameLoad($handle)) {
+        $runtime = $storage->dimension($handle->getDimensionType());
+        if ($runtime === null || !$runtime->handle->isSameLoad($handle)) {
             throw new LogicException('World handle belongs to an earlier load generation.');
         }
 
@@ -381,16 +454,34 @@ final class WorldRuntimeManager
     private function dimensionRuntimesByPollKey(): array
     {
         $dimensions = [];
-        foreach ($this->loaded as $worldId => $runtime) {
-            foreach ($runtime->dimensions() as $dimensionRuntime) {
+        foreach ($this->loaded as $worldId => $storage) {
+            foreach ($storage->dimensions() as $dimensionRuntime) {
                 $dimension = $dimensionRuntime->opened->world->dimension();
-                $key = $dimension === WorldDimension::OVERWORLD
+                $key = $dimension === DimensionType::OVERWORLD
                     ? $worldId
-                    : $worldId . '@' . ($dimension === WorldDimension::NETHER ? 'nether' : 'end');
+                    : $worldId . '@' . ($dimension === DimensionType::NETHER ? 'nether' : 'end');
                 $dimensions[$key] = $dimensionRuntime;
             }
         }
 
         return $dimensions;
+    }
+
+    private function runtimeStorageForHandle(World $handle): WorldStorageRuntime
+    {
+        $runtime = $this->runtimeForHandle($handle);
+
+        return $this->loaded[$runtime->handle->id()];
+    }
+
+    private function resolveHandle(string $worldId, int $generation, DimensionType $dimension): ?World
+    {
+        $storage = $this->loaded[$worldId] ?? null;
+        $runtime = $storage?->dimension($dimension);
+        if ($runtime !== null && $runtime->handle->loadGeneration() === $generation) {
+            return $runtime->handle;
+        }
+
+        return $this->reservedHandles[$worldId][$dimension->value] ?? null;
     }
 }

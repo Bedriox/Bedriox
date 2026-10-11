@@ -20,9 +20,9 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\WorldCreationOptions;
 use Bedriox\Api\World\WorldDifficulty;
-use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Data\PersistentBlockStateRegistry;
 use Bedriox\Server\Persistence\World\ProcessWorldProvider;
@@ -38,6 +38,7 @@ use Bedriox\Server\World\Generator\DeferredWorldGenerator;
 use Bedriox\Server\World\Generator\GeneratorExecution;
 use Bedriox\Server\World\Generator\GeneratorOptions;
 use Bedriox\Server\World\Generator\GeneratorRegistry;
+use Bedriox\Server\World\Provider\DimensionWorldData;
 use Bedriox\Server\World\Provider\LevelDbWorldProviderFactory;
 use Bedriox\Server\World\Provider\WorldData;
 use Bedriox\Server\World\Provider\WorldProviderFactory;
@@ -130,8 +131,9 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
         string $worldId,
         WorldCreationOptions $options,
     ): OpenedWorld {
-        $spawn = $options->spawn;
-        $seed = $options->seed ?? random_int(PHP_INT_MIN, PHP_INT_MAX);
+        $overworldOptions = $options->dimension(DimensionType::OVERWORLD);
+        $spawn = $overworldOptions->spawn;
+        $worldSeed = $options->seed ?? random_int(PHP_INT_MIN, PHP_INT_MAX);
         if ($spawn !== null && (
             floor($spawn->x) !== $spawn->x
             || floor($spawn->y) !== $spawn->y
@@ -147,12 +149,13 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
             createIfMissing: true,
             failIfExists: true,
             displayName: $options->displayName ?? $worldId,
-            seed: $seed,
+            seed: $worldSeed,
             generatorName: $options->generator,
             difficulty: self::apiDifficulty($options->difficulty),
             initialTime: $options->initialTime,
             configuredSpawn: $spawn === null ? null : new SpawnPosition((int) $spawn->x, (int) $spawn->y, (int) $spawn->z),
             generatorOptions: new GeneratorOptions($options->generatorOptions),
+            creationOptions: $options,
         );
     }
 
@@ -163,8 +166,10 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
         string $worldId,
         WorldCreationOptions $options,
     ): PendingOpenedWorld {
-        $spawn = $options->spawn;
-        $seed = $options->seed ?? random_int(PHP_INT_MIN, PHP_INT_MAX);
+        $overworldOptions = $options->dimension(DimensionType::OVERWORLD);
+        $spawn = $overworldOptions->spawn;
+        $worldSeed = $options->seed ?? random_int(PHP_INT_MIN, PHP_INT_MAX);
+        $overworldSeed = $overworldOptions->seed ?? $worldSeed;
         if ($spawn !== null && (
             floor($spawn->x) !== $spawn->x
             || floor($spawn->y) !== $spawn->y
@@ -189,17 +194,17 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
             ?? throw new RuntimeException('Asynchronous named-world creation requires a world preparation worker.');
         $internalStates = $this->internalStates($data);
         $configuredSpawn = $spawn === null ? null : new SpawnPosition((int) $spawn->x, (int) $spawn->y, (int) $spawn->z);
-        $generatorOptions = new GeneratorOptions($options->generatorOptions);
-        $identifier = WorldGeneratorFactory::canonicalIdentifier($options->generator);
+        $generatorOptions = new GeneratorOptions($overworldOptions->generatorOptions);
+        $identifier = WorldGeneratorFactory::canonicalIdentifier($overworldOptions->generator);
         $definition = $this->generators->require($identifier);
         $preparation = new PendingWorldPreparation(
             $workers,
             $this->worldPreparationTaskType,
             new WorldPreparationRequest(
-                $options->generator,
+                $overworldOptions->generator,
                 $identifier,
                 $definition->version,
-                $seed,
+                $overworldSeed,
                 'minecraft:overworld',
                 $generatorOptions,
                 $definition->workerSource,
@@ -215,17 +220,9 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
                 $configuredSpawn,
                 $prepared,
             ),
-            static fn(WorldPreparationResult $prepared): ProcessWorldProvider => $providers->beginCreate(
+            fn(WorldPreparationResult $prepared): ProcessWorldProvider => $providers->beginCreate(
                 $worldPath,
-                new WorldData(
-                    new WorldMetadata($options->displayName ?? $worldId, $seed),
-                    $options->generator,
-                    $configuredSpawn ?? $prepared->defaultSpawn,
-                    time: $options->initialTime,
-                    difficulty: self::apiDifficulty($options->difficulty),
-                    generatorVersion: $prepared->generatorVersion,
-                    generatorOptions: $generatorOptions->canonicalJson(),
-                ),
+                $this->creationWorldData($options, $worldId, $worldSeed, $internalStates, $prepared),
                 $internalStates,
             ),
         );
@@ -284,6 +281,7 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
         int $initialTime = 0,
         ?SpawnPosition $configuredSpawn = null,
         ?GeneratorOptions $generatorOptions = null,
+        ?WorldCreationOptions $creationOptions = null,
     ): OpenedWorld {
         $worldsPath = $this->ensureWorldsDirectory();
         $directoryName = self::safeDirectoryName($worldId);
@@ -322,9 +320,8 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
                 registry: $this->generators,
             );
             $defaultSpawn = $configuredSpawn ?? $configuredGenerator->defaultSpawn();
-            $provider = $this->providers->create(
-                $worldPath,
-                new WorldData(
+            $worldData = $creationOptions === null
+                ? new WorldData(
                     new WorldMetadata($displayName ?? $worldId, $seed),
                     $generatorName,
                     $defaultSpawn,
@@ -332,7 +329,11 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
                     difficulty: $difficulty,
                     generatorVersion: $configuredGenerator->version(),
                     generatorOptions: $generatorOptions->canonicalJson(),
-                ),
+                )
+                : $this->creationWorldData($creationOptions, $worldId, $seed, $internalStates);
+            $provider = $this->providers->create(
+                $worldPath,
+                $worldData,
                 $internalStates,
                 $persistentStates,
             );
@@ -357,7 +358,7 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
             $config,
             $provider,
             $internalStates,
-            WorldDimension::OVERWORLD,
+            DimensionType::OVERWORLD,
             $configuredSpawn,
             $prepared,
         );
@@ -365,14 +366,14 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
             $config,
             $provider,
             $internalStates,
-            WorldDimension::NETHER,
+            DimensionType::NETHER,
             null,
         );
         $end = $this->composeDimension(
             $config,
             $provider,
             $internalStates,
-            WorldDimension::END,
+            DimensionType::END,
             null,
         );
 
@@ -383,29 +384,30 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
         ServerConfig $config,
         WritableWorldProvider $provider,
         BlockStateRegistry $internalStates,
-        WorldDimension $dimension,
+        DimensionType $dimension,
         ?SpawnPosition $configuredSpawn,
         ?WorldPreparationResult $prepared = null,
     ): OpenedWorld {
         $stored = $provider->worldData();
-        $generatorOptions = GeneratorOptions::fromJson($stored->generatorOptions);
+        $dimensionData = $stored->dimension($dimension);
+        $generatorOptions = GeneratorOptions::fromJson($dimensionData->generatorOptions);
         try {
-            $identifier = WorldGeneratorFactory::canonicalIdentifier($stored->generatorName);
+            $identifier = WorldGeneratorFactory::canonicalIdentifier($dimensionData->generatorName);
             $definition = $this->generators->require($identifier);
             $deferredGeneratorVersion = $prepared instanceof WorldPreparationResult
                 ? $prepared->generatorVersion
                 : $definition->version;
             $deferredSpawn = $prepared instanceof WorldPreparationResult
                 ? $prepared->defaultSpawn
-                : $stored->spawn;
+                : $dimensionData->spawn;
             $generator = $prepared !== null || $definition->execution === GeneratorExecution::WORKER
                 ? new DeferredWorldGenerator(
-                    $stored->generatorName,
+                    $dimensionData->generatorName,
                     $deferredGeneratorVersion,
                     $deferredSpawn,
                     fn(): \Bedriox\Server\World\VersionedWorldGenerator => WorldGeneratorFactory::create(
-                        $stored->generatorName,
-                        $stored->metadata->seed,
+                        $dimensionData->generatorName,
+                        $dimensionData->seed,
                         $internalStates,
                         $generatorOptions,
                         $dimension->value,
@@ -413,8 +415,8 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
                     ),
                 )
                 : WorldGeneratorFactory::create(
-                    $stored->generatorName,
-                    $stored->metadata->seed,
+                    $dimensionData->generatorName,
+                    $dimensionData->seed,
                     $internalStates,
                     $generatorOptions,
                     $dimension->value,
@@ -422,28 +424,28 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
                 );
         } catch (InvalidArgumentException $failure) {
             throw new RuntimeException(
-                "World generator {$stored->generatorName} is not supported.",
+                "World generator {$dimensionData->generatorName} is not supported.",
                 previous: $failure,
             );
         }
         $generatorVersion = $generator->version();
-        if ($dimension === WorldDimension::OVERWORLD && $prepared !== null && (
+        if ($dimension === DimensionType::OVERWORLD && $prepared !== null && (
             $prepared->generatorIdentifier !== $identifier
             || $prepared->generatorVersion !== $definition->version
-            || $stored->spawn != $prepared->defaultSpawn && $configuredSpawn === null
+            || $dimensionData->spawn != $prepared->defaultSpawn && $configuredSpawn === null
         )) {
             throw new RuntimeException('Prepared world metadata does not match authoritative storage metadata.');
         }
-        if ($stored->bedrioxGeneratorVersionDeclared && $stored->generatorVersion !== $generatorVersion) {
+        if ($dimensionData->bedrioxGeneratorVersionDeclared && $dimensionData->generatorVersion !== $generatorVersion) {
             throw new RuntimeException(
-                "World generator {$stored->generatorName} version {$stored->generatorVersion} is not supported; expected version $generatorVersion.",
+                "World generator {$dimensionData->generatorName} version {$dimensionData->generatorVersion} is not supported; expected version $generatorVersion.",
             );
         }
         $world = new World(
             $stored->metadata,
             $generator,
             new ChunkRepository($config->chunkCacheLimit),
-            $configuredSpawn ?? ($dimension === WorldDimension::OVERWORLD ? null : $generator->defaultSpawn()),
+            $configuredSpawn ?? $dimensionData->spawn,
             provider: $provider,
             chunkUnloads: new ChunkUnloadManager(self::unloadGraceNanoseconds($config)),
             generatorOptions: $generatorOptions->canonicalJson(),
@@ -451,15 +453,79 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
         );
         $effectiveData = new WorldData(
             $stored->metadata,
-            $stored->generatorName,
+            $dimensionData->generatorName,
             $world->spawn(),
             $stored->time,
             $stored->difficulty,
             $generatorVersion,
             $generatorOptions->canonicalJson(),
+            weather: $stored->weather,
+            weatherCycleEnabled: $stored->weatherCycleEnabled,
+            bedrioxGeneratorVersionDeclared: true,
+            dimensions: $stored->dimensions,
         );
 
         return new OpenedWorld($world, $effectiveData);
+    }
+
+    private function creationWorldData(
+        WorldCreationOptions $options,
+        string $worldId,
+        int $worldSeed,
+        BlockStateRegistry $internalStates,
+        ?WorldPreparationResult $prepared = null,
+    ): WorldData {
+        $dimensions = [];
+        foreach (DimensionType::cases() as $dimension) {
+            $configuration = $options->dimension($dimension);
+            $seed = $configuration->seed ?? $worldSeed;
+            $generatorOptions = new GeneratorOptions($configuration->generatorOptions);
+            $generator = WorldGeneratorFactory::create(
+                $configuration->generator,
+                $seed,
+                $internalStates,
+                $generatorOptions,
+                $dimension->value,
+                registry: $this->generators,
+            );
+            if ($configuration->spawn !== null && (
+                floor($configuration->spawn->x) !== $configuration->spawn->x
+                || floor($configuration->spawn->y) !== $configuration->spawn->y
+                || floor($configuration->spawn->z) !== $configuration->spawn->z
+            )) {
+                throw new InvalidArgumentException('Persisted dimension spawn coordinates must be whole block coordinates.');
+            }
+            $spawn = $configuration->spawn === null
+                ? ($dimension === DimensionType::OVERWORLD && $prepared !== null
+                    ? $prepared->defaultSpawn
+                    : $generator->defaultSpawn())
+                : new SpawnPosition(
+                    (int) $configuration->spawn->x,
+                    (int) $configuration->spawn->y,
+                    (int) $configuration->spawn->z,
+                );
+            $dimensions[$dimension->value] = new DimensionWorldData(
+                $configuration->generator,
+                $seed,
+                $spawn,
+                $dimension === DimensionType::OVERWORLD && $prepared !== null
+                    ? $prepared->generatorVersion
+                    : $generator->version(),
+                $generatorOptions->canonicalJson(),
+            );
+        }
+        $overworld = $dimensions[DimensionType::OVERWORLD->value];
+
+        return new WorldData(
+            new WorldMetadata($options->displayName ?? $worldId, $worldSeed),
+            $overworld->generatorName,
+            $overworld->spawn,
+            time: $options->initialTime,
+            difficulty: self::apiDifficulty($options->difficulty),
+            generatorVersion: $overworld->generatorVersion,
+            generatorOptions: $overworld->generatorOptions,
+            dimensions: $dimensions,
+        );
     }
 
     private function ensureWorldsDirectory(): string

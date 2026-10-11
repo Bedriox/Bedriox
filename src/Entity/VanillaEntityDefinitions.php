@@ -450,6 +450,8 @@ final class VanillaEntityDefinitions
                         $world,
                         $position,
                         CanonicalBlockState::from('minecraft:sand'),
+                        yaw: $yaw,
+                        pitch: $pitch,
                     ),
                 persistenceFactory: static fn(string $uuid, int $runtimeId, EntityPersistenceRecord $record): FallingBlockEntity =>
                     new FallingBlockEntity(
@@ -460,6 +462,8 @@ final class VanillaEntityDefinitions
                         $record->position,
                         CanonicalBlockState::from('minecraft:sand'),
                         motion: $record->motion,
+                        yaw: $record->yaw,
+                        pitch: $record->pitch,
                     ),
             ),
             new RegisteredEntityDefinition(

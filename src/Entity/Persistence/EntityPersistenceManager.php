@@ -21,7 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Entity\Persistence;
 
 use Bedriox\Api\Entity\CustomEntityState;
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\Entity\AbstractEntity;
 use Bedriox\Server\Entity\AbstractLivingEntity;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
@@ -108,7 +108,7 @@ final class EntityPersistenceManager
         ?Closure $afterActivation = null,
         ?Closure $customStateEncoder = null,
         ?Closure $afterDeactivation = null,
-        private readonly WorldDimension $dimension = WorldDimension::OVERWORLD,
+        private readonly DimensionType $dimension = DimensionType::OVERWORLD,
     ) {
         if ($worldName === '' || strlen($worldName) > EntityPersistenceLimits::MAX_WORLD_NAME_BYTES
             || preg_match('//u', $worldName) !== 1 || preg_match('/[\x00-\x1f\x7f]/', $worldName) === 1) {

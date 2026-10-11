@@ -44,12 +44,12 @@ use Bedriox\Api\Player\ExperienceChangeCause;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\Player\Player as ApiPlayer;
 use Bedriox\Api\TextFormat;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\PortalType;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\WeatherState;
 use Bedriox\Api\World\WeatherType;
 use Bedriox\Api\World\World as ApiWorld;
-use Bedriox\Api\World\WorldDimension;
 use Bedriox\Protocol\Batch\BatchLimits;
 use Bedriox\Protocol\Batch\BedrockBatch;
 use Bedriox\Protocol\Batch\BedrockBatchCodec;
@@ -533,7 +533,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             return false;
         }
         $player = $simulation->authoritativePlayer($uuid);
-        if ($player === null || $position->world === null || $position->world->id() !== $player->worldName()) {
+        if ($player === null || $position->world === null
+            || $position->world->id() !== $player->worldName()
+            || $position->world->getDimensionType() !== $simulation->dimension()) {
             return false;
         }
 
@@ -565,7 +567,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
 
     public function worldDifficulty(?\Bedriox\Api\World\World $world = null): ?\Bedriox\Api\World\WorldDifficulty
     {
-        $runtime = $world === null ? $this->worldRuntimes?->default() : $this->worldRuntimes?->get($world->id());
+        $runtime = $world === null
+            ? $this->worldRuntimes?->default()
+            : $this->worldRuntimes?->get($world->id(), $world->getDimensionType());
         if ($runtime === null || ($world !== null && !$runtime->handle->isSameLoad($world))) {
             return null;
         }
@@ -583,7 +587,13 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         ?\Bedriox\Api\World\World $world,
         \Bedriox\Api\World\WorldDifficulty $difficulty,
     ): bool {
-        $runtime = $world === null ? $this->worldRuntimes?->default() : $this->worldRuntimes?->get($world->id());
+        $worldRuntimes = $this->worldRuntimes;
+        if ($worldRuntimes === null) {
+            return false;
+        }
+        $runtime = $world === null
+            ? $worldRuntimes->default()
+            : $worldRuntimes->get($world->id(), $world->getDimensionType());
         if ($runtime === null || ($world !== null && !$runtime->handle->isSameLoad($world))) {
             return false;
         }
@@ -593,11 +603,22 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             \Bedriox\Api\World\WorldDifficulty::NORMAL => 2,
             \Bedriox\Api\World\WorldDifficulty::HARD => 3,
         };
-        if ($runtime->opened->world->difficulty() === $value) {
+        $worldId = $runtime->handle->id();
+        $dimensions = array_values(array_filter(array_map(
+            fn(\Bedriox\Api\World\DimensionType $dimension): ?ManagedWorldRuntime =>
+                $worldRuntimes->get($worldId, $dimension),
+            \Bedriox\Api\World\DimensionType::cases(),
+        )));
+        if ($dimensions !== [] && array_all(
+            $dimensions,
+            static fn(ManagedWorldRuntime $dimension): bool => $dimension->opened->world->difficulty() === $value,
+        )) {
             return true;
         }
-        $runtime->opened->world->setDifficulty($value);
-        $runtime->opened->world->scheduleWorldDataSave();
+        foreach ($dimensions as $dimension) {
+            $dimension->opened->world->setDifficulty($value);
+        }
+        $worldRuntimes->scheduleWorldDataSave($runtime->handle);
         $packet = new SetDifficultyPacket($value);
         foreach ($this->sessions as $key => $session) {
             if ($session->joined && $session->play !== null && $session->worldId === $runtime->handle->id()
@@ -611,25 +632,30 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
 
     public function setWorldSpawn(\Bedriox\Api\World\World $world, \Bedriox\Api\World\BlockPosition $position): bool
     {
-        $runtime = $this->worldRuntimes?->get($world->id(), $position->dimension);
+        $worldRuntimes = $this->worldRuntimes;
+        if ($worldRuntimes === null) {
+            return false;
+        }
+        $dimension = $world->getDimensionType();
+        $runtime = $worldRuntimes->get($world->id(), $dimension);
         if ($runtime === null || !$runtime->handle->isSameLoad($world)) {
             return false;
         }
         $runtime->opened->world->setSpawn(new \Bedriox\Server\World\SpawnPosition($position->x, $position->y, $position->z));
-        $runtime->opened->world->scheduleWorldDataSave();
+        $worldRuntimes->scheduleWorldDataSave($runtime->handle);
         $packet = new SetSpawnPositionPacket(
             0,
             $position->x,
             $position->y,
             $position->z,
-            self::protocolDimension($position->dimension)->value,
+            self::protocolDimension($dimension)->value,
             $position->x,
             $position->y,
             $position->z,
         );
         foreach ($this->sessions as $key => $session) {
             if ($session->joined && $session->play !== null && $session->worldId === $runtime->handle->id()
-                && $session->dimension === $position->dimension
+                && $session->dimension === $dimension
                 && !$this->queueWorldPacket($session, $packet)) {
                 $this->disconnect($key, 'world_spawn_backlog_exhausted');
             }
@@ -772,7 +798,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         $session = $this->sessionById($player->sessionId);
         $sourceRuntime = $session === null ? null : $this->runtimeForSession($session);
         if ($this->worldRuntimes === null || $session?->play === null || $sourceRuntime === null) {
-            if ($position->world !== null || $position->dimension !== null) {
+            if ($position->world !== null) {
                 return false;
             }
 
@@ -784,7 +810,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             );
         }
         $targetHandle = $position->world ?? $sourceRuntime->handle;
-        $targetDimension = $position->dimension ?? $session->dimension;
+        $targetDimension = $targetHandle->getDimensionType();
         $targetRuntime = $this->worldRuntimes->get($targetHandle->id(), $targetDimension);
         if ($targetRuntime === null || !$targetRuntime->handle->isSameLoad($targetHandle)) {
             return false;
@@ -1196,10 +1222,14 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             ?? (str_starts_with($identifier, 'minecraft:')
                 ? new VanillaEntityIdentifier($identifier)
                 : new CustomEntityType($identifier));
-        $outcome = $this->world->spawnEntity(new EntitySpawnRequest(
+        $target = $this->entitySpawnTarget($position, $source?->getWorld());
+        if ($target === null) {
+            return false;
+        }
+        $outcome = $target['simulation']->spawnEntity(new EntitySpawnRequest(
             $type,
             SpawnCause::COMMAND,
-            $this->persistentWorld?->metadata->name ?? 'world',
+            $target['worldId'],
             new \Bedriox\Server\Simulation\Position($position->x, $position->y, $position->z),
             $source === null ? 0.0 : $source->yaw,
             0.0,
@@ -1214,10 +1244,15 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         float $yaw = 0.0,
         float $pitch = 0.0,
     ): bool {
-        return $this->world->spawnEntity(new EntitySpawnRequest(
+        $target = $this->entitySpawnTarget($position);
+        if ($target === null) {
+            return false;
+        }
+
+        return $target['simulation']->spawnEntity(new EntitySpawnRequest(
             $type,
             SpawnCause::PLUGIN,
-            $this->persistentWorld?->metadata->name ?? 'world',
+            $target['worldId'],
             new \Bedriox\Server\Simulation\Position($position->x, $position->y, $position->z),
             $yaw,
             $pitch,
@@ -1235,13 +1270,12 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         $position->validateResolved();
         $world = $position->world
             ?? throw new \LogicException('Human spawn position must identify a loaded world.');
-        $dimension = $position->dimension ?? WorldDimension::OVERWORLD;
-        $runtime = $this->worldRuntimes?->get($world->id(), $dimension);
+        $runtime = $this->worldRuntimes?->get($world->id(), $world->getDimensionType());
         if ($runtime !== null && $runtime->handle->isSameLoad($world)) {
             return $runtime->simulation->spawnHuman($position, $name, $skin, $yaw, $pitch, $visibility);
         }
         $defaultWorldMatches = $this->world->worldId() === $world->id()
-            && $this->world->dimension() === $dimension;
+            && $this->world->dimension() === $world->getDimensionType();
         if (!$defaultWorldMatches) {
             throw new \RuntimeException('Human spawn target world is not loaded.');
         }
@@ -1291,7 +1325,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             return;
         }
         $projector = new BedrockCommandPacketProjector($this->commandRegistry, $this->permissionStore);
-        $player = $this->world->pluginPlayer($uuid);
+        $player = $this->simulationForIdentity($uuid)?->pluginPlayer($uuid);
         $gameMode = $player === null ? GameMode::SURVIVAL : $player->getGameMode();
         foreach ($this->sessions as $key => $session) {
             if ($session->play === null || strcasecmp($session->play->login()->identity, $uuid) !== 0) {
@@ -2673,17 +2707,102 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
 
     public function entityAiMetrics(): ?AiSchedulerMetrics
     {
-        return $this->world->entityAiMetrics();
+        $totals = array_fill(0, 9, 0);
+        $budgetExhausted = false;
+        $available = false;
+        foreach ($this->simulations() as $simulation) {
+            $metrics = $simulation->entityAiMetrics();
+            if ($metrics === null) {
+                continue;
+            }
+            $available = true;
+            $totals[0] += $metrics->considered;
+            $totals[1] += $metrics->ticked;
+            $totals[2] += $metrics->active;
+            $totals[3] += $metrics->reduced;
+            $totals[4] += $metrics->sleeping;
+            $totals[5] += $metrics->sensorsRun;
+            $totals[6] += $metrics->goalsEvaluated;
+            $totals[7] += $metrics->goalsTicked;
+            $totals[8] += $metrics->elapsedNanoseconds;
+            $budgetExhausted = $budgetExhausted || $metrics->budgetExhausted;
+        }
+
+        return $available ? new AiSchedulerMetrics(
+            $totals[0],
+            $totals[1],
+            $totals[2],
+            $totals[3],
+            $totals[4],
+            $totals[5],
+            $totals[6],
+            $totals[7],
+            $totals[8],
+            $budgetExhausted,
+        ) : null;
     }
 
     public function entityRuntimeMetrics(): ?EntityRuntimeMetrics
     {
-        return $this->world->entityRuntimeMetrics();
+        $totals = array_fill(0, 13, 0);
+        $budgetExhausted = false;
+        $contactBudgetExhausted = false;
+        $available = false;
+        foreach ($this->simulations() as $simulation) {
+            $metrics = $simulation->entityRuntimeMetrics();
+            if ($metrics === null) {
+                continue;
+            }
+            $available = true;
+            $totals[0] += $metrics->entities;
+            $totals[1] += $metrics->physicsEligible;
+            $totals[2] += $metrics->physicsTicked;
+            $totals[3] += $metrics->cadenceSkipped;
+            $totals[4] += $metrics->budgetDeferred;
+            $totals[5] += $metrics->continuousBeyondBudget;
+            $totals[6] += $metrics->moved;
+            $totals[7] += $metrics->motionChanged;
+            $totals[8] += $metrics->elapsedNanoseconds;
+            $totals[9] += $metrics->contactCandidates;
+            $totals[10] += $metrics->contactPairs;
+            $totals[11] += $metrics->contactsResolved;
+            $totals[12] += $metrics->contactElapsedNanoseconds;
+            $budgetExhausted = $budgetExhausted || $metrics->budgetExhausted;
+            $contactBudgetExhausted = $contactBudgetExhausted || $metrics->contactBudgetExhausted;
+        }
+
+        return $available ? new EntityRuntimeMetrics(
+            $totals[0],
+            $totals[1],
+            $totals[2],
+            $totals[3],
+            $totals[4],
+            $totals[5],
+            $totals[6],
+            $totals[7],
+            $totals[8],
+            $budgetExhausted,
+            $totals[9],
+            $totals[10],
+            $totals[11],
+            $totals[12],
+            $contactBudgetExhausted,
+        ) : null;
     }
 
     public function entityNavigationMetrics(): EntityNavigationMetrics
     {
-        return $this->world->entityNavigationMetrics();
+        $totals = [0, 0, 0, 0, 0];
+        foreach ($this->simulations() as $simulation) {
+            $metrics = $simulation->entityNavigationMetrics();
+            $totals[0] += $metrics->submitted;
+            $totals[1] += $metrics->completed;
+            $totals[2] += $metrics->rejected;
+            $totals[3] += $metrics->pending;
+            $totals[4] += $metrics->cached;
+        }
+
+        return new EntityNavigationMetrics(...$totals);
     }
 
     public function chunkStreamingSnapshot(): ChunkStreamingSnapshot
@@ -2762,7 +2881,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
 
     public function pendingChunkUnloadCount(): int
     {
-        return $this->persistentWorld?->pendingChunkUnloadCount() ?? 0;
+        return $this->worldRuntimes?->pendingChunkUnloadCount()
+            ?? $this->persistentWorld?->pendingChunkUnloadCount()
+            ?? 0;
     }
 
     public function forceGarbageCollection(): ?GarbageCollectionReport
@@ -2772,10 +2893,14 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
 
     public function runChunkUnloadMaintenance(): ?ChunkUnloadResult
     {
-        if ($this->persistentWorld === null) {
+        if ($this->worldRuntimes === null && $this->persistentWorld === null) {
             return null;
         }
-        $result = $this->persistentWorld->processChunkUnloads($this->chunkUnloadPerTick, 5_000);
+        $result = $this->worldRuntimes?->processChunkUnloads($this->chunkUnloadPerTick, 5_000)
+            ?? $this->persistentWorld?->processChunkUnloads($this->chunkUnloadPerTick, 5_000);
+        if (!$result instanceof ChunkUnloadResult) {
+            return null;
+        }
         $this->recordChunkUnloadResult($result);
 
         return $result;
@@ -2796,14 +2921,25 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 $unloadBudget = max($unloadBudget, $decision->maximumChunkUnloads);
             }
             if ($decision->trimDisposableCaches && $decision->pressure !== $decision->previousPressure) {
-                $trimmed = $this->preparedChunks?->trim($decision->pressure->value >= MemoryPressure::HIGH->value) ?? 0;
+                $aggressive = $decision->pressure->value >= MemoryPressure::HIGH->value;
+                $trimmed = 0;
+                if ($this->worldRuntimes !== null) {
+                    foreach ($this->worldRuntimes->loadedDimensions() as $runtime) {
+                        $trimmed = self::saturatingAdd($trimmed, $runtime->preparedChunks?->trim($aggressive) ?? 0);
+                    }
+                } else {
+                    $trimmed = $this->preparedChunks?->trim($aggressive) ?? 0;
+                }
                 $this->totalPreparedBytesTrimmed = self::saturatingAdd($this->totalPreparedBytesTrimmed, $trimmed);
             }
         }
 
-        if ($this->persistentWorld !== null) {
-            $result = $this->persistentWorld->processChunkUnloads($unloadBudget, 2_000);
-            $this->recordChunkUnloadResult($result);
+        if ($this->worldRuntimes !== null || $this->persistentWorld !== null) {
+            $result = $this->worldRuntimes?->processChunkUnloads($unloadBudget, 2_000)
+                ?? $this->persistentWorld?->processChunkUnloads($unloadBudget, 2_000);
+            if ($result instanceof ChunkUnloadResult) {
+                $this->recordChunkUnloadResult($result);
+            }
         }
 
         if ($this->garbageCollector === null) {
@@ -4714,13 +4850,14 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             || isset($this->pendingPlayerWorldTransfers[$event->sessionId])) {
             return false;
         }
-        $target = $this->worldRuntimes->get(
-            $source->handle->id(),
-            $event->destination->targetDimension,
-        );
+        $targetHandle = $event->destination->targetWorld
+            ?? $source->handle->getDimension($event->destination->targetDimension);
+        $target = $targetHandle === null
+            ? null
+            : $this->worldRuntimes->get($targetHandle->id(), $targetHandle->getDimensionType());
         $identity = $session->bootstrap?->identity->uuid;
         $player = $identity === null ? null : $source->simulation->authoritativePlayer($identity);
-        if ($target === null || $player === null) {
+        if ($target === null || $player === null || !$target->handle->isSameLoad($targetHandle)) {
             return false;
         }
         if (!$target->simulation->preparePortalDestination($event->destination)) {
@@ -4737,7 +4874,6 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $player->movement->yaw,
             $player->movement->pitch,
             $source->handle,
-            $session->dimension,
         );
         $requested = new ApiPosition(
             $destination->x,
@@ -4746,7 +4882,6 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $player->movement->yaw,
             $player->movement->pitch,
             $target->handle,
-            $event->destination->targetDimension,
         );
         if (!$this->teleportPlayer($identity, $requested)) {
             return false;
@@ -4765,7 +4900,6 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 $transfer->decision->yaw,
                 $transfer->decision->pitch,
                 $target->handle,
-                $event->destination->targetDimension,
             ),
         ];
 
@@ -4781,15 +4915,19 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             || isset($this->pendingPlayerWorldTransfers[$event->sessionId])) {
             return false;
         }
-        $target = $this->worldRuntimes->get($source->handle->id(), $event->targetDimension);
+        $defaultTargetHandle = $source->handle->getDimension($event->targetDimension);
+        $defaultTarget = $defaultTargetHandle === null
+            ? null
+            : $this->worldRuntimes->get($defaultTargetHandle->id(), $event->targetDimension);
         $identity = $session->bootstrap?->identity->uuid;
         $player = $identity === null ? null : $source->simulation->authoritativePlayer($identity);
-        if ($target === null || $player === null) {
+        if ($defaultTarget === null || $player === null
+            || !$defaultTarget->handle->isSameLoad($defaultTargetHandle)) {
             return false;
         }
-        $desired = $event->targetDimension === WorldDimension::OVERWORLD
-            ? $player->spawnPoint() ?? $target->simulation->spawnPosition()
-            : $target->simulation->spawnPosition();
+        $desired = $event->targetDimension === DimensionType::OVERWORLD
+            ? $player->spawnPoint() ?? $defaultTarget->simulation->spawnPosition()
+            : $defaultTarget->simulation->spawnPosition();
         $authorized = $source->simulation->authorizePortalTravel(
             $player,
             PortalType::END,
@@ -4797,6 +4935,11 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $desired,
         );
         if ($authorized === null) {
+            return false;
+        }
+        $targetHandle = $authorized->world ?? $defaultTargetHandle;
+        $target = $this->worldRuntimes->get($targetHandle->id(), $targetHandle->getDimensionType());
+        if ($target === null || !$target->handle->isSameLoad($targetHandle)) {
             return false;
         }
         $destination = new Position($authorized->x, $authorized->y, $authorized->z);
@@ -4810,7 +4953,6 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $player->movement->yaw,
             $player->movement->pitch,
             $source->handle,
-            $session->dimension,
         );
         $requested = new ApiPosition(
             $destination->x,
@@ -4819,7 +4961,6 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $authorized->yaw ?? $player->movement->yaw,
             $authorized->pitch ?? $player->movement->pitch,
             $target->handle,
-            $event->targetDimension,
         );
         if (!$this->teleportPlayer($identity, $requested)) {
             return false;
@@ -4838,7 +4979,6 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 $transfer->decision->yaw,
                 $transfer->decision->pitch,
                 $target->handle,
-                $event->targetDimension,
             ),
         ];
 
@@ -4864,7 +5004,6 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $event->destination->y,
             $event->destination->z,
             world: $runtime->handle,
-            dimension: $session->dimension,
         ));
     }
 
@@ -6012,6 +6151,30 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         return null;
     }
 
+    /** @return array{simulation: WorldSimulation, worldId: string}|null */
+    private function entitySpawnTarget(ApiPosition $position, ?ApiWorld $fallback = null): ?array
+    {
+        $world = $position->world ?? $fallback ?? $this->worldRuntimes?->default()->handle;
+        if ($world !== null && $this->worldRuntimes !== null) {
+            $runtime = $this->worldRuntimes->get($world->id(), $world->getDimensionType());
+
+            return $runtime !== null && $runtime->handle->isSameLoad($world)
+                ? ['simulation' => $runtime->simulation, 'worldId' => $runtime->handle->id()]
+                : null;
+        }
+        if ($world !== null && (
+            $this->world->worldId() !== $world->id()
+            || $this->world->dimension() !== $world->getDimensionType()
+        )) {
+            return null;
+        }
+
+        return [
+            'simulation' => $this->world,
+            'worldId' => $this->persistentWorld?->metadata->name ?? 'world',
+        ];
+    }
+
     private function apiInventoryStack(ApiItemStack $stack): InventoryStack
     {
         $catalog = $this->itemCatalog
@@ -6059,21 +6222,21 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         return self::runtimePollKey($session->worldId, $session->dimension);
     }
 
-    private static function runtimePollKey(string $worldId, WorldDimension $dimension): string
+    private static function runtimePollKey(string $worldId, DimensionType $dimension): string
     {
         return match ($dimension) {
-            WorldDimension::OVERWORLD => $worldId,
-            WorldDimension::NETHER => $worldId . '@nether',
-            WorldDimension::END => $worldId . '@end',
+            DimensionType::OVERWORLD => $worldId,
+            DimensionType::NETHER => $worldId . '@nether',
+            DimensionType::END => $worldId . '@end',
         };
     }
 
-    private static function protocolDimension(WorldDimension $dimension): DimensionId
+    private static function protocolDimension(DimensionType $dimension): DimensionId
     {
         return match ($dimension) {
-            WorldDimension::OVERWORLD => DimensionId::Overworld,
-            WorldDimension::NETHER => DimensionId::Nether,
-            WorldDimension::END => DimensionId::End,
+            DimensionType::OVERWORLD => DimensionId::Overworld,
+            DimensionType::NETHER => DimensionId::Nether,
+            DimensionType::END => DimensionId::End,
         };
     }
 

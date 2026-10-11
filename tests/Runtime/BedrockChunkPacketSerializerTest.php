@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Runtime;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Packet\ChunkColumnData;
 use Bedriox\Protocol\Packet\ChunkSectionData;
@@ -224,7 +224,7 @@ final class BedrockChunkPacketSerializerTest extends TestCase
 
     #[DataProvider('nonOverworldDimensions')]
     public function testNonOverworldProjectionUsesDimensionSpecificBounds(
-        WorldDimension $dimension,
+        DimensionType $dimension,
         int $wireDimension,
         int $minimumSectionY,
         int $maximumSectionY,
@@ -253,10 +253,10 @@ final class BedrockChunkPacketSerializerTest extends TestCase
         self::assertSame($expected->data, $packet->data);
     }
 
-    /** @return iterable<string, array{WorldDimension, int, int, int}> */
+    /** @return iterable<string, array{DimensionType, int, int, int}> */
     public static function nonOverworldDimensions(): iterable
     {
-        yield 'nether' => [WorldDimension::NETHER, 1, 0, 7];
-        yield 'end' => [WorldDimension::END, 2, 0, 15];
+        yield 'nether' => [DimensionType::NETHER, 1, 0, 7];
+        yield 'end' => [DimensionType::END, 2, 0, 15];
     }
 }

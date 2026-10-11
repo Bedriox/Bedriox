@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\World\Storage;
 
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\World\Storage\Exception\CorruptWorldDataException;
 use Bedriox\Server\World\Storage\Exception\UnsupportedWorldDataException;
 use Bedriox\Server\World\Storage\Nbt\LevelDatCodec;
@@ -81,6 +82,37 @@ final class LevelDatCodecTest extends TestCase
 
         $this->expectException(CorruptWorldDataException::class);
         (new LevelDatMetadata(10, $root))->generatorVersion();
+    }
+
+    public function testDimensionGeneratorMetadataRoundTripsExactWorldContracts(): void
+    {
+        $root = self::metadata()->root;
+        $root['BedrioxDimensions'] = LittleEndianNbtTag::compound([
+            DimensionType::OVERWORLD->value => self::dimensionMetadata('default', 42, 10, 80, 11, 2, '{}'),
+            DimensionType::NETHER->value => self::dimensionMetadata('bedriox:nether', 99, 1, 64, 2, 3, '{"density":2}'),
+            DimensionType::END->value => self::dimensionMetadata('bedriox:end', -7, 0, 64, 0, 4, '{}'),
+        ]);
+        $codec = new LevelDatCodec();
+
+        $decoded = $codec->decode($codec->encode(new LevelDatMetadata(10, $root)))->dimensionGenerators();
+
+        self::assertNotNull($decoded);
+        self::assertSame('bedriox:nether', $decoded[DimensionType::NETHER->value]['generator']);
+        self::assertSame(99, $decoded[DimensionType::NETHER->value]['seed']);
+        self::assertSame([1, 64, 2], $decoded[DimensionType::NETHER->value]['spawn']);
+        self::assertSame(3, $decoded[DimensionType::NETHER->value]['version']);
+        self::assertSame('{"density":2}', $decoded[DimensionType::NETHER->value]['options']);
+    }
+
+    public function testDimensionGeneratorMetadataRejectsPartialContracts(): void
+    {
+        $root = self::metadata()->root;
+        $root['BedrioxDimensions'] = LittleEndianNbtTag::compound([
+            DimensionType::OVERWORLD->value => self::dimensionMetadata('default', 42, 0, 64, 0, 1, '{}'),
+        ]);
+
+        $this->expectException(CorruptWorldDataException::class);
+        (new LevelDatMetadata(10, $root))->dimensionGenerators();
     }
 
     /** @return iterable<string, array{string}> */
@@ -269,6 +301,27 @@ final class LevelDatCodecTest extends TestCase
             'SpawnZ' => LittleEndianNbtTag::int(2),
             'Time' => LittleEndianNbtTag::long(123),
             'Custom' => LittleEndianNbtTag::byte(7),
+        ]);
+    }
+
+    private static function dimensionMetadata(
+        string $generator,
+        int $seed,
+        int $spawnX,
+        int $spawnY,
+        int $spawnZ,
+        int $version,
+        string $options,
+    ): LittleEndianNbtTag {
+        return LittleEndianNbtTag::compound([
+            'Generator' => LittleEndianNbtTag::string($generator),
+            'Seed' => LittleEndianNbtTag::long($seed),
+            'SpawnX' => LittleEndianNbtTag::int($spawnX),
+            'SpawnY' => LittleEndianNbtTag::int($spawnY),
+            'SpawnZ' => LittleEndianNbtTag::int($spawnZ),
+            'Version' => LittleEndianNbtTag::int($version),
+            'Options' => LittleEndianNbtTag::string($options),
+            'VersionDeclared' => LittleEndianNbtTag::byte(1),
         ]);
     }
 }

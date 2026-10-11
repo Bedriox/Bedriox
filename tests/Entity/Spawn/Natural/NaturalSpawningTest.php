@@ -25,7 +25,7 @@ use Bedriox\Api\Entity\EntityType;
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\Value\SlimeSize;
 use Bedriox\Api\Entity\VanillaEntityType;
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\Entity\Spawn\Natural\NaturalDespawnDecision;
 use Bedriox\Server\Entity\Spawn\Natural\NaturalDespawnPolicy;
 use Bedriox\Server\Entity\Spawn\Natural\NaturalDespawnRandom;
@@ -111,7 +111,7 @@ final class NaturalSpawningTest extends TestCase
             NaturalSpawnMedium::GROUND,
             7,
             'minecraft:soulsand_valley',
-            WorldDimension::NETHER,
+            DimensionType::NETHER,
         )));
         self::assertFalse($rule->allows(self::contextForRule(
             VanillaEntityType::SKELETON,
@@ -119,7 +119,7 @@ final class NaturalSpawningTest extends TestCase
             NaturalSpawnMedium::GROUND,
             7,
             'minecraft:crimson_forest',
-            WorldDimension::NETHER,
+            DimensionType::NETHER,
         )));
         self::assertFalse($rule->allows(self::contextForRule(
             VanillaEntityType::SKELETON,
@@ -189,7 +189,7 @@ final class NaturalSpawningTest extends TestCase
         NaturalSpawnMedium $medium,
         int $lightLevel,
         string $biome,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): NaturalSpawnContext {
         return new NaturalSpawnContext(
             'world',
@@ -380,7 +380,7 @@ final class NaturalSpawningTest extends TestCase
         self::assertSame([], $batch->requests());
         self::assertGreaterThan(0, $rule->evaluations);
         self::assertNotNull($rule->lastContext);
-        self::assertSame(WorldDimension::OVERWORLD, $rule->lastContext->dimension);
+        self::assertSame(DimensionType::OVERWORLD, $rule->lastContext->dimension);
         self::assertSame('minecraft:plains', $rule->lastContext->biome);
     }
 
@@ -627,9 +627,9 @@ final class TestNaturalSpawnEnvironment implements NaturalSpawnEnvironment
         return $this->stable;
     }
 
-    public function dimension(string $worldName): WorldDimension
+    public function dimension(string $worldName): DimensionType
     {
-        return WorldDimension::OVERWORLD;
+        return DimensionType::OVERWORLD;
     }
 
     public function biome(string $worldName, Position $position): string

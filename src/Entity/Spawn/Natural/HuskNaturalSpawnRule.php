@@ -20,13 +20,13 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Spawn\Natural;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 
 final readonly class HuskNaturalSpawnRule implements NaturalSpawnRule
 {
     public function allows(NaturalSpawnContext $context): bool
     {
-        return $context->dimension === WorldDimension::OVERWORLD
+        return $context->dimension === DimensionType::OVERWORLD
             && $context->medium === NaturalSpawnMedium::GROUND
             && $context->lightLevel <= 7
             && NaturalSpawnBiomes::isDesert($context->biome);

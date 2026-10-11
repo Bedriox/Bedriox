@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Runtime;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\RakNet\SessionInfo;
 use Bedriox\Server\Runtime\RuntimeSession;
@@ -36,11 +36,11 @@ final class RuntimeSessionTest extends TestCase
             UnsignedLong::fromInt(1),
             null,
             '  Example World  ',
-            WorldDimension::NETHER,
+            DimensionType::NETHER,
         );
 
         self::assertSame('example-world', $session->worldId);
-        self::assertSame(WorldDimension::NETHER, $session->dimension);
+        self::assertSame(DimensionType::NETHER, $session->dimension);
     }
 
     public function testSessionDefaultsToOverworld(): void
@@ -52,6 +52,6 @@ final class RuntimeSessionTest extends TestCase
             null,
         );
 
-        self::assertSame(WorldDimension::OVERWORLD, $session->dimension);
+        self::assertSame(DimensionType::OVERWORLD, $session->dimension);
     }
 }

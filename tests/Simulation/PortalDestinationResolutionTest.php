@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Simulation;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Data\CanonicalBlockState;
 use Bedriox\Server\Gameplay\Block\BlockCatalog;
@@ -82,7 +82,7 @@ final class PortalDestinationResolutionTest extends TestCase
                 GenerationBlockPalette::fromRegistry($states),
             ),
             worldId: 'portal-target',
-            dimension: WorldDimension::NETHER,
+            dimension: DimensionType::NETHER,
         );
         $commands = new SimulationCommandFactory();
         $bootstrap = new PlayerBootstrap(
@@ -96,7 +96,7 @@ final class PortalDestinationResolutionTest extends TestCase
             ], 0),
             1,
             1,
-            dimension: WorldDimension::NETHER,
+            dimension: DimensionType::NETHER,
         );
         self::assertTrue($simulation->enqueue($commands->join(
             'session',
@@ -129,7 +129,7 @@ final class PortalDestinationResolutionTest extends TestCase
         $portals->build(new BlockPosition(8, 64, 0), PortalAxis::X);
         $portals->build(new BlockPosition(2, 64, 0), PortalAxis::Z);
         $plan = (new PortalDestinationPlanner())->plan(
-            WorldDimension::OVERWORLD,
+            DimensionType::OVERWORLD,
             new Position(0.0, 64.0, 0.0),
             PortalAxis::X,
         );
@@ -190,8 +190,8 @@ final class PortalDestinationResolutionTest extends TestCase
             static fn(object $event): bool => $event instanceof EndPortalTransferRequested,
         ));
         self::assertCount(1, $requests);
-        self::assertSame(WorldDimension::OVERWORLD, $requests[0]->sourceDimension);
-        self::assertSame(WorldDimension::END, $requests[0]->targetDimension);
+        self::assertSame(DimensionType::OVERWORLD, $requests[0]->sourceDimension);
+        self::assertSame(DimensionType::END, $requests[0]->targetDimension);
     }
 
     public function testEnderEyeInsertionConsumesOneAndActivatesTheCompleteFrame(): void
@@ -281,7 +281,7 @@ final class PortalDestinationResolutionTest extends TestCase
     {
         [$simulation, $world, $states] = self::simulation();
         $plan = (new PortalDestinationPlanner())->plan(
-            WorldDimension::OVERWORLD,
+            DimensionType::OVERWORLD,
             new Position(80.0, 64.0, 80.0),
             PortalAxis::X,
         );
@@ -299,7 +299,7 @@ final class PortalDestinationResolutionTest extends TestCase
     {
         [$simulation, $world] = self::simulation();
         $plan = (new PortalDestinationPlanner())->plan(
-            WorldDimension::OVERWORLD,
+            DimensionType::OVERWORLD,
             new Position(320.0, 64.0, -160.0),
             PortalAxis::X,
         );
@@ -318,7 +318,7 @@ final class PortalDestinationResolutionTest extends TestCase
     {
         [$simulation] = self::simulation();
         $plan = (new PortalDestinationPlanner())->plan(
-            WorldDimension::NETHER,
+            DimensionType::NETHER,
             new Position(0.0, 64.0, 0.0),
             PortalAxis::X,
         );
@@ -335,7 +335,7 @@ final class PortalDestinationResolutionTest extends TestCase
             new WorldMetadata('portal-target', 84),
             new FlatWorldGenerator($palette),
             new ChunkRepository(32),
-            dimension: WorldDimension::NETHER,
+            dimension: DimensionType::NETHER,
         );
         $collisions = BlockCollisionRegistry::forGenerationPalette(
             $states,
@@ -348,7 +348,7 @@ final class PortalDestinationResolutionTest extends TestCase
             blockStateRegistry: $states,
             blockCollisionRegistry: $collisions,
             worldId: 'portal-target',
-            dimension: WorldDimension::NETHER,
+            dimension: DimensionType::NETHER,
         );
 
         return [$simulation, $world, $states];

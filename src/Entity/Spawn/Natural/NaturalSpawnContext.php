@@ -22,7 +22,7 @@ namespace Bedriox\Server\Entity\Spawn\Natural;
 
 use Bedriox\Api\Entity\EntityCategory;
 use Bedriox\Api\Entity\EntityType;
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\ChunkPosition;
 use InvalidArgumentException;
@@ -35,7 +35,7 @@ final readonly class NaturalSpawnContext
         public EntityType $type,
         public EntityCategory $category,
         public Position $position,
-        public WorldDimension $dimension,
+        public DimensionType $dimension,
         public string $biome,
         public NaturalSpawnMedium $medium,
         public int $lightLevel,

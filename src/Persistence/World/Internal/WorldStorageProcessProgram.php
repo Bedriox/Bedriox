@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Persistence\World\Internal;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Data\PersistentBlockStateRegistry;
 use Bedriox\Server\Entity\Persistence\CorruptEntityPersistenceException;
@@ -405,16 +405,16 @@ final class WorldStorageProcessProgram
         return new ChunkPosition($value['x'], $value['z']);
     }
 
-    /** @return array{WorldDimension, string} */
+    /** @return array{DimensionType, string} */
     private static function decodeDimensionPayload(string $payload): array
     {
         if ($payload === '') {
             throw new \InvalidArgumentException('Dimension-aware world storage payload is empty.');
         }
         $dimension = match (ord($payload[0])) {
-            0 => WorldDimension::OVERWORLD,
-            1 => WorldDimension::NETHER,
-            2 => WorldDimension::END,
+            0 => DimensionType::OVERWORLD,
+            1 => DimensionType::NETHER,
+            2 => DimensionType::END,
             default => throw new \InvalidArgumentException('World storage dimension is invalid.'),
         };
 

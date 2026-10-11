@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Worker\Chunk;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Data\CanonicalBlockState;
 use Bedriox\Protocol\Packet\ChunkColumnData;
 use Bedriox\Protocol\Packet\ChunkSectionData;
@@ -30,10 +30,10 @@ use Bedriox\Server\World\BiomeRuntimeIdMap;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Chunk;
+use Bedriox\Server\World\DimensionTypeBounds;
 use Bedriox\Server\World\PackedPaletteWords;
 use Bedriox\Server\World\Storage\LevelDb\PersistentBlockEntityCodec;
 use Bedriox\Server\World\SubChunk;
-use Bedriox\Server\World\WorldDimensionBounds;
 
 /** Canonical packed snapshot used only for worker-side Bedrock chunk projection. */
 final class ChunkProjectionTransferCodec
@@ -46,19 +46,19 @@ final class ChunkProjectionTransferCodec
     public function encode(
         Chunk $chunk,
         BlockStateRegistry $states,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): string {
         $body = pack('N2', $chunk->position->x, $chunk->position->z)
             . self::encodeByte(match ($dimension) {
-                WorldDimension::OVERWORLD => DimensionId::Overworld->value,
-                WorldDimension::NETHER => DimensionId::Nether->value,
-                WorldDimension::END => DimensionId::End->value,
+                DimensionType::OVERWORLD => DimensionId::Overworld->value,
+                DimensionType::NETHER => DimensionId::Nether->value,
+                DimensionType::END => DimensionId::End->value,
             })
             . self::encodeDecimal($chunk->revision)
             . self::encodeState($states->state($chunk->airState()));
 
-        $minimumSectionY = WorldDimensionBounds::minimumSectionY($dimension);
-        $maximumSectionY = WorldDimensionBounds::maximumSectionY($dimension);
+        $minimumSectionY = DimensionTypeBounds::minimumSectionY($dimension);
+        $maximumSectionY = DimensionTypeBounds::maximumSectionY($dimension);
         $sections = array_values(array_filter(
             $chunk->populatedSections(),
             static fn(SubChunk $section): bool => $section->sectionY >= $minimumSectionY
@@ -134,12 +134,12 @@ final class ChunkProjectionTransferCodec
             $chunkZ = $reader->signedInt();
             $dimensionId = DimensionId::from($reader->byte());
             $dimension = match ($dimensionId) {
-                DimensionId::Overworld => WorldDimension::OVERWORLD,
-                DimensionId::Nether => WorldDimension::NETHER,
-                DimensionId::End => WorldDimension::END,
+                DimensionId::Overworld => DimensionType::OVERWORLD,
+                DimensionId::Nether => DimensionType::NETHER,
+                DimensionId::End => DimensionType::END,
             };
-            $minimumSectionY = WorldDimensionBounds::minimumSectionY($dimension);
-            $maximumSectionY = WorldDimensionBounds::maximumSectionY($dimension);
+            $minimumSectionY = DimensionTypeBounds::minimumSectionY($dimension);
+            $maximumSectionY = DimensionTypeBounds::maximumSectionY($dimension);
             self::decodeDecimal($reader);
             $airRuntimeId = $blocks->toNetwork($states->internalId(self::decodeState($reader)))->signed();
 

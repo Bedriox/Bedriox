@@ -24,7 +24,6 @@ use Bedriox\Api\Display\TextDisplay;
 use Bedriox\Api\Player\Player;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\World as ApiWorld;
-use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Plugin\Display\DisplayChange;
 use Bedriox\Server\Plugin\Display\DisplayRegistry;
 use Bedriox\Server\Plugin\PluginOwnershipRegistry;
@@ -145,7 +144,6 @@ final class TextDisplayProjectionTest extends TestCase
             0.0,
             0.0,
             new ApiWorld('world', 1),
-            WorldDimension::OVERWORLD,
         );
     }
 

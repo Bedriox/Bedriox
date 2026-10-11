@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Gameplay\Portal;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\BlockPosition;
 use InvalidArgumentException;
@@ -33,14 +33,14 @@ final class PortalDestinationPlanner
     public const int MAXIMUM_INDEXED_PORTALS = 4_096;
 
     public function plan(
-        WorldDimension $source,
+        DimensionType $source,
         Position $position,
         PortalAxis $preferredAxis,
     ): PortalDestinationPlan {
         [$target, $scale, $searchRadius] = match ($source) {
-            WorldDimension::OVERWORLD => [WorldDimension::NETHER, 0.125, self::NETHER_SEARCH_RADIUS],
-            WorldDimension::NETHER => [WorldDimension::OVERWORLD, 8.0, self::OVERWORLD_SEARCH_RADIUS],
-            WorldDimension::END => throw new InvalidArgumentException('Nether portals cannot transfer from the End.'),
+            DimensionType::OVERWORLD => [DimensionType::NETHER, 0.125, self::NETHER_SEARCH_RADIUS],
+            DimensionType::NETHER => [DimensionType::OVERWORLD, 8.0, self::OVERWORLD_SEARCH_RADIUS],
+            DimensionType::END => throw new InvalidArgumentException('Nether portals cannot transfer from the End.'),
         };
         $x = max(-29_999_872.0, min(29_999_872.0, $position->x * $scale));
         $z = max(-29_999_872.0, min(29_999_872.0, $position->z * $scale));
@@ -92,8 +92,8 @@ final class PortalDestinationPlanner
     public function buildOrigin(PortalDestinationPlan $plan, callable $isSuitable): ?BlockPosition
     {
         $centerX = (int) floor($plan->projectedPosition->x);
-        $minimumY = $plan->targetDimension === WorldDimension::NETHER ? 3 : -60;
-        $maximumY = $plan->targetDimension === WorldDimension::NETHER ? 122 : 315;
+        $minimumY = $plan->targetDimension === DimensionType::NETHER ? 3 : -60;
+        $maximumY = $plan->targetDimension === DimensionType::NETHER ? 122 : 315;
         $centerY = max($minimumY, min($maximumY, (int) floor($plan->projectedPosition->y)));
         $centerZ = (int) floor($plan->projectedPosition->z);
         for ($radius = 0; $radius <= self::BUILD_HORIZONTAL_RADIUS; ++$radius) {
@@ -119,8 +119,8 @@ final class PortalDestinationPlanner
     /** Returns the bounded vanilla-style fallback used when no naturally safe site exists. */
     public function fallbackBuildOrigin(PortalDestinationPlan $plan): BlockPosition
     {
-        $minimumY = $plan->targetDimension === WorldDimension::NETHER ? 3 : -60;
-        $maximumY = $plan->targetDimension === WorldDimension::NETHER ? 122 : 315;
+        $minimumY = $plan->targetDimension === DimensionType::NETHER ? 3 : -60;
+        $maximumY = $plan->targetDimension === DimensionType::NETHER ? 122 : 315;
 
         return new BlockPosition(
             (int) floor($plan->projectedPosition->x),

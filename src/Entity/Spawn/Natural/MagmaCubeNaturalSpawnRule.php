@@ -20,13 +20,13 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity\Spawn\Natural;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 
 final readonly class MagmaCubeNaturalSpawnRule implements NaturalSpawnRule
 {
     public function allows(NaturalSpawnContext $context): bool
     {
-        return $context->dimension === WorldDimension::NETHER
+        return $context->dimension === DimensionType::NETHER
             && $context->medium === NaturalSpawnMedium::GROUND
             && ($context->netherStructure === NetherStructureType::FORTRESS
                 || in_array($context->biome, ['minecraft:hell', 'minecraft:basalt_deltas'], true));

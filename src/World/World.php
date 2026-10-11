@@ -20,8 +20,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World;
 
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\WeatherState;
-use Bedriox\Api\World\WorldDimension;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceConflictException;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceManager;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
@@ -38,6 +38,7 @@ use Bedriox\Server\World\Generator\GeneratorOptions;
 use Bedriox\Server\World\Provider\AsynchronousWorldDataProvider;
 use Bedriox\Server\World\Provider\AsynchronousWorldProvider;
 use Bedriox\Server\World\Provider\ChunkSaveData;
+use Bedriox\Server\World\Provider\DimensionWorldData;
 use Bedriox\Server\World\Provider\WorldData;
 use Bedriox\Server\World\Provider\WorldProvider;
 use Bedriox\Server\World\Provider\WritableWorldProvider;
@@ -93,7 +94,7 @@ final class World
         ?AsyncChunkGenerator $asyncChunks = null,
         ?ChunkUnloadManager $chunkUnloads = null,
         ?string $generatorOptions = null,
-        private readonly WorldDimension $dimension = WorldDimension::OVERWORLD,
+        private readonly DimensionType $dimension = DimensionType::OVERWORLD,
     ) {
         $this->asyncChunks = $asyncChunks;
         $this->chunkUnloads = $chunkUnloads ?? new ChunkUnloadManager();
@@ -104,7 +105,7 @@ final class World
         if ($worldData !== null && (
             $worldData->metadata->name !== $metadata->name
             || $worldData->metadata->seed !== $metadata->seed
-            || ($dimension === WorldDimension::OVERWORLD && (
+            || ($dimension === DimensionType::OVERWORLD && (
                 $worldData->generatorName !== $generator->name()
                 || ($worldData->bedrioxGeneratorVersionDeclared
                     && $worldData->generatorVersion !== ($generator instanceof VersionedWorldGenerator ? $generator->version() : 1))
@@ -119,7 +120,7 @@ final class World
         $this->weatherCycleEnabled = $worldData === null || $worldData->weatherCycleEnabled;
     }
 
-    public function dimension(): WorldDimension
+    public function dimension(): DimensionType
     {
         return $this->dimension;
     }
@@ -743,9 +744,13 @@ final class World
     }
 
     /** Persists the current format-independent world metadata without flushing terrain. */
-    public function saveWorldData(): void
+    /**
+     * @internal The shared storage owner may provide one current record for every exact dimension.
+     * @param null|array<string, DimensionWorldData> $dimensions
+     */
+    public function saveWorldData(?array $dimensions = null): void
     {
-        if ($this->dimension !== WorldDimension::OVERWORLD) {
+        if ($this->dimension !== DimensionType::OVERWORLD) {
             return;
         }
         if (!$this->provider instanceof WritableWorldProvider) {
@@ -755,13 +760,14 @@ final class World
 
             throw new LogicException('This world does not have a writable provider.');
         }
-        $this->provider->saveWorldData($this->currentWorldData());
+        $this->provider->saveWorldData($this->currentWorldData($dimensions));
     }
 
     /** Queues routine metadata autosave without placing storage latency on the simulation thread. */
-    public function scheduleWorldDataSave(): PersistenceSubmission
+    /** @param null|array<string, DimensionWorldData> $dimensions */
+    public function scheduleWorldDataSave(?array $dimensions = null): PersistenceSubmission
     {
-        if ($this->dimension !== WorldDimension::OVERWORLD) {
+        if ($this->dimension !== DimensionType::OVERWORLD) {
             return PersistenceSubmission::ACCEPTED;
         }
         if (!$this->provider instanceof WritableWorldProvider) {
@@ -771,7 +777,7 @@ final class World
 
             throw new LogicException('This world does not have a writable provider.');
         }
-        $data = $this->currentWorldData();
+        $data = $this->currentWorldData($dimensions);
         if ($this->provider instanceof AsynchronousWorldDataProvider) {
             return $this->provider->enqueueWorldDataSave($data)->status;
         }
@@ -783,7 +789,7 @@ final class World
     /** @return list<PersistenceWriteCompletion> */
     public function pollWorldDataSaves(int $maximumCompletions = 16): array
     {
-        if ($this->dimension !== WorldDimension::OVERWORLD) {
+        if ($this->dimension !== DimensionType::OVERWORLD) {
             return [];
         }
         if (!$this->provider instanceof AsynchronousWorldDataProvider) {
@@ -793,8 +799,28 @@ final class World
         return $this->provider->pollWorldDataSaves($maximumCompletions);
     }
 
-    private function currentWorldData(): WorldData
+    /** @internal Returns the current persisted contract for this exact dimension. */
+    public function currentDimensionData(): DimensionWorldData
     {
+        $stored = $this->provider === null
+            ? null
+            : $this->provider->worldData()->dimension($this->dimension);
+
+        return new DimensionWorldData(
+            $this->generator->name(),
+            $stored === null ? $this->metadata->seed : $stored->seed,
+            $this->spawn(),
+            $this->generator instanceof VersionedWorldGenerator ? $this->generator->version() : 1,
+            $this->generatorOptions,
+        );
+    }
+
+    /** @param null|array<string, DimensionWorldData> $dimensions */
+    private function currentWorldData(?array $dimensions = null): WorldData
+    {
+        $dimensions ??= $this->provider?->worldData()->dimensions ?? [];
+        $dimensions[$this->dimension->value] = $this->currentDimensionData();
+
         return new WorldData(
             $this->metadata,
             $this->generator->name(),
@@ -805,6 +831,7 @@ final class World
             $this->generatorOptions,
             $this->weather,
             $this->weatherCycleEnabled,
+            dimensions: $dimensions,
         );
     }
 

@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Persistence\World;
 
-use Bedriox\Api\World\WorldDimension;
+use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\Entity\Persistence\AsynchronousEntityPersistenceStore;
 use Bedriox\Server\Entity\Persistence\CorruptEntityPersistenceException;
 use Bedriox\Server\Entity\Persistence\EntityChunkSaveCompletion;
@@ -108,16 +108,16 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
     private bool $asyncWriteIsTransientEntity = false;
     private int $asyncTaskId = 0;
     private string $asyncOutgoing = '';
-    /** @var array<string, array{position: ChunkPosition, dimension: WorldDimension}> */
+    /** @var array<string, array{position: ChunkPosition, dimension: DimensionType}> */
     private array $queuedLoads = [];
     /** @var array<string, true> */
     private array $loadKeys = [];
     private ?ChunkPosition $asyncLoad = null;
-    private WorldDimension $asyncLoadDimension = WorldDimension::OVERWORLD;
-    /** @var array<string, array{transfer: EntityOwnershipTransfer, dimension: WorldDimension}> */
+    private DimensionType $asyncLoadDimension = DimensionType::OVERWORLD;
+    /** @var array<string, array{transfer: EntityOwnershipTransfer, dimension: DimensionType}> */
     private array $queuedEntityTransfers = [];
     private ?EntityOwnershipTransfer $asyncEntityTransfer = null;
-    private WorldDimension $asyncEntityTransferDimension = WorldDimension::OVERWORLD;
+    private DimensionType $asyncEntityTransferDimension = DimensionType::OVERWORLD;
     /** @var list<EntityOwnershipTransferCompletion> */
     private array $entityTransferCompletions = [];
     /** @var array<string, array{state: 'loaded'|'missing'|'corrupt', snapshot: ?EntityChunkSnapshot}> */
@@ -434,7 +434,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
 
     public function loadChunk(
         ChunkPosition $position,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): ?LoadedChunkData {
         $payload = self::encodeDimensionPayload(
             $dimension,
@@ -521,7 +521,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
 
     public function saveChunk(
         ChunkSaveData $chunkData,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): void {
         $result = $this->request(
             WorldStorageOperation::SAVE_CHUNK,
@@ -537,7 +537,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
 
     public function loadEntityChunk(
         ChunkPosition $position,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): ?EntityChunkSnapshot {
         $preloadKey = self::dimensionChunkKey($dimension, $position);
         $preloaded = $this->preloadedEntityChunks[$preloadKey] ?? null;
@@ -579,7 +579,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
 
     public function saveEntityChunk(
         EntityChunkSnapshot $snapshot,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): void {
         $result = $this->request(
             WorldStorageOperation::SAVE_ENTITY_CHUNK,
@@ -643,7 +643,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
 
     public function enqueueEntityChunkSave(
         EntityChunkSnapshot $snapshot,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): PersistenceEnqueueResult {
         $this->assertOpen();
 
@@ -656,7 +656,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
 
     public function pollEntityChunkSaves(
         int $maximumCompletions = 256,
-        ?WorldDimension $dimension = null,
+        ?DimensionType $dimension = null,
     ): array {
         $this->assertOpen();
         if ($maximumCompletions < 1 || $maximumCompletions > 256) {
@@ -696,7 +696,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
 
     public function drainEntityChunkSaves(
         int $timeoutMilliseconds,
-        ?WorldDimension $dimension = null,
+        ?DimensionType $dimension = null,
     ): array {
         if ($timeoutMilliseconds < 1 || $timeoutMilliseconds > 300_000) {
             throw new \InvalidArgumentException('Entity persistence drain timeout is invalid.');
@@ -718,7 +718,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
 
     public function transferEntityOwnership(
         EntityOwnershipTransfer $transfer,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): EntityOwnershipTransferResult {
         $result = $this->request(
             WorldStorageOperation::TRANSFER_ENTITY_OWNERSHIP,
@@ -736,7 +736,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
 
     public function enqueueEntityOwnershipTransfer(
         EntityOwnershipTransfer $transfer,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): bool {
         $this->assertOpen();
         $uuid = $dimension->value . "\x00" . $transfer->uuid;
@@ -757,7 +757,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
     /** @return list<EntityOwnershipTransferCompletion> */
     public function pollEntityOwnershipTransfers(
         int $maximumCompletions = 256,
-        ?WorldDimension $dimension = null,
+        ?DimensionType $dimension = null,
     ): array {
         $this->assertOpen();
         if ($maximumCompletions < 1 || $maximumCompletions > 256) {
@@ -778,7 +778,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
     /** @return list<EntityOwnershipTransferCompletion> */
     public function drainEntityOwnershipTransfers(
         int $timeoutMilliseconds,
-        ?WorldDimension $dimension = null,
+        ?DimensionType $dimension = null,
     ): array {
         if ($timeoutMilliseconds < 1 || $timeoutMilliseconds > 300_000) {
             throw new \InvalidArgumentException('Entity ownership transfer drain timeout is invalid.');
@@ -799,7 +799,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
     /** Queues an immutable canonical snapshot without waiting for disk I/O. */
     public function enqueueChunkSave(
         ChunkSaveData $chunkData,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): PersistenceEnqueueResult {
         $this->assertOpen();
 
@@ -831,7 +831,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
     /** Deduplicates a coordinate and returns false when it is already queued, in flight, or awaiting collection. */
     public function requestChunkLoad(
         ChunkPosition $position,
-        WorldDimension $dimension = WorldDimension::OVERWORLD,
+        DimensionType $dimension = DimensionType::OVERWORLD,
     ): bool {
         $this->assertOpen();
         $key = self::dimensionChunkKey($dimension, $position);
@@ -853,7 +853,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
      */
     public function pollChunkLoads(
         int $maximumCompletions = 256,
-        ?WorldDimension $dimension = null,
+        ?DimensionType $dimension = null,
     ): array {
         $this->assertOpen();
         if ($maximumCompletions < 1 || $maximumCompletions > 256) {
@@ -879,7 +879,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
      */
     public function pollChunkSaves(
         int $maximumCompletions = 256,
-        ?WorldDimension $dimension = null,
+        ?DimensionType $dimension = null,
     ): array {
         $this->assertOpen();
         if ($maximumCompletions < 1 || $maximumCompletions > 256) {
@@ -912,7 +912,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
      */
     public function drainChunkSaves(
         int $timeoutMilliseconds,
-        ?WorldDimension $dimension = null,
+        ?DimensionType $dimension = null,
     ): array {
         if ($timeoutMilliseconds < 1 || $timeoutMilliseconds > 300_000) {
             throw new \InvalidArgumentException('Chunk persistence drain timeout is invalid.');
@@ -1487,7 +1487,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
     private function acceptAsyncLoad(
         WorkerFrame $frame,
         ChunkPosition $position,
-        WorldDimension $dimension,
+        DimensionType $dimension,
     ): void {
         if (!hash_equals($this->epoch, $frame->epoch) || $frame->taskId !== $this->asyncTaskId
             || $frame->taskTypeId !== WorldStorageOperation::LOAD_CHUNK->value
@@ -1533,7 +1533,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
     /** @param bool|int|string|null $entityState */
     private function decodeLoadedChunkPayload(
         ChunkPosition $position,
-        WorldDimension $dimension,
+        DimensionType $dimension,
         string $payload,
         bool|int|string|null $entityState,
     ): \Bedriox\Server\World\Chunk {
@@ -1563,7 +1563,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
     /** @param 'loaded'|'missing'|'corrupt' $state */
     private function rememberPreloadedEntityChunk(
         ChunkPosition $position,
-        WorldDimension $dimension,
+        DimensionType $dimension,
         string $state,
         ?EntityChunkSnapshot $snapshot = null,
     ): void {
@@ -1576,26 +1576,26 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
         }
     }
 
-    private static function encodeDimensionPayload(WorldDimension $dimension, string $payload): string
+    private static function encodeDimensionPayload(DimensionType $dimension, string $payload): string
     {
         return chr(match ($dimension) {
-            WorldDimension::OVERWORLD => 0,
-            WorldDimension::NETHER => 1,
-            WorldDimension::END => 2,
+            DimensionType::OVERWORLD => 0,
+            DimensionType::NETHER => 1,
+            DimensionType::END => 2,
         }) . $payload;
     }
 
-    private static function dimensionChunkKey(WorldDimension $dimension, ChunkPosition $position): string
+    private static function dimensionChunkKey(DimensionType $dimension, ChunkPosition $position): string
     {
         return $dimension->value . ':' . $position->key();
     }
 
     private static function persistenceKey(
         string $kind,
-        WorldDimension $dimension,
+        DimensionType $dimension,
         ChunkPosition $position,
     ): string {
-        return $dimension === WorldDimension::OVERWORLD
+        return $dimension === DimensionType::OVERWORLD
             ? $kind . ':' . $position->key()
             : $kind . ':' . $dimension->name . ':' . $position->key();
     }
@@ -1608,9 +1608,9 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
             throw new \InvalidArgumentException('Persistence completion does not contain a chunk coordinate key.');
         }
         $dimension = match ($matches[1] ?? '') {
-            '', 'OVERWORLD' => WorldDimension::OVERWORLD,
-            'NETHER' => WorldDimension::NETHER,
-            'END' => WorldDimension::END,
+            '', 'OVERWORLD' => DimensionType::OVERWORLD,
+            'NETHER' => DimensionType::NETHER,
+            'END' => DimensionType::END,
             default => throw new \InvalidArgumentException('Persistence completion dimension is invalid.'),
         };
         $position = new ChunkPosition((int) $matches[2], (int) $matches[3]);
@@ -1621,19 +1621,19 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
         return $position;
     }
 
-    private static function dimensionForPersistenceKey(string $key, string $kind): WorldDimension
+    private static function dimensionForPersistenceKey(string $key, string $kind): DimensionType
     {
         $prefix = $kind . ':';
         if (!str_starts_with($key, $prefix)) {
             throw new \InvalidArgumentException('Persistence completion has the wrong key kind.');
         }
-        foreach ([WorldDimension::NETHER, WorldDimension::END] as $dimension) {
+        foreach ([DimensionType::NETHER, DimensionType::END] as $dimension) {
             if (str_starts_with($key, $prefix . $dimension->name . ':')) {
                 return $dimension;
             }
         }
 
-        return WorldDimension::OVERWORLD;
+        return DimensionType::OVERWORLD;
     }
 
     /**

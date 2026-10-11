@@ -237,22 +237,31 @@ final class ServerBootstrap
         $flatWorld = $openedWorld->world;
         $runtimeWorldActions = new RuntimeWorldActions($blockCatalog, $internalStates, $pluginActions);
         $worldActions = $runtimeWorldActions->actions();
-        $defaultWorldHandle = new ApiWorld(
-            WorldRuntimeManager::canonicalId($config->levelName),
-            1,
-            $worldActions,
-            array_map(
-                static fn(OpenedWorld $dimension): \Bedriox\Api\World\WorldDimension => $dimension->world->dimension(),
-                $openedWorld->dimensions(),
-            ),
-        );
+        $defaultWorldId = WorldRuntimeManager::canonicalId($config->levelName);
+        $defaultWorldHandles = [];
+        foreach ($openedWorld->dimensions() as $dimensionOpened) {
+            $dimension = $dimensionOpened->world->dimension();
+            $defaultWorldHandles[$dimension->value] = new ApiWorld(
+                $defaultWorldId,
+                1,
+                $worldActions,
+                $dimension,
+                static fn(
+                    ApiWorld $source,
+                    \Bedriox\Api\World\DimensionType $target,
+                ): ?ApiWorld => $worldHandleResolver->resolve($source->id(), $target),
+            );
+        }
+        $defaultWorldHandle = $defaultWorldHandles[\Bedriox\Api\World\DimensionType::OVERWORLD->value]
+            ?? throw new \LogicException('The default world did not expose an Overworld runtime.');
         $generatorRegistry = $this->worldFactory instanceof PersistentWorldFactory
             ? $this->worldFactory->generators()
             : WorldGeneratorFactory::builtIns();
         $workerCount = $workers?->snapshot()->workerCount ?? 0;
         $workersAvailable = $workerCount > 0;
+        $defaultDimensionData = $openedWorld->data->dimension($flatWorld->dimension());
         $defaultGeneratorDefinition = $generatorRegistry->require(
-            WorldGeneratorFactory::canonicalIdentifier($openedWorld->data->generatorName),
+            WorldGeneratorFactory::canonicalIdentifier($defaultDimensionData->generatorName),
         );
         if ($defaultGeneratorDefinition->workerSource !== null && !$workersAvailable) {
             throw new \RuntimeException('Plugin world generators require an available generation worker.');
@@ -262,11 +271,11 @@ final class ServerBootstrap
             $flatWorld->enableAsyncGeneration(new AsyncChunkGenerator(
                 $workers,
                 CoreWorkerTaskCatalog::GENERATE_CHUNK,
-                $openedWorld->data->generatorName,
-                $openedWorld->data->generatorVersion,
-                $openedWorld->data->metadata->seed,
+                $defaultDimensionData->generatorName,
+                $defaultDimensionData->generatorVersion,
+                $defaultDimensionData->seed,
                 $internalStates,
-                options: GeneratorOptions::fromJson($openedWorld->data->generatorOptions),
+                options: GeneratorOptions::fromJson($defaultDimensionData->generatorOptions),
                 dimension: $flatWorld->dimension()->value,
                 workerSource: $defaultGeneratorDefinition->workerSource,
                 allowSynchronousFallback: $defaultGeneratorDefinition->workerSource === null,
@@ -385,8 +394,9 @@ final class ServerBootstrap
             ): ManagedWorldRuntime {
                 $startedAt = hrtime(true);
                 $internalWorld = $opened->world;
+                $dimensionData = $opened->data->dimension($internalWorld->dimension());
                 $generatorDefinition = $generatorRegistry->require(
-                    WorldGeneratorFactory::canonicalIdentifier($opened->data->generatorName),
+                    WorldGeneratorFactory::canonicalIdentifier($dimensionData->generatorName),
                 );
                 $generatorLookupAt = hrtime(true);
                 if ($generatorDefinition->workerSource !== null && !$workersAvailable) {
@@ -397,11 +407,11 @@ final class ServerBootstrap
                     $internalWorld->enableAsyncGeneration(new AsyncChunkGenerator(
                         $workers,
                         CoreWorkerTaskCatalog::GENERATE_CHUNK,
-                        $opened->data->generatorName,
-                        $opened->data->generatorVersion,
-                        $opened->data->metadata->seed,
+                        $dimensionData->generatorName,
+                        $dimensionData->generatorVersion,
+                        $dimensionData->seed,
                         $internalStates,
-                        options: GeneratorOptions::fromJson($opened->data->generatorOptions),
+                        options: GeneratorOptions::fromJson($dimensionData->generatorOptions),
                         dimension: $internalWorld->dimension()->value,
                         workerSource: $generatorDefinition->workerSource,
                         allowSynchronousFallback: $generatorDefinition->workerSource === null,
@@ -492,41 +502,32 @@ final class ServerBootstrap
             $composeManagedWorld = static function (
                 ApiWorld $handle,
                 OpenedWorld $opened,
-            ) use ($composeManagedDimension): ManagedWorldRuntime {
-                $root = $composeManagedDimension($handle, $opened);
-                $additional = [];
+            ) use ($composeManagedDimension): WorldStorageRuntime {
+                $dimensions = [];
                 foreach ($opened->dimensions() as $dimensionOpened) {
-                    if ($dimensionOpened === $opened) {
-                        continue;
-                    }
-                    $additional[] = $composeManagedDimension($handle, $dimensionOpened);
+                    $dimensionHandle = $handle->getDimension($dimensionOpened->world->dimension())
+                        ?? throw new \LogicException('Reserved world handle did not expose an opened dimension.');
+                    $dimensions[] = $composeManagedDimension($dimensionHandle, $dimensionOpened);
                 }
 
-                return new ManagedWorldRuntime(
-                    $handle,
-                    $root->opened,
-                    $root->simulation,
-                    $root->loop,
-                    $root->preparedChunks,
-                    $additional,
-                );
+                return new WorldStorageRuntime($dimensions);
             };
 
-            $defaultAdditionalDimensions = [];
+            $defaultManagedDimensions = [];
             foreach ($openedWorld->dimensions() as $dimensionOpened) {
-                if ($dimensionOpened === $openedWorld) {
-                    continue;
-                }
-                $defaultAdditionalDimensions[] = $composeManagedDimension($defaultWorldHandle, $dimensionOpened);
+                $dimensionHandle = $defaultWorldHandles[$dimensionOpened->world->dimension()->value]
+                    ?? throw new \LogicException('Default world handle did not expose an opened dimension.');
+                $defaultManagedDimensions[] = $dimensionOpened === $openedWorld
+                    ? new ManagedWorldRuntime(
+                        $dimensionHandle,
+                        $openedWorld,
+                        $world,
+                        $worldLoop,
+                        $preparedChunks,
+                    )
+                    : $composeManagedDimension($dimensionHandle, $dimensionOpened);
             }
-            $defaultManagedWorld = new ManagedWorldRuntime(
-                $defaultWorldHandle,
-                $openedWorld,
-                $world,
-                $worldLoop,
-                $preparedChunks,
-                $defaultAdditionalDimensions,
-            );
+            $defaultManagedWorld = new WorldStorageRuntime($defaultManagedDimensions);
             $worldRuntimes = new WorldRuntimeManager(
                 $defaultWorldHandle->id(),
                 $defaultManagedWorld,
@@ -557,14 +558,14 @@ final class ServerBootstrap
                     $config,
                     $data,
                     $composeManagedWorld,
-                ): PendingManagedWorldRuntime {
+                ): PendingWorldStorageRuntime {
                     if ($persistentWorldFactory === null) {
                         throw new \RuntimeException('Named world creation requires persistent world storage.');
                     }
 
-                    return new PendingManagedWorldRuntime(
+                    return new PendingWorldStorageRuntime(
                         $persistentWorldFactory->beginCreateNamed($config, $data, $handle->id(), $options),
-                        static fn(OpenedWorld $opened): ManagedWorldRuntime => $composeManagedWorld($handle, $opened),
+                        static fn(OpenedWorld $opened): WorldStorageRuntime => $composeManagedWorld($handle, $opened),
                     );
                 },
                 static function (ApiWorld $handle) use (
@@ -572,14 +573,14 @@ final class ServerBootstrap
                     $config,
                     $data,
                     $composeManagedWorld,
-                ): PendingManagedWorldRuntime {
+                ): PendingWorldStorageRuntime {
                     if ($persistentWorldFactory === null) {
                         throw new \RuntimeException('Named world loading requires persistent world storage.');
                     }
 
-                    return new PendingManagedWorldRuntime(
+                    return new PendingWorldStorageRuntime(
                         $persistentWorldFactory->beginLoadNamed($config, $data, $handle->id()),
-                        static fn(OpenedWorld $opened): ManagedWorldRuntime => $composeManagedWorld($handle, $opened),
+                        static fn(OpenedWorld $opened): WorldStorageRuntime => $composeManagedWorld($handle, $opened),
                     );
                 },
                 $pluginEvents === null ? null : $pluginEvents->dispatch(...),

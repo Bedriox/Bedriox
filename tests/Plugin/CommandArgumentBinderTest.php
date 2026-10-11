@@ -31,6 +31,7 @@ use Bedriox\Api\Player\Player;
 use Bedriox\Api\Player\PlayerConnection;
 use Bedriox\Api\World\Particle\ParticleType;
 use Bedriox\Api\World\Position;
+use Bedriox\Api\World\World;
 use Bedriox\Protocol\Packet\Packet;
 use Bedriox\Server\Entity\Vanilla\ZombieEntity;
 use Bedriox\Server\Plugin\Command\CommandArgumentBinder;
@@ -109,6 +110,7 @@ final class CommandArgumentBinderTest extends TestCase
             'world',
             new InternalPosition(2.0, 64.0, 0.0),
         );
+        $zombie->bindPublicWorld(new World('world', 1));
         $binder = new CommandArgumentBinder(
             static fn(): array => [$steve, $alex],
             static fn(): array => [$zombie],

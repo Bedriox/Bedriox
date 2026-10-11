@@ -26,6 +26,5 @@ final readonly class BlockPosition
         public int $x,
         public int $y,
         public int $z,
-        public WorldDimension $dimension = WorldDimension::OVERWORLD,
     ) {}
 }
