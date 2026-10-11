@@ -146,7 +146,10 @@ final readonly class BedrockCommandPacketProjector
         ApiCommandParameter $parameter,
         string $kind = 'parameter',
     ): string {
-        $fingerprint = substr(hash('sha256', implode("\0", $parameter->choices())), 0, 12);
+        $values = $kind === 'literal'
+            ? [$parameter->literalValue() ?? $parameter->name()]
+            : $parameter->choices();
+        $fingerprint = substr(hash('sha256', implode("\0", $values)), 0, 12);
         $scope = $kind === 'parameter'
             ? "{$command}:{$parameter->name()}"
             : "{$command}:{$kind}:{$parameter->name()}";

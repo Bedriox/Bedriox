@@ -39,7 +39,7 @@ abstract class TameableAnimalEntity extends BreedableAnimalEntity implements Tam
         $this->sitting = $sitting;
         if ($sitting) {
             $currentMotion = $this->getMotion();
-            $this->setMotion(new EntityMotion(0.0, $currentMotion->y, 0.0));
+            $this->applyMotion(new EntityMotion(0.0, $currentMotion->y, 0.0));
         }
     }
 
@@ -82,7 +82,7 @@ abstract class TameableAnimalEntity extends BreedableAnimalEntity implements Tam
             $this->sitting = $sitting;
             if ($sitting) {
                 $motion = $this->getMotion();
-                $this->setMotion(new EntityMotion(0.0, $motion->y, 0.0));
+                $this->applyMotion(new EntityMotion(0.0, $motion->y, 0.0));
             }
             $this->markPresentationChanged();
         }
@@ -117,7 +117,7 @@ abstract class TameableAnimalEntity extends BreedableAnimalEntity implements Tam
         $this->sitting = $data['sitting'];
         if ($this->sitting) {
             $motion = $this->getMotion();
-            $this->setMotion(new EntityMotion(0.0, $motion->y, 0.0));
+            $this->applyMotion(new EntityMotion(0.0, $motion->y, 0.0));
         }
     }
 

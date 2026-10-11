@@ -277,7 +277,7 @@ final class FoxEntity extends LandBreedableAnimalEntity implements ExclusiveAiAc
             $this->sleeping = $sleeping;
             if ($sleeping) {
                 $motion = $this->getMotion();
-                $this->setMotion(new EntityMotion(0.0, $motion->y, 0.0));
+                $this->applyMotion(new EntityMotion(0.0, $motion->y, 0.0));
             }
             $this->markPresentationChanged();
         }

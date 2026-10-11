@@ -37,6 +37,7 @@ final readonly class SimulationPluginServer implements Server
     /**
      * @param Closure(): list<Player>  $players
      * @param Closure(string): ?Player $player
+     * @param null|Closure(): int      $uptimeSeconds
      */
     public function __construct(
         private string $plugin,
@@ -44,9 +45,17 @@ final readonly class SimulationPluginServer implements Server
         private PluginActionBuffer $actions,
         private Closure $players,
         private Closure $player,
+        private ?Closure $uptimeSeconds = null,
         private ?WorldManager $worldManager = null,
         private ?Whitelist $whitelist = null,
     ) {}
+
+    public function getUptimeSeconds(): int
+    {
+        $this->assertEnabled();
+
+        return $this->uptimeSeconds === null ? 0 : max(0, ($this->uptimeSeconds)());
+    }
 
     public function broadcastMessage(string|TranslatableMessage $message): int
     {

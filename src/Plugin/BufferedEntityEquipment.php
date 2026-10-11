@@ -50,6 +50,66 @@ final readonly class BufferedEntityEquipment implements EntityEquipment
         ($this->stage)(fn() => $this->equipment->setItem($slot, $item));
     }
 
+    public function getMainHand(): ?ItemStack
+    {
+        return $this->equipment->getMainHand();
+    }
+
+    public function setMainHand(?ItemStack $item): void
+    {
+        $this->setItem(EquipmentSlot::MAIN_HAND, $item);
+    }
+
+    public function getOffHand(): ?ItemStack
+    {
+        return $this->equipment->getOffHand();
+    }
+
+    public function setOffHand(?ItemStack $item): void
+    {
+        $this->setItem(EquipmentSlot::OFF_HAND, $item);
+    }
+
+    public function getHelmet(): ?ItemStack
+    {
+        return $this->equipment->getHelmet();
+    }
+
+    public function setHelmet(?ItemStack $item): void
+    {
+        $this->setItem(EquipmentSlot::HEAD, $item);
+    }
+
+    public function getChestplate(): ?ItemStack
+    {
+        return $this->equipment->getChestplate();
+    }
+
+    public function setChestplate(?ItemStack $item): void
+    {
+        $this->setItem(EquipmentSlot::CHEST, $item);
+    }
+
+    public function getLeggings(): ?ItemStack
+    {
+        return $this->equipment->getLeggings();
+    }
+
+    public function setLeggings(?ItemStack $item): void
+    {
+        $this->setItem(EquipmentSlot::LEGS, $item);
+    }
+
+    public function getBoots(): ?ItemStack
+    {
+        return $this->equipment->getBoots();
+    }
+
+    public function setBoots(?ItemStack $item): void
+    {
+        $this->setItem(EquipmentSlot::FEET, $item);
+    }
+
     public function getDropChance(EquipmentSlot $slot): float
     {
         return $this->equipment->getDropChance($slot);
@@ -68,9 +128,19 @@ final readonly class BufferedEntityEquipment implements EntityEquipment
         return $this->equipment->getContents();
     }
 
+    public function getArmorContents(): array
+    {
+        return $this->equipment->getArmorContents();
+    }
+
     public function clear(EquipmentSlot $slot): void
     {
         ($this->stage)(fn() => $this->equipment->clear($slot));
+    }
+
+    public function clearArmor(): void
+    {
+        ($this->stage)(fn() => $this->equipment->clearArmor());
     }
 
     public function clearAll(): void

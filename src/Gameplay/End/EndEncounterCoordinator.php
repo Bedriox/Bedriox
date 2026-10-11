@@ -418,7 +418,7 @@ final class EndEncounterCoordinator
         $dy = $targetY - $current->y;
         $dz = $targetZ - $current->z;
         $distance = max(0.001, hypot(hypot($dx, $dz), $dy));
-        $dragon->setMotion(new EntityMotion($dx / $distance * $speed, $dy / $distance * $speed, $dz / $distance * $speed));
+        $dragon->applyMotion(new EntityMotion($dx / $distance * $speed, $dy / $distance * $speed, $dz / $distance * $speed));
 
         $target = $this->nearestTarget($current, 128.0);
         if ($target === null) {

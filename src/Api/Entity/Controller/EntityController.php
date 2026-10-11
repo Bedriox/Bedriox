@@ -22,6 +22,7 @@ namespace Bedriox\Api\Entity\Controller;
 
 use Bedriox\Api\Entity\Entity;
 use Bedriox\Api\Entity\EntityCombustionCause;
+use Bedriox\Api\Entity\Value\Motion;
 use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\World\Position;
 
@@ -40,7 +41,7 @@ interface EntityController
 
     public function setRotation(float $yaw, float $pitch): void;
 
-    public function setVelocity(float $x, float $y, float $z): void;
+    public function setMotion(Motion $motion): void;
 
     public function setNameTag(string $nameTag): void;
 
@@ -49,8 +50,6 @@ interface EntityController
     public function setImmobile(bool $immobile): void;
 
     public function setInvisible(bool $invisible): void;
-
-    public function setGlowing(bool $glowing): void;
 
     public function setScale(float $scale): void;
 

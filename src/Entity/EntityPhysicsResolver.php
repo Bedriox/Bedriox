@@ -54,7 +54,7 @@ final readonly class EntityPhysicsResolver
         }
         if ($entity->isImmobile()) {
             $beforeMotion = $entity->getMotion();
-            $entity->setMotion(new EntityMotion());
+            $entity->applyMotion(new EntityMotion());
             $entity->advanceAge();
 
             return new EntityPhysicsResult(false, $beforeMotion != new EntityMotion(), false);
@@ -129,7 +129,7 @@ final readonly class EntityPhysicsResolver
         $resolved = $this->resolve($box, $requested);
         if ($resolved === null) {
             $motion = new EntityMotion();
-            $entity->setMotion($motion);
+            $entity->applyMotion($motion);
             $entity->advanceAge();
 
             return new EntityPhysicsResult(false, $motion != $beforeMotion, false);
@@ -170,7 +170,7 @@ final readonly class EntityPhysicsResolver
             $beforePosition->z + $z,
         );
         $entity->moveTo($entity->getWorldName(), $position, $entity->getYaw(), $entity->getPitch());
-        $entity->setMotion($motion);
+        $entity->applyMotion($motion);
         $entity->setOnGround($landed || ($entity->isOnGround() && $requested->y === 0.0));
         $entity->advanceAge();
 

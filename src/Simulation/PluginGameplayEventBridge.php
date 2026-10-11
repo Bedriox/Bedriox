@@ -42,10 +42,12 @@ use Bedriox\Api\Entity\EntityType;
 use Bedriox\Api\Entity\KnockbackCause;
 use Bedriox\Api\Entity\KnockbackVector;
 use Bedriox\Api\Entity\LivingEntity as ApiLivingEntity;
+use Bedriox\Api\Entity\Skin;
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\Value\EntityBlockChangeReason;
 use Bedriox\Api\Entity\Value\EntityTransformReason;
 use Bedriox\Api\Entity\Value\LeashDetachReason;
+use Bedriox\Api\Entity\Value\Motion;
 use Bedriox\Api\Entity\Value\MountReason;
 use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\Entity\Vanilla\Armadillo as ApiArmadillo;
@@ -165,6 +167,8 @@ use Bedriox\Api\Event\Player\PlayerDropItemEvent;
 use Bedriox\Api\Event\Player\PlayerDroppedItemEvent;
 use Bedriox\Api\Event\Player\PlayerEnchantedItemEvent;
 use Bedriox\Api\Event\Player\PlayerEnchantItemEvent;
+use Bedriox\Api\Event\Player\PlayerEntityPickedEvent;
+use Bedriox\Api\Event\Player\PlayerEntityPickEvent;
 use Bedriox\Api\Event\Player\PlayerEquipmentChangedEvent;
 use Bedriox\Api\Event\Player\PlayerEquipmentChangeEvent;
 use Bedriox\Api\Event\Player\PlayerExperienceChangedEvent as ApiPlayerExperienceChangedEvent;
@@ -205,6 +209,8 @@ use Bedriox\Api\Event\Player\PlayerRegainedHealthEvent;
 use Bedriox\Api\Event\Player\PlayerRegainHealthEvent;
 use Bedriox\Api\Event\Player\PlayerRespawnedEvent;
 use Bedriox\Api\Event\Player\PlayerRespawnEvent;
+use Bedriox\Api\Event\Player\PlayerSkinChangedEvent;
+use Bedriox\Api\Event\Player\PlayerSkinChangeEvent;
 use Bedriox\Api\Event\Player\PlayerTeleportedEvent;
 use Bedriox\Api\Event\Player\PlayerTeleportEvent;
 use Bedriox\Api\Event\Processing\AnvilProcessedEvent;
@@ -304,6 +310,7 @@ final readonly class PluginGameplayEventBridge
      * @param null|Closure(string): EffectActions $playerEffectActions
      * @param null|Closure(string): (Closure(int, ExperienceChangeCause): void) $playerExperienceActions
      * @param null|Closure(string): ?\Bedriox\Api\World\World $worldResolver
+     * @param null|Closure(string): ?Skin $playerSkins
      */
     public function __construct(
         private EventDispatcher $events,
@@ -314,6 +321,7 @@ final readonly class PluginGameplayEventBridge
         private ?Closure $maximumStackSize = null,
         private ?Closure $playerEffectActions = null,
         private ?Closure $playerExperienceActions = null,
+        private ?Closure $playerSkins = null,
     ) {}
 
     /** @internal Dispatches lifecycle events that are owned outside the simulation. */
@@ -574,19 +582,19 @@ final readonly class PluginGameplayEventBridge
     /** @param Closure(string): PlayerConnection $playerConnections */
     public function withPlayerConnections(Closure $playerConnections): self
     {
-        return new self($this->events, $playerConnections, $this->worldResolver, $this->playerActions, $this->playerInventoryActions, $this->maximumStackSize, $this->playerEffectActions, $this->playerExperienceActions);
+        return new self($this->events, $playerConnections, $this->worldResolver, $this->playerActions, $this->playerInventoryActions, $this->maximumStackSize, $this->playerEffectActions, $this->playerExperienceActions, $this->playerSkins);
     }
 
     /** @param Closure(string): ?\Bedriox\Api\World\World $worldResolver */
     public function withWorldResolver(Closure $worldResolver): self
     {
-        return new self($this->events, $this->playerConnections, $worldResolver, $this->playerActions, $this->playerInventoryActions, $this->maximumStackSize, $this->playerEffectActions, $this->playerExperienceActions);
+        return new self($this->events, $this->playerConnections, $worldResolver, $this->playerActions, $this->playerInventoryActions, $this->maximumStackSize, $this->playerEffectActions, $this->playerExperienceActions, $this->playerSkins);
     }
 
     /** @param Closure(string): PlayerActions $playerActions */
     public function withPlayerActions(Closure $playerActions): self
     {
-        return new self($this->events, $this->playerConnections, $this->worldResolver, $playerActions, $this->playerInventoryActions, $this->maximumStackSize, $this->playerEffectActions, $this->playerExperienceActions);
+        return new self($this->events, $this->playerConnections, $this->worldResolver, $playerActions, $this->playerInventoryActions, $this->maximumStackSize, $this->playerEffectActions, $this->playerExperienceActions, $this->playerSkins);
     }
 
     /**
@@ -606,6 +614,7 @@ final readonly class PluginGameplayEventBridge
             $maximumStackSize,
             $this->playerEffectActions,
             $this->playerExperienceActions,
+            $this->playerSkins,
         );
     }
 
@@ -621,6 +630,7 @@ final readonly class PluginGameplayEventBridge
             $this->maximumStackSize,
             $playerEffectActions,
             $this->playerExperienceActions,
+            $this->playerSkins,
         );
     }
 
@@ -636,6 +646,23 @@ final readonly class PluginGameplayEventBridge
             $this->maximumStackSize,
             $this->playerEffectActions,
             $playerExperienceActions,
+            $this->playerSkins,
+        );
+    }
+
+    /** @param Closure(string): ?Skin $playerSkins */
+    public function withPlayerSkins(Closure $playerSkins): self
+    {
+        return new self(
+            $this->events,
+            $this->playerConnections,
+            $this->worldResolver,
+            $this->playerActions,
+            $this->playerInventoryActions,
+            $this->maximumStackSize,
+            $this->playerEffectActions,
+            $this->playerExperienceActions,
+            $playerSkins,
         );
     }
 
@@ -1651,6 +1678,19 @@ final readonly class PluginGameplayEventBridge
         ));
     }
 
+    public function authorizeSkinChange(Player $player, Skin $previous, Skin $requested): ?Skin
+    {
+        $event = new PlayerSkinChangeEvent($this->playerView($player), $previous, $requested);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->skin();
+    }
+
+    public function skinChanged(Player $player, Skin $previous, Skin $skin): void
+    {
+        $this->events->dispatch(new PlayerSkinChangedEvent($this->playerView($player), $previous, $skin));
+    }
+
     public function chat(Player $player, string $message): ?string
     {
         $event = new PlayerChatEvent($this->playerView($player), $message);
@@ -1688,6 +1728,41 @@ final readonly class PluginGameplayEventBridge
         $this->events->dispatch($event);
 
         return $event->isCancelled() ? null : $event->item();
+    }
+
+    public function entityPick(
+        Player $player,
+        ApiEntity $entity,
+        InventoryStack $item,
+        int $hotbarSlot,
+        bool $userDataRequested,
+    ): ?ApiItemStack {
+        $event = new PlayerEntityPickEvent(
+            $this->playerView($player),
+            $entity,
+            new ApiItemStack($item->identifier, $item->count, $item->damage, $item->nbt, $item->auxValue),
+            $hotbarSlot,
+            $userDataRequested,
+        );
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->item();
+    }
+
+    public function entityPicked(
+        Player $player,
+        ApiEntity $entity,
+        InventoryStack $item,
+        int $hotbarSlot,
+        bool $userDataRequested,
+    ): void {
+        $this->events->dispatch(new PlayerEntityPickedEvent(
+            $this->playerView($player),
+            $entity,
+            new ApiItemStack($item->identifier, $item->count, $item->damage, $item->nbt, $item->auxValue),
+            $hotbarSlot,
+            $userDataRequested,
+        ));
     }
 
     /**
@@ -2827,6 +2902,12 @@ final readonly class PluginGameplayEventBridge
             offHandItem: self::item(($inventory ?? $player->inventory)->offhandStack()),
             effects: $player->effects->snapshot(),
             experience: new ExperienceSnapshot($player->experience->totalPoints()),
+            skin: $this->playerSkins === null ? null : ($this->playerSkins)($snapshot->identity),
+            motion: new Motion(
+                $player->movement->velocityX,
+                $player->movement->verticalVelocity,
+                $player->movement->velocityZ,
+            ),
         );
 
         return $this->playerActions === null || $this->playerInventoryActions === null || $this->maximumStackSize === null
@@ -2864,6 +2945,11 @@ final readonly class PluginGameplayEventBridge
             offHandItem: self::item(($inventory ?? $player->inventory)->offhandStack()),
             effects: $player->effects->snapshot(),
             experience: new ExperienceSnapshot($player->experience->totalPoints()),
+            motion: new Motion(
+                $player->movement->velocityX,
+                $player->movement->verticalVelocity,
+                $player->movement->velocityZ,
+            ),
         );
     }
 

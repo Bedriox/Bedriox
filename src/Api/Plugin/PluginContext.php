@@ -24,6 +24,7 @@ use Bedriox\Api\BossBar\BossBarManager;
 use Bedriox\Api\Command\CommandRegistrar;
 use Bedriox\Api\Crafting\RecipeRegistrar;
 use Bedriox\Api\Crafting\UnavailableRecipeRegistrar;
+use Bedriox\Api\Display\DisplayManager;
 use Bedriox\Api\Encounter\EncounterManager;
 use Bedriox\Api\Entity\EntityRegistrar;
 use Bedriox\Api\Entity\UnavailableEntityRegistrar;
@@ -57,6 +58,7 @@ final class PluginContext
         private readonly GeneratorRegistrar $generators = new UnavailableGeneratorRegistrar(),
         private readonly ?ContainerManager $containers = null,
         private readonly ?BossBarManager $bossBars = null,
+        private readonly ?DisplayManager $displays = null,
         private readonly ?EncounterManager $encounters = null,
         private readonly UpdateService $updates = new UnavailableUpdateService(),
     ) {}
@@ -133,6 +135,12 @@ final class PluginContext
             ?? throw new \LogicException('The boss-bar capability is unavailable.');
     }
 
+    public function displays(): DisplayManager
+    {
+        return $this->displays
+            ?? throw new \LogicException('The display capability is unavailable.');
+    }
+
     public function encounters(): EncounterManager
     {
         return $this->encounters
@@ -162,6 +170,7 @@ final class PluginContext
             $this->generators,
             $this->containers,
             $this->bossBars,
+            $this->displays,
             $this->encounters,
             $this->updates,
         );
@@ -185,6 +194,7 @@ final class PluginContext
             $generators,
             $this->containers,
             $this->bossBars,
+            $this->displays,
             $this->encounters,
             $this->updates,
         );

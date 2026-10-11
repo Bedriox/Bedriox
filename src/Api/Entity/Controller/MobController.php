@@ -23,17 +23,11 @@ namespace Bedriox\Api\Entity\Controller;
 use Bedriox\Api\Entity\Entity;
 use Bedriox\Api\World\Position;
 
-interface MobController extends LivingEntityController
+interface MobController extends LivingEntityController, NavigableController
 {
     public function setAiEnabled(bool $enabled): void;
 
-    public function moveToward(Position $target, float $speed): void;
-
     public function moveAway(Position $target, float $speed): void;
-
-    public function stopMoving(): void;
-
-    public function lookAt(Position $target): void;
 
     public function target(Entity $target, float $speed): void;
 

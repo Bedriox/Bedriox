@@ -26,6 +26,9 @@ use Bedriox\Api\World\WorldManager;
 
 interface Server
 {
+    /** Returns the number of whole seconds since this server process began starting. */
+    public function getUptimeSeconds(): int;
+
     public function broadcastMessage(string|TranslatableMessage $message): int;
 
     public function getWorldManager(): WorldManager;

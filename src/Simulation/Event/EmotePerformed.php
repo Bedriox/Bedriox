@@ -27,6 +27,7 @@ final readonly class EmotePerformed implements WorldEvent
         public string $senderSessionId,
         public string $emoteId,
         public array $recipientSessionIds,
+        public bool $includeOwner = false,
     ) {}
 
     public function recipients(): array

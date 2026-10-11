@@ -175,7 +175,8 @@ final class ServerBootstrap
                 $playerConnections->maximumStackSize(...),
             )
             ->withPlayerEffectActions($playerConnections->effectActions(...))
-            ->withPlayerExperienceActions($playerConnections->experienceActions(...));
+            ->withPlayerExperienceActions($playerConnections->experienceActions(...))
+            ->withPlayerSkins($playerConnections->skin(...));
         $worldHandleResolver = new WorldHandleResolver();
         $pluginEvents = $pluginEvents?->withWorldResolver($worldHandleResolver->resolve(...));
         $simulationLimits = new SimulationLimits(
@@ -752,6 +753,7 @@ final class ServerBootstrap
                 $worldRuntimes,
                 $publicWorldManager,
                 $whitelist,
+                $startupStartedAt,
             ),
             $flatWorld,
             $craftingCatalog,

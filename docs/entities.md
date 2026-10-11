@@ -4,7 +4,10 @@ Bedriox owns every live non-player entity. Plugins receive protocol-neutral enti
 
 ## Public entity and controller hierarchy
 
-`Entity` exposes identity, type, category, world, position, rotation, grounded state, persistence, and `getController()`. `LivingEntity` adds health and fire state. `Mob` adds its activation state.
+`Entity` exposes identity, type, category, world, position, rotation, typed
+`Motion`, grounded state, persistence, visibility, and `getController()`.
+`LivingEntity` adds health, fire, effects, and authoritative equipment. `Mob`
+adds its activation state.
 
 Controllers are the mutation side of the same hierarchy:
 
@@ -21,7 +24,18 @@ EntityController
             `-- MountController
 ```
 
-`EntityController` supports availability checks, teleportation, rotation, velocity, name tags, name-tag visibility, immobility, invisibility, glowing, scale, gravity, fire, extinguishing, mounting, dismounting, and despawning. `LivingEntityController` adds damage, healing, direct bounded health changes, and equipment. `MobController` adds AI enablement, movement toward or away from a position, stopping, looking, targeting, and clearing the current target intent.
+`NavigableController` is the reusable steering and obstacle-aware navigation
+facet incorporated by `MobController`. `HumanController` extends
+`MobController` with validated skin replacement and emote presentation; a
+sessionless human still does not become an authenticated player.
+
+`EntityController` supports availability checks, teleportation, rotation, a
+typed `Motion` value, name tags, name-tag visibility, immobility, invisibility,
+scale, gravity, fire, extinguishing, mounting, dismounting, and despawning.
+`LivingEntityController` adds arm swings, damage, healing, direct bounded
+health changes, effects, and equipment. `MobController` adds AI enablement,
+movement toward or away from a position, stopping, looking, targeting, and
+clearing the current target intent.
 
 Always retain the entity view rather than a controller indefinitely, and check `isAvailable()` before a delayed mutation. Once the entity leaves its world, the old controller cannot mutate it.
 
@@ -45,7 +59,90 @@ function makeGuard(Mob $mob): void
 }
 ```
 
-Controller input is validated before it reaches world state. Positions, rotations, velocities, names, scale, health, fire duration, steering speed, and target worlds remain bounded. Damage and combustion use their typed causes and enter the ordinary cancellable entity event path. A cross-world teleport succeeds only when the target world is already available.
+Controller input is validated before it reaches world state. Positions,
+rotations, motion vectors, names, scale, health, fire duration, steering speed,
+and target worlds remain bounded. Damage and combustion use their typed causes
+and enter the ordinary cancellable entity event path. The current controller
+teleport is deliberately limited to the entity's owning world; world transfer
+requires a coordinated detach-and-admit lifecycle and is not silently emulated.
+
+## Player-shaped human entities
+
+Plugins may create a sessionless, player-shaped `Human` through
+`PluginContext::entities()->spawnHuman()`. A human is an authoritative living
+entity, not a connected `Player`: it has no login identity, network session,
+permissions, command sender, player inventory, or operator state. The caller
+supplies its name, validated `Skin`, position, yaw, and pitch. Copying
+`Player::getSkin()` is the simplest way to make a human use a connected
+player's current appearance.
+
+Humans share the ordinary living-entity damage, equipment, effect, spawn,
+death, and interaction event paths. A plugin can therefore react to a hit with
+`EntityDamageByEntityEvent`, compare the event target's unique ID with the
+human it created, and inspect the real `Player` damager. It may cancel the
+damage and reply to the attacker without adding a human-specific hit
+event.
+
+Humans intentionally do not own a player inventory. Their visible main hand,
+offhand, and armor are available through `Human::getEquipment()`. Plugins that
+need an NPC menu or storage should open a plugin-owned container when the human
+is interacted with, keeping presentation equipment separate from virtual data.
+
+`Human` exposes its skin, transform, motion, visibility, equipment, effects,
+and health, plus direct helpers for its supported presentation and movement
+operations. `HumanController` is the authoritative mutation gateway for skin,
+teleportation, rotation, motion, name tags, scale, gravity, arm swings, emotes,
+equipment, effects, health, and bounded movement control. `moveToward()` is
+direct steering. `navigateTo()` uses the existing asynchronous navigation
+pipeline to follow a bounded obstacle-aware route, while
+`cancelNavigation()` or direct motion returns control to the plugin. Humans do
+not run decision-making AI unless a plugin supplies its own scheduled logic.
+
+Active actor animation is deliberately typed and bounded. Connected players
+and humans can publish validated emotes, while players and living-entity
+controllers can publish an arm swing. `SkinAnimation` is skin payload data; it
+uses `SkinAnimationType` and `SkinAnimationExpression` instead of raw protocol
+integers. It is not a generic actor-animation command, and the API does not
+accept arbitrary animation names or client-supplied animation payloads.
+
+`DefaultEmote` names 103 known Bedrock emote content IDs, including `WAVE`,
+`SIMPLE_CLAP`, and `OVER_THERE`. Plugins may pass
+`DefaultEmote::WAVE->id()` to a player or human, or construct a validated
+`EmoteId` for other content without depending on a closed server-maintained
+catalog.
+
+Human skin replacement is projected to current viewers without replacing the
+entity. `PlayerSkinChangeEvent` and `PlayerSkinChangedEvent` apply only to
+connected real players; changing a human's skin does not impersonate a player
+or fire player lifecycle events.
+
+Spawned humans are tied to their creating plugin through one bounded lifecycle
+registration. Bedriox tracks their handles weakly, so a manually despawned
+human is not retained until plugin disable; any still-live humans are despawned
+when their owner disables, fails, or reloads.
+
+Every entity exposes the shared `getVisibility()` contract. `AUTOMATIC`
+follows normal world, dimension, delivered-chunk, and tracking rules.
+`SELECTED` admits only the selected authenticated player UUIDs, `EXCLUDED`
+follows automatic tracking except for excluded UUIDs, and `HIDDEN` admits
+nobody. `showOnlyTo()` selects one player, `hideFrom()` excludes one player
+from an automatic audience, `showToAll()` restores automatic visibility, and
+`hideFromAll()` hides the entity globally. UUID selection survives a player
+reconnecting with a new network session without retaining a `Player` object.
+
+Pass a shared `VisibilityPolicy` to `spawnHuman()` when initial visibility
+matters. For example, `VisibilityPolicy::only($player)` prevents a
+private human from being announced to other players even briefly. Runtime
+visibility changes still respect world and chunk admission; selection does not
+send an entity across dimensions or into an unloaded client chunk.
+Removing an entity clears its selected and excluded UUID state, reports hidden
+eligibility, and closes the visibility controller to further mutations.
+
+Humans created through a plugin registrar are runtime-scoped resources. They
+are removed when their owner disables or fails, and this milestone does not
+restore them after a server restart. A plugin that needs durable NPCs should
+save its own bounded definition in plugin data and recreate them after its
+world is ready.
 
 Movement helpers express bounded steering, not a persistent pathfinding script. `target()` uses the target entity's authoritative snapshot for that control operation. `clearTarget()` stops the current horizontal steering intent; enabled built-in AI may select another target on a later AI tick. Disable AI when a plugin needs exclusive movement control.
 
@@ -247,7 +344,7 @@ Custom-mob `onTick()` and `onAiTick()` callbacks receive the same controller con
 
 ## Living-entity equipment
 
-`LivingEntityController::equipment()` returns `EntityEquipment`. Its finite slots are `HEAD`, `CHEST`, `LEGS`, `FEET`, `MAIN_HAND`, and `OFF_HAND`. Plugins may read or replace one slot, clear one or all slots, enumerate occupied contents, and read or set each slot's drop chance from `0.0` through `1.0`.
+`LivingEntity::getEquipment()` returns `EntityEquipment`; the controller exposes the same transactional view for controller-oriented code. Its finite slots are `HEAD`, `CHEST`, `LEGS`, `FEET`, `MAIN_HAND`, and `OFF_HAND`. Plugins may use the generic slot methods or the named main-hand, offhand, helmet, chestplate, leggings, and boots helpers. They may also clear one slot, all armor, or all equipment, enumerate contents, and read or set each slot's drop chance from `0.0` through `1.0`.
 
 Every transition is checked against the active item catalog. Stack size, armor-slot compatibility, offhand admission, durability, auxiliary value, and bounded item NBT remain authoritative. A successful change is persisted with the entity and projected to current viewers. Armor reduces applicable incoming damage and takes durability wear; a zombie helmet can absorb daylight exposure until it breaks. A supported main-hand tool or weapon contributes its registered attack damage.
 
@@ -268,4 +365,8 @@ Strider string, and Zombified Piglin drops use the same normalized item-entity
 path. Equipped items are evaluated independently using their stored per-slot
 chance, preserving identifier, count, damage, auxiliary value, and NBT.
 
-Custom entities and other admitted species currently have an empty base table. Plugins can supply their drops through `EntityDeathEvent`; a public loot-table registrar is not yet available. Fake-human entities and a general NPC controller are separate milestones.
+Custom entities and other admitted species currently have an empty base table.
+Plugins can supply their drops through `EntityDeathEvent`; a public loot-table
+registrar is not yet available. Sessionless player-shaped humans use the
+public API described above and participate in the same authoritative death and
+equipment paths.

@@ -38,7 +38,18 @@ final class HorizontalSteering
         ?int $aiTick = null,
         ?AiWorldView $world = null,
     ): void {
-        self::apply($entity, $target, $speed, $aiTick, $world);
+        self::apply($entity, $target, $speed, $aiTick, $world, true);
+    }
+
+    /** Steers toward a waypoint already selected by the navigation coordinator. */
+    public static function towardWaypoint(
+        AbstractMobEntity $entity,
+        Position $waypoint,
+        float $speed,
+        int $aiTick,
+        AiWorldView $world,
+    ): void {
+        self::apply($entity, $waypoint, $speed, $aiTick, $world, false);
     }
 
     public static function away(
@@ -87,8 +98,9 @@ final class HorizontalSteering
         float $speed,
         ?int $aiTick,
         ?AiWorldView $world,
+        bool $resolveNavigationWaypoint = true,
     ): void {
-        if ($world instanceof NavigatingAiWorldView && $aiTick !== null) {
+        if ($resolveNavigationWaypoint && $world instanceof NavigatingAiWorldView && $aiTick !== null) {
             $target = $world->navigationWaypoint($entity, $target, $aiTick);
         }
         $position = $entity->internalPosition();
@@ -186,7 +198,7 @@ final class HorizontalSteering
         if ($aiTick !== null) {
             return $entity->applyAiMotion($motion, $aiTick);
         }
-        $entity->setMotion($motion);
+        $entity->applyMotion($motion);
 
         return true;
     }

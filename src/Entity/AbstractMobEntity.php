@@ -24,6 +24,7 @@ use Bedriox\Api\Entity\Capability\Sittable;
 use Bedriox\Api\Entity\Controller\MobController;
 use Bedriox\Api\Entity\Mob as ApiMob;
 use Bedriox\Api\Entity\MobActivationState;
+use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Server\Entity\Ai\AiBehaviorDefinition;
 use Bedriox\Server\Entity\Ai\AiBehaviorRuntime;
 use Bedriox\Server\Entity\Ai\AiTickContext;
@@ -45,6 +46,12 @@ abstract class AbstractMobEntity extends AbstractLivingEntity implements ApiMob
     private int $lastAiMovementIntentTick = -1;
 
     private bool $aiEnabled = true;
+
+    private ?Position $navigationTarget = null;
+
+    private ?ApiPosition $resolvedNavigationTarget = null;
+
+    private float $navigationSpeed = 0.0;
 
     private MobController $controller;
 
@@ -84,6 +91,7 @@ abstract class AbstractMobEntity extends AbstractLivingEntity implements ApiMob
     final public function attachController(?PluginActionBuffer $actions): void
     {
         $this->controller = $this->createController($actions);
+        $this->bindVisibilityActions($actions);
     }
 
     protected function createController(?PluginActionBuffer $actions): MobController
@@ -123,13 +131,43 @@ abstract class AbstractMobEntity extends AbstractLivingEntity implements ApiMob
         return $this->aiEnabled;
     }
 
+    /** @internal Records a plugin-owned destination consumed by the shared navigation coordinator. */
+    final public function requestNavigation(Position $target, float $speed, ?ApiPosition $resolvedTarget = null): void
+    {
+        $this->navigationTarget = $target;
+        $this->resolvedNavigationTarget = $resolvedTarget;
+        $this->navigationSpeed = $speed;
+    }
+
+    final public function clearNavigation(): void
+    {
+        $this->navigationTarget = null;
+        $this->resolvedNavigationTarget = null;
+        $this->navigationSpeed = 0.0;
+    }
+
+    final public function navigationTarget(): ?Position
+    {
+        return $this->navigationTarget;
+    }
+
+    final public function resolvedNavigationTarget(): ?ApiPosition
+    {
+        return $this->resolvedNavigationTarget;
+    }
+
+    final public function navigationSpeed(): float
+    {
+        return $this->navigationSpeed;
+    }
+
     /** @internal Authoritative controller mutation. */
     final public function setAiEnabled(bool $enabled): void
     {
         if ($this->aiEnabled !== $enabled) {
             $this->aiEnabled = $enabled;
             if (!$enabled) {
-                $this->setMotion(new EntityMotion());
+                $this->applyMotion(new EntityMotion());
             }
             $this->markPresentationChanged();
         }
@@ -159,7 +197,7 @@ abstract class AbstractMobEntity extends AbstractLivingEntity implements ApiMob
             return false;
         }
         $this->lastAiMovementIntentTick = $tick;
-        $this->setMotion($motion);
+        $this->applyMotion($motion);
 
         return true;
     }
@@ -171,7 +209,7 @@ abstract class AbstractMobEntity extends AbstractLivingEntity implements ApiMob
             throw new InvalidArgumentException('Controlled movement intent tick cannot be negative.');
         }
         $this->lastAiMovementIntentTick = $tick;
-        $this->setMotion($motion);
+        $this->applyMotion($motion);
     }
 
     final public function hasAiMovementIntentAt(int $tick): bool

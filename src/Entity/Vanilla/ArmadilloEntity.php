@@ -135,7 +135,7 @@ final class ArmadilloEntity extends LandBreedableAnimalEntity implements Armadil
             $this->defensiveTicks = 200;
             $this->setState(ArmadilloState::ROLLED_UP);
             $motion = $this->getMotion();
-            $this->setMotion(new EntityMotion(0.0, $motion->y, 0.0));
+            $this->applyMotion(new EntityMotion(0.0, $motion->y, 0.0));
             $this->suppressAiMovementUntil($currentTick + $ticks);
             $this->markChanged();
             return;

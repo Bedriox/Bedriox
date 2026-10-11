@@ -147,7 +147,7 @@ abstract class UndeadHorseEntity extends AnimalEntity implements HorseArmorHolde
             $this->sitting = $sitting;
             if ($sitting) {
                 $motion = $this->getMotion();
-                $this->setMotion(new EntityMotion(0.0, $motion->y, 0.0));
+                $this->applyMotion(new EntityMotion(0.0, $motion->y, 0.0));
             }
             $this->markPresentationChanged();
         }
@@ -210,7 +210,7 @@ abstract class UndeadHorseEntity extends AnimalEntity implements HorseArmorHolde
         $this->temper = $data['temper'];
         if ($this->sitting) {
             $motion = $this->getMotion();
-            $this->setMotion(new EntityMotion(0.0, $motion->y, 0.0));
+            $this->applyMotion(new EntityMotion(0.0, $motion->y, 0.0));
         }
     }
 

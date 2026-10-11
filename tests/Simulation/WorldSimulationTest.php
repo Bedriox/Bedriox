@@ -20,12 +20,15 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Simulation;
 
+use Bedriox\Api\Entity\SpawnCause;
+use Bedriox\Api\Entity\VanillaEntityType;
 use Bedriox\Api\Player\ExperienceChangeCause;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Packet\MultiCraftingRecipe;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\Item\ItemEntityRegistry;
+use Bedriox\Server\Entity\Spawn\EntitySpawnRequest;
 use Bedriox\Server\Gameplay\Block\BlockCatalog;
 use Bedriox\Server\Gameplay\Crafting\ComplexCraftingRecipeEvaluator;
 use Bedriox\Server\Gameplay\Crafting\CraftingCatalog;
@@ -1695,6 +1698,64 @@ final class WorldSimulationTest extends TestCase
         self::assertNotNull($picked->selectedStack->placedBlockState);
         self::assertSame($palette->dirt->value, $picked->selectedStack->placedBlockState->value);
         self::assertNotNull($picked->mainInventory[1]);
+    }
+
+    public function testCreativeEntityPickCreatesItsAdmittedSpawnEggInTheRequestedHotbarSlot(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $registry = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $blocks = new World(
+            new WorldMetadata('pick-entity-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+        );
+        $blocks->chunk(new ChunkPosition(0, 0));
+        $itemCatalog = ItemCatalog::vanilla(
+            $data->itemNetworkRegistry(),
+            creative: $data->creativeInventoryRegistry(),
+            blockItems: $data->blockItemMappingRegistry(),
+        );
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation(
+            blockWorld: $blocks,
+            blockPalette: $palette,
+            itemCatalog: $itemCatalog,
+            entityTypes: $data->entityTypeRegistry(),
+            entityDefinitions: EntityDefinitionRegistry::fromData($data->entityTypeRegistry()),
+        );
+        self::assertTrue($world->enqueue($factory->join(
+            'one',
+            'identity-one',
+            'One',
+            bootstrap: self::grassBootstrap('pick-entity-test'),
+        )));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->changeGameMode('one', GameMode::CREATIVE)));
+        $world->tick();
+
+        $spawn = $world->entityRuntime()->spawn(new EntitySpawnRequest(
+            VanillaEntityType::COW,
+            SpawnCause::PLUGIN,
+            'pick-entity-test',
+            new Position(1.5, 64.0, 1.5),
+        ));
+        self::assertTrue($spawn->succeeded(), $spawn->failure ?? 'unknown spawn failure');
+        self::assertNotNull($spawn->entity);
+
+        self::assertTrue($world->enqueue($factory->pickEntity(
+            'one',
+            $spawn->entity->getRuntimeId(),
+            3,
+            false,
+        )));
+        $picked = $world->tick()->events[0];
+
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $picked);
+        self::assertTrue($picked->success);
+        self::assertSame(3, $picked->selectedHotbarSlot);
+        self::assertSame('minecraft:cow_spawn_egg', $picked->selectedStack?->identifier);
+        self::assertSame('minecraft:cow_spawn_egg', $picked->mainInventory[3]?->identifier);
     }
 
     public function testJoinPublishesDeterministicPeerVisibilityAndFixedSpawn(): void

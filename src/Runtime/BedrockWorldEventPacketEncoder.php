@@ -40,6 +40,8 @@ use Bedriox\Api\World\Particle\StandardParticleType;
 use Bedriox\Api\World\WeatherState;
 use Bedriox\Api\World\WeatherType;
 use Bedriox\Protocol\Codec\UnsignedVarInt;
+use Bedriox\Protocol\Identity\VerifiedAnimation;
+use Bedriox\Protocol\Packet\Ability;
 use Bedriox\Protocol\Packet\AbilityLayer;
 use Bedriox\Protocol\Packet\ActorEventPacket;
 use Bedriox\Protocol\Packet\ActorEventType;
@@ -79,6 +81,7 @@ use Bedriox\Protocol\Packet\FurnaceProperty;
 use Bedriox\Protocol\Packet\HorseActorMetadata;
 use Bedriox\Protocol\Packet\HorseEquipmentNbt;
 use Bedriox\Protocol\Packet\HorseEquipmentSlot;
+use Bedriox\Protocol\Packet\InteractionActorMetadata;
 use Bedriox\Protocol\Packet\InventoryContainerId;
 use Bedriox\Protocol\Packet\InventoryContentPacket;
 use Bedriox\Protocol\Packet\InventoryItemStack as ProtocolInventoryItemStack;
@@ -127,6 +130,7 @@ use Bedriox\Protocol\Packet\SetPlayerGameTypePacket;
 use Bedriox\Protocol\Packet\SpawnParticleEffectPacket;
 use Bedriox\Protocol\Packet\SystemTextPacket;
 use Bedriox\Protocol\Packet\TakeItemActorPacket;
+use Bedriox\Protocol\Packet\TextDisplayActorMetadata;
 use Bedriox\Protocol\Packet\TippedArrowActorMetadata;
 use Bedriox\Protocol\Packet\TranslatedTextPacket;
 use Bedriox\Protocol\Packet\UpdateAttributesPacket;
@@ -138,6 +142,7 @@ use Bedriox\Protocol\Packet\UpdatePlayerGameTypePacket;
 use Bedriox\Protocol\Value\BuildPlatform;
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\Server\Entity\Block\FallingBlockEntity;
+use Bedriox\Server\Entity\Human\HumanEntity;
 use Bedriox\Server\Entity\Vanilla\End\EnderDragonEntity;
 use Bedriox\Server\Entity\Vehicle\BoatEntity;
 use Bedriox\Server\Gameplay\Enchanting\VanillaEnchantmentIdMap;
@@ -170,6 +175,7 @@ use Bedriox\Server\Simulation\Event\EmotePerformed;
 use Bedriox\Server\Simulation\Event\EnchantingOptionsUpdated;
 use Bedriox\Server\Simulation\Event\EnderDragonBossBarAction;
 use Bedriox\Server\Simulation\Event\EnderDragonBossBarChanged;
+use Bedriox\Server\Simulation\Event\EntityActorAnimated;
 use Bedriox\Server\Simulation\Event\EntityActorAttackStarted;
 use Bedriox\Server\Simulation\Event\EntityActorBodyEquipmentChanged;
 use Bedriox\Server\Simulation\Event\EntityActorDamaged;
@@ -193,6 +199,7 @@ use Bedriox\Server\Simulation\Event\FallingBlockActorSettled;
 use Bedriox\Server\Simulation\Event\FallingBlockActorSpawned;
 use Bedriox\Server\Simulation\Event\FurnaceUpdated;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
+use Bedriox\Server\Simulation\Event\HumanSkinChanged;
 use Bedriox\Server\Simulation\Event\InventorySlotChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
 use Bedriox\Server\Simulation\Event\ItemConsumed;
@@ -219,6 +226,7 @@ use Bedriox\Server\Simulation\Event\PlayerJoined;
 use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
 use Bedriox\Server\Simulation\Event\PlayerMotionChanged;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
+use Bedriox\Server\Simulation\Event\PlayerPresentationChanged;
 use Bedriox\Server\Simulation\Event\PlayerRespawned;
 use Bedriox\Server\Simulation\Event\PotionSplashImpacted;
 use Bedriox\Server\Simulation\Event\ProjectileMoved;
@@ -226,6 +234,9 @@ use Bedriox\Server\Simulation\Event\ProjectileRemoved;
 use Bedriox\Server\Simulation\Event\ProjectileSpawned;
 use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
 use Bedriox\Server\Simulation\Event\TameAttemptPresented;
+use Bedriox\Server\Simulation\Event\TextDisplayActorRemoved;
+use Bedriox\Server\Simulation\Event\TextDisplayActorSpawned;
+use Bedriox\Server\Simulation\Event\TextDisplayActorUpdated;
 use Bedriox\Server\Simulation\Event\WeatherChanged;
 use Bedriox\Server\Simulation\Event\WorldEvent;
 use Bedriox\Server\Simulation\PlayerSnapshot;
@@ -402,6 +413,7 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
                 $event->recipientSessionIds,
             ),
             $event instanceof EntityActorSpawned => $this->entityActorSpawned($event),
+            $event instanceof EntityActorAnimated => $this->entityActorAnimated($event),
             $event instanceof EntityActorEffectChanged => $this->entityActorEffectChanged($event),
             $event instanceof EntityActorBodyEquipmentChanged => $this->entityActorBodyEquipmentChanged($event),
             $event instanceof EntityActorEquipmentChanged => $this->entityActorEquipmentChanged($event),
@@ -415,6 +427,10 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             $event instanceof EntityActorDamaged => $this->entityActorDamaged($event),
             $event instanceof EntityActorDied => $this->entityActorDied($event),
             $event instanceof EntityActorRemoved => $this->entityActorRemoved($event),
+            $event instanceof HumanSkinChanged => $this->humanSkinChanged($event),
+            $event instanceof TextDisplayActorSpawned => $this->textDisplayActorSpawned($event),
+            $event instanceof TextDisplayActorUpdated => $this->textDisplayActorUpdated($event),
+            $event instanceof TextDisplayActorRemoved => $this->textDisplayActorRemoved($event),
             $event instanceof PlayerGameModeChanged => $this->gameModeChanged($event),
             $event instanceof PlayerDamaged => $this->damaged($event),
             $event instanceof PlayerHealed => [new DirectedPacket(
@@ -423,6 +439,7 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             )],
             $event instanceof PlayerKnockedBack => $this->playerKnockedBack($event),
             $event instanceof PlayerMotionChanged => $this->motionChanged($event),
+            $event instanceof PlayerPresentationChanged => $this->playerPresentationChanged($event),
             $event instanceof PlayerDied => $this->died($event),
             $event instanceof PlayerRespawned => $this->respawned($event),
             $event instanceof RespawnAcknowledged => [new DirectedPacket(
@@ -1233,10 +1250,12 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
 
         return array_map(
             static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
-            array_values(array_filter(
-                $event->recipientSessionIds,
-                static fn(string $recipient): bool => $recipient !== $event->senderSessionId,
-            )),
+            $event->includeOwner
+                ? $event->recipientSessionIds
+                : array_values(array_filter(
+                    $event->recipientSessionIds,
+                    static fn(string $recipient): bool => $recipient !== $event->senderSessionId,
+                )),
         );
     }
 
@@ -1564,7 +1583,7 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
     private function playerMetadata(PlayerSnapshot $player): array
     {
         $metadata = PlayerActorMetadata::baseline(
-            $player->displayName,
+            $player->nameTag !== '' ? $player->nameTag : $player->displayName,
             $player->sneaking,
             $player->sprinting,
             riding: $player->riding,
@@ -1576,6 +1595,20 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
         if (isset($player->effects[\Bedriox\Api\Effect\EffectType::INVISIBILITY->value])) {
             $flags |= ActorFlag::Invisible->mask();
         }
+        if ($player->invisible) {
+            $flags |= ActorFlag::Invisible->mask();
+        }
+        if (!$player->nameTagVisible) {
+            $flags &= ~ActorFlag::CanShowName->mask();
+        }
+        if (!$player->gravityEnabled) {
+            $flags &= ~ActorFlag::HasGravity->mask();
+        }
+        if ($player->immobile) {
+            $flags |= ActorFlag::NoAi->mask();
+        }
+        $width = 0.6 * $player->scale;
+        $height = 1.8 * $player->scale;
         foreach ($metadata as $index => $entry) {
             $metadata[$index] = match (true) {
                 PlayerActorMetadata::isFlags($entry) => PlayerActorMetadata::flagsEntry($flags),
@@ -1583,11 +1616,30 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
                 PlayerActorMetadata::isMaximumAirSupply($entry) => PlayerActorMetadata::maximumAirSupply(
                     \Bedriox\Server\Player\PlayerVitals::MAX_AIR_TICKS,
                 ),
+                $entry->id === 38 => ActorMetadata::float(38, $player->scale),
+                $entry->id === 53 => ActorMetadata::float(53, $width),
+                $entry->id === 54 => ActorMetadata::float(54, $height),
+                $entry->id === 130 => ActorMetadata::vector3(130, $width, $height, $width),
                 default => $entry,
             };
         }
 
         return $metadata;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function playerPresentationChanged(PlayerPresentationChanged $event): array
+    {
+        $packet = new SetActorDataPacket(
+            UnsignedLong::fromInt($event->player->runtimeActorId),
+            UnsignedLong::fromInt(max(0, $event->player->movementSequence)),
+            $this->playerMetadata($event->player),
+        );
+
+        return array_map(
+            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
+            $event->recipientSessionIds,
+        );
     }
 
     /** @return list<DirectedPacket> */
@@ -2413,6 +2465,9 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
     private function entityActorSpawned(EntityActorSpawned $event): array
     {
         $entity = $event->entity;
+        if ($entity instanceof HumanEntity) {
+            return $this->humanActorSpawned($entity, $event->recipientSessionIds);
+        }
         $position = $entity->internalPosition();
         $motion = $entity->getMotion();
         $runtimeId = $entity->getRuntimeId();
@@ -2458,6 +2513,176 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
         }
 
         return $packets;
+    }
+
+    /**
+     * @param list<string> $recipients
+     * @return list<DirectedPacket>
+     */
+    private function humanActorSpawned(HumanEntity $human, array $recipients): array
+    {
+        $runtimeId = $human->getRuntimeId();
+        $wireRuntimeId = UnsignedLong::fromInt($runtimeId);
+        $skin = $this->protocolSkin($human->getSkin());
+        $listAdd = new PlayerListAddPacket([new PlayerListAddEntry(
+            $human->getUniqueId(),
+            $runtimeId,
+            $human->getName(),
+            '',
+            '',
+            BuildPlatform::Unknown,
+            $skin,
+            colorArgb: 0xffffffff,
+            trustedSkin: true,
+        )]);
+        $position = $human->internalPosition();
+        $motion = $human->getMotion();
+        $spawn = new AddPlayerPacket(
+            $human->getUniqueId(),
+            $human->getName(),
+            $wireRuntimeId,
+            '',
+            $position->x,
+            $position->y,
+            $position->z,
+            $motion->x,
+            $motion->y,
+            $motion->z,
+            $human->getPitch(),
+            $human->getYaw(),
+            $human->getYaw(),
+            0,
+            new PlayerAbilities(
+                $runtimeId,
+                PlayerPermission::Member,
+                CommandPermissionLevel::Normal,
+                [AbilityLayer::fromAbilities(
+                    1,
+                    Ability::cases(),
+                    [
+                        Ability::Build,
+                        Ability::Mine,
+                        Ability::DoorsAndSwitches,
+                        Ability::OpenContainers,
+                        Ability::AttackPlayers,
+                        Ability::AttackMobs,
+                    ],
+                    0.05,
+                    1.0,
+                    0.1,
+                )],
+            ),
+            buildPlatform: BuildPlatform::Unknown,
+            metadata: $this->humanMetadata($human),
+        );
+        $listRemove = new PlayerListRemovePacket([$human->getUniqueId()]);
+        $equipment = $this->livingActors->equipmentPackets($human, $this->inventory);
+        $packets = [];
+        foreach ($recipients as $recipient) {
+            $packets[] = new DirectedPacket($recipient, $listAdd);
+            $packets[] = new DirectedPacket($recipient, $spawn);
+            foreach ($equipment as $equipmentPacket) {
+                $packets[] = new DirectedPacket($recipient, $equipmentPacket);
+            }
+            $packets[] = new DirectedPacket($recipient, $listRemove);
+        }
+
+        return $packets;
+    }
+
+    /** @return list<ActorMetadata> */
+    private function humanMetadata(HumanEntity $human): array
+    {
+        $nameTag = $human->nameTag() !== '' ? $human->nameTag() : $human->getName();
+        $metadata = PlayerActorMetadata::baseline($nameTag);
+        $flags = PlayerActorMetadata::flags();
+        if (!$human->isNameTagVisible()) {
+            $flags &= ~ActorFlag::CanShowName->mask();
+        }
+        if (!$human->isGravityEnabled()) {
+            $flags &= ~ActorFlag::HasGravity->mask();
+        }
+        if ($human->isInvisible()) {
+            $flags |= ActorFlag::Invisible->mask();
+        }
+        if ($human->isOnFire()) {
+            $flags |= ActorFlag::OnFire->mask();
+        }
+        if ($human->isImmobile()) {
+            $flags |= ActorFlag::NoAi->mask();
+        }
+        $width = $human->collisionWidth();
+        $height = $human->collisionHeight();
+        foreach ($metadata as $index => $entry) {
+            $metadata[$index] = match ($entry->id) {
+                0 => PlayerActorMetadata::flagsEntry($flags),
+                4 => ActorMetadata::string(4, $nameTag),
+                38 => ActorMetadata::float(38, $human->scale()),
+                53 => ActorMetadata::float(53, $width),
+                54 => ActorMetadata::float(54, $height),
+                130 => ActorMetadata::vector3(130, $width, $height, $width),
+                default => $entry,
+            };
+        }
+
+        return $metadata;
+    }
+
+    private function protocolSkin(\Bedriox\Api\Entity\Skin $skin): PlayerSkin
+    {
+        return new PlayerSkin(
+            $skin->width,
+            $skin->height,
+            $skin->rgba,
+            $skin->capeWidth,
+            $skin->capeHeight,
+            $skin->capeRgba,
+            $skin->geometryJson,
+            array_map(
+                static fn(\Bedriox\Api\Entity\SkinAnimation $animation): VerifiedAnimation => new VerifiedAnimation(
+                    $animation->width,
+                    $animation->height,
+                    $animation->rgba,
+                    $animation->type->value,
+                    $animation->frames,
+                    $animation->expression->value,
+                ),
+                $skin->animations,
+            ),
+            $skin->id,
+            '',
+            $skin->resourcePatchJson,
+            $skin->geometryEngineVersion,
+            $skin->animationDataJson,
+            $skin->capeId,
+            $skin->id,
+            $skin->armSize,
+            $skin->skinColor,
+            $skin->premium,
+            $skin->capeOnClassic,
+        );
+    }
+
+    /** @return list<DirectedPacket> */
+    private function entityActorAnimated(EntityActorAnimated $event): array
+    {
+        $runtimeId = UnsignedLong::fromInt($event->entity->getRuntimeId());
+        $packet = $event->animation->armSwing
+            ? new AnimatePacket(AnimatePacket::SWING, $runtimeId, 0.0, null)
+            : new EmotePacket(
+                $runtimeId,
+                $event->animation->emote->value
+                    ?? throw new \LogicException('Entity emote projection requires an emote ID.'),
+                0,
+                '',
+                '',
+                [EmoteFlag::ServerSide, EmoteFlag::MuteEmoteChat],
+            );
+
+        return array_map(
+            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
+            $event->recipientSessionIds,
+        );
     }
 
     /** @return list<DirectedPacket> */
@@ -2641,6 +2866,7 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
         $networkY = $position->y + match (true) {
             $entity instanceof BoatEntity => $entity->bedrockPositionOffsetY(),
             $entity instanceof FallingBlockEntity => 0.49,
+            $entity instanceof HumanEntity => PlayerPositionProjection::feetToWireY(0.0),
             default => 0.0,
         };
         $motion = $entity->getMotion();
@@ -2827,6 +3053,170 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
         return array_map(
             static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
             $event->recipientSessionIds,
+        );
+    }
+
+    /** @return list<DirectedPacket> */
+    private function humanSkinChanged(HumanSkinChanged $event): array
+    {
+        $skin = $event->human->getSkin();
+        $packet = new PlayerSkinPacket(
+            $event->human->getUniqueId(),
+            $this->protocolSkin($skin),
+            $skin->id,
+            '',
+            true,
+        );
+
+        return array_map(
+            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
+            $event->recipientSessionIds,
+        );
+    }
+
+    /** @return list<DirectedPacket> */
+    private function textDisplayActorSpawned(TextDisplayActorSpawned $event): array
+    {
+        if ($this->chunks === null) {
+            throw new \LogicException('Text-display projection requires the block translator.');
+        }
+        $airNetworkId = $this->chunks->networkRuntimeIdForCanonicalState('minecraft:air', []);
+        $textId = UnsignedLong::fromInt($event->textRuntimeId);
+        $text = new AddActorPacket(
+            $event->textRuntimeId,
+            $textId,
+            TextDisplayActorMetadata::IDENTIFIER,
+            $event->position->x,
+            $event->position->y,
+            $event->position->z,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            [],
+            TextDisplayActorMetadata::baseline($event->text, $airNetworkId),
+            new ActorProperties(),
+            [],
+        );
+        $interaction = $event->interactionRuntimeId === null
+            || $event->interactionWidth === null || $event->interactionHeight === null
+            ? null
+            : $this->interactionActorSpawnPacket(
+                $event->interactionRuntimeId,
+                $event->position,
+                $event->interactionWidth,
+                $event->interactionHeight,
+            );
+        $packets = [];
+        foreach ($event->recipientSessionIds as $recipient) {
+            $packets[] = new DirectedPacket($recipient, $text);
+            if ($interaction !== null) {
+                $packets[] = new DirectedPacket($recipient, $interaction);
+            }
+        }
+
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function textDisplayActorUpdated(TextDisplayActorUpdated $event): array
+    {
+        $shared = [];
+        if ($event->change === \Bedriox\Server\Plugin\Display\DisplayChange::TEXT) {
+            $shared[] = new SetActorDataPacket(
+                UnsignedLong::fromInt($event->textRuntimeId),
+                UnsignedLong::fromInt(0),
+                [TextDisplayActorMetadata::text($event->text)],
+            );
+        } elseif ($event->change === \Bedriox\Server\Plugin\Display\DisplayChange::POSITION) {
+            $shared[] = $this->displayMovePacket($event->textRuntimeId, $event->position);
+            if ($event->interactionRuntimeId !== null) {
+                $shared[] = $this->displayMovePacket($event->interactionRuntimeId, $event->position);
+            }
+        } elseif ($event->change === \Bedriox\Server\Plugin\Display\DisplayChange::INTERACTION) {
+            if ($event->previousInteractionRuntimeId !== null
+                && $event->previousInteractionRuntimeId !== $event->interactionRuntimeId) {
+                $shared[] = new RemoveActorPacket($event->previousInteractionRuntimeId);
+            }
+            if ($event->interactionRuntimeId !== null
+                && $event->interactionWidth !== null && $event->interactionHeight !== null) {
+                $shared[] = $this->interactionActorSpawnPacket(
+                    $event->interactionRuntimeId,
+                    $event->position,
+                    $event->interactionWidth,
+                    $event->interactionHeight,
+                );
+            }
+        }
+        $packets = [];
+        foreach ($event->recipientSessionIds as $recipient) {
+            foreach ($shared as $packet) {
+                $packets[] = new DirectedPacket($recipient, $packet);
+            }
+        }
+
+        return $packets;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function textDisplayActorRemoved(TextDisplayActorRemoved $event): array
+    {
+        $packets = [];
+        foreach ($event->recipientSessionIds as $recipient) {
+            if ($event->interactionRuntimeId !== null) {
+                $packets[] = new DirectedPacket($recipient, new RemoveActorPacket($event->interactionRuntimeId));
+            }
+            $packets[] = new DirectedPacket($recipient, new RemoveActorPacket($event->textRuntimeId));
+        }
+
+        return $packets;
+    }
+
+    private function interactionActorSpawnPacket(
+        int $runtimeId,
+        \Bedriox\Api\World\Position $position,
+        float $width,
+        float $height,
+    ): AddActorPacket {
+        $id = UnsignedLong::fromInt($runtimeId);
+
+        return new AddActorPacket(
+            $runtimeId,
+            $id,
+            InteractionActorMetadata::IDENTIFIER,
+            $position->x,
+            $position->y,
+            $position->z,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            [],
+            InteractionActorMetadata::baseline($width, $height),
+            new ActorProperties(),
+            [],
+        );
+    }
+
+    private function displayMovePacket(
+        int $runtimeId,
+        \Bedriox\Api\World\Position $position,
+    ): MoveActorAbsolutePacket {
+        return new MoveActorAbsolutePacket(
+            UnsignedLong::fromInt($runtimeId),
+            $position->x,
+            $position->y,
+            $position->z,
+            0.0,
+            0.0,
+            0.0,
+            [],
         );
     }
 

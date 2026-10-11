@@ -138,6 +138,58 @@ $bar->addViewer($player);
 $bar->setProgress(0.5);
 ```
 
+`PluginContext::displays()` supplies an owner-scoped `DisplayManager` for
+floating text. `createText()` accepts a world-explicit position, bounded text,
+an optional stable lowercase key, and an optional initial `VisibilityPolicy`.
+Applying the policy during creation prevents private displays from being sent
+to an unintended player even briefly. A display has an immutable generated
+UUID, can be moved or updated in place, supports tags and a bounded view
+distance, and uses the same `getVisibility()` contract as entities. The
+manager can find the owner's displays by key, UUID, or tag and can remove one
+or all of them.
+
+```php
+$displays = $this->context()->displays();
+$welcome = $displays->createText($spawnPosition, 'Welcome to the server', 'spawn-welcome');
+$welcome->addTag('spawn');
+$welcome->setViewDistance(64);
+```
+
+Use `showOnlyTo()` for a private audience, `hideFrom()` to exclude one player
+from automatic visibility, `showToAll()` to restore automatic tracking, and
+`hideFromAll()` to hide the display globally. The controller stores bounded
+authenticated player UUID sets rather than retaining player objects.
+
+Call `enableInteraction()` to attach an invisible, non-colliding interaction
+region. Its default width and height are suitable for short floating text and
+may be replaced with bounded dimensions. `DisplayInteractEvent` is the
+cancellable pre-event for an admitted player interaction or attack;
+`DisplayInteractedEvent` observes the committed result. Both identify the
+display, interaction region, player, typed action, hand when applicable, and
+optional hit position. Text replacement similarly uses
+`TextDisplayChangeEvent` and `TextDisplayChangedEvent`.
+An interaction region inherits its display's visibility policy, so a player
+who cannot observe the display cannot trigger its interaction events.
+
+Displays and their interaction regions are runtime-scoped plugin resources.
+They are removed from current viewers when the owner disables or fails, and
+they are not restored automatically after restart. Persist a plugin-owned
+definition and recreate it during enablement when a display must be durable.
+
+Player-shaped NPCs use `PluginContext::entities()->spawnHuman()`. They can
+reuse a connected player's validated `getSkin()` value and share ordinary
+entity events and controllers rather than introducing a separate NPC event
+system. For example, listen to `EntityDamageByEntityEvent`, compare
+`$event->entity->getUniqueId()` with the spawned human's ID, verify that
+`$event->damager` is a `Player`, and cancel the event before sending a reply.
+The [entity guide](entities.md#player-shaped-human-entities) covers human
+control, navigation, lifecycle, and skin behavior.
+
+`PlayerSkinChangeEvent` is a cancellable pre-event for a connected real
+player's requested skin replacement and may supply another validated `Skin`.
+`PlayerSkinChangedEvent` reports the committed result. These events are never
+emitted for a sessionless human entity.
+
 Blocks and items use canonical identifiers such as `minecraft:grass_block`; process-local numeric IDs never enter the public API. The gameplay catalogs expose the admitted terrain blocks, their drops, and supported tools without exposing network runtime IDs. Inventory writes accept catalog items or an empty slot.
 
 Item stacks may carry immutable, bounded custom NBT and a Bedrock auxiliary variant value from `0` through `32767`. `ItemNbt` supports every ordinary NBT value through typed `Tag` factories: byte, short, int, long, float, double, string, byte/int/long arrays, homogeneous lists, and nested compounds. Bedriox compares NBT and auxiliary values when stacking, preserves both across moves, drops, pickups, player saves, and rejoins, and writes them through their separate Bedrock item fields. The top-level `Damage` tag is reserved for Bedriox's authoritative durability field; plugins should use their own namespaced keys. Auxiliary values identify admitted variants and are not a substitute for implementing an item's unique gameplay mechanic.

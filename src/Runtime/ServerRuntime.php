@@ -20,13 +20,19 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
+use Bedriox\Api\Display\TextDisplay;
 use Bedriox\Api\Effect\EffectCause;
 use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Entity\CustomEntityType;
 use Bedriox\Api\Entity\Entity as ApiEntity;
+use Bedriox\Api\Entity\Human;
+use Bedriox\Api\Entity\Skin;
+use Bedriox\Api\Entity\SkinAnimation;
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\Value\MountSeat;
+use Bedriox\Api\Entity\Value\SkinAnimationExpression;
+use Bedriox\Api\Entity\Value\SkinAnimationType;
 use Bedriox\Api\Entity\VanillaEntityIdentifier;
 use Bedriox\Api\Entity\VanillaEntityType;
 use Bedriox\Api\Event\Player\PlayerKickCause;
@@ -48,6 +54,7 @@ use Bedriox\Protocol\Batch\BatchLimits;
 use Bedriox\Protocol\Batch\BedrockBatch;
 use Bedriox\Protocol\Batch\BedrockBatchCodec;
 use Bedriox\Protocol\Batch\CompressionMode;
+use Bedriox\Protocol\Identity\VerifiedClientData;
 use Bedriox\Protocol\Packet\BedrockPacketCodec;
 use Bedriox\Protocol\Packet\DimensionId;
 use Bedriox\Protocol\Packet\DisconnectPacket;
@@ -56,6 +63,8 @@ use Bedriox\Protocol\Packet\Packet;
 use Bedriox\Protocol\Packet\PacketFrame;
 use Bedriox\Protocol\Packet\PacketHeader;
 use Bedriox\Protocol\Packet\PlayerListRemovePacket;
+use Bedriox\Protocol\Packet\PlayerSkin as ProtocolPlayerSkin;
+use Bedriox\Protocol\Packet\PlayerSkinPacket;
 use Bedriox\Protocol\Packet\SetDifficultyPacket;
 use Bedriox\Protocol\Packet\SetSpawnPositionPacket;
 use Bedriox\Protocol\Packet\SetTimePacket;
@@ -100,6 +109,8 @@ use Bedriox\Server\Player\InventoryStack;
 use Bedriox\Server\Player\Persistence\PlayerPersistenceManager;
 use Bedriox\Server\Plugin\Command\CommandRegistry;
 use Bedriox\Server\Plugin\Command\ServerPlayerCommandSender;
+use Bedriox\Server\Plugin\Display\DisplayChange;
+use Bedriox\Server\Plugin\Display\DisplayRegistry;
 use Bedriox\Server\Plugin\PluginActionBuffer;
 use Bedriox\Server\Runtime\BossBar\ActorBackedBossBarDelivery;
 use Bedriox\Server\Simulation\Event\AreaEffectCloudRemoved;
@@ -184,6 +195,10 @@ use Throwable;
 /** Bounded single-threaded composition root for transport, protocol, and simulation. */
 final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, RuntimeIdleAdvisor
 {
+    private ?DisplayRegistry $displayRegistry = null;
+
+    /** @var array<int, true> */
+    private array $displayBoundSimulations = [];
     private const int MAXIMUM_PLAYER_COMMAND_OUTPUT_MESSAGES = 256;
     private const int MAXIMUM_PLAYER_COMMAND_OUTPUT_MESSAGE_BYTES = 4_096;
     private const int DEFERRED_WORLD_PACKETS_PER_TICK = 4_096;
@@ -207,6 +222,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
 
     /** @var array<string, RuntimeSession> runtime session ID => session */
     private array $sessionsById = [];
+
+    /** @var array<string, list<string>> Runtime session ID => bounded server-authored skin echoes. */
+    private array $expectedSkinEchoes = [];
 
     private bool $closed = false;
     private int $nextRuntimeEntityId = 1;
@@ -1206,6 +1224,66 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         ))->succeeded();
     }
 
+    public function spawnPluginHuman(
+        ApiPosition $position,
+        string $name,
+        Skin $skin,
+        float $yaw = 0.0,
+        float $pitch = 0.0,
+        \Bedriox\Api\Visibility\VisibilityPolicy $visibility = new \Bedriox\Api\Visibility\VisibilityPolicy(),
+    ): Human {
+        $position->validateResolved();
+        $world = $position->world
+            ?? throw new \LogicException('Human spawn position must identify a loaded world.');
+        $dimension = $position->dimension ?? WorldDimension::OVERWORLD;
+        $runtime = $this->worldRuntimes?->get($world->id(), $dimension);
+        if ($runtime !== null && $runtime->handle->isSameLoad($world)) {
+            return $runtime->simulation->spawnHuman($position, $name, $skin, $yaw, $pitch, $visibility);
+        }
+        $defaultWorldMatches = $this->world->worldId() === $world->id()
+            && $this->world->dimension() === $dimension;
+        if (!$defaultWorldMatches) {
+            throw new \RuntimeException('Human spawn target world is not loaded.');
+        }
+
+        return $this->world->spawnHuman($position, $name, $skin, $yaw, $pitch, $visibility);
+    }
+
+    public function setDisplayRegistry(DisplayRegistry $registry): void
+    {
+        if ($this->displayRegistry !== null && $this->displayRegistry !== $registry) {
+            throw new \LogicException('Display registry is already bound to this runtime.');
+        }
+        $this->displayRegistry = $registry;
+        $this->ensureDisplayBindings();
+    }
+
+    public function displayChanged(TextDisplay $display, DisplayChange $change, ?ApiPlayer $player = null): void
+    {
+        $this->ensureDisplayBindings();
+        foreach ($this->simulations() as $simulation) {
+            $simulation->displayChanged($display, $change, $player);
+        }
+    }
+
+    private function ensureDisplayBindings(): void
+    {
+        if ($this->displayRegistry === null) {
+            return;
+        }
+        foreach ($this->simulations() as $simulation) {
+            $id = spl_object_id($simulation);
+            if (isset($this->displayBoundSimulations[$id])) {
+                continue;
+            }
+            $simulation->setDisplayRegistry($this->displayRegistry);
+            foreach ($this->displayRegistry->all() as $display) {
+                $simulation->displayChanged($display, DisplayChange::CREATED);
+            }
+            $this->displayBoundSimulations[$id] = true;
+        }
+    }
+
     /** Refreshes one connected player's command authority after a persisted permission change. */
     public function refreshPlayerAuthority(string $uuid, bool $includeAbilities): void
     {
@@ -1332,6 +1410,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         $completedTicks = 0;
         $this->performance?->beginTick($pollStarted);
         try {
+            $this->ensureDisplayBindings();
             if ($this->worldOperations !== null) {
                 $worldOperationsStarted = hrtime(true);
                 $processedWorldOperations = $this->worldOperations->poll();
@@ -1556,6 +1635,18 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                             continue;
                         }
                         $changedChunkSet = array_fill_keys($changedChunkKeys, true);
+                        $activeSimulation->synchronizeDeliveredChunkVisibility(
+                            $session->id,
+                            $this->currentChunkVisibility($session, $changedChunkKeys),
+                        );
+                        foreach ($activeSimulation->reconcileDisplayVisibilityForSession(
+                            $session->id,
+                            $changedChunkSet,
+                        ) as $visibilityEvent) {
+                            if (!$this->dispatchWorldEvent($visibilityEvent, $directedCount)) {
+                                return false;
+                            }
+                        }
                         $this->enqueueActorVisibilityReconciliation(
                             $session->id,
                             false,
@@ -1830,6 +1921,18 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                             $changedChunkKeys = $session?->play?->takeChunkVisibilityChanges() ?? [];
                             if ($changedChunkKeys !== []) {
                                 $changedChunkSet = array_fill_keys($changedChunkKeys, true);
+                                $activeSimulation->synchronizeDeliveredChunkVisibility(
+                                    $event->player->sessionId,
+                                    $this->currentChunkVisibility($session, $changedChunkKeys),
+                                );
+                                foreach ($activeSimulation->reconcileDisplayVisibilityForSession(
+                                    $event->player->sessionId,
+                                    $changedChunkSet,
+                                ) as $displayVisibilityEvent) {
+                                    if (!$this->dispatchWorldEvent($displayVisibilityEvent, $directedCount)) {
+                                        return false;
+                                    }
+                                }
                                 $this->enqueueActorVisibilityReconciliation(
                                     $event->player->sessionId,
                                     false,
@@ -1900,6 +2003,18 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                             $viewerVisibilityChanged = $changedChunkKeys !== [];
                             if ($viewerVisibilityChanged) {
                                 $changedChunkSet = array_fill_keys($changedChunkKeys, true);
+                                $activeSimulation->synchronizeDeliveredChunkVisibility(
+                                    $event->authoritativePlayer->sessionId,
+                                    $this->currentChunkVisibility($session, $changedChunkKeys),
+                                );
+                                foreach ($activeSimulation->reconcileDisplayVisibilityForSession(
+                                    $event->authoritativePlayer->sessionId,
+                                    $changedChunkSet,
+                                ) as $displayVisibilityEvent) {
+                                    if (!$this->dispatchWorldEvent($displayVisibilityEvent, $directedCount)) {
+                                        return false;
+                                    }
+                                }
                                 $this->enqueueActorVisibilityReconciliation(
                                     $event->authoritativePlayer->sessionId,
                                     false,
@@ -2091,6 +2206,17 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                                 ])),
                                 $event->messageRecipientSessionIds,
                             );
+                        } elseif ($event instanceof \Bedriox\Server\Simulation\Event\PlayerPresentationChanged) {
+                            $event = new \Bedriox\Server\Simulation\Event\PlayerPresentationChanged(
+                                $event->player,
+                                array_values(array_unique([
+                                    $event->player->sessionId,
+                                    ...array_intersect(
+                                        $event->recipientSessionIds,
+                                        $this->actorVisibility->viewersOf($event->player->sessionId),
+                                    ),
+                                ])),
+                            );
                         }
                         if ($event instanceof PlayerDisconnected) {
                             foreach ($this->actorVisibility->remove($event->sessionId) as $visibilityEvent) {
@@ -2102,10 +2228,14 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                             $event = new EmotePerformed(
                                 $event->senderSessionId,
                                 $event->emoteId,
-                                array_values(array_intersect(
-                                    $event->recipientSessionIds,
-                                    $this->actorVisibility->viewersOf($event->senderSessionId),
-                                )),
+                                array_values(array_unique([
+                                    ...array_intersect(
+                                        $event->recipientSessionIds,
+                                        $this->actorVisibility->viewersOf($event->senderSessionId),
+                                    ),
+                                    ...($event->includeOwner ? [$event->senderSessionId] : []),
+                                ])),
+                                $event->includeOwner,
                             );
                         } elseif ($event instanceof ArmSwung) {
                             $event = new ArmSwung(
@@ -2914,6 +3044,13 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     return;
                 }
             }
+            foreach ($session->play->drainSkinChanges() as $skinChange) {
+                if (!$this->changePlayerSkin($session, $skinChange)) {
+                    $this->disconnect($key, 'player_skin_change_failed');
+
+                    return;
+                }
+            }
             if (!$this->dispatchPlayerCommands($session)) {
                 $this->disconnect($key, 'player_command_dispatch_failed');
                 return;
@@ -3174,6 +3311,62 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 fn(): bool => $this->acceptPluginAction(
                     fn(): bool => $this->dismountPlayer($identity),
                 ),
+                fn(\Bedriox\Api\Entity\Value\Motion $motion): bool => $this->acceptPluginAction(
+                    fn(): bool => $this->simulationForSession($session)?->setPluginPlayerMotion($identity, $motion) ?? false,
+                ),
+                fn(\Bedriox\Api\Entity\Value\EmoteId $emote): bool => $this->acceptPluginAction(
+                    fn(): bool => $this->simulationForSession($session)?->playPluginPlayerEmote($identity, $emote) ?? false,
+                ),
+                fn(float $yaw, float $pitch): bool => $this->acceptPluginAction(
+                    fn(): bool => $this->simulationForSession($session)?->setPluginPlayerRotation(
+                        $identity,
+                        $yaw,
+                        $pitch,
+                    ) ?? false,
+                ),
+                fn(string $nameTag): bool => $this->acceptPluginAction(
+                    fn(): bool => $this->simulationForSession($session)?->setPluginPlayerPresentation(
+                        $identity,
+                        'nameTag',
+                        $nameTag,
+                    ) ?? false,
+                ),
+                fn(bool $visible): bool => $this->acceptPluginAction(
+                    fn(): bool => $this->simulationForSession($session)?->setPluginPlayerPresentation(
+                        $identity,
+                        'nameTagVisible',
+                        $visible,
+                    ) ?? false,
+                ),
+                fn(bool $immobile): bool => $this->acceptPluginAction(
+                    fn(): bool => $this->simulationForSession($session)?->setPluginPlayerPresentation(
+                        $identity,
+                        'immobile',
+                        $immobile,
+                    ) ?? false,
+                ),
+                fn(bool $invisible): bool => $this->acceptPluginAction(
+                    fn(): bool => $this->simulationForSession($session)?->setPluginPlayerPresentation(
+                        $identity,
+                        'invisible',
+                        $invisible,
+                    ) ?? false,
+                ),
+                fn(float $scale): bool => $this->acceptPluginAction(
+                    fn(): bool => $this->simulationForSession($session)?->setPluginPlayerPresentation(
+                        $identity,
+                        'scale',
+                        $scale,
+                    ) ?? false,
+                ),
+                fn(bool $enabled): bool => $this->acceptPluginAction(
+                    fn(): bool => $this->simulationForSession($session)?->setPluginPlayerPresentation(
+                        $identity,
+                        'gravity',
+                        $enabled,
+                    ) ?? false,
+                ),
+                skin: self::apiSkin($ready->login->clientData),
             );
             $this->logJoining($session, $ready->login->displayName);
             $this->flush($key, $session);
@@ -3478,6 +3671,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $this->sessions[$key],
             $this->sessionEndpoints[$session->id],
             $this->sessionsById[$session->id],
+            $this->expectedSkinEchoes[$session->id],
             $this->deliveredOnlinePlayerCommandRevisions[$key],
             $this->lastPeerMovementBroadcastTicks[$session->id],
             $this->peerMovementBroadcastPhaseSeeds[$session->id],
@@ -4128,12 +4322,12 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         $old = $this->fallingBlockActorViewers[$worldId][$runtimeId] ?? [];
         $eligible = $old;
         foreach (array_keys($eligible) as $recipient) {
-            if (!$this->transientActorViewerCanSee($recipient, $worldId, $entity->internalPosition())) {
+            if (!$this->fallingBlockViewerCanSee($recipient, $worldId, $entity)) {
                 unset($eligible[$recipient]);
             }
         }
         foreach (array_values(array_unique($event->recipientSessionIds)) as $recipient) {
-            if ($this->transientActorViewerCanSee($recipient, $worldId, $entity->internalPosition())) {
+            if ($this->fallingBlockViewerCanSee($recipient, $worldId, $entity)) {
                 $eligible[$recipient] = true;
             } else {
                 unset($eligible[$recipient]);
@@ -4172,6 +4366,19 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
 
         return $events;
+    }
+
+    private function fallingBlockViewerCanSee(
+        string $sessionId,
+        string $worldId,
+        FallingBlockEntity $entity,
+    ): bool {
+        $viewer = $this->sessionById($sessionId);
+        $playerUuid = $viewer?->bootstrap?->identity->uuid ?? $viewer?->play?->login()->identity;
+
+        return $playerUuid !== null
+            && $entity->visibilityAllows($playerUuid)
+            && $this->transientActorViewerCanSee($sessionId, $worldId, $entity->internalPosition());
     }
 
     /**
@@ -4251,11 +4458,23 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 $recipients = array_values(array_unique($event->recipientSessionIds));
                 foreach ($recipients as $recipient) {
                     unset($this->entityActorViewers[$worldId][$runtimeId][$recipient]);
+                    $this->simulationForProcessingWorld()?->synchronizeEntityActorDelivery(
+                        $recipient,
+                        $runtimeId,
+                        false,
+                    );
                 }
 
                 return $recipients === [] ? [] : [new EntityActorRemoved($entity, $recipients, false)];
             }
             $viewers = array_keys($this->entityActorViewers[$worldId][$runtimeId] ?? []);
+            foreach ($viewers as $viewer) {
+                $this->simulationForProcessingWorld()?->synchronizeEntityActorDelivery(
+                    $viewer,
+                    $runtimeId,
+                    false,
+                );
+            }
             unset(
                 $this->entityActors[$worldId][$runtimeId],
                 $this->entityActorNoAi[$worldId][$runtimeId],
@@ -4272,24 +4491,10 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         if ($event instanceof EntityActorSpawned) {
             $this->entityActorNoAi[$worldId][$runtimeId] = $event->noAi;
         }
-        $previous = $this->entityActorViewers[$worldId][$runtimeId] ?? [];
-        foreach (array_keys($previous) as $recipient) {
-            if (!$this->entityActorViewerCanSee($recipient, $entity)) {
-                unset($previous[$recipient]);
-            }
-        }
-        $eligible = $previous;
-        foreach (array_values(array_unique($event->recipientSessionIds)) as $recipient) {
-            if ($this->entityActorViewerCanSee($recipient, $entity)) {
-                $eligible[$recipient] = true;
-            } else {
-                unset($eligible[$recipient]);
-            }
-        }
-        $old = $this->entityActorViewers[$worldId][$runtimeId] ?? [];
-        $this->entityActorViewers[$worldId][$runtimeId] = $eligible;
-        $appeared = array_keys(array_diff_key($eligible, $old));
-        $disappeared = array_keys(array_diff_key($old, $eligible));
+        [$appeared, $disappeared, $continuing] = $this->reconcileEntityActorAudience(
+            $entity,
+            $event->recipientSessionIds,
+        );
         $events = [];
         if ($disappeared !== []) {
             $events[] = new EntityActorRemoved($entity, $disappeared);
@@ -4301,7 +4506,6 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 $this->entityActorNoAi[$worldId][$runtimeId] ?? false,
             );
         }
-        $continuing = array_keys(array_intersect_key($eligible, $old));
         if ($continuing === []) {
             return $events;
         }
@@ -4314,6 +4518,49 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
 
         return $events;
+    }
+
+    /**
+     * Reconciles durable actor delivery state against policy and spatial admission.
+     *
+     * @param list<string> $candidateSessionIds
+     * @return array{list<string>, list<string>, list<string>}
+     */
+    private function reconcileEntityActorAudience(
+        AbstractLivingEntity $entity,
+        array $candidateSessionIds,
+    ): array {
+        $worldId = $this->processingWorldId ?? 'world';
+        $runtimeId = $entity->getRuntimeId();
+        $old = $this->entityActorViewers[$worldId][$runtimeId] ?? [];
+        $eligible = $old;
+        foreach (array_keys($eligible) as $sessionId) {
+            if (!$this->entityActorViewerCanSee($sessionId, $entity)) {
+                unset($eligible[$sessionId]);
+            }
+        }
+        foreach (array_values(array_unique($candidateSessionIds)) as $sessionId) {
+            if ($this->entityActorViewerCanSee($sessionId, $entity)) {
+                $eligible[$sessionId] = true;
+            } else {
+                unset($eligible[$sessionId]);
+            }
+        }
+        $this->entityActorViewers[$worldId][$runtimeId] = $eligible;
+
+        $simulation = $this->simulationForProcessingWorld();
+        foreach (array_keys(array_diff_key($eligible, $old)) as $sessionId) {
+            $simulation?->synchronizeEntityActorDelivery($sessionId, $runtimeId, true);
+        }
+        foreach (array_keys(array_diff_key($old, $eligible)) as $sessionId) {
+            $simulation?->synchronizeEntityActorDelivery($sessionId, $runtimeId, false);
+        }
+
+        return [
+            array_keys(array_diff_key($eligible, $old)),
+            array_keys(array_diff_key($old, $eligible)),
+            array_keys(array_intersect_key($eligible, $old)),
+        ];
     }
 
     /**
@@ -4345,11 +4592,14 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private function entityActorViewerCanSee(string $sessionId, AbstractLivingEntity $entity): bool
     {
         $viewer = $this->sessionById($sessionId);
+        $playerUuid = $viewer?->bootstrap?->identity->uuid ?? $viewer?->play?->login()->identity;
         $position = $entity->internalPosition();
         $visibilityX = $entity instanceof EnderDragonEntity ? 0.0 : $position->x;
         $visibilityZ = $entity instanceof EnderDragonEntity ? 0.0 : $position->z;
 
         return $viewer?->phase === SessionPhase::SPAWNED
+            && $playerUuid !== null
+            && $entity->visibilityAllows($playerUuid)
             && $this->runtimePollKeyForSession($viewer) === ($this->processingWorldId ?? 'world')
             && ($viewer->play?->hasSentChunkAt(
                 $visibilityX,
@@ -4367,9 +4617,40 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         return self::positionChunkKey($position->x, $position->z);
     }
 
+    private function simulationForProcessingWorld(): ?WorldSimulation
+    {
+        if ($this->processingWorldId === null || $this->worldRuntimes === null) {
+            return $this->processingWorldId === null ? null : $this->world;
+        }
+
+        return $this->worldRuntimes->runtimeForPollKey($this->processingWorldId)?->simulation;
+    }
+
     private static function positionChunkKey(float $x, float $z): string
     {
         return (int) floor($x / 16.0) . ':' . (int) floor($z / 16.0);
+    }
+
+    /**
+     * @param list<string> $chunkKeys
+     * @return array<string, bool>
+     */
+    private function currentChunkVisibility(RuntimeSession $session, array $chunkKeys): array
+    {
+        $visibility = [];
+        foreach ($chunkKeys as $chunkKey) {
+            $parts = explode(':', $chunkKey, 2);
+            if (count($parts) !== 2 || filter_var($parts[0], FILTER_VALIDATE_INT) === false
+                || filter_var($parts[1], FILTER_VALIDATE_INT) === false) {
+                continue;
+            }
+            $visibility[$chunkKey] = $session->play?->hasSentChunkAt(
+                ((int) $parts[0]) * 16.0,
+                ((int) $parts[1]) * 16.0,
+            ) ?? false;
+        }
+
+        return $visibility;
     }
 
     private function filterBlockRecipients(
@@ -4587,8 +4868,30 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         ));
     }
 
-    private function dispatchWorldEvent(WorldEvent $event, int &$directedCount): bool
-    {
+    private function dispatchWorldEvent(
+        WorldEvent $event,
+        int &$directedCount,
+        bool $entityAudienceReconciled = false,
+    ): bool {
+        if ($event instanceof \Bedriox\Server\Simulation\Event\ActorMounted
+            || $event instanceof \Bedriox\Server\Simulation\Event\ActorDismounted) {
+            $event = $this->filterActorLinkEvent($event);
+            if ($event === null) {
+                return true;
+            }
+        }
+        if (!$entityAudienceReconciled) {
+            $entityEvents = $this->reconcileSupplementalEntityActorEvent($event);
+            if ($entityEvents !== null) {
+                foreach ($entityEvents as $entityEvent) {
+                    if (!$this->dispatchWorldEvent($entityEvent, $directedCount, true)) {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+        }
         if ($event instanceof EnderDragonBossBarChanged) {
             $worldId = $this->processingWorldId ?? 'world';
             $requestedRecipients = count($event->recipientSessionIds);
@@ -4703,6 +5006,167 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
 
         return true;
+    }
+
+    private function filterActorLinkEvent(
+        \Bedriox\Server\Simulation\Event\ActorMounted|\Bedriox\Server\Simulation\Event\ActorDismounted $event,
+    ): \Bedriox\Server\Simulation\Event\ActorMounted|\Bedriox\Server\Simulation\Event\ActorDismounted|null {
+        $recipients = array_values(array_filter(
+            array_values(array_unique($event->recipientSessionIds)),
+            fn(string $recipient): bool => $this->actorRuntimeIdVisibleTo($event->vehicleRuntimeId, $recipient)
+                && $this->actorRuntimeIdVisibleTo($event->passengerRuntimeId, $recipient),
+        ));
+        if ($recipients === []) {
+            return null;
+        }
+
+        if ($event instanceof \Bedriox\Server\Simulation\Event\ActorMounted) {
+            return new \Bedriox\Server\Simulation\Event\ActorMounted(
+                $event->vehicleRuntimeId,
+                $event->passengerRuntimeId,
+                $event->seat,
+                $event->seatOffset,
+                $event->riderInitiated,
+                $event->passenger,
+                $recipients,
+            );
+        }
+
+        return new \Bedriox\Server\Simulation\Event\ActorDismounted(
+            $event->vehicleRuntimeId,
+            $event->passengerRuntimeId,
+            $event->passenger,
+            $recipients,
+            $event->resetHorseJumpPresentation,
+        );
+    }
+
+    private function actorRuntimeIdVisibleTo(int $runtimeId, string $recipient): bool
+    {
+        $worldId = $this->processingWorldId ?? 'world';
+        if (isset($this->entityActors[$worldId][$runtimeId])) {
+            return isset($this->entityActorViewers[$worldId][$runtimeId][$recipient]);
+        }
+        $simulation = $this->simulationForProcessingWorld();
+        if ($simulation === null) {
+            return false;
+        }
+        foreach ($this->sessionsById as $session) {
+            if ($session->play === null || $this->runtimePollKeyForSession($session) !== $worldId) {
+                continue;
+            }
+            $identity = $session->play->login()->identity;
+            $player = $simulation->authoritativePlayer($identity);
+            if ($player?->runtimeActorId !== $runtimeId) {
+                continue;
+            }
+
+            return $session->id === $recipient
+                || in_array($recipient, $this->actorVisibility->viewersOf($session->id), true);
+        }
+
+        return false;
+    }
+
+    /**
+     * Applies the same durable viewer admission to actor projections which do not own lifecycle reconciliation.
+     *
+     * @return null|list<WorldEvent> Null means the event is not an entity-actor projection.
+     */
+    private function reconcileSupplementalEntityActorEvent(WorldEvent $event): ?array
+    {
+        $entity = match (true) {
+            $event instanceof \Bedriox\Server\Simulation\Event\EntityActorAnimated,
+            $event instanceof \Bedriox\Server\Simulation\Event\EntityActorBodyEquipmentChanged,
+            $event instanceof \Bedriox\Server\Simulation\Event\EntityActorEffectChanged,
+            $event instanceof \Bedriox\Server\Simulation\Event\EntityActorEquipmentChanged,
+            $event instanceof \Bedriox\Server\Simulation\Event\EntityActorHealthChanged,
+            $event instanceof \Bedriox\Server\Simulation\Event\EntityActorMetadataChanged,
+            $event instanceof \Bedriox\Server\Simulation\Event\EntityActorAttackStarted => $event->entity,
+            $event instanceof \Bedriox\Server\Simulation\Event\AnimalLovePresented => $event->animal,
+            $event instanceof \Bedriox\Server\Simulation\Event\EntityTotemConsumedPresented,
+            $event instanceof \Bedriox\Server\Simulation\Event\TameAttemptPresented => $event->entity,
+            $event instanceof \Bedriox\Server\Simulation\Event\HumanSkinChanged => $event->human,
+            default => null,
+        };
+        if (!$entity instanceof AbstractLivingEntity) {
+            return null;
+        }
+
+        $requestedRecipients = array_values(array_unique($event->recipients()));
+        [$appeared, $disappeared, $continuing] = $this->reconcileEntityActorAudience(
+            $entity,
+            $requestedRecipients,
+        );
+        $events = [];
+        if ($disappeared !== []) {
+            $events[] = new EntityActorRemoved($entity, $disappeared);
+        }
+        if ($appeared !== []) {
+            $events[] = new EntityActorSpawned(
+                $entity,
+                $appeared,
+                $this->entityActorNoAi[$this->processingWorldId ?? 'world'][$entity->getRuntimeId()] ?? false,
+            );
+        }
+        $recipients = array_values(array_intersect($requestedRecipients, $continuing));
+        if ($recipients === []) {
+            return $events;
+        }
+        $events[] = match (true) {
+            $event instanceof \Bedriox\Server\Simulation\Event\EntityActorAnimated =>
+                new \Bedriox\Server\Simulation\Event\EntityActorAnimated(
+                    $entity,
+                    $event->animation,
+                    $recipients,
+                ),
+            $event instanceof \Bedriox\Server\Simulation\Event\EntityActorBodyEquipmentChanged =>
+                new \Bedriox\Server\Simulation\Event\EntityActorBodyEquipmentChanged($entity, $recipients),
+            $event instanceof \Bedriox\Server\Simulation\Event\EntityActorEffectChanged =>
+                new \Bedriox\Server\Simulation\Event\EntityActorEffectChanged(
+                    $entity,
+                    $event->type,
+                    $event->effect,
+                    $event->tick,
+                    $event->replacesExisting,
+                    $recipients,
+                ),
+            $event instanceof \Bedriox\Server\Simulation\Event\EntityActorEquipmentChanged =>
+                new \Bedriox\Server\Simulation\Event\EntityActorEquipmentChanged(
+                    $entity,
+                    $event->tick,
+                    $event->changedSlots,
+                    $recipients,
+                ),
+            $event instanceof \Bedriox\Server\Simulation\Event\EntityActorHealthChanged =>
+                new \Bedriox\Server\Simulation\Event\EntityActorHealthChanged(
+                    $entity,
+                    $event->tick,
+                    $recipients,
+                ),
+            $event instanceof \Bedriox\Server\Simulation\Event\EntityActorMetadataChanged =>
+                new \Bedriox\Server\Simulation\Event\EntityActorMetadataChanged(
+                    $entity,
+                    $event->tick,
+                    $recipients,
+                    $event->noAi,
+                ),
+            $event instanceof \Bedriox\Server\Simulation\Event\EntityActorAttackStarted =>
+                new \Bedriox\Server\Simulation\Event\EntityActorAttackStarted($event->entity, $recipients),
+            $event instanceof \Bedriox\Server\Simulation\Event\AnimalLovePresented =>
+                new \Bedriox\Server\Simulation\Event\AnimalLovePresented($event->animal, $recipients),
+            $event instanceof \Bedriox\Server\Simulation\Event\EntityTotemConsumedPresented =>
+                new \Bedriox\Server\Simulation\Event\EntityTotemConsumedPresented($entity, $recipients),
+            $event instanceof \Bedriox\Server\Simulation\Event\TameAttemptPresented =>
+                new \Bedriox\Server\Simulation\Event\TameAttemptPresented(
+                    $entity,
+                    $event->succeeded,
+                    $recipients,
+                ),
+            default => new \Bedriox\Server\Simulation\Event\HumanSkinChanged($event->human, $recipients),
+        };
+
+        return $events;
     }
 
     /**
@@ -5641,6 +6105,204 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private static function rawEndpointKey(string $address, int $port): string
     {
         return $address . ':' . $port;
+    }
+
+    private function changePlayerSkin(RuntimeSession $session, PlayerSkinPacket $packet): bool
+    {
+        $simulation = $this->simulationForSession($session);
+        $identity = $session->play?->login()->identity;
+        if ($simulation === null || $identity === null) {
+            return false;
+        }
+        $player = $simulation->authoritativePlayer($identity);
+        $previous = $this->playerConnections->skin($identity);
+        if ($player === null || $previous === null) {
+            return false;
+        }
+        $requested = self::apiSkinFromProtocol($packet->skin);
+        if ($this->consumeExpectedSkinEcho($session->id, $requested)) {
+            return true;
+        }
+        $accepted = $this->pluginEvents === null
+            ? $requested
+            : $this->pluginEvents->authorizeSkinChange($player, $previous, $requested);
+        if ($accepted === null) {
+            $correction = new PlayerSkinPacket(
+                $identity,
+                self::protocolSkinFromApi($previous),
+                $previous->id,
+                $requested->id,
+                false,
+            );
+            if (!$session->play->queuePacket($correction)) {
+                return false;
+            }
+            $this->expectSkinEcho($session->id, $previous);
+
+            return true;
+        }
+        if (!$this->playerConnections->updateSkin($identity, $accepted)) {
+            return false;
+        }
+        $outgoing = new PlayerSkinPacket(
+            $identity,
+            self::protocolSkinFromApi($accepted),
+            $accepted->id,
+            $previous->id,
+            false,
+        );
+        $recipients = array_values(array_unique([
+            $session->id,
+            ...$this->actorVisibility->viewersOf($session->id),
+        ]));
+        foreach ($recipients as $recipient) {
+            $candidate = $this->sessionById($recipient);
+            if ($candidate?->play === null || $candidate->phase !== SessionPhase::SPAWNED
+                || $this->simulationForSession($candidate) !== $simulation
+                || !$candidate->play->queuePacket($outgoing)) {
+                continue;
+            }
+            if ($candidate->id === $session->id) {
+                $this->expectSkinEcho($session->id, $accepted);
+            }
+        }
+        $this->pluginEvents?->skinChanged($player, $previous, $accepted);
+
+        return true;
+    }
+
+    private function expectSkinEcho(string $sessionId, Skin $skin): void
+    {
+        $expected = $this->expectedSkinEchoes[$sessionId] ?? [];
+        $expected[] = self::skinFingerprint($skin);
+        if (count($expected) > 4) {
+            array_shift($expected);
+        }
+        $this->expectedSkinEchoes[$sessionId] = $expected;
+    }
+
+    private function consumeExpectedSkinEcho(string $sessionId, Skin $skin): bool
+    {
+        $expected = $this->expectedSkinEchoes[$sessionId] ?? [];
+        $index = array_search(self::skinFingerprint($skin), $expected, true);
+        if ($index === false) {
+            return false;
+        }
+        unset($expected[$index]);
+        if ($expected === []) {
+            unset($this->expectedSkinEchoes[$sessionId]);
+        } else {
+            $this->expectedSkinEchoes[$sessionId] = array_values($expected);
+        }
+
+        return true;
+    }
+
+    private static function skinFingerprint(Skin $skin): string
+    {
+        return hash('sha256', serialize($skin));
+    }
+
+    private static function apiSkinFromProtocol(ProtocolPlayerSkin $skin): Skin
+    {
+        return new Skin(
+            $skin->skinId,
+            $skin->skinWidth,
+            $skin->skinHeight,
+            $skin->skin,
+            $skin->resourcePatchJson,
+            $skin->geometryJson,
+            $skin->capeWidth,
+            $skin->capeHeight,
+            $skin->cape,
+            $skin->capeId,
+            array_map(
+                static fn(\Bedriox\Protocol\Identity\VerifiedAnimation $animation): SkinAnimation => new SkinAnimation(
+                    $animation->width,
+                    $animation->height,
+                    $animation->image,
+                    SkinAnimationType::from($animation->type),
+                    $animation->frames,
+                    SkinAnimationExpression::from($animation->expressionType),
+                ),
+                $skin->animations,
+            ),
+            $skin->animationDataJson,
+            $skin->geometryEngineVersion,
+            $skin->armSize,
+            $skin->skinColor,
+            $skin->premium,
+            $skin->capeOnClassic,
+        );
+    }
+
+    private static function protocolSkinFromApi(Skin $skin): ProtocolPlayerSkin
+    {
+        return new ProtocolPlayerSkin(
+            $skin->width,
+            $skin->height,
+            $skin->rgba,
+            $skin->capeWidth,
+            $skin->capeHeight,
+            $skin->capeRgba,
+            $skin->geometryJson,
+            array_map(
+                static fn(SkinAnimation $animation): \Bedriox\Protocol\Identity\VerifiedAnimation =>
+                    new \Bedriox\Protocol\Identity\VerifiedAnimation(
+                        $animation->width,
+                        $animation->height,
+                        $animation->rgba,
+                        $animation->type->value,
+                        $animation->frames,
+                        $animation->expression->value,
+                    ),
+                $skin->animations,
+            ),
+            $skin->id,
+            '',
+            $skin->resourcePatchJson,
+            $skin->geometryEngineVersion,
+            $skin->animationDataJson,
+            $skin->capeId,
+            $skin->id,
+            $skin->armSize,
+            $skin->skinColor,
+            $skin->premium,
+            $skin->capeOnClassic,
+        );
+    }
+
+    private static function apiSkin(VerifiedClientData $data): Skin
+    {
+        return new Skin(
+            $data->skinId,
+            $data->skinWidth,
+            $data->skinHeight,
+            $data->skin,
+            $data->skinResourcePatchJson,
+            $data->geometryJson,
+            $data->capeWidth,
+            $data->capeHeight,
+            $data->cape,
+            $data->capeId,
+            array_map(
+                static fn(\Bedriox\Protocol\Identity\VerifiedAnimation $animation): SkinAnimation => new SkinAnimation(
+                    $animation->width,
+                    $animation->height,
+                    $animation->image,
+                    SkinAnimationType::from($animation->type),
+                    $animation->frames,
+                    SkinAnimationExpression::from($animation->expressionType),
+                ),
+                $data->animations,
+            ),
+            $data->animationDataJson,
+            $data->geometryEngineVersion,
+            $data->armSize,
+            $data->skinColor,
+            $data->premium,
+            $data->capeOnClassic,
+        );
     }
 }
 

@@ -45,7 +45,7 @@ final class EndCrystalEntity extends AbstractMobEntity implements EndCrystal, In
     {
         parent::__construct($uniqueId, $runtimeId, VanillaEntityDefinitions::endCrystal(), $worldName, $position, new AiBehaviorDefinition(), new EntityMotion());
         $this->setAiEnabled(false);
-        $this->setGravityEnabled(false);
+        $this->applyGravityEnabled(false);
     }
 
     public function showsBase(): bool

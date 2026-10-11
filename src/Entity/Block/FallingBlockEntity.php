@@ -120,7 +120,7 @@ final class FallingBlockEntity extends AbstractEntity implements FallingBlock, I
             throw new InvalidArgumentException('Falling-block removal tick must not be negative.');
         }
         $this->settledRemovalTick = $removalTick;
-        $this->setMotion(new EntityMotion());
+        $this->applyMotion(new EntityMotion());
         $this->setOnGround(true);
     }
 

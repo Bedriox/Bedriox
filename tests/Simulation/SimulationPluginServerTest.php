@@ -47,9 +47,26 @@ final class SimulationPluginServerTest extends TestCase
             'getOnlinePlayers',
             'getPlayerByName',
             'getPlayerByUuid',
+            'getUptimeSeconds',
             'getWhitelist',
             'getWorldManager',
         ], $methods);
+    }
+
+    public function testUptimeUsesTheBoundedServerClockProjection(): void
+    {
+        $player = self::player();
+        $control = new FacadeRuntimeControl(true);
+        $server = new SimulationPluginServer(
+            'Example',
+            $control,
+            new PluginActionBuffer(),
+            static fn(): array => [$player],
+            static fn(string $uuid): ?Player => $uuid === $player->uuid ? $player : null,
+            static fn(): int => 123,
+        );
+
+        self::assertSame(123, $server->getUptimeSeconds());
     }
 
     public function testOnlinePlayersAndUuidLookupUseTheDiscoveryFacade(): void

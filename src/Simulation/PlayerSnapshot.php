@@ -64,5 +64,11 @@ final readonly class PlayerSnapshot
         public int $totalExperience = 0,
         public WorldDimension $dimension = WorldDimension::OVERWORLD,
         public bool $riding = false,
+        public string $nameTag = '',
+        public bool $nameTagVisible = true,
+        public bool $immobile = false,
+        public bool $invisible = false,
+        public float $scale = 1.0,
+        public bool $gravityEnabled = true,
     ) {}
 }

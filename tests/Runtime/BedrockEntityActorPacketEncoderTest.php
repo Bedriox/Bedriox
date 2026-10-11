@@ -423,7 +423,7 @@ final class BedrockEntityActorPacketEncoderTest extends TestCase
             new Position(4.0, 65.0, -2.0),
         );
         $zombie->moveTo('world', new Position(5.0, 66.0, -1.0), 35.0, -12.0);
-        $zombie->setMotion(new EntityMotion(0.2, 0.1, -0.3));
+        $zombie->applyMotion(new EntityMotion(0.2, 0.1, -0.3));
         $zombie->setOnGround(false);
         $event = new EntityActorMoved($zombie, 81, ['viewer-a', 'viewer-b'], true);
         $encoder = new BedrockWorldEventPacketEncoder();
@@ -528,7 +528,7 @@ final class BedrockEntityActorPacketEncoderTest extends TestCase
         $packets = $encoder->encode(new EntityActorSpawned($zombie, ['observer']), []);
 
         $zombie->moveTo('world', new Position(1.0, 64.0, 2.0), 90.0, -15.0);
-        $zombie->setMotion(new EntityMotion(0.25, 0.0, -0.5));
+        $zombie->applyMotion(new EntityMotion(0.25, 0.0, -0.5));
         $zombie->setOnGround(true);
         array_push($packets, ...$encoder->encode(new EntityActorMoved($zombie, 41, ['observer']), []));
 

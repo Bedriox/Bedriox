@@ -1472,7 +1472,7 @@ final class EntityPersistenceManager
             throw new LogicException('Loaded non-living entity unexpectedly contains health.');
         }
         $entity->restoreSpawnOwnership($record->spawnOrigin, $record->despawnPolicy);
-        $entity->setMotion($record->motion);
+        $entity->applyMotion($record->motion);
         $entity->restoreAgeTicks($record->ageTicks);
         if ($entity instanceof IntrinsicEntityPersistence) {
             $entity->restorePersistenceState(

@@ -43,6 +43,7 @@ final readonly class SimulationPluginApiBackend
         private ?WorldRuntimeManager $worldRuntimes = null,
         private ?ApiWorldManager $worldManager = null,
         private ?Whitelist $whitelist = null,
+        private int $startedNanoseconds = 0,
     ) {}
 
     /** @internal Plugin item definitions enter the simulation through this bounded registry. */
@@ -69,9 +70,24 @@ final readonly class SimulationPluginApiBackend
             $actions,
             $this->pluginPlayers(...),
             $this->pluginPlayer(...),
+            $this->uptimeSeconds(...),
             worldManager: $this->worldManager,
             whitelist: $this->whitelist,
         );
+    }
+
+    private function uptimeSeconds(): int
+    {
+        if ($this->startedNanoseconds <= 0) {
+            return 0;
+        }
+
+        $now = hrtime(true);
+        if (!is_int($now)) {
+            return 0;
+        }
+
+        return intdiv(max(0, $now - $this->startedNanoseconds), 1_000_000_000);
     }
 
     public function containerManagerFor(

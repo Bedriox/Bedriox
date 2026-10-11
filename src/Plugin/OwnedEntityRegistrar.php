@@ -23,23 +23,36 @@ namespace Bedriox\Server\Plugin;
 use Bedriox\Api\Entity\CustomEntityType;
 use Bedriox\Api\Entity\CustomMobDefinition;
 use Bedriox\Api\Entity\EntityRegistrar;
+use Bedriox\Api\Entity\Human;
+use Bedriox\Api\Entity\Skin;
+use Bedriox\Api\Visibility\VisibilityPolicy;
 use Bedriox\Api\World\Position;
+use Bedriox\Server\Plugin\Entity\HumanOwnershipRegistry;
 use Closure;
 use InvalidArgumentException;
+use Throwable;
 
 final readonly class OwnedEntityRegistrar implements EntityRegistrar
 {
     /** @var null|Closure(CustomEntityType, Position, float, float): bool */
     private ?Closure $spawner;
+    /** @var null|Closure(Position, string, Skin, float, float, VisibilityPolicy): Human */
+    private ?Closure $humanSpawner;
 
-    /** @param null|callable(CustomEntityType, Position, float, float): bool $spawner */
+    /**
+     * @param null|callable(CustomEntityType, Position, float, float): bool $spawner
+     * @param null|callable(Position, string, Skin, float, float, VisibilityPolicy): Human $humanSpawner
+     */
     public function __construct(
         private string $plugin,
         private PluginEntityRegistrar $registrar,
         private ?PluginActionBuffer $actions = null,
         ?callable $spawner = null,
+        ?callable $humanSpawner = null,
+        private ?HumanOwnershipRegistry $humanOwnership = null,
     ) {
         $this->spawner = $spawner === null ? null : Closure::fromCallable($spawner);
+        $this->humanSpawner = $humanSpawner === null ? null : Closure::fromCallable($humanSpawner);
     }
 
     public function register(CustomMobDefinition $definition, bool $replace = false): void
@@ -72,5 +85,30 @@ final readonly class OwnedEntityRegistrar implements EntityRegistrar
         } else {
             $spawn();
         }
+    }
+
+    public function spawnHuman(
+        Position $position,
+        string $name,
+        Skin $skin,
+        float $yaw = 0.0,
+        float $pitch = 0.0,
+        VisibilityPolicy $visibility = new VisibilityPolicy(),
+    ): Human {
+        $position->validate();
+        if ($this->humanSpawner === null) {
+            throw new PluginException('Human spawning is unavailable.');
+        }
+        $human = ($this->humanSpawner)($position, $name, $skin, $yaw, $pitch, $visibility);
+        try {
+            $this->humanOwnership?->track($this->plugin, $human);
+        } catch (Throwable $failure) {
+            if ($human->getController()->isAvailable()) {
+                $human->getController()->despawn();
+            }
+            throw $failure;
+        }
+
+        return $human;
     }
 }

@@ -63,6 +63,11 @@ final class SimulationCommandFactoryTest extends TestCase
         self::assertFalse($move->sprinting);
         self::assertSame('Hello, world', $chat->message);
         self::assertSame('00112233-4455-6677-8899-aabbccddeeff', $emote->emoteId);
+        $pickEntity = $factory->pickEntity('session-1', 42, 3, true);
+        self::assertSame(42, $pickEntity->actorRuntimeId);
+        self::assertSame(3, $pickEntity->hotbarSlot);
+        self::assertTrue($pickEntity->userDataRequested);
+        self::assertGreaterThan(0, $pickEntity->estimatedBytes());
         self::assertSame(7, $factory->closeContainer('session-1', 7)->windowId);
         self::assertSame(
             10,
@@ -100,6 +105,8 @@ final class SimulationCommandFactoryTest extends TestCase
         yield 'command-shaped chat' => [static fn(SimulationCommandFactory $factory) => $factory->chat('session', 1, '/stop')];
         yield 'non-canonical emote UUID' => [static fn(SimulationCommandFactory $factory) => $factory->emote('session', '00112233-4455-6677-8899-AABBCCDDEEFF')];
         yield 'container window outside byte range' => [static fn(SimulationCommandFactory $factory) => $factory->closeContainer('session', 256)];
+        yield 'entity pick without actor' => [static fn(SimulationCommandFactory $factory) => $factory->pickEntity('session', 0, 0, false)];
+        yield 'entity pick outside hotbar' => [static fn(SimulationCommandFactory $factory) => $factory->pickEntity('session', 1, 9, false)];
     }
 
     #[DataProvider('invalidInputProvider')]

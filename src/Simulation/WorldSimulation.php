@@ -28,6 +28,8 @@ use Bedriox\Api\Crafting\CraftingRecipe as ApiCraftingRecipe;
 use Bedriox\Api\Crafting\RecipeIngredient as ApiRecipeIngredient;
 use Bedriox\Api\Crafting\ShapedRecipe as ApiShapedRecipe;
 use Bedriox\Api\Crafting\ShapelessRecipe as ApiShapelessRecipe;
+use Bedriox\Api\Display\DisplayInteractionType;
+use Bedriox\Api\Display\TextDisplay;
 use Bedriox\Api\Effect\EffectCause;
 use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Effect\EffectType;
@@ -45,17 +47,21 @@ use Bedriox\Api\Entity\EntityCombustionCause;
 use Bedriox\Api\Entity\EntityDamageCause as ApiEntityDamageCause;
 use Bedriox\Api\Entity\EntityTargetReason;
 use Bedriox\Api\Entity\EntityType;
+use Bedriox\Api\Entity\Human;
 use Bedriox\Api\Entity\KnockbackCause as ApiKnockbackCause;
 use Bedriox\Api\Entity\KnockbackVector as ApiKnockbackVector;
 use Bedriox\Api\Entity\MobActivationState;
+use Bedriox\Api\Entity\Skin;
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\Value\BoatVariant;
+use Bedriox\Api\Entity\Value\EmoteId;
 use Bedriox\Api\Entity\Value\EntityBlockChangeReason;
 use Bedriox\Api\Entity\Value\EntityTransformReason;
 use Bedriox\Api\Entity\Value\LeashDetachReason;
 use Bedriox\Api\Entity\Value\LeashHolderType;
 use Bedriox\Api\Entity\Value\MooshroomStewEffect;
 use Bedriox\Api\Entity\Value\MooshroomVariant;
+use Bedriox\Api\Entity\Value\Motion;
 use Bedriox\Api\Entity\Value\MountReason;
 use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\Entity\Value\PandaActivity;
@@ -141,6 +147,8 @@ use Bedriox\Server\Entity\Experience\ExperienceOrbCollisionResolver;
 use Bedriox\Server\Entity\Experience\ExperienceOrbMotion;
 use Bedriox\Server\Entity\Experience\ExperienceOrbRegistry;
 use Bedriox\Server\Entity\Experience\ExperienceOrbTarget;
+use Bedriox\Server\Entity\Human\HumanEntity;
+use Bedriox\Server\Entity\Human\HumanEntityFactory;
 use Bedriox\Server\Entity\Item\DroppedItemCollisionResolver;
 use Bedriox\Server\Entity\Item\DroppedItemEntity;
 use Bedriox\Server\Entity\Item\ItemEntityMotion;
@@ -325,6 +333,8 @@ use Bedriox\Server\Player\PlayerIdentity;
 use Bedriox\Server\Player\PlayerInventory;
 use Bedriox\Server\Player\PlayerRegistry;
 use Bedriox\Server\Player\SupportedInventoryItem;
+use Bedriox\Server\Plugin\Display\DisplayChange;
+use Bedriox\Server\Plugin\Display\DisplayRegistry;
 use Bedriox\Server\Plugin\PluginActionBuffer;
 use Bedriox\Server\Plugin\PluginEntityLifecycleBridge;
 use Bedriox\Server\Simulation\Command\AcknowledgeRespawn;
@@ -349,6 +359,7 @@ use Bedriox\Server\Simulation\Command\MountPlayer;
 use Bedriox\Server\Simulation\Command\MovePlayer;
 use Bedriox\Server\Simulation\Command\PerformEmote;
 use Bedriox\Server\Simulation\Command\PickBlock;
+use Bedriox\Server\Simulation\Command\PickEntity;
 use Bedriox\Server\Simulation\Command\PlaceBlock;
 use Bedriox\Server\Simulation\Command\ReleaseItem;
 use Bedriox\Server\Simulation\Command\RemovePlayerEffect;
@@ -371,6 +382,7 @@ use Bedriox\Server\Simulation\Command\TeleportPlayer;
 use Bedriox\Server\Simulation\Command\UseItem;
 use Bedriox\Server\Simulation\Command\WorkstationRequest;
 use Bedriox\Server\Simulation\Command\WorldCommand;
+use Bedriox\Server\Simulation\Display\TextDisplayProjection;
 use Bedriox\Server\Simulation\Event\ActorDismounted;
 use Bedriox\Server\Simulation\Event\ActorMounted;
 use Bedriox\Server\Simulation\Event\AnimalLovePresented;
@@ -394,12 +406,14 @@ use Bedriox\Server\Simulation\Event\ContainerContentsChanged;
 use Bedriox\Server\Simulation\Event\ContainerOpened;
 use Bedriox\Server\Simulation\Event\ContainerViewerProjection;
 use Bedriox\Server\Simulation\Event\CraftingTableOpened;
+use Bedriox\Server\Simulation\Event\DisplayInteractionAccepted;
 use Bedriox\Server\Simulation\Event\EmotePerformed;
 use Bedriox\Server\Simulation\Event\EnchantingOptionsUpdated;
 use Bedriox\Server\Simulation\Event\EnderDragonBossBarAction;
 use Bedriox\Server\Simulation\Event\EnderDragonBossBarChanged;
 use Bedriox\Server\Simulation\Event\EndGatewayTransferRequested;
 use Bedriox\Server\Simulation\Event\EndPortalTransferRequested;
+use Bedriox\Server\Simulation\Event\EntityActorAnimated;
 use Bedriox\Server\Simulation\Event\EntityActorAttackStarted;
 use Bedriox\Server\Simulation\Event\EntityActorBodyEquipmentChanged;
 use Bedriox\Server\Simulation\Event\EntityActorDamaged;
@@ -424,6 +438,7 @@ use Bedriox\Server\Simulation\Event\FallingBlockActorSettled;
 use Bedriox\Server\Simulation\Event\FallingBlockActorSpawned;
 use Bedriox\Server\Simulation\Event\FurnaceUpdated;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
+use Bedriox\Server\Simulation\Event\HumanSkinChanged;
 use Bedriox\Server\Simulation\Event\InstantItemUsed;
 use Bedriox\Server\Simulation\Event\InventorySlotChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
@@ -451,6 +466,7 @@ use Bedriox\Server\Simulation\Event\PlayerJoined;
 use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
 use Bedriox\Server\Simulation\Event\PlayerMotionChanged;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
+use Bedriox\Server\Simulation\Event\PlayerPresentationChanged;
 use Bedriox\Server\Simulation\Event\PlayerRespawned;
 use Bedriox\Server\Simulation\Event\PortalTransferRequested;
 use Bedriox\Server\Simulation\Event\PotionSplashImpacted;
@@ -459,6 +475,9 @@ use Bedriox\Server\Simulation\Event\ProjectileRemoved;
 use Bedriox\Server\Simulation\Event\ProjectileSpawned;
 use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
 use Bedriox\Server\Simulation\Event\TameAttemptPresented;
+use Bedriox\Server\Simulation\Event\TextDisplayActorRemoved;
+use Bedriox\Server\Simulation\Event\TextDisplayActorSpawned;
+use Bedriox\Server\Simulation\Event\TextDisplayActorUpdated;
 use Bedriox\Server\Simulation\Event\WeatherChanged;
 use Bedriox\Server\Simulation\Event\WorldEvent;
 use Bedriox\Server\Worker\WorkerDispatcher;
@@ -530,6 +549,8 @@ final class WorldSimulation
     private const int MAXIMUM_VIRTUAL_CONTAINERS = 1_024;
     private const int MAXIMUM_PARTICLES_PER_PLUGIN_PER_TICK = 256;
     private const int MAXIMUM_PARTICLES_PER_WORLD_PER_TICK = 1_024;
+    private const int MAXIMUM_DISPLAY_VISIBILITY_CHECKS_PER_TICK = 256;
+    private const int FIRST_DISPLAY_RUNTIME_ID = 4_000_000_000;
 
     /** @var SplQueue<WorldCommand> */
     private SplQueue $commands;
@@ -586,6 +607,9 @@ final class WorldSimulation
 
     /** @var array<int, int> Runtime actor ID to last projected presentation revision. */
     private array $publishedEntityPresentationRevisions = [];
+
+    /** @var array<int, int> Human runtime actor ID to last projected skin revision. */
+    private array $publishedHumanSkinRevisions = [];
 
     /** @var array<int, float> Runtime actor ID to last projected health. */
     private array $publishedEntityHealth = [];
@@ -769,6 +793,30 @@ final class WorldSimulation
 
     /** @var array<string, int> */
     private array $particlesByPluginThisTick = [];
+
+    private ?DisplayRegistry $displayRegistry = null;
+
+    /** @var array<string, TextDisplayProjection> */
+    private array $displayProjections = [];
+
+    /** @var array<int, string> Interaction runtime ID to interaction UUID. */
+    private array $displayInteractionIds = [];
+
+    /** @var array<int, string> Interaction runtime ID to owning display projection key. */
+    private array $displayInteractionProjectionKeys = [];
+
+    /** @var array<string, array<string, true>> Session ID to delivered chunk keys. */
+    private array $deliveredChunkKeysBySession = [];
+
+    /** @var array<string, array<int, true>> Session ID to non-player actor runtime IDs delivered by the runtime. */
+    private array $deliveredEntityActorsBySession = [];
+
+    /** @var array<string, true> Sessions whose actor admission is owned by the network runtime. */
+    private array $runtimeAudienceAuthoritySessions = [];
+
+    private int $nextDisplayRuntimeId = self::FIRST_DISPLAY_RUNTIME_ID;
+
+    private int $displayVisibilityCursor = 0;
 
     private readonly ?ComplexCraftingRecipeEvaluator $complexCraftingRecipes;
 
@@ -1645,6 +1693,7 @@ final class WorldSimulation
         $stageCompletedNanoseconds = $nextStageNanoseconds;
         array_push($events, ...$this->advanceGeneralEntities());
         array_push($events, ...$this->closeInvalidEntityContainers());
+        array_push($events, ...$this->reconcileDisplayVisibility());
         array_push($events, ...$this->drainDeferredEvents());
         $stages['general_entities'] = hrtime(true) - $stageCompletedNanoseconds;
         $stages['entity_runtime'] = $this->lastEntityRuntimeNanoseconds;
@@ -1832,6 +1881,22 @@ final class WorldSimulation
         foreach ($this->announcedFallingBlocks as $entity) {
             $events[] = new FallingBlockActorRemoved($entity, [$player->sessionId], false);
         }
+        foreach ($this->displayProjections as $projection) {
+            if (!isset($projection->viewers[$player->sessionId])) {
+                continue;
+            }
+            unset($projection->viewers[$player->sessionId]);
+            $events[] = new TextDisplayActorRemoved(
+                $projection->textRuntimeId,
+                $projection->interactionRuntimeId,
+                [$player->sessionId],
+            );
+        }
+        unset(
+            $this->deliveredChunkKeysBySession[$player->sessionId],
+            $this->deliveredEntityActorsBySession[$player->sessionId],
+            $this->runtimeAudienceAuthoritySessions[$player->sessionId],
+        );
         $events[] = new PlayerDisconnected(
             $player->sessionId,
             $player->identity->uuid,
@@ -1909,6 +1974,7 @@ final class WorldSimulation
                 );
             }
         }
+        array_push($events, ...$this->displayArrivalEvents($player));
         foreach ($this->announcedFallingBlocks as $entity) {
             $events[] = new FallingBlockActorSpawned($entity, null, null, [$player->sessionId]);
         }
@@ -1952,6 +2018,64 @@ final class WorldSimulation
         }
 
         return $outcome;
+    }
+
+    /** Spawns one sessionless player-shaped entity into this authoritative world. */
+    public function spawnHuman(
+        ApiPosition $position,
+        string $name,
+        Skin $skin,
+        float $yaw = 0.0,
+        float $pitch = 0.0,
+        \Bedriox\Api\Visibility\VisibilityPolicy $visibility = new \Bedriox\Api\Visibility\VisibilityPolicy(),
+    ): Human {
+        $position->validateResolved();
+        if ($position->world?->id() !== $this->worldId
+            || ($position->dimension ?? WorldDimension::OVERWORLD) !== $this->dimension) {
+            throw new InvalidArgumentException('Human spawn position does not belong to this simulation.');
+        }
+        if (!is_finite($yaw) || !is_finite($pitch) || $pitch < -90.0 || $pitch > 90.0) {
+            throw new InvalidArgumentException('Human spawn rotation is outside its supported bounds.');
+        }
+        $factory = new HumanEntityFactory();
+        $entity = $this->entityRuntime->registry()->spawn(
+            fn(string $uniqueId, int $runtimeId): HumanEntity => $factory->create(
+                $uniqueId,
+                $runtimeId,
+                $this->worldId,
+                new Position($position->x, $position->y, $position->z),
+                $name,
+                $skin,
+                $yaw,
+                $pitch,
+                $position->world,
+                $this->dimension,
+            ),
+        );
+        if (!$entity instanceof HumanEntity) {
+            throw new \LogicException('Human factory returned an incompatible entity implementation.');
+        }
+        $entity->applyInitialVisibility($visibility);
+        $this->prepareLivingEntity($entity, true);
+        if ($this->pluginEvents !== null
+            && !$this->pluginEvents->allowEntitySpawn($entity, SpawnCause::PLUGIN)) {
+            $this->entityRuntime->remove($entity->getRuntimeId());
+            throw new \RuntimeException('Human spawn was cancelled by a plugin.');
+        }
+        $this->pluginEvents?->entitySpawned($entity, SpawnCause::PLUGIN);
+        $this->announcedEntities[$entity->getRuntimeId()] = $entity;
+        $entity->drainEquipmentChanges();
+        $entity->drainEffectChanges();
+        $this->publishedEntityHealth[$entity->getRuntimeId()] = $entity->getHealth();
+        $this->publishedEntityPresentationRevisions[$entity->getRuntimeId()] = $entity->presentationRevision();
+        $this->publishedHumanSkinRevisions[$entity->getRuntimeId()] = $entity->skinRevision();
+        $this->deferredEvents[] = new EntityActorSpawned(
+            $entity,
+            $this->players->recipients(),
+            true,
+        );
+
+        return $entity;
     }
 
     public function enableEntityPersistence(
@@ -3453,6 +3577,7 @@ final class WorldSimulation
         $this->advanceFoxDefenseAndAvoidance();
         array_push($events, ...$this->advanceGoatRams());
         $this->applyHoglinRepellentAvoidance();
+        $this->advancePluginNavigation();
         $entityRuntimeStartedNanoseconds = hrtime(true);
         $this->resolvePlayerEntityContacts();
         $tick = $this->entityRuntime->tick(
@@ -3498,7 +3623,7 @@ final class WorldSimulation
                 $passenger->suppressAiMovementUntil($this->tick + 2);
             }
             $vehiclePosition = $link->vehicle->internalPosition();
-            $passenger->setMotion(new EntityMotion());
+            $passenger->applyMotion(new EntityMotion());
             $passenger->moveTo(
                 $link->vehicle->getWorldName(),
                 new Position(
@@ -3567,6 +3692,7 @@ final class WorldSimulation
             unset($this->announcedEntities[$runtimeId]);
             unset($this->publishedEntityHealth[$runtimeId]);
             unset($this->publishedEntityPresentationRevisions[$runtimeId]);
+            unset($this->publishedHumanSkinRevisions[$runtimeId]);
             unset($this->entityTargets[$runtimeId]);
             $events[] = new EntityActorRemoved($entity, $recipients);
         }
@@ -3667,6 +3793,22 @@ final class WorldSimulation
                 !$this->entityAiEnabled || ($entity instanceof AbstractMobEntity && !$entity->isAiEnabled()),
             );
         }
+        foreach ($this->announcedEntities as $runtimeId => $entity) {
+            if (!$entity instanceof HumanEntity) {
+                continue;
+            }
+            $revision = $entity->skinRevision();
+            if (($this->publishedHumanSkinRevisions[$runtimeId] ?? -1) === $revision) {
+                continue;
+            }
+            $this->publishedHumanSkinRevisions[$runtimeId] = $revision;
+            $events[] = new HumanSkinChanged($entity, $recipients);
+        }
+        foreach ($this->announcedEntities as $entity) {
+            foreach ($entity->drainAnimationRequests() as $animation) {
+                $events[] = new EntityActorAnimated($entity, $animation, $recipients);
+            }
+        }
         foreach ($this->entityRuntime->registry()->all() as $entity) {
             if (!$entity instanceof AbstractMobEntity) {
                 continue;
@@ -3725,6 +3867,7 @@ final class WorldSimulation
                 unset($this->announcedEntities[$runtimeId]);
                 unset($this->publishedEntityHealth[$runtimeId]);
                 unset($this->publishedEntityPresentationRevisions[$runtimeId]);
+                unset($this->publishedHumanSkinRevisions[$runtimeId]);
                 $this->entityPersistence?->forgetEntity($entity->getUniqueId());
                 $events[] = new EntityActorRemoved($entity, $recipients);
             }
@@ -3735,6 +3878,35 @@ final class WorldSimulation
         $this->lastEntityPersistenceNanoseconds = hrtime(true) - $entityPersistenceStartedNanoseconds;
 
         return $events;
+    }
+
+    /** Consumes persistent plugin navigation intents before authoritative entity physics. */
+    private function advancePluginNavigation(): void
+    {
+        foreach ($this->entityRuntime->registry()->all() as $entity) {
+            if (!$entity instanceof AbstractMobEntity || $entity->isRemoved() || !$entity->isAlive()) {
+                continue;
+            }
+            $target = $entity->navigationTarget();
+            if ($target === null) {
+                continue;
+            }
+            $position = $entity->internalPosition();
+            if (hypot($target->x - $position->x, $target->z - $position->z) <= 0.5
+                && abs($target->y - $position->y) <= 1.0) {
+                $entity->clearNavigation();
+                HorizontalSteering::stop($entity);
+                continue;
+            }
+            $waypoint = $this->navigation?->waypoint($entity, $target, $this->tick) ?? $target;
+            HorizontalSteering::towardWaypoint(
+                $entity,
+                $waypoint,
+                $entity->navigationSpeed(),
+                $this->tick,
+                $this->entityAiWorld,
+            );
+        }
     }
 
     private function advanceLlamaCaravans(): void
@@ -4321,7 +4493,7 @@ final class WorldSimulation
                     $to = $prey->internalPosition();
                     $horizontal = max(0.000_001, hypot($to->x - $from->x, $to->z - $from->z));
                     $predator->beginPounce();
-                    $predator->setMotion(new EntityMotion(
+                    $predator->applyMotion(new EntityMotion(
                         (($to->x - $from->x) / $horizontal) * 0.42,
                         0.52,
                         (($to->z - $from->z) / $horizontal) * 0.42,
@@ -4532,7 +4704,7 @@ final class WorldSimulation
             $motion,
         ) ?? ($this->pluginEvents === null ? $motion : null);
         if ($motion !== null) {
-            $target->setMotion(new EntityMotion($motion->x, $motion->y, $motion->z));
+            $target->applyMotion(new EntityMotion($motion->x, $motion->y, $motion->z));
             $this->pluginEvents?->knockedBack($target, $goat, ApiKnockbackCause::MELEE, $motion);
         }
 
@@ -4603,7 +4775,7 @@ final class WorldSimulation
         }
         $moved = $attachment->position != $shulker->internalPosition();
         $shulker->setAttachmentFace($attachment->face);
-        $shulker->setMotion(new EntityMotion());
+        $shulker->applyMotion(new EntityMotion());
         if ($moved) {
             $this->entityRuntime->registry()->move(
                 $shulker->getRuntimeId(),
@@ -4636,7 +4808,7 @@ final class WorldSimulation
         if ($transfer === null) {
             return false;
         }
-        $entity->setMotion(new EntityMotion());
+        $entity->applyMotion(new EntityMotion());
         $entity->setOnGround(false);
         $this->entityRuntime->registry()->move(
             $entity->getRuntimeId(),
@@ -4968,9 +5140,9 @@ final class WorldSimulation
                 $motion->y,
             );
             if ($levitationVelocity !== null) {
-                $entity->setMotion(new EntityMotion($motion->x, $levitationVelocity, $motion->z));
+                $entity->applyMotion(new EntityMotion($motion->x, $levitationVelocity, $motion->z));
             } elseif ($entity->effectState()->has(EffectType::SLOW_FALLING) && $motion->y < -0.125) {
-                $entity->setMotion(new EntityMotion($motion->x, -0.125, $motion->z));
+                $entity->applyMotion(new EntityMotion($motion->x, -0.125, $motion->z));
             }
             $transitions = $entity->effectState()->tick(1, function (EffectInstance $effect) use ($entity): void {
                 if ($effect->type === EffectType::REGENERATION) {
@@ -5730,6 +5902,287 @@ final class WorldSimulation
         return $views;
     }
 
+    public function setDisplayRegistry(DisplayRegistry $registry): void
+    {
+        if ($this->displayRegistry !== null && $this->displayRegistry !== $registry) {
+            throw new \LogicException('Display registry is already bound to this simulation.');
+        }
+        $this->displayRegistry = $registry;
+    }
+
+    /**
+     * Synchronizes chunk delivery owned by the network runtime into display admission.
+     *
+     * @param array<string, bool> $visibility Chunk key to its current delivered state.
+     */
+    public function synchronizeDeliveredChunkVisibility(string $sessionId, array $visibility): void
+    {
+        $this->runtimeAudienceAuthoritySessions[$sessionId] = true;
+        foreach ($visibility as $chunkKey => $delivered) {
+            if ($delivered) {
+                $this->deliveredChunkKeysBySession[$sessionId][$chunkKey] = true;
+            } else {
+                unset($this->deliveredChunkKeysBySession[$sessionId][$chunkKey]);
+            }
+        }
+        if (($this->deliveredChunkKeysBySession[$sessionId] ?? []) === []) {
+            unset($this->deliveredChunkKeysBySession[$sessionId]);
+        }
+    }
+
+    /**
+     * Reconciles display actors immediately when the network runtime changes a player's delivered chunks.
+     *
+     * @param array<string, true> $chunkKeys
+     * @return list<TextDisplayActorSpawned|TextDisplayActorRemoved>
+     */
+    public function reconcileDisplayVisibilityForSession(string $sessionId, array $chunkKeys): array
+    {
+        $player = $this->players->player($sessionId);
+        if ($player === null || $chunkKeys === []) {
+            return [];
+        }
+        $events = [];
+        $checked = 0;
+        foreach ($this->displayProjections as $projection) {
+            $position = $projection->display->getPosition();
+            if (!isset($chunkKeys[self::positionChunkKey($position->x, $position->z)])) {
+                continue;
+            }
+            if (++$checked > self::MAXIMUM_DISPLAY_VISIBILITY_CHECKS_PER_TICK) {
+                break;
+            }
+            $visible = isset($this->displayViewers($projection->display, $this->pluginPlayer(
+                $player->identity->uuid,
+            ))[$sessionId]);
+            $wasVisible = isset($projection->viewers[$sessionId]);
+            if ($visible === $wasVisible) {
+                continue;
+            }
+            if ($visible) {
+                $projection->viewers[$sessionId] = true;
+                $events[] = $this->displaySpawnEvent($projection, [$sessionId]);
+            } else {
+                unset($projection->viewers[$sessionId]);
+                $events[] = new TextDisplayActorRemoved(
+                    $projection->textRuntimeId,
+                    $projection->interactionRuntimeId,
+                    [$sessionId],
+                );
+            }
+        }
+
+        return $events;
+    }
+
+    /** Records the runtime's authoritative non-player actor delivery state. */
+    public function synchronizeEntityActorDelivery(string $sessionId, int $runtimeId, bool $delivered): void
+    {
+        $this->runtimeAudienceAuthoritySessions[$sessionId] = true;
+        if ($delivered) {
+            $this->deliveredEntityActorsBySession[$sessionId][$runtimeId] = true;
+
+            return;
+        }
+        unset($this->deliveredEntityActorsBySession[$sessionId][$runtimeId]);
+        if (($this->deliveredEntityActorsBySession[$sessionId] ?? []) === []) {
+            unset($this->deliveredEntityActorsBySession[$sessionId]);
+        }
+    }
+
+    /** Receives one committed plugin display change from the owner-scoped registry. */
+    public function displayChanged(TextDisplay $display, DisplayChange $change, ?ApiPlayer $player = null): void
+    {
+        $key = strtolower($display->getUniqueId());
+        $projection = $this->displayProjections[$key] ?? null;
+        $belongsHere = !$display->isRemoved()
+            && $display->getPosition()->world?->id() === $this->worldId
+            && ($display->getPosition()->dimension ?? WorldDimension::OVERWORLD) === $this->dimension;
+        if (!$belongsHere) {
+            if ($projection instanceof TextDisplayProjection) {
+                $this->deferredEvents[] = new TextDisplayActorRemoved(
+                    $projection->textRuntimeId,
+                    $projection->interactionRuntimeId,
+                    array_keys($projection->viewers),
+                );
+                if ($projection->interactionRuntimeId !== null) {
+                    unset($this->displayInteractionIds[$projection->interactionRuntimeId]);
+                    unset($this->displayInteractionProjectionKeys[$projection->interactionRuntimeId]);
+                }
+                unset($this->displayProjections[$key]);
+            }
+
+            return;
+        }
+        if (!$projection instanceof TextDisplayProjection) {
+            $projection = new TextDisplayProjection($display, $this->allocateDisplayRuntimeId());
+            $this->displayProjections[$key] = $projection;
+        }
+        $previousInteractionId = $projection->interactionRuntimeId;
+        if ($change === DisplayChange::INTERACTION && $previousInteractionId !== null) {
+            unset($this->displayInteractionIds[$previousInteractionId]);
+            unset($this->displayInteractionProjectionKeys[$previousInteractionId]);
+            $projection->interactionRuntimeId = null;
+            $projection->interactionUniqueId = null;
+        }
+        $interaction = $display->getInteraction();
+        if ($interaction !== null && $interaction->isEnabled() && !$interaction->isRemoved()
+            && $projection->interactionRuntimeId === null) {
+            $projection->interactionRuntimeId = $this->allocateDisplayRuntimeId();
+            $projection->interactionUniqueId = strtolower($interaction->getUniqueId());
+            $this->displayInteractionIds[$projection->interactionRuntimeId] = $projection->interactionUniqueId;
+            $this->displayInteractionProjectionKeys[$projection->interactionRuntimeId] = $key;
+        }
+        // Reconcile the complete audience even for a player-specific visibility
+        // change. Restricting the candidate set to the changed player loses the
+        // old membership and makes a targeted hide impossible to project.
+        $viewers = $this->displayViewers($display);
+        $added = array_diff_key($viewers, $projection->viewers);
+        $removed = array_diff_key($projection->viewers, $viewers);
+        $unchanged = array_intersect_key($projection->viewers, $viewers);
+        $projection->viewers = $viewers;
+        if ($removed !== []) {
+            $this->deferredEvents[] = new TextDisplayActorRemoved(
+                $projection->textRuntimeId,
+                $previousInteractionId,
+                array_keys($removed),
+            );
+        }
+        if ($added !== []) {
+            $this->deferredEvents[] = $this->displaySpawnEvent($projection, array_keys($added));
+        }
+        if ($change !== DisplayChange::CREATED && $change !== DisplayChange::VISIBILITY
+            && $change !== DisplayChange::VIEW_DISTANCE && $change !== DisplayChange::TAGS
+            && $unchanged !== []) {
+            $this->deferredEvents[] = new TextDisplayActorUpdated(
+                $projection->textRuntimeId,
+                $display->getText(),
+                $display->getPosition(),
+                $previousInteractionId,
+                $projection->interactionRuntimeId,
+                $interaction?->getWidth(),
+                $interaction?->getHeight(),
+                $change,
+                array_keys($unchanged),
+            );
+        }
+    }
+
+    private function allocateDisplayRuntimeId(): int
+    {
+        if ($this->nextDisplayRuntimeId >= 4_294_967_295) {
+            throw new \OverflowException('Display runtime-ID space is exhausted.');
+        }
+
+        return $this->nextDisplayRuntimeId++;
+    }
+
+    private static function positionChunkKey(float $x, float $z): string
+    {
+        return (int) floor($x / 16.0) . ':' . (int) floor($z / 16.0);
+    }
+
+    /** @return array<string, true> */
+    private function displayViewers(TextDisplay $display, ?ApiPlayer $only = null): array
+    {
+        $position = $display->getPosition();
+        $viewers = [];
+        foreach ($this->players->players() as $player) {
+            $view = $this->pluginEvents?->playerView($player)
+                ?? PluginGameplayEventBridge::detachedPlayerView($player);
+            if ($only !== null && strcasecmp($only->uuid, $view->uuid) !== 0) {
+                continue;
+            }
+            $distance = $player->movement->position->distanceTo(new Position($position->x, $position->y, $position->z));
+            $chunkKey = self::positionChunkKey($position->x, $position->z);
+            if (isset($this->deliveredChunkKeysBySession[$player->sessionId][$chunkKey])
+                && $distance <= $display->getViewDistance() && $display->getVisibility()->isVisibleTo($view)) {
+                $viewers[$player->sessionId] = true;
+            }
+        }
+
+        return $viewers;
+    }
+
+    /** @param list<string> $recipients */
+    private function displaySpawnEvent(TextDisplayProjection $projection, array $recipients): TextDisplayActorSpawned
+    {
+        $interaction = $projection->display->getInteraction();
+
+        return new TextDisplayActorSpawned(
+            $projection->textRuntimeId,
+            $projection->display->getText(),
+            $projection->display->getPosition(),
+            $projection->interactionRuntimeId,
+            $interaction?->getWidth(),
+            $interaction?->getHeight(),
+            $recipients,
+        );
+    }
+
+    /** @return list<WorldEvent> */
+    private function displayArrivalEvents(Player $player): array
+    {
+        $events = [];
+        $view = $this->pluginEvents?->playerView($player)
+            ?? PluginGameplayEventBridge::detachedPlayerView($player);
+        foreach ($this->displayProjections as $projection) {
+            $display = $projection->display;
+            $position = $display->getPosition();
+            if ($display->isRemoved() || !$display->getVisibility()->isVisibleTo($view)
+                || !isset($this->deliveredChunkKeysBySession[$player->sessionId][self::positionChunkKey(
+                    $position->x,
+                    $position->z,
+                )])
+                || $player->movement->position->distanceTo(new Position(
+                    $position->x,
+                    $position->y,
+                    $position->z,
+                )) > $display->getViewDistance()) {
+                continue;
+            }
+            $projection->viewers[$player->sessionId] = true;
+            $events[] = $this->displaySpawnEvent($projection, [$player->sessionId]);
+        }
+
+        return $events;
+    }
+
+    /** @return list<WorldEvent> */
+    private function reconcileDisplayVisibility(): array
+    {
+        $events = [];
+        $projections = array_values($this->displayProjections);
+        $count = count($projections);
+        if ($count === 0) {
+            $this->displayVisibilityCursor = 0;
+
+            return $events;
+        }
+        $checks = min(self::MAXIMUM_DISPLAY_VISIBILITY_CHECKS_PER_TICK, $count);
+        $start = $this->displayVisibilityCursor % $count;
+        for ($offset = 0; $offset < $checks; ++$offset) {
+            $projection = $projections[($start + $offset) % $count];
+            $viewers = $this->displayViewers($projection->display);
+            $added = array_diff_key($viewers, $projection->viewers);
+            $removed = array_diff_key($projection->viewers, $viewers);
+            $projection->viewers = $viewers;
+            if ($removed !== []) {
+                $events[] = new TextDisplayActorRemoved(
+                    $projection->textRuntimeId,
+                    $projection->interactionRuntimeId,
+                    array_keys($removed),
+                );
+            }
+            if ($added !== []) {
+                $events[] = $this->displaySpawnEvent($projection, array_keys($added));
+            }
+        }
+        $this->displayVisibilityCursor = ($start + $checks) % $count;
+
+        return $events;
+    }
+
     /** @return list<\Bedriox\Api\Player\Player> */
     public function pluginEndEncounterParticipants(): array
     {
@@ -6326,6 +6779,100 @@ final class WorldSimulation
             && $this->enqueue($this->validator->swingArm($player->sessionId, ArmSwingSource::Plugin));
     }
 
+    public function setPluginPlayerMotion(string $identity, Motion $motion): bool
+    {
+        $player = $this->players->playerByIdentity($identity);
+        if ($player === null) {
+            return false;
+        }
+        $player->movement->velocityX = $motion->x;
+        $player->movement->verticalVelocity = $motion->y;
+        $player->movement->velocityZ = $motion->z;
+        $this->deferredEvents[] = new PlayerMotionChanged(
+            $player->sessionId,
+            $player->snapshot(),
+            $motion->x,
+            $motion->y,
+            $motion->z,
+            $player->movement->clientTick,
+            false,
+            $this->players->recipients(),
+        );
+
+        return true;
+    }
+
+    public function playPluginPlayerEmote(string $identity, EmoteId $emote): bool
+    {
+        $player = $this->players->playerByIdentity($identity);
+        if ($player === null) {
+            return false;
+        }
+        $this->deferredEvents[] = new EmotePerformed(
+            $player->sessionId,
+            $emote->value,
+            $this->players->recipients(),
+            true,
+        );
+
+        return true;
+    }
+
+    public function setPluginPlayerRotation(string $identity, float $yaw, float $pitch): bool
+    {
+        if (!is_finite($yaw) || !is_finite($pitch) || $pitch < -90.0 || $pitch > 90.0) {
+            return false;
+        }
+        $player = $this->players->playerByIdentity($identity);
+        if ($player === null) {
+            return false;
+        }
+        $player->movement->yaw = $yaw;
+        $player->movement->headYaw = $yaw;
+        $player->movement->pitch = $pitch;
+        $this->deferredEvents[] = new PlayerMoved($player->snapshot(), $this->players->recipients());
+
+        return true;
+    }
+
+    public function setPluginPlayerPresentation(string $identity, string $property, mixed $value): bool
+    {
+        $player = $this->players->playerByIdentity($identity);
+        if ($player === null) {
+            return false;
+        }
+        if ($property === 'nameTag') {
+            if (!is_string($value) || strlen($value) > 256 || preg_match('//u', $value) !== 1) {
+                return false;
+            }
+            $player->setNameTag($value);
+        } elseif ($property === 'scale') {
+            if (!is_float($value) || !is_finite($value) || $value < 0.0625 || $value > 16.0) {
+                return false;
+            }
+            $player->setScale($value);
+        } elseif (!is_bool($value)) {
+            return false;
+        } else {
+            match ($property) {
+                'nameTagVisible' => $player->setNameTagVisible($value),
+                'immobile' => $player->setImmobile($value),
+                'invisible' => $player->setInvisible($value),
+                'gravity' => $player->setGravityEnabled($value),
+                default => null,
+            };
+            if (!in_array($property, ['nameTagVisible', 'immobile', 'invisible', 'gravity'], true)) {
+                return false;
+            }
+        }
+        $this->deferredEvents[] = new PlayerPresentationChanged(
+            $player->snapshot(),
+            $this->players->recipients(),
+        );
+
+        return true;
+    }
+
     public function enqueuePluginTeleport(string $identity, Position $position): bool
     {
         return $this->enqueueTeleport($identity, $position);
@@ -6567,6 +7114,7 @@ final class WorldSimulation
             $command instanceof BrushBlock => $this->brushBlock($command),
             $command instanceof PlaceBlock => $this->placeBlock($command),
             $command instanceof PickBlock => $this->pickBlock($command),
+            $command instanceof PickEntity => $this->pickEntity($command),
             $command instanceof ApplyInventoryStackRequest => $this->inventoryStackRequest($command),
             $command instanceof DropItem => $this->dropItem($command),
             $command instanceof AttackPlayer => $this->attack($command),
@@ -7240,6 +7788,7 @@ final class WorldSimulation
                 );
             }
         }
+        array_push($this->deferredEvents, ...$this->displayArrivalEvents($player));
         foreach ($this->announcedFallingBlocks as $entity) {
             $this->deferredEvents[] = new FallingBlockActorSpawned($entity, null, null, [$player->sessionId]);
         }
@@ -7294,11 +7843,15 @@ final class WorldSimulation
         }
         $movement->sequence = $command->sequence;
         $movement->clientTick = $command->clientTick;
+        if ($player->isImmobile()) {
+            return new MovementCorrected($player->snapshot(), 'plugin_immobile', clientTick: $command->clientTick);
+        }
         $mount = $this->mounts->playerLink($player->sessionId);
         if ($mount !== null) {
             return $this->acceptMountedMovement($player, $mount, $command);
         }
-        if ($this->limits->movementSecurityEnabled && $command->flying && !$player->gameMode()->allowsFlight()) {
+        if ($this->limits->movementSecurityEnabled && $command->flying
+            && $player->isGravityEnabled() && !$player->gameMode()->allowsFlight()) {
             if ($movement->lastViolationTick < 0 || $this->tick - $movement->lastViolationTick >= 5) {
                 if ($movement->lastViolationTick >= 0) {
                     $elapsedViolationTicks = $this->tick - $movement->lastViolationTick;
@@ -7558,7 +8111,7 @@ final class WorldSimulation
             );
             if ($this->pluginEvents !== null && $control === null) {
                 $motion = $vehicle->getMotion();
-                $vehicle->setMotion(new EntityMotion(0.0, $motion->y, 0.0));
+                $vehicle->applyMotion(new EntityMotion(0.0, $motion->y, 0.0));
                 $vehicle->applyPaddleInput(false, false);
                 $this->syncMountedPlayer($player, $link);
 
@@ -7615,7 +8168,7 @@ final class WorldSimulation
                 );
             } else {
                 $motion = $vehicle->getMotion();
-                $vehicle->setMotion(new EntityMotion(0.0, $motion->y, 0.0));
+                $vehicle->applyMotion(new EntityMotion(0.0, $motion->y, 0.0));
             }
         } elseif ($vehicle instanceof StriderEntity && $link->seat->controlsVehicle()) {
             $vehicle->suppressAiMovementUntil($this->tick + 2);
@@ -8143,6 +8696,15 @@ final class WorldSimulation
 
     private function attackEntity(Player $attacker, AttackPlayer $command): WorldEvent
     {
+        $displayInteraction = $this->dispatchDisplayInteraction(
+            $attacker,
+            $command->targetRuntimeActorId,
+            DisplayInteractionType::ATTACK,
+            $command->hotbarSlot,
+        );
+        if ($displayInteraction !== null) {
+            return $displayInteraction;
+        }
         $projectile = $this->projectiles->get($command->targetRuntimeActorId);
         if ($projectile !== null
             && in_array($projectile->type, [ProjectileType::SMALL_FIREBALL, ProjectileType::FIREBALL], true)) {
@@ -8221,6 +8783,7 @@ final class WorldSimulation
             return new CommandRejected($command->session, 'target_unavailable');
         }
         $reason = match (true) {
+            !$this->entityActorDeliveredTo($attacker->sessionId, $target->getRuntimeId()) => 'target_unavailable',
             $attacker->gameMode() === GameMode::SPECTATOR => 'attacker_gamemode',
             !$target->isAlive() => 'target_dead',
             $command->hotbarSlot !== $attacker->inventory->selectedHotbarSlot() => 'selected_slot',
@@ -8376,7 +8939,7 @@ final class WorldSimulation
             );
         }
         if ($knockback !== null) {
-            $target->setMotion(new EntityMotion($knockback->x, $knockback->y, $knockback->z));
+            $target->applyMotion(new EntityMotion($knockback->x, $knockback->y, $knockback->z));
             if ($target instanceof AbstractMobEntity) {
                 $target->suppressAiMovementUntil($this->tick + CombatRules::DAMAGE_IMMUNITY_TICKS);
             }
@@ -8426,6 +8989,61 @@ final class WorldSimulation
         $this->publishedEntityHealth[$target->getRuntimeId()] = $target->getHealth();
 
         return new EntityActorDamaged($target, $this->tick, $this->players->recipients());
+    }
+
+    private function entityActorDeliveredTo(string $sessionId, int $runtimeId): bool
+    {
+        return !isset($this->runtimeAudienceAuthoritySessions[$sessionId])
+            || isset($this->deliveredEntityActorsBySession[$sessionId][$runtimeId]);
+    }
+
+    private function dispatchDisplayInteraction(
+        Player $player,
+        int $runtimeId,
+        DisplayInteractionType $type,
+        int $hotbarSlot,
+    ): ?WorldEvent {
+        $interactionUniqueId = $this->displayInteractionIds[$runtimeId] ?? null;
+        if ($interactionUniqueId === null) {
+            return null;
+        }
+        $projectionKey = $this->displayInteractionProjectionKeys[$runtimeId] ?? null;
+        $projection = $projectionKey === null ? null : ($this->displayProjections[$projectionKey] ?? null);
+        if ($this->displayRegistry === null
+            || !$projection instanceof TextDisplayProjection
+            || !isset($projection->viewers[$player->sessionId])) {
+            return new CommandRejected($player->sessionId, 'target_unavailable');
+        }
+        if ($hotbarSlot !== $player->inventory->selectedHotbarSlot()) {
+            return new CommandRejected($player->sessionId, 'selected_slot');
+        }
+        $interaction = $this->displayRegistry->interactionByUniqueId($interactionUniqueId);
+        if ($interaction === null
+            || $player->movement->position->distanceTo(new Position(
+                $interaction->getPosition()->x,
+                $interaction->getPosition()->y,
+                $interaction->getPosition()->z,
+            )) > self::MAXIMUM_BLOCK_REACH) {
+            return new CommandRejected($player->sessionId, 'reach');
+        }
+        $view = $this->pluginEvents?->playerView($player)
+            ?? PluginGameplayEventBridge::detachedPlayerView($player);
+        if (!$this->displayRegistry->dispatchInteraction(
+            $interactionUniqueId,
+            $view,
+            $type,
+            ApiEquipmentSlot::MAIN_HAND,
+        )) {
+            return new CommandRejected($player->sessionId, 'plugin_cancelled');
+        }
+        if ($type === DisplayInteractionType::ATTACK) {
+            $swing = $this->armSwingEvent($player, ArmSwingSource::Attack);
+            if ($swing !== null) {
+                $this->deferredEvents[] = $swing;
+            }
+        }
+
+        return new DisplayInteractionAccepted($player->sessionId);
     }
 
     /** @return list<WorldEvent> */
@@ -8598,11 +9216,21 @@ final class WorldSimulation
         if ($player === null) {
             return new CommandRejected($command->session, 'not_joined');
         }
+        $displayInteraction = $this->dispatchDisplayInteraction(
+            $player,
+            $command->targetRuntimeActorId,
+            DisplayInteractionType::INTERACT,
+            $command->hotbarSlot,
+        );
+        if ($displayInteraction !== null) {
+            return $displayInteraction;
+        }
         $target = $this->entityRuntime->registry()->getByRuntimeId($command->targetRuntimeActorId);
         if (!$target instanceof AbstractLivingEntity) {
             return new CommandRejected($command->session, 'target_unavailable');
         }
         $reason = match (true) {
+            !$this->entityActorDeliveredTo($player->sessionId, $target->getRuntimeId()) => 'target_unavailable',
             $player->gameMode() === GameMode::SPECTATOR => 'player_gamemode',
             !$target->isAlive() => 'target_unavailable',
             $command->hotbarSlot !== $player->inventory->selectedHotbarSlot() => 'selected_slot',
@@ -8950,6 +9578,7 @@ final class WorldSimulation
             return new CommandRejected($command->session, 'not_joined');
         }
         if (!$vehicle instanceof AbstractLivingEntity || !$vehicle->isAlive()
+            || !$this->entityActorDeliveredTo($player->sessionId, $vehicle->getRuntimeId())
             || $vehicle->getUniqueId() !== $command->vehicleUniqueId
             || $vehicle->getWorldName() !== $this->worldId
             || $this->mounts->playerLink($player->sessionId) !== null) {
@@ -9202,7 +9831,7 @@ final class WorldSimulation
                     $combinedX *= $scale;
                     $combinedZ *= $scale;
                 }
-                $entity->setMotion(new EntityMotion($combinedX, $motion->y, $combinedZ));
+                $entity->applyMotion(new EntityMotion($combinedX, $motion->y, $combinedZ));
                 if ($entity instanceof AbstractMobEntity
                     && $entity->getActivationState() === MobActivationState::SLEEPING) {
                     $entity->setActivationState(MobActivationState::REDUCED);
@@ -10755,6 +11384,14 @@ final class WorldSimulation
         $this->playerPersistence?->save($player);
         $this->removeEndEncounterParticipant($player);
         $this->players->remove($command->session);
+        foreach ($this->displayProjections as $projection) {
+            unset($projection->viewers[$player->sessionId]);
+        }
+        unset(
+            $this->deliveredChunkKeysBySession[$player->sessionId],
+            $this->deliveredEntityActorsBySession[$player->sessionId],
+            $this->runtimeAudienceAuthoritySessions[$player->sessionId],
+        );
 
         return new PlayerDisconnected(
             $player->sessionId,
@@ -10935,6 +11572,12 @@ final class WorldSimulation
                     $command->session,
                     $command->position,
                     $command->addUserData,
+                ),
+                $command instanceof PickEntity => $this->validator->pickEntity(
+                    $command->session,
+                    $command->actorRuntimeId,
+                    $command->hotbarSlot,
+                    $command->userDataRequested,
                 ),
                 $command instanceof SendPluginMessage => $this->validator->pluginMessage(
                     $command->session,
@@ -14089,7 +14732,7 @@ final class WorldSimulation
                                 );
                             }
                             if ($motion !== null) {
-                                $directEntity->setMotion(new EntityMotion($motion->x, $motion->y, $motion->z));
+                                $directEntity->applyMotion(new EntityMotion($motion->x, $motion->y, $motion->z));
                                 $this->pluginEvents?->knockedBack(
                                     $directEntity,
                                     $apiShooter,
@@ -14379,7 +15022,7 @@ final class WorldSimulation
                             );
                         }
                         if ($knockback !== null) {
-                            $directEntity->setMotion(new EntityMotion($knockback->x, $knockback->y, $knockback->z));
+                            $directEntity->applyMotion(new EntityMotion($knockback->x, $knockback->y, $knockback->z));
                             $this->pluginEvents?->knockedBack(
                                 $directEntity,
                                 $apiShooter,
@@ -15076,7 +15719,7 @@ final class WorldSimulation
                     continue;
                 }
                 $force = 1.0 - min(1.0, $distance / 5.0);
-                $entity->setMotion(new EntityMotion(
+                $entity->applyMotion(new EntityMotion(
                     ($dx / $distance) * $force,
                     0.35 * $force,
                     ($dz / $distance) * $force,
@@ -16024,7 +16667,7 @@ final class WorldSimulation
                 continue;
             }
             $entity->suppressAiMovementUntil($this->tick + 2);
-            $entity->setMotion(new EntityMotion($motion->x, $entity->getMotion()->y, $motion->z));
+            $entity->applyMotion(new EntityMotion($motion->x, $entity->getMotion()->y, $motion->z));
         }
     }
 
@@ -17404,6 +18047,112 @@ final class WorldSimulation
         $player->inventory->selectHotbarSlot($targetSlot);
         $player->markDirty();
         $this->pluginEvents?->inventoryChanged($player, $before);
+
+        return $this->blockPickInventoryProjection($player, $before, true);
+    }
+
+    private function pickEntity(PickEntity $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        if ($player === null) {
+            return new CommandRejected($command->session, 'not_joined');
+        }
+
+        $before = clone $player->inventory;
+        $target = $this->entityRuntime->registry()->getByRuntimeId($command->actorRuntimeId);
+        if ($target === null
+            || $target->isRemoved()
+            || !$this->entityActorDeliveredTo($player->sessionId, $target->getRuntimeId())
+            || $this->entityTypes === null
+            || $this->itemCatalog === null) {
+            return $this->blockPickInventoryProjection($player, $before, false, $command->hotbarSlot);
+        }
+
+        try {
+            $itemIdentifier = $this->entityTypes
+                ->definitionForIdentifier($target->getType()->identifier())
+                ->spawnEggItemIdentifier();
+        } catch (InvalidArgumentException) {
+            $itemIdentifier = null;
+        }
+        if ($itemIdentifier === null || !$this->itemCatalog->has($itemIdentifier)) {
+            return $this->blockPickInventoryProjection($player, $before, false, $command->hotbarSlot);
+        }
+
+        $item = new InventoryStack($itemIdentifier, 1, 1);
+        if ($this->pluginEvents !== null) {
+            $eventItem = $this->pluginEvents->entityPick(
+                $player,
+                $target,
+                $item,
+                $command->hotbarSlot,
+                $command->userDataRequested,
+            );
+            if ($eventItem === null) {
+                return $this->blockPickInventoryProjection($player, $before, false, $command->hotbarSlot);
+            }
+            try {
+                $item = $this->inventoryStackFromApi($eventItem);
+            } catch (InvalidArgumentException|OverflowException) {
+                return new CommandRejected($command->session, 'plugin_result');
+            }
+        }
+
+        $proposed = clone $player->inventory;
+        $matchingSlot = null;
+        for ($slot = 0; $slot < PlayerInventory::SLOT_COUNT; ++$slot) {
+            $candidate = $proposed->stackAt($slot);
+            if ($candidate !== null && self::sameInventoryStackType($candidate, $item)) {
+                $matchingSlot = $slot;
+                if ($slot < PlayerInventory::HOTBAR_SIZE) {
+                    break;
+                }
+            }
+        }
+
+        if ($matchingSlot === null && $player->gameMode() !== GameMode::CREATIVE) {
+            return $this->blockPickInventoryProjection($player, $before, false, $command->hotbarSlot);
+        }
+
+        $targetSlot = $command->hotbarSlot;
+        if ($matchingSlot !== null && $matchingSlot < PlayerInventory::HOTBAR_SIZE) {
+            $targetSlot = $matchingSlot;
+        } elseif ($matchingSlot !== null) {
+            $targetStack = $proposed->stackAt($targetSlot);
+            $matchingStack = $proposed->stackAt($matchingSlot);
+            $proposed->replaceSlot($targetSlot, $matchingStack);
+            $proposed->replaceSlot($matchingSlot, $targetStack);
+        } else {
+            $displaced = $proposed->stackAt($targetSlot);
+            $emptySlot = null;
+            for ($slot = 0; $slot < PlayerInventory::SLOT_COUNT; ++$slot) {
+                if ($slot !== $targetSlot && $proposed->stackAt($slot) === null) {
+                    $emptySlot = $slot;
+                    break;
+                }
+            }
+            if ($displaced !== null && $emptySlot !== null) {
+                $proposed->replaceSlot($emptySlot, $displaced);
+            }
+            $proposed->replaceSlot($targetSlot, $item);
+        }
+        $proposed->selectHotbarSlot($targetSlot);
+
+        if ($this->pluginEvents !== null && !$this->pluginEvents->allowInventoryChange($player, $before, $proposed)) {
+            return $this->blockPickInventoryProjection($player, $before, false, $targetSlot);
+        }
+
+        $player->inventory->replaceMainContents($proposed->slots());
+        $player->inventory->selectHotbarSlot($targetSlot);
+        $player->markDirty();
+        $this->pluginEvents?->inventoryChanged($player, $before);
+        $this->pluginEvents?->entityPicked(
+            $player,
+            $target,
+            $item,
+            $targetSlot,
+            $command->userDataRequested,
+        );
 
         return $this->blockPickInventoryProjection($player, $before, true);
     }

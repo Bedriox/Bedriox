@@ -40,7 +40,7 @@ final class ShulkerEntity extends MonsterEntity implements Shulker, IntrinsicEnt
     public function __construct(string $uniqueId, int $runtimeId, string $worldName, Position $position, EntityMotion $motion = new EntityMotion(), float $yaw = 0.0, float $pitch = 0.0, ?float $health = null)
     {
         parent::__construct($uniqueId, $runtimeId, VanillaEntityDefinitions::shulker(), $worldName, $position, VanillaAiBehaviors::shulker(), $motion, $yaw, $pitch, $health);
-        $this->setGravityEnabled(false);
+        $this->applyGravityEnabled(false);
     }
 
     public function getAttachmentFace(): BlockFace

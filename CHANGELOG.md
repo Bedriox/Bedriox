@@ -1,5 +1,12 @@
 # Changelog
 
+- Give distinct wire enum identities to literal command alternatives that share an argument name, preventing command projection from rejecting player admission.
+- Admit the current entity-pick request without disconnecting creative clients that middle-click an actor.
+- Expand the named Bedrock emote catalog to 103 validated content identifiers and correct the Simple Clap identifier.
+- Remove the nonfunctional Java-style entity glowing controls, which have no corresponding current Bedrock actor flag.
+- Add shared UUID-backed automatic, selected, excluded, and hidden visibility for entities and text displays, with private spawn policies and reconnect-safe viewer admission.
+- Expose authoritative living-entity equipment directly, add named default emotes, and provide hand and armor helpers for humans and mobs without adding player inventory state to sessionless NPCs.
+- Add plugin-owned human actors and interactive floating text with bounded visibility, shared asynchronous navigation, current-client actor projection, real-player skin events, and automatic lifecycle cleanup.
 - Add authoritative creative block picking and inventory trash actions, including cancellable block-pick and inventory-change plugin interception.
 - Clear stale flight intent when game-mode abilities revoke flight so airborne creative-to-survival transitions fall normally instead of accumulating invalid-movement violations.
 - Add bounded, scheduled falling-block physics for sand, red sand, gravel, concrete powder, anvils, and dragon eggs, including cascades, water hardening, landing damage, persistence, plugin block-change events, and current-client actor projection.

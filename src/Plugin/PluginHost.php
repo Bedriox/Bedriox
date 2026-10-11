@@ -21,6 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Plugin;
 
 use Bedriox\Api\Entity\Entity;
+use Bedriox\Api\Event\Event;
 use Bedriox\Api\Plugin\Data\PluginData;
 use Bedriox\Api\Plugin\PluginContext;
 use Bedriox\Api\Plugin\SourcePluginDefinition;
@@ -31,6 +32,8 @@ use Bedriox\Server\Plugin\Command\CommandRegistry;
 use Bedriox\Server\Plugin\Command\OwnedCommandRegistrar;
 use Bedriox\Server\Plugin\Data\ArrayPluginResourceProvider;
 use Bedriox\Server\Plugin\Data\FilePluginData;
+use Bedriox\Server\Plugin\Display\DisplayRegistry;
+use Bedriox\Server\Plugin\Entity\HumanOwnershipRegistry;
 use Bedriox\Server\Plugin\Event\EventDispatcher;
 use Bedriox\Server\Plugin\Event\OwnedEventRegistrar;
 use Bedriox\Server\Plugin\Scheduler\MainThreadPluginScheduler;
@@ -49,6 +52,8 @@ final class PluginHost
     private readonly MainThreadPluginScheduler $scheduler;
     private readonly PluginEntityRegistrar $entities;
     private readonly BossBarRegistry $bossBars;
+    private readonly DisplayRegistry $displays;
+    private readonly HumanOwnershipRegistry $humans;
     /** @var list<PluginPackage> */
     private array $packages = [];
     /** @var array<string, array{provider: string, definitions: list<SourcePluginDefinition>}> */
@@ -71,8 +76,10 @@ final class PluginHost
         ?Closure $commandEntities = null,
         ?Closure $commandSelectorOrigin = null,
         ?Closure $administrativeCommandFeedback = null,
+        ?Closure $displayChanged = null,
     ) {
         $this->ownership = new PluginOwnershipRegistry();
+        $this->humans = new HumanOwnershipRegistry($this->ownership);
         $onlinePlayers ??= static fn(): array => [];
         $this->bossBars = new BossBarRegistry($this->ownership, $onlinePlayers);
         $this->actions = new PluginActionBuffer();
@@ -125,6 +132,11 @@ final class PluginHost
             $this->execution,
             $this->actions,
             $this->ownership,
+        );
+        $this->displays = new DisplayRegistry(
+            $this->ownership,
+            fn(Event $event): Event => $this->events->dispatch($event),
+            $displayChanged,
         );
     }
 
@@ -271,6 +283,18 @@ final class PluginHost
     public function entities(): PluginEntityRegistrar
     {
         return $this->entities;
+    }
+
+    /** @internal Used to construct owner-scoped public display managers and route interaction targets. */
+    public function displays(): DisplayRegistry
+    {
+        return $this->displays;
+    }
+
+    /** @internal Used to bind spawned humans to their plugin lifecycle without retaining public handles. */
+    public function humans(): HumanOwnershipRegistry
+    {
+        return $this->humans;
     }
 
     /** @internal Used to construct owner-scoped public boss-bar managers. */

@@ -30,6 +30,8 @@ use Bedriox\Api\Entity\Entity;
 use Bedriox\Api\Entity\EntityCombustionCause;
 use Bedriox\Api\Entity\EntityDamageCause;
 use Bedriox\Api\Entity\EntityEquipment;
+use Bedriox\Api\Entity\Value\EmoteId;
+use Bedriox\Api\Entity\Value\Motion;
 use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Server\Entity\AbstractMobEntity;
@@ -113,9 +115,47 @@ class BufferedMobController implements MobController
         self::validateSpeed($speed);
         $this->stage(function () use ($target, $speed): void {
             if (!$this->entity->isRemoved()) {
+                $this->entity->clearNavigation();
                 HorizontalSteering::toward($this->entity, self::position($target), $speed);
             }
         });
+    }
+
+    public function navigateTo(ApiPosition $target, float $speed): void
+    {
+        self::validatePosition($target);
+        self::validateSpeed($speed);
+        $target = $this->resolveNavigationTarget($target);
+        $this->stage(function () use ($target, $speed): void {
+            if (!$this->entity->isRemoved()) {
+                $this->entity->requestNavigation(self::position($target), $speed, $target);
+            }
+        });
+    }
+
+    public function cancelNavigation(): void
+    {
+        $this->stage(function (): void {
+            if (!$this->entity->isRemoved()) {
+                $this->entity->clearNavigation();
+            }
+        });
+    }
+
+    public function isNavigating(): bool
+    {
+        return !$this->entity->isRemoved() && $this->entity->navigationTarget() !== null;
+    }
+
+    public function getNavigationTarget(): ?ApiPosition
+    {
+        $resolved = $this->entity->resolvedNavigationTarget();
+        if ($resolved !== null) {
+            return $resolved;
+        }
+        $target = $this->entity->navigationTarget();
+
+        return $target === null ? null : new ApiPosition($target->x, $target->y, $target->z);
     }
 
     public function moveAway(ApiPosition $target, float $speed): void
@@ -124,6 +164,7 @@ class BufferedMobController implements MobController
         self::validateSpeed($speed);
         $this->stage(function () use ($target, $speed): void {
             if (!$this->entity->isRemoved()) {
+                $this->entity->clearNavigation();
                 HorizontalSteering::away($this->entity, self::position($target), $speed);
             }
         });
@@ -133,7 +174,18 @@ class BufferedMobController implements MobController
     {
         $this->stage(function (): void {
             if (!$this->entity->isRemoved()) {
+                $this->entity->clearNavigation();
                 HorizontalSteering::stop($this->entity);
+            }
+        });
+    }
+
+    public function jump(): void
+    {
+        $this->stage(function (): void {
+            if (!$this->entity->isRemoved() && $this->entity->isOnGround() && !$this->entity->isImmobile()) {
+                $motion = $this->entity->getMotion();
+                $this->entity->applyMotion(new EntityMotion($motion->x, 0.42, $motion->z));
             }
         });
     }
@@ -163,12 +215,31 @@ class BufferedMobController implements MobController
         });
     }
 
-    public function setVelocity(float $x, float $y, float $z): void
+    public function setMotion(Motion $motion): void
     {
-        $motion = new EntityMotion($x, $y, $z);
-        $this->stage(function () use ($motion): void {
+        $internal = new EntityMotion($motion->x, $motion->y, $motion->z);
+        $this->stage(function () use ($internal): void {
             if (!$this->entity->isRemoved()) {
-                $this->entity->setMotion($motion);
+                $this->entity->clearNavigation();
+                $this->entity->applyMotion($internal);
+            }
+        });
+    }
+
+    public function swingArm(): void
+    {
+        $this->stage(function (): void {
+            if (!$this->entity->isRemoved()) {
+                $this->entity->requestArmSwing();
+            }
+        });
+    }
+
+    public function playEmote(EmoteId $emote): void
+    {
+        $this->stage(function () use ($emote): void {
+            if (!$this->entity->isRemoved()) {
+                $this->entity->requestEmote($emote);
             }
         });
     }
@@ -203,7 +274,7 @@ class BufferedMobController implements MobController
         }
         $this->stage(function () use ($nameTag): void {
             if (!$this->entity->isRemoved()) {
-                $this->entity->setNameTag($nameTag);
+                $this->entity->applyNameTag($nameTag);
             }
         });
     }
@@ -217,7 +288,7 @@ class BufferedMobController implements MobController
         }
         $this->stage(function () use ($visible): void {
             if (!$this->entity->isRemoved()) {
-                $this->entity->setNameTagVisible($visible);
+                $this->entity->applyNameTagVisible($visible);
             }
         });
     }
@@ -231,7 +302,7 @@ class BufferedMobController implements MobController
         }
         $this->stage(function () use ($immobile): void {
             if (!$this->entity->isRemoved()) {
-                $this->entity->setImmobile($immobile);
+                $this->entity->applyImmobile($immobile);
             }
         });
     }
@@ -245,21 +316,7 @@ class BufferedMobController implements MobController
         }
         $this->stage(function () use ($invisible): void {
             if (!$this->entity->isRemoved()) {
-                $this->entity->setInvisible($invisible);
-            }
-        });
-    }
-
-    public function setGlowing(bool $glowing): void
-    {
-        if ($this->delegate !== null) {
-            $this->delegate->setGlowing($glowing);
-
-            return;
-        }
-        $this->stage(function () use ($glowing): void {
-            if (!$this->entity->isRemoved()) {
-                $this->entity->setGlowing($glowing);
+                $this->entity->applyInvisible($invisible);
             }
         });
     }
@@ -276,7 +333,7 @@ class BufferedMobController implements MobController
         }
         $this->stage(function () use ($scale): void {
             if (!$this->entity->isRemoved()) {
-                $this->entity->setScale($scale);
+                $this->entity->applyScale($scale);
             }
         });
     }
@@ -290,7 +347,7 @@ class BufferedMobController implements MobController
         }
         $this->stage(function () use ($enabled): void {
             if (!$this->entity->isRemoved()) {
-                $this->entity->setGravityEnabled($enabled);
+                $this->entity->applyGravityEnabled($enabled);
             }
         });
     }
@@ -478,6 +535,12 @@ class BufferedMobController implements MobController
             throw new PluginException('Custom mob control-intent limit exceeded for one plugin callback.');
         }
         $this->actions->stage($intent);
+    }
+
+    /** Resolves controller-specific world context before an intent is staged. */
+    protected function resolveNavigationTarget(ApiPosition $target): ApiPosition
+    {
+        return $target;
     }
 
     private function fullController(): MobController

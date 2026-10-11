@@ -28,6 +28,7 @@ use Bedriox\Api\Entity\Controller\LivingEntityController;
 use Bedriox\Api\Entity\Entity as ApiEntity;
 use Bedriox\Api\Entity\EntityCombustionCause;
 use Bedriox\Api\Entity\EntityDamageCause;
+use Bedriox\Api\Entity\EntityEquipment as ApiEntityEquipment;
 use Bedriox\Api\Entity\LivingEntity as ApiLivingEntity;
 use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Server\Effect\ActiveEffectCollection;
@@ -110,6 +111,16 @@ abstract class AbstractLivingEntity extends AbstractEntity implements ApiLivingE
         }
 
         return $controller->effects();
+    }
+
+    final public function getEquipment(): ApiEntityEquipment
+    {
+        $controller = $this->getController();
+        if (!$controller instanceof LivingEntityController) {
+            throw new \LogicException('A living entity must expose a living-entity controller.');
+        }
+
+        return $controller->equipment();
     }
 
     /** @internal Air supply used by living entities without a specialized aquatic state. */

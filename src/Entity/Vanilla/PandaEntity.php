@@ -111,7 +111,7 @@ final class PandaEntity extends LandBreedableAnimalEntity implements ExclusiveAi
         $this->activityTicks = 60;
         $this->setActivity(PandaActivity::EATING);
         $motion = $this->getMotion();
-        $this->setMotion(new EntityMotion(0.0, $motion->y, 0.0));
+        $this->applyMotion(new EntityMotion(0.0, $motion->y, 0.0));
         $this->suppressAiMovementUntil($currentTick + 20);
         $this->markChanged();
     }
@@ -144,7 +144,7 @@ final class PandaEntity extends LandBreedableAnimalEntity implements ExclusiveAi
             $this->activityTicks = $duration;
             $this->setActivity($activity);
             $motion = $this->getMotion();
-            $this->setMotion(new EntityMotion(0.0, $motion->y, 0.0));
+            $this->applyMotion(new EntityMotion(0.0, $motion->y, 0.0));
             $this->suppressAiMovementUntil($currentTick + $ticks);
         }
     }

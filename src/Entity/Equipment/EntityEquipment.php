@@ -122,14 +122,91 @@ final class EntityEquipment implements ApiEntityEquipment
         return $contents;
     }
 
+    public function getArmorContents(): array
+    {
+        return [
+            EquipmentSlot::HEAD->value => $this->getHelmet(),
+            EquipmentSlot::CHEST->value => $this->getChestplate(),
+            EquipmentSlot::LEGS->value => $this->getLeggings(),
+            EquipmentSlot::FEET->value => $this->getBoots(),
+        ];
+    }
+
     public function setItem(EquipmentSlot $slot, ?ItemStack $item): void
     {
         $this->transition($slot, $item, $this->dropChances[$slot->value]);
     }
 
+    public function getMainHand(): ?ItemStack
+    {
+        return $this->getItem(EquipmentSlot::MAIN_HAND);
+    }
+
+    public function setMainHand(?ItemStack $item): void
+    {
+        $this->setItem(EquipmentSlot::MAIN_HAND, $item);
+    }
+
+    public function getOffHand(): ?ItemStack
+    {
+        return $this->getItem(EquipmentSlot::OFF_HAND);
+    }
+
+    public function setOffHand(?ItemStack $item): void
+    {
+        $this->setItem(EquipmentSlot::OFF_HAND, $item);
+    }
+
+    public function getHelmet(): ?ItemStack
+    {
+        return $this->getItem(EquipmentSlot::HEAD);
+    }
+
+    public function setHelmet(?ItemStack $item): void
+    {
+        $this->setItem(EquipmentSlot::HEAD, $item);
+    }
+
+    public function getChestplate(): ?ItemStack
+    {
+        return $this->getItem(EquipmentSlot::CHEST);
+    }
+
+    public function setChestplate(?ItemStack $item): void
+    {
+        $this->setItem(EquipmentSlot::CHEST, $item);
+    }
+
+    public function getLeggings(): ?ItemStack
+    {
+        return $this->getItem(EquipmentSlot::LEGS);
+    }
+
+    public function setLeggings(?ItemStack $item): void
+    {
+        $this->setItem(EquipmentSlot::LEGS, $item);
+    }
+
+    public function getBoots(): ?ItemStack
+    {
+        return $this->getItem(EquipmentSlot::FEET);
+    }
+
+    public function setBoots(?ItemStack $item): void
+    {
+        $this->setItem(EquipmentSlot::FEET, $item);
+    }
+
     public function clear(EquipmentSlot $slot): void
     {
         $this->setItem($slot, null);
+    }
+
+    public function clearArmor(): void
+    {
+        foreach ([EquipmentSlot::HEAD, EquipmentSlot::CHEST, EquipmentSlot::LEGS, EquipmentSlot::FEET] as $slot) {
+            $this->clear($slot);
+        }
     }
 
     public function clearAll(): void

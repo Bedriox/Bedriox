@@ -23,6 +23,7 @@ namespace Bedriox\Server\Entity\Controller;
 use Bedriox\Api\Entity\Controller\EntityController;
 use Bedriox\Api\Entity\Entity;
 use Bedriox\Api\Entity\EntityCombustionCause;
+use Bedriox\Api\Entity\Value\Motion;
 use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Server\Entity\AbstractEntity;
@@ -63,52 +64,46 @@ final readonly class BasicEntityController implements EntityController
         );
     }
 
-    public function setVelocity(float $x, float $y, float $z): void
+    public function setMotion(Motion $motion): void
     {
         $this->assertAvailable();
-        $this->entity->setMotion(new EntityMotion($x, $y, $z));
+        $this->entity->applyMotion(new EntityMotion($motion->x, $motion->y, $motion->z));
     }
 
     public function setNameTag(string $nameTag): void
     {
         $this->assertAvailable();
-        $this->entity->setNameTag($nameTag);
+        $this->entity->applyNameTag($nameTag);
     }
 
     public function setNameTagVisible(bool $visible): void
     {
         $this->assertAvailable();
-        $this->entity->setNameTagVisible($visible);
+        $this->entity->applyNameTagVisible($visible);
     }
 
     public function setImmobile(bool $immobile): void
     {
         $this->assertAvailable();
-        $this->entity->setImmobile($immobile);
+        $this->entity->applyImmobile($immobile);
     }
 
     public function setInvisible(bool $invisible): void
     {
         $this->assertAvailable();
-        $this->entity->setInvisible($invisible);
-    }
-
-    public function setGlowing(bool $glowing): void
-    {
-        $this->assertAvailable();
-        $this->entity->setGlowing($glowing);
+        $this->entity->applyInvisible($invisible);
     }
 
     public function setScale(float $scale): void
     {
         $this->assertAvailable();
-        $this->entity->setScale($scale);
+        $this->entity->applyScale($scale);
     }
 
     public function setGravityEnabled(bool $enabled): void
     {
         $this->assertAvailable();
-        $this->entity->setGravityEnabled($enabled);
+        $this->entity->applyGravityEnabled($enabled);
     }
 
     public function setOnFire(int $durationTicks, EntityCombustionCause $cause = EntityCombustionCause::PLUGIN): void

@@ -134,7 +134,7 @@ final class SnifferEntity extends LandBreedableAnimalEntity implements Exclusive
             $this->diggingTicks = 120;
             $this->setDigging(true);
             $motion = $this->getMotion();
-            $this->setMotion(new EntityMotion(0.0, $motion->y, 0.0));
+            $this->applyMotion(new EntityMotion(0.0, $motion->y, 0.0));
         } elseif ($this->sniffCooldownTicks > 0) {
             $this->markChanged();
         }

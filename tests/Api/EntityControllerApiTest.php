@@ -21,6 +21,8 @@ declare(strict_types=1);
 namespace Bedriox\Server\Tests\Api;
 
 use Bedriox\Api\Entity\Controller\EntityController;
+use Bedriox\Api\Entity\Controller\HumanController;
+use Bedriox\Api\Entity\Controller\LivingEntityController;
 use Bedriox\Api\Entity\EntityEquipment;
 use Bedriox\Api\Inventory\EquipmentSlot;
 use PHPUnit\Framework\TestCase;
@@ -47,12 +49,11 @@ final class EntityControllerApiTest extends TestCase
         foreach ([
             'teleport',
             'setRotation',
-            'setVelocity',
+            'setMotion',
             'setNameTag',
             'setNameTagVisible',
             'setImmobile',
             'setInvisible',
-            'setGlowing',
             'setScale',
             'setGravityEnabled',
             'setOnFire',
@@ -61,5 +62,7 @@ final class EntityControllerApiTest extends TestCase
         ] as $method) {
             self::assertTrue((new ReflectionMethod(EntityController::class, $method))->isPublic());
         }
+        self::assertTrue((new ReflectionMethod(LivingEntityController::class, 'swingArm'))->isPublic());
+        self::assertTrue((new ReflectionMethod(HumanController::class, 'playEmote'))->isPublic());
     }
 }

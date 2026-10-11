@@ -25,16 +25,24 @@ use Bedriox\Api\Entity\EntityCategory;
 use Bedriox\Api\Entity\EntityType;
 use Bedriox\Api\Entity\MountedPassenger;
 use Bedriox\Api\Entity\SpawnCause;
+use Bedriox\Api\Entity\Value\EmoteId;
+use Bedriox\Api\Entity\Value\Motion;
 use Bedriox\Api\Entity\Value\MountSeat;
+use Bedriox\Api\Visibility\Visibility;
+use Bedriox\Api\Visibility\VisibilityPolicy;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Server\Entity\Mount\MountSeatOffset;
+use Bedriox\Server\Plugin\PluginActionBuffer;
 use Bedriox\Server\Simulation\Position;
+use Bedriox\Server\Visibility\MutableVisibility;
 use Closure;
 use InvalidArgumentException;
 use LogicException;
 
 abstract class AbstractEntity implements ApiEntity
 {
+    private const int MAXIMUM_PENDING_ANIMATIONS = 16;
+
     private readonly string $uniqueId;
 
     private bool $removed = false;
@@ -59,13 +67,16 @@ abstract class AbstractEntity implements ApiEntity
 
     private bool $invisible = false;
 
-    private bool $glowing = false;
-
     private bool $gravityEnabled = true;
 
     private float $scale = 1.0;
 
     private int $presentationRevision = 0;
+
+    private readonly MutableVisibility $visibility;
+
+    /** @var list<ActorAnimationRequest> */
+    private array $pendingAnimations = [];
 
     /** @var null|Closure(): ?ApiEntity */
     private ?Closure $vehicleResolver = null;
@@ -99,6 +110,11 @@ abstract class AbstractEntity implements ApiEntity
         }
         self::validatePosition($position);
         self::validateRotation($yaw, $pitch);
+        $this->visibility = new MutableVisibility(
+            VisibilityPolicy::automatic(),
+            fn() => $this->markPresentationChanged(),
+            fn(): bool => !$this->removed,
+        );
     }
 
     final public function getUniqueId(): string
@@ -179,6 +195,32 @@ abstract class AbstractEntity implements ApiEntity
     final public function hasPassengers(): bool
     {
         return $this->getPassengers() !== [];
+    }
+
+    final public function getVisibility(): Visibility
+    {
+        return $this->visibility;
+    }
+
+    /** @internal Applies initial visibility before the entity is announced. */
+    final public function applyInitialVisibility(VisibilityPolicy $policy): void
+    {
+        if ($this->ageTicks !== 0 || $this->removed) {
+            throw new LogicException('Initial entity visibility must be assigned before simulation.');
+        }
+        $this->visibility->initialize($policy);
+    }
+
+    /** @internal Rebinds visibility mutations to the active plugin transaction. */
+    final public function bindVisibilityActions(?PluginActionBuffer $actions): void
+    {
+        $this->visibility->bindActions($actions);
+    }
+
+    /** @internal Runtime projection policy admission. */
+    final public function visibilityAllows(string $playerUuid): bool
+    {
+        return $this->visibility->allowsUuid($playerUuid);
     }
 
     /**
@@ -262,11 +304,6 @@ abstract class AbstractEntity implements ApiEntity
         return $this->invisible;
     }
 
-    final public function isGlowing(): bool
-    {
-        return $this->glowing;
-    }
-
     final public function isGravityEnabled(): bool
     {
         return $this->gravityEnabled;
@@ -320,8 +357,40 @@ abstract class AbstractEntity implements ApiEntity
         return $this->presentationRevision;
     }
 
+    /** @internal Queues a transient arm swing for authoritative projection. */
+    final public function requestArmSwing(): void
+    {
+        $this->queueAnimation(ActorAnimationRequest::armSwing());
+    }
+
+    /** @internal Queues a validated transient emote for authoritative projection. */
+    final public function requestEmote(EmoteId $emote): void
+    {
+        $this->queueAnimation(ActorAnimationRequest::emote($emote));
+    }
+
+    /**
+     * @internal Projection consumes each request exactly once.
+     * @return list<ActorAnimationRequest>
+     */
+    final public function drainAnimationRequests(): array
+    {
+        $requests = $this->pendingAnimations;
+        $this->pendingAnimations = [];
+
+        return $requests;
+    }
+
+    private function queueAnimation(ActorAnimationRequest $request): void
+    {
+        if (count($this->pendingAnimations) >= self::MAXIMUM_PENDING_ANIMATIONS) {
+            array_shift($this->pendingAnimations);
+        }
+        $this->pendingAnimations[] = $request;
+    }
+
     /** @internal Authoritative controller mutation. */
-    final public function setNameTag(string $nameTag): void
+    final public function applyNameTag(string $nameTag): void
     {
         if (strlen($nameTag) > 256 || preg_match('//u', $nameTag) !== 1) {
             throw new InvalidArgumentException('Entity name tag must be valid UTF-8 and bounded.');
@@ -333,7 +402,7 @@ abstract class AbstractEntity implements ApiEntity
     }
 
     /** @internal Authoritative controller mutation. */
-    final public function setNameTagVisible(bool $visible): void
+    final public function applyNameTagVisible(bool $visible): void
     {
         if ($this->nameTagVisible !== $visible) {
             $this->nameTagVisible = $visible;
@@ -342,19 +411,19 @@ abstract class AbstractEntity implements ApiEntity
     }
 
     /** @internal Authoritative controller mutation. */
-    final public function setImmobile(bool $immobile): void
+    final public function applyImmobile(bool $immobile): void
     {
         if ($this->immobile !== $immobile) {
             $this->immobile = $immobile;
             if ($immobile) {
-                $this->setMotion(new EntityMotion());
+                $this->applyMotion(new EntityMotion());
             }
             $this->markPresentationChanged();
         }
     }
 
     /** @internal Authoritative controller mutation. */
-    final public function setInvisible(bool $invisible): void
+    final public function applyInvisible(bool $invisible): void
     {
         if ($this->invisible !== $invisible) {
             $this->invisible = $invisible;
@@ -363,16 +432,7 @@ abstract class AbstractEntity implements ApiEntity
     }
 
     /** @internal Authoritative controller mutation. */
-    final public function setGlowing(bool $glowing): void
-    {
-        if ($this->glowing !== $glowing) {
-            $this->glowing = $glowing;
-            $this->markPresentationChanged();
-        }
-    }
-
-    /** @internal Authoritative controller mutation. */
-    final public function setGravityEnabled(bool $enabled): void
+    final public function applyGravityEnabled(bool $enabled): void
     {
         if ($this->gravityEnabled !== $enabled) {
             $this->gravityEnabled = $enabled;
@@ -381,7 +441,7 @@ abstract class AbstractEntity implements ApiEntity
     }
 
     /** @internal Authoritative controller mutation. */
-    final public function setScale(float $scale): void
+    final public function applyScale(float $scale): void
     {
         if (!is_finite($scale) || $scale < 0.01 || $scale > 16.0) {
             throw new InvalidArgumentException('Entity scale must be finite and between 0.01 and 16.');
@@ -467,10 +527,13 @@ abstract class AbstractEntity implements ApiEntity
         $this->moveTo($worldName, $position, $yaw, $pitch);
     }
 
-    final public function setMotion(EntityMotion $motion): void
+    final public function applyMotion(Motion $motion): void
     {
-        if ($this->motion != $motion) {
-            $this->motion = $motion;
+        $internal = $motion instanceof EntityMotion
+            ? $motion
+            : new EntityMotion($motion->x, $motion->y, $motion->z);
+        if ($this->motion != $internal) {
+            $this->motion = $internal;
             $this->markChanged();
         }
     }
@@ -504,6 +567,7 @@ abstract class AbstractEntity implements ApiEntity
     {
         if (!$this->removed) {
             $this->removed = true;
+            $this->visibility->clear();
             $this->markChanged();
         }
     }

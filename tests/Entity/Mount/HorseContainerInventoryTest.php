@@ -174,7 +174,7 @@ final class HorseContainerInventoryTest extends TestCase
         $revision = $inventory->revision();
 
         $horse->moveTo('world', new Position(2.0, 65.0, -1.0), 135.0, 12.0);
-        $horse->setMotion(new \Bedriox\Server\Entity\EntityMotion(0.1, 0.0, -0.1));
+        $horse->applyMotion(new \Bedriox\Server\Entity\EntityMotion(0.1, 0.0, -0.1));
 
         self::assertSame($revision, $inventory->revision());
         self::assertTrue($inventory->replaceContents([

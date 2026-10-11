@@ -42,8 +42,8 @@ final class LeashKnotEntity extends AbstractMobEntity
             new EntityMotion(),
         );
         $this->setAiEnabled(false);
-        $this->setGravityEnabled(false);
-        $this->setImmobile(true);
+        $this->applyGravityEnabled(false);
+        $this->applyImmobile(true);
     }
 
     public function fencePosition(): BlockPosition

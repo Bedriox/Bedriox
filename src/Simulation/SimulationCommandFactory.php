@@ -61,6 +61,7 @@ use Bedriox\Server\Simulation\Command\MountPlayer;
 use Bedriox\Server\Simulation\Command\MovePlayer;
 use Bedriox\Server\Simulation\Command\PerformEmote;
 use Bedriox\Server\Simulation\Command\PickBlock;
+use Bedriox\Server\Simulation\Command\PickEntity;
 use Bedriox\Server\Simulation\Command\PlaceBlock;
 use Bedriox\Server\Simulation\Command\ReleaseItem;
 use Bedriox\Server\Simulation\Command\RemovePlayerEffect;
@@ -701,6 +702,20 @@ final readonly class SimulationCommandFactory
         $this->assertOpaqueId($session, 128, 'session');
 
         return new PickBlock($session, $position, $addUserData);
+    }
+
+    public function pickEntity(
+        string $session,
+        int $actorRuntimeId,
+        int $hotbarSlot,
+        bool $userDataRequested,
+    ): PickEntity {
+        $this->assertOpaqueId($session, 128, 'session');
+        if ($actorRuntimeId < 1 || $hotbarSlot < 0 || $hotbarSlot > 8) {
+            throw new CommandValidationException('Entity-pick intent is invalid.');
+        }
+
+        return new PickEntity($session, $actorRuntimeId, $hotbarSlot, $userDataRequested);
     }
 
     public function useItem(string $session, int $hotbarSlot): UseItem

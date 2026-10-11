@@ -177,6 +177,30 @@ final class BedrockCommandPacketProjectorTest extends TestCase
         );
     }
 
+    public function testDifferentLiteralValuesMayShareOneArgumentNameAcrossOverloads(): void
+    {
+        [$registry, $permissions] = $this->dependencies();
+        $registry->register('Tools', new ProjectorCommand(
+            new CommandDefinition('visibility', 'Control visibility'),
+            CommandArguments::create()
+                ->addOverload(CommandOverload::create()
+                    ->addArgument(CommandParameter::literal('show', 'action')))
+                ->addOverload(CommandOverload::create()
+                    ->addArgument(CommandParameter::literal('hide', 'action'))),
+        ));
+
+        $projected = (new BedrockCommandPacketProjector($registry, $permissions))
+            ->availableCommands(self::UUID);
+        $packet = AvailableCommandsPacket::decode($projected->encode());
+        $command = self::commandsByName($packet)['visibility'];
+        $show = $command->overloads[0]->parameters[0];
+        $hide = $command->overloads[1]->parameters[0];
+
+        self::assertEnum($show, 'bedriox:command:visibility:literal:action', ['show'], false);
+        self::assertEnum($hide, 'bedriox:command:visibility:literal:action', ['hide'], false);
+        self::assertNotSame($show->type->name, $hide->type->name);
+    }
+
     public function testOnlinePlayerUpdateReplacesTheSharedEnumWithConnectedNames(): void
     {
         [$registry, $permissions] = $this->dependencies();

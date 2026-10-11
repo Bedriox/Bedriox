@@ -21,6 +21,8 @@ declare(strict_types=1);
 namespace Bedriox\Api\Player;
 
 use Bedriox\Api\Entity\Entity;
+use Bedriox\Api\Entity\Value\EmoteId;
+use Bedriox\Api\Entity\Value\Motion;
 use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\World\Position;
 use Closure;
@@ -44,6 +46,15 @@ final readonly class PlayerActions
         private ?Closure $vehicle = null,
         private ?Closure $mount = null,
         private ?Closure $dismount = null,
+        private ?Closure $setMotion = null,
+        private ?Closure $playEmote = null,
+        private ?Closure $setRotation = null,
+        private ?Closure $setNameTag = null,
+        private ?Closure $setNameTagVisible = null,
+        private ?Closure $setImmobile = null,
+        private ?Closure $setInvisible = null,
+        private ?Closure $setScale = null,
+        private ?Closure $setGravityEnabled = null,
     ) {}
 
     public static function unavailable(): self
@@ -83,6 +94,51 @@ final readonly class PlayerActions
     public function dismount(): void
     {
         ($this->dismount ?? self::unavailableAction())();
+    }
+
+    public function setMotion(Motion $motion): void
+    {
+        ($this->setMotion ?? self::unavailableAction())($motion);
+    }
+
+    public function playEmote(EmoteId $emote): void
+    {
+        ($this->playEmote ?? self::unavailableAction())($emote);
+    }
+
+    public function setRotation(float $yaw, float $pitch): void
+    {
+        ($this->setRotation ?? self::unavailableAction())($yaw, $pitch);
+    }
+
+    public function setNameTag(string $nameTag): void
+    {
+        ($this->setNameTag ?? self::unavailableAction())($nameTag);
+    }
+
+    public function setNameTagVisible(bool $visible): void
+    {
+        ($this->setNameTagVisible ?? self::unavailableAction())($visible);
+    }
+
+    public function setImmobile(bool $immobile): void
+    {
+        ($this->setImmobile ?? self::unavailableAction())($immobile);
+    }
+
+    public function setInvisible(bool $invisible): void
+    {
+        ($this->setInvisible ?? self::unavailableAction())($invisible);
+    }
+
+    public function setScale(float $scale): void
+    {
+        ($this->setScale ?? self::unavailableAction())($scale);
+    }
+
+    public function setGravityEnabled(bool $enabled): void
+    {
+        ($this->setGravityEnabled ?? self::unavailableAction())($enabled);
     }
 
     private static function unavailableAction(): Closure

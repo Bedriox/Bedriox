@@ -1157,6 +1157,9 @@ final class PluginGameplayEventBridgeTest extends TestCase
         );
         $player->movement->yaw = 120.0;
         $player->movement->pitch = -25.0;
+        $player->movement->velocityX = 0.25;
+        $player->movement->verticalVelocity = -0.5;
+        $player->movement->velocityZ = 0.75;
 
         $view = $bridge->playerView($player);
 
@@ -1165,6 +1168,9 @@ final class PluginGameplayEventBridgeTest extends TestCase
         self::assertSame(120.0, $view->position->yaw);
         self::assertSame(-25.0, $view->position->pitch);
         self::assertSame(WorldDimension::END, $view->position->dimension);
+        self::assertSame(0.25, $view->getMotion()->x);
+        self::assertSame(-0.5, $view->getMotion()->y);
+        self::assertSame(0.75, $view->getMotion()->z);
     }
 
     public function testEndEncounterRewardEventsPreserveOrderingModificationAndListenerIsolation(): void

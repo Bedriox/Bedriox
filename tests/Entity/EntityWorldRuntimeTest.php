@@ -511,7 +511,7 @@ final class EntityWorldRuntimeTest extends TestCase
         self::assertInstanceOf(AbstractMobEntity::class, $spawn->entity);
         $entity = $spawn->entity;
         $impulse = new \Bedriox\Server\Entity\EntityMotion(0.4, 0.4, 0.0);
-        $entity->setMotion($impulse);
+        $entity->applyMotion($impulse);
         $entity->suppressAiMovementUntil(10);
 
         HorizontalSteering::toward($entity, new Position(-10.0, 64.0, 0.5), 0.11, 5);
@@ -693,7 +693,7 @@ final class EntityWorldRuntimeTest extends TestCase
             new Position(1.5, 62.0, 1.5),
         ));
         self::assertInstanceOf(PolarBearEntity::class, $spawn->entity);
-        $spawn->entity->setMotion(new EntityMotion(0.0, -0.4, 0.0));
+        $spawn->entity->applyMotion(new EntityMotion(0.0, -0.4, 0.0));
 
         for ($tick = 1; $tick <= 30; ++$tick) {
             $runtime->tick($tick, self::emptyAiWorld(), false);
@@ -832,7 +832,7 @@ final class EntityWorldRuntimeTest extends TestCase
             new Position(0.0, 64.0, 0.0),
         ));
         self::assertInstanceOf(AbstractMobEntity::class, $spawn->entity);
-        $spawn->entity->setMotion(new EntityMotion(0.0, -0.2, 0.0));
+        $spawn->entity->applyMotion(new EntityMotion(0.0, -0.2, 0.0));
 
         $runtime->tick(1, self::emptyAiWorld(), false);
 

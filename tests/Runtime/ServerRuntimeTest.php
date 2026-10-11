@@ -27,6 +27,8 @@ use Bedriox\Api\Command\CommandParameter;
 use Bedriox\Api\Command\CommandResult;
 use Bedriox\Api\Command\CommandSoftEnum;
 use Bedriox\Api\Command\PlayerCommandSender;
+use Bedriox\Api\Entity\Skin;
+use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\World as PublicWorld;
 use Bedriox\Api\World\WorldDimension;
 use Bedriox\Data\BedrockDataSet;
@@ -145,9 +147,11 @@ use Bedriox\Server\Plugin\PluginRuntimeControl;
 use Bedriox\Server\Plugin\Scheduler\MainThreadPluginScheduler;
 use Bedriox\Server\Runtime\BedrockChunkPacketSerializer;
 use Bedriox\Server\Runtime\BedrockInventoryPacketProjector;
+use Bedriox\Server\Runtime\BedrockPlayChannel;
 use Bedriox\Server\Runtime\BedrockPlayChannelFactory;
 use Bedriox\Server\Runtime\BedrockWorldEventPacketEncoder;
 use Bedriox\Server\Runtime\ChatBroadcastPacketEncoder;
+use Bedriox\Server\Runtime\ChunkViewManager;
 use Bedriox\Server\Runtime\DirectedPacket;
 use Bedriox\Server\Runtime\EntityMovementPacketEncoder;
 use Bedriox\Server\Runtime\LoginChannelFactory;
@@ -159,6 +163,7 @@ use Bedriox\Server\Runtime\RuntimeDiagnostics;
 use Bedriox\Server\Runtime\RuntimeLimits;
 use Bedriox\Server\Runtime\RuntimeSession;
 use Bedriox\Server\Runtime\ServerRuntime;
+use Bedriox\Server\Runtime\SessionPhase;
 use Bedriox\Server\Runtime\WorldEventPacketEncoder;
 use Bedriox\Server\Runtime\WorldRuntimeManager;
 use Bedriox\Server\Simulation\ClientInputTick;
@@ -202,6 +207,36 @@ use Throwable;
 
 final class ServerRuntimeTest extends TestCase
 {
+    public function testExpectedServerSkinEchoIsConsumedExactlyOnce(): void
+    {
+        $world = new WorldSimulation();
+        $runtime = new ServerRuntime(
+            new FakeConnectedTransport(),
+            new RuntimeLoginFactory(),
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $world,
+            new FixedRateWorldLoop($world, new RuntimeTestClock()),
+            new RecordingEventEncoder(),
+        );
+        $skin = new Skin(
+            'skin-id',
+            64,
+            64,
+            str_repeat("\0", 64 * 64 * 4),
+            '{"geometry":{"default":"geometry.humanoid.custom"}}',
+        );
+        $expect = new \ReflectionMethod(ServerRuntime::class, 'expectSkinEcho');
+        $consume = new \ReflectionMethod(ServerRuntime::class, 'consumeExpectedSkinEcho');
+
+        try {
+            $expect->invoke($runtime, 'session', $skin);
+            self::assertTrue($consume->invoke($runtime, 'session', $skin));
+            self::assertFalse($consume->invoke($runtime, 'session', $skin));
+        } finally {
+            $runtime->close();
+        }
+    }
+
     public function testViewerOnlyActorTeardownPreservesSourceWorldActorOwnership(): void
     {
         $transport = new FakeConnectedTransport();
@@ -307,6 +342,153 @@ final class ServerRuntimeTest extends TestCase
                 ['remaining' => true],
                 $fallingBlockViewers[905],
             );
+        } finally {
+            $runtime->close();
+        }
+    }
+
+    public function testEntityVisibilityPolicyControlsActorAudienceAndSurvivesSessionReplacement(): void
+    {
+        $transport = new FakeConnectedTransport();
+        $clock = new RuntimeTestClock();
+        $world = new WorldSimulation();
+        $loginFactory = new RuntimeLoginFactory(uniqueIdentities: true, uniqueDisplayNames: true);
+        $runtime = new ServerRuntime(
+            $transport,
+            $loginFactory,
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $world,
+            new FixedRateWorldLoop($world, $clock),
+            new RecordingEventEncoder(),
+        );
+        $firstInfo = new SessionInfo('127.0.0.1', 20_001, 41, 1_400, 11);
+        $secondInfo = new SessionInfo('127.0.0.1', 20_002, 42, 1_400, 11);
+
+        try {
+            $this->advanceToInitializing($runtime, $transport, $firstInfo, $loginFactory);
+            $this->advanceToInitializing($runtime, $transport, $secondInfo, $loginFactory);
+            $firstId = '41@127.0.0.1:20001';
+            $secondId = '42@127.0.0.1:20002';
+            $first = $this->runtimeSession($runtime, $firstId);
+            $second = $this->runtimeSession($runtime, $secondId);
+            $firstUuid = '00000000-0000-4000-8000-000000020001';
+            $secondUuid = '00000000-0000-4000-8000-000000020002';
+            $this->prepareEntityViewer($first, $firstUuid, 'First');
+            $this->prepareEntityViewer($second, $secondUuid, 'Second');
+            $this->setRuntimeProperty($runtime, 'processingWorldId', 'world');
+
+            $entity = new ZombieEntity(
+                '00000000-0000-4000-8000-000000000902',
+                902,
+                'world',
+                new Position(1.0, 64.0, 1.0),
+            );
+            $entity->applyInitialVisibility(new \Bedriox\Api\Visibility\VisibilityPolicy(
+                \Bedriox\Api\Visibility\VisibilityMode::SELECTED,
+                [$firstUuid],
+            ));
+            $spawned = $this->invokeRuntimeReconciler(
+                $runtime,
+                'reconcileEntityActorEvent',
+                new \Bedriox\Server\Simulation\Event\EntityActorSpawned(
+                    $entity,
+                    [$firstId, $secondId],
+                ),
+            );
+            self::assertCount(1, $spawned);
+            self::assertInstanceOf(\Bedriox\Server\Simulation\Event\EntityActorSpawned::class, $spawned[0]);
+            self::assertSame([$firstId], $spawned[0]->recipients());
+
+            $entity->getVisibility()->hideFromAll();
+            $hidden = $this->invokeRuntimeReconciler(
+                $runtime,
+                'reconcileSupplementalEntityActorEvent',
+                new \Bedriox\Server\Simulation\Event\EntityActorMetadataChanged(
+                    $entity,
+                    1,
+                    [$firstId, $secondId],
+                ),
+            );
+            self::assertCount(1, $hidden);
+            self::assertInstanceOf(EntityActorRemoved::class, $hidden[0]);
+            self::assertSame([$firstId], $hidden[0]->recipients());
+
+            $entity->getVisibility()->showToAll();
+            $shown = $this->invokeRuntimeReconciler(
+                $runtime,
+                'reconcileSupplementalEntityActorEvent',
+                new \Bedriox\Server\Simulation\Event\EntityActorMetadataChanged(
+                    $entity,
+                    2,
+                    [$firstId, $secondId],
+                ),
+            );
+            self::assertCount(1, $shown, 'A complete spawn supersedes the metadata delta for newly admitted viewers.');
+            self::assertInstanceOf(\Bedriox\Server\Simulation\Event\EntityActorSpawned::class, $shown[0]);
+            self::assertSame([$firstId, $secondId], $shown[0]->recipients());
+
+            $selected = new ZombieEntity(
+                '00000000-0000-4000-8000-000000000903',
+                903,
+                'world',
+                new Position(1.0, 64.0, 1.0),
+            );
+            $selected->applyInitialVisibility(new \Bedriox\Api\Visibility\VisibilityPolicy(
+                \Bedriox\Api\Visibility\VisibilityMode::SELECTED,
+                [$firstUuid],
+            ));
+            $this->invokeRuntimeReconciler(
+                $runtime,
+                'reconcileEntityActorEvent',
+                new \Bedriox\Server\Simulation\Event\EntityActorSpawned($selected, [$firstId, $secondId]),
+            );
+            $sessionEndpoints = $this->runtimeArrayProperty($runtime, 'sessionEndpoints');
+            $firstEndpoint = $sessionEndpoints[$firstId] ?? null;
+            self::assertIsString($firstEndpoint);
+            (new \ReflectionMethod(ServerRuntime::class, 'removeRuntimeSession'))
+                ->invoke($runtime, $firstEndpoint);
+            $viewers = $this->runtimeArrayProperty($runtime, 'entityActorViewers');
+            $worldViewers = $viewers['world'] ?? null;
+            self::assertIsArray($worldViewers);
+            self::assertSame([], $worldViewers[903] ?? null, 'Disconnect must purge active session delivery state.');
+
+            $replacementId = $secondId;
+            $replacement = $second;
+            $this->prepareEntityViewer($replacement, $firstUuid, 'First');
+
+            $reappeared = $this->invokeRuntimeViewerReconciler($runtime, $replacementId);
+            $selectedReappeared = array_values(array_filter(
+                $reappeared,
+                static fn(WorldEvent $event): bool => $event instanceof \Bedriox\Server\Simulation\Event\EntityActorSpawned
+                    && $event->entity->getRuntimeId() === 903,
+            ));
+            self::assertCount(1, $selectedReappeared);
+            self::assertSame([$replacementId], $selectedReappeared[0]->recipients());
+
+            $replacement->worldId = 'other';
+            $viewers = $this->runtimeArrayProperty($runtime, 'entityActorViewers');
+            $worldViewers = $viewers['world'] ?? null;
+            self::assertIsArray($worldViewers);
+            $worldViewers[902] = [];
+            $worldViewers[903] = [];
+            $viewers['world'] = $worldViewers;
+            $this->setRuntimeProperty($runtime, 'entityActorViewers', $viewers);
+            self::assertSame([], $this->invokeRuntimeViewerReconciler($runtime, $replacementId));
+
+            $replacement->worldId = 'world';
+            $unsentView = new ChunkViewManager(1);
+            $unsentView->centerOnChunk(0, 0);
+            (new \ReflectionProperty(BedrockPlayChannel::class, 'chunkView'))
+                ->setValue($replacement->play, $unsentView);
+            self::assertSame([], $this->invokeRuntimeViewerReconciler($runtime, $replacementId));
+            $unsentView->markPrepared(0, 0);
+            $unsentView->markSent(0, 0);
+            $afterChunk = $this->invokeRuntimeViewerReconciler($runtime, $replacementId);
+            self::assertNotSame([], $afterChunk);
+            $viewers = $this->runtimeArrayProperty($runtime, 'entityActorViewers');
+            $worldViewers = $viewers['world'] ?? null;
+            self::assertIsArray($worldViewers);
+            self::assertSame([$replacementId => true], $worldViewers[903] ?? null);
         } finally {
             $runtime->close();
         }
@@ -834,7 +1016,7 @@ final class ServerRuntimeTest extends TestCase
                 'world',
                 new Position(1.0, 64.0, 2.0),
             );
-            $entity->setMotion(new EntityMotion(0.1, 0.0, -0.2));
+            $entity->applyMotion(new EntityMotion(0.1, 0.0, -0.2));
             $firstId = '41@127.0.0.1:20001';
             $secondId = '42@127.0.0.1:20002';
             $event = new EntityActorMoved($entity, 17, [$firstId, $secondId], true);
@@ -2192,6 +2374,41 @@ final class ServerRuntimeTest extends TestCase
         self::assertSame(1, $transport->closeCalls);
     }
 
+    public function testHumanSpawnFallsBackToDefaultSimulationWithoutRuntimeManager(): void
+    {
+        $simulation = new WorldSimulation(worldId: 'world');
+        $runtime = new ServerRuntime(
+            new FakeConnectedTransport(),
+            new RuntimeLoginFactory(),
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $simulation,
+            new FixedRateWorldLoop($simulation, new RuntimeTestClock()),
+            new RecordingEventEncoder(),
+        );
+        $human = $runtime->spawnPluginHuman(
+            new ApiPosition(
+                0.5,
+                64.0,
+                0.5,
+                0.0,
+                0.0,
+                new PublicWorld('world', 1),
+                WorldDimension::OVERWORLD,
+            ),
+            'Guide',
+            new Skin(
+                'guide',
+                64,
+                64,
+                str_repeat("\0", 64 * 64 * 4),
+                '{"geometry":{"default":"geometry.humanoid.custom"}}',
+            ),
+        );
+
+        self::assertSame('Guide', $human->getName());
+        self::assertSame('world', $human->getWorldName());
+    }
+
     public function testAutosavePassContinuesWithinItsPerTickChunkBudgetUntilClean(): void
     {
         $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
@@ -2691,6 +2908,15 @@ final class ServerRuntimeTest extends TestCase
         return $value;
     }
 
+    private function runtimeSession(ServerRuntime $runtime, string $sessionId): RuntimeSession
+    {
+        $sessions = $this->runtimeArrayProperty($runtime, 'sessionsById');
+        $session = $sessions[$sessionId] ?? null;
+        self::assertInstanceOf(RuntimeSession::class, $session);
+
+        return $session;
+    }
+
     /** @return list<WorldEvent> */
     private function invokeRuntimeReconciler(ServerRuntime $runtime, string $method, WorldEvent $event): array
     {
@@ -2700,6 +2926,43 @@ final class ServerRuntimeTest extends TestCase
         foreach ($result as $resultEvent) {
             self::assertInstanceOf(WorldEvent::class, $resultEvent);
             $events[] = $resultEvent;
+        }
+
+        return $events;
+    }
+
+    private function prepareEntityViewer(RuntimeSession $session, string $uuid, string $displayName): void
+    {
+        self::assertNotNull($session->play);
+        $session->phase = SessionPhase::SPAWNED;
+        $session->joined = true;
+        $session->bootstrap = new PlayerBootstrap(
+            new \Bedriox\Server\Player\PlayerIdentity($uuid, $displayName),
+            'world',
+            new Position(0.0, 64.0, 0.0),
+            0.0,
+            0.0,
+            new \Bedriox\Server\Player\PlayerInventoryState([], 0),
+            0,
+            0,
+        );
+        $view = new ChunkViewManager(1);
+        $view->centerOnChunk(0, 0);
+        $view->markPrepared(0, 0);
+        $view->markSent(0, 0);
+        (new \ReflectionProperty(BedrockPlayChannel::class, 'chunkView'))->setValue($session->play, $view);
+    }
+
+    /** @return list<WorldEvent> */
+    private function invokeRuntimeViewerReconciler(ServerRuntime $runtime, string $sessionId): array
+    {
+        $result = (new \ReflectionMethod(ServerRuntime::class, 'reconcileEntityActorsForViewer'))
+            ->invoke($runtime, $sessionId, null);
+        self::assertIsArray($result);
+        $events = [];
+        foreach ($result as $event) {
+            self::assertInstanceOf(WorldEvent::class, $event);
+            $events[] = $event;
         }
 
         return $events;
@@ -3137,7 +3400,18 @@ final class RuntimeLoginFactory implements LoginChannelFactory
                 : '00000000-0000-0000-0000-000000000001',
             '1',
             $this->client->publicKey,
-            new VerifiedClientData(1, 1, "\0\0\0\0", 0, 0, '', '{}', []),
+            new VerifiedClientData(
+                64,
+                64,
+                str_repeat("\0", 64 * 64 * 4),
+                0,
+                0,
+                '',
+                '{"geometry":{"default":"geometry.humanoid.custom"}}',
+                [],
+                skinId: 'runtime-test-skin',
+                skinResourcePatchJson: '{"geometry":{"default":"geometry.humanoid.custom"}}',
+            ),
         );
         return new BedrockLoginChannel(new LoginSession(
             new RuntimeLoginClock(),

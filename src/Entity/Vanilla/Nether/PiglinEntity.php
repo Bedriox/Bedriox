@@ -50,7 +50,7 @@ final class PiglinEntity extends NetherAngerableEntity implements Piglin
         $memory = $this->aiRuntime()->memory();
         $memory->forget(VanillaAiMemories::nearestPlayer());
         $memory->forget(VanillaAiMemories::meleeIntent());
-        $this->setMotion(new EntityMotion());
+        $this->applyMotion(new EntityMotion());
         $this->markPresentationChanged();
     }
 

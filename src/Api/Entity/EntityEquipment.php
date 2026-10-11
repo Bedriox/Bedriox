@@ -30,6 +30,30 @@ interface EntityEquipment
 
     public function setItem(EquipmentSlot $slot, ?ItemStack $item): void;
 
+    public function getMainHand(): ?ItemStack;
+
+    public function setMainHand(?ItemStack $item): void;
+
+    public function getOffHand(): ?ItemStack;
+
+    public function setOffHand(?ItemStack $item): void;
+
+    public function getHelmet(): ?ItemStack;
+
+    public function setHelmet(?ItemStack $item): void;
+
+    public function getChestplate(): ?ItemStack;
+
+    public function setChestplate(?ItemStack $item): void;
+
+    public function getLeggings(): ?ItemStack;
+
+    public function setLeggings(?ItemStack $item): void;
+
+    public function getBoots(): ?ItemStack;
+
+    public function setBoots(?ItemStack $item): void;
+
     public function getDropChance(EquipmentSlot $slot): float;
 
     public function setDropChance(EquipmentSlot $slot, float $chance): void;
@@ -37,7 +61,12 @@ interface EntityEquipment
     /** @return array<string, ItemStack|null> keyed by EquipmentSlot::value */
     public function getContents(): array;
 
+    /** @return array{head: ItemStack|null, chest: ItemStack|null, legs: ItemStack|null, feet: ItemStack|null} */
+    public function getArmorContents(): array;
+
     public function clear(EquipmentSlot $slot): void;
+
+    public function clearArmor(): void;
 
     public function clearAll(): void;
 }

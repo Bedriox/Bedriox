@@ -126,7 +126,7 @@ final readonly class EntityContactResolver
             $combinedX *= $scale;
             $combinedZ *= $scale;
         }
-        $entity->setMotion(new EntityMotion($combinedX, $motion->y, $combinedZ));
+        $entity->applyMotion(new EntityMotion($combinedX, $motion->y, $combinedZ));
         if ($entity instanceof AbstractMobEntity && $entity->getActivationState() === MobActivationState::SLEEPING) {
             $entity->setActivationState(MobActivationState::REDUCED);
         }

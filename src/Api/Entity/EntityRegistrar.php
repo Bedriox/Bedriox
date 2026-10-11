@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\Entity;
 
+use Bedriox\Api\Visibility\VisibilityPolicy;
 use Bedriox\Api\World\Position;
 
 interface EntityRegistrar
@@ -28,4 +29,14 @@ interface EntityRegistrar
 
     /** Queues one server-authoritative instance of a custom type owned by this plugin. */
     public function spawn(CustomEntityType $type, Position $position, float $yaw = 0.0, float $pitch = 0.0): void;
+
+    /** Spawns a sessionless player-shaped entity and returns its live public handle. */
+    public function spawnHuman(
+        Position $position,
+        string $name,
+        Skin $skin,
+        float $yaw = 0.0,
+        float $pitch = 0.0,
+        VisibilityPolicy $visibility = new VisibilityPolicy(),
+    ): Human;
 }

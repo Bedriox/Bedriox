@@ -23,6 +23,8 @@ namespace Bedriox\Server\Tests\Runtime;
 use Bedriox\Api\Effect\EffectCause;
 use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Effect\EffectType;
+use Bedriox\Api\Entity\Value\EmoteId;
+use Bedriox\Api\Entity\Value\Motion;
 use Bedriox\Api\Inventory\ItemStack;
 use Bedriox\Api\World\Position;
 use Bedriox\Protocol\Packet\Packet;
@@ -33,6 +35,61 @@ use PHPUnit\Framework\TestCase;
 
 final class PlayerConnectionDirectoryTest extends TestCase
 {
+    public function testSharedActorActionsRemainSessionBoundAndTyped(): void
+    {
+        $directory = new PlayerConnectionDirectory();
+        $received = [];
+        $accept = static function (string $action, mixed ...$values) use (&$received): bool {
+            $received[] = [$action, ...$values];
+
+            return true;
+        };
+        $directory->connect(
+            'player-uuid',
+            'session-one',
+            static fn(): bool => true,
+            static fn(Packet $packet, bool $immediate): bool => true,
+            setMotion: static fn(Motion $motion): bool => $accept('motion', $motion),
+            playEmote: static fn(EmoteId $emote): bool => $accept('emote', $emote),
+            setRotation: static fn(float $yaw, float $pitch): bool => $accept('rotation', $yaw, $pitch),
+            setNameTag: static fn(string $nameTag): bool => $accept('name', $nameTag),
+            setNameTagVisible: static fn(bool $visible): bool => $accept('visible', $visible),
+            setImmobile: static fn(bool $immobile): bool => $accept('immobile', $immobile),
+            setInvisible: static fn(bool $invisible): bool => $accept('invisible', $invisible),
+            setScale: static fn(float $scale): bool => $accept('scale', $scale),
+            setGravityEnabled: static fn(bool $enabled): bool => $accept('gravity', $enabled),
+        );
+        $actions = $directory->actions('player-uuid');
+        $motion = new Motion(0.1, 0.2, 0.3);
+        $emote = new EmoteId('00000000-0000-4000-8000-000000000001');
+
+        $actions->setMotion($motion);
+        $actions->playEmote($emote);
+        $actions->setRotation(90.0, 10.0);
+        $actions->setNameTag('Guide');
+        $actions->setNameTagVisible(true);
+        $actions->setImmobile(true);
+        $actions->setInvisible(true);
+        $actions->setScale(1.25);
+        $actions->setGravityEnabled(false);
+
+        self::assertSame([
+            ['motion', $motion],
+            ['emote', $emote],
+            ['rotation', 90.0, 10.0],
+            ['name', 'Guide'],
+            ['visible', true],
+            ['immobile', true],
+            ['invisible', true],
+            ['scale', 1.25],
+            ['gravity', false],
+        ], $received);
+
+        $directory->disconnect('player-uuid', 'session-one');
+        $this->expectException(LogicException::class);
+        $actions->setMotion($motion);
+    }
+
     public function testHandlesRemainBoundToTheSessionThatCreatedThem(): void
     {
         $directory = new PlayerConnectionDirectory();

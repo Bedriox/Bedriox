@@ -26,6 +26,7 @@ namespace Bedriox\Api\Entity;
  */
 enum VanillaEntityType: string implements VanillaEntityIdentity
 {
+    case PLAYER = 'minecraft:player';
     case BOAT = 'minecraft:boat';
     case CHEST_BOAT = 'minecraft:chest_boat';
     case FALLING_BLOCK = 'minecraft:falling_block';

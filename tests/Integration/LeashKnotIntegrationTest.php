@@ -85,8 +85,8 @@ final class LeashKnotIntegrationTest extends TestCase
         ));
         self::assertInstanceOf(LlamaEntity::class, $spawn->entity);
         $llama = $spawn->entity;
-        $llama->setGravityEnabled(false);
-        $llama->setImmobile(true);
+        $llama->applyGravityEnabled(false);
+        $llama->applyImmobile(true);
         self::assertTrue($simulation->enqueue($commands->interactEntity(
             'owner',
             $llama->getRuntimeId(),

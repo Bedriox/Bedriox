@@ -197,7 +197,7 @@ final class NetherEntitySystemTest extends TestCase
         );
 
         $piglin->aiRuntime()->memory()->put(VanillaAiMemories::nearestPlayer(), $world->target, 40);
-        $piglin->setMotion(new EntityMotion(0.2, 0.0, 0.1));
+        $piglin->applyMotion(new EntityMotion(0.2, 0.0, 0.1));
         $piglin->beginAdmiring();
         self::assertNull($piglin->aiRuntime()->memory()->get(VanillaAiMemories::nearestPlayer(), 20));
         self::assertEquals(new EntityMotion(), $piglin->getMotion());

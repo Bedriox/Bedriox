@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\Entity;
 
+use Bedriox\Api\Visibility\VisibilityPolicy;
 use Bedriox\Api\World\Position;
 use LogicException;
 
@@ -34,5 +35,16 @@ final class UnavailableEntityRegistrar implements EntityRegistrar
     public function spawn(CustomEntityType $type, Position $position, float $yaw = 0.0, float $pitch = 0.0): void
     {
         throw new LogicException('Entity spawning is unavailable in this plugin context.');
+    }
+
+    public function spawnHuman(
+        Position $position,
+        string $name,
+        Skin $skin,
+        float $yaw = 0.0,
+        float $pitch = 0.0,
+        VisibilityPolicy $visibility = new VisibilityPolicy(),
+    ): Human {
+        throw new LogicException('Human spawning is unavailable in this plugin context.');
     }
 }

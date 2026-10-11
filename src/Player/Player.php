@@ -54,6 +54,12 @@ final class Player
     private int $stateRevision = 0;
     private int $savedRevision = 0;
     private ?Position $spawnPoint;
+    private string $nameTag;
+    private bool $nameTagVisible = true;
+    private bool $immobile = false;
+    private bool $invisible = false;
+    private float $scale = 1.0;
+    private bool $gravityEnabled = true;
 
     /** @var null|Closure(): bool */
     private ?Closure $ridingStateResolver = null;
@@ -108,6 +114,7 @@ final class Player
             $this->markDirty();
         });
         $this->spawnPoint = $spawnPoint;
+        $this->nameTag = $this->identity->displayName;
     }
 
     public function snapshot(): PlayerSnapshot
@@ -147,7 +154,73 @@ final class Player
             $this->experience->totalPoints(),
             $this->dimension,
             $riding,
+            $this->nameTag,
+            $this->nameTagVisible,
+            $this->immobile,
+            $this->invisible,
+            $this->scale,
+            $this->gravityEnabled,
         );
+    }
+
+    public function nameTag(): string
+    {
+        return $this->nameTag;
+    }
+
+    public function isNameTagVisible(): bool
+    {
+        return $this->nameTagVisible;
+    }
+
+    public function isImmobile(): bool
+    {
+        return $this->immobile;
+    }
+
+    public function isInvisible(): bool
+    {
+        return $this->invisible;
+    }
+
+    public function scale(): float
+    {
+        return $this->scale;
+    }
+
+    public function isGravityEnabled(): bool
+    {
+        return $this->gravityEnabled;
+    }
+
+    public function setNameTag(string $nameTag): void
+    {
+        $this->nameTag = $nameTag;
+    }
+
+    public function setNameTagVisible(bool $visible): void
+    {
+        $this->nameTagVisible = $visible;
+    }
+
+    public function setImmobile(bool $immobile): void
+    {
+        $this->immobile = $immobile;
+    }
+
+    public function setInvisible(bool $invisible): void
+    {
+        $this->invisible = $invisible;
+    }
+
+    public function setScale(float $scale): void
+    {
+        $this->scale = $scale;
+    }
+
+    public function setGravityEnabled(bool $enabled): void
+    {
+        $this->gravityEnabled = $enabled;
     }
 
     /** @internal The world mount registry remains the sole owner of riding state. */

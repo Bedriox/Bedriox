@@ -65,6 +65,7 @@ use Bedriox\Protocol\Packet\DimensionId;
 use Bedriox\Protocol\Packet\DropItemStackRequestAction;
 use Bedriox\Protocol\Packet\EmoteListPacket;
 use Bedriox\Protocol\Packet\EmotePacket;
+use Bedriox\Protocol\Packet\EntityPickRequestPacket;
 use Bedriox\Protocol\Packet\FullContainerName;
 use Bedriox\Protocol\Packet\InteractPacket;
 use Bedriox\Protocol\Packet\InventoryContainerId;
@@ -266,6 +267,9 @@ final class BedrockPlayChannel
 
     /** @var SplQueue<string> */
     private SplQueue $deferredCompressionBatches;
+
+    /** @var SplQueue<PlayerSkinPacket> */
+    private SplQueue $skinChanges;
     private int $deferredCompressionBytes = 0;
 
     /** @var array<string, true> */
@@ -315,6 +319,7 @@ final class BedrockPlayChannel
         $this->pendingStreamingResponses = new SplQueue();
         $this->generatedChunks = new SplQueue();
         $this->deferredCompressionBatches = new SplQueue();
+        $this->skinChanges = new SplQueue();
         $this->traceWindowStartedNanoseconds = hrtime(true);
         $this->trafficGuard = new GameplayTrafficGuard(startedNanoseconds: $this->traceWindowStartedNanoseconds);
         $this->batchLimits = new BatchLimits(maximumPackets: $this->limits->maximumPacketsPerPayload);
@@ -897,6 +902,17 @@ final class BedrockPlayChannel
         return $values;
     }
 
+    /** @return list<PlayerSkinPacket> */
+    public function drainSkinChanges(): array
+    {
+        $values = [];
+        while (!$this->skinChanges->isEmpty()) {
+            $values[] = $this->skinChanges->dequeue();
+        }
+
+        return $values;
+    }
+
     public function takeSpawnAcknowledged(): bool
     {
         $acknowledged = $this->spawnAcknowledged;
@@ -1365,6 +1381,7 @@ final class BedrockPlayChannel
                 || $packet instanceof ItemStackRequestPacket
                 || $packet instanceof PlayerActionPacket
                 || $packet instanceof BlockPickRequestPacket
+                || $packet instanceof EntityPickRequestPacket
                 || $packet instanceof InteractPacket
                 || $packet instanceof MobEquipmentPacket
                 || $packet instanceof MobArmorEquipmentPacket
@@ -1420,8 +1437,14 @@ final class BedrockPlayChannel
             return $packet->runtimeEntityId->equals($this->runtimeEntityId);
         }
         if ($packet instanceof PlayerSkinPacket) {
-            return $this->initialized
-                && strtolower($packet->uuid) === strtolower($this->login->identity);
+            if (!$this->initialized
+                || strcasecmp($packet->uuid, $this->login->identity) !== 0
+                || $this->skinChanges->count() >= 2) {
+                return false;
+            }
+            $this->skinChanges->enqueue($packet);
+
+            return true;
         }
         if ($packet instanceof InteractPacket) {
             if ($packet->action === InteractPacket::VEHICLE_EXIT && $this->initialized) {
@@ -1570,6 +1593,23 @@ final class BedrockPlayChannel
                 $this->sessionId,
                 new WorldBlockPosition($packet->position->x, $packet->position->y, $packet->position->z),
                 $packet->addUserData,
+            ));
+
+            return true;
+        }
+        if ($packet instanceof EntityPickRequestPacket) {
+            if (!$this->initialized
+                || $packet->runtimeEntityId < 1
+                || $packet->hotbarSlot < 0
+                || $packet->hotbarSlot >= PlayerInventory::HOTBAR_SIZE
+                || $this->commands->count() >= $this->limits->maximumCommandsPerPayload) {
+                return $this->initialized;
+            }
+            $this->commands->enqueue($this->commandFactory->pickEntity(
+                $this->sessionId,
+                $packet->runtimeEntityId,
+                $packet->hotbarSlot,
+                $packet->withData,
             ));
 
             return true;

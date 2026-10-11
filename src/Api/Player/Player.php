@@ -24,6 +24,9 @@ use Bedriox\Api\Effect\EffectActions;
 use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Effect\EffectManager;
 use Bedriox\Api\Entity\Entity;
+use Bedriox\Api\Entity\Skin;
+use Bedriox\Api\Entity\Value\EmoteId;
+use Bedriox\Api\Entity\Value\Motion;
 use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\Event\Player\PlayerKickCause;
 use Bedriox\Api\Inventory\ArmorInventory;
@@ -77,6 +80,8 @@ final readonly class Player
         private ?EffectActions $effectActions = null,
         private ExperienceSnapshot $experience = new ExperienceSnapshot(0),
         private ?Closure $setExperience = null,
+        private ?Skin $skin = null,
+        private Motion $motion = new Motion(),
     ) {
         $this->inventorySnapshot = $inventory;
         $armor = new ArmorInventory(
@@ -109,6 +114,70 @@ final readonly class Player
     public function getDimension(): WorldDimension
     {
         return $this->position->dimension ?? WorldDimension::OVERWORLD;
+    }
+
+    public function getSkin(): Skin
+    {
+        return $this->skin ?? throw new \LogicException('This player snapshot does not contain a verified skin.');
+    }
+
+    public function getMotion(): Motion
+    {
+        return $this->motion;
+    }
+
+    public function setMotion(Motion $motion): void
+    {
+        ($this->playerActions ?? PlayerActions::unavailable())->setMotion($motion);
+    }
+
+    public function playEmote(EmoteId $emote): void
+    {
+        ($this->playerActions ?? PlayerActions::unavailable())->playEmote($emote);
+    }
+
+    public function setRotation(float $yaw, float $pitch): void
+    {
+        if (!is_finite($yaw) || !is_finite($pitch) || $pitch < -90.0 || $pitch > 90.0) {
+            throw new InvalidArgumentException('Player rotation must be finite and bounded.');
+        }
+        ($this->playerActions ?? PlayerActions::unavailable())->setRotation($yaw, $pitch);
+    }
+
+    public function setNameTag(string $nameTag): void
+    {
+        if (strlen($nameTag) > 256 || preg_match('//u', $nameTag) !== 1) {
+            throw new InvalidArgumentException('Player name tag must be valid UTF-8 and bounded.');
+        }
+        ($this->playerActions ?? PlayerActions::unavailable())->setNameTag($nameTag);
+    }
+
+    public function setNameTagVisible(bool $visible): void
+    {
+        ($this->playerActions ?? PlayerActions::unavailable())->setNameTagVisible($visible);
+    }
+
+    public function setImmobile(bool $immobile): void
+    {
+        ($this->playerActions ?? PlayerActions::unavailable())->setImmobile($immobile);
+    }
+
+    public function setInvisible(bool $invisible): void
+    {
+        ($this->playerActions ?? PlayerActions::unavailable())->setInvisible($invisible);
+    }
+
+    public function setScale(float $scale): void
+    {
+        if (!is_finite($scale) || $scale < 0.01 || $scale > 16.0) {
+            throw new InvalidArgumentException('Player scale must be finite and between 0.01 and 16.');
+        }
+        ($this->playerActions ?? PlayerActions::unavailable())->setScale($scale);
+    }
+
+    public function setGravityEnabled(bool $enabled): void
+    {
+        ($this->playerActions ?? PlayerActions::unavailable())->setGravityEnabled($enabled);
     }
 
     public function teleport(Position $position): void
@@ -220,6 +289,40 @@ final readonly class Player
             $effectActions,
             $this->experience,
             $setExperience,
+            $this->skin,
+            $this->motion,
+        );
+    }
+
+    /** @internal Attaches the verified login skin without changing the player session binding. */
+    public function withSkin(Skin $skin): self
+    {
+        return new self(
+            $this->name,
+            $this->uuid,
+            $this->position,
+            $this->yaw,
+            $this->pitch,
+            $this->sneaking,
+            $this->sprinting,
+            $this->inventorySnapshot,
+            $this->health,
+            $this->maxHealth,
+            $this->alive,
+            $this->gameMode,
+            $this->playerConnection,
+            $this->nutrition,
+            $this->playerActions,
+            $this->armorInventorySnapshot,
+            $this->offHandItem,
+            $this->inventoryActions,
+            $this->maximumStackSize,
+            $this->effects,
+            $this->effectActions,
+            $this->experience,
+            $this->setExperience,
+            $skin,
+            $this->motion,
         );
     }
 

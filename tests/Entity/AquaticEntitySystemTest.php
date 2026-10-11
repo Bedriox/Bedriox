@@ -337,7 +337,7 @@ final class AquaticEntitySystemTest extends TestCase
         $context = new AiTickContext(10, $view);
 
         $goal->start($entity, $memory, $context);
-        $entity->setMotion(new EntityMotion(0.1, 0.0, 0.1));
+        $entity->applyMotion(new EntityMotion(0.1, 0.0, 0.1));
         $goal->tick($entity, $memory, $context);
 
         self::assertSame(0.0, $entity->getMotion()->x);

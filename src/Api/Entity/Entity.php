@@ -21,6 +21,8 @@ declare(strict_types=1);
 namespace Bedriox\Api\Entity;
 
 use Bedriox\Api\Entity\Controller\EntityController;
+use Bedriox\Api\Entity\Value\Motion;
+use Bedriox\Api\Visibility\Visibility;
 use Bedriox\Api\World\Position;
 
 interface Entity
@@ -34,6 +36,8 @@ interface Entity
     public function getCategory(): EntityCategory;
 
     public function getPosition(): Position;
+
+    public function getMotion(): Motion;
 
     public function getWorldName(): string;
 
@@ -59,4 +63,6 @@ interface Entity
     public function hasPassengers(): bool;
 
     public function getController(): EntityController;
+
+    public function getVisibility(): Visibility;
 }

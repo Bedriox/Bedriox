@@ -303,6 +303,22 @@ final class Bedriox
                                 $yaw,
                                 $pitch,
                             ),
+                            humanSpawner: static fn(
+                                \Bedriox\Api\World\Position $position,
+                                string $name,
+                                \Bedriox\Api\Entity\Skin $skin,
+                                float $yaw,
+                                float $pitch,
+                                \Bedriox\Api\Visibility\VisibilityPolicy $visibility,
+                            ): \Bedriox\Api\Entity\Human => $composition->server->runtime->spawnPluginHuman(
+                                $position,
+                                $name,
+                                $skin,
+                                $yaw,
+                                $pitch,
+                                $visibility,
+                            ),
+                            humanOwnership: $composition->host->humans(),
                         ),
                         generators: new OwnedGeneratorRegistrar(
                             $manifest->name,
@@ -320,6 +336,7 @@ final class Bedriox
                             $manifest->name,
                             $composition->host->manager(),
                         ),
+                        displays: $composition->host->displays()->forOwner($manifest->name),
                         updates: $composition->updates
                             ?? throw new \LogicException('The update capability is unavailable.'),
                     );
@@ -363,6 +380,13 @@ final class Bedriox
                             . \Bedriox\Api\TextFormat::RESET,
                         );
                     }
+                },
+                displayChanged: static function (
+                    \Bedriox\Api\Display\TextDisplay $display,
+                    \Bedriox\Server\Plugin\Display\DisplayChange $change,
+                    ?\Bedriox\Api\Player\Player $player,
+                ) use ($composition): void {
+                    $composition->server?->runtime->displayChanged($display, $change, $player);
                 },
             );
             $composition->host = $pluginHost;
@@ -715,6 +739,7 @@ final class Bedriox
                 'time_to_listen_us' => intdiv($startupCompositionReadyAt - $startupStartedAt, 1_000),
             ]);
             $composition->server = $server;
+            $server->runtime->setDisplayRegistry($pluginHost->displays());
             $updates = new UpdateManager(
                 self::VERSION,
                 $config->updatesEnabled,

@@ -25,6 +25,9 @@ use Bedriox\Api\Effect\EffectCause;
 use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Entity\Entity;
+use Bedriox\Api\Entity\Skin;
+use Bedriox\Api\Entity\Value\EmoteId;
+use Bedriox\Api\Entity\Value\Motion;
 use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\Event\Player\PlayerKickCause;
 use Bedriox\Api\Inventory\EquipmentSlot;
@@ -40,11 +43,17 @@ use Bedriox\Protocol\Packet\Packet;
 use Closure;
 use LogicException;
 
-/** @internal Binds immutable public player handles to the current runtime session without exposing it. */
+/**
+ * @internal Binds immutable public player handles to the current runtime session without exposing it.
+ * @phpstan-type Connection array{session: string, connected: Closure(): bool, send: Closure(Packet, bool): bool, kick: Closure(string, ?string, ?string, PlayerKickCause, ?string): bool, swing: Closure(): bool, teleport: Closure(Position): bool, gameMode: Closure(GameMode): bool, give: Closure(ItemStack): bool, slot: Closure(int, ?ItemStack): bool, contents: Closure(list<ItemStack|null>): bool, remove: Closure(ItemStack): bool, select: Closure(int): bool, equipment: Closure(EquipmentSlot, ?ItemStack): bool, armor: Closure(array<string, ItemStack|null>): bool, damage: Closure(float): bool, maximumStackSize: Closure(ItemStack): int, effectAdd: Closure(EffectInstance, EffectCause): bool, effectRemove: Closure(EffectType, EffectCause): bool, effectClear: Closure(EffectCause): bool, experience: Closure(int, ExperienceChangeCause): bool, vehicle: Closure(): ?Entity, mount: Closure(Entity, MountSeat): bool, dismount: Closure(): bool, motion: Closure(Motion): bool, emote: Closure(EmoteId): bool, rotation: Closure(float, float): bool, nameTag: Closure(string): bool, nameTagVisible: Closure(bool): bool, immobile: Closure(bool): bool, invisible: Closure(bool): bool, scale: Closure(float): bool, gravity: Closure(bool): bool}
+ */
 final class PlayerConnectionDirectory
 {
-    /** @var array<string, array{session: string, connected: Closure(): bool, send: Closure(Packet, bool): bool, kick: Closure(string, ?string, ?string, PlayerKickCause, ?string): bool, swing: Closure(): bool, teleport: Closure(Position): bool, gameMode: Closure(GameMode): bool, give: Closure(ItemStack): bool, slot: Closure(int, ?ItemStack): bool, contents: Closure(list<ItemStack|null>): bool, remove: Closure(ItemStack): bool, select: Closure(int): bool, equipment: Closure(EquipmentSlot, ?ItemStack): bool, armor: Closure(array<string, ItemStack|null>): bool, damage: Closure(float): bool, maximumStackSize: Closure(ItemStack): int, effectAdd: Closure(EffectInstance, EffectCause): bool, effectRemove: Closure(EffectType, EffectCause): bool, effectClear: Closure(EffectCause): bool, experience: Closure(int, ExperienceChangeCause): bool, vehicle: Closure(): ?Entity, mount: Closure(Entity, MountSeat): bool, dismount: Closure(): bool}> */
+    /** @var array<string, Connection> */
     private array $connections = [];
+
+    /** @var array<string, Skin> */
+    private array $skins = [];
 
     /**
      * @param Closure(): bool             $connected
@@ -88,6 +97,16 @@ final class PlayerConnectionDirectory
         ?Closure $vehicle = null,
         ?Closure $mount = null,
         ?Closure $dismount = null,
+        ?Closure $setMotion = null,
+        ?Closure $playEmote = null,
+        ?Closure $setRotation = null,
+        ?Closure $setNameTag = null,
+        ?Closure $setNameTagVisible = null,
+        ?Closure $setImmobile = null,
+        ?Closure $setInvisible = null,
+        ?Closure $setScale = null,
+        ?Closure $setGravityEnabled = null,
+        ?Skin $skin = null,
     ): void {
         /** @var Closure(list<ItemStack|null>): bool $contents */
         $contents = $setInventoryContents ?? static fn(array $contents): bool => false;
@@ -118,7 +137,19 @@ final class PlayerConnectionDirectory
             'vehicle' => $vehicle ?? static fn(): ?Entity => null,
             'mount' => $mount ?? static fn(Entity $vehicle, MountSeat $seat): bool => false,
             'dismount' => $dismount ?? static fn(): bool => false,
+            'motion' => $setMotion ?? static fn(Motion $motion): bool => false,
+            'emote' => $playEmote ?? static fn(EmoteId $emote): bool => false,
+            'rotation' => $setRotation ?? static fn(float $yaw, float $pitch): bool => false,
+            'nameTag' => $setNameTag ?? static fn(string $nameTag): bool => false,
+            'nameTagVisible' => $setNameTagVisible ?? static fn(bool $visible): bool => false,
+            'immobile' => $setImmobile ?? static fn(bool $immobile): bool => false,
+            'invisible' => $setInvisible ?? static fn(bool $invisible): bool => false,
+            'scale' => $setScale ?? static fn(float $scale): bool => false,
+            'gravity' => $setGravityEnabled ?? static fn(bool $enabled): bool => false,
         ];
+        if ($skin !== null) {
+            $this->skins[self::key($identity)] = $skin;
+        }
     }
 
     public function disconnect(string $identity, string $sessionId): void
@@ -126,6 +157,7 @@ final class PlayerConnectionDirectory
         $key = self::key($identity);
         if (($this->connections[$key]['session'] ?? null) === $sessionId) {
             unset($this->connections[$key]);
+            unset($this->skins[$key]);
         }
     }
 
@@ -144,6 +176,22 @@ final class PlayerConnectionDirectory
             fn(): bool => $session !== null && ($this->connections[$key]['session'] ?? null) === $session
                 && ($this->connections[$key]['swing'])(),
         );
+    }
+
+    public function skin(string $identity): ?Skin
+    {
+        return $this->skins[self::key($identity)] ?? null;
+    }
+
+    public function updateSkin(string $identity, Skin $skin): bool
+    {
+        $key = self::key($identity);
+        if (!isset($this->connections[$key])) {
+            return false;
+        }
+        $this->skins[$key] = $skin;
+
+        return true;
     }
 
     public function actions(string $identity): PlayerActions
@@ -179,6 +227,42 @@ final class PlayerConnectionDirectory
             function () use ($key, $session): void {
                 $connection = $this->currentConnection($key, $session);
                 $this->requireAccepted(($connection['dismount'])());
+            },
+            function (Motion $motion) use ($key, $session): void {
+                $connection = $this->currentConnection($key, $session);
+                $this->requireAccepted(($connection['motion'])($motion));
+            },
+            function (EmoteId $emote) use ($key, $session): void {
+                $connection = $this->currentConnection($key, $session);
+                $this->requireAccepted(($connection['emote'])($emote));
+            },
+            function (float $yaw, float $pitch) use ($key, $session): void {
+                $connection = $this->currentConnection($key, $session);
+                $this->requireAccepted(($connection['rotation'])($yaw, $pitch));
+            },
+            function (string $nameTag) use ($key, $session): void {
+                $connection = $this->currentConnection($key, $session);
+                $this->requireAccepted(($connection['nameTag'])($nameTag));
+            },
+            function (bool $visible) use ($key, $session): void {
+                $connection = $this->currentConnection($key, $session);
+                $this->requireAccepted(($connection['nameTagVisible'])($visible));
+            },
+            function (bool $immobile) use ($key, $session): void {
+                $connection = $this->currentConnection($key, $session);
+                $this->requireAccepted(($connection['immobile'])($immobile));
+            },
+            function (bool $invisible) use ($key, $session): void {
+                $connection = $this->currentConnection($key, $session);
+                $this->requireAccepted(($connection['invisible'])($invisible));
+            },
+            function (float $scale) use ($key, $session): void {
+                $connection = $this->currentConnection($key, $session);
+                $this->requireAccepted(($connection['scale'])($scale));
+            },
+            function (bool $enabled) use ($key, $session): void {
+                $connection = $this->currentConnection($key, $session);
+                $this->requireAccepted(($connection['gravity'])($enabled));
             },
         );
     }
@@ -295,7 +379,7 @@ final class PlayerConnectionDirectory
     }
 
     /**
-     * @return array{session: string, connected: Closure(): bool, send: Closure(Packet, bool): bool, kick: Closure(string, ?string, ?string, PlayerKickCause, ?string): bool, swing: Closure(): bool, teleport: Closure(Position): bool, gameMode: Closure(GameMode): bool, give: Closure(ItemStack): bool, slot: Closure(int, ?ItemStack): bool, contents: Closure(list<ItemStack|null>): bool, remove: Closure(ItemStack): bool, select: Closure(int): bool, equipment: Closure(EquipmentSlot, ?ItemStack): bool, armor: Closure(array<string, ItemStack|null>): bool, damage: Closure(float): bool, maximumStackSize: Closure(ItemStack): int, effectAdd: Closure(EffectInstance, EffectCause): bool, effectRemove: Closure(EffectType, EffectCause): bool, effectClear: Closure(EffectCause): bool, experience: Closure(int, ExperienceChangeCause): bool, vehicle: Closure(): ?Entity, mount: Closure(Entity, MountSeat): bool, dismount: Closure(): bool}
+     * @return Connection
      */
     private function currentConnection(string $key, ?string $session): array
     {

@@ -62,6 +62,7 @@ use Bedriox\Protocol\Packet\DropItemStackRequestAction;
 use Bedriox\Protocol\Packet\EmoteFlag;
 use Bedriox\Protocol\Packet\EmoteListPacket;
 use Bedriox\Protocol\Packet\EmotePacket;
+use Bedriox\Protocol\Packet\EntityPickRequestPacket;
 use Bedriox\Protocol\Packet\FullContainerName;
 use Bedriox\Protocol\Packet\HandSlot;
 use Bedriox\Protocol\Packet\InteractPacket;
@@ -156,6 +157,7 @@ use Bedriox\Server\Simulation\Command\InteractEntity;
 use Bedriox\Server\Simulation\Command\MovePlayer;
 use Bedriox\Server\Simulation\Command\PerformEmote;
 use Bedriox\Server\Simulation\Command\PickBlock;
+use Bedriox\Server\Simulation\Command\PickEntity;
 use Bedriox\Server\Simulation\Command\PlaceBlock;
 use Bedriox\Server\Simulation\Command\ReleaseItem;
 use Bedriox\Server\Simulation\Command\RespawnPlayer;
@@ -678,7 +680,6 @@ final class BedrockPlayChannelTest extends TestCase
         )));
         self::assertFalse($channel->isClosed());
         self::assertSame([], $channel->drainCommands());
-
         self::assertTrue($channel->accept(new ConnectedPayloadEvent(
             $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
             Reliability::ReliableOrdered,
@@ -906,9 +907,13 @@ final class BedrockPlayChannelTest extends TestCase
         )));
         self::assertFalse($channel->isClosed());
         self::assertSame([], $channel->drainCommands());
+        $skinChanges = $channel->drainSkinChanges();
+        self::assertCount(1, $skinChanges);
+        self::assertSame('skin', $skinChanges[0]->skin->skinId);
+        self::assertSame([], $channel->drainSkinChanges());
     }
 
-    public function testPlayerSkinUpdateCannotSpoofAnotherIdentity(): void
+    public function testPlayerSkinUpdateRejectsAnotherIdentity(): void
     {
         [$channel, $client, , $entityId] = $this->channel();
         self::assertTrue($channel->accept(new ConnectedPayloadEvent(
@@ -940,6 +945,7 @@ final class BedrockPlayChannelTest extends TestCase
             0,
         )));
         self::assertTrue($channel->isClosed());
+        self::assertSame([], $channel->drainSkinChanges());
     }
 
     public function testRecognizedRoutineNotificationsArePostSpawnSafeNoOps(): void
@@ -3528,6 +3534,22 @@ final class BedrockPlayChannelTest extends TestCase
             $pickCommands[0]->position->y,
             $pickCommands[0]->position->z,
         ]);
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new EntityPickRequestPacket(
+                1234,
+                0,
+                false,
+            )])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $entityPickCommands = $channel->drainCommands();
+        self::assertCount(1, $entityPickCommands);
+        self::assertInstanceOf(PickEntity::class, $entityPickCommands[0]);
+        self::assertSame(1234, $entityPickCommands[0]->actorRuntimeId);
+        self::assertSame(0, $entityPickCommands[0]->hotbarSlot);
+        self::assertFalse($entityPickCommands[0]->userDataRequested);
 
         $grassBefore = $world->chunk(new ChunkPosition(0, -1))->blockStateAt(1, 63, 14);
         self::assertSame($palette->grassBlock->value, $grassBefore->value);

@@ -24,6 +24,8 @@ use Bedriox\Api\Effect\EffectManager;
 
 interface LivingEntity extends Entity
 {
+    public function getEquipment(): EntityEquipment;
+
     public function getHealth(): float;
 
     public function getMaximumHealth(): float;

@@ -27,6 +27,8 @@ use Bedriox\Api\Entity\EntityEquipment;
 
 interface LivingEntityController extends EntityController
 {
+    public function swingArm(): void;
+
     public function damage(
         float $amount,
         EntityDamageCause $cause = EntityDamageCause::PLUGIN,

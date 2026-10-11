@@ -21,6 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Tests\Plugin;
 
 use Bedriox\Api\Command\CommandRegistrar;
+use Bedriox\Api\Entity\Controller\HumanController;
 use Bedriox\Api\Entity\Controller\MobController;
 use Bedriox\Api\Entity\CustomEntityState;
 use Bedriox\Api\Entity\CustomEntityType;
@@ -31,7 +32,9 @@ use Bedriox\Api\Entity\CustomMobSpawnContext;
 use Bedriox\Api\Entity\CustomMobStateCodec;
 use Bedriox\Api\Entity\CustomMobTickContext;
 use Bedriox\Api\Entity\EntityCategory;
+use Bedriox\Api\Entity\Human;
 use Bedriox\Api\Entity\Mob;
+use Bedriox\Api\Entity\Skin;
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\VanillaEntityIdentifier;
 use Bedriox\Api\Entity\VanillaEntityType;
@@ -42,6 +45,7 @@ use Bedriox\Api\Plugin\SourcePluginRegistrar;
 use Bedriox\Api\Server;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\PluginMobEntity;
+use Bedriox\Server\Plugin\Entity\HumanOwnershipRegistry;
 use Bedriox\Server\Plugin\OwnedEntityRegistrar;
 use Bedriox\Server\Plugin\PluginActionBuffer;
 use Bedriox\Server\Plugin\PluginEntityDefinitionBridge;
@@ -131,6 +135,86 @@ final class PluginEntityRegistrarTest extends TestCase
             new CustomEntityType('example:guardian'),
             new \Bedriox\Api\World\Position(0.0, 64.0, 0.0),
         );
+    }
+
+    public function testHumanSpawnReturnsTheLiveHandleAndCleansItUpWithItsPlugin(): void
+    {
+        [$registrar, $ownership] = self::registrar('Example');
+        $controller = $this->createMock(HumanController::class);
+        $controller->method('isAvailable')->willReturn(true);
+        $controller->expects(self::once())->method('despawn');
+        $human = $this->createStub(Human::class);
+        $human->method('getUniqueId')->willReturn('00000000-0000-4000-8000-000000000111');
+        $human->method('getController')->willReturn($controller);
+        $skin = new Skin(
+            'example',
+            64,
+            32,
+            str_repeat("\xff", 64 * 32 * 4),
+            '{"geometry":{"default":"geometry.humanoid.custom"}}',
+        );
+        $owned = new OwnedEntityRegistrar(
+            'Example',
+            $registrar,
+            humanSpawner: static fn(
+                \Bedriox\Api\World\Position $_position,
+                string $_name,
+                Skin $_skin,
+                float $_yaw,
+                float $_pitch,
+                \Bedriox\Api\Visibility\VisibilityPolicy $_visibility,
+            ): Human => $human,
+            humanOwnership: new HumanOwnershipRegistry($ownership),
+        );
+
+        self::assertSame($human, $owned->spawnHuman(
+            new \Bedriox\Api\World\Position(1.5, 64.0, -2.5),
+            'Guide',
+            $skin,
+            90.0,
+            -10.0,
+        ));
+        self::assertSame(1, $ownership->count('Example'));
+        self::assertSame([], $ownership->releaseAll('Example'));
+    }
+
+    public function testHumanOwnershipUsesOneWeakLifecycleRegistration(): void
+    {
+        [$registrar, $ownership] = self::registrar('Example');
+        $controller = $this->createMock(HumanController::class);
+        $available = true;
+        $controller->method('isAvailable')->willReturnCallback(static function () use (&$available): bool {
+            return $available;
+        });
+        $controller->expects(self::never())->method('despawn');
+        $human = $this->createStub(Human::class);
+        $human->method('getUniqueId')->willReturn('00000000-0000-4000-8000-000000000222');
+        $human->method('getController')->willReturn($controller);
+        $humans = new HumanOwnershipRegistry($ownership);
+        $owned = new OwnedEntityRegistrar(
+            'Example',
+            $registrar,
+            humanSpawner: static fn(): Human => $human,
+            humanOwnership: $humans,
+        );
+
+        $owned->spawnHuman(
+            new \Bedriox\Api\World\Position(1.5, 64.0, -2.5),
+            'Guide',
+            new Skin(
+                'example',
+                64,
+                32,
+                str_repeat("\xff", 64 * 32 * 4),
+                '{"geometry":{"default":"geometry.humanoid.custom"}}',
+            ),
+        );
+
+        self::assertSame(1, $ownership->count('Example'));
+        self::assertSame(1, $humans->count('Example'));
+        $available = false;
+        self::assertSame(0, $humans->count('Example'));
+        self::assertSame([], $ownership->releaseAll('Example'));
     }
 
     public function testLifecycleCleanupRemovesEveryOwnedDefinition(): void
@@ -523,7 +607,7 @@ final class EntityFailingControlBehavior extends CustomMobBehavior
 {
     public function onTick(CustomMobTickContext $context): void
     {
-        $context->controller->setVelocity(1.0, 2.0, 3.0);
+        $context->controller->setMotion(new \Bedriox\Api\Entity\Value\Motion(1.0, 2.0, 3.0));
         $context->controller->despawn();
 
         throw new RuntimeException('control failed');
@@ -536,7 +620,7 @@ final class EntityControlBehavior extends CustomMobBehavior
     {
         $context->controller->moveToward(new \Bedriox\Api\World\Position(4.5, 64.0, 2.5), 0.4);
         $context->controller->lookAt(new \Bedriox\Api\World\Position(4.5, 64.0, 2.5));
-        $context->controller->setVelocity(0.25, 0.5, -0.75);
+        $context->controller->setMotion(new \Bedriox\Api\Entity\Value\Motion(0.25, 0.5, -0.75));
         $context->controller->despawn();
     }
 }
