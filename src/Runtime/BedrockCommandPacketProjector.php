@@ -29,8 +29,10 @@ use Bedriox\Protocol\Packet\AvailableCommandsPacket;
 use Bedriox\Protocol\Packet\CommandArgumentType;
 use Bedriox\Protocol\Packet\CommandDefinition as ProtocolCommandDefinition;
 use Bedriox\Protocol\Packet\CommandEnum;
+use Bedriox\Protocol\Packet\CommandEnumConstraint;
 use Bedriox\Protocol\Packet\CommandOverload;
 use Bedriox\Protocol\Packet\CommandParameter;
+use Bedriox\Protocol\Packet\CommandParameterOption;
 use Bedriox\Protocol\Packet\CommandPermission;
 use Bedriox\Protocol\Packet\SoftEnumUpdateType;
 use Bedriox\Protocol\Packet\UpdateAbilitiesPacket;
@@ -68,6 +70,7 @@ final readonly class BedrockCommandPacketProjector
             fn(string $permission): bool => $this->permissions->hasPermission($uuid, $permission),
         );
         $onlinePlayerEnum = new CommandEnum(self::ONLINE_PLAYERS_ENUM, self::onlinePlayerNames($onlinePlayers), true);
+        $itemEnum = self::protocolItemEnum($commands);
 
         return new AvailableCommandsPacket(array_map(
             static fn($registered): ProtocolCommandDefinition => new ProtocolCommandDefinition(
@@ -76,10 +79,11 @@ final readonly class BedrockCommandPacketProjector
                 CommandPermission::Any,
                 array_map(
                     static fn($overload): CommandOverload => new CommandOverload(array_map(
-                        static fn(ApiCommandParameter $parameter): CommandParameter => new CommandParameter(
-                            $parameter->name(),
-                            self::protocolType($registered->definition->name, $parameter, $onlinePlayerEnum),
-                            $parameter->isOptional(),
+                        static fn(ApiCommandParameter $parameter): CommandParameter => self::protocolParameter(
+                            $registered->definition->name,
+                            $parameter,
+                            $onlinePlayerEnum,
+                            $itemEnum,
                         ),
                         $overload->parameters(),
                     )),
@@ -92,6 +96,22 @@ final readonly class BedrockCommandPacketProjector
             ),
             $commands,
         ));
+    }
+
+    private static function protocolParameter(
+        string $command,
+        ApiCommandParameter $parameter,
+        CommandEnum $onlinePlayers,
+        ?CommandEnum $items,
+    ): CommandParameter {
+        return new CommandParameter(
+            $parameter->name(),
+            self::protocolType($command, $parameter, $onlinePlayers, $items),
+            $parameter->isOptional(),
+            $parameter->type() === CommandParameterType::ITEM
+                ? [CommandParameterOption::HasSemanticConstraint]
+                : [],
+        );
     }
 
     /** @param list<Player> $onlinePlayers */
@@ -114,6 +134,7 @@ final readonly class BedrockCommandPacketProjector
         string $command,
         ApiCommandParameter $parameter,
         CommandEnum $onlinePlayers,
+        ?CommandEnum $items,
     ): CommandArgumentType|CommandEnum {
         return match ($parameter->type()) {
             CommandParameterType::STRING => CommandArgumentType::String,
@@ -129,6 +150,8 @@ final readonly class BedrockCommandPacketProjector
                 $parameter->choices(),
             ),
             CommandParameterType::SOFT_ENUM => self::protocolSoftEnum($parameter),
+            CommandParameterType::ITEM => $items
+                ?? throw new \LogicException('The shared item command enum is unavailable.'),
             CommandParameterType::POSITION => CommandArgumentType::Position,
             CommandParameterType::BLOCK_POSITION => CommandArgumentType::BlockPosition,
             CommandParameterType::MESSAGE => CommandArgumentType::Message,
@@ -163,6 +186,48 @@ final readonly class BedrockCommandPacketProjector
             ?? throw new \LogicException('A command soft-enum parameter is missing its registered value source.');
 
         return new CommandEnum($softEnum->name(), $softEnum->values(), true);
+    }
+
+    /** @param list<\Bedriox\Server\Plugin\Command\RegisteredCommand> $commands */
+    private static function protocolItemEnum(array $commands): ?CommandEnum
+    {
+        $values = [];
+        $constraints = [];
+        foreach ($commands as $command) {
+            foreach ($command->arguments->overloads() as $overload) {
+                foreach ($overload->parameters() as $parameter) {
+                    if ($parameter->type() !== CommandParameterType::ITEM) {
+                        continue;
+                    }
+                    $source = $parameter->softEnumValue()
+                        ?? throw new \LogicException('An item command parameter is missing its registered identifier source.');
+                    foreach ($source->values() as $value) {
+                        $canonical = self::canonicalItemIdentifier($value);
+                        if ($canonical === null) {
+                            throw new \LogicException('An item command parameter source contains an invalid identifier.');
+                        }
+                        $values[$canonical] = $canonical;
+                        if (str_starts_with($canonical, 'minecraft:')) {
+                            $constraints[$canonical] = [CommandEnumConstraint::AllowAliases];
+                        }
+                    }
+                }
+            }
+        }
+
+        return $values === []
+            ? null
+            : new CommandEnum('Item', array_values($values), constraints: $constraints);
+    }
+
+    private static function canonicalItemIdentifier(string $value): ?string
+    {
+        $identifier = strtolower(str_contains($value, ':') ? $value : 'minecraft:' . $value);
+
+        return preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $identifier) === 1
+            && strlen($identifier) <= 128
+            ? $identifier
+            : null;
     }
 
     /**

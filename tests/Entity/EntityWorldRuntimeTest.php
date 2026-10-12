@@ -53,6 +53,8 @@ use Bedriox\Server\World\Collision\AxisAlignedBox;
 use Bedriox\Server\World\Collision\BlockCollisionQuery;
 use Bedriox\Server\World\Collision\BlockCollisionRegistry;
 use Bedriox\Server\World\Collision\LoadedCollisionBoxQuery;
+use Bedriox\Server\World\Environment\Fluid\FluidState;
+use Bedriox\Server\World\Environment\Fluid\FluidType;
 use Bedriox\Server\World\FlatWorldGenerator;
 use Bedriox\Server\World\Generation\GenerationBlockPalette;
 use Bedriox\Server\World\World;
@@ -61,6 +63,48 @@ use PHPUnit\Framework\TestCase;
 
 final class EntityWorldRuntimeTest extends TestCase
 {
+    public function testOrdinaryMobIsCarriedByLoadedWaterDepthGradient(): void
+    {
+        $states = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $source = $states->internalId(FluidState::source(FluidType::WATER)->canonicalState());
+        $depthOne = $states->internalId((new FluidState(FluidType::WATER, 1, false))->canonicalState());
+        $depthTwo = $states->internalId((new FluidState(FluidType::WATER, 2, false))->canonicalState());
+        $palette = FixedFlatBlockPalette::fromRegistry($states);
+        $generation = GenerationBlockPalette::fromRegistry($states);
+        $world = new World(
+            new WorldMetadata('mob-current-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+        );
+        $world->chunk(new ChunkPosition(0, 0));
+        $world->setBlockState(1, 64, 1, $depthOne);
+        $world->setBlockState(0, 64, 1, $source);
+        $world->setBlockState(2, 64, 1, $depthTwo);
+        $shapes = BlockCollisionRegistry::forGenerationPalette($states, $generation);
+        $environment = new WorldEntityEnvironment($world, $states, $shapes, $palette->air, $source);
+        $registry = new EntityRegistry();
+        $runtime = new EntityWorldRuntime(
+            $registry,
+            new EntitySpawnService($registry, EntityDefinitionRegistry::baseline()),
+            new EntityPhysicsResolver(
+                new BlockCollisionQuery($world, $palette->air, [$source, $depthOne, $depthTwo], $shapes),
+                $environment,
+            ),
+        );
+        $spawn = $runtime->spawn(new EntitySpawnRequest(
+            VanillaEntityType::COW,
+            SpawnCause::COMMAND,
+            'mob-current-test',
+            new Position(1.5, 64.0, 1.5),
+        ));
+        self::assertInstanceOf(CowEntity::class, $spawn->entity);
+
+        $runtime->tick(1, self::emptyAiWorld(), false);
+
+        self::assertGreaterThan(1.5, $spawn->entity->internalPosition()->x);
+        self::assertGreaterThan(0.0, $spawn->entity->getMotion()->x);
+    }
+
     public function testGroundFrictionStopsContactImpulseFromSlidingLikeIce(): void
     {
         $entity = new CowEntity(

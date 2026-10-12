@@ -41,6 +41,28 @@ final class BlockDropRules
         if (!BlockBreakRules::canHarvest($block, $heldItem)) {
             return [];
         }
+
+        return self::resolveDrops($block, $heldItem, $random, $silkTouch, $fortuneLevel);
+    }
+
+    /** @return list<BlockDrop> */
+    public static function explosionDrops(BlockType $block, DropRandom $random): array
+    {
+        if (!$block->isBreakable()) {
+            return [];
+        }
+
+        return self::resolveDrops($block, null, $random, false, 0);
+    }
+
+    /** @return list<BlockDrop> */
+    private static function resolveDrops(
+        BlockType $block,
+        ?ItemType $heldItem,
+        DropRandom $random,
+        bool $silkTouch,
+        int $fortuneLevel,
+    ): array {
         if (BlockTagRegistry::contains(BlockTag::DOUBLE_SLAB, $block->identifier())) {
             $slab = substr($block->identifier(), 0, -strlen('_double_slab')) . '_slab';
 

@@ -33,6 +33,7 @@ enum CommandParameterType: string
     case CHOICE = 'choice';
     case ENUM = 'enum';
     case SOFT_ENUM = 'soft_enum';
+    case ITEM = 'item';
     case POSITION = 'position';
     case BLOCK_POSITION = 'block_position';
     case MESSAGE = 'message';

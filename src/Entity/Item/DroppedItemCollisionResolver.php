@@ -23,19 +23,32 @@ namespace Bedriox\Server\Entity\Item;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\Collision\AxisAlignedBox;
 use Bedriox\Server\World\Collision\CollisionBoxQuery;
+use Bedriox\Server\World\Environment\Fluid\FluidCurrentResolver;
 
 /** Resolves a dropped item's quarter-block body against authoritative solid blocks. */
 final readonly class DroppedItemCollisionResolver
 {
     private const float HALF_WIDTH = 0.125;
     private const float HEIGHT = 0.25;
+    private const float CURRENT_ACCELERATION = 0.014;
 
-    public function __construct(private CollisionBoxQuery $query) {}
+    public function __construct(
+        private CollisionBoxQuery $query,
+        private ?FluidCurrentResolver $fluidCurrents = null,
+    ) {}
 
     public function resolve(DroppedItemEntity $before, DroppedItemEntity $advanced): DroppedItemEntity
     {
         $from = $before->position;
         $motion = $advanced->motion;
+        $current = $this->fluidCurrents?->currentAt($from, self::HEIGHT);
+        if ($current !== null) {
+            $motion = new ItemEntityMotion(
+                $motion->x + ($current->x * self::CURRENT_ACCELERATION),
+                $motion->y + ($current->y * self::CURRENT_ACCELERATION),
+                $motion->z + ($current->z * self::CURRENT_ACCELERATION),
+            );
+        }
         $box = new AxisAlignedBox(
             $from->x - self::HALF_WIDTH,
             $from->y,
@@ -44,6 +57,7 @@ final readonly class DroppedItemCollisionResolver
             $from->y + self::HEIGHT,
             $from->z + self::HALF_WIDTH,
         );
+        [$box, $escapeX, $escapeY, $escapeZ] = $this->escapeEmbeddedBlock($box);
         $obstacles = $this->query->boxesIntersecting($box->swept($motion->x, $motion->y, $motion->z));
         $y = $motion->y;
         foreach ($obstacles as $obstacle) {
@@ -75,8 +89,48 @@ final readonly class DroppedItemCollisionResolver
         }
 
         return $advanced->withPositionAndMotion(
-            new Position($from->x + $x, $from->y + $y, $from->z + $z),
+            new Position(
+                $from->x + $escapeX + $x,
+                $from->y + $escapeY + $y,
+                $from->z + $escapeZ + $z,
+            ),
             new ItemEntityMotion($xMotion, $y === $motion->y ? $y : 0.0, $zMotion),
         );
+    }
+
+    /** @return array{AxisAlignedBox, float, float, float} */
+    private function escapeEmbeddedBlock(AxisAlignedBox $box): array
+    {
+        $overlaps = $this->query->boxesIntersecting($box);
+        if ($overlaps === []) {
+            return [$box, 0.0, 0.0, 0.0];
+        }
+        $highestSurface = $box->minY;
+        foreach ($overlaps as $obstacle) {
+            $highestSurface = max($highestSurface, $obstacle->maxY);
+        }
+        $up = $highestSurface - $box->minY;
+        $raised = $box->offset(0.0, $up, 0.0);
+        if (!$this->query->hasCollision($raised)) {
+            return [$raised, 0.0, $up, 0.0];
+        }
+
+        $candidates = [];
+        foreach ($overlaps as $obstacle) {
+            $candidates[] = [$obstacle->minX - $box->maxX, 0.0, 0.0];
+            $candidates[] = [$obstacle->maxX - $box->minX, 0.0, 0.0];
+            $candidates[] = [0.0, 0.0, $obstacle->minZ - $box->maxZ];
+            $candidates[] = [0.0, 0.0, $obstacle->maxZ - $box->minZ];
+        }
+        usort($candidates, static fn(array $left, array $right): int =>
+            (abs($left[0]) + abs($left[2])) <=> (abs($right[0]) + abs($right[2])));
+        foreach ($candidates as [$x, $y, $z]) {
+            $escaped = $box->offset($x, $y, $z);
+            if (!$this->query->hasCollision($escaped)) {
+                return [$escaped, $x, $y, $z];
+            }
+        }
+
+        return [$box, 0.0, 0.0, 0.0];
     }
 }

@@ -28,8 +28,11 @@ use Bedriox\Server\World\Block\InternalBlockStateId;
 use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\Collision\BlockCollisionRegistry;
+use Bedriox\Server\World\Environment\Fluid\FluidCurrent;
+use Bedriox\Server\World\Environment\Fluid\FluidCurrentResolver;
 use Bedriox\Server\World\Environment\Fluid\FluidState;
 use Bedriox\Server\World\Environment\Fluid\FluidType;
+use Bedriox\Server\World\Environment\Fluid\LoadedWorldFluidView;
 use Bedriox\Server\World\World;
 use Bedriox\Server\World\WorldTimeRules;
 
@@ -38,6 +41,7 @@ final readonly class WorldEntityEnvironment
 {
     public const int DAYLIGHT_CHECK_INTERVAL_TICKS = 20;
     private const int MAXIMUM_WATER_COLUMN_SCAN = 8;
+    private FluidCurrentResolver $fluidCurrents;
 
     public function __construct(
         private World $world,
@@ -46,7 +50,22 @@ final readonly class WorldEntityEnvironment
         private InternalBlockStateId $air,
         private ?InternalBlockStateId $water = null,
         private ?BlockPropertyRegistry $blockProperties = null,
-    ) {}
+    ) {
+        $this->fluidCurrents = new FluidCurrentResolver(new LoadedWorldFluidView($world, $states, $shapes));
+    }
+
+    public function waterCurrent(AbstractEntity $entity): FluidCurrent
+    {
+        if ($entity->getWorldName() !== $this->world->metadata->name) {
+            return FluidCurrent::still();
+        }
+
+        return $this->fluidCurrents->currentAt(
+            $entity->internalPosition(),
+            $entity->collisionHeight(),
+            $entity->collisionWidth(),
+        );
+    }
 
     public function groundFriction(AbstractEntity $entity): ?float
     {
@@ -153,6 +172,35 @@ final readonly class WorldEntityEnvironment
 
         return $this->isWater($chunk->blockStateAt($x, $feetY, $z))
             || ($headY !== $feetY && $this->isWater($chunk->blockStateAt($x, $headY, $z)));
+    }
+
+    public function isTouchingFire(AbstractLivingEntity $entity): bool
+    {
+        if ($entity->getWorldName() !== $this->world->metadata->name) {
+            return false;
+        }
+        $position = $entity->internalPosition();
+        $feetY = (int) floor($position->y + 0.001);
+        $headY = (int) floor($position->y + $entity->collisionHeight() - 0.000_001);
+        foreach (array_unique([$feetY, $headY]) as $y) {
+            if ($y < Chunk::MIN_Y || $y > Chunk::MAX_Y) {
+                continue;
+            }
+            $state = $this->world->loadedBlockStateAt(
+                (int) floor($position->x),
+                $y,
+                (int) floor($position->z),
+            );
+            if ($state === null) {
+                continue;
+            }
+            $identifier = $this->states->state($state)->identifier();
+            if ($identifier === 'minecraft:fire' || $identifier === 'minecraft:soul_fire') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public function isTouchingPowderSnow(AbstractLivingEntity $entity): bool

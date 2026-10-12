@@ -31,6 +31,7 @@ use Bedriox\Server\Entity\Vehicle\BoatEntity;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\Collision\AxisAlignedBox;
 use Bedriox\Server\World\Collision\LoadedCollisionBoxQuery;
+use Bedriox\Server\World\Environment\Fluid\FluidCurrent;
 use Closure;
 
 /** Resolves authoritative gravity and motion without invoking AI. */
@@ -39,6 +40,7 @@ final readonly class EntityPhysicsResolver
     private const float MOB_JUMP_VELOCITY = 0.42;
     private const float MOB_CLIMB_HEIGHT = 1.0;
     private const float DEFAULT_GROUND_FRICTION = 0.60;
+    private const float WATER_CURRENT_ACCELERATION = 0.014;
 
     public function __construct(
         private LoadedCollisionBoxQuery $collisions,
@@ -108,10 +110,18 @@ final readonly class EntityPhysicsResolver
             $vertical = 0.10;
         }
         $restriction = $this->environment?->movementRestrictionMultiplier($entity) ?? 1.0;
+        $waterCurrent = $this->environment === null
+            ? FluidCurrent::still()
+            : $this->environment->waterCurrent($entity);
         $requested = new EntityMotion(
-            $beforeMotion->x * $horizontalFriction * $restriction,
-            max(-$entity->maximumDownwardVelocity(), $vertical),
-            $beforeMotion->z * $horizontalFriction * $restriction,
+            ($beforeMotion->x * $horizontalFriction * $restriction)
+                + ($waterCurrent->x * self::WATER_CURRENT_ACCELERATION),
+            max(
+                -$entity->maximumDownwardVelocity(),
+                $vertical + ($waterCurrent->y * self::WATER_CURRENT_ACCELERATION),
+            ),
+            ($beforeMotion->z * $horizontalFriction * $restriction)
+                + ($waterCurrent->z * self::WATER_CURRENT_ACCELERATION),
         );
         if ($entity instanceof AvoidsPowderSnow
             && ($requested->x !== 0.0 || $requested->z !== 0.0)

@@ -33,6 +33,7 @@ use Bedriox\Server\Entity\Spawn\EntitySpawnOutcome;
 use Bedriox\Server\Entity\Spawn\EntitySpawnRequest;
 use Bedriox\Server\Entity\Spawn\EntitySpawnService;
 use Bedriox\Server\Entity\Vanilla\ArmadilloEntity;
+use Bedriox\Server\Entity\Vanilla\Misc\PrimedTntEntity;
 use Closure;
 use InvalidArgumentException;
 
@@ -79,7 +80,7 @@ final class EntityWorldRuntime
     public function damage(int $runtimeId, float $amount): ?EntityDamageResult
     {
         $entity = $this->entities->getByRuntimeId($runtimeId);
-        if (!$entity instanceof AbstractLivingEntity || !$entity->isAlive()) {
+        if (!$entity instanceof AbstractLivingEntity || $entity instanceof PrimedTntEntity || !$entity->isAlive()) {
             return null;
         }
         if ($entity instanceof ArmadilloEntity && $entity->getState() !== ArmadilloState::UNROLLED) {
@@ -109,7 +110,7 @@ final class EntityWorldRuntime
         }
         $mobs = [];
         foreach ($this->entities->all() as $entity) {
-            if ($entity instanceof AbstractMobEntity && $entity->isAlive()) {
+            if ($entity instanceof AbstractMobEntity && $entity->isAlive() && $entity->isAiEnabled()) {
                 $mobs[] = $entity;
             }
         }

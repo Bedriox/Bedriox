@@ -138,6 +138,24 @@ final class BlockRulesTest extends TestCase
         )[0]->count);
     }
 
+    public function testExplosionDropsUseLootRulesWithoutRequiringAPlayerTool(): void
+    {
+        $blocks = BlockCatalog::vanilla();
+
+        self::assertSame('minecraft:cobblestone', BlockDropRules::explosionDrops(
+            $blocks->type('minecraft:stone'),
+            new SequenceDropRandom([]),
+        )[0]->identifier);
+        self::assertSame('minecraft:diamond', BlockDropRules::explosionDrops(
+            $blocks->type('minecraft:diamond_ore'),
+            new SequenceDropRandom([]),
+        )[0]->identifier);
+        self::assertSame([], BlockDropRules::explosionDrops(
+            $blocks->type('minecraft:ice'),
+            new SequenceDropRandom([]),
+        ));
+    }
+
     public function testGravelLeavesAndIceUseExplicitRandomAndToolRules(): void
     {
         $blocks = BlockCatalog::vanilla();

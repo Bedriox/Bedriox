@@ -1,5 +1,7 @@
 # Changelog
 
+- Add current-client item suggestions to `/give` and authoritative TNT ignition, fuse, explosion, chain-reaction, damage, knockback, drops, and plugin interception.
+- Stabilize loaded-chunk fluids with deterministic frontier commits, immediate water-lava reactions, submerged-cavity refill, entity currents, safe item surfacing, fluid-aware fall damage, exact vanilla stack limits, and lossless bucket filling.
 - Add complete generated `VanillaBlocks` and `VanillaItems` identifier catalogs, exact block and item identity helpers, and typed semantic tags for stable plugin classification without exposing internal or network IDs.
 - Start automatic worker pools concurrently, report bounded startup progress, and clean up partial worker groups when startup cannot complete.
 - Represent each loaded dimension as an exact public world, make resolved positions carry that world directly, persist per-dimension generator settings, and allow portal events to target compatible dimensions in other named worlds while retaining one native LevelDB per named world.

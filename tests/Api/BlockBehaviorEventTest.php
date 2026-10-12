@@ -69,6 +69,8 @@ final class BlockBehaviorEventTest extends TestCase
     public function testStateChangeReasonsAreStablePluginValues(): void
     {
         self::assertSame('neighbor_update', BlockStateChangeReason::NEIGHBOR_UPDATE->value);
+        self::assertSame('fluid_flow', BlockStateChangeReason::FLUID_FLOW->value);
+        self::assertSame('fluid_reaction', BlockStateChangeReason::FLUID_REACTION->value);
         self::assertSame('tool_transform', BlockStateChangeReason::TOOL_TRANSFORM->value);
 
         $position = new BlockPosition(4, 70, 8);

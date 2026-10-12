@@ -33,7 +33,11 @@ use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\BlockPosition;
 use Bedriox\Server\World\ChunkRepository;
+use Bedriox\Server\World\Collision\BlockCollisionRegistry;
+use Bedriox\Server\World\Environment\Fluid\FluidState;
+use Bedriox\Server\World\Environment\Fluid\FluidType;
 use Bedriox\Server\World\FlatWorldGenerator;
+use Bedriox\Server\World\Generation\GenerationBlockPalette;
 use Bedriox\Server\World\World;
 use Bedriox\Server\World\WorldMetadata;
 use PHPUnit\Framework\TestCase;
@@ -106,6 +110,68 @@ final class FallDistanceRegressionTest extends TestCase
         self::assertInstanceOf(PlayerDamaged::class, $damagedEvents[1]);
         self::assertSame(1.0, $damagedEvents[1]->damage);
         self::assertSame(19.0, $damagedWorld->snapshot()->players[0]->health);
+    }
+
+    public function testLandingInWaterResetsFallDistanceBeforeDamage(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $blocks = new World(
+            new WorldMetadata('water-landing-test', 0),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(4),
+        );
+        $water = $registry->internalId(FluidState::source(FluidType::WATER)->canonicalState());
+        $blocks->setBlockState(
+            0,
+            65,
+            0,
+            $water,
+        );
+        $collisions = BlockCollisionRegistry::forGenerationPalette(
+            $registry,
+            GenerationBlockPalette::fromRegistry($registry),
+        );
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation(
+            spawn: new Position(0.5, 69.0, 0.5),
+            blockWorld: $blocks,
+            blockPalette: $palette,
+            waterState: $water,
+            blockStateRegistry: $registry,
+            blockCollisionRegistry: $collisions,
+        );
+        self::assertTrue($world->enqueue($factory->join('session', 'identity', 'Player')));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->move(
+            'session',
+            1,
+            0.5,
+            67.0,
+            0.5,
+            0.0,
+            0.0,
+            MovementMode::STOPPED,
+            deltaY: -2.0,
+        )));
+        self::assertInstanceOf(PlayerMoved::class, $world->tick()->events[0]);
+        self::assertTrue($world->enqueue($factory->move(
+            'session',
+            2,
+            0.5,
+            65.0,
+            0.5,
+            0.0,
+            0.0,
+            MovementMode::STOPPED,
+            deltaY: -2.0,
+        )));
+
+        $events = $world->tick()->events;
+
+        self::assertNotEmpty(array_filter($events, static fn(object $event): bool => $event instanceof PlayerMoved));
+        self::assertEmpty(array_filter($events, static fn(object $event): bool => $event instanceof PlayerDamaged));
+        self::assertSame(20.0, $world->snapshot()->players[0]->health);
     }
 
     public function testRejectedMovementDoesNotChangeAccumulatedFallDistance(): void

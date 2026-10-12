@@ -35,9 +35,12 @@ use Bedriox\Api\World\Position;
 use Bedriox\Protocol\Packet\AvailableCommandsPacket;
 use Bedriox\Protocol\Packet\CommandArgumentType;
 use Bedriox\Protocol\Packet\CommandEnum;
+use Bedriox\Protocol\Packet\CommandEnumConstraint;
 use Bedriox\Protocol\Packet\CommandParameter as ProtocolCommandParameter;
+use Bedriox\Protocol\Packet\CommandParameterOption;
 use Bedriox\Protocol\Packet\Packet;
 use Bedriox\Protocol\Packet\SoftEnumUpdateType;
+use Bedriox\Server\Command\Default\GiveCommand;
 use Bedriox\Server\Permission\PermissionStore;
 use Bedriox\Server\Plugin\Command\CommandRegistry;
 use Bedriox\Server\Plugin\Event\EventDispatcher;
@@ -241,6 +244,79 @@ final class BedrockCommandPacketProjectorTest extends TestCase
         self::assertSame('bedriox:plugin:tools:kits', $packet->enumName);
         self::assertSame(['starter', 'builder', 'vip'], $packet->values);
         self::assertSame(SoftEnumUpdateType::Replace, $packet->type);
+    }
+
+    public function testGivePublishesItsItemArgumentAsTheClientSemanticItemEnum(): void
+    {
+        [$registry, $permissions] = $this->dependencies();
+        $items = $registry->registerServerSoftEnum(
+            'bedriox:item_identifiers',
+            ['stone', 'minecraft:stone', 'minecraft:diamond', 'tools:ruby'],
+        );
+        $registry->registerServer(new GiveCommand($items));
+        $permissions->grant(self::UUID, 'Alex', 'bedriox.command.give');
+
+        $commands = self::commandsByName(AvailableCommandsPacket::decode(
+            (new BedrockCommandPacketProjector($registry, $permissions))
+                ->availableCommands(self::UUID)
+                ->encode(),
+        ));
+        $parameter = $commands['give']->overloads[0]->parameters[1];
+
+        self::assertEnum(
+            $parameter,
+            'Item',
+            ['minecraft:stone', 'minecraft:diamond', 'tools:ruby'],
+            false,
+        );
+        self::assertSame([CommandParameterOption::HasSemanticConstraint], $parameter->options);
+        self::assertInstanceOf(CommandEnum::class, $parameter->type);
+        self::assertSame([
+            'minecraft:stone' => [CommandEnumConstraint::AllowAliases],
+            'minecraft:diamond' => [CommandEnumConstraint::AllowAliases],
+        ], $parameter->type->constraints);
+
+        $revision = $registry->schemaRevision();
+        self::assertTrue($items->replace(['stone', 'minecraft:diamond', 'tools:sapphire']));
+        self::assertSame($revision + 1, $registry->schemaRevision());
+        $refreshed = self::commandsByName((new BedrockCommandPacketProjector($registry, $permissions))
+            ->availableCommands(self::UUID));
+        self::assertEnum(
+            $refreshed['give']->overloads[0]->parameters[1],
+            'Item',
+            ['minecraft:stone', 'minecraft:diamond', 'tools:sapphire'],
+            false,
+        );
+    }
+
+    public function testAllItemParametersShareOneCompatibleWireEnum(): void
+    {
+        [$registry, $permissions] = $this->dependencies();
+        $first = $registry->registerServerSoftEnum('bedriox:first_items', ['minecraft:stone']);
+        $second = $registry->registerServerSoftEnum('bedriox:second_items', ['tools:ruby']);
+        $registry->registerServer(new ProjectorCommand(
+            new CommandDefinition('firstitem', 'First item command'),
+            CommandArguments::create()->addArgument(CommandParameter::item('item', $first)),
+        ));
+        $registry->registerServer(new ProjectorCommand(
+            new CommandDefinition('seconditem', 'Second item command'),
+            CommandArguments::create()->addArgument(CommandParameter::item('item', $second)),
+        ));
+
+        $commands = self::commandsByName(AvailableCommandsPacket::decode(
+            (new BedrockCommandPacketProjector($registry, $permissions))
+                ->availableCommands(self::UUID)
+                ->encode(),
+        ));
+
+        foreach (['firstitem', 'seconditem'] as $name) {
+            self::assertEnum(
+                $commands[$name]->overloads[0]->parameters[0],
+                'Item',
+                ['minecraft:stone', 'tools:ruby'],
+                false,
+            );
+        }
     }
 
     /** @return array{CommandRegistry, PermissionStore} */

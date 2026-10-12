@@ -43,6 +43,12 @@ enum BoatVariant: int
         if ($identifier === 'minecraft:chest_boat') {
             return self::tryFrom($auxValue);
         }
+        if (!str_ends_with($identifier, '_boat')
+            && !str_ends_with($identifier, '_chest_boat')
+            && !str_ends_with($identifier, '_raft')
+            && !str_ends_with($identifier, '_chest_raft')) {
+            return null;
+        }
         $base = str_replace(['minecraft:', '_chest_boat', '_chest_raft', '_boat', '_raft'], '', $identifier);
 
         return match ($base) {

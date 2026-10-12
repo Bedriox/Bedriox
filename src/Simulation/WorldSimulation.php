@@ -76,6 +76,7 @@ use Bedriox\Api\Entity\VanillaEntityIdentifier;
 use Bedriox\Api\Entity\VanillaEntityType;
 use Bedriox\Api\Event\Block\BlockStateChangeReason;
 use Bedriox\Api\Event\Entity\EntityDamageByEntityEvent;
+use Bedriox\Api\Event\Entity\EntityExplodedEvent;
 use Bedriox\Api\Event\Inventory\InventoryCloseReason as ApiInventoryCloseReason;
 use Bedriox\Api\Event\World\WeatherChangeCause;
 use Bedriox\Api\Inventory\ConsumptionResult as ApiConsumptionResult;
@@ -211,6 +212,7 @@ use Bedriox\Server\Entity\Vanilla\HorseEntity;
 use Bedriox\Server\Entity\Vanilla\LlamaEntity;
 use Bedriox\Server\Entity\Vanilla\MagmaCubeEntity;
 use Bedriox\Server\Entity\Vanilla\Misc\LeashKnotEntity;
+use Bedriox\Server\Entity\Vanilla\Misc\PrimedTntEntity;
 use Bedriox\Server\Entity\Vanilla\MooshroomEntity;
 use Bedriox\Server\Entity\Vanilla\MuleEntity;
 use Bedriox\Server\Entity\Vanilla\Nether\BlazeEntity;
@@ -303,6 +305,7 @@ use Bedriox\Server\Gameplay\Portal\EndPortalSystem;
 use Bedriox\Server\Gameplay\Portal\NetherPortalFrame;
 use Bedriox\Server\Gameplay\Portal\NetherPortalSystem;
 use Bedriox\Server\Gameplay\Portal\PortalAxis;
+use Bedriox\Server\Gameplay\Portal\PortalBlockMutation;
 use Bedriox\Server\Gameplay\Portal\PortalContactTracker;
 use Bedriox\Server\Gameplay\Portal\PortalDestinationPlan;
 use Bedriox\Server\Gameplay\Portal\PortalDestinationPlanner;
@@ -508,6 +511,7 @@ use Bedriox\Server\Simulation\Event\TameAttemptPresented;
 use Bedriox\Server\Simulation\Event\TextDisplayActorRemoved;
 use Bedriox\Server\Simulation\Event\TextDisplayActorSpawned;
 use Bedriox\Server\Simulation\Event\TextDisplayActorUpdated;
+use Bedriox\Server\Simulation\Event\TntPrimed;
 use Bedriox\Server\Simulation\Event\WeatherChanged;
 use Bedriox\Server\Simulation\Event\WorldEvent;
 use Bedriox\Server\Worker\WorkerDispatcher;
@@ -531,7 +535,10 @@ use Bedriox\Server\World\Collision\PlayerCollisionResolver;
 use Bedriox\Server\World\Collision\PlayerCollisionShape;
 use Bedriox\Server\World\Environment\EnvironmentTickScheduler;
 use Bedriox\Server\World\Environment\EnvironmentTickType;
+use Bedriox\Server\World\Environment\Fluid\FluidCurrentResolver;
+use Bedriox\Server\World\Environment\Fluid\FluidFlowBatchPlanner;
 use Bedriox\Server\World\Environment\Fluid\FluidFlowPlanner;
+use Bedriox\Server\World\Environment\Fluid\FluidMutationType;
 use Bedriox\Server\World\Environment\Fluid\FluidState;
 use Bedriox\Server\World\Environment\Fluid\FluidType;
 use Bedriox\Server\World\Environment\Fluid\LoadedWorldFluidView;
@@ -562,6 +569,7 @@ final class WorldSimulation
 
     private int $lastEntityPersistenceNanoseconds = 0;
     private const int DAYLIGHT_FIRE_DURATION_TICKS = 160;
+    private const int BLOCK_FIRE_DURATION_TICKS = 160;
     private const float FIRE_TICK_DAMAGE = 1.0;
     private const float DROWNING_DAMAGE = 2.0;
     private const float LAVA_CONTACT_DAMAGE = 4.0;
@@ -720,6 +728,8 @@ final class WorldSimulation
     private ?InternalBlockStateId $frostedIceState = null;
 
     private readonly ?FluidFlowPlanner $fluidFlow;
+
+    private readonly ?FluidFlowBatchPlanner $fluidFlowBatch;
 
     private readonly ?LoadedWorldFluidView $fluidWorld;
 
@@ -1018,7 +1028,16 @@ final class WorldSimulation
             : null;
         $this->blockCollisions = $collisionQuery;
         $this->collisionResolver = $collisionQuery === null ? null : new PlayerCollisionResolver($collisionQuery);
-        $this->itemCollisionResolver = $collisionQuery === null ? null : new DroppedItemCollisionResolver($collisionQuery);
+        $fluidCurrents = $blockWorld !== null && $blockStateRegistry !== null && $blockCollisionRegistry !== null
+            ? new FluidCurrentResolver(new LoadedWorldFluidView(
+                $blockWorld,
+                $blockStateRegistry,
+                $blockCollisionRegistry,
+            ))
+            : null;
+        $this->itemCollisionResolver = $collisionQuery === null
+            ? null
+            : new DroppedItemCollisionResolver($collisionQuery, $fluidCurrents);
         $this->experienceOrbCollisions = $collisionQuery === null ? null : new ExperienceOrbCollisionResolver($collisionQuery);
         $definitions = $this->entityDefinitions = $entityDefinitions ?? EntityDefinitionRegistry::baseline();
         $this->entityEnvironment = $blockWorld !== null && $blockPalette !== null
@@ -1261,10 +1280,12 @@ final class WorldSimulation
         if ($blockWorld !== null && $blockStateRegistry !== null && $blockCollisionRegistry !== null) {
             $this->environmentTicks = new EnvironmentTickScheduler();
             $this->fluidFlow = new FluidFlowPlanner();
+            $this->fluidFlowBatch = new FluidFlowBatchPlanner($this->fluidFlow);
             $this->fluidWorld = new LoadedWorldFluidView($blockWorld, $blockStateRegistry, $blockCollisionRegistry);
         } else {
             $this->environmentTicks = null;
             $this->fluidFlow = null;
+            $this->fluidFlowBatch = null;
             $this->fluidWorld = null;
         }
         $portalSystem = null;
@@ -3753,6 +3774,7 @@ final class WorldSimulation
             $this->entityAiWorld,
             $this->entityAiEnabled,
         );
+        array_push($events, ...$this->advancePrimedTnt());
         array_push($events, ...$this->advanceFallingBlocks());
         $this->lastEntityRuntimeNanoseconds = hrtime(true) - $entityRuntimeStartedNanoseconds;
         $this->reconcileFoxHuntingTransitions();
@@ -5153,6 +5175,461 @@ final class WorldSimulation
     }
 
     /** @return list<WorldEvent> */
+    private function advancePrimedTnt(): array
+    {
+        $events = [];
+        foreach ($this->entityRuntime->registry()->all() as $entity) {
+            if (!$entity instanceof PrimedTntEntity || !$entity->isAlive() || !$entity->advanceFuse()) {
+                continue;
+            }
+            $position = $entity->internalPosition();
+            $radius = 4.0;
+            $breaksBlocks = $entity->worksUnderwater() || !$this->positionContainsWater($position);
+            $fireChance = 0.0;
+            $prime = $this->pluginEvents?->primeExplosion(
+                $entity,
+                $entity->getPosition(),
+                $radius,
+                $breaksBlocks,
+                $fireChance,
+            );
+            if ($this->pluginEvents === null || $prime !== null) {
+                array_push($events, ...$this->detonatePrimedTnt(
+                    $entity,
+                    $position,
+                    $prime?->radius() ?? $radius,
+                    $prime?->breaksBlocks() ?? $breaksBlocks,
+                    $prime?->fireChance() ?? $fireChance,
+                ));
+            }
+            $runtimeId = $entity->getRuntimeId();
+            $this->entityPersistence?->forgetEntity($entity->getUniqueId());
+            $this->entityRuntime->remove($runtimeId);
+            unset(
+                $this->announcedEntities[$runtimeId],
+                $this->publishedEntityHealth[$runtimeId],
+                $this->publishedEntityPresentationRevisions[$runtimeId],
+                $this->entityTargets[$runtimeId],
+                $this->entityInvulnerableUntilTicks[$runtimeId],
+                $this->entityLastDamageEvents[$runtimeId],
+                $this->entityDeathRemovalTicks[$runtimeId],
+            );
+            $events[] = new EntityActorRemoved($entity, $this->players->recipients());
+        }
+
+        return $events;
+    }
+
+    /** @return list<WorldEvent> */
+    private function detonatePrimedTnt(
+        PrimedTntEntity $tnt,
+        Position $position,
+        float $radius,
+        bool $breaksBlocks,
+        float $fireChance,
+    ): array {
+        $plannedBlocks = [];
+        $ignitionCandidates = [];
+        if ($breaksBlocks && $this->blockWorld !== null && $this->blockStateRegistry !== null
+            && $this->blockPalette !== null && $this->blockProperties !== null) {
+            $plan = (new ExplosionPlanningService())->plan(
+                new ExplosionRequest($position, $radius, true, $fireChance),
+                new LoadedWorldExplosionView($this->blockWorld, $this->blockStateRegistry, $this->blockProperties),
+            );
+            $plannedBlocks = $plan->affectedBlocks;
+            $ignitionCandidates = $plan->ignitionCandidates;
+        }
+        $dropYield = min(1.0, 1.0 / $radius);
+        if ($this->pluginEvents !== null) {
+            $impact = $this->pluginEvents->allowEntityExplosionImpact(
+                $tnt,
+                $tnt->getPosition(),
+                $radius,
+                array_map(
+                    static fn(BlockPosition $block): ApiBlockPosition => new ApiBlockPosition(
+                        $block->x,
+                        $block->y,
+                        $block->z,
+                    ),
+                    $plannedBlocks,
+                ),
+                $dropYield,
+            );
+            if ($impact === null) {
+                return [];
+            }
+            $dropYield = $impact->dropYield();
+            $plannedBlocks = [];
+            foreach ($impact->affectedBlocks() as $block) {
+                try {
+                    $plannedBlocks[] = new BlockPosition($block->x, $block->y, $block->z);
+                } catch (InvalidArgumentException) {
+                    // Invalid plugin-supplied positions are excluded from the authoritative impact plan.
+                }
+            }
+        }
+
+        $events = [];
+        $affectedActors = [];
+        foreach ($this->players->players() as $player) {
+            if (!$player->vitals->isAlive() || !$player->gameMode()->takesDamage()) {
+                continue;
+            }
+            $target = $player->movement->position;
+            $distance = $target->distanceTo($position);
+            if ($distance > $radius * 2.0) {
+                continue;
+            }
+            $exposure = $this->explosionExposure($position, $target, PlayerCollisionShape::HEIGHT);
+            $impact = max(0.0, (1.0 - ($distance / ($radius * 2.0))) * $exposure);
+            if ($impact <= 0.0) {
+                continue;
+            }
+            $damage = max(1.0, (($impact * $impact + $impact) / 2.0) * 14.0 * $radius + 1.0);
+            $event = $this->damage(new DamagePlayer($player->sessionId, $damage, DamageCause::Explosion), $tnt);
+            $events[] = $event;
+            if (!$event instanceof PlayerDamaged || $event->damage <= 0.0) {
+                continue;
+            }
+            if (count($affectedActors) < EntityExplodedEvent::MAXIMUM_AFFECTED_ENTITIES) {
+                $affectedActors[] = $this->pluginEvents?->playerView($player)
+                    ?? PluginGameplayEventBridge::detachedPlayerView($player);
+            }
+            $knockback = $this->radialExplosionKnockback(
+                $position,
+                $target,
+                $impact,
+                new EntityMotion(
+                    $player->movement->velocityX,
+                    $player->movement->verticalVelocity,
+                    $player->movement->velocityZ,
+                ),
+            );
+            if ($this->pluginEvents !== null) {
+                $knockback = $this->pluginEvents->knockback(
+                    $this->pluginEvents->playerView($player),
+                    $tnt,
+                    ApiKnockbackCause::EXPLOSION,
+                    $knockback,
+                );
+            }
+            if ($knockback === null) {
+                continue;
+            }
+            $player->movement->velocityX = $knockback->x;
+            $player->movement->verticalVelocity = $knockback->y;
+            $player->movement->velocityZ = $knockback->z;
+            $player->movement->verticalState = VerticalState::AIRBORNE;
+            $player->movement->jumpAuthorizedUntilTick = $this->tick + CombatRules::DAMAGE_IMMUNITY_TICKS;
+            $player->markDirty();
+            $this->pluginEvents?->knockedBack(
+                $this->pluginEvents->playerView($player),
+                $tnt,
+                ApiKnockbackCause::EXPLOSION,
+                $knockback,
+            );
+            $events[] = new PlayerKnockedBack(
+                $player->sessionId,
+                $player->snapshot(),
+                $knockback->x,
+                $knockback->y,
+                $knockback->z,
+                $player->movement->clientTick,
+                $this->players->recipients(),
+            );
+        }
+        $entityRegistry = $this->entityRuntime->registry();
+        foreach ($entityRegistry->nearby(
+            $this->worldId,
+            $position,
+            $radius * 2.0,
+            max(256, count($entityRegistry->all())),
+        ) as $entity) {
+            if (!$entity instanceof AbstractLivingEntity || $entity === $tnt || !$entity->isAlive()) {
+                continue;
+            }
+            $target = $entity->internalPosition();
+            $distance = $target->distanceTo($position);
+            $exposure = $this->explosionExposure($position, $target, $entity->collisionHeight());
+            $impact = max(0.0, (1.0 - ($distance / ($radius * 2.0))) * $exposure);
+            if ($impact <= 0.0) {
+                continue;
+            }
+            if ($entity instanceof PrimedTntEntity) {
+                $knockback = $this->radialExplosionKnockback(
+                    $position,
+                    $target,
+                    $impact,
+                    $entity->getMotion(),
+                );
+                $entity->applyMotion(new EntityMotion($knockback->x, $knockback->y, $knockback->z));
+                $events[] = new EntityActorMoved($entity, $this->tick, $this->players->recipients(), true);
+                continue;
+            }
+            $damage = max(1.0, (($impact * $impact + $impact) / 2.0) * 14.0 * $radius + 1.0);
+            $damageEvent = $this->pluginEvents?->entityDamage(
+                $entity,
+                ApiEntityDamageCause::EXPLOSION,
+                $damage,
+                $tnt,
+            );
+            if ($this->pluginEvents !== null && $damageEvent === null) {
+                continue;
+            }
+            $result = $this->damageLivingEntity($entity, $damageEvent?->damage() ?? $damage);
+            if ($result === null || $result->appliedDamage <= 0.0) {
+                continue;
+            }
+            if (count($affectedActors) < EntityExplodedEvent::MAXIMUM_AFFECTED_ENTITIES) {
+                $affectedActors[] = $entity;
+            }
+            $knockback = $this->radialExplosionKnockback($position, $target, $impact, $entity->getMotion());
+            if ($this->pluginEvents !== null) {
+                $knockback = $this->pluginEvents->knockback(
+                    $entity,
+                    $tnt,
+                    ApiKnockbackCause::EXPLOSION,
+                    $knockback,
+                );
+            }
+            if ($knockback !== null) {
+                $entity->applyMotion(new EntityMotion($knockback->x, $knockback->y, $knockback->z));
+                $this->pluginEvents?->knockedBack($entity, $tnt, ApiKnockbackCause::EXPLOSION, $knockback);
+                $events[] = new EntityActorMoved($entity, $this->tick, $this->players->recipients(), true);
+            }
+            $events[] = new EntityActorDamaged($entity, $this->tick, $this->players->recipients());
+        }
+
+        $affectedBlocks = [];
+        if ($breaksBlocks && $this->blockWorld !== null && $this->blockPalette !== null
+            && $this->blockStateRegistry !== null && $this->blockCatalog !== null) {
+            foreach ($plannedBlocks as $blockPosition) {
+                $previous = $this->blockWorld->loadedBlockStateAt(
+                    $blockPosition->x,
+                    $blockPosition->y,
+                    $blockPosition->z,
+                );
+                if ($previous === null || $previous->value === $this->blockPalette->air->value) {
+                    continue;
+                }
+                $state = $this->blockStateRegistry->state($previous);
+                if ($state->identifier() === 'minecraft:bedrock') {
+                    continue;
+                }
+                $blockType = $this->blockCatalog->typeForState($state);
+                $storageEntity = $this->blockWorld->blockEntityAt($blockPosition);
+                $storageDrops = match (true) {
+                    $storageEntity instanceof ContainerBlockEntity
+                        && $storageEntity->type !== BlockEntityType::ShulkerBox =>
+                        array_values($storageEntity->inventory->contents()),
+                    $storageEntity instanceof ShelfBlockEntity => array_values(array_filter(
+                        $storageEntity->inventory->slots(),
+                        static fn(?ContainerItemStack $stack): bool => $stack !== null,
+                    )),
+                    default => [],
+                };
+                $shulkerNbt = null;
+                if ($storageEntity instanceof ContainerBlockEntity
+                    && $storageEntity->type === BlockEntityType::ShulkerBox) {
+                    try {
+                        $shulkerNbt = $this->shulkerItems->encode($storageEntity);
+                    } catch (InvalidArgumentException) {
+                        // Invalid stored container data cannot abort an otherwise valid explosion.
+                    }
+                }
+                try {
+                    $this->setBlockStateAndSchedule($blockPosition, $this->blockPalette->air);
+                } catch (OverflowException) {
+                    // The block mutation is already authoritative; bounded follow-up saturation is isolated.
+                }
+                $this->closeContainersAt($blockPosition, ApiInventoryCloseReason::BLOCK_REMOVED);
+                $this->removeStorageBlockEntity($blockPosition, $storageEntity);
+                $affectedBlocks[] = new ApiBlockPosition($blockPosition->x, $blockPosition->y, $blockPosition->z);
+                $events[] = new BlockChanged(
+                    'server',
+                    $blockPosition,
+                    $this->blockPalette->air,
+                    $this->players->recipients(),
+                    destroyedState: $previous,
+                );
+                if ($state->identifier() === 'minecraft:tnt') {
+                    $chain = $this->spawnEntity(new EntitySpawnRequest(
+                        VanillaEntityType::PRIMED_TNT,
+                        SpawnCause::EXPLOSION_CHAIN,
+                        $this->worldId,
+                        new Position($blockPosition->x + 0.5, $blockPosition->y, $blockPosition->z + 0.5),
+                    ));
+                    if ($chain->entity instanceof PrimedTntEntity) {
+                        $chain->entity->setFuseTicks($this->dropRandom->integer(10, 30));
+                        $angle = deg2rad($this->dropRandom->integer(0, 359_999) / 1_000.0);
+                        $chain->entity->applyMotion(PrimedTntEntity::primingMotion($angle));
+                        $this->deferredEvents[] = new TntPrimed(
+                            $chain->entity->internalPosition(),
+                            $this->players->recipients(),
+                        );
+                    }
+                    continue;
+                }
+                foreach (BlockDropRules::explosionDrops($blockType, $this->dropRandom) as $resolvedDrop) {
+                    if ($dropYield <= 0.0 || $this->itemEntities->remainingCapacity() === 0
+                        || $this->dropRandom->integer(1, 10_000) > (int) floor($dropYield * 10_000)
+                        || $this->itemCatalog?->has($resolvedDrop->identifier) !== true) {
+                        continue;
+                    }
+                    $dropType = $this->itemCatalog->type($resolvedDrop->identifier);
+                    try {
+                        $drop = $this->itemEntities->spawn(
+                            new InventoryStack(
+                                $resolvedDrop->identifier,
+                                $resolvedDrop->count,
+                                1,
+                                $dropType->placedBlockState === null
+                                    ? null
+                                    : $this->blockStateRegistry->internalId($dropType->placedBlockState),
+                                nbt: $shulkerNbt,
+                            ),
+                            new Position($blockPosition->x + 0.5, $blockPosition->y + 0.5, $blockPosition->z + 0.5),
+                            new ItemEntityMotion(0.0, 0.1, 0.0),
+                            10,
+                        );
+                        $events[] = new ItemEntitySpawned($drop, $this->players->recipients());
+                    } catch (InvalidArgumentException|OverflowException) {
+                        // A saturated or invalid drop cannot abort the authoritative explosion.
+                    }
+                }
+                foreach ($storageDrops as $storageDrop) {
+                    if ($this->itemEntities->remainingCapacity() === 0) {
+                        break;
+                    }
+                    try {
+                        $drop = $this->itemEntities->spawn(
+                            $this->inventoryStackFromContainerItem($storageDrop),
+                            new Position($blockPosition->x + 0.5, $blockPosition->y + 0.5, $blockPosition->z + 0.5),
+                            new ItemEntityMotion(0.0, 0.1, 0.0),
+                            10,
+                        );
+                        $events[] = new ItemEntitySpawned($drop, $this->players->recipients());
+                    } catch (InvalidArgumentException|OverflowException) {
+                        // A saturated or invalid stored stack cannot abort the authoritative explosion.
+                    }
+                }
+            }
+        }
+        if ($fireChance > 0.0 && $this->blockWorld !== null && $this->blockPalette !== null
+            && $this->blockStateRegistry !== null && $this->blockProperties !== null
+            && $this->blockCatalog?->has('minecraft:fire') === true) {
+            $fire = $this->blockStateRegistry->internalId($this->blockCatalog->type('minecraft:fire')->state);
+            foreach ($ignitionCandidates as $candidate) {
+                if ($this->dropRandom->integer(1, 10_000) > (int) floor($fireChance * 10_000)) {
+                    continue;
+                }
+                $previous = $this->blockWorld->loadedBlockStateAt($candidate->x, $candidate->y, $candidate->z);
+                if ($previous === null || $previous->value !== $this->blockPalette->air->value) {
+                    continue;
+                }
+                try {
+                    $support = new BlockPosition($candidate->x, $candidate->y - 1, $candidate->z);
+                } catch (InvalidArgumentException) {
+                    continue;
+                }
+                $supportState = $this->blockWorld->loadedBlockStateAt($support->x, $support->y, $support->z);
+                if ($supportState === null || $supportState->value === $this->blockPalette->air->value
+                    || !$this->blockProperties->propertiesForState(
+                        $this->blockStateRegistry->state($supportState),
+                    )->solid()) {
+                    continue;
+                }
+                try {
+                    $this->setBlockStateAndSchedule($candidate, $fire);
+                } catch (OverflowException) {
+                    // The fire block was committed before the bounded scheduler rejected more follow-up work.
+                }
+                $events[] = new BlockChanged(
+                    'server',
+                    $candidate,
+                    $fire,
+                    $this->players->recipients(),
+                    destroyedState: $previous,
+                );
+            }
+        }
+        $events[] = new EntityExplosionPresented($position, $this->players->recipients());
+        $this->pluginEvents?->entityExploded(
+            $tnt,
+            $tnt->getPosition(),
+            $radius,
+            $affectedBlocks !== [],
+            $fireChance,
+            $affectedBlocks,
+            $affectedActors,
+        );
+
+        return $events;
+    }
+
+    private function explosionExposure(Position $origin, Position $target, float $height): float
+    {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null || $this->blockProperties === null) {
+            return 1.0;
+        }
+        $clear = 0;
+        foreach ([0.1, 0.5, 0.9] as $heightFactor) {
+            $sample = new Position($target->x, $target->y + ($height * $heightFactor), $target->z);
+            $dx = $sample->x - $origin->x;
+            $dy = $sample->y - $origin->y;
+            $dz = $sample->z - $origin->z;
+            $distance = sqrt($dx * $dx + $dy * $dy + $dz * $dz);
+            if ($distance <= 0.000_001) {
+                ++$clear;
+                continue;
+            }
+            $blocked = false;
+            $steps = min(128, (int) ceil($distance / 0.3));
+            for ($step = 1; $step < $steps; ++$step) {
+                $progress = $step / $steps;
+                $stateId = $this->blockWorld->loadedBlockStateAt(
+                    (int) floor($origin->x + $dx * $progress),
+                    (int) floor($origin->y + $dy * $progress),
+                    (int) floor($origin->z + $dz * $progress),
+                );
+                if ($stateId === null) {
+                    $blocked = true;
+                    break;
+                }
+                $state = $this->blockStateRegistry->state($stateId);
+                if ($state->identifier() !== 'minecraft:air'
+                    && $this->blockProperties->propertiesForState($state)->solid()) {
+                    $blocked = true;
+                    break;
+                }
+            }
+            if (!$blocked) {
+                ++$clear;
+            }
+        }
+
+        return $clear / 3.0;
+    }
+
+    private function radialExplosionKnockback(
+        Position $origin,
+        Position $target,
+        float $strength,
+        EntityMotion $current,
+    ): ApiKnockbackVector {
+        $dx = $target->x - $origin->x;
+        $dy = ($target->y + 0.5) - $origin->y;
+        $dz = $target->z - $origin->z;
+        $length = max(0.001, sqrt($dx * $dx + $dy * $dy + $dz * $dz));
+
+        return new ApiKnockbackVector(
+            max(-16.0, min(16.0, $current->x + (($dx / $length) * $strength))),
+            max(-16.0, min(16.0, $current->y + max(0.1, ($dy / $length) * $strength))),
+            max(-16.0, min(16.0, $current->z + (($dz / $length) * $strength))),
+        );
+    }
+
+    /** @return list<WorldEvent> */
     private function advanceCreepers(): array
     {
         $events = [];
@@ -5260,10 +5737,11 @@ final class WorldSimulation
         }
 
         $affectedBlocks = [];
-        if ($breaksBlocks && $this->blockWorld !== null && $this->blockStateRegistry !== null && $this->blockPalette !== null) {
+        if ($breaksBlocks && $this->blockWorld !== null && $this->blockStateRegistry !== null
+            && $this->blockPalette !== null && $this->blockProperties !== null) {
             $plan = (new ExplosionPlanningService())->plan(
                 new ExplosionRequest($position, $radius, true, $fireChance),
-                new LoadedWorldExplosionView($this->blockWorld, $this->blockStateRegistry),
+                new LoadedWorldExplosionView($this->blockWorld, $this->blockStateRegistry, $this->blockProperties),
             );
             foreach ($plan->affectedBlocks as $blockPosition) {
                 $previous = $this->blockWorld->loadedBlockStateAt($blockPosition->x, $blockPosition->y, $blockPosition->z);
@@ -5498,6 +5976,40 @@ final class WorldSimulation
                 && ($this->tick + $entity->getRuntimeId()) % 20 === 0
                 && $this->entityEnvironment->hasSkyExposure($entity)) {
                 $entity->extinguish();
+            }
+            $touchingFire = !($entity instanceof FireImmune)
+                && !($entity instanceof MagmaCubeEntity)
+                && !VanillaEffectBehavior::hasFireResistance($entity->effectState()->snapshot())
+                && $this->entityEnvironment->isTouchingFire($entity);
+            if ($touchingFire && !$entity->isOnFire()) {
+                $combust = $this->pluginEvents?->combust(
+                    $entity,
+                    EntityCombustionCause::BLOCK,
+                    self::BLOCK_FIRE_DURATION_TICKS,
+                );
+                if ($this->pluginEvents === null || $combust !== null) {
+                    $entity->setOnFire($combust?->durationTicks() ?? self::BLOCK_FIRE_DURATION_TICKS);
+                }
+            }
+            if ($touchingFire && (!$wasOnFire || ($this->tick + $entity->getRuntimeId()) % 10 === 0)) {
+                $damageEvent = $this->pluginEvents?->entityDamage(
+                    $entity,
+                    ApiEntityDamageCause::FIRE,
+                    self::FIRE_TICK_DAMAGE,
+                );
+                if ($this->pluginEvents === null || $damageEvent !== null) {
+                    $result = $this->damageLivingEntity(
+                        $entity,
+                        $damageEvent?->damage() ?? self::FIRE_TICK_DAMAGE,
+                    );
+                    if ($result !== null && $result->appliedDamage > 0.0) {
+                        if ($damageEvent !== null) {
+                            $this->entityLastDamageEvents[$entity->getRuntimeId()] = $damageEvent;
+                        }
+                        $this->publishedEntityHealth[$entity->getRuntimeId()] = $entity->getHealth();
+                        $events[] = new EntityActorDamaged($entity, $this->tick, $recipients);
+                    }
+                }
             }
             if ($entity->isOnFire() && $entity->advanceFireTick()) {
                 $damageEvent = $this->pluginEvents?->entityDamage(
@@ -8239,8 +8751,10 @@ final class WorldSimulation
         $pluginStartedNanoseconds = hrtime(true);
         $this->pluginEvents?->moved($player);
         $this->movementPluginNanoseconds += hrtime(true) - $pluginStartedNanoseconds;
-        $landingFallDistance = $movement->fallDistance;
-        if ($flying || !$player->gameMode()->takesDamage()) {
+        $touchingFallResettingFluid = $this->playerTouchesFluid($position, FluidType::WATER)
+            || $this->playerTouchesFluid($position, FluidType::LAVA);
+        $landingFallDistance = $touchingFallResettingFluid ? 0.0 : $movement->fallDistance;
+        if ($flying || !$player->gameMode()->takesDamage() || $touchingFallResettingFluid) {
             $movement->fallDistance = 0.0;
         } elseif ($verticalDistance < $movement->fallDistance) {
             $movement->fallDistance -= $verticalDistance;
@@ -8709,6 +9223,7 @@ final class WorldSimulation
     {
         $target = $this->entityRuntime->registry()->getByRuntimeId($command->runtimeId);
         if (!$target instanceof AbstractLivingEntity
+            || $target instanceof PrimedTntEntity
             || !hash_equals($target->getUniqueId(), $command->uniqueId)
             || !$target->isAlive()) {
             return new CommandRejected($command->source, 'target_unavailable');
@@ -9000,7 +9515,7 @@ final class WorldSimulation
         } elseif ($target instanceof EnderDragonEntity) {
             $dragonPart = EnderDragonPart::BODY;
         }
-        if (!$target instanceof AbstractLivingEntity) {
+        if (!$target instanceof AbstractLivingEntity || $target instanceof PrimedTntEntity) {
             return new CommandRejected($command->session, 'target_unavailable');
         }
         $reason = match (true) {
@@ -10314,6 +10829,7 @@ final class WorldSimulation
 
             return true;
         }
+        $deferredOffset = count($this->deferredEvents);
         $outcome = $this->spawnEntity(new EntitySpawnRequest(
             self::offspringType($animal, $partner),
             SpawnCause::BREEDING,
@@ -10838,13 +11354,17 @@ final class WorldSimulation
         return $this->replaceConsumedContainerWithStack($player, new InventoryStack($resultIdentifier, 1, 1));
     }
 
-    private function replaceConsumedContainerWithStack(Player $player, InventoryStack $result): bool
-    {
-        if (!$player->gameMode()->consumesItems()) {
+    private function replaceConsumedContainerWithStack(
+        Player $player,
+        InventoryStack $result,
+        bool $replaceWithoutConsumption = false,
+    ): bool {
+        if (!$replaceWithoutConsumption && !$player->gameMode()->consumesItems()) {
             return true;
         }
         $slot = $player->inventory->selectedHotbarSlot();
         $held = $player->inventory->selectedStack();
+        $before = $player->inventory->slots();
         if ($held === null || $this->itemCatalog === null || !$this->itemCatalog->has($result->identifier)) {
             return false;
         }
@@ -10863,6 +11383,11 @@ final class WorldSimulation
             }
         }
         $player->markDirty();
+        foreach ($player->inventory->slots() as $changedSlot => $stack) {
+            if ($changedSlot !== $slot && $stack !== $before[$changedSlot]) {
+                $this->deferredEvents[] = new InventorySlotChanged($player->sessionId, $changedSlot, $stack);
+            }
+        }
         $this->deferredEvents[] = new HeldItemChanged(
             $player->sessionId,
             $player->runtimeActorId,
@@ -11246,11 +11771,14 @@ final class WorldSimulation
                 'death.attack.arrow',
                 [$player->identity->displayName, $attacker->identity->displayName],
             ),
+            $cause === DamageCause::Explosion => new TranslatableMessage(
+                'death.attack.explosion',
+                [$player->identity->displayName],
+            ),
             $cause === DamageCause::Kill,
             $cause === DamageCause::Plugin,
             $cause === DamageCause::Projectile,
             $cause === DamageCause::Magic,
-            $cause === DamageCause::Explosion,
             $cause === DamageCause::Thorns => new TranslatableMessage(
                 'death.attack.generic',
                 [$player->identity->displayName],
@@ -15650,10 +16178,11 @@ final class WorldSimulation
             }
         }
         $affectedBlocks = [];
-        if ($breaksBlocks && $this->blockWorld !== null && $this->blockStateRegistry !== null && $this->blockPalette !== null) {
+        if ($breaksBlocks && $this->blockWorld !== null && $this->blockStateRegistry !== null
+            && $this->blockPalette !== null && $this->blockProperties !== null) {
             $plan = (new ExplosionPlanningService())->plan(
                 new ExplosionRequest($position, $radius, true, $fireChance),
-                new LoadedWorldExplosionView($this->blockWorld, $this->blockStateRegistry),
+                new LoadedWorldExplosionView($this->blockWorld, $this->blockStateRegistry, $this->blockProperties),
             );
             foreach ($plan->affectedBlocks as $blockPosition) {
                 $previous = $this->blockWorld->loadedBlockStateAt($blockPosition->x, $blockPosition->y, $blockPosition->z);
@@ -15897,6 +16426,9 @@ final class WorldSimulation
 
     private function damageLivingEntity(AbstractLivingEntity $entity, float $amount): ?EntityDamageResult
     {
+        if ($entity instanceof PrimedTntEntity) {
+            return null;
+        }
         if ($entity instanceof FoxEntity && $amount >= $entity->getHealth()) {
             $totem = $entity->equipmentState()->getItem(ApiEquipmentSlot::MAIN_HAND);
             if ($totem?->identifier === 'minecraft:totem_of_undying'
@@ -17054,6 +17586,7 @@ final class WorldSimulation
         $maximumTicks = $this->players->count() === 0 ? 16 : 64;
         $drain = $this->environmentTicks->drain($this->tick, $maximumTicks, 250);
         $events = [];
+        $fluidOrigins = [];
         foreach ($drain->ticks as $index => $scheduled) {
             if ($index > 0 && hrtime(true) >= $deadline) {
                 foreach (array_slice($drain->ticks, $index) as $deferred) {
@@ -17227,43 +17760,94 @@ final class WorldSimulation
             if ($scheduled->type !== EnvironmentTickType::FLUID) {
                 continue;
             }
-            $cell = $this->fluidWorld->cellAt($scheduled->position);
-            if ($cell?->fluid === null) {
-                continue;
+            $fluidOrigins[] = $scheduled->position;
+        }
+
+        array_push($events, ...$this->advanceFluidBatch($fluidOrigins));
+
+        return $events;
+    }
+
+    /**
+     * Plans every due fluid origin against one unchanged loaded-world view, then commits the resolved frontier once.
+     *
+     * @param list<BlockPosition> $origins
+     * @return list<WorldEvent>
+     */
+    private function advanceFluidBatch(array $origins): array
+    {
+        if ($origins === [] || $this->fluidFlowBatch === null || $this->fluidWorld === null
+            || $this->blockWorld === null || $this->blockStateRegistry === null) {
+            return [];
+        }
+
+        $originTypes = [];
+        foreach ($origins as $origin) {
+            $fluid = $this->fluidWorld->cellAt($origin)?->fluid;
+            if ($fluid !== null) {
+                $originTypes[$origin->x . ':' . $origin->y . ':' . $origin->z] = $fluid->type;
             }
-            $plan = $this->fluidFlow->plan($this->fluidWorld, $scheduled->position);
-            foreach ($plan->mutations as $mutation) {
-                try {
-                    $state = $this->blockStateRegistry->internalId($mutation->state);
-                    $previous = $this->blockWorld->loadedBlockStateAt(
-                        $mutation->position->x,
-                        $mutation->position->y,
-                        $mutation->position->z,
-                    );
-                    if ($previous === null || $previous->value === $state->value) {
-                        continue;
-                    }
-                    $this->setBlockStateAndSchedule($mutation->position, $state, false);
-                    $events[] = new BlockChanged(
-                        'server',
-                        $mutation->position,
-                        $state,
-                        $this->players->recipients(),
-                        false,
-                        $previous,
-                    );
-                } catch (InvalidArgumentException|OverflowException) {
+        }
+
+        $batch = $this->fluidFlowBatch->plan($this->fluidWorld, $origins);
+        $events = [];
+        foreach ($batch->mutations as $mutation) {
+            try {
+                $state = $this->blockStateRegistry->internalId($mutation->state);
+                $previous = $this->blockWorld->loadedBlockStateAt(
+                    $mutation->position->x,
+                    $mutation->position->y,
+                    $mutation->position->z,
+                );
+                if ($previous === null || $previous->value === $state->value) {
                     continue;
                 }
-            }
-            $remaining = $this->fluidWorld->cellAt($scheduled->position)?->fluid;
-            if ($remaining !== null || $plan->deferredPositions !== []) {
-                $retryType = $remaining === null ? $cell->fluid->type : $remaining->type;
-                $this->scheduleEnvironmentTick(
-                    $scheduled->position,
-                    $retryType,
-                    $plan->deferredPositions === [] ? null : 20,
+                $before = $this->blockStateRegistry->state($previous);
+                $reason = $mutation->type === FluidMutationType::FORM_BLOCK
+                    ? BlockStateChangeReason::FLUID_REACTION
+                    : BlockStateChangeReason::FLUID_FLOW;
+                if ($this->pluginEvents !== null && !$this->pluginEvents->allowBlockStateChange(
+                    $mutation->position,
+                    $before->identifier(),
+                    $before->properties(),
+                    $mutation->state->identifier(),
+                    $mutation->state->properties(),
+                    $reason,
+                )) {
+                    continue;
+                }
+                $this->setBlockStateAndSchedule($mutation->position, $state, false);
+                $events[] = new BlockChanged(
+                    'server',
+                    $mutation->position,
+                    $state,
+                    $this->players->recipients(),
+                    false,
+                    $previous,
                 );
+                $this->pluginEvents?->blockStateChanged(
+                    $mutation->position,
+                    $before->identifier(),
+                    $before->properties(),
+                    $mutation->state->identifier(),
+                    $mutation->state->properties(),
+                    $reason,
+                );
+            } catch (InvalidArgumentException|OverflowException) {
+                continue;
+            }
+        }
+
+        $deferredRetries = [];
+        foreach ($batch->deferredRetryOrigins as $origin) {
+            $deferredRetries[$origin->x . ':' . $origin->y . ':' . $origin->z] = true;
+        }
+        foreach ($batch->retryOrigins as $origin) {
+            $key = $origin->x . ':' . $origin->y . ':' . $origin->z;
+            $remaining = $this->fluidWorld->cellAt($origin)?->fluid;
+            $type = $remaining === null ? ($originTypes[$key] ?? null) : $remaining->type;
+            if ($type !== null) {
+                $this->scheduleEnvironmentTick($origin, $type, isset($deferredRetries[$key]) ? 20 : null);
             }
         }
 
@@ -17547,6 +18131,38 @@ final class WorldSimulation
             new EnvironmentBlockTransition($position, $next),
             $reason,
         );
+    }
+
+    private function playerTouchesFluid(Position $position, FluidType $type): bool
+    {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null) {
+            return false;
+        }
+        $box = PlayerCollisionShape::at($position);
+        $minimumX = (int) floor($box->minX);
+        $maximumX = (int) floor($box->maxX - 0.000_001);
+        $minimumY = (int) floor($box->minY);
+        $maximumY = (int) floor($box->maxY - 0.000_001);
+        $minimumZ = (int) floor($box->minZ);
+        $maximumZ = (int) floor($box->maxZ - 0.000_001);
+        for ($x = $minimumX; $x <= $maximumX; ++$x) {
+            for ($z = $minimumZ; $z <= $maximumZ; ++$z) {
+                for ($y = $minimumY; $y <= $maximumY; ++$y) {
+                    $state = $this->blockWorld->loadedBlockStateAt($x, $y, $z);
+                    if ($state === null) {
+                        continue;
+                    }
+                    $fluid = FluidState::fromCanonical($this->blockStateRegistry->state($state));
+                    if ($fluid?->type === $type
+                        && $box->minY < $y + $fluid->height()
+                        && $box->maxY > $y) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 
     private function trampleFarmlandBelow(Position $position, float $fallDistance): ?BlockChanged
@@ -18184,8 +18800,46 @@ final class WorldSimulation
                     $fluid->type,
                     $index !== 0 && $prioritizeNeighbors ? 1 : null,
                 );
+                continue;
+            }
+            if ($index === 0) {
+                $refillType = $this->fluidRefillCandidateType($position);
+                if ($refillType !== null) {
+                    $this->scheduleEnvironmentTick($position, $refillType, 1);
+                }
             }
         }
+    }
+
+    private function fluidRefillCandidateType(BlockPosition $opening): ?FluidType
+    {
+        if ($this->fluidWorld?->cellAt($opening)?->replaceable !== true) {
+            return null;
+        }
+        try {
+            $above = new BlockPosition($opening->x, $opening->y + 1, $opening->z);
+            $fluid = $this->fluidWorld->cellAt($above)?->fluid;
+            if ($fluid !== null) {
+                return $fluid->type;
+            }
+        } catch (InvalidArgumentException) {
+            return null;
+        }
+
+        $waterSources = 0;
+        foreach ([[0, -1], [0, 1], [-1, 0], [1, 0]] as [$x, $z]) {
+            try {
+                $neighbor = new BlockPosition($opening->x + $x, $opening->y, $opening->z + $z);
+            } catch (InvalidArgumentException) {
+                continue;
+            }
+            $fluid = $this->fluidWorld->cellAt($neighbor)?->fluid;
+            if ($fluid?->type === FluidType::WATER && $fluid->isSource()) {
+                ++$waterSources;
+            }
+        }
+
+        return $waterSources >= 2 ? FluidType::WATER : null;
     }
 
     private function scheduleEnvironmentTick(BlockPosition $position, FluidType $type, ?int $delay = null): void
@@ -18271,6 +18925,10 @@ final class WorldSimulation
                 || $headState->value === $this->waterState?->value || $feetState->value === $this->waterState?->value;
             $touchingLava = $headFluid?->type === FluidType::LAVA || $feetFluid?->type === FluidType::LAVA
                 || $headState->value === $this->lavaState?->value || $feetState->value === $this->lavaState?->value;
+            $headIdentifier = $this->blockStateRegistry?->state($headState)->identifier();
+            $feetIdentifier = $this->blockStateRegistry?->state($feetState)->identifier();
+            $touchingFire = $headIdentifier === 'minecraft:fire' || $headIdentifier === 'minecraft:soul_fire'
+                || $feetIdentifier === 'minecraft:fire' || $feetIdentifier === 'minecraft:soul_fire';
             array_push($events, ...$this->advancePotentSulfurContact($player));
             if ($touchingWater || VanillaEffectBehavior::hasFireResistance($effects)) {
                 $player->vitals->fireTicks = 0;
@@ -18288,6 +18946,19 @@ final class WorldSimulation
                     $events[] = $this->damage(new DamagePlayer(
                         $player->sessionId,
                         self::LAVA_CONTACT_DAMAGE,
+                        DamageCause::Fire,
+                    ));
+                    array_push($events, ...$this->drainDeferredEvents());
+                }
+            } elseif ($touchingFire) {
+                $player->vitals->fireTicks = max(
+                    $player->vitals->fireTicks,
+                    $this->fireProtectionAdjustedTicks($player, self::BLOCK_FIRE_DURATION_TICKS),
+                );
+                if ($previousFire === 0 || $this->tick % 10 === 0) {
+                    $events[] = $this->damage(new DamagePlayer(
+                        $player->sessionId,
+                        self::FIRE_TICK_DAMAGE,
                         DamageCause::Fire,
                     ));
                     array_push($events, ...$this->drainDeferredEvents());
@@ -21372,6 +22043,16 @@ final class WorldSimulation
         $key = self::sessionKey($command->session);
         $activeBreak = $this->breakingBlocks[$key] ?? null;
         unset($this->breakingBlocks[$key]);
+        if ($clickedIdentifier === 'minecraft:tnt' && $held !== null
+            && in_array($held->identifier, ['minecraft:flint_and_steel', 'minecraft:fire_charge'], true)) {
+            return $this->useTntIgnition(
+                $player,
+                $command,
+                $clickedState,
+                $held,
+                $activeBreak['position'] ?? null,
+            );
+        }
         $interactiveUse = $this->useInteractiveBlock($player, $command, $clickedState, $held);
         if ($interactiveUse !== null) {
             return $interactiveUse;
@@ -21487,7 +22168,8 @@ final class WorldSimulation
                 $activeBreak['position'] ?? null,
             );
         }
-        if ($held?->identifier === 'minecraft:flint_and_steel' && $this->netherPortals !== null) {
+        if ($held !== null
+            && in_array($held->identifier, ['minecraft:flint_and_steel', 'minecraft:fire_charge'], true)) {
             return $this->useFlintAndSteel(
                 $player,
                 $command,
@@ -22336,13 +23018,29 @@ final class WorldSimulation
         if ($command->sequence > $player->placementSequence) {
             $player->placementSequence = $command->sequence;
         }
-        if ($failure === null && $this->pluginEvents !== null
-            && !$this->pluginEvents->allowBlockPlace($player, $target, 'minecraft:portal')) {
-            $failure = 'plugin_cancelled';
+        $portalFrame = $failure === null ? $this->netherPortals?->detect($target) : null;
+        $placedIdentifier = $portalFrame === null ? 'minecraft:fire' : 'minecraft:portal';
+        $placedState = null;
+        if ($failure === null && $portalFrame === null) {
+            if ($this->blockCatalog?->has('minecraft:fire') !== true || $this->blockStateRegistry === null) {
+                $failure = 'fire_state_unavailable';
+            } else {
+                $placedState = $this->blockStateRegistry->internalId(
+                    $this->blockCatalog->type('minecraft:fire')->state,
+                );
+            }
         }
-        $mutations = $failure === null ? $this->netherPortals?->ignite($target) ?? [] : [];
-        if ($failure === null && $mutations === []) {
-            $failure = 'invalid_portal_frame';
+        if ($failure === null && $this->pluginEvents !== null
+            && (!$this->pluginEvents->allowBlockPlace($player, $target, $placedIdentifier)
+                || ($placedState !== null && !$this->pluginEvents->allowBlockStateChange(
+                    $target,
+                    'minecraft:air',
+                    [],
+                    'minecraft:fire',
+                    $this->blockStateRegistry->state($placedState)->properties(),
+                    BlockStateChangeReason::IGNITION,
+                )))) {
+            $failure = 'plugin_cancelled';
         }
         if ($failure !== null) {
             return new BlockPlacementCorrected(
@@ -22357,7 +23055,31 @@ final class WorldSimulation
                 $failure,
             );
         }
-        $this->damageHeldItem($player, ApiItemDamageCause::ITEM_USE, 1);
+        $mutations = $portalFrame === null ? [] : $this->netherPortals->ignite($target);
+        if ($portalFrame === null && $placedState !== null) {
+            $previous = $this->setBlockStateAndSchedule($target, $placedState);
+            $mutations = [new PortalBlockMutation(
+                $target,
+                $previous,
+                $placedState,
+            )];
+        }
+        if ($player->gameMode()->consumesItems()) {
+            if ($held->identifier === 'minecraft:flint_and_steel') {
+                $this->damageHeldItem($player, ApiItemDamageCause::ITEM_USE, 1);
+            } else {
+                $remaining = $player->inventory->decrementSelectedOne();
+                $player->markDirty();
+                $this->deferredEvents[] = new HeldItemChanged(
+                    $player->sessionId,
+                    $player->runtimeActorId,
+                    $player->inventory->selectedHotbarSlot(),
+                    $remaining,
+                    $this->players->recipients($player->sessionId),
+                    ownerSlotCorrection: false,
+                );
+            }
+        }
         $first = null;
         foreach ($mutations as $index => $mutation) {
             $event = new BlockChanged(
@@ -22374,9 +23096,183 @@ final class WorldSimulation
                 $this->deferredEvents[] = $event;
             }
         }
-        $this->pluginEvents?->blockPlaced($player, $target, 'minecraft:portal');
+        $this->pluginEvents?->blockPlaced($player, $target, $placedIdentifier);
 
-        return $first ?? throw new \LogicException('Portal ignition completed without a block mutation.');
+        return $first ?? throw new \LogicException('Block ignition completed without a block mutation.');
+    }
+
+    private function useTntIgnition(
+        Player $player,
+        PlaceBlock $command,
+        InternalBlockStateId $clickedState,
+        InventoryStack $held,
+        ?BlockPosition $stoppedBreakingPosition,
+    ): WorldEvent {
+        $clicked = $this->blockStateRegistry?->state($clickedState);
+        $air = $this->blockPalette === null || $this->blockStateRegistry === null
+            ? null
+            : $this->blockStateRegistry->state($this->blockPalette->air);
+        if ($clicked === null || $air === null) {
+            return new BlockPlacementCorrected(
+                $player->sessionId,
+                $command->clickedPosition,
+                $clickedState,
+                $command->clickedPosition,
+                $clickedState,
+                $player->inventory->selectedHotbarSlot(),
+                $held,
+                $stoppedBreakingPosition,
+                'block_registry_unavailable',
+            );
+        }
+        $failure = match (true) {
+            $clicked->identifier() !== 'minecraft:tnt' => 'not_tnt',
+            !in_array($held->identifier, ['minecraft:flint_and_steel', 'minecraft:fire_charge'], true) => 'ignition_item',
+            !$player->gameMode()->canBuild() => 'gamemode',
+            $command->sequence <= $player->placementSequence => 'stale_sequence',
+            $command->hotbarSlot !== $player->inventory->selectedHotbarSlot() => 'selected_slot',
+            !$this->blockIsReachable($player->snapshot(), $command->clickedPosition) => 'reach',
+            default => null,
+        };
+        if ($command->sequence > $player->placementSequence) {
+            $player->placementSequence = $command->sequence;
+        }
+        if ($failure === null && $this->pluginEvents !== null
+            && (!$this->pluginEvents->allowBlockInteraction(
+                $player,
+                $command->clickedPosition,
+                $clicked->identifier(),
+                $clicked->properties(),
+                $command->face,
+                $command->clickX,
+                $command->clickY,
+                $command->clickZ,
+                $held,
+            ) || !$this->pluginEvents->allowBlockStateChange(
+                $command->clickedPosition,
+                $clicked->identifier(),
+                $clicked->properties(),
+                $air->identifier(),
+                $air->properties(),
+                BlockStateChangeReason::IGNITION,
+            ))) {
+            $failure = 'plugin_cancelled';
+        }
+        if ($failure !== null || $this->blockWorld === null) {
+            return new BlockPlacementCorrected(
+                $player->sessionId,
+                $command->clickedPosition,
+                $clickedState,
+                $command->clickedPosition,
+                $clickedState,
+                $player->inventory->selectedHotbarSlot(),
+                $held,
+                $stoppedBreakingPosition,
+                $failure ?? 'block_world_unavailable',
+            );
+        }
+
+        $position = new Position(
+            $command->clickedPosition->x + 0.5,
+            $command->clickedPosition->y,
+            $command->clickedPosition->z + 0.5,
+        );
+        try {
+            $this->setBlockStateAndSchedule($command->clickedPosition, $this->blockPalette->air);
+        } catch (OverflowException) {
+            $this->blockWorld->setBlockState(
+                $command->clickedPosition->x,
+                $command->clickedPosition->y,
+                $command->clickedPosition->z,
+                $clickedState,
+            );
+
+            return new BlockPlacementCorrected(
+                $player->sessionId,
+                $command->clickedPosition,
+                $clickedState,
+                $command->clickedPosition,
+                $clickedState,
+                $player->inventory->selectedHotbarSlot(),
+                $held,
+                $stoppedBreakingPosition,
+                'world_update_capacity',
+            );
+        }
+        $outcome = $this->spawnEntity(new EntitySpawnRequest(
+            VanillaEntityType::PRIMED_TNT,
+            SpawnCause::TNT_IGNITION,
+            $this->worldId,
+            $position,
+        ));
+        if (!$outcome->entity instanceof PrimedTntEntity) {
+            $this->blockWorld->setBlockState(
+                $command->clickedPosition->x,
+                $command->clickedPosition->y,
+                $command->clickedPosition->z,
+                $clickedState,
+            );
+
+            return new BlockPlacementCorrected(
+                $player->sessionId,
+                $command->clickedPosition,
+                $clickedState,
+                $command->clickedPosition,
+                $clickedState,
+                $player->inventory->selectedHotbarSlot(),
+                $held,
+                $stoppedBreakingPosition,
+                $outcome->failure ?? 'tnt_spawn_failed',
+            );
+        }
+        $angle = deg2rad($this->dropRandom->integer(0, 359_999) / 1_000.0);
+        $outcome->entity->applyMotion(PrimedTntEntity::primingMotion($angle));
+
+        if ($player->gameMode()->consumesItems()) {
+            if ($held->identifier === 'minecraft:flint_and_steel') {
+                $this->damageHeldItem($player, ApiItemDamageCause::ITEM_USE, 1);
+            } else {
+                $remaining = $player->inventory->decrementSelectedOne();
+                $player->markDirty();
+                $this->deferredEvents[] = new HeldItemChanged(
+                    $player->sessionId,
+                    $player->runtimeActorId,
+                    $player->inventory->selectedHotbarSlot(),
+                    $remaining,
+                    $this->players->recipients($player->sessionId),
+                    ownerSlotCorrection: false,
+                );
+            }
+        }
+        $this->pluginEvents?->blockStateChanged(
+            $command->clickedPosition,
+            $clicked->identifier(),
+            $clicked->properties(),
+            $air->identifier(),
+            $air->properties(),
+            BlockStateChangeReason::IGNITION,
+        );
+        $this->pluginEvents?->blockInteracted(
+            $player,
+            $command->clickedPosition,
+            $clicked->identifier(),
+            $clicked->properties(),
+            $command->face,
+            $command->clickX,
+            $command->clickY,
+            $command->clickZ,
+            $held,
+        );
+        $this->deferredEvents[] = new TntPrimed($position, $this->players->recipients());
+
+        return new BlockChanged(
+            $player->sessionId,
+            $command->clickedPosition,
+            $this->blockPalette->air,
+            $this->players->recipients(),
+            $stoppedBreakingPosition !== null,
+            $clickedState,
+        );
     }
 
     private function fillFluidBucket(
@@ -22425,15 +23321,27 @@ final class WorldSimulation
             );
         }
 
-        $this->setBlockStateAndSchedule($command->clickedPosition, $this->blockPalette->air);
         $filledIdentifier = $fluid->type === FluidType::WATER
             ? 'minecraft:water_bucket'
             : 'minecraft:lava_bucket';
-        $player->inventory->replaceSlot(
-            $player->inventory->selectedHotbarSlot(),
+        if (!$this->replaceConsumedContainerWithStack(
+            $player,
             new InventoryStack($filledIdentifier, 1, $held->stackNetworkId),
-        );
-        $player->markDirty();
+            true,
+        )) {
+            return new BlockPlacementCorrected(
+                $command->session,
+                $command->clickedPosition,
+                $clickedState,
+                $placedPosition,
+                $placedState,
+                $player->inventory->selectedHotbarSlot(),
+                $held,
+                $stoppedBreakingPosition,
+                'inventory_capacity',
+            );
+        }
+        $this->setBlockStateAndSchedule($command->clickedPosition, $this->blockPalette->air);
         $remaining = $player->inventory->selectedStack();
         $this->pluginEvents?->blockPlaced($player, $command->clickedPosition, $filledIdentifier);
 
@@ -24220,7 +25128,10 @@ final class WorldSimulation
         return $state->value === $this->blockPalette?->air->value
             || $this->fluidState($state) !== null
             || ($this->blockStateRegistry !== null
-                && $this->blockStateRegistry->state($state)->identifier() === 'minecraft:portal');
+                && BlockTagRegistry::contains(
+                    BlockTag::REPLACEABLE,
+                    $this->blockStateRegistry->state($state)->identifier(),
+                ));
     }
 
     private function isReplaceablePhysicsState(InternalBlockStateId $state): bool
@@ -24483,6 +25394,15 @@ final class WorldSimulation
         $movedEntities = [];
         foreach ($result->updated as $entity) {
             $previous = $previousPositions[$entity->runtimeEntityId] ?? null;
+            $previousMotion = $previousMotions[$entity->runtimeEntityId] ?? null;
+            $wasTouchingLava = $previous !== null && $previousMotion !== null
+                && $this->itemTouchesLava($entity->withPositionAndMotion($previous, $previousMotion));
+            if ($wasTouchingLava || $this->itemTouchesLava($entity)) {
+                $this->itemEntities->remove($entity->runtimeEntityId);
+                unset($this->itemPublishedMotions[$entity->runtimeEntityId]);
+                $this->pendingItemDespawns[] = $entity->runtimeEntityId;
+                continue;
+            }
             if ($this->itemCollisionResolver !== null && $previous !== null) {
                 $before = $entity->withPositionAndMotion($previous, $entity->motion);
                 $entity = $this->itemCollisionResolver->resolve($before, $entity);

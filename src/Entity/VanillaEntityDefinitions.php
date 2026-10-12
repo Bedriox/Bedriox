@@ -47,6 +47,7 @@ use Bedriox\Server\Entity\Vanilla\GuardianEntity;
 use Bedriox\Server\Entity\Vanilla\HuskEntity;
 use Bedriox\Server\Entity\Vanilla\MagmaCubeEntity;
 use Bedriox\Server\Entity\Vanilla\Misc\LeashKnotEntity;
+use Bedriox\Server\Entity\Vanilla\Misc\PrimedTntEntity;
 use Bedriox\Server\Entity\Vanilla\Nether\NetherEntityRegistrations;
 use Bedriox\Server\Entity\Vanilla\ParchedEntity;
 use Bedriox\Server\Entity\Vanilla\PhantomEntity;
@@ -81,6 +82,7 @@ final class VanillaEntityDefinitions
     private static ?EntityDefinition $skeleton = null;
     private static ?EntityDefinition $zombie = null;
     private static ?EntityDefinition $fallingBlock = null;
+    private static ?EntityDefinition $primedTnt = null;
 
     /** @var array<string, EntityDefinition> */
     private static array $hostiles = [];
@@ -97,6 +99,20 @@ final class VanillaEntityDefinitions
             VanillaEntityType::FALLING_BLOCK,
             EntityCategory::MISCELLANEOUS,
             VanillaEntityType::FALLING_BLOCK->value,
+            0.98,
+            0.98,
+            1.0,
+            gravity: 0.04,
+            drag: 0.02,
+        );
+    }
+
+    public static function primedTnt(): EntityDefinition
+    {
+        return self::$primedTnt ??= new EntityDefinition(
+            VanillaEntityType::PRIMED_TNT,
+            EntityCategory::MISCELLANEOUS,
+            VanillaEntityType::PRIMED_TNT->value,
             0.98,
             0.98,
             1.0,
@@ -440,6 +456,21 @@ final class VanillaEntityDefinitions
     public static function registrations(): array
     {
         return [
+            new RegisteredEntityDefinition(
+                self::primedTnt(),
+                static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): PrimedTntEntity =>
+                    new PrimedTntEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch),
+                persistenceFactory: static fn(string $uuid, int $runtimeId, EntityPersistenceRecord $record): PrimedTntEntity =>
+                    new PrimedTntEntity(
+                        $uuid,
+                        $runtimeId,
+                        $record->worldName(),
+                        $record->position,
+                        motion: $record->motion,
+                        yaw: $record->yaw,
+                        pitch: $record->pitch,
+                    ),
+            ),
             new RegisteredEntityDefinition(
                 self::fallingBlock(),
                 static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): FallingBlockEntity =>

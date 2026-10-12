@@ -26,6 +26,7 @@ use Bedriox\Api\Entity\VanillaEntityType;
 use Bedriox\Api\Event\Entity\EntityBlockChangedEvent;
 use Bedriox\Api\Event\Entity\EntityBlockChangeEvent;
 use Bedriox\Api\Event\Entity\EntityExplodedEvent;
+use Bedriox\Api\Event\Entity\EntityExplodeEvent;
 use Bedriox\Api\Event\Entity\EntityExplosionPrimeEvent;
 use Bedriox\Api\Event\Entity\EntitySplitEvent;
 use Bedriox\Api\Event\Entity\EntityTransformedEvent;
@@ -68,6 +69,21 @@ final class HostileEntityEventFoundationTest extends TestCase
         $event->setReadOnly(true);
         $this->expectException(LogicException::class);
         $event->setRadius(2.0);
+    }
+
+    public function testExplosionImpactAllowsBoundedBlockAndYieldChanges(): void
+    {
+        $entity = self::cow();
+        $position = $entity->getPosition();
+        $first = new BlockPosition(0, 64, 0);
+        $second = new BlockPosition(1, 64, 0);
+        $event = new EntityExplodeEvent($entity, $position, 4.0, [$first, $second], 0.25);
+
+        $event->setAffectedBlocks([$second]);
+        $event->setDropYield(0.5);
+
+        self::assertSame([$second], $event->affectedBlocks());
+        self::assertSame(0.5, $event->dropYield());
     }
 
     public function testExplosionPrimeRejectsUnboundedRadiusAndFireChance(): void

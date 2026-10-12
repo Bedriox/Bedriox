@@ -25,6 +25,7 @@ use Bedriox\Api\Command\CommandOverload;
 use Bedriox\Api\Command\CommandParameter;
 use Bedriox\Api\Command\CommandSender;
 use Bedriox\Api\Command\CommandSenderType;
+use Bedriox\Api\Command\CommandSoftEnum;
 use Bedriox\Api\Command\PlayerCommandSender;
 use Bedriox\Api\Inventory\Inventory;
 use Bedriox\Api\Player\Player;
@@ -194,6 +195,29 @@ final class CommandArgumentBinderTest extends TestCase
         }
     }
 
+    public function testItemParameterBindsShorthandAndCanonicalNamesToAnAuthoritativeIdentifier(): void
+    {
+        $items = self::itemIdentifiers(['stone', 'bedriox:ruby']);
+        $arguments = CommandArguments::create()->addArgument(CommandParameter::item('item', $items));
+        $binder = new CommandArgumentBinder(static fn(): array => []);
+
+        self::assertSame(
+            'minecraft:stone',
+            $binder->bind($arguments, new BinderCommandSender(), ['STONE'])->string('item'),
+        );
+        self::assertSame(
+            'bedriox:ruby',
+            $binder->bind($arguments, new BinderCommandSender(), ['Bedriox:Ruby'])->string('item'),
+        );
+
+        try {
+            $binder->bind($arguments, new BinderCommandSender(), ['diamond']);
+            self::fail('An item outside the authoritative identifier source was accepted.');
+        } catch (CommandBindingException $failure) {
+            self::assertSame("Argument 'item' is not currently available.", $failure->getMessage());
+        }
+    }
+
     public function testJsonConsumesTheRemainingStructuredValue(): void
     {
         $arguments = CommandArguments::create()->addArgument(CommandParameter::json('data'));
@@ -222,6 +246,58 @@ final class CommandArgumentBinderTest extends TestCase
                 static fn(Packet $packet, bool $immediate): bool => true,
             ),
         );
+    }
+
+    /** @param list<string> $values */
+    private static function itemIdentifiers(array $values): CommandSoftEnum
+    {
+        return new class ($values) implements CommandSoftEnum {
+            /** @param list<string> $values */
+            public function __construct(private array $values) {}
+
+            public function name(): string
+            {
+                return 'bedriox:test_items';
+            }
+
+            public function values(): array
+            {
+                return $this->values;
+            }
+
+            public function replace(array $values): bool
+            {
+                $this->values = $values;
+
+                return true;
+            }
+
+            public function add(string $value): bool
+            {
+                if (in_array($value, $this->values, true)) {
+                    return false;
+                }
+                $this->values[] = $value;
+
+                return true;
+            }
+
+            public function remove(string $value): bool
+            {
+                $offset = array_search($value, $this->values, true);
+                if ($offset === false) {
+                    return false;
+                }
+                array_splice($this->values, $offset, 1);
+
+                return true;
+            }
+
+            public function isRegistered(): bool
+            {
+                return true;
+            }
+        };
     }
 }
 

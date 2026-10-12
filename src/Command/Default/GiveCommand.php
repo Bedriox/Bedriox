@@ -56,7 +56,7 @@ final readonly class GiveCommand implements BuiltinCommand
     {
         return CommandArguments::create()
             ->addArgument(CommandParameter::onlinePlayer('player'))
-            ->addArgument(CommandParameter::softEnum('item', $this->itemIdentifiers))
+            ->addArgument(CommandParameter::item('item', $this->itemIdentifiers))
             ->addArgument(CommandParameter::integer('amount')
                 ->minimum(1)
                 ->maximum(self::MAXIMUM_AMOUNT)

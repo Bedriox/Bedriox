@@ -33,6 +33,7 @@ use Bedriox\Server\Entity\EntityWorkBudget;
 use Bedriox\Server\Entity\Mount\MountRegistry;
 use Bedriox\Server\Entity\Spawn\EntitySpawnRequest;
 use Bedriox\Server\Entity\Spawn\EntitySpawnService;
+use Bedriox\Server\Entity\Vanilla\Misc\PrimedTntEntity;
 use Bedriox\Server\Simulation\Position;
 use PHPUnit\Framework\TestCase;
 
@@ -76,6 +77,32 @@ final class EntityContactResolverTest extends TestCase
         self::assertLessThanOrEqual(0.05, hypot($first->getMotion()->x, $first->getMotion()->z));
         self::assertLessThanOrEqual(0.05, hypot($second->getMotion()->x, $second->getMotion()->z));
         self::assertNotEquals(new EntityMotion(), $firstMotion);
+    }
+
+    public function testPrimedTntDoesNotExchangeEntityContactPushes(): void
+    {
+        $registry = new EntityRegistry();
+        $spawns = new EntitySpawnService($registry, EntityDefinitionRegistry::baseline());
+        $cow = $spawns->spawn(new EntitySpawnRequest(
+            VanillaEntityType::COW,
+            SpawnCause::COMMAND,
+            'world',
+            new Position(0.5, 64.0, 0.5),
+        ))->entity;
+        $tnt = $spawns->spawn(new EntitySpawnRequest(
+            VanillaEntityType::PRIMED_TNT,
+            SpawnCause::COMMAND,
+            'world',
+            new Position(0.5, 64.0, 0.5),
+        ))->entity;
+        self::assertInstanceOf(AbstractMobEntity::class, $cow);
+        self::assertInstanceOf(PrimedTntEntity::class, $tnt);
+
+        $metrics = (new EntityContactResolver($registry))->resolve(new EntityWorkBudget());
+
+        self::assertSame(0, $metrics->contacts);
+        self::assertSame(0.0, $cow->getMotion()->lengthSquared());
+        self::assertSame(0.0, $tnt->getMotion()->lengthSquared());
     }
 
     /** @return array{EntityRegistry, AbstractMobEntity, AbstractMobEntity} */

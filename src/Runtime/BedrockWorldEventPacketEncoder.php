@@ -146,6 +146,7 @@ use Bedriox\Server\Entity\Block\FallingBlockEntity;
 use Bedriox\Server\Entity\Human\HumanEntity;
 use Bedriox\Server\Entity\Mount\MountViewConstraint;
 use Bedriox\Server\Entity\Vanilla\End\EnderDragonEntity;
+use Bedriox\Server\Entity\Vanilla\Misc\PrimedTntEntity;
 use Bedriox\Server\Entity\Vehicle\BoatEntity;
 use Bedriox\Server\Gameplay\Enchanting\VanillaEnchantmentIdMap;
 use Bedriox\Server\Gameplay\Potion\PotionColorMixer;
@@ -240,6 +241,7 @@ use Bedriox\Server\Simulation\Event\TameAttemptPresented;
 use Bedriox\Server\Simulation\Event\TextDisplayActorRemoved;
 use Bedriox\Server\Simulation\Event\TextDisplayActorSpawned;
 use Bedriox\Server\Simulation\Event\TextDisplayActorUpdated;
+use Bedriox\Server\Simulation\Event\TntPrimed;
 use Bedriox\Server\Simulation\Event\WeatherChanged;
 use Bedriox\Server\Simulation\Event\WorldEvent;
 use Bedriox\Server\Simulation\PlayerSnapshot;
@@ -270,6 +272,7 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
     {
         return match (true) {
             $event instanceof EntityExplosionPresented => $this->explosion($event, $sessions),
+            $event instanceof TntPrimed => $this->tntPrimed($event, $sessions),
             $event instanceof ParticleSpawned => $this->particle($event, $sessions),
             $event instanceof PlayerJoined => $this->joined($event, $sessions),
             $event instanceof WeatherChanged => $this->weatherChanged($event),
@@ -548,6 +551,28 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             $packets[] = new DirectedPacket(
                 $recipient,
                 new LevelSoundEventPacket(LevelSoundEventName::explode(), $position),
+            );
+        }
+
+        return $packets;
+    }
+
+    /**
+     * @param array<string, RuntimeSession> $sessions
+     * @return list<DirectedPacket>
+     */
+    private function tntPrimed(TntPrimed $event, array $sessions): array
+    {
+        $position = new LevelEventPosition($event->position->x, $event->position->y, $event->position->z);
+        $packets = [];
+        foreach ($event->recipientSessionIds as $recipient) {
+            $session = $sessions[$recipient] ?? null;
+            if ($session?->play?->hasSentChunkAt($event->position->x, $event->position->z) !== true) {
+                continue;
+            }
+            $packets[] = new DirectedPacket(
+                $recipient,
+                new LevelSoundEventPacket(LevelSoundEventName::ignite(), $position),
             );
         }
 
@@ -2492,7 +2517,11 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             UnsignedLong::fromInt($runtimeId),
             $entity->definition()->networkIdentifier,
             $position->x,
-            $position->y + ($entity instanceof BoatEntity ? $entity->bedrockPositionOffsetY() : 0.0),
+            $position->y + match (true) {
+                $entity instanceof BoatEntity => $entity->bedrockPositionOffsetY(),
+                $entity instanceof PrimedTntEntity => 0.49,
+                default => 0.0,
+            },
             $position->z,
             $motion->x,
             $motion->y,
@@ -2882,6 +2911,7 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
         $networkY = $position->y + match (true) {
             $entity instanceof BoatEntity => $entity->bedrockPositionOffsetY(),
             $entity instanceof FallingBlockEntity => 0.49,
+            $entity instanceof PrimedTntEntity => 0.49,
             $entity instanceof HumanEntity => PlayerPositionProjection::feetToWireY(0.0),
             default => 0.0,
         };

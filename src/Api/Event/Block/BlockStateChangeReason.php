@@ -30,5 +30,9 @@ enum BlockStateChangeReason: string
     case TRAMPLE = 'trample';
     case GROWTH = 'growth';
     case PHYSICS = 'physics';
+    case FLUID_FLOW = 'fluid_flow';
+    case FLUID_REACTION = 'fluid_reaction';
     case TOOL_TRANSFORM = 'tool_transform';
+    case IGNITION = 'ignition';
+    case EXPLOSION = 'explosion';
 }

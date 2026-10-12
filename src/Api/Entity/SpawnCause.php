@@ -35,4 +35,6 @@ enum SpawnCause: string
     case ITEM = 'item';
     case BLOCK_PHYSICS = 'block_physics';
     case TRANSFORMATION = 'transformation';
+    case TNT_IGNITION = 'tnt_ignition';
+    case EXPLOSION_CHAIN = 'explosion_chain';
 }

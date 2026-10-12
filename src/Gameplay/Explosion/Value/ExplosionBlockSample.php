@@ -32,7 +32,7 @@ final readonly class ExplosionBlockSample
         if (preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $identifier) !== 1) {
             throw new InvalidArgumentException('Explosion block identifier must be canonical.');
         }
-        if (!is_finite($blastResistance) || $blastResistance < 0.0 || $blastResistance > 1_000_000.0) {
+        if (!is_finite($blastResistance) || $blastResistance < 0.0 || $blastResistance > 1_000_000_000.0) {
             throw new InvalidArgumentException('Explosion block resistance must be finite and bounded.');
         }
         if ($air && $blastResistance !== 0.0) {

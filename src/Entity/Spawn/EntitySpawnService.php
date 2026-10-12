@@ -155,7 +155,9 @@ final readonly class EntitySpawnService
             SpawnCause::PLUGIN,
             SpawnCause::CHUNK_LOAD,
             SpawnCause::TRANSFORMATION,
-            SpawnCause::BLOCK_PHYSICS => false,
+            SpawnCause::BLOCK_PHYSICS,
+            SpawnCause::TNT_IGNITION,
+            SpawnCause::EXPLOSION_CHAIN => false,
         };
     }
 }

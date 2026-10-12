@@ -235,6 +235,12 @@ final class CommandRegistry
     {
         $record = $this->softEnums[$id] ?? throw new PluginException('Command soft enum is no longer registered.');
         $normalized = self::normalizeSoftEnumValues($values);
+        foreach ($this->commands as $command) {
+            if ($this->commandUsesItemSource($command, $record->handle)) {
+                self::validateItemSourceValues($normalized);
+                break;
+            }
+        }
         if ($record->values === $normalized) {
             return false;
         }
@@ -243,6 +249,12 @@ final class CommandRegistry
             $record->name,
             $normalized,
         );
+        foreach ($this->commands as $command) {
+            if ($this->commandUsesItemSource($command, $record->handle)) {
+                ++$this->schemaRevision;
+                break;
+            }
+        }
 
         return true;
     }
@@ -621,7 +633,8 @@ final class CommandRegistry
     {
         foreach ($arguments->overloads() as $overload) {
             foreach ($overload->parameters() as $parameter) {
-                if ($parameter->type() !== CommandParameterType::SOFT_ENUM) {
+                if ($parameter->type() !== CommandParameterType::SOFT_ENUM
+                    && $parameter->type() !== CommandParameterType::ITEM) {
                     continue;
                 }
                 $softEnum = $parameter->softEnumValue();
@@ -631,6 +644,9 @@ final class CommandRegistry
                     || $record->pluginOwned !== $pluginOwned
                     || strcasecmp($record->owner, $owner) !== 0) {
                     throw new PluginException('Command soft enums must be registered by the command owner.');
+                }
+                if ($parameter->type() === CommandParameterType::ITEM) {
+                    self::validateItemSourceValues($record->values);
                 }
             }
         }
@@ -647,6 +663,40 @@ final class CommandRegistry
         }
 
         return false;
+    }
+
+    private function commandUsesItemSource(RegisteredCommand $command, CommandSoftEnum $softEnum): bool
+    {
+        foreach ($command->arguments->overloads() as $overload) {
+            foreach ($overload->parameters() as $parameter) {
+                if ($parameter->type() === CommandParameterType::ITEM
+                    && $parameter->softEnumValue() === $softEnum) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /** @param list<string> $values */
+    private static function validateItemSourceValues(array $values): void
+    {
+        if ($values === []) {
+            throw new PluginException('An item command parameter requires at least one registered identifier.');
+        }
+        $wireValues = [];
+        foreach ($values as $value) {
+            $identifier = strtolower(str_contains($value, ':') ? $value : 'minecraft:' . $value);
+            if (preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $identifier) !== 1
+                || strlen($identifier) > 128) {
+                throw new PluginException('Item command parameter values must be canonical bounded identifiers.');
+            }
+            $wireValues[$identifier] = true;
+            if (count($wireValues) > 4_096) {
+                throw new PluginException('An item command parameter expands beyond the supported wire enum limit.');
+            }
+        }
     }
 
     private static function validateLocalSoftEnumName(string $name): void

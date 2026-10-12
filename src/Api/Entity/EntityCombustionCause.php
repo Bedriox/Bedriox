@@ -23,6 +23,7 @@ namespace Bedriox\Api\Entity;
 /** Stable causes for attempts to ignite an entity. */
 enum EntityCombustionCause: string
 {
+    case BLOCK = 'block';
     case SUNLIGHT = 'sunlight';
     case ENCHANTMENT = 'enchantment';
     case PROJECTILE = 'projectile';

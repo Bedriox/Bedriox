@@ -80,6 +80,7 @@ use Bedriox\Server\Entity\Vanilla\CamelEntity;
 use Bedriox\Server\Entity\Vanilla\End\EndCrystalEntity;
 use Bedriox\Server\Entity\Vanilla\LlamaEntity;
 use Bedriox\Server\Entity\Vanilla\Misc\LeashKnotEntity;
+use Bedriox\Server\Entity\Vanilla\Misc\PrimedTntEntity;
 use Bedriox\Server\Entity\Vanilla\Nether\StriderEntity;
 use Bedriox\Server\Entity\Vanilla\SkeletonHorseEntity;
 use Bedriox\Server\Entity\Vanilla\TraderLlamaEntity;
@@ -95,7 +96,7 @@ final class BedrockLivingActorProjector
     /** @return list<ActorSpawnAttribute> */
     public function spawnAttributes(AbstractLivingEntity $entity): array
     {
-        if ($entity instanceof LeashKnotEntity) {
+        if ($entity instanceof LeashKnotEntity || $entity instanceof PrimedTntEntity) {
             return [];
         }
         $maximumHealth = $entity->getMaximumHealth();
@@ -157,6 +158,10 @@ final class BedrockLivingActorProjector
                 ActorMetadata::int(20, $entity->getFuseTicks()),
                 ActorMetadata::int(21, $entity->isIgnited() ? 1 : -1),
             ] : []),
+            ...($entity instanceof PrimedTntEntity ? [
+                ActorMetadata::int(2, $entity->worksUnderwater() ? 1 : 0),
+                ActorMetadata::int(55, $entity->getFuseTicks()),
+            ] : []),
             ActorMetadata::long(37, $entity instanceof BreedableAnimalEntity
                 ? ($entity->getLeashHolderRuntimeId() ?? -1)
                 : -1),
@@ -213,7 +218,10 @@ final class BedrockLivingActorProjector
     {
         $flags = $entity instanceof LeashKnotEntity
             ? 0
-            : ActorFlag::combine(ActorFlag::Breathing, ActorFlag::HasCollision);
+            : ActorFlag::combine(
+                ActorFlag::Breathing,
+                ...($entity instanceof PrimedTntEntity ? [] : [ActorFlag::HasCollision]),
+            );
         if ($entity instanceof Climbing) {
             $flags |= ActorFlag::CanClimb->mask();
         }
@@ -221,6 +229,9 @@ final class BedrockLivingActorProjector
             $flags |= ActorFlag::Powered->mask();
         }
         if ($entity instanceof Creeper && $entity->isIgnited()) {
+            $flags |= ActorFlag::Ignited->mask();
+        }
+        if ($entity instanceof PrimedTntEntity) {
             $flags |= ActorFlag::Ignited->mask();
         }
         if ($entity instanceof FireImmune) {
@@ -421,7 +432,7 @@ final class BedrockLivingActorProjector
         ?BedrockInventoryPacketProjector $inventory,
         ?array $changedSlots = null,
     ): array {
-        if ($entity instanceof LeashKnotEntity) {
+        if ($entity instanceof LeashKnotEntity || $entity instanceof PrimedTntEntity) {
             return [];
         }
         $armorChanged = $changedSlots === null;

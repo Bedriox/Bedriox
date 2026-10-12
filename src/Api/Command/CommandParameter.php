@@ -108,6 +108,17 @@ final class CommandParameter
         return new self($name, CommandParameterType::SOFT_ENUM, softEnum: $softEnum);
     }
 
+    /**
+     * Declares an item identifier backed by a bounded, dynamically maintained catalog.
+     *
+     * Values are bound to canonical namespace:path identifiers even when a player uses
+     * the shorthand form accepted by the Bedrock command UI.
+     */
+    public static function item(string $name, CommandSoftEnum $identifiers): self
+    {
+        return new self($name, CommandParameterType::ITEM, softEnum: $identifiers);
+    }
+
     public static function position(string $name): self
     {
         return new self($name, CommandParameterType::POSITION);
@@ -330,7 +341,7 @@ final class CommandParameter
             CommandParameterType::BOOLEAN => is_bool($this->default),
             CommandParameterType::CHOICE => is_string($this->default) && in_array($this->default, $this->choices, true),
             CommandParameterType::ENUM => $this->default instanceof BackedEnum && $this->default::class === $this->enumClass,
-            CommandParameterType::SOFT_ENUM => is_string($this->default),
+            CommandParameterType::SOFT_ENUM, CommandParameterType::ITEM => is_string($this->default),
             CommandParameterType::LITERAL => $this->default === $this->literal,
             default => true,
         };

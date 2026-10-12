@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Gameplay\Explosion\Planning;
 
+use Bedriox\Data\BlockPropertyRegistry;
 use Bedriox\Server\Gameplay\Explosion\Value\ExplosionBlockSample;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\BlockPosition;
@@ -28,7 +29,11 @@ use Bedriox\Server\World\World;
 /** Read-only loaded-chunk explosion view with conservative vanilla material resistance groups. */
 final readonly class LoadedWorldExplosionView implements ExplosionWorldView
 {
-    public function __construct(private World $world, private BlockStateRegistry $states) {}
+    public function __construct(
+        private World $world,
+        private BlockStateRegistry $states,
+        private BlockPropertyRegistry $properties,
+    ) {}
 
     public function sample(BlockPosition $position): ?ExplosionBlockSample
     {
@@ -41,20 +46,9 @@ final readonly class LoadedWorldExplosionView implements ExplosionWorldView
             return ExplosionBlockSample::air();
         }
 
-        return new ExplosionBlockSample($identifier, self::resistance($identifier));
-    }
-
-    private static function resistance(string $identifier): float
-    {
-        return match (true) {
-            $identifier === 'minecraft:bedrock' => 1_000_000.0,
-            str_contains($identifier, 'obsidian') => 1_200.0,
-            str_contains($identifier, 'deepslate') => 6.0,
-            str_contains($identifier, 'stone'), str_contains($identifier, 'brick') => 6.0,
-            str_contains($identifier, 'log'), str_contains($identifier, 'planks') => 3.0,
-            str_contains($identifier, 'dirt'), str_contains($identifier, 'grass') => 0.5,
-            str_contains($identifier, 'leaves'), str_contains($identifier, 'glass') => 0.3,
-            default => 4.0,
-        };
+        return new ExplosionBlockSample(
+            $identifier,
+            $this->properties->propertiesForState($this->states->state($state))->explosionResistance(),
+        );
     }
 }

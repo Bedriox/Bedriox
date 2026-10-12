@@ -134,6 +134,7 @@ final readonly class CommandArgumentBinder
             CommandParameterType::CHOICE => [$this->choice($parameter, $token), 1, 80],
             CommandParameterType::ENUM => [$this->enum($parameter, $token), 1, 80],
             CommandParameterType::SOFT_ENUM => [$this->softEnum($parameter, $token), 1, 75],
+            CommandParameterType::ITEM => [$this->item($parameter, $token), 1, 85],
             CommandParameterType::POSITION => [$this->position($sender, $tokens, $offset), 3, 50],
             CommandParameterType::BLOCK_POSITION => [$this->blockPosition($sender, $tokens, $offset), 3, 50],
             CommandParameterType::MESSAGE, CommandParameterType::RAW_TEXT => [implode(' ', array_slice($tokens, $offset)), count($tokens) - $offset, 5],
@@ -274,6 +275,35 @@ final readonly class CommandArgumentBinder
         }
 
         throw new CommandBindingException("Argument '{$parameter->name()}' is not currently available.");
+    }
+
+    private function item(CommandParameter $parameter, string $token): string
+    {
+        $identifiers = $parameter->softEnumValue();
+        if ($identifiers === null || !$identifiers->isRegistered()) {
+            throw new CommandBindingException("Argument '{$parameter->name()}' is unavailable.");
+        }
+        $requested = self::canonicalItemIdentifier($token);
+        if ($requested === null) {
+            throw new CommandBindingException("Argument '{$parameter->name()}' is not a valid item identifier.");
+        }
+        foreach ($identifiers->values() as $identifier) {
+            if (self::canonicalItemIdentifier($identifier) === $requested) {
+                return $requested;
+            }
+        }
+
+        throw new CommandBindingException("Argument '{$parameter->name()}' is not currently available.");
+    }
+
+    private static function canonicalItemIdentifier(string $value): ?string
+    {
+        $identifier = strtolower(str_contains($value, ':') ? $value : 'minecraft:' . $value);
+
+        return preg_match('/^[a-z0-9_.-]+:[a-z0-9_.\/-]+$/D', $identifier) === 1
+            && strlen($identifier) <= 128
+            ? $identifier
+            : null;
     }
 
     /** @param list<string> $tokens */

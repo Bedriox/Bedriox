@@ -108,6 +108,7 @@ use Bedriox\Api\Event\Entity\EntityEffectRemoveEvent;
 use Bedriox\Api\Event\Entity\EntityEquipmentChangedEvent;
 use Bedriox\Api\Event\Entity\EntityEquipmentChangeEvent;
 use Bedriox\Api\Event\Entity\EntityExplodedEvent;
+use Bedriox\Api\Event\Entity\EntityExplodeEvent;
 use Bedriox\Api\Event\Entity\EntityExplosionPrimeEvent;
 use Bedriox\Api\Event\Entity\EntityInteractedEvent;
 use Bedriox\Api\Event\Entity\EntityInteractEvent;
@@ -829,6 +830,22 @@ final readonly class PluginGameplayEventBridge
         float $fireChance,
     ): ?EntityExplosionPrimeEvent {
         $event = new EntityExplosionPrimeEvent($entity, $position, $radius, $breaksBlocks, $fireChance);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event;
+    }
+
+    /**
+     * @param list<ApiBlockPosition> $affectedBlocks
+     */
+    public function allowEntityExplosionImpact(
+        ApiEntity $entity,
+        ApiPosition $position,
+        float $radius,
+        array $affectedBlocks,
+        float $dropYield,
+    ): ?EntityExplodeEvent {
+        $event = new EntityExplodeEvent($entity, $position, $radius, $affectedBlocks, $dropYield);
         $this->events->dispatch($event);
 
         return $event->isCancelled() ? null : $event;

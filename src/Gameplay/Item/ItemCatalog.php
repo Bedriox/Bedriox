@@ -128,7 +128,10 @@ final class ItemCatalog
                 maximumStackSize: $armor !== null || $maximumDurability !== null
                     || self::isShulkerBox($identifier) || BoatVariant::fromItem($identifier) !== null
                     ? 1
-                    : ($existing === null ? 64 : $existing->maximumStackSize),
+                    : min(
+                        $existing === null ? 64 : $existing->maximumStackSize,
+                        VanillaItemStackSizes::for($identifier),
+                    ),
                 tool: $existing?->tool,
                 placedBlockState: $mappedBlockState ?? $existing?->placedBlockState,
                 networkBlockState: $mappedBlockState ?? $existing?->networkBlockState,
