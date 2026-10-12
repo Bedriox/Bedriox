@@ -50,7 +50,12 @@ final readonly class ContainerContentsChanged implements WorldEvent
             ? $layout?->size()
             : ($containerType === ContainerType::HORSE ? count($slots) : $containerType->slotCount());
         if ($windowId < 2 || $windowId > 99
-            || ((in_array($containerType, [ContainerType::VIRTUAL, ContainerType::CHEST_BOAT, ContainerType::HORSE], true))
+            || ((in_array($containerType, [
+                ContainerType::VIRTUAL,
+                ContainerType::CHEST_BOAT,
+                ContainerType::CHEST_MINECART,
+                ContainerType::HORSE,
+            ], true))
                 !== ($position === null))
             || ($containerType === ContainerType::VIRTUAL) !== ($layout !== null)
             || $double !== ($pairedPosition !== null)

@@ -209,11 +209,28 @@ connected water column. Downward client motion cannot submerge a supported boat.
 Their collision, structural hit feedback, destruction, drops, passengers, and
 storage remain server-owned.
 
+Ordinary minecarts and chest minecarts use the same authoritative vehicle,
+damage, persistence, and inventory boundaries. Minecarts may only be placed on
+a loaded rail and follow the rail's straight, curved, or ascending canonical
+shape. A rider can nudge a near-stationary ordinary cart in the direction they
+face; the client never owns cart coordinates or speed. Chest minecarts are not
+rideable and open their persistent 27-slot inventory on interaction. Regular,
+powered, detector, and activator rails all provide track geometry in this
+milestone; powered, detector, and activator behavior is intentionally deferred
+to redstone and automation support.
+
 `VehicleControlEvent` runs before driver motion is accepted. Plugins may cancel
 the input or replace its normalized forward, strafe, yaw, and paddle state.
 `VehicleControlledEvent` observes the committed control input. The ordinary
 spawn, interaction, damage, death, mount, dismount, and inventory events also
 apply, so vehicle support does not introduce duplicate lifecycle hooks.
+
+Minecart movement enters `VehicleMoveEvent` before an authoritative rail step
+and `VehicleMovedEvent` after commit. `MinecartRailChangeEvent` and
+`MinecartRailChangedEvent` expose bounded transitions between typed
+`RailSegment` values. Entity and vehicle contacts use
+`VehicleCollisionEvent` and `VehicleCollidedEvent`; cancelling a contact skips
+its soft-push response without granting ownership of either actor's position.
 
 Adult saddled pigs, horses, donkeys, mules, camels, llamas, trader llamas,
 skeleton horses, and zombie horses use the same authoritative passenger

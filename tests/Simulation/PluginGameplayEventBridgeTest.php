@@ -1084,16 +1084,18 @@ final class PluginGameplayEventBridgeTest extends TestCase
         $simulation->enqueue($factory->damage('one', 2.0));
         $simulation->tick();
 
-        $events = [];
+        $healed = null;
         for ($tick = 0; $tick < 80; ++$tick) {
-            $events = $simulation->tick()->events;
-            if ($events !== []) {
-                break;
+            foreach ($simulation->tick()->events as $event) {
+                if ($event instanceof PlayerHealed) {
+                    $healed = $event;
+                    break 2;
+                }
             }
         }
 
-        self::assertInstanceOf(PlayerHealed::class, $events[0] ?? null);
-        self::assertSame(18.5, $events[0]->player->health);
+        self::assertInstanceOf(PlayerHealed::class, $healed);
+        self::assertSame(18.5, $healed->player->health);
         self::assertSame(['health-before', 'food-before', 'health-after', 'food-after'], $order);
     }
 

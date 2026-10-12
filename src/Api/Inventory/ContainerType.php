@@ -33,6 +33,7 @@ enum ContainerType: string
     case SHULKER_BOX = 'shulker_box';
     case ENDER_CHEST = 'ender_chest';
     case CHEST_BOAT = 'chest_boat';
+    case CHEST_MINECART = 'chest_minecart';
     case HORSE = 'horse';
     case BREWING_STAND = 'brewing_stand';
     case FURNACE = 'furnace';
@@ -52,7 +53,7 @@ enum ContainerType: string
             self::VIRTUAL => null,
             self::DOUBLE_CHEST, self::DOUBLE_TRAPPED_CHEST => 54,
             self::CHEST, self::TRAPPED_CHEST, self::BARREL, self::SHULKER_BOX, self::ENDER_CHEST,
-            self::CHEST_BOAT => 27,
+            self::CHEST_BOAT, self::CHEST_MINECART => 27,
             self::HORSE => null,
             self::BREWING_STAND => 5,
             self::FURNACE, self::BLAST_FURNACE, self::SMOKER,

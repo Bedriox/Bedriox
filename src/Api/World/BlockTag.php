@@ -38,6 +38,7 @@ enum BlockTag: string
     case LOG = 'log';
     case ORE = 'ore';
     case PRESSURE_PLATE = 'pressure_plate';
+    case RAIL = 'rail';
     case REPLACEABLE = 'replaceable';
     case SAND = 'sand';
     case SIGN = 'sign';

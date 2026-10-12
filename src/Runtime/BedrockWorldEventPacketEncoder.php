@@ -142,12 +142,15 @@ use Bedriox\Protocol\Packet\UpdateEquipPacket;
 use Bedriox\Protocol\Packet\UpdatePlayerGameTypePacket;
 use Bedriox\Protocol\Value\BuildPlatform;
 use Bedriox\Protocol\Value\UnsignedLong;
+use Bedriox\Server\Entity\AbstractLivingEntity;
 use Bedriox\Server\Entity\Block\FallingBlockEntity;
 use Bedriox\Server\Entity\Human\HumanEntity;
 use Bedriox\Server\Entity\Mount\MountViewConstraint;
 use Bedriox\Server\Entity\Vanilla\End\EnderDragonEntity;
 use Bedriox\Server\Entity\Vanilla\Misc\PrimedTntEntity;
 use Bedriox\Server\Entity\Vehicle\BoatEntity;
+use Bedriox\Server\Entity\Vehicle\Minecart\AbstractMinecartEntity;
+use Bedriox\Server\Entity\Vehicle\Minecart\ChestMinecartEntity;
 use Bedriox\Server\Gameplay\Enchanting\VanillaEnchantmentIdMap;
 use Bedriox\Server\Gameplay\Potion\PotionColorMixer;
 use Bedriox\Server\Gameplay\Projectile\ProjectileType;
@@ -458,6 +461,20 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             )],
             default => [],
         };
+    }
+
+    private function minecartDisplayBlockRuntimeId(AbstractLivingEntity $entity): ?int
+    {
+        if (!$entity instanceof ChestMinecartEntity) {
+            return null;
+        }
+        if ($this->chunks === null) {
+            throw new \LogicException('Chest minecart projection requires the active block-network translator.');
+        }
+
+        return $this->chunks->networkRuntimeIdForCanonicalState('minecraft:chest', [
+            'minecraft:cardinal_direction' => 'north',
+        ]);
     }
 
     /** @return list<DirectedPacket> */
@@ -901,6 +918,7 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
                 ApiContainerType::LOOM => ContainerType::Loom,
                 ApiContainerType::CARTOGRAPHY_TABLE => ContainerType::Cartography,
                 ApiContainerType::CHEST_BOAT => ContainerType::ChestBoat,
+                ApiContainerType::CHEST_MINECART => ContainerType::MinecartChest,
                 ApiContainerType::HORSE => ContainerType::Horse,
                 default => ContainerType::Container,
             };
@@ -2531,7 +2549,11 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             $entity->getYaw(),
             $entity->getYaw(),
             $this->livingActors->spawnAttributes($entity),
-            $this->livingActors->metadata($entity, $event->noAi),
+            $this->livingActors->metadata(
+                $entity,
+                $event->noAi,
+                $this->minecartDisplayBlockRuntimeId($entity),
+            ),
             $this->livingActors->properties($entity),
             [],
         );
@@ -2968,19 +2990,22 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             UnsignedLong::fromInt(max(0, $event->tick)),
         );
         $hurt = new ActorEventPacket($runtimeId, ActorEventType::Hurt);
-        $boatMetadata = $event->entity instanceof BoatEntity
+        $vehicleMetadata = $event->entity instanceof BoatEntity || $event->entity instanceof AbstractMinecartEntity
             ? new SetActorDataPacket(
                 $runtimeId,
                 UnsignedLong::fromInt(max(0, $event->tick)),
-                $this->livingActors->metadata($event->entity),
+                $this->livingActors->metadata(
+                    $event->entity,
+                    minecartDisplayBlockRuntimeId: $this->minecartDisplayBlockRuntimeId($event->entity),
+                ),
             )
             : null;
         $packets = [];
         foreach ($event->recipientSessionIds as $recipient) {
             $packets[] = new DirectedPacket($recipient, $health);
             $packets[] = new DirectedPacket($recipient, $hurt);
-            if ($boatMetadata !== null) {
-                $packets[] = new DirectedPacket($recipient, $boatMetadata);
+            if ($vehicleMetadata !== null) {
+                $packets[] = new DirectedPacket($recipient, $vehicleMetadata);
             }
         }
 
@@ -3011,7 +3036,11 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
         $packet = new SetActorDataPacket(
             UnsignedLong::fromInt($event->entity->getRuntimeId()),
             UnsignedLong::fromInt(max(0, $event->tick)),
-            $this->livingActors->metadata($event->entity, $event->noAi),
+            $this->livingActors->metadata(
+                $event->entity,
+                $event->noAi,
+                $this->minecartDisplayBlockRuntimeId($event->entity),
+            ),
             $this->livingActors->properties($event->entity),
         );
 

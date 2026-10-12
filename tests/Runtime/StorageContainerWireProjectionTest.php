@@ -129,6 +129,26 @@ final class StorageContainerWireProjectionTest extends TestCase
         self::assertCount(27, $packets[1]->packet->items);
     }
 
+    public function testChestMinecartOpenUsesTheMinecartContainerAndAuthoritativeEntity(): void
+    {
+        $packets = $this->encoder()->encode(new ContainerOpened(
+            'owner',
+            10,
+            ApiContainerType::CHEST_MINECART,
+            null,
+            array_fill(0, 27, null),
+            ['owner'],
+            entityRuntimeId: 413,
+        ), []);
+
+        self::assertCount(2, $packets);
+        self::assertInstanceOf(ContainerOpenPacket::class, $packets[0]->packet);
+        self::assertSame(ContainerType::MinecartChest, $packets[0]->packet->containerType);
+        self::assertSame(413, $packets[0]->packet->actorUniqueId);
+        self::assertInstanceOf(InventoryContentPacket::class, $packets[1]->packet);
+        self::assertCount(27, $packets[1]->packet->items);
+    }
+
     public function testHorseStorageDeclaresEquipmentBeforeOpeningAndSendingContents(): void
     {
         $contents = array_fill(0, 16, null);

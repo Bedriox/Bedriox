@@ -32,6 +32,9 @@ final readonly class SupportDependentBlockResolver
     {
         $identifier = $state->identifier();
         $properties = $state->properties();
+        if (BlockTagRegistry::contains(BlockTag::RAIL, $identifier)) {
+            return new BlockSupportOffset(0, -1, 0);
+        }
         if (BlockTagRegistry::contains(BlockTag::DOOR, $identifier)) {
             return new BlockSupportOffset(0, -1, 0);
         }

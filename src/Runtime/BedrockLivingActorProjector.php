@@ -65,6 +65,7 @@ use Bedriox\Protocol\Packet\EndCrystalActorMetadata;
 use Bedriox\Protocol\Packet\HorseActorMetadata;
 use Bedriox\Protocol\Packet\InventoryContainerId;
 use Bedriox\Protocol\Packet\InventoryItemStack as ProtocolInventoryItemStack;
+use Bedriox\Protocol\Packet\MinecartActorMetadata;
 use Bedriox\Protocol\Packet\MobArmorEquipmentPacket;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
 use Bedriox\Protocol\Packet\Packet;
@@ -85,6 +86,8 @@ use Bedriox\Server\Entity\Vanilla\Nether\StriderEntity;
 use Bedriox\Server\Entity\Vanilla\SkeletonHorseEntity;
 use Bedriox\Server\Entity\Vanilla\TraderLlamaEntity;
 use Bedriox\Server\Entity\Vehicle\BoatEntity;
+use Bedriox\Server\Entity\Vehicle\Minecart\AbstractMinecartEntity;
+use Bedriox\Server\Entity\Vehicle\Minecart\ChestMinecartEntity;
 use Bedriox\Server\Player\InventoryStack;
 use LogicException;
 
@@ -115,8 +118,11 @@ final class BedrockLivingActorProjector
     }
 
     /** @return list<ActorMetadata> */
-    public function metadata(AbstractLivingEntity $entity, bool $noAi = false): array
-    {
+    public function metadata(
+        AbstractLivingEntity $entity,
+        bool $noAi = false,
+        ?int $minecartDisplayBlockRuntimeId = null,
+    ): array {
         if ($entity instanceof BoatEntity) {
             return BoatActorMetadata::baseline(
                 $entity->getVariant()->value,
@@ -126,6 +132,23 @@ final class BedrockLivingActorProjector
                 rowTimeLeft: $entity->paddleTimeLeft(),
                 rowTimeRight: $entity->paddleTimeRight(),
             );
+        }
+        if ($entity instanceof AbstractMinecartEntity) {
+            if ($entity instanceof ChestMinecartEntity && $minecartDisplayBlockRuntimeId === null) {
+                throw new LogicException('Chest minecart metadata requires its display block runtime ID.');
+            }
+
+            return [
+                ...MinecartActorMetadata::baseline(
+                    $entity->getMaximumHealth() - $entity->getHealth(),
+                    $entity->hurtTicks(),
+                    $entity->hurtDirection(),
+                    $entity instanceof ChestMinecartEntity ? $minecartDisplayBlockRuntimeId : null,
+                ),
+                ActorMetadata::float(38, $entity->scale()),
+                ActorMetadata::float(53, $entity->collisionWidth()),
+                ActorMetadata::float(54, $entity->collisionHeight()),
+            ];
         }
 
         $metadata = [

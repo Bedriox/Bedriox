@@ -85,7 +85,7 @@ final readonly class BlockCollisionRegistry
             $stateAwareShape = StateAwareBlockCollisionResolver::resolve($state);
             if ($stateAwareShape !== null) {
                 $shapes[$value] = $stateAwareShape;
-            } elseif (in_array($state->identifier(), ['minecraft:water', 'minecraft:lava', 'minecraft:portal'], true)) {
+            } elseif (in_array($state->identifier(), self::emptyCollisionIdentifiers(), true)) {
                 $shapes[$value] = BlockCollisionShape::empty();
             }
         }
@@ -210,6 +210,9 @@ final readonly class BlockCollisionRegistry
             'minecraft:kelp',
             'minecraft:seagrass',
             'minecraft:rail',
+            'minecraft:golden_rail',
+            'minecraft:detector_rail',
+            'minecraft:activator_rail',
             'minecraft:torch',
             'minecraft:fire',
             'minecraft:soul_fire',

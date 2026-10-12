@@ -364,6 +364,10 @@ final class BlockTagRegistry
             'minecraft:flowing_lava' => true, 'minecraft:flowing_water' => true,
             'minecraft:lava' => true, 'minecraft:water' => true,
         ],
+        'rail' => [
+            'minecraft:activator_rail' => true, 'minecraft:detector_rail' => true,
+            'minecraft:golden_rail' => true, 'minecraft:rail' => true,
+        ],
         'pressure_plate' => [
             'minecraft:acacia_pressure_plate' => true, 'minecraft:bamboo_pressure_plate' => true,
             'minecraft:birch_pressure_plate' => true, 'minecraft:cherry_pressure_plate' => true,

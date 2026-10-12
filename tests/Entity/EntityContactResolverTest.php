@@ -20,10 +20,13 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Entity;
 
+use Bedriox\Api\Entity\Capability\Vehicle;
+use Bedriox\Api\Entity\Entity;
 use Bedriox\Api\Entity\MobActivationState;
 use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\Entity\VanillaEntityType;
+use Bedriox\Api\Event\Vehicle\VehicleCollisionKind;
 use Bedriox\Server\Entity\AbstractMobEntity;
 use Bedriox\Server\Entity\EntityContactResolver;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
@@ -34,6 +37,7 @@ use Bedriox\Server\Entity\Mount\MountRegistry;
 use Bedriox\Server\Entity\Spawn\EntitySpawnRequest;
 use Bedriox\Server\Entity\Spawn\EntitySpawnService;
 use Bedriox\Server\Entity\Vanilla\Misc\PrimedTntEntity;
+use Bedriox\Server\Entity\Vehicle\BoatEntity;
 use Bedriox\Server\Simulation\Position;
 use PHPUnit\Framework\TestCase;
 
@@ -105,6 +109,83 @@ final class EntityContactResolverTest extends TestCase
         self::assertSame(0.0, $tnt->getMotion()->lengthSquared());
     }
 
+    public function testCancelledVehicleCollisionSkipsTheWholeContactPair(): void
+    {
+        [$registry, $vehicle, $other] = self::overlappingVehicleAndMob();
+        $pre = [];
+        $post = [];
+        $resolver = new EntityContactResolver(
+            $registry,
+            allowVehicleCollision: static function (
+                Vehicle $actualVehicle,
+                VehicleCollisionKind $kind,
+                Entity $actualOther,
+                float $relativeSpeed,
+            ) use (&$pre, $vehicle, $other): bool {
+                $pre[] = [$actualVehicle, $kind, $actualOther, $relativeSpeed];
+                self::assertSame($vehicle, $actualVehicle);
+                self::assertSame(VehicleCollisionKind::ENTITY, $kind);
+                self::assertSame($other, $actualOther);
+
+                return false;
+            },
+            vehicleCollided: static function () use (&$post): void {
+                $post[] = true;
+            },
+        );
+
+        $metrics = $resolver->resolve(new EntityWorkBudget());
+
+        self::assertCount(1, $pre);
+        self::assertSame(0.0, $pre[0][3]);
+        self::assertSame([], $post);
+        self::assertSame(0, $metrics->contacts);
+        self::assertSame(0.0, $vehicle->getMotion()->lengthSquared());
+        self::assertSame(0.0, $other->getMotion()->lengthSquared());
+    }
+
+    public function testVehiclePairPublishesBothCommittedPerspectives(): void
+    {
+        $registry = new EntityRegistry();
+        $first = self::spawnBoat($registry);
+        $second = self::spawnBoat($registry);
+        $pre = [];
+        $post = [];
+        $resolver = new EntityContactResolver(
+            $registry,
+            allowVehicleCollision: static function (
+                Vehicle $vehicle,
+                VehicleCollisionKind $kind,
+                Entity $other,
+                float $relativeSpeed,
+            ) use (&$pre): bool {
+                $pre[] = [$vehicle, $kind, $other, $relativeSpeed];
+
+                return true;
+            },
+            vehicleCollided: static function (
+                Vehicle $vehicle,
+                VehicleCollisionKind $kind,
+                Entity $other,
+                float $relativeSpeed,
+            ) use (&$post): void {
+                $post[] = [$vehicle, $kind, $other, $relativeSpeed];
+            },
+        );
+
+        $metrics = $resolver->resolve(new EntityWorkBudget());
+
+        self::assertSame(1, $metrics->contacts);
+        self::assertCount(2, $pre);
+        self::assertCount(2, $post);
+        self::assertSame([$first, $second], array_column($pre, 0));
+        self::assertSame([VehicleCollisionKind::VEHICLE, VehicleCollisionKind::VEHICLE], array_column($pre, 1));
+        self::assertSame([$second, $first], array_column($pre, 2));
+        self::assertSame([$first, $second], array_column($post, 0));
+        self::assertNotSame(0.0, $first->getMotion()->lengthSquared());
+        self::assertNotSame(0.0, $second->getMotion()->lengthSquared());
+    }
+
     /** @return array{EntityRegistry, AbstractMobEntity, AbstractMobEntity} */
     private static function overlappingMobs(): array
     {
@@ -126,5 +207,35 @@ final class EntityContactResolverTest extends TestCase
         self::assertInstanceOf(AbstractMobEntity::class, $second);
 
         return [$registry, $first, $second];
+    }
+
+    /** @return array{EntityRegistry, BoatEntity, AbstractMobEntity} */
+    private static function overlappingVehicleAndMob(): array
+    {
+        $registry = new EntityRegistry();
+        $vehicle = self::spawnBoat($registry);
+        $spawns = new EntitySpawnService($registry, EntityDefinitionRegistry::baseline());
+        $other = $spawns->spawn(new EntitySpawnRequest(
+            VanillaEntityType::COW,
+            SpawnCause::COMMAND,
+            'world',
+            new Position(0.5, 64.0, 0.5),
+        ))->entity;
+        self::assertInstanceOf(AbstractMobEntity::class, $other);
+
+        return [$registry, $vehicle, $other];
+    }
+
+    private static function spawnBoat(EntityRegistry $registry): BoatEntity
+    {
+        $entity = $registry->spawn(static fn(string $uniqueId, int $runtimeId): BoatEntity => new BoatEntity(
+            $uniqueId,
+            $runtimeId,
+            'world',
+            new Position(0.5, 64.0, 0.5),
+        ));
+        self::assertInstanceOf(BoatEntity::class, $entity);
+
+        return $entity;
     }
 }

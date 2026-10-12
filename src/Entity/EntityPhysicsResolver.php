@@ -28,6 +28,8 @@ use Bedriox\Server\Entity\Vanilla\Nether\GhastEntity;
 use Bedriox\Server\Entity\Vanilla\Nether\HappyGhastEntity;
 use Bedriox\Server\Entity\Vanilla\Nether\StriderEntity;
 use Bedriox\Server\Entity\Vehicle\BoatEntity;
+use Bedriox\Server\Entity\Vehicle\Minecart\AbstractMinecartEntity;
+use Bedriox\Server\Entity\Vehicle\Minecart\MinecartRailPhysics;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\Collision\AxisAlignedBox;
 use Bedriox\Server\World\Collision\LoadedCollisionBoxQuery;
@@ -47,11 +49,19 @@ final readonly class EntityPhysicsResolver
         private ?WorldEntityEnvironment $environment = null,
         /** @var null|Closure(AbstractEntity): array{float, float} */
         private ?Closure $mountedCollisionSize = null,
+        private ?MinecartRailPhysics $minecartRails = null,
     ) {}
 
     public function tick(AbstractEntity $entity, int $tick): EntityPhysicsResult
     {
         if ($entity instanceof BoatEntity) {
+            $entity->advanceDamageAnimation();
+        }
+        if ($entity instanceof AbstractMinecartEntity && $this->minecartRails !== null) {
+            $railResult = $this->minecartRails->tick($entity);
+            if ($railResult !== null) {
+                return $railResult;
+            }
             $entity->advanceDamageAnimation();
         }
         if ($entity->isImmobile()) {

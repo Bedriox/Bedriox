@@ -802,6 +802,25 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         self::assertNotSame($corrected[0]->packet->encode(), $corrected[1]->packet->encode());
         self::assertSame(64, $corrected[2]->packet->item->count);
 
+        $minecartCorrection = $encoder->encode(new BlockPlacementCorrected(
+            'one',
+            new BlockPosition(1, 64, 0),
+            $palette->grassBlock,
+            new BlockPosition(1, 64, 0),
+            $palette->grassBlock,
+            0,
+            new InventoryStack('minecraft:minecart', 1, 2),
+            reason: 'minecart_used',
+        ), []);
+        self::assertCount(3, $minecartCorrection);
+        self::assertInstanceOf(UpdateBlockPacket::class, $minecartCorrection[0]->packet);
+        self::assertInstanceOf(UpdateBlockPacket::class, $minecartCorrection[1]->packet);
+        self::assertSame(
+            $minecartCorrection[0]->packet->encode(),
+            $minecartCorrection[1]->packet->encode(),
+            'Using a minecart must not overwrite the clicked rail with predicted adjacent air.',
+        );
+
         $equipment = $encoder->encode(new HeldItemChanged('one', 41, 0, $remaining, ['two']), []);
         self::assertCount(1, $equipment);
         self::assertSame('two', $equipment[0]->sessionId);

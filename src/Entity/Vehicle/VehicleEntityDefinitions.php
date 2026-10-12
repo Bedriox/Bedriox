@@ -28,6 +28,8 @@ final class VehicleEntityDefinitions
 {
     private static ?EntityDefinition $boat = null;
     private static ?EntityDefinition $chestBoat = null;
+    private static ?EntityDefinition $minecart = null;
+    private static ?EntityDefinition $chestMinecart = null;
 
     public static function boat(): EntityDefinition
     {
@@ -39,6 +41,16 @@ final class VehicleEntityDefinitions
         return self::$chestBoat ??= self::create(VanillaEntityType::CHEST_BOAT);
     }
 
+    public static function minecart(): EntityDefinition
+    {
+        return self::$minecart ??= self::createMinecart(VanillaEntityType::MINECART);
+    }
+
+    public static function chestMinecart(): EntityDefinition
+    {
+        return self::$chestMinecart ??= self::createMinecart(VanillaEntityType::CHEST_MINECART);
+    }
+
     private static function create(VanillaEntityType $type): EntityDefinition
     {
         return new EntityDefinition(
@@ -47,6 +59,20 @@ final class VehicleEntityDefinitions
             $type->value,
             1.4,
             0.455,
+            40.0,
+            gravity: 0.04,
+            drag: 0.10,
+        );
+    }
+
+    private static function createMinecart(VanillaEntityType $type): EntityDefinition
+    {
+        return new EntityDefinition(
+            $type,
+            EntityCategory::MISCELLANEOUS,
+            $type->value,
+            0.98,
+            0.7,
             40.0,
             gravity: 0.04,
             drag: 0.10,

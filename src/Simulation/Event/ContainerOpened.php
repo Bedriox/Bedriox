@@ -51,7 +51,11 @@ final readonly class ContainerOpened implements WorldEvent
         public ?int $entityRuntimeId = null,
         array $animalEquipmentSlots = [],
     ) {
-        $entityBacked = in_array($containerType, [ContainerType::CHEST_BOAT, ContainerType::HORSE], true);
+        $entityBacked = in_array($containerType, [
+            ContainerType::CHEST_BOAT,
+            ContainerType::CHEST_MINECART,
+            ContainerType::HORSE,
+        ], true);
         if ($windowId < 2 || $windowId > 99
             || (($containerType === ContainerType::VIRTUAL || $entityBacked) !== ($position === null))
             || ($containerType === ContainerType::VIRTUAL) !== ($layout !== null)

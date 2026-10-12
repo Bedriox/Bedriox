@@ -99,6 +99,14 @@ typed driver and boat plus normalized movement, yaw, and paddle values. Mount,
 dismount, interaction, damage, death, and inventory behavior continues through
 the shared entity and container events.
 
+Minecarts expose a typed `MinecartController` for bounded track speed, stop,
+and reverse requests. `VehicleMoveEvent`, `MinecartRailChangeEvent`, and
+`VehicleCollisionEvent` are the cancellable pre-commit boundaries;
+`VehicleMovedEvent`, `MinecartRailChangedEvent`, and `VehicleCollidedEvent`
+observe committed results. Rail geometry is exposed as immutable
+`RailSegment`, `RailShape`, and `RailEndpoint` values and never as protocol
+metadata or network block IDs.
+
 `PlayerItemUseEvent` runs after the held stack, game mode, cooldown, and active-use rules have been validated. Cancelling it prevents the use from starting or applying. `PlayerItemUsedEvent` reports a committed instant or completed timed use, while `PlayerItemUseCancelledEvent` records why an active use ended without completing. `PlayerItemConsumeEvent` may cancel consumption or replace its bounded `ConsumptionResult`, including nutrition restoration and residue stacks. `PlayerItemConsumedEvent` reports the committed stack, nutrition, and residue result. `PlayerFoodLevelChangeEvent` may cancel or replace a bounded `Nutrition` snapshot; `PlayerFoodLevelChangedEvent` reports the committed state. `FoodLevelChangeCause::EXHAUSTION` includes accepted survival and adventure sprint movement.
 
 `PlayerEquipmentChangeEvent` covers armor and offhand transitions. A listener may cancel it or replace the proposed immutable stack, which is revalidated for the target `EquipmentSlot` before commit. `PlayerEquipmentChangedEvent` reports the committed result. `PlayerItemDamageEvent` may cancel or adjust bounded durability loss; `PlayerItemBreakEvent` reports an item removed after its durability was exhausted. These APIs use gameplay enums such as `EquipmentSlot`, `ItemUseKind`, and `ItemDamageCause`, never protocol ordinals.

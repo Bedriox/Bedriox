@@ -1,5 +1,10 @@
 # Changelog
 
+- Add authoritative regular, powered, detector, and activator rail geometry;
+  rideable minecarts; persistent chest minecarts; bounded track physics;
+  structural damage and drops; and typed movement, rail-transition, and vehicle
+  collision events. Redstone-powered rail behavior remains reserved for the
+  automation milestone.
 - Add current-client item suggestions to `/give` and authoritative TNT ignition, fuse, explosion, chain-reaction, damage, knockback, drops, and plugin interception.
 - Stabilize loaded-chunk fluids with deterministic frontier commits, immediate water-lava reactions, submerged-cavity refill, entity currents, safe item surfacing, fluid-aware fall damage, exact vanilla stack limits, and lossless bucket filling.
 - Add complete generated `VanillaBlocks` and `VanillaItems` identifier catalogs, exact block and item identity helpers, and typed semantic tags for stable plugin classification without exposing internal or network IDs.

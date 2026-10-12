@@ -250,8 +250,15 @@ use Bedriox\Api\Event\Processing\SmithingProcessedEvent;
 use Bedriox\Api\Event\Processing\SmithingProcessEvent;
 use Bedriox\Api\Event\Processing\StonecutterProcessedEvent;
 use Bedriox\Api\Event\Processing\StonecutterProcessEvent;
+use Bedriox\Api\Event\Vehicle\MinecartRailChangedEvent;
+use Bedriox\Api\Event\Vehicle\MinecartRailChangeEvent;
+use Bedriox\Api\Event\Vehicle\VehicleCollidedEvent;
+use Bedriox\Api\Event\Vehicle\VehicleCollisionEvent;
+use Bedriox\Api\Event\Vehicle\VehicleCollisionKind;
 use Bedriox\Api\Event\Vehicle\VehicleControlEvent;
 use Bedriox\Api\Event\Vehicle\VehicleControlledEvent;
+use Bedriox\Api\Event\Vehicle\VehicleMovedEvent;
+use Bedriox\Api\Event\Vehicle\VehicleMoveEvent;
 use Bedriox\Api\Event\World\WeatherChangeCause;
 use Bedriox\Api\Event\World\WeatherChangedEvent;
 use Bedriox\Api\Event\World\WeatherChangeEvent;
@@ -292,6 +299,7 @@ use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
 use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\PortalType;
 use Bedriox\Api\World\Position as ApiPosition;
+use Bedriox\Api\World\Rail\RailSegment;
 use Bedriox\Api\World\WeatherState;
 use Bedriox\Server\Entity\AbstractLivingEntity;
 use Bedriox\Server\Entity\AbstractMobEntity;
@@ -799,6 +807,81 @@ final readonly class PluginGameplayEventBridge
             $control->isPaddlingLeft(),
             $control->isPaddlingRight(),
         ));
+    }
+
+    public function allowVehicleMove(
+        \Bedriox\Api\Entity\Capability\Vehicle $vehicle,
+        Position $from,
+        Position $to,
+        EntityMotion $motion,
+    ): bool {
+        $world = $vehicle->getPosition()->world;
+        $event = new VehicleMoveEvent(
+            $vehicle,
+            new ApiPosition($from->x, $from->y, $from->z, $vehicle->getYaw(), $vehicle->getPitch(), $world),
+            new ApiPosition($to->x, $to->y, $to->z, $vehicle->getYaw(), $vehicle->getPitch(), $world),
+            $motion,
+        );
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function vehicleMoved(
+        \Bedriox\Api\Entity\Capability\Vehicle $vehicle,
+        Position $from,
+        Position $to,
+        EntityMotion $motion,
+    ): void {
+        $world = $vehicle->getPosition()->world;
+        $this->events->dispatch(new VehicleMovedEvent(
+            $vehicle,
+            new ApiPosition($from->x, $from->y, $from->z, $vehicle->getYaw(), $vehicle->getPitch(), $world),
+            new ApiPosition($to->x, $to->y, $to->z, $vehicle->getYaw(), $vehicle->getPitch(), $world),
+            $motion,
+        ));
+    }
+
+    public function allowMinecartRailChange(
+        \Bedriox\Api\Entity\Vanilla\Minecart $minecart,
+        ?RailSegment $from,
+        RailSegment $to,
+        float $speed,
+    ): bool {
+        $event = new MinecartRailChangeEvent($minecart, $from, $to, $speed);
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function minecartRailChanged(
+        \Bedriox\Api\Entity\Vanilla\Minecart $minecart,
+        ?RailSegment $from,
+        RailSegment $to,
+        float $speed,
+    ): void {
+        $this->events->dispatch(new MinecartRailChangedEvent($minecart, $from, $to, $speed));
+    }
+
+    public function allowVehicleCollision(
+        \Bedriox\Api\Entity\Capability\Vehicle $vehicle,
+        VehicleCollisionKind $kind,
+        ApiEntity $other,
+        float $relativeSpeed,
+    ): bool {
+        $event = new VehicleCollisionEvent($vehicle, $kind, $other, $relativeSpeed);
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function vehicleCollided(
+        \Bedriox\Api\Entity\Capability\Vehicle $vehicle,
+        VehicleCollisionKind $kind,
+        ApiEntity $other,
+        float $relativeSpeed,
+    ): void {
+        $this->events->dispatch(new VehicleCollidedEvent($vehicle, $kind, $other, $relativeSpeed));
     }
 
     public function allowDismount(

@@ -14,6 +14,11 @@ window targets the authoritative vehicle identity, follows the same atomic
 transaction and stack-lineage rules as block storage, and persists with the
 boat across unloads and restarts.
 
+Chest minecarts own the same bounded 27-slot durable storage contract. Ordinary
+interaction opens their inventory by actor identity; they do not provide a
+passenger seat. Contents survive unload and restart, follow atomic inventory
+transactions, and drop exactly once when the cart is destroyed.
+
 Shulker boxes retain their bounded contents and custom block name in portable item NBT when broken in survival. Placing that server-owned item restores its inventory while deriving the new facing from the placement. Shulker items stack to one and cannot be nested inside an open shulker box through a player transaction.
 
 World and entity storage closes when its backing block or entity disappears, or

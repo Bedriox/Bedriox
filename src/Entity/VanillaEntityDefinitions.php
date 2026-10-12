@@ -69,6 +69,8 @@ use Bedriox\Server\Entity\Vanilla\WitherSkeletonEntity;
 use Bedriox\Server\Entity\Vanilla\ZombieEntity;
 use Bedriox\Server\Entity\Vanilla\ZombieVillagerEntity;
 use Bedriox\Server\Entity\Vehicle\BoatEntity;
+use Bedriox\Server\Entity\Vehicle\Minecart\ChestMinecartEntity;
+use Bedriox\Server\Entity\Vehicle\Minecart\RideableMinecartEntity;
 use Bedriox\Server\Entity\Vehicle\VehicleEntityDefinitions;
 use Bedriox\Server\Simulation\Position;
 
@@ -529,6 +531,38 @@ final class VanillaEntityDefinitions
                         \Bedriox\Api\Entity\Value\BoatVariant::tryFrom(is_int($record->variant) ? $record->variant : -1)
                             ?? \Bedriox\Api\Entity\Value\BoatVariant::OAK,
                         true,
+                        $record->motion,
+                        $record->yaw,
+                        $record->pitch,
+                        $record->health,
+                    ),
+            ),
+            new RegisteredEntityDefinition(
+                VehicleEntityDefinitions::minecart(),
+                static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): RideableMinecartEntity =>
+                    new RideableMinecartEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch),
+                persistenceFactory: static fn(string $uuid, int $runtimeId, EntityPersistenceRecord $record): RideableMinecartEntity =>
+                    new RideableMinecartEntity(
+                        $uuid,
+                        $runtimeId,
+                        $record->worldName(),
+                        $record->position,
+                        $record->motion,
+                        $record->yaw,
+                        $record->pitch,
+                        $record->health,
+                    ),
+            ),
+            new RegisteredEntityDefinition(
+                VehicleEntityDefinitions::chestMinecart(),
+                static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): ChestMinecartEntity =>
+                    new ChestMinecartEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch),
+                persistenceFactory: static fn(string $uuid, int $runtimeId, EntityPersistenceRecord $record): ChestMinecartEntity =>
+                    new ChestMinecartEntity(
+                        $uuid,
+                        $runtimeId,
+                        $record->worldName(),
+                        $record->position,
                         $record->motion,
                         $record->yaw,
                         $record->pitch,

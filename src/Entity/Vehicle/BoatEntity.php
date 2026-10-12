@@ -23,6 +23,7 @@ namespace Bedriox\Server\Entity\Vehicle;
 use Bedriox\Api\Entity\Value\BoatVariant;
 use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\Entity\Vanilla\Boat;
+use Bedriox\Api\Inventory\ContainerType;
 use Bedriox\Api\Inventory\ItemNbt;
 use Bedriox\Api\Inventory\ItemStack;
 use Bedriox\Server\Entity\AbstractMobEntity;
@@ -38,7 +39,7 @@ use Bedriox\Server\Simulation\Position;
 use InvalidArgumentException;
 use JsonException;
 
-final class BoatEntity extends AbstractMobEntity implements Boat, IntrinsicEntityPersistence, SpawnVariantAware
+final class BoatEntity extends AbstractMobEntity implements Boat, IntrinsicEntityPersistence, SpawnVariantAware, VehicleInventoryOwner
 {
     private const float PLAYER_SEAT_Y = 1.020_01;
     private const float WATER_CONTROL_SPEED = 0.28;
@@ -133,6 +134,21 @@ final class BoatEntity extends AbstractMobEntity implements Boat, IntrinsicEntit
         if ($this->inventory !== null) {
             $this->markChanged();
         }
+    }
+
+    public function vehicleContainerType(): ?ContainerType
+    {
+        return $this->chestBoat ? ContainerType::CHEST_BOAT : null;
+    }
+
+    public function vehicleInventory(): ?SimpleContainerInventory
+    {
+        return $this->inventory;
+    }
+
+    public function markVehicleInventoryChanged(): void
+    {
+        $this->markChestInventoryChanged();
     }
 
     public function mountedPassengerOffsetY(MountSeat $seat, float $passengerHeight, bool $playerPassenger): float

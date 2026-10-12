@@ -20,7 +20,9 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Entity;
 
+use Bedriox\Api\Entity\Capability\Vehicle;
 use Bedriox\Api\Entity\MobActivationState;
+use Bedriox\Api\Event\Vehicle\VehicleCollisionKind;
 use Bedriox\Server\Entity\Ai\AiClock;
 use Bedriox\Server\Entity\Ai\SystemAiClock;
 use Bedriox\Server\Entity\Block\FallingBlockEntity;
@@ -28,6 +30,7 @@ use Bedriox\Server\Entity\Collision\SkipsEntityContact;
 use Bedriox\Server\Entity\Mount\MountLink;
 use Bedriox\Server\Entity\Mount\MountRegistry;
 use Bedriox\Server\Entity\Vanilla\Misc\LeashKnotEntity;
+use Closure;
 
 /** Applies a bounded, deterministic horizontal soft push between overlapping actors. */
 final readonly class EntityContactResolver
@@ -40,6 +43,8 @@ final readonly class EntityContactResolver
         private EntityRegistry $entities,
         private ?MountRegistry $mounts = null,
         private AiClock $clock = new SystemAiClock(),
+        private ?Closure $allowVehicleCollision = null,
+        private ?Closure $vehicleCollided = null,
     ) {}
 
     public function resolve(EntityWorkBudget $budget): EntityContactMetrics
@@ -101,8 +106,17 @@ final readonly class EntityContactResolver
                 $push = min(self::MAXIMUM_PUSH, max(0.0, $penetration * 0.25));
                 $nx = $dx / $distance;
                 $nz = $dz / $distance;
+                $relativeSpeed = hypot(
+                    $entity->getMotion()->x - $other->getMotion()->x,
+                    $entity->getMotion()->z - $other->getMotion()->z,
+                );
+                $vehicleContacts = $this->vehicleContacts($entity, $other);
+                if (!$this->allowsVehicleContacts($vehicleContacts, $relativeSpeed)) {
+                    continue;
+                }
                 $this->push($entity, -$nx * $push, -$nz * $push);
                 $this->push($other, $nx * $push, $nz * $push);
+                $this->notifyVehicleContacts($vehicleContacts, $relativeSpeed);
                 ++$contacts;
             }
         }
@@ -114,6 +128,56 @@ final readonly class EntityContactResolver
             max(0, $this->clock->nanoseconds() - $start),
             $exhausted,
         );
+    }
+
+    /**
+     * @return list<array{Vehicle, VehicleCollisionKind, AbstractEntity}>
+     */
+    private function vehicleContacts(AbstractEntity $left, AbstractEntity $right): array
+    {
+        $contacts = [];
+        if ($left instanceof Vehicle) {
+            $contacts[] = [$left, $right instanceof Vehicle
+                ? VehicleCollisionKind::VEHICLE
+                : VehicleCollisionKind::ENTITY, $right];
+        }
+        if ($right instanceof Vehicle) {
+            $contacts[] = [$right, $left instanceof Vehicle
+                ? VehicleCollisionKind::VEHICLE
+                : VehicleCollisionKind::ENTITY, $left];
+        }
+
+        return $contacts;
+    }
+
+    /**
+     * @param list<array{Vehicle, VehicleCollisionKind, AbstractEntity}> $contacts
+     */
+    private function allowsVehicleContacts(array $contacts, float $relativeSpeed): bool
+    {
+        if ($this->allowVehicleCollision === null) {
+            return true;
+        }
+        foreach ($contacts as [$vehicle, $kind, $other]) {
+            if (!(($this->allowVehicleCollision)($vehicle, $kind, $other, $relativeSpeed))) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @param list<array{Vehicle, VehicleCollisionKind, AbstractEntity}> $contacts
+     */
+    private function notifyVehicleContacts(array $contacts, float $relativeSpeed): void
+    {
+        if ($this->vehicleCollided === null) {
+            return;
+        }
+        foreach ($contacts as [$vehicle, $kind, $other]) {
+            ($this->vehicleCollided)($vehicle, $kind, $other, $relativeSpeed);
+        }
     }
 
     private function push(AbstractEntity $entity, float $x, float $z): void

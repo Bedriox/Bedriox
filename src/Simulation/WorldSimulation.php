@@ -242,6 +242,11 @@ use Bedriox\Server\Entity\Vanilla\WolfEntity;
 use Bedriox\Server\Entity\Vanilla\ZombieFamilyEntity;
 use Bedriox\Server\Entity\Vanilla\ZombieHorseEntity;
 use Bedriox\Server\Entity\Vehicle\BoatEntity;
+use Bedriox\Server\Entity\Vehicle\Minecart\AbstractMinecartEntity;
+use Bedriox\Server\Entity\Vehicle\Minecart\ChestMinecartEntity;
+use Bedriox\Server\Entity\Vehicle\Minecart\MinecartRailPhysics;
+use Bedriox\Server\Entity\Vehicle\Minecart\RideableMinecartEntity;
+use Bedriox\Server\Entity\Vehicle\VehicleInventoryOwner;
 use Bedriox\Server\Entity\WorldEntityEnvironment;
 use Bedriox\Server\Gameplay\Block\BlockBreakContext;
 use Bedriox\Server\Gameplay\Block\BlockBreakEffect;
@@ -273,6 +278,7 @@ use Bedriox\Server\Gameplay\Block\Interaction\DoorStatePair;
 use Bedriox\Server\Gameplay\Block\Interaction\InteractiveBlockStateResolver;
 use Bedriox\Server\Gameplay\Block\Interaction\ShelfInventory;
 use Bedriox\Server\Gameplay\Block\Interaction\SignBlockStateResolver;
+use Bedriox\Server\Gameplay\Block\Rail\RailBlockStateResolver;
 use Bedriox\Server\Gameplay\Block\StairBlockStateResolver;
 use Bedriox\Server\Gameplay\Block\SystemDropRandom;
 use Bedriox\Server\Gameplay\Combat\KnockbackMotion;
@@ -573,6 +579,7 @@ final class WorldSimulation
     private const float FIRE_TICK_DAMAGE = 1.0;
     private const float DROWNING_DAMAGE = 2.0;
     private const float LAVA_CONTACT_DAMAGE = 4.0;
+    private const float MINECART_PLACEMENT_OFFSET_Y = 0.5;
 
     private const int MAXIMUM_ITEM_ENTITIES_SPAWNED_PER_COMMAND = 256;
     private const int MAXIMUM_ITEM_MOVEMENT_EVENTS_PER_TICK = 256;
@@ -635,6 +642,8 @@ final class WorldSimulation
     private readonly ?ConnectedBlockStateResolver $connectedBlockStates;
 
     private readonly ?StairBlockStateResolver $stairBlockStates;
+
+    private readonly ?RailBlockStateResolver $railBlockStates;
 
     private readonly ?SurfaceBlockBehaviorResolver $surfaceBlockBehavior;
 
@@ -1156,6 +1165,33 @@ final class WorldSimulation
 
                         return [$width, $height];
                     },
+                    $blockStateRegistry === null
+                        ? null
+                        : new MinecartRailPhysics(
+                            $blockWorld,
+                            $blockStateRegistry,
+                            new RailBlockStateResolver($blockStateRegistry),
+                            fn(AbstractMinecartEntity $minecart): bool =>
+                                $this->mounts->linksForVehicle($minecart->getRuntimeId()) !== [],
+                            $this->pluginEvents === null
+                                ? null
+                                : fn(AbstractMinecartEntity $minecart, Position $from, Position $to, EntityMotion $motion): bool =>
+                                    $this->pluginEvents->allowVehicleMove($minecart, $from, $to, $motion),
+                            $this->pluginEvents === null
+                                ? null
+                                : function (AbstractMinecartEntity $minecart, Position $from, Position $to, EntityMotion $motion): void {
+                                    $this->pluginEvents->vehicleMoved($minecart, $from, $to, $motion);
+                                },
+                            $this->pluginEvents === null
+                                ? null
+                                : fn(AbstractMinecartEntity $minecart, ?\Bedriox\Api\World\Rail\RailSegment $from, \Bedriox\Api\World\Rail\RailSegment $to, float $speed): bool =>
+                                    $this->pluginEvents->allowMinecartRailChange($minecart, $from, $to, $speed),
+                            $this->pluginEvents === null
+                                ? null
+                                : function (AbstractMinecartEntity $minecart, ?\Bedriox\Api\World\Rail\RailSegment $from, \Bedriox\Api\World\Rail\RailSegment $to, float $speed): void {
+                                    $this->pluginEvents->minecartRailChanged($minecart, $from, $to, $speed);
+                                },
+                        ),
                 ),
                 scheduledAiTick: static function (AbstractMobEntity $entity, int $currentTick) use (
                     $pluginEntityLifecycle,
@@ -1164,7 +1200,33 @@ final class WorldSimulation
                         $pluginEntityLifecycle?->aiTick($entity, $currentTick);
                     }
                 },
-                contacts: new EntityContactResolver($entityRegistry, $this->mounts),
+                contacts: new EntityContactResolver(
+                    $entityRegistry,
+                    $this->mounts,
+                    allowVehicleCollision: $this->pluginEvents === null
+                        ? null
+                        : fn(
+                            \Bedriox\Api\Entity\Capability\Vehicle $vehicle,
+                            \Bedriox\Api\Event\Vehicle\VehicleCollisionKind $kind,
+                            AbstractEntity $other,
+                            float $relativeSpeed,
+                        ): bool => $this->pluginEvents->allowVehicleCollision(
+                            $vehicle,
+                            $kind,
+                            $other,
+                            $relativeSpeed,
+                        ),
+                    vehicleCollided: $this->pluginEvents === null
+                        ? null
+                        : function (
+                            \Bedriox\Api\Entity\Capability\Vehicle $vehicle,
+                            \Bedriox\Api\Event\Vehicle\VehicleCollisionKind $kind,
+                            AbstractEntity $other,
+                            float $relativeSpeed,
+                        ): void {
+                            $this->pluginEvents->vehicleCollided($vehicle, $kind, $other, $relativeSpeed);
+                        },
+                ),
             );
         }
         $this->entityRuntime = $entityRuntime;
@@ -1334,6 +1396,9 @@ final class WorldSimulation
         $this->stairBlockStates = $blockStateRegistry === null
             ? null
             : new StairBlockStateResolver($blockStateRegistry);
+        $this->railBlockStates = $blockStateRegistry === null
+            ? null
+            : new RailBlockStateResolver($blockStateRegistry);
         $this->surfaceBlockBehavior = $blockStateRegistry === null
             ? null
             : new SurfaceBlockBehaviorResolver($blockStateRegistry);
@@ -5083,6 +5148,21 @@ final class WorldSimulation
 
             return $drops;
         }
+        if ($entity instanceof AbstractMinecartEntity) {
+            $drops = [new ApiItemStack(
+                $entity instanceof ChestMinecartEntity ? 'minecraft:chest_minecart' : 'minecraft:minecart',
+                1,
+            )];
+            if ($entity instanceof VehicleInventoryOwner) {
+                foreach ($entity->vehicleInventory()?->contents() ?? [] as $stack) {
+                    if ($stack !== null) {
+                        $drops[] = $stack;
+                    }
+                }
+            }
+
+            return $drops;
+        }
         $attachedStorageDrops = [];
         if ($entity instanceof BreedableAnimalEntity && $entity->isLeashed()) {
             $holder = $this->leashes->knownHolder($entity);
@@ -8532,7 +8612,7 @@ final class WorldSimulation
                     false,
                     $mountedPlayer?->snapshot(),
                     [$player->sessionId],
-                    $vehicle instanceof BoatEntity
+                    $vehicle instanceof BoatEntity || $vehicle instanceof AbstractMinecartEntity
                         ? $vehicle->mountedViewConstraint()
                         : MountViewConstraint::standard(),
                 );
@@ -8880,6 +8960,30 @@ final class WorldSimulation
             );
             if ($control !== null) {
                 $this->pluginEvents->vehicleControlled($player, $vehicle, $control);
+            }
+        } elseif ($vehicle instanceof AbstractMinecartEntity && $link->seat->controlsVehicle()) {
+            $forward = max(-1.0, min(1.0, $command->moveZ));
+            $rail = $vehicle->getCurrentRail();
+            if ($rail !== null && abs($forward) > 0.001) {
+                [$first, $second] = $rail->endpoints();
+                $trackX = (float) ($second->x - $first->x);
+                $trackZ = (float) ($second->z - $first->z);
+                $trackLength = hypot($trackX, $trackZ);
+                if ($trackLength > 0.0) {
+                    $radians = deg2rad($vehicleControlYaw);
+                    $facingX = -sin($radians);
+                    $facingZ = cos($radians);
+                    $currentSpeed = $vehicle->getTrackSpeed();
+                    $direction = abs($currentSpeed) > 0.001
+                        ? ($currentSpeed < 0.0 ? -1.0 : 1.0)
+                        : (((($facingX * $trackX) + ($facingZ * $trackZ)) < 0.0) ? -1.0 : 1.0);
+                    $nextSpeed = $currentSpeed
+                        + ($forward * $direction * AbstractMinecartEntity::RIDER_TRACK_ACCELERATION);
+                    $vehicle->setTrackSpeed(max(
+                        -AbstractMinecartEntity::MAXIMUM_TRACK_SPEED,
+                        min(AbstractMinecartEntity::MAXIMUM_TRACK_SPEED, $nextSpeed),
+                    ));
+                }
             }
         } elseif ($vehicle instanceof PigEntity && $link->seat->controlsVehicle()) {
             $vehicle->suppressAiMovementUntil($this->tick + 2);
@@ -9526,7 +9630,7 @@ final class WorldSimulation
             !($dragonPartPosition === null
                 ? $this->generalEntityIsReachable($attacker, $target)
                 : $this->entityPositionIsReachable($attacker, $dragonPartPosition)) => 'reach',
-            !$target instanceof BoatEntity
+            !$target instanceof BoatEntity && !$target instanceof AbstractMinecartEntity
                 && $this->tick <= ($this->entityInvulnerableUntilTicks[$target->getRuntimeId()] ?? -1) => 'damage_cooldown',
             default => null,
         };
@@ -9594,7 +9698,7 @@ final class WorldSimulation
             $target instanceof Undead,
             $target instanceof Arthropod,
         ) + $this->maceDensityDamage($attacker, $heldEnchantments);
-        $reducedDamage = $target instanceof BoatEntity
+        $reducedDamage = $target instanceof BoatEntity || $target instanceof AbstractMinecartEntity
             ? $target->structuralDamage($baseDamage, $attacker->gameMode() === GameMode::CREATIVE)
             : $this->entityArmorReducedDamage(
                 $target,
@@ -9621,7 +9725,7 @@ final class WorldSimulation
         if ($result === null || $result->appliedDamage <= 0.0) {
             return new CommandRejected($command->session, 'target_unavailable');
         }
-        if ($target instanceof BoatEntity) {
+        if ($target instanceof BoatEntity || $target instanceof AbstractMinecartEntity) {
             $target->showDamageAnimation();
         }
         if ($damageEvent !== null) {
@@ -9642,7 +9746,7 @@ final class WorldSimulation
         if ($target instanceof LlamaEntity || $target instanceof TraderLlamaEntity) {
             $target->setRetaliationTargetUniqueId($attacker->identity->uuid);
         }
-        if (!$target instanceof BoatEntity) {
+        if (!$target instanceof BoatEntity && !$target instanceof AbstractMinecartEntity) {
             $this->entityInvulnerableUntilTicks[$target->getRuntimeId()] =
                 $this->tick + CombatRules::DAMAGE_IMMUNITY_TICKS;
         }
@@ -10260,18 +10364,33 @@ final class WorldSimulation
 
             return $result;
         }
-        if ($target instanceof BoatEntity && $target->isChestBoat() && $player->movement->sneaking) {
-            $inventory = $target->chestInventory();
-            if ($inventory === null) {
-                return new CommandRejected($player->sessionId, 'container_unavailable');
-            }
+        if ($target instanceof VehicleInventoryOwner
+            && ($player->movement->sneaking || $target instanceof ChestMinecartEntity)
+            && ($inventory = $target->vehicleInventory()) !== null
+            && ($containerType = $target->vehicleContainerType()) !== null) {
             $result = $this->openContainerInventory(
                 $player,
-                ApiContainerType::CHEST_BOAT,
+                $containerType,
                 $inventory,
                 entityRuntimeId: $target->getRuntimeId(),
             );
             if ($result instanceof ContainerOpened) {
+                $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
+            }
+
+            return $result;
+        }
+        if ($target instanceof RideableMinecartEntity && $this->mounts->playerLink($player->sessionId) === null) {
+            if ($this->mounts->linksForVehicle($target->getRuntimeId()) !== []) {
+                return new CommandRejected($player->sessionId, 'seat_unavailable');
+            }
+            $result = $this->mountPlayer(new MountPlayer(
+                $player->sessionId,
+                $target->getRuntimeId(),
+                $target->getUniqueId(),
+                MountSeat::DRIVER,
+            ));
+            if ($result instanceof ActorMounted) {
                 $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
             }
 
@@ -10364,7 +10483,7 @@ final class WorldSimulation
             true,
             $player->snapshot(),
             $this->players->recipients(),
-            $vehicle instanceof BoatEntity
+            $vehicle instanceof BoatEntity || $vehicle instanceof AbstractMinecartEntity
                 ? $vehicle->mountedViewConstraint()
                 : MountViewConstraint::standard(),
         );
@@ -13218,8 +13337,8 @@ final class WorldSimulation
             }
             $entity = $this->entityRuntime->registry()->getByRuntimeId($session->entityRuntimeId);
             $reason = null;
-            $validEntityContainer = ($entity instanceof BoatEntity
-                    && $entity->chestInventory() === $session->inventory)
+            $validEntityContainer = ($entity instanceof VehicleInventoryOwner
+                    && $entity->vehicleInventory() === $session->inventory)
                 || ($entity instanceof AnimalStorageInventoryOwner
                     && ($entity->storageInventory() === $session->inventory
                         || ($session->inventory instanceof HorseContainerInventory
@@ -13228,7 +13347,8 @@ final class WorldSimulation
                 || (($entity instanceof HorseFamilyEntity || $entity instanceof UndeadHorseEntity)
                     && $session->inventory instanceof HorseContainerInventory
                     && $session->inventory->belongsTo($entity));
-            if (!$validEntityContainer || $entity->isRemoved()) {
+            if (!$validEntityContainer || $entity->isRemoved()
+                || !$entity instanceof AbstractLivingEntity || !$entity->isAlive()) {
                 $reason = ApiInventoryCloseReason::ENTITY_REMOVED;
             } elseif ($entity->getWorldName() !== $this->worldId
                 || $player->movement->position->distanceTo($entity->internalPosition()) > self::MAXIMUM_BLOCK_REACH) {
@@ -18555,6 +18675,7 @@ final class WorldSimulation
 
     private function refreshConnectedBlockStates(BlockPosition $origin): void
     {
+        $this->refreshRailBlockStates($origin);
         if ($this->blockWorld === null || $this->blockStateRegistry === null
             || $this->blockPalette === null
             || $this->connectedBlockStates === null || $this->stairBlockStates === null) {
@@ -18651,6 +18772,61 @@ final class WorldSimulation
         }
     }
 
+    private function refreshRailBlockStates(BlockPosition $origin): void
+    {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null || $this->railBlockStates === null) {
+            return;
+        }
+        $stateAt = fn(BlockPosition $position): ?CanonicalBlockState =>
+            $this->loadedCanonicalStateAt($position->x, $position->y, $position->z);
+        foreach ($this->railBlockStates->affectedPositions($origin) as $position) {
+            $currentState = $this->blockWorld->loadedBlockStateAt($position->x, $position->y, $position->z);
+            if ($currentState === null) {
+                continue;
+            }
+            $current = $this->blockStateRegistry->state($currentState);
+            if (!BlockTagRegistry::contains(BlockTag::RAIL, $current->identifier())) {
+                continue;
+            }
+            try {
+                $nextState = $this->railBlockStates->resolveNeighborUpdate($current, $position, $stateAt);
+            } catch (InvalidArgumentException) {
+                continue;
+            }
+            if ($nextState->value === $currentState->value) {
+                continue;
+            }
+            $next = $this->blockStateRegistry->state($nextState);
+            if ($this->pluginEvents !== null && !$this->pluginEvents->allowBlockStateChange(
+                $position,
+                $current->identifier(),
+                $current->properties(),
+                $next->identifier(),
+                $next->properties(),
+                BlockStateChangeReason::NEIGHBOR_UPDATE,
+            )) {
+                continue;
+            }
+            $this->blockWorld->setBlockState($position->x, $position->y, $position->z, $nextState);
+            $this->deferredEvents[] = new BlockChanged(
+                'server',
+                $position,
+                $nextState,
+                $this->players->recipients(),
+                false,
+                $currentState,
+            );
+            $this->pluginEvents?->blockStateChanged(
+                $position,
+                $current->identifier(),
+                $current->properties(),
+                $next->identifier(),
+                $next->properties(),
+                BlockStateChangeReason::NEIGHBOR_UPDATE,
+            );
+        }
+    }
+
     private function processSupportDependentTick(BlockPosition $position): ?WorldEvent
     {
         if ($this->blockWorld === null || $this->blockStateRegistry === null || $this->blockPalette === null) {
@@ -18661,6 +18837,20 @@ final class WorldSimulation
             return null;
         }
         $state = $this->blockStateRegistry->state($stateId);
+        $railUnsupported = false;
+        if ($this->railBlockStates !== null && BlockTagRegistry::contains(BlockTag::RAIL, $state->identifier())) {
+            $supported = $this->railBlockStates->isSupported(
+                $position,
+                $state,
+                fn(BlockPosition $support): bool => $this->isOpaqueBlockState(
+                    $this->loadedCanonicalStateAt($support->x, $support->y, $support->z),
+                ),
+            );
+            if ($supported) {
+                return null;
+            }
+            $railUnsupported = true;
+        }
         $offset = $this->supportDependentBlocks->supportOffset($state);
         if ($offset === null) {
             return null;
@@ -18670,7 +18860,7 @@ final class WorldSimulation
             $position->y + $offset->y,
             $position->z + $offset->z,
         );
-        if ($support !== null && !$this->isReplaceablePhysicsState($support)) {
+        if (!$railUnsupported && $support !== null && !$this->isReplaceablePhysicsState($support)) {
             return null;
         }
         if ($this->pluginEvents !== null && !$this->pluginEvents->allowBlockStateChange(
@@ -21584,8 +21774,8 @@ final class WorldSimulation
         $session->inventory->replaceContents($contents, $session->canonicalRevision);
         if ($session->entityRuntimeId !== null) {
             $entity = $this->entityRuntime->registry()->getByRuntimeId($session->entityRuntimeId);
-            if ($entity instanceof BoatEntity && $entity->chestInventory() === $session->inventory) {
-                $entity->markChestInventoryChanged();
+            if ($entity instanceof VehicleInventoryOwner && $entity->vehicleInventory() === $session->inventory) {
+                $entity->markVehicleInventoryChanged();
             } elseif ($entity instanceof AnimalStorageInventoryOwner
                 && $entity->storageInventory() === $session->inventory) {
                 $entity->markStorageInventoryChanged();
@@ -22154,6 +22344,17 @@ final class WorldSimulation
             );
         }
         $boatVariant = $held === null ? null : BoatVariant::fromItem($held->identifier, $held->auxValue);
+        if ($held !== null
+            && in_array($held->identifier, ['minecraft:minecart', 'minecraft:chest_minecart'], true)) {
+            return $this->useMinecartItem(
+                $player,
+                $command,
+                $clickedState,
+                $placedState,
+                $held,
+                $activeBreak['position'] ?? null,
+            );
+        }
         if ($boatVariant !== null
             && $boatVariant->matchesItem($held->identifier, $held->auxValue)) {
             return $this->useBoatItem(
@@ -22260,6 +22461,7 @@ final class WorldSimulation
             $placedBlockState === null => 'unsupported_item',
             $clickedState->value === $this->blockPalette->air->value => 'clicked_air',
             $slabMergeState === null && !$this->isReplaceablePlacementState($placedState) => 'occupied',
+            $this->railPlacementLacksSupport($placedPosition, $placedBlockState) => 'unsupported',
             $doorPair !== null && ($doorUpperPrevious === null
                 || !$this->isReplaceablePlacementState($doorUpperPrevious)) => 'door_upper_occupied',
             !$this->blockIsReachable($player->snapshot(), $command->clickedPosition) => 'reach',
@@ -22298,6 +22500,11 @@ final class WorldSimulation
         }
         try {
             $this->setBlockStateAndSchedule($placedPosition, $placedBlockState);
+            $placedBlockState = $this->blockWorld->loadedBlockStateAt(
+                $placedPosition->x,
+                $placedPosition->y,
+                $placedPosition->z,
+            ) ?? $placedBlockState;
             if ($doorPair !== null && $doorUpperPosition !== null) {
                 $this->setBlockStateAndSchedule($doorUpperPosition, $doorPair->upper);
                 $this->deferredEvents[] = new BlockChanged(
@@ -22355,6 +22562,13 @@ final class WorldSimulation
             $this->blockWorld->setBlockEntity($shelf);
             $this->deferredEvents[] = new BlockEntityChanged($shelf, $this->players->recipients());
         }
+        if ($this->blockStateRegistry !== null
+            && BlockTagRegistry::contains(
+                BlockTag::RAIL,
+                $this->blockStateRegistry->state($placedBlockState)->identifier(),
+            )) {
+            $this->projectRailNeighborhood($placedPosition);
+        }
         $this->refreshPlayerGroundStates();
         if ($player->gameMode()->consumesItems() && $bucketFluid !== null) {
             $player->inventory->replaceSlot(
@@ -22384,11 +22598,42 @@ final class WorldSimulation
         );
     }
 
+    /** Reasserts the bounded connected track neighborhood after client-predicted rail placement. */
+    private function projectRailNeighborhood(BlockPosition $origin): void
+    {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null || $this->railBlockStates === null) {
+            return;
+        }
+        foreach ($this->railBlockStates->affectedPositions($origin) as $position) {
+            $state = $this->blockWorld->loadedBlockStateAt($position->x, $position->y, $position->z);
+            if ($state === null
+                || !BlockTagRegistry::contains(BlockTag::RAIL, $this->blockStateRegistry->state($state)->identifier())) {
+                continue;
+            }
+            $this->deferredEvents[] = new BlockChanged(
+                'server',
+                $position,
+                $state,
+                $this->players->recipients(),
+                false,
+            );
+        }
+    }
+
     private function resolvePlacedBlockState(
         CanonicalBlockState $itemState,
         BlockPlacementContext $context,
         BlockPosition $position,
     ): InternalBlockStateId {
+        if ($this->railBlockStates !== null && BlockTagRegistry::contains(BlockTag::RAIL, $itemState->identifier())) {
+            return $this->railBlockStates->resolvePlacement(
+                $itemState,
+                $position,
+                $context->playerYaw,
+                fn(BlockPosition $candidate): ?CanonicalBlockState =>
+                    $this->loadedCanonicalStateAt($candidate->x, $candidate->y, $candidate->z),
+            );
+        }
         if ($this->signBlockStates !== null
             && (str_ends_with($itemState->identifier(), '_standing_sign')
                 || BlockTagRegistry::contains(BlockTag::HANGING_SIGN, $itemState->identifier())
@@ -22421,6 +22666,27 @@ final class WorldSimulation
         return ($this->blockPlacementStates
             ?? throw new \LogicException('Block placement resolver is unavailable.'))
             ->resolvePlacement($itemState, $context);
+    }
+
+    private function railPlacementLacksSupport(
+        BlockPosition $position,
+        ?InternalBlockStateId $stateId,
+    ): bool {
+        if ($stateId === null || $this->blockStateRegistry === null || $this->railBlockStates === null) {
+            return false;
+        }
+        $state = $this->blockStateRegistry->state($stateId);
+        if (!BlockTagRegistry::contains(BlockTag::RAIL, $state->identifier())) {
+            return false;
+        }
+
+        return !$this->railBlockStates->isSupported(
+            $position,
+            $state,
+            fn(BlockPosition $support): bool => $this->isOpaqueBlockState(
+                $this->loadedCanonicalStateAt($support->x, $support->y, $support->z),
+            ),
+        );
     }
 
     private function resolveDoorPlacement(
@@ -23532,6 +23798,108 @@ final class WorldSimulation
             $stoppedBreakingPosition,
             'boat_used',
         );
+    }
+
+    private function useMinecartItem(
+        Player $player,
+        PlaceBlock $command,
+        InternalBlockStateId $clickedState,
+        InternalBlockStateId $placedState,
+        InventoryStack $held,
+        ?BlockPosition $stoppedBreakingPosition,
+    ): WorldEvent {
+        $adjacent = self::adjacentBlock($command->clickedPosition, $command->face);
+        $spawnBlock = $command->clickedPosition;
+        $railState = $this->blockStateRegistry?->state($clickedState);
+        if ($railState === null || !BlockTagRegistry::contains(BlockTag::RAIL, $railState->identifier())) {
+            $spawnBlock = $adjacent ?? $command->clickedPosition;
+            $railState = $adjacent === null || $this->blockStateRegistry === null
+                ? null
+                : $this->loadedCanonicalStateAt($adjacent->x, $adjacent->y, $adjacent->z);
+        }
+        $spawnBlockState = $this->blockWorld?->loadedBlockStateAt(
+            $spawnBlock->x,
+            $spawnBlock->y,
+            $spawnBlock->z,
+        ) ?? $placedState;
+        $failure = match (true) {
+            !$player->gameMode()->canBuild() => 'gamemode',
+            $command->sequence <= $player->placementSequence => 'stale_sequence',
+            $command->hotbarSlot !== $player->inventory->selectedHotbarSlot() => 'selected_slot',
+            !$this->blockIsReachable($player->snapshot(), $command->clickedPosition) => 'reach',
+            $railState === null || !BlockTagRegistry::contains(BlockTag::RAIL, $railState->identifier()) => 'rail_required',
+            $this->pluginEvents !== null
+                && !$this->pluginEvents->allowItemUse($player, $held, ApiItemUseKind::VEHICLE_PLACE, 0) => 'plugin_cancelled',
+            default => null,
+        };
+        if ($command->sequence > $player->placementSequence) {
+            $player->placementSequence = $command->sequence;
+        }
+        if ($failure === null) {
+            $outcome = $this->spawnEntity(new EntitySpawnRequest(
+                $held->identifier === 'minecraft:chest_minecart'
+                    ? VanillaEntityType::CHEST_MINECART
+                    : VanillaEntityType::MINECART,
+                SpawnCause::ITEM,
+                $this->worldId,
+                new Position(
+                    $spawnBlock->x + 0.5,
+                    $spawnBlock->y + self::MINECART_PLACEMENT_OFFSET_Y
+                        + (self::isAscendingRailState($railState) ? 0.5 : 0.0),
+                    $spawnBlock->z + 0.5,
+                ),
+                $player->movement->yaw,
+            ));
+            $failure = $outcome->failure;
+        }
+        if ($failure !== null) {
+            return new BlockPlacementCorrected(
+                $player->sessionId,
+                $command->clickedPosition,
+                $clickedState,
+                $spawnBlock,
+                $spawnBlockState,
+                $player->inventory->selectedHotbarSlot(),
+                $held,
+                $stoppedBreakingPosition,
+                $failure,
+            );
+        }
+
+        $remaining = $player->gameMode()->consumesItems()
+            ? $player->inventory->decrementSelectedOne()
+            : $held;
+        if ($player->gameMode()->consumesItems()) {
+            $player->markDirty();
+        }
+        $this->pluginEvents?->itemUsed($player, $held, ApiItemUseKind::VEHICLE_PLACE, 0);
+        $this->deferredEvents[] = new HeldItemChanged(
+            $player->sessionId,
+            $player->runtimeActorId,
+            $player->inventory->selectedHotbarSlot(),
+            $remaining,
+            $this->players->recipients($player->sessionId),
+            ownerSlotCorrection: false,
+        );
+
+        return new BlockPlacementCorrected(
+            $player->sessionId,
+            $command->clickedPosition,
+            $clickedState,
+            $spawnBlock,
+            $spawnBlockState,
+            $player->inventory->selectedHotbarSlot(),
+            $remaining,
+            $stoppedBreakingPosition,
+            'minecart_used',
+        );
+    }
+
+    private static function isAscendingRailState(CanonicalBlockState $state): bool
+    {
+        $direction = $state->properties()['rail_direction'] ?? null;
+
+        return is_int($direction) && $direction >= 2 && $direction <= 5;
     }
 
     private function attachLeashesToFence(

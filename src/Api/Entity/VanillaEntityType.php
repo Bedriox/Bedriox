@@ -29,6 +29,8 @@ enum VanillaEntityType: string implements VanillaEntityIdentity
     case PLAYER = 'minecraft:player';
     case BOAT = 'minecraft:boat';
     case CHEST_BOAT = 'minecraft:chest_boat';
+    case MINECART = 'minecraft:minecart';
+    case CHEST_MINECART = 'minecraft:chest_minecart';
     case FALLING_BLOCK = 'minecraft:falling_block';
     case PRIMED_TNT = 'minecraft:tnt';
     case COW = 'minecraft:cow';
