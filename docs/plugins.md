@@ -241,7 +241,67 @@ player's requested skin replacement and may supply another validated `Skin`.
 `PlayerSkinChangedEvent` reports the committed result. These events are never
 emitted for a sessionless human entity.
 
-Blocks and items use canonical identifiers such as `minecraft:grass_block`; process-local numeric IDs never enter the public API. The gameplay catalogs expose the admitted terrain blocks, their drops, and supported tools without exposing network runtime IDs. Inventory writes accept catalog items or an empty slot.
+Blocks and items use canonical identifiers such as `minecraft:grass_block`; process-local numeric IDs never enter the public API. `VanillaBlocks` and `VanillaItems` expose every exact identifier admitted by the active Bedrock data set as a generated constant. `getIdentifier()` returns that canonical string, while `is()` accepts either an exact identifier or a semantic tag:
+
+```php
+use Bedriox\Api\Inventory\ItemTag;
+use Bedriox\Api\Inventory\VanillaItems;
+use Bedriox\Api\World\BlockTag;
+use Bedriox\Api\World\VanillaBlocks;
+
+if ($block->is(VanillaBlocks::OAK_DOOR)) {
+    // This exact block is an oak door.
+}
+
+if ($block->getIdentifier() === VanillaBlocks::OAK_DOOR) {
+    // Direct canonical-string comparison is also supported.
+}
+
+if ($block->is(BlockTag::DOOR)) {
+    // This is any admitted door, but not a trapdoor.
+}
+
+if ($item->is(VanillaItems::DIAMOND_SWORD)) {
+    // This exact stack contains a diamond sword.
+}
+
+if ($item->is(ItemTag::SWORD)) {
+    // This stack contains any admitted sword.
+}
+```
+
+Exact identity and semantic family are separate from state. A door's canonical identifier says which door it is, `BlockTag::DOOR` says which behavior family it belongs to, and its immutable `properties` describe the particular placed state, such as whether it is open and which direction it faces. Plugins should use exact constants or tags to classify a block instead of inferring its family from state-property names. Numeric internal state IDs, legacy IDs, and network runtime IDs remain private. The gameplay catalogs expose admitted terrain blocks, their drops, and supported tools without exposing those internal identities. Inventory writes accept catalog items or an empty slot.
+
+`BlockTagRegistry::tagsFor()` and `ItemTagRegistry::tagsFor()` return the built-in families for a canonical identifier. Their `members()` methods return the canonical identifiers in one tag, and `contains()` performs the same direct membership test used by `is()`. These immutable registries describe built-in vanilla behavior; they are not a mutable plugin registration surface.
+
+For example, a plugin can prevent players from operating any door without
+depending on the door's material or current state:
+
+```php
+use Bedriox\Api\Event\Block\BlockInteractionType;
+use Bedriox\Api\Event\Block\PlayerInteractBlockEvent;
+use Bedriox\Api\Event\EventHandler;
+use Bedriox\Api\World\BlockTag;
+
+#[EventHandler]
+public function onDoorUse(PlayerInteractBlockEvent $event): void
+{
+    if (
+        $event->interaction === BlockInteractionType::USE
+        && $event->block->is(BlockTag::DOOR)
+    ) {
+        $event->cancel();
+    }
+}
+```
+
+The generated vanilla catalogs are refreshed after an active Data update with:
+
+```shell
+php tools/generate-vanilla-catalogs.php
+```
+
+Added identifiers create constants, removed identifiers remove constants, and a constant-name collision stops generation rather than choosing an ambiguous name. Use `php tools/generate-vanilla-catalogs.php --check` to verify that the committed catalogs exactly match the active data set without rewriting them. Semantic tag membership is maintained separately because a tag describes Bedriox gameplay behavior rather than a wire or palette identity.
 
 Item stacks may carry immutable, bounded custom NBT and a Bedrock auxiliary variant value from `0` through `32767`. `ItemNbt` supports every ordinary NBT value through typed `Tag` factories: byte, short, int, long, float, double, string, byte/int/long arrays, homogeneous lists, and nested compounds. Bedriox compares NBT and auxiliary values when stacking, preserves both across moves, drops, pickups, player saves, and rejoins, and writes them through their separate Bedrock item fields. The top-level `Damage` tag is reserved for Bedriox's authoritative durability field; plugins should use their own namespaced keys. Auxiliary values identify admitted variants and are not a substitute for implementing an item's unique gameplay mechanic.
 

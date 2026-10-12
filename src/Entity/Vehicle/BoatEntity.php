@@ -28,6 +28,8 @@ use Bedriox\Api\Inventory\ItemStack;
 use Bedriox\Server\Entity\AbstractMobEntity;
 use Bedriox\Server\Entity\Ai\AiBehaviorDefinition;
 use Bedriox\Server\Entity\EntityMotion;
+use Bedriox\Server\Entity\Mount\MountSeatOffset;
+use Bedriox\Server\Entity\Mount\MountViewConstraint;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceLimits;
 use Bedriox\Server\Entity\Persistence\IntrinsicEntityPersistence;
 use Bedriox\Server\Entity\Spawn\SpawnVariantAware;
@@ -44,6 +46,8 @@ final class BoatEntity extends AbstractMobEntity implements Boat, IntrinsicEntit
     private const float WATERLINE_OFFSET_Y = 0.375;
     private const float WATERLINE_EQUILIBRIUM = -0.01;
     private const float STRUCTURAL_DAMAGE_MULTIPLIER = 10.0;
+    private const float DRIVER_SEAT_OFFSET_X = 0.2;
+    private const float PASSENGER_SEAT_OFFSET_X = -0.6;
 
     private bool $paddlingLeft = false;
     private bool $paddlingRight = false;
@@ -134,6 +138,27 @@ final class BoatEntity extends AbstractMobEntity implements Boat, IntrinsicEntit
     public function mountedPassengerOffsetY(MountSeat $seat, float $passengerHeight, bool $playerPassenger): float
     {
         return $playerPassenger ? self::PLAYER_SEAT_Y : -0.2;
+    }
+
+    public function mountedPassengerOffset(
+        MountSeat $seat,
+        float $passengerHeight,
+        bool $playerPassenger,
+    ): MountSeatOffset {
+        return new MountSeatOffset(
+            match ($seat) {
+                MountSeat::DRIVER => self::DRIVER_SEAT_OFFSET_X,
+                MountSeat::PASSENGER_1 => self::PASSENGER_SEAT_OFFSET_X,
+                default => 0.0,
+            },
+            $this->mountedPassengerOffsetY($seat, $passengerHeight, $playerPassenger),
+            0.0,
+        );
+    }
+
+    public function mountedViewConstraint(): MountViewConstraint
+    {
+        return MountViewConstraint::boat();
     }
 
     public function applyPaddleInput(bool $left, bool $right): void

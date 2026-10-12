@@ -61,9 +61,6 @@ final class BoatGameplayTest extends TestCase
             $world->tick();
             if ($hit < 3) {
                 self::assertTrue($spawn->entity->isAlive());
-                for ($cooldown = 0; $cooldown < 10; ++$cooldown) {
-                    $world->tick();
-                }
             }
         }
 

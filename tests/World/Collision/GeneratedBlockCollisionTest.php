@@ -62,6 +62,83 @@ final class GeneratedBlockCollisionTest extends TestCase
         }
     }
 
+    public function testEveryBundledStateBuildsItsExactVoxelCollisionDefinition(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $states = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $collisions = BlockCollisionRegistry::forGenerationPalette(
+            $states,
+            GenerationBlockPalette::fromRegistry($states),
+            $data->voxelShapeRegistry(),
+        );
+
+        self::assertSame(count($states->states()), $collisions->count());
+    }
+
+    public function testStateDerivedDoorCollisionOverridesTheStaticVoxelAssignment(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $states = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $collisions = BlockCollisionRegistry::forGenerationPalette(
+            $states,
+            GenerationBlockPalette::fromRegistry($states),
+            $data->voxelShapeRegistry(),
+        );
+        $door = null;
+        foreach ($states->states() as $value => $state) {
+            if ($state->identifier() === 'minecraft:wooden_door'
+                && $state->properties() === [
+                    'door_hinge_bit' => 0,
+                    'minecraft:cardinal_direction' => 'south',
+                    'open_bit' => 0,
+                    'upper_block_bit' => 0,
+                ]) {
+                $door = $collisions->find(new InternalBlockStateId($value));
+                break;
+            }
+        }
+
+        self::assertNotNull($door);
+        self::assertTrue($door->intersectsAt(new AxisAlignedBox(0.4, 0.0, 0.01, 0.6, 1.0, 0.1), 0, 0, 0));
+        self::assertFalse($door->intersectsAt(new AxisAlignedBox(0.4, 0.0, 0.3, 0.6, 1.0, 0.9), 0, 0, 0));
+    }
+
+    public function testPitcherCropCollisionExtendingBelowItsCellIsQueriedFromTheCellAbove(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $states = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $flat = FixedFlatBlockPalette::fromRegistry($states);
+        $world = new World(
+            new WorldMetadata('pitcher-crop-collision', 0),
+            new FlatWorldGenerator($flat),
+            new ChunkRepository(4),
+        );
+        $pitcher = null;
+        foreach ($states->states() as $value => $state) {
+            $shape = $data->voxelShapeRegistry()->shapeForBlockState($state);
+            foreach ($shape->boxes() as $box) {
+                if ($state->identifier() === 'minecraft:pitcher_crop' && $box->minimum()[1] < 0.0) {
+                    $pitcher = new InternalBlockStateId($value);
+                    break 2;
+                }
+            }
+        }
+        self::assertNotNull($pitcher);
+        $world->setBlockState(0, 65, 0, $pitcher);
+        $query = new BlockCollisionQuery(
+            $world,
+            $flat->air,
+            [],
+            BlockCollisionRegistry::forGenerationPalette(
+                $states,
+                GenerationBlockPalette::fromRegistry($states),
+                $data->voxelShapeRegistry(),
+            ),
+        );
+
+        self::assertTrue($query->hasCollision(new AxisAlignedBox(0.4, 64.95, 0.4, 0.6, 65.01, 0.6)));
+    }
+
     public function testBucketSourceFluidVariantsArePassable(): void
     {
         [$states, $generation] = self::generationPalette();

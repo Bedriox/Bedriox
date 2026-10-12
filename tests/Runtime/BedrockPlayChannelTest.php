@@ -36,6 +36,7 @@ use Bedriox\Protocol\Packet\ActorEventType;
 use Bedriox\Protocol\Packet\AnimatePacket;
 use Bedriox\Protocol\Packet\BasicInventoryTransaction;
 use Bedriox\Protocol\Packet\BedrockPacketCodec;
+use Bedriox\Protocol\Packet\BlockActorDataPacket;
 use Bedriox\Protocol\Packet\BlockPickRequestPacket;
 use Bedriox\Protocol\Packet\BlockPosition;
 use Bedriox\Protocol\Packet\BossEventAction;
@@ -118,6 +119,8 @@ use Bedriox\Protocol\Packet\ServerSettingsRequestPacket;
 use Bedriox\Protocol\Packet\SetActorMotionPacket;
 use Bedriox\Protocol\Packet\SetLocalPlayerAsInitializedPacket;
 use Bedriox\Protocol\Packet\SetPlayerInventoryOptionsPacket;
+use Bedriox\Protocol\Packet\SignBlockActorData;
+use Bedriox\Protocol\Packet\SignTextData;
 use Bedriox\Protocol\Packet\SubChunkRequestPacket;
 use Bedriox\Protocol\Packet\SystemTextPacket;
 use Bedriox\Protocol\Packet\TakeItemStackRequestAction;
@@ -166,6 +169,7 @@ use Bedriox\Server\Simulation\Command\SendChat;
 use Bedriox\Server\Simulation\Command\SwingArm;
 use Bedriox\Server\Simulation\Command\SyncInventory;
 use Bedriox\Server\Simulation\Command\SyncInventorySlots;
+use Bedriox\Server\Simulation\Command\UpdateSignText;
 use Bedriox\Server\Simulation\Command\UseItem;
 use Bedriox\Server\Simulation\Command\WorkstationRequestType;
 use Bedriox\Server\Simulation\Event\BlockPlaced;
@@ -3814,6 +3818,66 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertInstanceOf(BlockPlaced::class, $events[1]);
         self::assertSame(63, $events[1]->remainingStack?->count);
         self::assertSame($palette->grassBlock->value, $world->blockStateAt(1, 64, 0)->value);
+        self::assertFalse($channel->isClosed());
+        $channel->close();
+        $repository->clear();
+    }
+
+    public function testBoundedSignBlockActorInputBecomesVersionIndependentCommand(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $network = $data->blockStateRegistry();
+        $internal = new BlockStateRegistry($network->states());
+        $translator = new BlockNetworkTranslator($internal, $network);
+        $palette = FixedFlatBlockPalette::fromRegistry($internal);
+        $repository = new ChunkRepository(16);
+        $world = new World(new WorldMetadata('sign-channel-test', 0), new FlatWorldGenerator($palette), $repository);
+        [$channel, $client, $server, $entityId] = $this->channel(
+            [new ChunkRadiusUpdatedPacket(1)],
+            world: $world,
+            serializer: new BedrockChunkPacketSerializer($translator),
+            viewDistance: 1,
+            spawnRadius: 1,
+            fixedFlatRuntimeIds: $palette->toNetworkRuntimeIds($translator),
+        );
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new RequestChunkRadiusPacket(1, 1)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        foreach ($channel->drainOutgoing() as $outgoing) {
+            $server->decryptEnvelope($outgoing->payload);
+        }
+        for ($tick = 0; $tick < 12; ++$tick) {
+            self::assertTrue($channel->worldTick());
+            foreach ($channel->drainOutgoing() as $outgoing) {
+                $server->decryptEnvelope($outgoing->payload);
+            }
+        }
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $position = new BlockPosition(1, 64, 0);
+        $signData = new SignBlockActorData(
+            $position,
+            new SignTextData("front\nline", -16711936, true),
+            new SignTextData('back', -16777216, false),
+        );
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new BlockActorDataPacket($position, $signData->encode())])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(UpdateSignText::class, $commands[0]);
+        self::assertSame("front\nline", $commands[0]->front->blob());
+        self::assertSame(0xff00ff00, $commands[0]->front->color);
+        self::assertSame('back', $commands[0]->back->blob());
         self::assertFalse($channel->isClosed());
         $channel->close();
         $repository->clear();

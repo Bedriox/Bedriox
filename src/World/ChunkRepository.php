@@ -152,6 +152,30 @@ final class ChunkRepository
     }
 
     /**
+     * Returns a bounded, wrapping window without copying the complete chunk cache.
+     *
+     * @return list<Chunk>
+     */
+    public function loadedChunkWindow(int $offset, int $maximumChunks): array
+    {
+        if ($offset < 0 || $maximumChunks < 1 || $maximumChunks > $this->capacity) {
+            throw new InvalidArgumentException('Loaded chunk window is outside the supported bounds.');
+        }
+        $count = count($this->chunks);
+        if ($count === 0) {
+            return [];
+        }
+        $offset %= $count;
+        $window = array_values(array_slice($this->chunks, $offset, min($maximumChunks, $count), true));
+        $missing = min($maximumChunks, $count) - count($window);
+        if ($missing > 0) {
+            array_push($window, ...array_values(array_slice($this->chunks, 0, $missing, true)));
+        }
+
+        return $window;
+    }
+
+    /**
      * Removes a clean unretained chunk and all repository bookkeeping.
      *
      * Dirty or retained chunks fail closed so callers cannot discard authoritative state.

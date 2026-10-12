@@ -22,6 +22,7 @@ namespace Bedriox\Server\Simulation\Event;
 
 use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Server\Entity\Mount\MountSeatOffset;
+use Bedriox\Server\Entity\Mount\MountViewConstraint;
 use Bedriox\Server\Simulation\PlayerSnapshot;
 
 final readonly class ActorMounted implements WorldEvent
@@ -35,6 +36,7 @@ final readonly class ActorMounted implements WorldEvent
         public bool $riderInitiated,
         public ?PlayerSnapshot $passenger,
         public array $recipientSessionIds,
+        public MountViewConstraint $viewConstraint = new MountViewConstraint(false, 181.0, false, 0.0),
     ) {}
 
     public function recipients(): array

@@ -25,7 +25,6 @@ use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\World as ApiWorld;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Data\CanonicalBlockState;
-use Bedriox\Server\Gameplay\Block\BlockCatalog;
 use Bedriox\Server\Runtime\ManagedWorldRuntime;
 use Bedriox\Server\Runtime\OpenedWorld;
 use Bedriox\Server\Runtime\RuntimeWorldActions;
@@ -51,8 +50,7 @@ final class RuntimeWorldActionsTest extends TestCase
     {
         $data = BedrockDataSet::bundled();
         $states = new BlockStateRegistry($data->blockStateRegistry()->states());
-        $blocks = BlockCatalog::vanilla($states, $data->blockItemMappingRegistry());
-        $runtimeActions = new RuntimeWorldActions($blocks, $states);
+        $runtimeActions = new RuntimeWorldActions($states);
         $actions = $runtimeActions->actions();
         $overworldHandle = new ApiWorld(
             'world',
@@ -94,8 +92,7 @@ final class RuntimeWorldActionsTest extends TestCase
     {
         $data = BedrockDataSet::bundled();
         $states = new BlockStateRegistry($data->blockStateRegistry()->states());
-        $blocks = BlockCatalog::vanilla($states, $data->blockItemMappingRegistry());
-        $runtimeActions = new RuntimeWorldActions($blocks, $states);
+        $runtimeActions = new RuntimeWorldActions($states);
         $actions = $runtimeActions->actions();
         $overworldHandle = new ApiWorld('world', 1, $actions);
         $netherHandle = new ApiWorld(

@@ -106,6 +106,7 @@ use Bedriox\Protocol\Packet\MoveActorAbsolutePacket;
 use Bedriox\Protocol\Packet\MoveActorDeltaPacket;
 use Bedriox\Protocol\Packet\MovePlayerMode;
 use Bedriox\Protocol\Packet\MovePlayerPacket;
+use Bedriox\Protocol\Packet\OpenSignPacket;
 use Bedriox\Protocol\Packet\Packet;
 use Bedriox\Protocol\Packet\PlayerAbilities;
 use Bedriox\Protocol\Packet\PlayerActorMetadata;
@@ -143,6 +144,7 @@ use Bedriox\Protocol\Value\BuildPlatform;
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\Server\Entity\Block\FallingBlockEntity;
 use Bedriox\Server\Entity\Human\HumanEntity;
+use Bedriox\Server\Entity\Mount\MountViewConstraint;
 use Bedriox\Server\Entity\Vanilla\End\EnderDragonEntity;
 use Bedriox\Server\Entity\Vehicle\BoatEntity;
 use Bedriox\Server\Gameplay\Enchanting\VanillaEnchantmentIdMap;
@@ -233,6 +235,7 @@ use Bedriox\Server\Simulation\Event\ProjectileMoved;
 use Bedriox\Server\Simulation\Event\ProjectileRemoved;
 use Bedriox\Server\Simulation\Event\ProjectileSpawned;
 use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
+use Bedriox\Server\Simulation\Event\SignEditorOpened;
 use Bedriox\Server\Simulation\Event\TameAttemptPresented;
 use Bedriox\Server\Simulation\Event\TextDisplayActorRemoved;
 use Bedriox\Server\Simulation\Event\TextDisplayActorSpawned;
@@ -350,6 +353,10 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             $event instanceof BlockBreakStopped => $this->blockBreakStopped($event),
             $event instanceof BlockChanged => $this->blockChanged($event),
             $event instanceof BlockEntityChanged => $this->blockEntityChanged($event),
+            $event instanceof SignEditorOpened => [new DirectedPacket(
+                $event->sessionId,
+                new OpenSignPacket(self::protocolBlockPosition($event->position), $event->front),
+            )],
             $event instanceof BlockPlaced => $this->blockPlaced($event),
             $event instanceof BlockPlacementCorrected => $this->blockPlacementCorrected($event),
             $event instanceof HeldItemChanged => $this->heldItemChanged($event),
@@ -468,12 +475,21 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
                 $event instanceof ActorMounted ? $event->seatOffset->y : 0.0,
                 $event instanceof ActorMounted ? $event->seatOffset->z : 0.0,
             );
-            $metadata[] = PlayerActorMetadata::seatLockRiderRotation(false);
-            $metadata[] = PlayerActorMetadata::seatLockRiderRotationDegrees(
-                $event instanceof ActorMounted ? 181.0 : 0.0,
+            $viewConstraint = $event instanceof ActorMounted
+                ? $event->viewConstraint
+                : MountViewConstraint::standard();
+            $metadata[] = PlayerActorMetadata::seatLockRiderRotation(
+                $event instanceof ActorMounted && $viewConstraint->locked,
             );
-            $metadata[] = PlayerActorMetadata::seatHasRotation(false);
-            $metadata[] = PlayerActorMetadata::seatRotationOffsetDegrees(0.0);
+            $metadata[] = PlayerActorMetadata::seatLockRiderRotationDegrees(
+                $event instanceof ActorMounted ? $viewConstraint->lockDegrees : 0.0,
+            );
+            $metadata[] = PlayerActorMetadata::seatHasRotation(
+                $event instanceof ActorMounted && $viewConstraint->hasRotation,
+            );
+            $metadata[] = PlayerActorMetadata::seatRotationOffsetDegrees(
+                $event instanceof ActorMounted ? $viewConstraint->rotationOffsetDegrees : 0.0,
+            );
             usort($metadata, static fn(ActorMetadata $left, ActorMetadata $right): int => $left->id <=> $right->id);
             $actorData = new SetActorDataPacket(
                 UnsignedLong::fromInt($event->passengerRuntimeId),

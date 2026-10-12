@@ -72,6 +72,26 @@ final class BoatEntityTest extends TestCase
         self::assertCount(27, $chestBoat->chestInventory()?->contents() ?? []);
     }
 
+    public function testNormalBoatUsesDistinctBoundedSeatOffsets(): void
+    {
+        $boat = self::boat();
+
+        $driver = $boat->mountedPassengerOffset(MountSeat::DRIVER, 1.8, true);
+        $passenger = $boat->mountedPassengerOffset(MountSeat::PASSENGER_1, 1.8, true);
+
+        self::assertSame(0.2, $driver->x);
+        self::assertSame(-0.6, $passenger->x);
+        self::assertSame($driver->y, $passenger->y);
+        self::assertSame(0.0, $driver->z);
+        self::assertSame(0.0, $passenger->z);
+
+        $view = $boat->mountedViewConstraint();
+        self::assertTrue($view->locked);
+        self::assertSame(90.0, $view->lockDegrees);
+        self::assertFalse($view->hasRotation);
+        self::assertSame(-90.0, $view->rotationOffsetDegrees);
+    }
+
     public function testBoatControlIsStrongOnWaterAndHeavilyLimitedOnLand(): void
     {
         $boat = self::boat();

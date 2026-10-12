@@ -29,7 +29,6 @@ use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\WeatherState;
 use Bedriox\Api\World\World;
 use Bedriox\Api\World\WorldActions;
-use Bedriox\Server\Gameplay\Block\BlockCatalog;
 use Bedriox\Server\Plugin\PluginActionBuffer;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\BlockPosition;
@@ -43,7 +42,6 @@ final class RuntimeWorldActions
     private ?WorldRuntimeManager $worlds = null;
 
     public function __construct(
-        private readonly BlockCatalog $blocks,
         private readonly BlockStateRegistry $states,
         private readonly ?PluginActionBuffer $pluginActions = null,
     ) {}
@@ -72,9 +70,9 @@ final class RuntimeWorldActions
     {
         $runtime = $this->runtime($world);
         $state = $runtime->opened->world->blockStateAt($position->x, $position->y, $position->z);
-        $identifier = $this->blocks->typeForInternalId($state, $this->states)->identifier();
+        $canonical = $this->states->state($state);
 
-        return new Block($position, $identifier);
+        return new Block($position, $canonical->identifier(), $canonical->properties());
     }
 
     private function setBlock(World $world, ApiBlockPosition $position, string $identifier): void

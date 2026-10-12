@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Gameplay\Item;
 
+use Bedriox\Api\Entity\Value\BoatVariant;
 use Bedriox\Data\BlockItemMappingRegistry;
 use Bedriox\Data\CanonicalBlockState;
 use Bedriox\Data\CreativeInventoryRegistry;
@@ -64,7 +65,8 @@ final class ItemCatalog
         foreach (($blocks ?? BlockCatalog::vanilla())->all() as $block) {
             $state = $block->itemFormState();
             $identifier = $block->itemIdentifier();
-            if ($state !== null && $identifier !== null) {
+            if ($state !== null && $identifier !== null
+                && isset($networkRegistry->definitions()[$identifier])) {
                 $types[$identifier] = new ItemType($identifier, placedBlockState: $state);
             }
         }
@@ -118,11 +120,13 @@ final class ItemCatalog
             }
             $existing = $types[$identifier] ?? null;
             $mappedBlockState = $creativeBlockStates[$identifier] ?? null;
+            $mappedBlockState ??= self::signBlockState($identifier);
             $armor = VanillaArmorDefinitions::definition($identifier) ?? $existing?->armor;
             $maximumDurability = VanillaItemDurability::maximum($identifier) ?? $existing?->maximumDurability;
             $types[$identifier] = new ItemType(
                 $identifier,
-                maximumStackSize: $armor !== null || $maximumDurability !== null || self::isShulkerBox($identifier)
+                maximumStackSize: $armor !== null || $maximumDurability !== null
+                    || self::isShulkerBox($identifier) || BoatVariant::fromItem($identifier) !== null
                     ? 1
                     : ($existing === null ? 64 : $existing->maximumStackSize),
                 tool: $existing?->tool,
@@ -142,6 +146,31 @@ final class ItemCatalog
     private static function isShulkerBox(string $identifier): bool
     {
         return $identifier === 'minecraft:shulker_box' || str_ends_with($identifier, '_shulker_box');
+    }
+
+    private static function signBlockState(string $identifier): ?CanonicalBlockState
+    {
+        if (str_ends_with($identifier, '_hanging_sign')) {
+            return CanonicalBlockState::from($identifier, [
+                'attached_bit' => 0,
+                'facing_direction' => 0,
+                'ground_sign_direction' => 0,
+                'hanging' => 0,
+            ]);
+        }
+        if (!str_ends_with($identifier, '_sign')
+            || str_ends_with($identifier, '_standing_sign')
+            || str_ends_with($identifier, '_wall_sign')) {
+            return null;
+        }
+        $wood = substr($identifier, strlen('minecraft:'), -strlen('_sign'));
+        $standingIdentifier = match ($wood) {
+            'oak' => 'minecraft:standing_sign',
+            'dark_oak' => 'minecraft:darkoak_standing_sign',
+            default => 'minecraft:' . $wood . '_standing_sign',
+        };
+
+        return CanonicalBlockState::from($standingIdentifier, ['ground_sign_direction' => 0]);
     }
 
     public function type(string $identifier): ItemType

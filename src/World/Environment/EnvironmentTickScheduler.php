@@ -76,6 +76,7 @@ final class EnvironmentTickScheduler
         $sequence = $this->sequence++;
         $this->scheduled[$key] = $tick;
         $this->queue->insert($tick, ['due' => -$dueTick, 'sequence' => -$sequence]);
+        $this->compactStaleEntries();
 
         return true;
     }
@@ -87,6 +88,7 @@ final class EnvironmentTickScheduler
             return false;
         }
         unset($this->scheduled[$key]);
+        $this->compactStaleEntries();
 
         return true;
     }
@@ -163,5 +165,27 @@ final class EnvironmentTickScheduler
         }
 
         return $now;
+    }
+
+    private function compactStaleEntries(): void
+    {
+        $physicalCount = $this->queue->count();
+        $logicalCount = count($this->scheduled);
+        $threshold = min($this->maximumQueued * 2, ($logicalCount * 2) + 1_024);
+        if ($physicalCount <= $threshold) {
+            return;
+        }
+
+        $ticks = array_values($this->scheduled);
+        usort($ticks, static fn(ScheduledEnvironmentTick $left, ScheduledEnvironmentTick $right): int =>
+            ($left->dueTick <=> $right->dueTick) ?: ($left->key() <=> $right->key()));
+        $this->queue = new SplPriorityQueue();
+        $this->queue->setExtractFlags(SplPriorityQueue::EXTR_DATA);
+        foreach ($ticks as $tick) {
+            $this->queue->insert($tick, [
+                'due' => -$tick->dueTick,
+                'sequence' => -$this->sequence++,
+            ]);
+        }
     }
 }

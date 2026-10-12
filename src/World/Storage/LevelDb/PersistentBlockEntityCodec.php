@@ -23,6 +23,7 @@ namespace Bedriox\Server\World\Storage\LevelDb;
 use Bedriox\Api\Inventory\ItemNbt;
 use Bedriox\Protocol\Exception\InvalidValueException;
 use Bedriox\Protocol\Packet\LittleEndianNbtToNetwork;
+use Bedriox\Server\Gameplay\Block\Interaction\ShelfInventory;
 use Bedriox\Server\Gameplay\Potion\BrewingStandBlockEntity;
 use Bedriox\Server\Gameplay\Processing\CampfireBlockEntity;
 use Bedriox\Server\Gameplay\Processing\CampfireType;
@@ -36,6 +37,9 @@ use Bedriox\Server\World\BlockEntity\BlockEntityType;
 use Bedriox\Server\World\BlockEntity\ContainerBlockEntity;
 use Bedriox\Server\World\BlockEntity\ContainerInventory;
 use Bedriox\Server\World\BlockEntity\ContainerItemStack;
+use Bedriox\Server\World\BlockEntity\ShelfBlockEntity;
+use Bedriox\Server\World\BlockEntity\SignBlockEntity;
+use Bedriox\Server\World\BlockEntity\SignText;
 use Bedriox\Server\World\BlockEntity\SuspiciousSandBlockEntity;
 use Bedriox\Server\World\BlockPosition;
 use Bedriox\Server\World\ChunkPosition;
@@ -266,6 +270,24 @@ final readonly class PersistentBlockEntityCodec
 
             return $root;
         }
+        if ($entity instanceof SignBlockEntity) {
+            $root['FrontText'] = LittleEndianNbtTag::compound(self::encodeSignText($entity->front));
+            $root['BackText'] = LittleEndianNbtTag::compound(self::encodeSignText($entity->back));
+            $root['IsWaxed'] = LittleEndianNbtTag::byte($entity->waxed ? 1 : 0);
+
+            return $root;
+        }
+        if ($entity instanceof ShelfBlockEntity) {
+            $items = [];
+            foreach ($entity->inventory->slots() as $slot => $stack) {
+                if ($stack !== null) {
+                    $items[] = LittleEndianNbtTag::compound($this->encodeItem($slot, $stack));
+                }
+            }
+            $root['Items'] = LittleEndianNbtTag::list(LittleEndianNbtTag::COMPOUND, $items);
+
+            return $root;
+        }
         if (!$entity instanceof ContainerBlockEntity) {
             return $root;
         }
@@ -342,6 +364,25 @@ final readonly class PersistentBlockEntityCodec
 
             return $root;
         }
+        if ($entity instanceof SignBlockEntity) {
+            $root['FrontText'] = LittleEndianNbtTag::compound(self::encodeSignText($entity->front));
+            $root['BackText'] = LittleEndianNbtTag::compound(self::encodeSignText($entity->back));
+            $root['IsWaxed'] = LittleEndianNbtTag::byte($entity->waxed ? 1 : 0);
+            $root['LockedForEditingBy'] = LittleEndianNbtTag::long($entity->editorRuntimeActorId ?? -1);
+
+            return $root;
+        }
+        if ($entity instanceof ShelfBlockEntity) {
+            $items = [];
+            foreach ($entity->inventory->slots() as $slot => $stack) {
+                if ($stack !== null) {
+                    $items[] = LittleEndianNbtTag::compound($this->encodeItem($slot, $stack));
+                }
+            }
+            $root['Items'] = LittleEndianNbtTag::list(LittleEndianNbtTag::COMPOUND, $items);
+
+            return $root;
+        }
         if (!$entity instanceof ContainerBlockEntity) {
             return $root;
         }
@@ -385,6 +426,41 @@ final readonly class PersistentBlockEntityCodec
                 : 0;
 
             return new SuspiciousSandBlockEntity($position, $hiddenItem, $seed, $provenance, $progress, $revision);
+        }
+        if ($type === BlockEntityType::Sign || $type === BlockEntityType::HangingSign) {
+            return new SignBlockEntity(
+                $position,
+                self::decodeSignText(self::compound(self::required($root, 'FrontText'), 'FrontText')),
+                self::decodeSignText(self::compound(self::required($root, 'BackText'), 'BackText')),
+                isset($root['IsWaxed'])
+                    && self::integer($root['IsWaxed'], LittleEndianNbtTag::BYTE, 'IsWaxed') !== 0,
+                hanging: $type === BlockEntityType::HangingSign,
+            );
+        }
+        if ($type === BlockEntityType::Shelf) {
+            $contents = [];
+            $items = $root['Items'] ?? null;
+            if ($items !== null) {
+                if ($items->type !== LittleEndianNbtTag::LIST
+                    || ($items->listType !== LittleEndianNbtTag::COMPOUND
+                        && !($items->listType === LittleEndianNbtTag::END && $items->value === []))
+                    || !is_array($items->value) || count($items->value) > ShelfInventory::SLOT_COUNT) {
+                    throw new InvalidArgumentException('Shelf Items tag is malformed or exceeds its slot limit.');
+                }
+                foreach ($items->value as $item) {
+                    if (!$item instanceof LittleEndianNbtTag || $item->type !== LittleEndianNbtTag::COMPOUND
+                        || !is_array($item->value)) {
+                        throw new InvalidArgumentException('Shelf item entry is malformed.');
+                    }
+                    [$slot, $stack] = $this->decodeItem(self::compound($item, 'Items'), ShelfInventory::SLOT_COUNT);
+                    if (isset($contents[$slot])) {
+                        throw new InvalidArgumentException('Shelf Items tag contains a duplicate slot.');
+                    }
+                    $contents[$slot] = $stack;
+                }
+            }
+
+            return new ShelfBlockEntity($position, new ShelfInventory($contents));
         }
         if (!$type->ownsPersistentInventory()) {
             if ($type === BlockEntityType::Cauldron) {
@@ -528,6 +604,37 @@ final readonly class PersistentBlockEntityCodec
             new ContainerInventory(CampfireBlockEntity::SLOT_COUNT, $contents),
             $progress,
             $durations,
+        );
+    }
+
+    /** @return array<string, LittleEndianNbtTag> */
+    private static function encodeSignText(SignText $text): array
+    {
+        return [
+            'HideGlowOutline' => LittleEndianNbtTag::byte(0),
+            'IgnoreLighting' => LittleEndianNbtTag::byte($text->glowing ? 1 : 0),
+            'PersistFormatting' => LittleEndianNbtTag::byte(1),
+            'SignTextColor' => LittleEndianNbtTag::int(
+                $text->color > 0x7fffffff ? $text->color - 0x100000000 : $text->color,
+            ),
+            'Text' => LittleEndianNbtTag::string($text->blob()),
+            'TextOwner' => LittleEndianNbtTag::string(''),
+        ];
+    }
+
+    /** @param array<string, LittleEndianNbtTag> $tags */
+    private static function decodeSignText(array $tags): SignText
+    {
+        $color = self::integer(self::required($tags, 'SignTextColor'), LittleEndianNbtTag::INT, 'SignTextColor');
+        if ($color < 0) {
+            $color += 0x100000000;
+        }
+
+        return SignText::fromBlob(
+            self::string(self::required($tags, 'Text'), 'Text'),
+            $color,
+            isset($tags['IgnoreLighting'])
+                && self::integer($tags['IgnoreLighting'], LittleEndianNbtTag::BYTE, 'IgnoreLighting') !== 0,
         );
     }
 

@@ -14,6 +14,23 @@ composer analyse
 composer test
 ```
 
+When the active Data package changes, regenerate the complete public vanilla
+block and item catalogs before running the gate:
+
+```shell
+php tools/generate-vanilla-catalogs.php
+php tools/generate-vanilla-catalogs.php --check
+```
+
+The first command deterministically rewrites `VanillaBlocks` and
+`VanillaItems`; the second performs a read-only freshness check. Catalog
+coverage compares the generated constants with every unique canonical block
+identifier and every admitted item identifier in the active data set. Tool
+tests also reject invalid identifiers, ambiguous PHP constant names, and stale
+output. Semantic `BlockTag` and `ItemTag` tests are separate: they verify
+family membership, exact-identifier checks, and important exclusions such as a
+trapdoor not matching the door tag.
+
 The complete gate also validates Composer metadata and advisories, the integration manifest, relative documentation links, and dependency licenses. PHPUnit treats warnings, risky tests, and tests without assertions as failures. Environment tests verify locked archive parsing, hostile archive rejection, staged rollback, pre-autoload Runtime identity and inventory checks, launcher argument forwarding, and the absence of any system-PHP fallback.
 
 Routine GitHub CI runs `composer check:ci` on PHP 8.4 for lightweight metadata, dependency, formatting, and static-analysis validation. It does not run PHPUnit. The complete PHPUnit suite remains part of the required local `composer check` before a commit; platform and retail qualification remain separate release evidence.

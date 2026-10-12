@@ -44,4 +44,27 @@ final readonly class ItemStack
             throw new InvalidArgumentException('Item auxiliary value must be between 0 and 32767.');
         }
     }
+
+    public function getIdentifier(): string
+    {
+        return $this->identifier;
+    }
+
+    public function is(string|ItemTag $identity): bool
+    {
+        return $identity instanceof ItemTag
+            ? ItemTagRegistry::contains($identity, $this->identifier)
+            : $this->identifier === $identity;
+    }
+
+    public function hasTag(ItemTag $tag): bool
+    {
+        return ItemTagRegistry::contains($tag, $this->identifier);
+    }
+
+    /** @return list<ItemTag> */
+    public function getTags(): array
+    {
+        return ItemTagRegistry::tagsFor($this->identifier);
+    }
 }

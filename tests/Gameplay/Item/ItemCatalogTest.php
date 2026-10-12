@@ -66,6 +66,10 @@ final class ItemCatalogTest extends TestCase
         self::assertSame(64, $catalog->type('minecraft:diamond')->maximumStackSize);
         self::assertSame(1, $catalog->type('minecraft:shulker_box')->maximumStackSize);
         self::assertSame(1, $catalog->type('minecraft:red_shulker_box')->maximumStackSize);
+        self::assertSame(1, $catalog->type('minecraft:oak_boat')->maximumStackSize);
+        self::assertSame(1, $catalog->type('minecraft:oak_chest_boat')->maximumStackSize);
+        self::assertSame(1, $catalog->type('minecraft:bamboo_raft')->maximumStackSize);
+        self::assertSame(1, $catalog->type('minecraft:bamboo_chest_raft')->maximumStackSize);
         self::assertSame(
             'minecraft:undyed_shulker_box',
             $catalog->type('minecraft:shulker_box')->placedBlockState?->identifier(),
@@ -73,6 +77,22 @@ final class ItemCatalogTest extends TestCase
         self::assertSame(
             'minecraft:red_shulker_box',
             $catalog->type('minecraft:red_shulker_box')->placedBlockState?->identifier(),
+        );
+        self::assertSame(
+            'minecraft:standing_sign',
+            $catalog->type('minecraft:oak_sign')->placedBlockState?->identifier(),
+        );
+        self::assertSame(
+            'minecraft:darkoak_standing_sign',
+            $catalog->type('minecraft:dark_oak_sign')->placedBlockState?->identifier(),
+        );
+        self::assertSame(
+            'minecraft:birch_standing_sign',
+            $catalog->type('minecraft:birch_sign')->placedBlockState?->identifier(),
+        );
+        self::assertSame(
+            'minecraft:birch_hanging_sign',
+            $catalog->type('minecraft:birch_hanging_sign')->placedBlockState?->identifier(),
         );
         self::assertCount(count($catalog->all()), $catalog->commandIdentifiers());
         self::assertContains('diamond', $catalog->commandIdentifiers());

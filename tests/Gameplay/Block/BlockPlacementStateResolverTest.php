@@ -22,6 +22,7 @@ namespace Bedriox\Server\Tests\Gameplay\Block;
 
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Data\CanonicalBlockState;
+use Bedriox\Server\Gameplay\Block\BlockPlacementContext;
 use Bedriox\Server\Gameplay\Block\BlockPlacementStateResolver;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Generation\GenerationBlockPalette;
@@ -77,5 +78,74 @@ final class BlockPlacementStateResolverTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('Canonical block state is not registered internally.');
         $resolver->resolve($vertical, 5);
+    }
+
+    public function testStairsUsePlayerDirectionAndClickedHalf(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $resolver = new BlockPlacementStateResolver($registry);
+        $base = CanonicalBlockState::from('minecraft:oak_stairs', [
+            'minecraft:corner' => 'none',
+            'upside_down_bit' => 0,
+            'weirdo_direction' => 0,
+        ]);
+
+        $bottom = $registry->state($resolver->resolvePlacement(
+            $base,
+            new BlockPlacementContext(1, 0.5, 0.9, 0.5, 0.0),
+        ));
+        self::assertSame(2, $bottom->properties()['weirdo_direction']);
+        self::assertSame(0, $bottom->properties()['upside_down_bit']);
+
+        $top = $registry->state($resolver->resolvePlacement(
+            $base,
+            new BlockPlacementContext(5, 0.5, 0.75, 0.5, 90.0),
+        ));
+        self::assertSame(1, $top->properties()['weirdo_direction']);
+        self::assertSame(1, $top->properties()['upside_down_bit']);
+
+        foreach ([[0.0, 2], [90.0, 1], [180.0, 3], [270.0, 0]] as [$yaw, $direction]) {
+            $placed = $registry->state($resolver->resolvePlacement(
+                $base,
+                new BlockPlacementContext(1, 0.5, 0.5, 0.5, $yaw),
+            ));
+            self::assertSame($direction, $placed->properties()['weirdo_direction']);
+        }
+    }
+
+    public function testSlabsSelectTheirHalfAndMergeMatchingStates(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $resolver = new BlockPlacementStateResolver($registry);
+        $base = CanonicalBlockState::from('minecraft:oak_slab', ['minecraft:vertical_half' => 'bottom']);
+        $sideTop = new BlockPlacementContext(5, 0.5, 0.75, 0.5, 0.0);
+
+        $placed = $registry->state($resolver->resolvePlacement($base, $sideTop));
+        self::assertSame('top', $placed->properties()['minecraft:vertical_half']);
+
+        $merged = $resolver->resolveSlabMerge(
+            $base,
+            CanonicalBlockState::from('minecraft:oak_slab', ['minecraft:vertical_half' => 'bottom']),
+            new BlockPlacementContext(1, 0.5, 0.5, 0.5, 0.0),
+        );
+        self::assertNotNull($merged);
+        self::assertSame('minecraft:oak_double_slab', $registry->state($merged)->identifier());
+    }
+
+    public function testButtonAttachesToTheClickedFaceUnpressed(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $resolver = new BlockPlacementStateResolver($registry);
+        $base = CanonicalBlockState::from('minecraft:stone_button', [
+            'button_pressed_bit' => 1,
+            'facing_direction' => 0,
+        ]);
+
+        $placed = $registry->state($resolver->resolvePlacement(
+            $base,
+            new BlockPlacementContext(4, 0.5, 0.5, 0.5, 0.0),
+        ));
+        self::assertSame(4, $placed->properties()['facing_direction']);
+        self::assertSame(0, $placed->properties()['button_pressed_bit']);
     }
 }

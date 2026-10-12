@@ -36,6 +36,7 @@ use Bedriox\Protocol\Packet\AnimatePacket;
 use Bedriox\Protocol\Packet\AutoCraftRecipeItemStackRequestAction;
 use Bedriox\Protocol\Packet\BasicInventoryTransaction;
 use Bedriox\Protocol\Packet\BedrockPacketCodec;
+use Bedriox\Protocol\Packet\BlockActorDataPacket;
 use Bedriox\Protocol\Packet\BlockPickRequestPacket;
 use Bedriox\Protocol\Packet\BlockPosition;
 use Bedriox\Protocol\Packet\BossEventAction;
@@ -119,6 +120,7 @@ use Bedriox\Protocol\Packet\SetLocalPlayerAsInitializedPacket;
 use Bedriox\Protocol\Packet\SetPlayerFurnaceOptionsPacket;
 use Bedriox\Protocol\Packet\SetPlayerInventoryOptionsPacket;
 use Bedriox\Protocol\Packet\SetTimePacket;
+use Bedriox\Protocol\Packet\SignBlockActorData;
 use Bedriox\Protocol\Packet\SubChunkPacket;
 use Bedriox\Protocol\Packet\SubChunkRequestPacket;
 use Bedriox\Protocol\Packet\SwapItemStackRequestAction;
@@ -155,6 +157,7 @@ use Bedriox\Server\Worker\Chunk\PreparedChunkAvailability;
 use Bedriox\Server\Worker\Chunk\PreparedChunkCache;
 use Bedriox\Server\Worker\Network\CompressionWorkerDispatcher;
 use Bedriox\Server\Worker\Network\OrderedOutboundCompressionQueue;
+use Bedriox\Server\World\BlockEntity\SignText;
 use Bedriox\Server\World\BlockPosition as WorldBlockPosition;
 use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkPosition;
@@ -1481,6 +1484,24 @@ final class BedrockPlayChannel
         if ($packet instanceof ClientCacheStatusPacket) {
             return true;
         }
+        if ($packet instanceof BlockActorDataPacket) {
+            if (!$this->initialized || !$this->hasLoadedBlock($packet->position)
+                || $this->commands->count() >= $this->limits->maximumCommandsPerPayload) {
+                return $this->initialized;
+            }
+            $data = SignBlockActorData::decode($packet->networkNbt);
+            if ($data->position != $packet->position) {
+                return false;
+            }
+            $this->commands->enqueue($this->commandFactory->updateSignText(
+                $this->sessionId,
+                new WorldBlockPosition($data->position->x, $data->position->y, $data->position->z),
+                SignText::fromBlob($data->front->text, self::unsignedInt($data->front->color), $data->front->glowing),
+                SignText::fromBlob($data->back->text, self::unsignedInt($data->back->color), $data->back->glowing),
+            ));
+
+            return true;
+        }
         if ($packet instanceof AnimatePacket) {
             return $packet->runtimeEntityId->equals($this->runtimeEntityId);
         }
@@ -2054,6 +2075,11 @@ final class BedrockPlayChannel
         $normalized = fmod($yaw, 360.0);
 
         return $normalized < 0.0 ? $normalized + 360.0 : $normalized;
+    }
+
+    private static function unsignedInt(int $value): int
+    {
+        return $value < 0 ? $value + 0x100000000 : $value;
     }
 
     private function enqueueMovementCommand(MovePlayer $command): void

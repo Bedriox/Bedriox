@@ -228,6 +228,7 @@ final class ServerBootstrap
         $blockCollisions = BlockCollisionRegistry::forGenerationPalette(
             $internalStates,
             GenerationBlockPalette::fromRegistry($internalStates),
+            $data->voxelShapeRegistry(),
         );
         $chunkProjectionRegistryHash = ChunkProjectionIdentity::registryHash($data, $networkStates);
         $startupCatalogsReadyAt = hrtime(true);
@@ -235,7 +236,7 @@ final class ServerBootstrap
             ?? $this->ephemeralWorld($config, $internalStates);
         $startupWorldOpenedAt = hrtime(true);
         $flatWorld = $openedWorld->world;
-        $runtimeWorldActions = new RuntimeWorldActions($blockCatalog, $internalStates, $pluginActions);
+        $runtimeWorldActions = new RuntimeWorldActions($internalStates, $pluginActions);
         $worldActions = $runtimeWorldActions->actions();
         $defaultWorldId = WorldRuntimeManager::canonicalId($config->levelName);
         $defaultWorldHandles = [];

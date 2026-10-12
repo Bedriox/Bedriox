@@ -20,6 +20,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Gameplay\Block;
 
+use Bedriox\Api\World\BlockTag;
+use Bedriox\Api\World\BlockTagRegistry;
 use Bedriox\Server\Gameplay\Item\ItemType;
 use Bedriox\Server\Gameplay\Item\ToolType;
 
@@ -38,6 +40,15 @@ final class BlockDropRules
     ): array {
         if (!BlockBreakRules::canHarvest($block, $heldItem)) {
             return [];
+        }
+        if (BlockTagRegistry::contains(BlockTag::DOUBLE_SLAB, $block->identifier())) {
+            $slab = substr($block->identifier(), 0, -strlen('_double_slab')) . '_slab';
+
+            return [new BlockDrop($slab, 2)];
+        }
+        $definition = VanillaBlockLootRegistry::definition($block->identifier());
+        if ($definition !== null) {
+            return self::registeredDrops($definition, $random, $silkTouch, $fortuneLevel);
         }
         if ($silkTouch && $block->dropKind !== BlockDropKind::None) {
             return [new BlockDrop($block->itemIdentifier() ?? $block->identifier(), 1)];
@@ -74,6 +85,67 @@ final class BlockDropRules
             BlockDropKind::BirchLeaves => self::leaves($block, $heldItem, $random, 'minecraft:birch_sapling', false),
             BlockDropKind::SpruceLeaves => self::leaves($block, $heldItem, $random, 'minecraft:spruce_sapling', false),
         };
+    }
+
+    public static function experience(
+        BlockType $block,
+        ?ItemType $heldItem,
+        DropRandom $random,
+        bool $silkTouch = false,
+    ): int {
+        if (!BlockBreakRules::canHarvest($block, $heldItem)) {
+            return 0;
+        }
+        $definition = VanillaBlockLootRegistry::definition($block->identifier());
+        if ($definition === null || $definition->maximumExperience === 0
+            || ($silkTouch && !$definition->experienceWithSilkTouch)
+            || ($definition->experienceStateProperty !== null
+                && ($block->state->properties()[$definition->experienceStateProperty] ?? null)
+                    !== $definition->experienceStateValue)) {
+            return 0;
+        }
+
+        return $random->integer($definition->minimumExperience, $definition->maximumExperience);
+    }
+
+    public static function breakEffect(BlockType $block, bool $silkTouch = false): BlockBreakEffect
+    {
+        if ($silkTouch) {
+            return BlockBreakEffect::None;
+        }
+
+        $definition = VanillaBlockLootRegistry::definition($block->identifier());
+
+        return $definition === null ? BlockBreakEffect::None : $definition->breakEffect;
+    }
+
+    /** @return list<BlockDrop> */
+    private static function registeredDrops(
+        BlockLootDefinition $definition,
+        DropRandom $random,
+        bool $silkTouch,
+        int $fortuneLevel,
+    ): array {
+        if ($silkTouch) {
+            return $definition->silkTouchIdentifier === null
+                ? []
+                : [new BlockDrop($definition->silkTouchIdentifier, 1)];
+        }
+        if ($definition->kind === BlockLootKind::None || $definition->dropIdentifier === null) {
+            return [];
+        }
+        $base = $definition->minimumCount === $definition->maximumCount
+            ? $definition->minimumCount
+            : $random->integer($definition->minimumCount, $definition->maximumCount);
+        $count = match ($definition->kind) {
+            BlockLootKind::Fixed => $base,
+            BlockLootKind::FortuneWeighted => self::fortuneCount($base, $fortuneLevel, $random),
+            BlockLootKind::Redstone => $fortuneLevel <= 0
+                ? $base
+                : min(8, $base + $random->integer(0, $fortuneLevel)),
+        };
+
+        return $count === 0 ? [] : [new BlockDrop($definition->dropIdentifier, $count)];
     }
 
     private static function fortuneCount(int $base, int $level, DropRandom $random): int

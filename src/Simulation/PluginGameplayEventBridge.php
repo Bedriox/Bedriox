@@ -56,8 +56,12 @@ use Bedriox\Api\Entity\Vanilla\Ocelot as ApiOcelot;
 use Bedriox\Api\Entity\Vector3;
 use Bedriox\Api\Event\Block\BlockBreakEvent;
 use Bedriox\Api\Event\Block\BlockBrokenEvent;
+use Bedriox\Api\Event\Block\BlockInteractionType;
 use Bedriox\Api\Event\Block\BlockPlacedEvent;
 use Bedriox\Api\Event\Block\BlockPlaceEvent;
+use Bedriox\Api\Event\Block\BlockStateChangedEvent;
+use Bedriox\Api\Event\Block\BlockStateChangeEvent;
+use Bedriox\Api\Event\Block\BlockStateChangeReason;
 use Bedriox\Api\Event\Block\BrewedEvent;
 use Bedriox\Api\Event\Block\BrewingEvent;
 use Bedriox\Api\Event\Block\BrewingFuelConsumedEvent;
@@ -66,6 +70,8 @@ use Bedriox\Api\Event\Block\ChestPairedEvent;
 use Bedriox\Api\Event\Block\ChestPairEvent;
 use Bedriox\Api\Event\Block\EndPortalActivatedEvent;
 use Bedriox\Api\Event\Block\EndPortalActivateEvent;
+use Bedriox\Api\Event\Block\PlayerInteractBlockEvent;
+use Bedriox\Api\Event\Block\PlayerInteractedBlockEvent;
 use Bedriox\Api\Event\Encounter\EnderDragonEncounterCompletedEvent;
 use Bedriox\Api\Event\Encounter\EnderDragonParticipantChangedEvent;
 use Bedriox\Api\Event\Encounter\EnderDragonParticipantChangeEvent;
@@ -280,6 +286,7 @@ use Bedriox\Api\Processing\StationProcessCause;
 use Bedriox\Api\TextFormat;
 use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\Block as ApiBlock;
+use Bedriox\Api\World\BlockFace;
 use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
 use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\PortalType;
@@ -298,6 +305,7 @@ use Bedriox\Server\Player\PlayerVitals;
 use Bedriox\Server\Plugin\Event\EventDispatcher;
 use Bedriox\Server\World\BlockPosition;
 use Closure;
+use InvalidArgumentException;
 
 /** Projects authoritative simulation state into the capability-limited public event API. */
 final readonly class PluginGameplayEventBridge
@@ -1810,6 +1818,100 @@ final readonly class PluginGameplayEventBridge
         $this->events->dispatch(new BlockPlacedEvent($this->playerView($player), self::block($position, $identifier)));
     }
 
+    /** @param array<string, bool|int|string> $properties */
+    public function allowBlockInteraction(
+        Player $player,
+        BlockPosition $position,
+        string $identifier,
+        array $properties,
+        int $face,
+        float $hitX,
+        float $hitY,
+        float $hitZ,
+        ?InventoryStack $held,
+        BlockInteractionType $interaction = BlockInteractionType::USE,
+    ): bool {
+        $event = new PlayerInteractBlockEvent(
+            $this->playerView($player),
+            self::block($position, $identifier, $properties),
+            $interaction,
+            self::blockFace($face),
+            $hitX,
+            $hitY,
+            $hitZ,
+            self::apiItem($held),
+        );
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    /** @param array<string, bool|int|string> $properties */
+    public function blockInteracted(
+        Player $player,
+        BlockPosition $position,
+        string $identifier,
+        array $properties,
+        int $face,
+        float $hitX,
+        float $hitY,
+        float $hitZ,
+        ?InventoryStack $held,
+        BlockInteractionType $interaction = BlockInteractionType::USE,
+    ): void {
+        $this->events->dispatch(new PlayerInteractedBlockEvent(
+            $this->playerView($player),
+            self::block($position, $identifier, $properties),
+            $interaction,
+            self::blockFace($face),
+            $hitX,
+            $hitY,
+            $hitZ,
+            self::apiItem($held),
+        ));
+    }
+
+    /**
+     * @param array<string, bool|int|string> $previousProperties
+     * @param array<string, bool|int|string> $proposedProperties
+     */
+    public function allowBlockStateChange(
+        BlockPosition $position,
+        string $previousIdentifier,
+        array $previousProperties,
+        string $proposedIdentifier,
+        array $proposedProperties,
+        BlockStateChangeReason $reason,
+    ): bool {
+        $event = new BlockStateChangeEvent(
+            self::block($position, $previousIdentifier, $previousProperties),
+            self::block($position, $proposedIdentifier, $proposedProperties),
+            $reason,
+        );
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    /**
+     * @param array<string, bool|int|string> $previousProperties
+     * @param array<string, bool|int|string> $currentProperties
+     */
+    public function blockStateChanged(
+        BlockPosition $position,
+        string $previousIdentifier,
+        array $previousProperties,
+        string $currentIdentifier,
+        array $currentProperties,
+        BlockStateChangeReason $reason,
+    ): void {
+        $this->events->dispatch(new BlockStateChangedEvent(
+            self::block($position, $previousIdentifier, $previousProperties),
+            self::block($position, $currentIdentifier, $currentProperties),
+            $reason,
+        ));
+    }
+
     public function allowWeatherChange(
         string $worldName,
         DimensionType $dimension,
@@ -3058,8 +3160,29 @@ final readonly class PluginGameplayEventBridge
         );
     }
 
-    private static function block(BlockPosition $position, string $identifier): ApiBlock
+    /** @param array<string, bool|int|string> $properties */
+    private static function block(BlockPosition $position, string $identifier, array $properties = []): ApiBlock
     {
-        return new ApiBlock(new ApiBlockPosition($position->x, $position->y, $position->z), $identifier);
+        return new ApiBlock(new ApiBlockPosition($position->x, $position->y, $position->z), $identifier, $properties);
+    }
+
+    private static function blockFace(int $face): BlockFace
+    {
+        return match ($face) {
+            0 => BlockFace::DOWN,
+            1 => BlockFace::UP,
+            2 => BlockFace::NORTH,
+            3 => BlockFace::SOUTH,
+            4 => BlockFace::WEST,
+            5 => BlockFace::EAST,
+            default => throw new InvalidArgumentException('Block face is outside the supported range.'),
+        };
+    }
+
+    private static function apiItem(?InventoryStack $stack): ?ApiItemStack
+    {
+        return $stack === null
+            ? null
+            : new ApiItemStack($stack->identifier, $stack->count, $stack->damage, $stack->nbt, $stack->auxValue);
     }
 }

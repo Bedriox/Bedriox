@@ -35,9 +35,9 @@ final readonly class BlockCollisionShape
             throw new InvalidArgumentException('A block collision shape cannot contain more than 16 boxes.');
         }
         foreach ($boxes as $box) {
-            if ($box->minX < 0.0 || $box->minY < 0.0 || $box->minZ < 0.0
-                || $box->maxX > 1.0 || $box->maxY > 1.0 || $box->maxZ > 1.0) {
-                throw new InvalidArgumentException('Block collision boxes must remain inside their local cell.');
+            if ($box->minX < 0.0 || $box->minY < -1.0 || $box->minZ < 0.0
+                || $box->maxX > 1.0 || $box->maxY > 2.0 || $box->maxZ > 1.0) {
+                throw new InvalidArgumentException('Block collision boxes must remain inside their local cell footprint and height limit.');
             }
         }
         $this->boxes = $boxes;

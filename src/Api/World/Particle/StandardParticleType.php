@@ -108,6 +108,7 @@ enum StandardParticleType: string
     case GREEN_FLAME = 'green_flame';
     case PAUSE_MOB_GROWTH = 'pause_mob_growth';
     case RESET_MOB_GROWTH = 'reset_mob_growth';
+    case SULFUR_CUBE = 'sulfur_cube';
     case WATER_DRIP = 'water_drip';
     case WATER_SPLASH = 'water_splash';
     case WATER_WAKE = 'water_wake';

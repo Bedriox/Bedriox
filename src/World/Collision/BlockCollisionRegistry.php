@@ -21,6 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\World\Collision;
 
 use Bedriox\Data\CanonicalBlockState;
+use Bedriox\Data\VoxelShapeRegistry;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\InternalBlockStateId;
 use Bedriox\Server\World\Generation\GenerationBlockPalette;
@@ -35,8 +36,8 @@ final readonly class BlockCollisionRegistry
     /** @param array<int, BlockCollisionShape> $shapes */
     private function __construct(array $shapes)
     {
-        if ($shapes === [] || count($shapes) > 512) {
-            throw new LogicException('Block collision registry must contain between 1 and 512 supported states.');
+        if ($shapes === [] || count($shapes) > 100_000) {
+            throw new LogicException('Block collision registry must contain between 1 and 100,000 supported states.');
         }
         $this->shapes = $shapes;
     }
@@ -44,7 +45,34 @@ final readonly class BlockCollisionRegistry
     public static function forGenerationPalette(
         BlockStateRegistry $states,
         GenerationBlockPalette $palette,
+        ?VoxelShapeRegistry $voxelShapes = null,
     ): self {
+        if ($voxelShapes !== null) {
+            $shapes = [];
+            /** @var array<int, BlockCollisionShape> $converted */
+            $converted = [];
+            foreach ($states->states() as $value => $state) {
+                $stateAwareShape = StateAwareBlockCollisionResolver::resolve($state);
+                if ($stateAwareShape !== null) {
+                    $shapes[$value] = $stateAwareShape;
+                    continue;
+                }
+                $voxelShape = $voxelShapes->shapeForBlockState($state);
+                $shape = $converted[$voxelShape->id()] ?? null;
+                if ($shape === null) {
+                    $boxes = [];
+                    foreach ($voxelShape->boxes() as $box) {
+                        [$minX, $minY, $minZ] = $box->minimum();
+                        [$maxX, $maxY, $maxZ] = $box->maximum();
+                        $boxes[] = new AxisAlignedBox($minX, $minY, $minZ, $maxX, $maxY, $maxZ);
+                    }
+                    $shape = $converted[$voxelShape->id()] = BlockCollisionShape::fromBoxes($boxes);
+                }
+                $shapes[$value] = $shape;
+            }
+
+            return new self($shapes);
+        }
         $shapes = [];
         foreach ($palette->states() as $stateId) {
             $shapes[$stateId->value] = self::shapeForState($states->state($stateId));
@@ -54,7 +82,10 @@ final readonly class BlockCollisionRegistry
             throw new LogicException('Generation collision definitions are incomplete or duplicated.');
         }
         foreach ($states->states() as $value => $state) {
-            if (in_array($state->identifier(), ['minecraft:water', 'minecraft:lava', 'minecraft:portal'], true)) {
+            $stateAwareShape = StateAwareBlockCollisionResolver::resolve($state);
+            if ($stateAwareShape !== null) {
+                $shapes[$value] = $stateAwareShape;
+            } elseif (in_array($state->identifier(), ['minecraft:water', 'minecraft:lava', 'minecraft:portal'], true)) {
                 $shapes[$value] = BlockCollisionShape::empty();
             }
         }
@@ -82,6 +113,10 @@ final readonly class BlockCollisionRegistry
 
     private static function shapeForState(CanonicalBlockState $state): BlockCollisionShape
     {
+        $stateAwareShape = StateAwareBlockCollisionResolver::resolve($state);
+        if ($stateAwareShape !== null) {
+            return $stateAwareShape;
+        }
         $identifier = $state->identifier();
         if (in_array($identifier, self::emptyCollisionIdentifiers(), true)) {
             return BlockCollisionShape::empty();

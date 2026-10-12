@@ -74,6 +74,7 @@ use Bedriox\Api\Entity\Vanilla\Skeleton as ApiSkeleton;
 use Bedriox\Api\Entity\Vanilla\Zombie as ApiZombie;
 use Bedriox\Api\Entity\VanillaEntityIdentifier;
 use Bedriox\Api\Entity\VanillaEntityType;
+use Bedriox\Api\Event\Block\BlockStateChangeReason;
 use Bedriox\Api\Event\Entity\EntityDamageByEntityEvent;
 use Bedriox\Api\Event\Inventory\InventoryCloseReason as ApiInventoryCloseReason;
 use Bedriox\Api\Event\World\WeatherChangeCause;
@@ -104,6 +105,8 @@ use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\Block as ApiBlock;
 use Bedriox\Api\World\BlockFace as ApiBlockFace;
 use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
+use Bedriox\Api\World\BlockTag;
+use Bedriox\Api\World\BlockTagRegistry;
 use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\Particle\StandardParticle;
 use Bedriox\Api\World\Particle\StandardParticleType;
@@ -165,6 +168,7 @@ use Bedriox\Server\Entity\Mount\HorseFamilyEntity;
 use Bedriox\Server\Entity\Mount\Inventory\HorseContainerInventory;
 use Bedriox\Server\Entity\Mount\MountLink;
 use Bedriox\Server\Entity\Mount\MountRegistry;
+use Bedriox\Server\Entity\Mount\MountViewConstraint;
 use Bedriox\Server\Entity\Mount\UndeadHorseEntity;
 use Bedriox\Server\Entity\Navigation\AsyncNavigationCoordinator;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceFlushResult;
@@ -238,12 +242,36 @@ use Bedriox\Server\Entity\Vanilla\ZombieHorseEntity;
 use Bedriox\Server\Entity\Vehicle\BoatEntity;
 use Bedriox\Server\Entity\WorldEntityEnvironment;
 use Bedriox\Server\Gameplay\Block\BlockBreakContext;
+use Bedriox\Server\Gameplay\Block\BlockBreakEffect;
 use Bedriox\Server\Gameplay\Block\BlockBreakRules;
 use Bedriox\Server\Gameplay\Block\BlockCatalog;
 use Bedriox\Server\Gameplay\Block\BlockDropRules;
+use Bedriox\Server\Gameplay\Block\BlockPlacementContext;
 use Bedriox\Server\Gameplay\Block\BlockPlacementStateResolver;
+use Bedriox\Server\Gameplay\Block\BlockToolTransformRegistry;
 use Bedriox\Server\Gameplay\Block\BlockType;
+use Bedriox\Server\Gameplay\Block\ConnectedBlockStateResolver;
 use Bedriox\Server\Gameplay\Block\DropRandom;
+use Bedriox\Server\Gameplay\Block\Environment\BrushableBlockBehaviorResolver;
+use Bedriox\Server\Gameplay\Block\Environment\DripstoneCauldronBehaviorResolver;
+use Bedriox\Server\Gameplay\Block\Environment\EnvironmentBlockTransition;
+use Bedriox\Server\Gameplay\Block\Environment\FallingBlockSupportResolver;
+use Bedriox\Server\Gameplay\Block\Environment\FarmlandBehaviorResolver;
+use Bedriox\Server\Gameplay\Block\Environment\FarmlandHydrationSearch;
+use Bedriox\Server\Gameplay\Block\Environment\PotentSulfurBehaviorResolver;
+use Bedriox\Server\Gameplay\Block\Environment\PotentSulfurState;
+use Bedriox\Server\Gameplay\Block\Environment\PotentSulfurSubstrate;
+use Bedriox\Server\Gameplay\Block\Environment\SulfurSpikeBehaviorResolver;
+use Bedriox\Server\Gameplay\Block\Environment\SulfurSpikeSupportAction;
+use Bedriox\Server\Gameplay\Block\Environment\SupportDependentBlockResolver;
+use Bedriox\Server\Gameplay\Block\Environment\SurfaceBlockBehaviorResolver;
+use Bedriox\Server\Gameplay\Block\Environment\SurfaceSpreadCandidate;
+use Bedriox\Server\Gameplay\Block\Interaction\DoorBlockStateResolver;
+use Bedriox\Server\Gameplay\Block\Interaction\DoorStatePair;
+use Bedriox\Server\Gameplay\Block\Interaction\InteractiveBlockStateResolver;
+use Bedriox\Server\Gameplay\Block\Interaction\ShelfInventory;
+use Bedriox\Server\Gameplay\Block\Interaction\SignBlockStateResolver;
+use Bedriox\Server\Gameplay\Block\StairBlockStateResolver;
 use Bedriox\Server\Gameplay\Block\SystemDropRandom;
 use Bedriox\Server\Gameplay\Combat\KnockbackMotion;
 use Bedriox\Server\Gameplay\Combat\KnockbackResolver;
@@ -379,6 +407,7 @@ use Bedriox\Server\Simulation\Command\SwingArm;
 use Bedriox\Server\Simulation\Command\SyncInventory;
 use Bedriox\Server\Simulation\Command\SyncInventorySlots;
 use Bedriox\Server\Simulation\Command\TeleportPlayer;
+use Bedriox\Server\Simulation\Command\UpdateSignText;
 use Bedriox\Server\Simulation\Command\UseItem;
 use Bedriox\Server\Simulation\Command\WorkstationRequest;
 use Bedriox\Server\Simulation\Command\WorldCommand;
@@ -474,6 +503,7 @@ use Bedriox\Server\Simulation\Event\ProjectileMoved;
 use Bedriox\Server\Simulation\Event\ProjectileRemoved;
 use Bedriox\Server\Simulation\Event\ProjectileSpawned;
 use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
+use Bedriox\Server\Simulation\Event\SignEditorOpened;
 use Bedriox\Server\Simulation\Event\TameAttemptPresented;
 use Bedriox\Server\Simulation\Event\TextDisplayActorRemoved;
 use Bedriox\Server\Simulation\Event\TextDisplayActorSpawned;
@@ -487,6 +517,9 @@ use Bedriox\Server\World\Block\InternalBlockStateId;
 use Bedriox\Server\World\BlockEntity\BlockEntityType;
 use Bedriox\Server\World\BlockEntity\ContainerBlockEntity;
 use Bedriox\Server\World\BlockEntity\ContainerItemStack;
+use Bedriox\Server\World\BlockEntity\ShelfBlockEntity;
+use Bedriox\Server\World\BlockEntity\SignBlockEntity;
+use Bedriox\Server\World\BlockEntity\SignText;
 use Bedriox\Server\World\BlockEntity\SimpleBlockEntity;
 use Bedriox\Server\World\BlockEntity\SuspiciousSandBlockEntity;
 use Bedriox\Server\World\BlockPosition;
@@ -580,6 +613,47 @@ final class WorldSimulation
     private readonly ?PlayerCollisionResolver $collisionResolver;
     private readonly ?DroppedItemCollisionResolver $itemCollisionResolver;
     private readonly ?BlockPlacementStateResolver $blockPlacementStates;
+
+    private readonly ?BlockToolTransformRegistry $blockToolTransforms;
+
+    private readonly ?DoorBlockStateResolver $doorStates;
+
+    private readonly ?InteractiveBlockStateResolver $interactiveBlockStates;
+
+    private readonly ?SignBlockStateResolver $signBlockStates;
+
+    private readonly ?SulfurSpikeBehaviorResolver $sulfurSpikeBehavior;
+
+    private readonly ?ConnectedBlockStateResolver $connectedBlockStates;
+
+    private readonly ?StairBlockStateResolver $stairBlockStates;
+
+    private readonly ?SurfaceBlockBehaviorResolver $surfaceBlockBehavior;
+
+    private readonly ?FarmlandBehaviorResolver $farmlandBehavior;
+
+    private readonly ?BrushableBlockBehaviorResolver $brushableBlockBehavior;
+
+    private readonly FallingBlockSupportResolver $fallingBlockSupport;
+
+    private readonly SupportDependentBlockResolver $supportDependentBlocks;
+
+    private readonly DripstoneCauldronBehaviorResolver $dripstoneCauldrons;
+
+    private readonly ?PotentSulfurBehaviorResolver $potentSulfurBehavior;
+
+    private readonly FarmlandHydrationSearch $farmlandHydrationSearch;
+
+    private int $randomTickChunkCursor = 0;
+
+    private int $fallingBlockCursor = 0;
+
+    private int $pressureEntityCursor = 0;
+
+    private int $pressureItemCursor = 0;
+
+    /** @var array<string, array{position: BlockPosition, releaseAt: int}> */
+    private array $activePressurePlates = [];
     private readonly DropRandom $dropRandom;
     private readonly ItemEntityRegistry $itemEntities;
 
@@ -1222,6 +1296,39 @@ final class WorldSimulation
         $this->blockPlacementStates = $blockStateRegistry === null
             ? null
             : new BlockPlacementStateResolver($blockStateRegistry);
+        $this->blockToolTransforms = $blockStateRegistry === null
+            ? null
+            : new BlockToolTransformRegistry($blockStateRegistry);
+        $this->doorStates = $blockStateRegistry === null ? null : new DoorBlockStateResolver($blockStateRegistry);
+        $this->interactiveBlockStates = $blockStateRegistry === null
+            ? null
+            : new InteractiveBlockStateResolver($blockStateRegistry);
+        $this->signBlockStates = $blockStateRegistry === null ? null : new SignBlockStateResolver($blockStateRegistry);
+        $this->sulfurSpikeBehavior = $blockStateRegistry === null
+            ? null
+            : new SulfurSpikeBehaviorResolver($blockStateRegistry);
+        $this->connectedBlockStates = $blockStateRegistry === null
+            ? null
+            : new ConnectedBlockStateResolver($blockStateRegistry);
+        $this->stairBlockStates = $blockStateRegistry === null
+            ? null
+            : new StairBlockStateResolver($blockStateRegistry);
+        $this->surfaceBlockBehavior = $blockStateRegistry === null
+            ? null
+            : new SurfaceBlockBehaviorResolver($blockStateRegistry);
+        $this->farmlandBehavior = $blockStateRegistry === null
+            ? null
+            : new FarmlandBehaviorResolver($blockStateRegistry);
+        $this->brushableBlockBehavior = $blockStateRegistry === null
+            ? null
+            : new BrushableBlockBehaviorResolver($blockStateRegistry);
+        $this->fallingBlockSupport = new FallingBlockSupportResolver();
+        $this->supportDependentBlocks = new SupportDependentBlockResolver();
+        $this->dripstoneCauldrons = new DripstoneCauldronBehaviorResolver();
+        $this->potentSulfurBehavior = $blockStateRegistry === null
+            ? null
+            : new PotentSulfurBehaviorResolver($blockStateRegistry);
+        $this->farmlandHydrationSearch = new FarmlandHydrationSearch();
         $encounterStore = $blockWorld?->transientEntityPersistenceStore();
         $this->endGateways = $this->dimension === DimensionType::END
             ? new \Bedriox\Server\Gameplay\End\EndGatewayRuntime(
@@ -1582,6 +1689,8 @@ final class WorldSimulation
         array_push($events, ...$this->advanceNetherLifecycle());
         $this->advanceEndStructurePopulation();
         array_push($events, ...$this->advanceEnvironmentalBlocks());
+        array_push($events, ...$this->advanceRandomBlockTicks());
+        array_push($events, ...$this->advancePressurePlates());
         array_push($events, ...$this->advanceWeather());
         $stages['environment'] = hrtime(true) - $environmentStartedNanoseconds;
         array_push($events, ...$this->advancePlayerEnvironment());
@@ -2438,6 +2547,31 @@ final class WorldSimulation
         if ($behavior === null) {
             return [];
         }
+        if ($state->identifier() === 'minecraft:sulfur_spike' && $this->sulfurSpikeBehavior !== null) {
+            $hanging = ($state->properties()['hanging'] ?? 0) === 1;
+            $supportY = $position->y + ($hanging ? 1 : -1);
+            $support = $this->blockWorld->loadedBlockStateAt($position->x, $supportY, $position->z);
+            $action = $this->sulfurSpikeBehavior->supportAction(
+                $state,
+                $support !== null && !$this->isReplaceablePhysicsState($support),
+            );
+            if ($action === SulfurSpikeSupportAction::STABLE) {
+                return [];
+            }
+            if ($action === SulfurSpikeSupportAction::BREAK) {
+                $previous = $this->setBlockStateAndSchedule($position, $this->blockPalette->air);
+
+                return [new BlockChanged(
+                    'server',
+                    $position,
+                    $this->blockPalette->air,
+                    $this->players->recipients(),
+                    false,
+                    $previous,
+                )];
+            }
+            return $this->beginFallingBlock($position, $stateId, $state, $behavior);
+        }
         if ($behavior->kind === FallingBlockKind::CONCRETE_POWDER && $this->blockTouchesWater($position)) {
             $hardened = $this->canonicalStateForIdentifier($behavior->waterHardenedIdentifier ?? '');
             if ($hardened === null) {
@@ -2616,10 +2750,26 @@ final class WorldSimulation
         if ($this->blockWorld === null || $this->blockStateRegistry === null) {
             return [];
         }
+        $count = count($this->announcedFallingBlocks);
+        if ($count === 0) {
+            $this->fallingBlockCursor = 0;
+
+            return [];
+        }
+        $offset = $this->fallingBlockCursor % $count;
+        $limit = min(128, $count);
+        $fallingBlocks = array_slice($this->announcedFallingBlocks, $offset, $limit, true);
+        $missing = $limit - count($fallingBlocks);
+        if ($missing > 0) {
+            $fallingBlocks += array_slice($this->announcedFallingBlocks, 0, $missing, true);
+        }
+        $this->fallingBlockCursor = ($offset + $limit) % $count;
         $events = [];
-        foreach ($this->entityRuntime->registry()->all() as $entity) {
-            if (!$entity instanceof FallingBlockEntity) {
-                continue;
+        $deadline = hrtime(true) + 750_000;
+        $firstRuntimeId = array_key_first($fallingBlocks);
+        foreach ($fallingBlocks as $index => $entity) {
+            if ($index !== $firstRuntimeId && hrtime(true) >= $deadline) {
+                break;
             }
             if ($entity->isSettled()) {
                 if ($entity->shouldRemoveSettledActor($this->tick)) {
@@ -4752,7 +4902,6 @@ final class WorldSimulation
             (int) floor($position->z + ($motion->z / $length)),
         );
         $identifier = $this->blockIdentifier($state->value);
-
         return str_ends_with($identifier, '_log')
             || in_array($identifier, [
                 'minecraft:stone',
@@ -7174,6 +7323,7 @@ final class WorldSimulation
             $command instanceof BreakBlock => $this->breakBlock($command),
             $command instanceof BrushBlock => $this->brushBlock($command),
             $command instanceof PlaceBlock => $this->placeBlock($command),
+            $command instanceof UpdateSignText => $this->updateSignText($command),
             $command instanceof PickBlock => $this->pickBlock($command),
             $command instanceof PickEntity => $this->pickEntity($command),
             $command instanceof ApplyInventoryStackRequest => $this->inventoryStackRequest($command),
@@ -7870,6 +8020,9 @@ final class WorldSimulation
                     false,
                     $mountedPlayer?->snapshot(),
                     [$player->sessionId],
+                    $vehicle instanceof BoatEntity
+                        ? $vehicle->mountedViewConstraint()
+                        : MountViewConstraint::standard(),
                 );
             }
         }
@@ -8086,6 +8239,7 @@ final class WorldSimulation
         $pluginStartedNanoseconds = hrtime(true);
         $this->pluginEvents?->moved($player);
         $this->movementPluginNanoseconds += hrtime(true) - $pluginStartedNanoseconds;
+        $landingFallDistance = $movement->fallDistance;
         if ($flying || !$player->gameMode()->takesDamage()) {
             $movement->fallDistance = 0.0;
         } elseif ($verticalDistance < $movement->fallDistance) {
@@ -8101,6 +8255,12 @@ final class WorldSimulation
                 $deathEvents = $this->drainDeferredEvents();
                 $this->deferredEvents[] = $damageEvent;
                 array_push($this->deferredEvents, ...$deathEvents);
+            }
+        }
+        if ($grounded && !$wasGrounded && $landingFallDistance > 0.5) {
+            $trampled = $this->trampleFarmlandBelow($position, $landingFallDistance);
+            if ($trampled !== null) {
+                $this->deferredEvents[] = $trampled;
             }
         }
         if ($terrainConstrained) {
@@ -8851,7 +9011,8 @@ final class WorldSimulation
             !($dragonPartPosition === null
                 ? $this->generalEntityIsReachable($attacker, $target)
                 : $this->entityPositionIsReachable($attacker, $dragonPartPosition)) => 'reach',
-            $this->tick <= ($this->entityInvulnerableUntilTicks[$target->getRuntimeId()] ?? -1) => 'damage_cooldown',
+            !$target instanceof BoatEntity
+                && $this->tick <= ($this->entityInvulnerableUntilTicks[$target->getRuntimeId()] ?? -1) => 'damage_cooldown',
             default => null,
         };
         if ($reason !== null) {
@@ -8966,8 +9127,10 @@ final class WorldSimulation
         if ($target instanceof LlamaEntity || $target instanceof TraderLlamaEntity) {
             $target->setRetaliationTargetUniqueId($attacker->identity->uuid);
         }
-        $this->entityInvulnerableUntilTicks[$target->getRuntimeId()] =
-            $this->tick + CombatRules::DAMAGE_IMMUNITY_TICKS;
+        if (!$target instanceof BoatEntity) {
+            $this->entityInvulnerableUntilTicks[$target->getRuntimeId()] =
+                $this->tick + CombatRules::DAMAGE_IMMUNITY_TICKS;
+        }
         if (!$result->died) {
             $this->damageEntityArmor($target, $baseDamage);
         }
@@ -9686,6 +9849,9 @@ final class WorldSimulation
             true,
             $player->snapshot(),
             $this->players->recipients(),
+            $vehicle instanceof BoatEntity
+                ? $vehicle->mountedViewConstraint()
+                : MountViewConstraint::standard(),
         );
     }
 
@@ -10472,8 +10638,7 @@ final class WorldSimulation
 
     private static function isFenceBlock(string $identifier): bool
     {
-        return $identifier === 'minecraft:fence'
-            || (str_starts_with($identifier, 'minecraft:') && str_ends_with($identifier, '_fence'));
+        return BlockTagRegistry::contains(BlockTag::FENCE, $identifier);
     }
 
     /**
@@ -11572,6 +11737,12 @@ final class WorldSimulation
                     $command->clickY,
                     $command->clickZ,
                 ),
+                $command instanceof UpdateSignText => $this->validator->updateSignText(
+                    $command->session,
+                    $command->position,
+                    $command->front,
+                    $command->back,
+                ),
                 $command instanceof ApplyInventoryStackRequest => $this->validator->inventoryStackRequest(
                     $command->session,
                     $command->requestId,
@@ -11903,7 +12074,8 @@ final class WorldSimulation
                 || !self::sameInventoryStack($held, $active['stack'])
                 || $held?->identifier !== 'minecraft:brush'
                 || !$entity instanceof SuspiciousSandBlockEntity
-                || $state === null || $this->blockIdentifier($state->value) !== 'minecraft:suspicious_sand') {
+                || $state === null
+                || $this->brushableBlockBehavior?->supports($this->blockStateRegistry->state($state)) !== true) {
                 $this->clearBrushSession($key);
                 if ($entity instanceof SuspiciousSandBlockEntity && $state !== null) {
                     $events[] = $this->resetSuspiciousSandProgress($entity, $state);
@@ -11916,12 +12088,7 @@ final class WorldSimulation
             if ($entity->progress < SuspiciousSandBlockEntity::MAXIMUM_PROGRESS) {
                 $progress = $entity->progress + 1;
                 $canonical = $this->blockStateRegistry->state($state);
-                $properties = $canonical->properties();
-                $properties['brushed_progress'] = $progress;
-                $next = $this->blockStateRegistry->internalId(CanonicalBlockState::from(
-                    'minecraft:suspicious_sand',
-                    $properties,
-                ));
+                $next = $this->brushableBlockBehavior->withProgress($canonical, $progress);
                 $this->setBlockStateAndSchedule($position, $next, false);
                 $this->blockWorld->setBlockEntity($entity->withProgress($progress));
                 $this->brushingBlocks[$key]['nextStageTick'] = $this->tick + 10;
@@ -11938,8 +12105,10 @@ final class WorldSimulation
                 $this->brushingBlocks[$key]['nextStageTick'] = $this->tick + 1;
                 continue;
             }
-            $sand = $this->blockStateRegistry->internalId(CanonicalBlockState::from('minecraft:sand'));
-            $this->setBlockStateAndSchedule($position, $sand, false);
+            $replacement = $this->brushableBlockBehavior->exhaustedReplacement(
+                $this->blockStateRegistry->state($state),
+            );
+            $this->setBlockStateAndSchedule($position, $replacement, false);
             $this->blockWorld->removeBlockEntity($position);
             $this->clearBrushSession($key);
             [$faceX, $faceY, $faceZ] = self::brushFaceOffset($active['face']);
@@ -11962,7 +12131,7 @@ final class WorldSimulation
             if ($player->gameMode() !== GameMode::CREATIVE) {
                 $this->damageHeldItem($player, ApiItemDamageCause::ITEM_USE, 1);
             }
-            $events[] = new BlockChanged('server', $position, $sand, $this->players->recipients(), false, $state);
+            $events[] = new BlockChanged('server', $position, $replacement, $this->players->recipients(), false, $state);
             $events[] = new ItemEntitySpawned($drop, $this->players->recipients());
         }
 
@@ -11972,7 +12141,8 @@ final class WorldSimulation
     private function brushBlock(BrushBlock $command): WorldEvent
     {
         $player = $this->players->player($command->session);
-        if ($player === null || $this->blockWorld === null || $this->blockPalette === null) {
+        if ($player === null || $this->blockWorld === null || $this->blockPalette === null
+            || $this->blockStateRegistry === null || $this->brushableBlockBehavior === null) {
             return new CommandRejected($command->session, 'block_world_unavailable');
         }
         $key = self::sessionKey($command->session);
@@ -12002,7 +12172,8 @@ final class WorldSimulation
         }
         $state = $this->blockWorld->loadedBlockStateAt($position->x, $position->y, $position->z);
         $entity = $this->blockWorld->blockEntityAt($position);
-        if ($state === null || $this->blockIdentifier($state->value) !== 'minecraft:suspicious_sand'
+        if ($state === null
+            || !$this->brushableBlockBehavior->supports($this->blockStateRegistry->state($state))
             || !$entity instanceof SuspiciousSandBlockEntity) {
             return new BlockChanged($command->session, $position, $state ?? $this->blockPalette->air, [$command->session]);
         }
@@ -12059,9 +12230,8 @@ final class WorldSimulation
         if ($this->blockWorld === null || $this->blockStateRegistry === null || $entity->progress === 0) {
             return new BlockChanged('server', $entity->position, $state, $this->players->recipients());
         }
-        $properties = $this->blockStateRegistry->state($state)->properties();
-        $properties['brushed_progress'] = 0;
-        $reset = $this->blockStateRegistry->internalId(CanonicalBlockState::from('minecraft:suspicious_sand', $properties));
+        $reset = $this->brushableBlockBehavior?->withProgress($this->blockStateRegistry->state($state), 0)
+            ?? $state;
         $this->setBlockStateAndSchedule($entity->position, $reset, false);
         $this->blockWorld->setBlockEntity($entity->withProgress(0));
 
@@ -12267,16 +12437,45 @@ final class WorldSimulation
         }
         unset($this->breakingBlocks[$key]);
         $identifier = $this->blockIdentifier($state->value);
+        $doorCompanionPosition = null;
+        $doorCompanionState = null;
+        if ($this->blockStateRegistry !== null) {
+            $brokenCanonical = $this->blockStateRegistry->state($state);
+            $brokenProperties = $brokenCanonical->properties();
+            if (BlockTagRegistry::contains(BlockTag::DOOR, $brokenCanonical->identifier())
+                && array_key_exists('upper_block_bit', $brokenProperties)) {
+                $otherY = $position->y + ($brokenProperties['upper_block_bit'] === 1 ? -1 : 1);
+                try {
+                    $candidatePosition = new BlockPosition($position->x, $otherY, $position->z);
+                    $candidateState = $this->blockWorld->loadedBlockStateAt(
+                        $candidatePosition->x,
+                        $candidatePosition->y,
+                        $candidatePosition->z,
+                    );
+                    $candidate = $candidateState === null ? null : $this->blockStateRegistry->state($candidateState);
+                    $candidateProperties = $candidate?->properties() ?? [];
+                    if ($candidate?->identifier() === $brokenCanonical->identifier()
+                        && array_key_exists('upper_block_bit', $candidateProperties)
+                        && $candidateProperties['upper_block_bit'] !== $brokenProperties['upper_block_bit']) {
+                        $doorCompanionPosition = $candidatePosition;
+                        $doorCompanionState = $candidateState;
+                    }
+                } catch (InvalidArgumentException) {
+                    // A door half on the build boundary has no valid companion coordinate.
+                }
+            }
+        }
         $heldType = $this->heldItemType($player);
         $survivalBreak = $player->gameMode() === GameMode::SURVIVAL
             && $blockType !== null && $this->itemCatalog !== null;
         $heldEnchantments = $this->heldEnchantments($player);
+        $silkTouch = ($heldEnchantments[VanillaEnchantments::SILK_TOUCH] ?? 0) > 0;
         $resolvedDrops = $survivalBreak
             ? BlockDropRules::drops(
                 $blockType,
                 $heldType,
                 $this->dropRandom,
-                ($heldEnchantments[VanillaEnchantments::SILK_TOUCH] ?? 0) > 0,
+                $silkTouch,
                 $heldEnchantments[VanillaEnchantments::FORTUNE] ?? 0,
             )
             : [];
@@ -12311,10 +12510,16 @@ final class WorldSimulation
             }
         }
         $storageEntity = $this->blockWorld->blockEntityAt($position);
-        $storageDrops = $storageEntity instanceof ContainerBlockEntity
-            && $storageEntity->type !== BlockEntityType::ShulkerBox
-            ? array_values($storageEntity->inventory->contents())
-            : [];
+        $storageDrops = match (true) {
+            $storageEntity instanceof ContainerBlockEntity
+                && $storageEntity->type !== BlockEntityType::ShulkerBox =>
+                array_values($storageEntity->inventory->contents()),
+            $storageEntity instanceof ShelfBlockEntity => array_values(array_filter(
+                $storageEntity->inventory->slots(),
+                static fn(?ContainerItemStack $stack): bool => $stack !== null,
+            )),
+            default => [],
+        };
         $shulkerNbt = null;
         if ($survivalBreak
             && $storageEntity instanceof ContainerBlockEntity
@@ -12340,6 +12545,17 @@ final class WorldSimulation
         }
         try {
             $this->setBlockStateAndSchedule($position, $this->blockPalette->air);
+            if ($doorCompanionPosition !== null && $doorCompanionState !== null) {
+                $this->setBlockStateAndSchedule($doorCompanionPosition, $this->blockPalette->air);
+                $this->deferredEvents[] = new BlockChanged(
+                    $command->session,
+                    $doorCompanionPosition,
+                    $this->blockPalette->air,
+                    $this->players->recipients(),
+                    false,
+                    $doorCompanionState,
+                );
+            }
         } catch (OverflowException) {
             return new BlockChanged(
                 $command->session,
@@ -12353,6 +12569,24 @@ final class WorldSimulation
         $this->removeStorageBlockEntity($position, $storageEntity);
         $this->refreshPlayerGroundStates();
         if ($survivalBreak) {
+            $experience = BlockDropRules::experience($blockType, $heldType, $this->dropRandom, $silkTouch);
+            if ($experience > 0) {
+                array_push(
+                    $this->deferredEvents,
+                    ...$this->spawnExperienceOrbs(
+                        $experience,
+                        new Position($position->x + 0.5, $position->y + 0.5, $position->z + 0.5),
+                    ),
+                );
+            }
+            if (BlockDropRules::breakEffect($blockType, $silkTouch) === BlockBreakEffect::SpawnSilverfish) {
+                $this->spawnEntity(new EntitySpawnRequest(
+                    VanillaEntityType::SILVERFISH,
+                    SpawnCause::BLOCK_PHYSICS,
+                    $this->worldId,
+                    new Position($position->x + 0.5, $position->y, $position->z + 0.5),
+                ));
+            }
             $itemCatalog = $this->itemCatalog;
             $blockStateRegistry = $this->blockStateRegistry;
             foreach ($drops as $drop) {
@@ -14630,6 +14864,16 @@ final class WorldSimulation
             $apiShooter = $shooter instanceof Player
                 ? $this->pluginEvents?->playerView($shooter)
                 : $shooter;
+            $sulfurSpikeImpact = null;
+            if ($projectile->type === ProjectileType::TRIDENT && $impactBlock instanceof BlockPosition) {
+                $sulfurSpikeImpact = $this->dislodgeSulfurSpikeFromProjectile(
+                    $impactBlock,
+                    $projectile->type->value,
+                );
+                if ($sulfurSpikeImpact !== null) {
+                    array_push($events, ...$sulfurSpikeImpact);
+                }
+            }
             if ($projectile->type === ProjectileType::ENDER_PEARL) {
                 $owner = $this->players->playerByIdentity($projectile->ownerUuid);
                 if ($owner !== null && $owner->vitals->isAlive()) {
@@ -14830,7 +15074,7 @@ final class WorldSimulation
                 if ($projectile->carriedItem !== null && $projectile->pickupAllowed) {
                     if ($projectile->loyaltyLevel > 0) {
                         $projectile = $projectile->beginReturning();
-                    } elseif ($blockHit) {
+                    } elseif ($blockHit && $sulfurSpikeImpact === null) {
                         $projectile = $projectile->embeddedAt(
                             $projectile->position,
                             $impactBlock,
@@ -15494,6 +15738,31 @@ final class WorldSimulation
             && $projectile->ownedByEntity($entity->getUniqueId(), $entity->getRuntimeId())
             ? $entity
             : null;
+    }
+
+    /** @return null|list<WorldEvent> Null means that the impacted block is not a sulfur spike. */
+    private function dislodgeSulfurSpikeFromProjectile(
+        BlockPosition $position,
+        string $projectileIdentifier,
+    ): ?array {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null
+            || !SulfurSpikeBehaviorResolver::breaksFromProjectile($projectileIdentifier)) {
+            return null;
+        }
+        $stateId = $this->blockWorld->loadedBlockStateAt($position->x, $position->y, $position->z);
+        if ($stateId === null) {
+            return null;
+        }
+        $state = $this->blockStateRegistry->state($stateId);
+        if ($state->identifier() !== 'minecraft:sulfur_spike') {
+            return null;
+        }
+        $behavior = $this->fallingBlocks->behavior($state);
+        if ($behavior === null) {
+            return [];
+        }
+
+        return $this->beginFallingBlock($position, $stateId, $state, $behavior);
     }
 
     /** @return list<WorldEvent> */
@@ -16781,10 +17050,35 @@ final class WorldSimulation
             || $this->blockStateRegistry === null || $this->blockPalette === null) {
             return [];
         }
-        $drain = $this->environmentTicks->drain($this->tick, 256, 1_500);
+        $deadline = hrtime(true) + 1_500_000;
+        $maximumTicks = $this->players->count() === 0 ? 16 : 64;
+        $drain = $this->environmentTicks->drain($this->tick, $maximumTicks, 250);
         $events = [];
-        foreach ($drain->ticks as $scheduled) {
+        foreach ($drain->ticks as $index => $scheduled) {
+            if ($index > 0 && hrtime(true) >= $deadline) {
+                foreach (array_slice($drain->ticks, $index) as $deferred) {
+                    try {
+                        $this->environmentTicks->schedule(
+                            $deferred->position,
+                            $deferred->type,
+                            $this->tick,
+                            0,
+                        );
+                    } catch (OverflowException) {
+                        // These entries were just drained, so capacity should remain available.
+                    }
+                }
+                break;
+            }
             if ($scheduled->type === EnvironmentTickType::BLOCK_PHYSICS) {
+                $buttonRelease = $this->releaseButton($scheduled->position);
+                if ($buttonRelease !== null) {
+                    $events[] = $buttonRelease;
+                }
+                $supportLoss = $this->processSupportDependentTick($scheduled->position);
+                if ($supportLoss !== null) {
+                    $events[] = $supportLoss;
+                }
                 array_push($events, ...$this->processFallingBlockTick($scheduled->position));
                 continue;
             }
@@ -16976,6 +17270,560 @@ final class WorldSimulation
         return $events;
     }
 
+    /** @return list<WorldEvent> */
+    private function advanceRandomBlockTicks(): array
+    {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null
+            || $this->surfaceBlockBehavior === null || $this->farmlandBehavior === null
+            || $this->players->count() === 0) {
+            return [];
+        }
+        $chunkCount = $this->blockWorld->loadedChunkCount();
+        if ($chunkCount === 0) {
+            return [];
+        }
+        $events = [];
+        $deadline = hrtime(true) + 750_000;
+        $chunkBudget = min(8, $chunkCount);
+        $chunks = $this->blockWorld->loadedChunkWindow($this->randomTickChunkCursor, $chunkBudget);
+        $this->randomTickChunkCursor = ($this->randomTickChunkCursor + count($chunks)) % $chunkCount;
+        foreach ($chunks as $chunk) {
+            $sections = $chunk->populatedSections();
+            foreach ($sections as $section) {
+                for ($sample = 0; $sample < 3; ++$sample) {
+                    $position = new BlockPosition(
+                        $chunk->position->x * 16 + $this->dropRandom->integer(0, 15),
+                        $section->sectionY * 16 + $this->dropRandom->integer(0, 15),
+                        $chunk->position->z * 16 + $this->dropRandom->integer(0, 15),
+                    );
+                    $stateId = $this->blockWorld->loadedBlockStateAt($position->x, $position->y, $position->z);
+                    if ($stateId === null) {
+                        continue;
+                    }
+                    $state = $this->blockStateRegistry->state($stateId);
+                    if ($state->identifier() === 'minecraft:grass_block'
+                        || $state->identifier() === 'minecraft:mycelium') {
+                        foreach ($this->surfaceRandomTickTransitions($position, $state) as $transition) {
+                            $event = $this->applyEnvironmentBlockTransition(
+                                $transition,
+                                $transition->position->equals($position)
+                                    ? BlockStateChangeReason::DECAY
+                                    : BlockStateChangeReason::SPREAD,
+                            );
+                            if ($event !== null) {
+                                $events[] = $event;
+                            }
+                        }
+                    } elseif ($state->identifier() === 'minecraft:farmland') {
+                        $event = $this->farmlandRandomTick($position, $state);
+                        if ($event !== null) {
+                            $events[] = $event;
+                        }
+                    } elseif ($state->identifier() === 'minecraft:cauldron') {
+                        $event = $this->dripstoneCauldronRandomTick($position, $state);
+                        if ($event !== null) {
+                            $events[] = $event;
+                        }
+                    } elseif ($state->identifier() === 'minecraft:potent_sulfur') {
+                        array_push($events, ...$this->potentSulfurRandomTick($position, $state));
+                    }
+                    if (hrtime(true) >= $deadline) {
+                        break 3;
+                    }
+                }
+            }
+        }
+
+        return $events;
+    }
+
+    /** @return list<WorldEvent> */
+    private function advancePressurePlates(): array
+    {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null
+            || $this->interactiveBlockStates === null
+            || ($this->players->count() === 0 && $this->activePressurePlates === [])) {
+            return [];
+        }
+        /** @var array<string, array{position: BlockPosition, living: int, all: int}> $occupants */
+        $occupants = [];
+        foreach ($this->players->players() as $player) {
+            $this->countPressurePlateOccupant($occupants, $player->movement->position, true);
+        }
+        $deadline = hrtime(true) + 250_000;
+        $entities = self::boundedRotatingWindow($this->announcedEntities, $this->pressureEntityCursor, 512);
+        foreach ($entities as $entity) {
+            if (hrtime(true) >= $deadline) {
+                break;
+            }
+            if (!$entity->isRemoved()) {
+                $this->countPressurePlateOccupant(
+                    $occupants,
+                    $entity->internalPosition(),
+                    $entity->isAlive(),
+                );
+            }
+        }
+        $deadline = hrtime(true) + 250_000;
+        $items = $this->itemEntities->all();
+        $items = self::boundedRotatingWindow($items, $this->pressureItemCursor, 512);
+        foreach ($items as $entity) {
+            if (hrtime(true) >= $deadline) {
+                break;
+            }
+            $this->countPressurePlateOccupant($occupants, $entity->position, false);
+        }
+        $positions = $this->activePressurePlates;
+        foreach ($occupants as $key => $entry) {
+            $positions[$key] = [
+                'position' => $entry['position'],
+                'releaseAt' => $this->activePressurePlates[$key]['releaseAt'] ?? $this->tick,
+            ];
+        }
+        $events = [];
+        foreach ($positions as $key => $active) {
+            $position = $active['position'];
+            $currentState = $this->blockWorld->loadedBlockStateAt($position->x, $position->y, $position->z);
+            if ($currentState === null) {
+                unset($this->activePressurePlates[$key]);
+                continue;
+            }
+            $current = $this->blockStateRegistry->state($currentState);
+            if (!BlockTagRegistry::contains(BlockTag::PRESSURE_PLATE, $current->identifier())
+                || !array_key_exists('redstone_signal', $current->properties())) {
+                unset($this->activePressurePlates[$key]);
+                continue;
+            }
+            $entry = $occupants[$key] ?? null;
+            $living = $entry['living'] ?? 0;
+            $all = $entry['all'] ?? 0;
+            if ($all > 0) {
+                $releaseAt = $this->tick + $this->interactiveBlockStates->pressurePlateReleaseTicks($current);
+                $this->activePressurePlates[$key] = ['position' => $position, 'releaseAt' => $releaseAt];
+            } elseif ($this->tick < $active['releaseAt']) {
+                continue;
+            } else {
+                unset($this->activePressurePlates[$key]);
+            }
+            $nextState = $this->interactiveBlockStates->pressurePlateSignal($current, $living, $all);
+            if ($nextState->value === $currentState->value) {
+                continue;
+            }
+            $event = $this->applyEnvironmentBlockTransition(
+                new EnvironmentBlockTransition($position, $nextState),
+                BlockStateChangeReason::PHYSICS,
+            );
+            if ($event !== null) {
+                $events[] = $event;
+            }
+        }
+
+        return $events;
+    }
+
+    /**
+     * @template T
+     * @param array<array-key, T> $entries
+     * @return array<array-key, T>
+     */
+    private static function boundedRotatingWindow(array $entries, int &$cursor, int $maximum): array
+    {
+        $count = count($entries);
+        if ($count === 0) {
+            $cursor = 0;
+
+            return [];
+        }
+        $offset = $cursor % $count;
+        $limit = min($maximum, $count);
+        $window = array_slice($entries, $offset, $limit, true);
+        $missing = $limit - count($window);
+        if ($missing > 0) {
+            $window += array_slice($entries, 0, $missing, true);
+        }
+        $cursor = ($offset + $limit) % $count;
+
+        return $window;
+    }
+
+    /** @param array<string, array{position: BlockPosition, living: int, all: int}> $occupants */
+    private function countPressurePlateOccupant(array &$occupants, Position $position, bool $living): void
+    {
+        $x = (int) floor($position->x);
+        $z = (int) floor($position->z);
+        $baseY = (int) floor($position->y + 0.01);
+        foreach ([$baseY, $baseY - 1] as $y) {
+            try {
+                $platePosition = new BlockPosition($x, $y, $z);
+            } catch (InvalidArgumentException) {
+                continue;
+            }
+            $state = $this->blockWorld?->loadedBlockStateAt($x, $y, $z);
+            if ($state === null || $this->blockStateRegistry === null) {
+                continue;
+            }
+            $canonical = $this->blockStateRegistry->state($state);
+            if (!BlockTagRegistry::contains(BlockTag::PRESSURE_PLATE, $canonical->identifier())
+                || !array_key_exists('redstone_signal', $canonical->properties())) {
+                continue;
+            }
+            $key = $x . ':' . $y . ':' . $z;
+            $entry = $occupants[$key] ?? ['position' => $platePosition, 'living' => 0, 'all' => 0];
+            ++$entry['all'];
+            if ($living) {
+                ++$entry['living'];
+            }
+            $occupants[$key] = $entry;
+            break;
+        }
+    }
+
+    /** @return list<EnvironmentBlockTransition> */
+    private function surfaceRandomTickTransitions(
+        BlockPosition $position,
+        CanonicalBlockState $state,
+    ): array {
+        $candidates = [];
+        for ($attempt = 0; $attempt < 4; ++$attempt) {
+            try {
+                $candidatePosition = new BlockPosition(
+                    $position->x + $this->dropRandom->integer(-1, 1),
+                    $position->y + $this->dropRandom->integer(-3, 1),
+                    $position->z + $this->dropRandom->integer(-1, 1),
+                );
+                $candidate = $this->loadedCanonicalStateAt(
+                    $candidatePosition->x,
+                    $candidatePosition->y,
+                    $candidatePosition->z,
+                );
+                if ($candidate !== null) {
+                    $candidates[] = new SurfaceSpreadCandidate(
+                        $candidatePosition,
+                        $candidate,
+                        $this->growthBlockedAbove($candidatePosition),
+                    );
+                }
+            } catch (InvalidArgumentException) {
+                continue;
+            }
+        }
+
+        return $this->surfaceBlockBehavior?->resolve(
+            $position,
+            $state,
+            $this->growthBlockedAbove($position),
+            $candidates,
+        ) ?? [];
+    }
+
+    private function farmlandRandomTick(
+        BlockPosition $position,
+        CanonicalBlockState $state,
+    ): ?BlockChanged {
+        $water = $this->farmlandHydrationSearch->findWater(
+            $position,
+            fn(BlockPosition $probe): ?CanonicalBlockState => $this->loadedCanonicalStateAt(
+                $probe->x,
+                $probe->y,
+                $probe->z,
+            ),
+        );
+        $above = $this->loadedCanonicalStateAt($position->x, $position->y + 1, $position->z);
+        $next = $this->farmlandBehavior?->resolveCovered($state, $this->isOpaqueBlockState($above));
+        $reason = BlockStateChangeReason::DECAY;
+        if ($next === null) {
+            $next = $this->farmlandBehavior?->resolveRandomTick(
+                $state,
+                $water !== null,
+                $above !== null && $this->farmlandBehavior->supportsCrop($above),
+            );
+            $reason = $water !== null ? BlockStateChangeReason::HYDRATION : BlockStateChangeReason::DECAY;
+        }
+        if ($next === null) {
+            return null;
+        }
+
+        return $this->applyEnvironmentBlockTransition(
+            new EnvironmentBlockTransition($position, $next),
+            $reason,
+        );
+    }
+
+    private function trampleFarmlandBelow(Position $position, float $fallDistance): ?BlockChanged
+    {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null || $this->farmlandBehavior === null) {
+            return null;
+        }
+        try {
+            $blockPosition = new BlockPosition(
+                (int) floor($position->x),
+                (int) floor($position->y - 0.01),
+                (int) floor($position->z),
+            );
+        } catch (InvalidArgumentException) {
+            return null;
+        }
+        $currentId = $this->blockWorld->loadedBlockStateAt(
+            $blockPosition->x,
+            $blockPosition->y,
+            $blockPosition->z,
+        );
+        if ($currentId === null) {
+            return null;
+        }
+        $current = $this->blockStateRegistry->state($currentId);
+        if ($current->identifier() !== 'minecraft:farmland') {
+            return null;
+        }
+        $next = $this->farmlandBehavior->resolveTrample(
+            $current,
+            $fallDistance,
+            $this->dropRandom->integer(0, 999_999) / 1_000_000,
+        );
+        if ($next === null) {
+            return null;
+        }
+
+        return $this->applyEnvironmentBlockTransition(
+            new EnvironmentBlockTransition($blockPosition, $next),
+            BlockStateChangeReason::TRAMPLE,
+        );
+    }
+
+    private function dripstoneCauldronRandomTick(
+        BlockPosition $position,
+        CanonicalBlockState $state,
+    ): ?BlockChanged {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null) {
+            return null;
+        }
+        $column = [];
+        for ($distance = 1; $distance <= DripstoneCauldronBehaviorResolver::MAXIMUM_COLUMN_BLOCKS; ++$distance) {
+            $candidate = $this->loadedCanonicalStateAt($position->x, $position->y + $distance, $position->z);
+            if ($candidate === null) {
+                return null;
+            }
+            $column[] = $candidate;
+        }
+        $source = $this->dripstoneCauldrons->source($column);
+        if ($source === null) {
+            return null;
+        }
+        $properties = $state->properties();
+        $level = $properties['fill_level'] ?? null;
+        $liquid = $properties['cauldron_liquid'] ?? null;
+        if (!is_int($level) || !is_string($liquid)) {
+            return null;
+        }
+        $content = match (true) {
+            $level === 0 => \Bedriox\Api\Processing\CauldronContentType::EMPTY,
+            $liquid === 'water' => \Bedriox\Api\Processing\CauldronContentType::WATER,
+            $liquid === 'lava' => \Bedriox\Api\Processing\CauldronContentType::LAVA,
+            default => null,
+        };
+        if ($content === null) {
+            return null;
+        }
+        $next = $this->dripstoneCauldrons->resolveFill(new CauldronState($content, $level), $source);
+        if ($next === null) {
+            return null;
+        }
+        $apiPosition = new ApiBlockPosition($position->x, $position->y, $position->z);
+        $change = $this->pluginEvents?->cauldronChange(
+            null,
+            $apiPosition,
+            $content,
+            $level,
+            $next->content,
+            $next->level,
+            \Bedriox\Api\Processing\CauldronChangeCause::DRIPSTONE,
+        );
+        if ($this->pluginEvents !== null && $change === null) {
+            return null;
+        }
+        try {
+            $next = new CauldronState(
+                $change?->newContent() ?? $next->content,
+                $change?->newLevel() ?? $next->level,
+            );
+            $nextState = $this->blockStateRegistry->internalId(CanonicalBlockState::from('minecraft:cauldron', [
+                'cauldron_liquid' => $next->content === \Bedriox\Api\Processing\CauldronContentType::LAVA
+                    ? 'lava'
+                    : 'water',
+                'fill_level' => $next->level,
+            ]));
+        } catch (InvalidArgumentException) {
+            return null;
+        }
+        $previous = $this->setBlockStateAndSchedule($position, $nextState);
+        $this->pluginEvents?->cauldronChanged(
+            null,
+            $apiPosition,
+            $content,
+            $level,
+            $next->content,
+            $next->level,
+            \Bedriox\Api\Processing\CauldronChangeCause::DRIPSTONE,
+        );
+
+        return new BlockChanged('server', $position, $nextState, $this->players->recipients(), false, $previous);
+    }
+
+    /** @return list<WorldEvent> */
+    private function potentSulfurRandomTick(BlockPosition $position, CanonicalBlockState $state): array
+    {
+        if ($this->potentSulfurBehavior === null || $this->blockStateRegistry === null) {
+            return [];
+        }
+        [$waterDepth, $substrate] = $this->potentSulfurEnvironment($position);
+        $erupting = (($this->tick + $position->x * 31 + $position->z * 17) & 0x3f) < 8;
+        $next = $this->potentSulfurBehavior->resolve($state, $waterDepth, $substrate, $erupting);
+        $events = [];
+        if ($next->value !== $this->blockStateRegistry->internalId($state)->value) {
+            $changed = $this->applyEnvironmentBlockTransition(
+                new EnvironmentBlockTransition($position, $next),
+                BlockStateChangeReason::PHYSICS,
+            );
+            if ($changed !== null) {
+                $events[] = $changed;
+            }
+        }
+        if (PotentSulfurBehaviorResolver::hasSurfaceGas($waterDepth)) {
+            $events[] = new ParticleSpawned(
+                new Position($position->x + 0.5, $position->y + $waterDepth + 0.1, $position->z + 0.5),
+                new StandardParticle(StandardParticleType::SULFUR_CUBE),
+                $this->players->recipients(),
+                $this->dimension,
+            );
+        }
+
+        return $events;
+    }
+
+    /** @return array{int, PotentSulfurSubstrate} */
+    private function potentSulfurEnvironment(BlockPosition $position): array
+    {
+        $waterDepth = 0;
+        for ($distance = 1; $distance <= PotentSulfurBehaviorResolver::MAXIMUM_WATER_DEPTH; ++$distance) {
+            $state = $this->loadedCanonicalStateAt($position->x, $position->y + $distance, $position->z);
+            $fluid = $state === null ? null : FluidState::fromCanonical($state);
+            if ($fluid?->type !== FluidType::WATER || !$fluid->isSource()) {
+                break;
+            }
+            ++$waterDepth;
+        }
+        $below = $this->loadedCanonicalStateAt($position->x, $position->y - 1, $position->z);
+        $belowFluid = $below === null ? null : FluidState::fromCanonical($below);
+        $substrate = match (true) {
+            $below?->identifier() === 'minecraft:magma' => PotentSulfurSubstrate::MAGMA,
+            $belowFluid?->type === FluidType::LAVA && $belowFluid->isSource() => PotentSulfurSubstrate::SOURCE_LAVA,
+            default => PotentSulfurSubstrate::NONE,
+        };
+
+        return [$waterDepth, $substrate];
+    }
+
+    private function growthBlockedAbove(BlockPosition $position): bool
+    {
+        if ($position->y >= \Bedriox\Server\World\Chunk::MAX_Y) {
+            return true;
+        }
+        $above = $this->loadedCanonicalStateAt($position->x, $position->y + 1, $position->z);
+
+        return $above === null || $this->isOpaqueBlockState($above);
+    }
+
+    private function applyEnvironmentBlockTransition(
+        EnvironmentBlockTransition $transition,
+        BlockStateChangeReason $reason,
+    ): ?BlockChanged {
+        $previousState = $this->blockWorld?->loadedBlockStateAt(
+            $transition->position->x,
+            $transition->position->y,
+            $transition->position->z,
+        );
+        if ($previousState === null || $this->blockStateRegistry === null
+            || $previousState->value === $transition->state->value) {
+            return null;
+        }
+        $previous = $this->blockStateRegistry->state($previousState);
+        $next = $this->blockStateRegistry->state($transition->state);
+        if ($this->pluginEvents !== null && !$this->pluginEvents->allowBlockStateChange(
+            $transition->position,
+            $previous->identifier(),
+            $previous->properties(),
+            $next->identifier(),
+            $next->properties(),
+            $reason,
+        )) {
+            return null;
+        }
+        $this->setBlockStateAndSchedule($transition->position, $transition->state);
+        $this->pluginEvents?->blockStateChanged(
+            $transition->position,
+            $previous->identifier(),
+            $previous->properties(),
+            $next->identifier(),
+            $next->properties(),
+            $reason,
+        );
+
+        return new BlockChanged(
+            'server',
+            $transition->position,
+            $transition->state,
+            $this->players->recipients(),
+            false,
+            $previousState,
+        );
+    }
+
+    private function releaseButton(BlockPosition $position): ?BlockChanged
+    {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null
+            || $this->interactiveBlockStates === null) {
+            return null;
+        }
+        $currentState = $this->blockWorld->loadedBlockStateAt($position->x, $position->y, $position->z);
+        if ($currentState === null) {
+            return null;
+        }
+        $current = $this->blockStateRegistry->state($currentState);
+        if (($current->properties()['button_pressed_bit'] ?? 0) !== 1) {
+            return null;
+        }
+        $nextState = $this->interactiveBlockStates->setButtonPressed($current, false);
+        $next = $this->blockStateRegistry->state($nextState);
+        if ($this->pluginEvents !== null && !$this->pluginEvents->allowBlockStateChange(
+            $position,
+            $current->identifier(),
+            $current->properties(),
+            $next->identifier(),
+            $next->properties(),
+            BlockStateChangeReason::PHYSICS,
+        )) {
+            $this->environmentTicks?->schedule(
+                $position,
+                EnvironmentTickType::BLOCK_PHYSICS,
+                $this->tick,
+                $this->interactiveBlockStates->buttonReleaseTicks($current),
+            );
+
+            return null;
+        }
+        $this->setBlockStateAndSchedule($position, $nextState);
+        $this->pluginEvents?->blockStateChanged(
+            $position,
+            $current->identifier(),
+            $current->properties(),
+            $next->identifier(),
+            $next->properties(),
+            BlockStateChangeReason::PHYSICS,
+        );
+
+        return new BlockChanged('server', $position, $nextState, $this->players->recipients());
+    }
+
     private function scheduleDriedGhastHydration(BlockPosition $position): void
     {
         if ($this->environmentTicks === null || $this->driedGhastHydration === null) {
@@ -17052,8 +17900,9 @@ final class WorldSimulation
             if ($identifier === 'minecraft:water' || $previousIdentifier === 'minecraft:water') {
                 $this->scheduleDriedGhastNeighborhood($position, true);
             }
+            $this->scheduleBlockPhysicsNeighborhood($position);
             $this->scheduleFluidNeighborhood($position, $prioritizeNeighborFluids);
-            $this->scheduleFallingBlockNeighborhood($position);
+            $this->refreshConnectedBlockStates($position);
             if ($invalidatePortals && $this->netherPortals !== null
                 && $this->blockIdentifier($state->value) !== 'minecraft:portal') {
                 foreach ($this->netherPortals->invalidateNear(
@@ -17088,7 +17937,203 @@ final class WorldSimulation
         return $previous;
     }
 
-    private function scheduleFallingBlockNeighborhood(BlockPosition $origin): void
+    private function refreshConnectedBlockStates(BlockPosition $origin): void
+    {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null
+            || $this->blockPalette === null
+            || $this->connectedBlockStates === null || $this->stairBlockStates === null) {
+            return;
+        }
+        $positions = [];
+        foreach ([[0, 0], [0, -1], [1, 0], [0, 1], [-1, 0]] as [$x, $z]) {
+            try {
+                $positions[] = new BlockPosition($origin->x + $x, $origin->y, $origin->z + $z);
+            } catch (InvalidArgumentException) {
+                continue;
+            }
+        }
+        $hasRelevantState = false;
+        $hasStairState = false;
+        foreach ($positions as $position) {
+            $state = $this->loadedCanonicalStateAt($position->x, $position->y, $position->z);
+            if ($state === null) {
+                continue;
+            }
+            $properties = $state->properties();
+            $stair = array_key_exists('minecraft:corner', $properties);
+            if ($stair || array_key_exists('wall_post_bit', $properties)
+                || array_key_exists('minecraft:connection_north', $properties)) {
+                $hasRelevantState = true;
+                $hasStairState = $hasStairState || $stair;
+            }
+        }
+        if (!$hasRelevantState) {
+            return;
+        }
+        $passes = $hasStairState ? 2 : 1;
+        for ($pass = 0; $pass < $passes; ++$pass) {
+            foreach ($positions as $position) {
+                $currentState = $this->blockWorld->loadedBlockStateAt($position->x, $position->y, $position->z);
+                if ($currentState === null) {
+                    continue;
+                }
+                $current = $this->blockStateRegistry->state($currentState);
+                $neighbors = $this->horizontalCanonicalNeighbors($position);
+                try {
+                    if (array_key_exists('minecraft:corner', $current->properties())) {
+                        $nextState = $this->stairBlockStates->resolve($current, $neighbors);
+                    } elseif (array_key_exists('wall_post_bit', $current->properties())
+                        || array_key_exists('minecraft:connection_north', $current->properties())) {
+                        $connections = [];
+                        foreach ($neighbors as $direction => $neighbor) {
+                            $connections[$direction] = $this->blocksConnect($current, $neighbor);
+                        }
+                        $above = $this->loadedCanonicalStateAt($position->x, $position->y + 1, $position->z);
+                        $nextState = $this->connectedBlockStates->resolve(
+                            $current,
+                            $connections,
+                            forceWallPost: $this->isOpaqueBlockState($above),
+                        );
+                    } else {
+                        continue;
+                    }
+                } catch (InvalidArgumentException) {
+                    continue;
+                }
+                if ($nextState->value === $currentState->value) {
+                    continue;
+                }
+                $next = $this->blockStateRegistry->state($nextState);
+                if ($this->pluginEvents !== null && !$this->pluginEvents->allowBlockStateChange(
+                    $position,
+                    $current->identifier(),
+                    $current->properties(),
+                    $next->identifier(),
+                    $next->properties(),
+                    BlockStateChangeReason::NEIGHBOR_UPDATE,
+                )) {
+                    continue;
+                }
+                $this->blockWorld->setBlockState($position->x, $position->y, $position->z, $nextState);
+                $this->deferredEvents[] = new BlockChanged(
+                    'server',
+                    $position,
+                    $nextState,
+                    $this->players->recipients(),
+                    false,
+                    $currentState,
+                );
+                $this->pluginEvents?->blockStateChanged(
+                    $position,
+                    $current->identifier(),
+                    $current->properties(),
+                    $next->identifier(),
+                    $next->properties(),
+                    BlockStateChangeReason::NEIGHBOR_UPDATE,
+                );
+            }
+        }
+    }
+
+    private function processSupportDependentTick(BlockPosition $position): ?WorldEvent
+    {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null || $this->blockPalette === null) {
+            return null;
+        }
+        $stateId = $this->blockWorld->loadedBlockStateAt($position->x, $position->y, $position->z);
+        if ($stateId === null || $stateId->value === $this->blockPalette->air->value) {
+            return null;
+        }
+        $state = $this->blockStateRegistry->state($stateId);
+        $offset = $this->supportDependentBlocks->supportOffset($state);
+        if ($offset === null) {
+            return null;
+        }
+        $support = $this->blockWorld->loadedBlockStateAt(
+            $position->x + $offset->x,
+            $position->y + $offset->y,
+            $position->z + $offset->z,
+        );
+        if ($support !== null && !$this->isReplaceablePhysicsState($support)) {
+            return null;
+        }
+        if ($this->pluginEvents !== null && !$this->pluginEvents->allowBlockStateChange(
+            $position,
+            $state->identifier(),
+            $state->properties(),
+            'minecraft:air',
+            [],
+            BlockStateChangeReason::PHYSICS,
+        )) {
+            return null;
+        }
+        $this->blockWorld->setBlockState($position->x, $position->y, $position->z, $this->blockPalette->air);
+        $removedBlockEntity = $this->blockWorld->removeBlockEntity($position);
+        if ($removedBlockEntity !== null) {
+            $this->worldContainers?->forget($position);
+        }
+        $this->scheduleFluidNeighborhood($position, true);
+        $this->scheduleBlockPhysicsNeighborhood($position);
+        $this->refreshConnectedBlockStates($position);
+        $this->pluginEvents?->blockStateChanged(
+            $position,
+            $state->identifier(),
+            $state->properties(),
+            'minecraft:air',
+            [],
+            BlockStateChangeReason::PHYSICS,
+        );
+
+        return new BlockChanged(
+            'server',
+            $position,
+            $this->blockPalette->air,
+            $this->players->recipients(),
+            false,
+            $stateId,
+        );
+    }
+
+    /** @return array{north: CanonicalBlockState, east: CanonicalBlockState, south: CanonicalBlockState, west: CanonicalBlockState} */
+    private function horizontalCanonicalNeighbors(BlockPosition $position): array
+    {
+        $registry = $this->blockStateRegistry
+            ?? throw new \LogicException('Block-state registry is unavailable.');
+        $palette = $this->blockPalette
+            ?? throw new \LogicException('Block palette is unavailable.');
+        $air = $registry->state($palette->air);
+
+        return [
+            'north' => $this->loadedCanonicalStateAt($position->x, $position->y, $position->z - 1) ?? $air,
+            'east' => $this->loadedCanonicalStateAt($position->x + 1, $position->y, $position->z) ?? $air,
+            'south' => $this->loadedCanonicalStateAt($position->x, $position->y, $position->z + 1) ?? $air,
+            'west' => $this->loadedCanonicalStateAt($position->x - 1, $position->y, $position->z) ?? $air,
+        ];
+    }
+
+    private function blocksConnect(CanonicalBlockState $current, CanonicalBlockState $neighbor): bool
+    {
+        $identifier = $current->identifier();
+        $neighborIdentifier = $neighbor->identifier();
+        if (BlockTagRegistry::contains(BlockTag::WALL, $identifier)) {
+            return BlockTagRegistry::contains(BlockTag::WALL, $neighborIdentifier)
+                || BlockTagRegistry::contains(BlockTag::FENCE_GATE, $neighborIdentifier)
+                || $this->isOpaqueBlockState($neighbor);
+        }
+        if (BlockTagRegistry::contains(BlockTag::FENCE, $identifier)) {
+            return BlockTagRegistry::contains(BlockTag::FENCE, $neighborIdentifier)
+                || BlockTagRegistry::contains(BlockTag::FENCE_GATE, $neighborIdentifier)
+                || $this->isOpaqueBlockState($neighbor);
+        }
+        $currentIsBars = $identifier === 'minecraft:iron_bars';
+        $neighborIsBars = $neighborIdentifier === 'minecraft:iron_bars';
+
+        return ($currentIsBars && $neighborIsBars)
+            || (!$currentIsBars && str_ends_with($neighborIdentifier, '_pane'))
+            || $this->isOpaqueBlockState($neighbor);
+    }
+
+    private function scheduleBlockPhysicsNeighborhood(BlockPosition $origin): void
     {
         if ($this->environmentTicks === null || $this->blockWorld === null || $this->blockStateRegistry === null) {
             return;
@@ -17100,7 +18145,12 @@ final class WorldSimulation
                 continue;
             }
             $state = $this->blockWorld->loadedBlockStateAt($position->x, $position->y, $position->z);
-            if ($state === null || !$this->fallingBlocks->isFalling($this->blockStateRegistry->state($state))) {
+            if ($state === null) {
+                continue;
+            }
+            $canonical = $this->blockStateRegistry->state($state);
+            if (!$this->fallingBlocks->isFalling($canonical)
+                && $this->supportDependentBlocks->supportOffset($canonical) === null) {
                 continue;
             }
             try {
@@ -17221,6 +18271,7 @@ final class WorldSimulation
                 || $headState->value === $this->waterState?->value || $feetState->value === $this->waterState?->value;
             $touchingLava = $headFluid?->type === FluidType::LAVA || $feetFluid?->type === FluidType::LAVA
                 || $headState->value === $this->lavaState?->value || $feetState->value === $this->lavaState?->value;
+            array_push($events, ...$this->advancePotentSulfurContact($player));
             if ($touchingWater || VanillaEffectBehavior::hasFireResistance($effects)) {
                 $player->vitals->fireTicks = 0;
             } elseif ($player->vitals->fireTicks > 0
@@ -17274,6 +18325,65 @@ final class WorldSimulation
         }
 
         return $events;
+    }
+
+    /** @return list<WorldEvent> */
+    private function advancePotentSulfurContact(Player $player): array
+    {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null) {
+            return [];
+        }
+        $x = (int) floor($player->movement->position->x);
+        $z = (int) floor($player->movement->position->z);
+        $feetY = (int) floor($player->movement->position->y + 0.1);
+        for ($depth = 0; $depth <= PotentSulfurBehaviorResolver::MAXIMUM_WATER_DEPTH; ++$depth) {
+            $y = $feetY - 1 - $depth;
+            $stateId = $this->blockWorld->loadedBlockStateAt($x, $y, $z);
+            if ($stateId === null) {
+                return [];
+            }
+            $state = $this->blockStateRegistry->state($stateId);
+            if ($state->identifier() === 'minecraft:potent_sulfur') {
+                $sulfurState = PotentSulfurState::tryFrom((string) ($state->properties()['potent_sulfur_state'] ?? ''));
+                if ($sulfurState === null) {
+                    return [];
+                }
+                $events = [];
+                if ($depth === 0 && ($this->tick + $player->runtimeActorId) % 20 === 0) {
+                    $effect = $this->addPlayerEffect(new AddPlayerEffect(
+                        $player->sessionId,
+                        new EffectInstance(EffectType::NAUSEA, 80, visible: false),
+                        EffectCause::ENVIRONMENT,
+                    ));
+                    if ($effect !== null) {
+                        $events[] = $effect;
+                    }
+                }
+                if ($depth > 0 && PotentSulfurBehaviorResolver::hasUpwardImpulse($sulfurState)
+                    && ($this->tick + $player->runtimeActorId) % 5 === 0) {
+                    $player->movement->verticalVelocity = max($player->movement->verticalVelocity, 0.3);
+                    $player->movement->fallDistance = 0.0;
+                    $events[] = new PlayerMotionChanged(
+                        $player->sessionId,
+                        $player->snapshot(),
+                        $player->movement->velocityX,
+                        $player->movement->verticalVelocity,
+                        $player->movement->velocityZ,
+                        $player->movement->clientTick,
+                        false,
+                        $this->players->recipients(),
+                    );
+                }
+
+                return $events;
+            }
+            $fluid = FluidState::fromCanonical($state);
+            if ($depth > 0 && $fluid?->type !== FluidType::WATER) {
+                return [];
+            }
+        }
+
+        return [];
     }
 
     private function advancePlayerPortal(
@@ -19953,6 +21063,211 @@ final class WorldSimulation
         return $changes;
     }
 
+    private function openSignEditor(
+        Player $player,
+        BlockPosition $position,
+        InternalBlockStateId $stateId,
+    ): WorldEvent {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null) {
+            return new CommandRejected($player->sessionId, 'block_world_unavailable');
+        }
+        $canonical = $this->blockStateRegistry->state($stateId);
+        if (!self::isSignIdentifier($canonical->identifier())) {
+            return new CommandRejected($player->sessionId, 'not_sign');
+        }
+        $front = $this->signFrontForPlayer($canonical, $position, $player->movement->position);
+        $stored = $this->blockWorld->blockEntityAt($position);
+        if ($stored !== null && !$stored instanceof SignBlockEntity) {
+            return new CommandRejected($player->sessionId, 'invalid_sign_state');
+        }
+        try {
+            $sign = ($stored ?? SignBlockEntity::empty($position))->withEditor(
+                $player->sessionId,
+                $front,
+                $player->runtimeActorId,
+            );
+        } catch (InvalidArgumentException|OverflowException) {
+            return new CommandRejected($player->sessionId, 'sign_locked');
+        }
+        $this->blockWorld->setBlockEntity($sign);
+        $this->deferredEvents[] = new BlockEntityChanged($sign, [$player->sessionId]);
+
+        return new SignEditorOpened($player->sessionId, $position, $front);
+    }
+
+    private function updateSignText(UpdateSignText $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        if ($player === null || $this->blockWorld === null || $this->blockStateRegistry === null
+            || !$this->blockIsReachable($player->snapshot(), $command->position)) {
+            return new CommandRejected($command->session, 'sign_unavailable');
+        }
+        $stateId = $this->blockWorld->loadedBlockStateAt(
+            $command->position->x,
+            $command->position->y,
+            $command->position->z,
+        );
+        $sign = $this->blockWorld->blockEntityAt($command->position);
+        if ($stateId === null || !$sign instanceof SignBlockEntity
+            || !self::isSignIdentifier($this->blockStateRegistry->state($stateId)->identifier())
+            || $sign->editorSessionId !== $command->session
+            || $sign->editorFront === null) {
+            if ($sign instanceof SignBlockEntity) {
+                $this->deferredEvents[] = new BlockEntityChanged($sign, [$command->session]);
+            }
+            return new CommandRejected($command->session, 'sign_editor_mismatch');
+        }
+        try {
+            $requested = $sign->editorFront ? $command->front : $command->back;
+            $current = $sign->editorFront ? $sign->front : $sign->back;
+            $updated = $sign->withText(
+                $sign->editorFront,
+                SignText::fromBlob($requested->blob(), $current->color, $current->glowing),
+                $command->session,
+            )->withoutEditor();
+        } catch (InvalidArgumentException|OverflowException) {
+            $this->deferredEvents[] = new BlockEntityChanged($sign, [$command->session]);
+            return new CommandRejected($command->session, 'sign_update_rejected');
+        }
+        $this->blockWorld->setBlockEntity($updated);
+
+        return new BlockEntityChanged($updated, $this->players->recipients());
+    }
+
+    private function signFrontForPlayer(
+        CanonicalBlockState $state,
+        BlockPosition $position,
+        Position $playerPosition,
+    ): bool {
+        $properties = $state->properties();
+        $facing = $properties['facing_direction'] ?? null;
+        [$normalX, $normalZ] = match ($facing) {
+            2 => [0.0, -1.0],
+            3 => [0.0, 1.0],
+            4 => [-1.0, 0.0],
+            5 => [1.0, 0.0],
+            default => self::signRotationNormal($properties['ground_sign_direction'] ?? 0),
+        };
+
+        return (($playerPosition->x - ($position->x + 0.5)) * $normalX)
+            + (($playerPosition->z - ($position->z + 0.5)) * $normalZ) >= 0.0;
+    }
+
+    /** @return array{float, float} */
+    private static function signRotationNormal(mixed $rotation): array
+    {
+        $step = is_int($rotation) && $rotation >= 0 && $rotation <= 15 ? $rotation : 0;
+        $radians = deg2rad($step * 22.5);
+
+        return [-sin($radians), cos($radians)];
+    }
+
+    private static function isSignIdentifier(string $identifier): bool
+    {
+        return BlockTagRegistry::contains(BlockTag::SIGN, $identifier);
+    }
+
+    private static function isTrapdoorIdentifier(string $identifier): bool
+    {
+        return BlockTagRegistry::contains(BlockTag::TRAPDOOR, $identifier);
+    }
+
+    private static function isShelfIdentifier(string $identifier): bool
+    {
+        return str_ends_with($identifier, '_shelf')
+            && !str_ends_with($identifier, 'bookshelf')
+            && $identifier !== 'minecraft:shelf_mushroom';
+    }
+
+    private function useShelf(
+        Player $player,
+        PlaceBlock $command,
+        InternalBlockStateId $clickedState,
+        ?InventoryStack $held,
+    ): WorldEvent {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null) {
+            return new CommandRejected($player->sessionId, 'block_world_unavailable');
+        }
+        $state = $this->blockStateRegistry->state($clickedState);
+        $facing = $state->properties()['minecraft:cardinal_direction'] ?? null;
+        $stored = $this->blockWorld->blockEntityAt($command->clickedPosition);
+        $failure = match (true) {
+            !is_string($facing) => 'shelf_state',
+            $stored !== null && !$stored instanceof ShelfBlockEntity => 'shelf_block_entity',
+            $command->sequence <= $player->placementSequence => 'stale_sequence',
+            $command->hotbarSlot !== $player->inventory->selectedHotbarSlot() => 'selected_slot',
+            default => null,
+        };
+        if ($command->sequence > $player->placementSequence) {
+            $player->placementSequence = $command->sequence;
+        }
+        if ($failure !== null) {
+            return new BlockPlacementCorrected(
+                $player->sessionId,
+                $command->clickedPosition,
+                $clickedState,
+                self::adjacentBlock($command->clickedPosition, $command->face) ?? $command->clickedPosition,
+                $clickedState,
+                $player->inventory->selectedHotbarSlot(),
+                $held,
+                null,
+                $failure,
+            );
+        }
+        try {
+            $slot = ShelfInventory::slotFromHit($facing, $command->clickX, $command->clickZ);
+            $persistentHeld = $held === null ? null : new ContainerItemStack(
+                $held->identifier,
+                $held->count,
+                $held->damage,
+                $held->nbt,
+                $held->auxValue,
+            );
+            $shelf = $stored instanceof ShelfBlockEntity ? $stored : ShelfBlockEntity::empty($command->clickedPosition);
+            $exchange = $shelf->inventory->exchange($slot, $persistentHeld);
+            $updated = $shelf->withInventory($exchange->inventory);
+            $replacement = $exchange->returnedStack === null
+                ? null
+                : $this->inventoryStackFromContainerItem($exchange->returnedStack);
+            $this->blockWorld->setBlockEntity($updated);
+            $player->inventory->replaceSlot($player->inventory->selectedHotbarSlot(), $replacement);
+        } catch (InvalidArgumentException|OverflowException) {
+            return new BlockPlacementCorrected(
+                $player->sessionId,
+                $command->clickedPosition,
+                $clickedState,
+                self::adjacentBlock($command->clickedPosition, $command->face) ?? $command->clickedPosition,
+                $clickedState,
+                $player->inventory->selectedHotbarSlot(),
+                $held,
+                null,
+                'shelf_exchange',
+            );
+        }
+        $player->markDirty();
+        $this->deferredEvents[] = new BlockEntityChanged($updated, $this->players->recipients());
+        $this->deferredEvents[] = new HeldItemChanged(
+            $player->sessionId,
+            $player->runtimeActorId,
+            $player->inventory->selectedHotbarSlot(),
+            $replacement,
+            $this->players->recipients($player->sessionId),
+            ownerSlotCorrection: false,
+        );
+
+        return new BlockPlacementCorrected(
+            $player->sessionId,
+            $command->clickedPosition,
+            $clickedState,
+            self::adjacentBlock($command->clickedPosition, $command->face) ?? $command->clickedPosition,
+            $clickedState,
+            $player->inventory->selectedHotbarSlot(),
+            $replacement,
+            null,
+            'shelf_exchanged',
+        );
+    }
+
     private function placeBlock(PlaceBlock $command): WorldEvent
     {
         $player = $this->players->player($command->session);
@@ -19969,6 +21284,17 @@ final class WorldSimulation
             $command->clickedPosition->z,
         );
         $clickedIdentifier = $this->blockIdentifier($clickedState->value);
+        $held = $player->inventory->selectedStack();
+        if (self::isShelfIdentifier($clickedIdentifier)
+            && !$player->movement->sneaking
+            && $this->blockIsReachable($player->snapshot(), $command->clickedPosition)) {
+            return $this->useShelf($player, $command, $clickedState, $held);
+        }
+        if (self::isSignIdentifier($clickedIdentifier)
+            && !$player->movement->sneaking
+            && $this->blockIsReachable($player->snapshot(), $command->clickedPosition)) {
+            return $this->openSignEditor($player, $command->clickedPosition, $clickedState);
+        }
         if (WorldContainerStore::isStorageBlock($clickedIdentifier)
             && !$player->movement->sneaking
             && $this->blockIsReachable($player->snapshot(), $command->clickedPosition)) {
@@ -20046,7 +21372,14 @@ final class WorldSimulation
         $key = self::sessionKey($command->session);
         $activeBreak = $this->breakingBlocks[$key] ?? null;
         unset($this->breakingBlocks[$key]);
-        $held = $player->inventory->selectedStack();
+        $interactiveUse = $this->useInteractiveBlock($player, $command, $clickedState, $held);
+        if ($interactiveUse !== null) {
+            return $interactiveUse;
+        }
+        $toolInteraction = $this->useToolOnBlock($player, $command, $clickedState, $held);
+        if ($toolInteraction !== null) {
+            return $toolInteraction;
+        }
         if (self::isFenceBlock($clickedIdentifier)) {
             $leashAttachment = $this->attachLeashesToFence(
                 $player,
@@ -20087,9 +21420,41 @@ final class WorldSimulation
             'minecraft:lava_bucket' => FluidType::LAVA,
             default => $aquaticBucketType === null ? null : FluidType::WATER,
         };
-        $heldPlacesBlock = $heldType?->placedBlockState !== null || $held?->placedBlockState !== null;
+        $cropPlacementState = $held !== null && $clickedIdentifier === 'minecraft:farmland' && $command->face === 1
+            ? $this->farmlandBehavior?->cropForItem($held->identifier)
+            : null;
+        $heldPlacesBlock = $heldType?->placedBlockState !== null
+            || $held?->placedBlockState !== null
+            || $cropPlacementState !== null;
         if ($bucketFluid === null && $heldPlacesBlock && $this->fluidState($clickedState) !== null) {
             $placedPosition = $command->clickedPosition;
+        }
+        $placementContext = new BlockPlacementContext(
+            $command->face,
+            $command->clickX,
+            $command->clickY,
+            $command->clickZ,
+            $player->movement->yaw,
+        );
+        $slabMergeState = null;
+        if ($bucketFluid === null && $heldPlacesBlock
+            && $this->blockPlacementStates !== null && $this->blockStateRegistry !== null) {
+            $itemPlacementState = null;
+            if ($heldType !== null && $heldType->placedBlockState !== null) {
+                $itemPlacementState = $heldType->placedBlockState;
+            } elseif ($held !== null && $held->placedBlockState !== null) {
+                $itemPlacementState = $this->blockStateRegistry->state($held->placedBlockState);
+            }
+            if ($itemPlacementState !== null) {
+                $slabMergeState = $this->blockPlacementStates->resolveSlabMerge(
+                    $itemPlacementState,
+                    $this->blockStateRegistry->state($clickedState),
+                    $placementContext,
+                );
+                if ($slabMergeState !== null) {
+                    $placedPosition = $command->clickedPosition;
+                }
+            }
         }
         $placedState = $this->blockWorld->blockStateAt($placedPosition->x, $placedPosition->y, $placedPosition->z);
         if ($held?->identifier === 'minecraft:bucket') {
@@ -20136,16 +21501,45 @@ final class WorldSimulation
         $placementStateValid = true;
         $storageEntityValid = true;
         $storageEntity = null;
+        $signEntity = null;
+        $doorPair = null;
+        $doorUpperPosition = null;
+        $doorUpperPrevious = null;
         try {
-            $placedBlockState = $bucketFluid !== null && $this->blockStateRegistry !== null
-                ? $this->blockStateRegistry->internalId(FluidState::source($bucketFluid)->canonicalState())
-                : ($heldType?->placedBlockState !== null && $this->blockPlacementStates !== null
-                ? $this->blockPlacementStates->resolve(
-                    $heldType->placedBlockState,
-                    $command->face,
-                    $player->movement->yaw,
-                )
-                : $held?->placedBlockState);
+            if ($slabMergeState !== null) {
+                $placedBlockState = $slabMergeState;
+            } elseif ($cropPlacementState !== null) {
+                $placedBlockState = $cropPlacementState;
+            } elseif ($bucketFluid !== null && $this->blockStateRegistry !== null) {
+                $placedBlockState = $this->blockStateRegistry->internalId(
+                    FluidState::source($bucketFluid)->canonicalState(),
+                );
+            } elseif ($heldType?->placedBlockState !== null && $this->blockPlacementStates !== null) {
+                $itemState = $heldType->placedBlockState;
+                if (BlockTagRegistry::contains(BlockTag::DOOR, $itemState->identifier())
+                    && $this->doorStates !== null) {
+                    $doorPair = $this->resolveDoorPlacement($itemState, $placementContext, $placedPosition);
+                    $placedBlockState = $doorPair->lower;
+                    $doorUpperPosition = new BlockPosition(
+                        $placedPosition->x,
+                        $placedPosition->y + 1,
+                        $placedPosition->z,
+                    );
+                    $doorUpperPrevious = $this->blockWorld->blockStateAt(
+                        $doorUpperPosition->x,
+                        $doorUpperPosition->y,
+                        $doorUpperPosition->z,
+                    );
+                } else {
+                    $placedBlockState = $this->resolvePlacedBlockState(
+                        $itemState,
+                        $placementContext,
+                        $placedPosition,
+                    );
+                }
+            } else {
+                $placedBlockState = $held?->placedBlockState;
+            }
         } catch (InvalidArgumentException) {
             $placedBlockState = null;
             $placementStateValid = false;
@@ -20161,6 +21555,15 @@ final class WorldSimulation
                     $command->face,
                     $held,
                 );
+                if (self::isSignIdentifier($placedIdentifier)) {
+                    $signEntity = SignBlockEntity::empty(
+                        $placedPosition,
+                        $player->sessionId,
+                        true,
+                        $player->runtimeActorId,
+                        BlockTagRegistry::contains(BlockTag::HANGING_SIGN, $placedIdentifier),
+                    );
+                }
             } catch (InvalidArgumentException) {
                 $storageEntityValid = false;
             }
@@ -20174,7 +21577,9 @@ final class WorldSimulation
             !$storageEntityValid => 'invalid_block_entity_item',
             $placedBlockState === null => 'unsupported_item',
             $clickedState->value === $this->blockPalette->air->value => 'clicked_air',
-            !$this->isReplaceablePlacementState($placedState) => 'occupied',
+            $slabMergeState === null && !$this->isReplaceablePlacementState($placedState) => 'occupied',
+            $doorPair !== null && ($doorUpperPrevious === null
+                || !$this->isReplaceablePlacementState($doorUpperPrevious)) => 'door_upper_occupied',
             !$this->blockIsReachable($player->snapshot(), $command->clickedPosition) => 'reach',
             $this->placementIntersectsPlayer($placedPosition) => 'collision',
             default => null,
@@ -20211,6 +21616,17 @@ final class WorldSimulation
         }
         try {
             $this->setBlockStateAndSchedule($placedPosition, $placedBlockState);
+            if ($doorPair !== null && $doorUpperPosition !== null) {
+                $this->setBlockStateAndSchedule($doorUpperPosition, $doorPair->upper);
+                $this->deferredEvents[] = new BlockChanged(
+                    $command->session,
+                    $doorUpperPosition,
+                    $doorPair->upper,
+                    $this->players->recipients(),
+                    false,
+                    $doorUpperPrevious,
+                );
+            }
         } catch (OverflowException) {
             return new BlockPlacementCorrected(
                 $command->session,
@@ -20237,11 +21653,6 @@ final class WorldSimulation
             ? $heldType?->placedBlockState?->identifier() ?? $held->identifier
             : $bucketFluid->value;
         if ($placedIdentifier === 'minecraft:sniffer_egg' && $this->environmentTicks !== null) {
-            $below = $this->blockWorld->blockStateAt(
-                $placedPosition->x,
-                $placedPosition->y - 1,
-                $placedPosition->z,
-            );
             $this->environmentTicks->schedule(
                 $placedPosition,
                 EnvironmentTickType::SNIFFER_EGG,
@@ -20251,6 +21662,16 @@ final class WorldSimulation
         }
         if ($storageEntity !== null) {
             $this->installStorageBlockEntity($player, $storageEntity, $placedIdentifier);
+        }
+        if ($signEntity !== null) {
+            $this->blockWorld->setBlockEntity($signEntity);
+            $this->deferredEvents[] = new BlockEntityChanged($signEntity, $this->players->recipients());
+            $this->deferredEvents[] = new SignEditorOpened($player->sessionId, $placedPosition, true);
+        }
+        if (self::isShelfIdentifier($placedIdentifier)) {
+            $shelf = ShelfBlockEntity::empty($placedPosition);
+            $this->blockWorld->setBlockEntity($shelf);
+            $this->deferredEvents[] = new BlockEntityChanged($shelf, $this->players->recipients());
         }
         $this->refreshPlayerGroundStates();
         if ($player->gameMode()->consumesItems() && $bucketFluid !== null) {
@@ -20279,6 +21700,473 @@ final class WorldSimulation
             $this->players->recipients(),
             $activeBreak['position'] ?? null,
         );
+    }
+
+    private function resolvePlacedBlockState(
+        CanonicalBlockState $itemState,
+        BlockPlacementContext $context,
+        BlockPosition $position,
+    ): InternalBlockStateId {
+        if ($this->signBlockStates !== null
+            && (str_ends_with($itemState->identifier(), '_standing_sign')
+                || BlockTagRegistry::contains(BlockTag::HANGING_SIGN, $itemState->identifier())
+                || $itemState->identifier() === 'minecraft:standing_sign')) {
+            return $this->signBlockStates->place($itemState, $context);
+        }
+        if ($this->sulfurSpikeBehavior !== null && $itemState->identifier() === 'minecraft:sulfur_spike') {
+            return $this->sulfurSpikeBehavior->place($context->clickedFace);
+        }
+        if ($this->interactiveBlockStates !== null && self::isTrapdoorIdentifier($itemState->identifier())) {
+            return $this->interactiveBlockStates->placeTrapdoor($itemState, $context);
+        }
+        if ($this->interactiveBlockStates !== null
+            && BlockTagRegistry::contains(BlockTag::FENCE_GATE, $itemState->identifier())) {
+            $direction = self::horizontalDirection($context->playerYaw);
+            [$leftX, $leftZ, $rightX, $rightZ] = match ($direction) {
+                'north', 'south' => [-1, 0, 1, 0],
+                'east', 'west' => [0, -1, 0, 1],
+                default => throw new \LogicException('Resolved player direction is not horizontal.'),
+            };
+
+            return $this->interactiveBlockStates->placeFenceGate(
+                $itemState,
+                $context,
+                $this->isWallAt($position->x + $leftX, $position->y, $position->z + $leftZ),
+                $this->isWallAt($position->x + $rightX, $position->y, $position->z + $rightZ),
+            );
+        }
+
+        return ($this->blockPlacementStates
+            ?? throw new \LogicException('Block placement resolver is unavailable.'))
+            ->resolvePlacement($itemState, $context);
+    }
+
+    private function resolveDoorPlacement(
+        CanonicalBlockState $itemState,
+        BlockPlacementContext $context,
+        BlockPosition $position,
+    ): DoorStatePair {
+        $direction = self::horizontalDirection($context->playerYaw);
+        [$leftX, $leftZ, $rightX, $rightZ] = match ($direction) {
+            'south' => [1, 0, -1, 0],
+            'north' => [-1, 0, 1, 0],
+            'west' => [0, 1, 0, -1],
+            'east' => [0, -1, 0, 1],
+            default => throw new \LogicException('Resolved player direction is not horizontal.'),
+        };
+        $left = $this->loadedCanonicalStateAt($position->x + $leftX, $position->y, $position->z + $leftZ);
+        $right = $this->loadedCanonicalStateAt($position->x + $rightX, $position->y, $position->z + $rightZ);
+
+        return ($this->doorStates ?? throw new \LogicException('Door state resolver is unavailable.'))->place(
+            $itemState,
+            $context,
+            $left?->identifier() === $itemState->identifier(),
+            $this->isOpaqueBlockState($left),
+            $this->isOpaqueBlockState($right),
+        );
+    }
+
+    private function loadedCanonicalStateAt(int $x, int $y, int $z): ?CanonicalBlockState
+    {
+        $state = $this->blockWorld?->loadedBlockStateAt($x, $y, $z);
+
+        return $state === null || $this->blockStateRegistry === null
+            ? null
+            : $this->blockStateRegistry->state($state);
+    }
+
+    private function isOpaqueBlockState(?CanonicalBlockState $state): bool
+    {
+        return $state !== null && ($this->blockProperties?->propertiesForState($state)->solid() ?? false);
+    }
+
+    private function isWallAt(int $x, int $y, int $z): bool
+    {
+        $state = $this->blockWorld?->loadedBlockStateAt($x, $y, $z);
+
+        return $state !== null
+            && BlockTagRegistry::contains(BlockTag::WALL, $this->blockIdentifier($state->value));
+    }
+
+    private function useInteractiveBlock(
+        Player $player,
+        PlaceBlock $command,
+        InternalBlockStateId $clickedState,
+        ?InventoryStack $held,
+    ): ?WorldEvent {
+        if ($player->movement->sneaking || $this->blockWorld === null || $this->blockStateRegistry === null
+            || $this->interactiveBlockStates === null || $this->doorStates === null) {
+            return null;
+        }
+        $clicked = $this->blockStateRegistry->state($clickedState);
+        $properties = $clicked->properties();
+        $isDoor = BlockTagRegistry::contains(BlockTag::DOOR, $clicked->identifier())
+            && array_key_exists('upper_block_bit', $properties);
+        $isOpenable = array_key_exists('open_bit', $properties)
+            && !$isDoor
+            && (self::isTrapdoorIdentifier($clicked->identifier())
+                || BlockTagRegistry::contains(BlockTag::FENCE_GATE, $clicked->identifier()));
+        $isButton = BlockTagRegistry::contains(BlockTag::BUTTON, $clicked->identifier())
+            && array_key_exists('button_pressed_bit', $properties);
+        if (!$isDoor && !$isOpenable && !$isButton) {
+            return null;
+        }
+        $staleSequence = $command->sequence <= $player->placementSequence;
+        if (!$staleSequence) {
+            $player->placementSequence = $command->sequence;
+        }
+        if ($staleSequence || $command->hotbarSlot !== $player->inventory->selectedHotbarSlot()
+            || !$this->blockIsReachable($player->snapshot(), $command->clickedPosition)) {
+            return new BlockChanged(
+                $player->sessionId,
+                $command->clickedPosition,
+                $clickedState,
+                [$player->sessionId],
+            );
+        }
+        if ($isDoor && !$this->doorStates->canPlayerToggle($clicked)) {
+            return null;
+        }
+        if ($isOpenable && !$this->interactiveBlockStates->canPlayerToggle($clicked)) {
+            return null;
+        }
+        if ($this->pluginEvents !== null && !$this->pluginEvents->allowBlockInteraction(
+            $player,
+            $command->clickedPosition,
+            $clicked->identifier(),
+            $properties,
+            $command->face,
+            $command->clickX,
+            $command->clickY,
+            $command->clickZ,
+            $held,
+        )) {
+            return new BlockChanged(
+                $player->sessionId,
+                $command->clickedPosition,
+                $clickedState,
+                [$player->sessionId],
+            );
+        }
+        if ($isDoor) {
+            return $this->toggleDoor($player, $command, $clickedState, $clicked, $held);
+        }
+        $nextState = $isButton
+            ? $this->interactiveBlockStates->setButtonPressed($clicked, true)
+            : $this->interactiveBlockStates->toggleOpen(
+                $clicked,
+                BlockTagRegistry::contains(BlockTag::FENCE_GATE, $clicked->identifier())
+                    ? self::horizontalDirection($player->movement->yaw)
+                    : null,
+            );
+        if ($nextState->value === $clickedState->value) {
+            return new BlockChanged(
+                $player->sessionId,
+                $command->clickedPosition,
+                $clickedState,
+                [$player->sessionId],
+            );
+        }
+        $next = $this->blockStateRegistry->state($nextState);
+        if ($this->pluginEvents !== null && !$this->pluginEvents->allowBlockStateChange(
+            $command->clickedPosition,
+            $clicked->identifier(),
+            $properties,
+            $next->identifier(),
+            $next->properties(),
+            BlockStateChangeReason::INTERACTION,
+        )) {
+            return new BlockChanged(
+                $player->sessionId,
+                $command->clickedPosition,
+                $clickedState,
+                [$player->sessionId],
+            );
+        }
+        $this->setBlockStateAndSchedule($command->clickedPosition, $nextState);
+        if ($isButton && $this->environmentTicks !== null) {
+            $this->environmentTicks->schedule(
+                $command->clickedPosition,
+                EnvironmentTickType::BLOCK_PHYSICS,
+                $this->tick,
+                $this->interactiveBlockStates->buttonReleaseTicks($clicked),
+            );
+        }
+        $this->pluginEvents?->blockStateChanged(
+            $command->clickedPosition,
+            $clicked->identifier(),
+            $properties,
+            $next->identifier(),
+            $next->properties(),
+            BlockStateChangeReason::INTERACTION,
+        );
+        $this->pluginEvents?->blockInteracted(
+            $player,
+            $command->clickedPosition,
+            $next->identifier(),
+            $next->properties(),
+            $command->face,
+            $command->clickX,
+            $command->clickY,
+            $command->clickZ,
+            $held,
+        );
+
+        return new BlockChanged(
+            $player->sessionId,
+            $command->clickedPosition,
+            $nextState,
+            $this->players->recipients(),
+        );
+    }
+
+    private function useToolOnBlock(
+        Player $player,
+        PlaceBlock $command,
+        InternalBlockStateId $currentState,
+        ?InventoryStack $held,
+    ): ?WorldEvent {
+        if ($held === null || $this->blockWorld === null || $this->blockStateRegistry === null
+            || $this->blockToolTransforms === null || $this->blockPalette === null) {
+            return null;
+        }
+        $aboveState = $this->blockWorld->blockStateAt(
+            $command->clickedPosition->x,
+            $command->clickedPosition->y + 1,
+            $command->clickedPosition->z,
+        );
+        $current = $this->blockStateRegistry->state($currentState);
+        $transform = $this->blockToolTransforms->resolve(
+            $current,
+            $held->identifier,
+            $command->face,
+            $this->isReplaceablePlacementState($aboveState),
+        );
+        if ($transform === null) {
+            return null;
+        }
+        $staleSequence = $command->sequence <= $player->placementSequence;
+        if (!$staleSequence) {
+            $player->placementSequence = $command->sequence;
+        }
+        if (!$player->gameMode()->canBuild()
+            || $staleSequence
+            || $command->hotbarSlot !== $player->inventory->selectedHotbarSlot()
+            || !$this->blockIsReachable($player->snapshot(), $command->clickedPosition)) {
+            return new BlockChanged(
+                $player->sessionId,
+                $command->clickedPosition,
+                $currentState,
+                [$player->sessionId],
+            );
+        }
+        $next = $this->blockStateRegistry->state($transform->state);
+        if ($this->pluginEvents !== null
+            && (!$this->pluginEvents->allowBlockInteraction(
+                $player,
+                $command->clickedPosition,
+                $current->identifier(),
+                $current->properties(),
+                $command->face,
+                $command->clickX,
+                $command->clickY,
+                $command->clickZ,
+                $held,
+            ) || !$this->pluginEvents->allowBlockStateChange(
+                $command->clickedPosition,
+                $current->identifier(),
+                $current->properties(),
+                $next->identifier(),
+                $next->properties(),
+                \Bedriox\Api\Event\Block\BlockStateChangeReason::TOOL_TRANSFORM,
+            ))) {
+            return new BlockChanged(
+                $player->sessionId,
+                $command->clickedPosition,
+                $currentState,
+                [$player->sessionId],
+            );
+        }
+        if ($transform->dropIdentifier !== null && $this->itemEntities->remainingCapacity() === 0) {
+            return new BlockChanged(
+                $player->sessionId,
+                $command->clickedPosition,
+                $currentState,
+                [$player->sessionId],
+            );
+        }
+        try {
+            $this->setBlockStateAndSchedule($command->clickedPosition, $transform->state);
+        } catch (OverflowException) {
+            return new BlockChanged(
+                $player->sessionId,
+                $command->clickedPosition,
+                $currentState,
+                [$player->sessionId],
+            );
+        }
+        if ($transform->dropIdentifier !== null && $this->itemCatalog?->has($transform->dropIdentifier) === true) {
+            $drop = $this->itemEntities->spawn(
+                new InventoryStack($transform->dropIdentifier, 1, 1),
+                new Position(
+                    $command->clickedPosition->x + 0.5,
+                    $command->clickedPosition->y + 0.75,
+                    $command->clickedPosition->z + 0.5,
+                ),
+                new ItemEntityMotion(0.0, 0.1, 0.0),
+                10,
+            );
+            $this->deferredEvents[] = new ItemEntitySpawned($drop, $this->players->recipients());
+        }
+        $this->damageHeldTool($player, $this->heldItemType($player));
+        $this->pluginEvents?->blockStateChanged(
+            $command->clickedPosition,
+            $current->identifier(),
+            $current->properties(),
+            $next->identifier(),
+            $next->properties(),
+            \Bedriox\Api\Event\Block\BlockStateChangeReason::TOOL_TRANSFORM,
+        );
+        $this->pluginEvents?->blockInteracted(
+            $player,
+            $command->clickedPosition,
+            $next->identifier(),
+            $next->properties(),
+            $command->face,
+            $command->clickX,
+            $command->clickY,
+            $command->clickZ,
+            $held,
+        );
+
+        return new BlockChanged(
+            $player->sessionId,
+            $command->clickedPosition,
+            $transform->state,
+            $this->players->recipients(),
+        );
+    }
+
+    private function toggleDoor(
+        Player $player,
+        PlaceBlock $command,
+        InternalBlockStateId $clickedState,
+        CanonicalBlockState $clicked,
+        ?InventoryStack $held,
+    ): WorldEvent {
+        $clickedIsUpper = ($clicked->properties()['upper_block_bit'] ?? 0) === 1;
+        $lowerPosition = $clickedIsUpper
+            ? new BlockPosition(
+                $command->clickedPosition->x,
+                $command->clickedPosition->y - 1,
+                $command->clickedPosition->z,
+            )
+            : $command->clickedPosition;
+        $upperPosition = new BlockPosition($lowerPosition->x, $lowerPosition->y + 1, $lowerPosition->z);
+        $lowerState = $this->blockWorld?->loadedBlockStateAt(
+            $lowerPosition->x,
+            $lowerPosition->y,
+            $lowerPosition->z,
+        );
+        $upperState = $this->blockWorld?->loadedBlockStateAt(
+            $upperPosition->x,
+            $upperPosition->y,
+            $upperPosition->z,
+        );
+        if ($lowerState === null || $upperState === null || $this->blockStateRegistry === null) {
+            return new BlockChanged($player->sessionId, $command->clickedPosition, $clickedState, [$player->sessionId]);
+        }
+        $lower = $this->blockStateRegistry->state($lowerState);
+        $upper = $this->blockStateRegistry->state($upperState);
+        try {
+            $pair = $this->doorStates?->toggle($lower, $upper);
+        } catch (InvalidArgumentException) {
+            $pair = null;
+        }
+        if ($pair === null) {
+            return new BlockChanged($player->sessionId, $command->clickedPosition, $clickedState, [$player->sessionId]);
+        }
+        $nextLower = $this->blockStateRegistry->state($pair->lower);
+        $nextUpper = $this->blockStateRegistry->state($pair->upper);
+        if ($this->pluginEvents !== null
+            && (!$this->pluginEvents->allowBlockStateChange(
+                $lowerPosition,
+                $lower->identifier(),
+                $lower->properties(),
+                $nextLower->identifier(),
+                $nextLower->properties(),
+                BlockStateChangeReason::INTERACTION,
+            ) || !$this->pluginEvents->allowBlockStateChange(
+                $upperPosition,
+                $upper->identifier(),
+                $upper->properties(),
+                $nextUpper->identifier(),
+                $nextUpper->properties(),
+                BlockStateChangeReason::INTERACTION,
+            ))) {
+            return new BlockChanged($player->sessionId, $command->clickedPosition, $clickedState, [$player->sessionId]);
+        }
+        $this->setBlockStateAndSchedule($lowerPosition, $pair->lower);
+        $this->setBlockStateAndSchedule($upperPosition, $pair->upper);
+        $this->pluginEvents?->blockStateChanged(
+            $lowerPosition,
+            $lower->identifier(),
+            $lower->properties(),
+            $nextLower->identifier(),
+            $nextLower->properties(),
+            BlockStateChangeReason::INTERACTION,
+        );
+        $this->pluginEvents?->blockStateChanged(
+            $upperPosition,
+            $upper->identifier(),
+            $upper->properties(),
+            $nextUpper->identifier(),
+            $nextUpper->properties(),
+            BlockStateChangeReason::INTERACTION,
+        );
+        $clickedNextState = $clickedIsUpper ? $pair->upper : $pair->lower;
+        $clickedNext = $clickedIsUpper ? $nextUpper : $nextLower;
+        $this->pluginEvents?->blockInteracted(
+            $player,
+            $command->clickedPosition,
+            $clickedNext->identifier(),
+            $clickedNext->properties(),
+            $command->face,
+            $command->clickX,
+            $command->clickY,
+            $command->clickZ,
+            $held,
+        );
+        $otherPosition = $clickedIsUpper ? $lowerPosition : $upperPosition;
+        $otherState = $clickedIsUpper ? $pair->lower : $pair->upper;
+        $this->deferredEvents[] = new BlockChanged(
+            $player->sessionId,
+            $otherPosition,
+            $otherState,
+            $this->players->recipients(),
+        );
+
+        return new BlockChanged(
+            $player->sessionId,
+            $command->clickedPosition,
+            $clickedNextState,
+            $this->players->recipients(),
+        );
+    }
+
+    private static function horizontalDirection(float $yaw): string
+    {
+        $normalized = fmod($yaw, 360.0);
+        if ($normalized < 0.0) {
+            $normalized += 360.0;
+        }
+
+        return match (true) {
+            $normalized < 45.0 || $normalized >= 315.0 => 'south',
+            $normalized < 135.0 => 'west',
+            $normalized < 225.0 => 'north',
+            default => 'east',
+        };
     }
 
     private function useEnderEye(
@@ -22341,15 +24229,7 @@ final class WorldSimulation
             return $this->isReplaceablePlacementState($state);
         }
 
-        return in_array($this->blockStateRegistry->state($state)->identifier(), [
-            'minecraft:fire',
-            'minecraft:soul_fire',
-            'minecraft:tallgrass',
-            'minecraft:short_grass',
-            'minecraft:fern',
-            'minecraft:deadbush',
-            'minecraft:vine',
-        ], true);
+        return $this->fallingBlockSupport->canFallThrough($this->blockStateRegistry->state($state));
     }
 
     private function itemTouchesLava(DroppedItemEntity $entity): bool

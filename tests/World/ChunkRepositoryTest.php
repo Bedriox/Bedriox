@@ -63,6 +63,28 @@ final class ChunkRepositoryTest extends TestCase
         self::assertSame(0.4, $snapshot->hitRatio());
     }
 
+    public function testLoadedChunkWindowIsBoundedAndWrapsWithoutDuplicatingChunks(): void
+    {
+        $repository = new ChunkRepository(4);
+        $loader = static fn(ChunkPosition $position): Chunk => new Chunk(
+            $position,
+            new InternalBlockStateId(0),
+            [],
+        );
+        foreach (range(0, 3) as $x) {
+            $repository->get(new ChunkPosition($x, 0), $loader);
+        }
+
+        self::assertSame(['2:0', '3:0', '0:0'], array_map(
+            static fn(Chunk $chunk): string => $chunk->position->key(),
+            $repository->loadedChunkWindow(2, 3),
+        ));
+        self::assertSame(['1:0', '2:0'], array_map(
+            static fn(Chunk $chunk): string => $chunk->position->key(),
+            $repository->loadedChunkWindow(5, 2),
+        ));
+    }
+
     public function testRetainedChunksCannotBeEvictedUntilReleased(): void
     {
         $repository = new ChunkRepository(1);

@@ -59,8 +59,11 @@ final readonly class BlockCollisionQuery implements LoadedCollisionBoxQuery
 
     public function hasCollision(AxisAlignedBox $area): bool
     {
-        $minY = max(Chunk::MIN_Y, (int) floor($area->minY));
-        $maxY = min(Chunk::MAX_Y, self::maximumCell($area->minY, $area->maxY));
+        $minY = max(Chunk::MIN_Y, (int) floor($area->minY) - ($this->shapes === null ? 0 : 1));
+        $maxY = min(
+            Chunk::MAX_Y,
+            self::maximumCell($area->minY, $area->maxY) + ($this->shapes === null ? 0 : 1),
+        );
         if ($minY > $maxY) {
             return false;
         }
@@ -176,8 +179,11 @@ final readonly class BlockCollisionQuery implements LoadedCollisionBoxQuery
         $boxes = [];
         /** @var array<string, Chunk> $chunks */
         $chunks = [];
-        $minY = max(Chunk::MIN_Y, (int) floor($area->minY));
-        $maxY = min(Chunk::MAX_Y, self::maximumCell($area->minY, $area->maxY));
+        $minY = max(Chunk::MIN_Y, (int) floor($area->minY) - ($this->shapes === null ? 0 : 1));
+        $maxY = min(
+            Chunk::MAX_Y,
+            self::maximumCell($area->minY, $area->maxY) + ($this->shapes === null ? 0 : 1),
+        );
         if ($minY > $maxY) {
             return [];
         }

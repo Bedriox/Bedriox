@@ -81,8 +81,10 @@ use Bedriox\Server\Simulation\Command\SwingArm;
 use Bedriox\Server\Simulation\Command\SyncInventory;
 use Bedriox\Server\Simulation\Command\SyncInventorySlots;
 use Bedriox\Server\Simulation\Command\TeleportPlayer;
+use Bedriox\Server\Simulation\Command\UpdateSignText;
 use Bedriox\Server\Simulation\Command\UseItem;
 use Bedriox\Server\Simulation\Command\WorkstationRequest;
+use Bedriox\Server\World\BlockEntity\SignText;
 use Bedriox\Server\World\BlockPosition;
 
 final readonly class SimulationCommandFactory
@@ -648,6 +650,17 @@ final readonly class SimulationCommandFactory
         }
 
         return new \Bedriox\Server\Simulation\Command\BrushBlock($session, $sequence, $action, $position, $face);
+    }
+
+    public function updateSignText(
+        string $session,
+        BlockPosition $position,
+        SignText $front,
+        SignText $back,
+    ): UpdateSignText {
+        $this->assertOpaqueId($session, 128, 'session');
+
+        return new UpdateSignText($session, $position, $front, $back);
     }
 
     public function placeBlock(

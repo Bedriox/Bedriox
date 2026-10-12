@@ -27,7 +27,6 @@ use Bedriox\Server\Gameplay\Item\ToolType;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\InternalBlockStateId;
 use Bedriox\Server\World\Block\VanillaBlockStates;
-use Bedriox\Server\World\Generation\GenerationBlockPalette;
 use InvalidArgumentException;
 
 /** Bounded gameplay definitions for generated terrain and admitted block-item states. */
@@ -101,12 +100,13 @@ final readonly class BlockCatalog
             new BlockType(VanillaBlockStates::spruceLeaves(), 0.2, ToolType::Hoe, null, BlockDropKind::SpruceLeaves),
         ];
         $indicesByIdentifier = [];
+        $explicitIdentifiers = [];
         foreach ($types as $index => $type) {
             $indicesByIdentifier[$type->identifier()] = $index;
+            $explicitIdentifiers[$type->identifier()] = true;
         }
         if ($registry !== null) {
-            foreach (GenerationBlockPalette::fromRegistry($registry)->states() as $stateId) {
-                $state = $registry->state($stateId);
+            foreach ($registry->states() as $state) {
                 if (!isset($indicesByIdentifier[$state->identifier()])) {
                     $types[] = self::generatedType($state);
                     $indicesByIdentifier[$state->identifier()] = count($types) - 1;
@@ -134,11 +134,19 @@ final readonly class BlockCatalog
                 }
                 $index = $indicesByIdentifier[$state->identifier()] ?? null;
                 if ($index !== null) {
-                    $types[$index] = $types[$index]->withItemIdentifier($mapping->itemIdentifier());
+                    $types[$index] = isset($explicitIdentifiers[$state->identifier()])
+                        ? $types[$index]->withItemIdentifier($mapping->itemIdentifier())
+                        : self::mappedType($state, $mapping->itemIdentifier());
                     continue;
                 }
                 $types[] = self::mappedType($state, $mapping->itemIdentifier());
                 $indicesByIdentifier[$state->identifier()] = count($types) - 1;
+            }
+        }
+        foreach ($types as $index => $type) {
+            $definition = VanillaBlockMiningRegistry::definition($type->identifier());
+            if ($definition !== null) {
+                $types[$index] = $type->withMiningDefinition($definition);
             }
         }
 

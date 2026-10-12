@@ -25,6 +25,8 @@ use Bedriox\Server\World\Environment\EnvironmentTickScheduler;
 use Bedriox\Server\World\Environment\EnvironmentTickType;
 use OverflowException;
 use PHPUnit\Framework\TestCase;
+use ReflectionProperty;
+use SplPriorityQueue;
 
 final class EnvironmentTickSchedulerTest extends TestCase
 {
@@ -101,5 +103,20 @@ final class EnvironmentTickSchedulerTest extends TestCase
         $replacement = $scheduler->drain(20, 2, 1_000)->ticks;
         self::assertCount(1, $replacement);
         self::assertSame(20, $replacement[0]->dueTick);
+    }
+
+    public function testRepeatedEarlierReplacementCompactsStaleHeapEntries(): void
+    {
+        $scheduler = new EnvironmentTickScheduler(100_000, static fn(): int => 0);
+        $position = new BlockPosition(0, 64, 0);
+        for ($delay = 2_000; $delay >= 0; --$delay) {
+            self::assertTrue($scheduler->schedule($position, EnvironmentTickType::FLUID, 0, $delay));
+        }
+
+        $queue = (new ReflectionProperty(EnvironmentTickScheduler::class, 'queue'))->getValue($scheduler);
+        self::assertInstanceOf(SplPriorityQueue::class, $queue);
+        self::assertLessThanOrEqual(1_024, $queue->count());
+        self::assertSame(1, $scheduler->count());
+        self::assertSame(0, $scheduler->drain(0, 1, 1_000)->ticks[0]->dueTick);
     }
 }

@@ -63,6 +63,12 @@ final readonly class BlockEntityRegistry
             'minecraft:cauldron' => BlockEntityType::Cauldron,
             'BrushableBlock' => BlockEntityType::BrushableBlock,
             'minecraft:brushable_block' => BlockEntityType::BrushableBlock,
+            'Sign' => BlockEntityType::Sign,
+            'HangingSign' => BlockEntityType::HangingSign,
+            'minecraft:sign' => BlockEntityType::Sign,
+            'minecraft:hanging_sign' => BlockEntityType::HangingSign,
+            'Shelf' => BlockEntityType::Shelf,
+            'minecraft:shelf' => BlockEntityType::Shelf,
         ];
         $this->saveIds = [
             BlockEntityType::Chest->value => 'Chest',
@@ -76,6 +82,9 @@ final readonly class BlockEntityRegistry
             BlockEntityType::Campfire->value => 'Campfire',
             BlockEntityType::Cauldron->value => 'Cauldron',
             BlockEntityType::BrushableBlock->value => 'BrushableBlock',
+            BlockEntityType::Sign->value => 'Sign',
+            BlockEntityType::HangingSign->value => 'HangingSign',
+            BlockEntityType::Shelf->value => 'Shelf',
         ];
     }
 
@@ -100,6 +109,9 @@ final readonly class BlockEntityRegistry
             BlockEntityType::Campfire => CampfireBlockEntity::empty(CampfireType::Campfire, $position),
             BlockEntityType::Cauldron => new CauldronBlockEntity($position),
             BlockEntityType::BrushableBlock => SuspiciousSandBlockEntity::empty($position),
+            BlockEntityType::Sign => SignBlockEntity::empty($position),
+            BlockEntityType::HangingSign => SignBlockEntity::empty($position, hanging: true),
+            BlockEntityType::Shelf => ShelfBlockEntity::empty($position),
             BlockEntityType::Chest, BlockEntityType::Barrel, BlockEntityType::ShulkerBox =>
                 ContainerBlockEntity::empty($type, $position),
             BlockEntityType::EnderChest => new SimpleBlockEntity($type, $position),

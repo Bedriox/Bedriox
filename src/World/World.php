@@ -372,6 +372,12 @@ final class World
         return $this->chunks->loadedChunks();
     }
 
+    /** @return list<Chunk> A bounded, wrapping view over the loaded chunk cache. */
+    public function loadedChunkWindow(int $offset, int $maximumChunks): array
+    {
+        return $this->chunks->loadedChunkWindow($offset, $maximumChunks);
+    }
+
     /** Installs immutable durable state and returns the block entity previously stored at the position. */
     public function setBlockEntity(BlockEntity $blockEntity): ?BlockEntity
     {

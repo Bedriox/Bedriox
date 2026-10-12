@@ -84,4 +84,17 @@ final readonly class BlockType
             $identifier,
         );
     }
+
+    public function withMiningDefinition(BlockMiningDefinition $definition): self
+    {
+        return new self(
+            $this->state,
+            $definition->hardness,
+            $definition->preferredTool,
+            $definition->requiredTier,
+            $this->dropKind,
+            $this->hasItemForm,
+            $this->itemFormIdentifier,
+        );
+    }
 }
