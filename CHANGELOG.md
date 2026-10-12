@@ -1,5 +1,7 @@
 # Changelog
 
+- Add complete generated `VanillaBlocks` and `VanillaItems` identifier catalogs, exact block and item identity helpers, and typed semantic tags for stable plugin classification without exposing internal or network IDs.
+- Start automatic worker pools concurrently, report bounded startup progress, and clean up partial worker groups when startup cannot complete.
 - Represent each loaded dimension as an exact public world, make resolved positions carry that world directly, persist per-dimension generator settings, and allow portal events to target compatible dimensions in other named worlds while retaining one native LevelDB per named world.
 - Give distinct wire enum identities to literal command alternatives that share an argument name, preventing command projection from rejecting player admission.
 - Admit the current entity-pick request without disconnecting creative clients that middle-click an actor.

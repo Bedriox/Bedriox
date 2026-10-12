@@ -66,7 +66,7 @@ Routine file output is sent to one bounded background writer. Console output rem
 
 ## Workers and performance status
 
-`workers.core-count=auto` selects a bounded number of local PHP worker processes. An integer from `0` through `32` overrides it; `0` is the rollback mode and keeps the characterized synchronous fallbacks. Workers use the same PHP executable, configuration, extensions, and Bedriox installation as the parent. They communicate only over authenticated `127.0.0.1` streams created before the public RakNet listener binds. No additional PHP extension is required.
+`workers.core-count=auto` selects a bounded number of local PHP worker processes. An integer from `0` through `32` overrides it; `0` is the rollback mode and keeps the characterized synchronous fallbacks. Workers use the same PHP executable, configuration, extensions, and Bedriox installation as the parent. They start as one concurrent group, report bounded readiness progress to the parent, and are all stopped if the group cannot become ready. They communicate only over authenticated `127.0.0.1` streams created before the public RakNet listener binds. No additional PHP extension is required.
 
 `entities.ai.enabled=true` enables the bounded mob AI scheduler. Setting it to `false` preserves entity spawning, physics, persistence, damage, and packet projection while marking mobs as having no AI.
 

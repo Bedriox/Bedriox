@@ -97,14 +97,10 @@ final class BrokerProgram
             return 65;
         }
         stream_set_blocking($this->parentStream, false);
-        for ($id = 0; $id < $this->configuredWorkers; ++$id) {
-            $worker = $this->startWorker();
-            if ($worker === null) {
-                $this->closeAll();
+        if (!$this->startWorkers()) {
+            $this->closeAll();
 
-                return 66;
-            }
-            $this->workers[$id] = $worker;
+            return 66;
         }
         $this->queueParent(new WorkerFrame(
             WorkerFrameKind::READY,
@@ -177,6 +173,60 @@ final class BrokerProgram
 
     private function startWorker(): ?BrokerWorker
     {
+        $pending = $this->launchWorker();
+        if ($pending === null) {
+            return null;
+        }
+
+        return $this->finishWorkerStartup($pending);
+    }
+
+    private function startWorkers(): bool
+    {
+        /** @var list<array{process: resource, listener: resource, token: string}> $pending */
+        $pending = [];
+        for ($id = 0; $id < $this->configuredWorkers; ++$id) {
+            $worker = $this->launchWorker();
+            if ($worker === null) {
+                $this->closePendingWorkers($pending);
+
+                return false;
+            }
+            $pending[] = $worker;
+        }
+
+        foreach ($pending as $id => $workerStartup) {
+            $worker = $this->finishWorkerStartup($workerStartup);
+            if ($worker === null) {
+                $this->closePendingWorkers(array_slice($pending, $id + 1));
+
+                return false;
+            }
+            $this->workers[$id] = $worker;
+            $this->queueParent(new WorkerFrame(
+                WorkerFrameKind::HEARTBEAT,
+                $this->epoch,
+                metadata: [
+                    'phase' => 'startup',
+                    'ready_workers' => count($this->workers),
+                    'workers' => $this->configuredWorkers,
+                ],
+            ));
+            $this->flushParent();
+            $this->pollParent();
+            if ($this->stopping || feof($this->parent())) {
+                $this->closePendingWorkers(array_slice($pending, $id + 1));
+
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /** @return array{process: resource, listener: resource, token: string}|null */
+    private function launchWorker(): ?array
+    {
         $listener = @stream_socket_server('tcp://127.0.0.1:0', $errorCode, $errorMessage, STREAM_SERVER_BIND | STREAM_SERVER_LISTEN);
         $address = is_resource($listener) ? @stream_socket_get_name($listener, false) : false;
         if (!is_resource($listener) || !is_string($address) || $address === '') {
@@ -204,6 +254,16 @@ final class BrokerProgram
             fclose($listener);
             return null;
         }
+
+        return ['process' => $process, 'listener' => $listener, 'token' => $token];
+    }
+
+    /** @param array{process: resource, listener: resource, token: string} $pending */
+    private function finishWorkerStartup(array $pending): ?BrokerWorker
+    {
+        $process = $pending['process'];
+        $listener = $pending['listener'];
+        $token = $pending['token'];
         $connection = @stream_socket_accept($listener, 5);
         fclose($listener);
         if (!is_resource($connection)) {
@@ -249,6 +309,16 @@ final class BrokerProgram
         $this->closeProcess($process, $pipes[0], $pipes[1]);
 
         return null;
+    }
+
+    /** @param list<array{process: resource, listener: resource, token: string}> $pending */
+    private function closePendingWorkers(array $pending): void
+    {
+        foreach ($pending as $worker) {
+            @fclose($worker['listener']);
+            @proc_terminate($worker['process']);
+            @proc_close($worker['process']);
+        }
     }
 
     private function pollParent(): void

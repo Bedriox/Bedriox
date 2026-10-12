@@ -30,6 +30,8 @@ use RuntimeException;
 
 final class ManagedWorkerPool
 {
+    private const int MAXIMUM_STARTUP_SECONDS = 60;
+
     /** @var resource|null */
     private $process = null;
     /** @var resource|null */
@@ -322,7 +324,7 @@ final class ManagedWorkerPool
             $this->epoch,
             metadata: $identity->metadata($nonce),
         )));
-        $ready = $this->readBlockingFrame();
+        $ready = $this->awaitBrokerReady($identity, $nonce);
         $expected = $identity->metadata($nonce);
         if ($ready === null || $ready->kind !== WorkerFrameKind::READY || !hash_equals($this->epoch, $ready->epoch)
             || array_diff_assoc($expected, $ready->metadata) !== []
@@ -566,6 +568,63 @@ final class ManagedWorkerPool
         return $body === null ? null : $this->codec->decode($fixed . $body);
     }
 
+    private function awaitBrokerReady(WorkerIdentity $identity, string $nonce): ?WorkerFrame
+    {
+        $deadline = hrtime(true) + min(
+            self::MAXIMUM_STARTUP_SECONDS,
+            10 + ($this->workerCount * 2),
+        ) * 1_000_000_000;
+        $expected = $identity->metadata($nonce);
+        do {
+            $frame = $this->readBlockingFrame();
+            if ($frame === null) {
+                $this->diagnostic = $this->brokerStatusDiagnostic('startup channel closed or timed out');
+
+                return null;
+            }
+            if (!hash_equals($this->epoch, $frame->epoch)) {
+                $this->diagnostic = 'broker returned a frame for the wrong worker epoch';
+
+                return null;
+            }
+            if ($frame->kind === WorkerFrameKind::HEARTBEAT && ($frame->metadata['phase'] ?? null) === 'startup') {
+                $readyWorkers = max(0, (int) ($frame->metadata['ready_workers'] ?? 0));
+                $this->diagnostic = sprintf('broker started %d of %d workers', $readyWorkers, $this->workerCount);
+                continue;
+            }
+            if ($frame->kind === WorkerFrameKind::READY
+                && array_diff_assoc($expected, $frame->metadata) === []
+                && (int) ($frame->metadata['workers'] ?? -1) === $this->workerCount) {
+                return $frame;
+            }
+            $this->diagnostic = 'broker returned an invalid startup frame';
+
+            return null;
+        } while (hrtime(true) < $deadline);
+
+        $this->diagnostic = $this->brokerStatusDiagnostic('startup deadline exceeded');
+
+        return null;
+    }
+
+    private function brokerStatusDiagnostic(string $fallback): string
+    {
+        if (!is_resource($this->process)) {
+            return $fallback;
+        }
+        $status = @proc_get_status($this->process);
+        $deadline = hrtime(true) + 250_000_000;
+        while ($status['running'] && hrtime(true) < $deadline) {
+            usleep(5_000);
+            $status = @proc_get_status($this->process);
+        }
+        if ($status['running']) {
+            return $this->diagnostic !== '' ? $this->diagnostic : $fallback;
+        }
+
+        return sprintf('broker exited during startup with code %d', $status['exitcode']);
+    }
+
     /** @param resource $stream */
     private function readExactly($stream, int $length): ?string
     {
@@ -587,12 +646,6 @@ final class ManagedWorkerPool
 
     private function closeProcess(): void
     {
-        if (is_resource($this->process)) {
-            $status = @proc_get_status($this->process);
-            if ($status['running']) {
-                @proc_terminate($this->process);
-            }
-        }
         foreach (['input', 'output'] as $property) {
             if (is_resource($this->{$property})) {
                 @fclose($this->{$property});
@@ -601,6 +654,17 @@ final class ManagedWorkerPool
                 $this->output = null;
             }
             $this->{$property} = null;
+        }
+        if (is_resource($this->process)) {
+            $status = @proc_get_status($this->process);
+            $deadline = hrtime(true) + 6_000_000_000;
+            while ($status['running'] && hrtime(true) < $deadline) {
+                usleep(10_000);
+                $status = @proc_get_status($this->process);
+            }
+            if ($status['running']) {
+                @proc_terminate($this->process);
+            }
         }
         if (is_resource($this->process)) {
             @proc_close($this->process);

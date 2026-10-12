@@ -336,6 +336,9 @@ final class WorldContainerStore
             BlockEntityType::Campfire => false,
             BlockEntityType::Cauldron => false,
             BlockEntityType::BrushableBlock => false,
+            BlockEntityType::Sign => false,
+            BlockEntityType::HangingSign => false,
+            BlockEntityType::Shelf => false,
         };
     }
 

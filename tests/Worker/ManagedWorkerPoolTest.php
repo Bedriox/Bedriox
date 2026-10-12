@@ -30,6 +30,7 @@ use Bedriox\Server\Worker\WorkerLimits;
 use Bedriox\Server\Worker\WorkerRejectionReason;
 use Bedriox\Server\Worker\WorkerResultStatus;
 use PHPUnit\Framework\TestCase;
+use RuntimeException;
 
 final class ManagedWorkerPoolTest extends TestCase
 {
@@ -82,6 +83,34 @@ final class ManagedWorkerPoolTest extends TestCase
             $pool->shutdown();
         }
         self::assertFalse($pool->snapshot()->available);
+    }
+
+    public function testAutomaticMaximumWorkerCountStartsAsOnePool(): void
+    {
+        $pool = ManagedWorkerPool::start('automatic-worker-test', 8);
+        try {
+            self::assertTrue($pool->snapshot()->available, $pool->diagnostic());
+            self::assertSame(8, $pool->snapshot()->workerCount);
+            $submission = $pool->submit(CoreWorkerTaskCatalog::SELF_TEST, 'automatic-workers');
+            self::assertTrue($submission->isAccepted());
+
+            $results = $this->awaitResults($pool, 1);
+            self::assertCount(1, $results, $pool->diagnostic());
+            self::assertSame(WorkerResultStatus::SUCCESS, $results[0]->status, $pool->diagnostic());
+            self::assertSame(hash('sha256', 'automatic-workers', true), $results[0]->payload);
+        } finally {
+            $pool->shutdown();
+        }
+        self::assertFalse($pool->snapshot()->available);
+    }
+
+    public function testFailedWorkerStartupReturnsAUsefulBrokerDiagnostic(): void
+    {
+        $fixture = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'Fixtures' . DIRECTORY_SEPARATOR . 'FailingWorkerProgram.php';
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessageMatches('/Managed worker broker handshake failed: broker exited during startup with code 66/');
+        ManagedWorkerPool::start('failed-worker-test', 4, entryPoint: $fixture);
     }
 
     public function testResultCollectedAfterItsReceiptDeadlineBecomesATimeout(): void
