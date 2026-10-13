@@ -322,6 +322,7 @@ use Bedriox\Server\Gameplay\Potion\BrewingStandProcessor;
 use Bedriox\Server\Gameplay\Potion\PotionCatalog;
 use Bedriox\Server\Gameplay\Potion\PotionEffectDose;
 use Bedriox\Server\Gameplay\Potion\PotionEffectProjector;
+use Bedriox\Server\Gameplay\Potion\TippedArrowCatalog;
 use Bedriox\Server\Gameplay\Processing\CampfireBlockEntity;
 use Bedriox\Server\Gameplay\Processing\CampfireProcessor;
 use Bedriox\Server\Gameplay\Processing\CampfireRecipeResolver;
@@ -9136,6 +9137,7 @@ final class WorldSimulation
     private function damage(
         DamagePlayer $command,
         ?AbstractLivingEntity $entityAttacker = null,
+        bool $bypassDamageCooldown = false,
     ): WorldEvent {
         $player = $this->players->player($command->session);
         if ($player === null) {
@@ -9151,7 +9153,7 @@ final class WorldSimulation
         if (!$isKill && !$player->gameMode()->takesDamage()) {
             return new CommandRejected($command->session, 'gamemode_invulnerable');
         }
-        if (!$isKill && $this->tick <= $player->vitals->invulnerableUntilTick) {
+        if (!$isKill && !$bypassDamageCooldown && $this->tick <= $player->vitals->invulnerableUntilTick) {
             return new CommandRejected($command->session, 'damage_cooldown');
         }
         $baseDamage = $command->amount;
@@ -13755,9 +13757,7 @@ final class WorldSimulation
         $powerLevel = $enchantments[VanillaEnchantments::POWER] ?? 0;
         $punchLevel = $enchantments[VanillaEnchantments::PUNCH] ?? 0;
         $flameLevel = $enchantments[VanillaEnchantments::FLAME] ?? 0;
-        $type = $arrow->auxValue === 0
-            ? null
-            : \Bedriox\Api\Potion\PotionType::tryFrom($arrow->auxValue);
+        $type = $this->tippedArrowType($arrow);
         try {
             $projectile = $this->projectiles->spawnArrow(
                 $player->identity->uuid,
@@ -13859,9 +13859,7 @@ final class WorldSimulation
         $enchantments = WorkstationItemData::enchantments($crossbow->nbt);
         $multishot = ($enchantments[VanillaEnchantments::MULTISHOT] ?? 0) > 0;
         $piercingLevel = $enchantments[VanillaEnchantments::PIERCING] ?? 0;
-        $potionType = $ammunition->auxValue === 0
-            ? null
-            : \Bedriox\Api\Potion\PotionType::tryFrom($ammunition->auxValue);
+        $potionType = $this->tippedArrowType($ammunition);
         $launched = [];
         try {
             foreach ($multishot ? [-10.0, 0.0, 10.0] : [0.0] as $yawOffset) {
@@ -13962,6 +13960,11 @@ final class WorldSimulation
         $this->projectileEntitiesDirty = true;
 
         return new InstantItemUsed($player->snapshot(), $crossbow, $this->players->recipients());
+    }
+
+    private function tippedArrowType(InventoryStack $arrow): ?PotionType
+    {
+        return (new TippedArrowCatalog())->resolve($arrow->auxValue);
     }
 
     private function releaseTrident(Player $player, ItemUseSession $active): WorldEvent
@@ -16505,7 +16508,7 @@ final class WorldSimulation
                 $player->sessionId,
                 (float) (6 << min(20, $effect->amplifier)) * $dose->intensity,
                 DamageCause::Magic,
-            ));
+            ), bypassDamageCooldown: $cause === EffectCause::TIPPED_ARROW);
         }
         if ($effect->type === EffectType::INSTANT_HEALTH) {
             $maximumHealth = VanillaEffectBehavior::maximumHealth($player->effects->snapshot());

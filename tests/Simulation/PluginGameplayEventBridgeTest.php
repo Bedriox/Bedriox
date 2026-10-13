@@ -448,6 +448,68 @@ final class PluginGameplayEventBridgeTest extends TestCase
         self::assertSame(1, $effectAdded);
     }
 
+    public function testTippedArrowInstantDamageCombinesWithItsPhysicalImpactOnly(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $damageCauses = [];
+        $dispatcher->register('Example', PlayerDamageEvent::class, static function (PlayerDamageEvent $event) use (&$damageCauses): void {
+            $damageCauses[] = $event->cause;
+        });
+        [$simulation, $factory] = self::simulation($bridge);
+        $simulation->enqueue($factory->join('one', 'identity-one', 'One'));
+        $simulation->tick();
+        $simulation->enqueue($factory->damage('one', 1.0, DamageCause::Projectile));
+        self::assertInstanceOf(PlayerDamaged::class, $simulation->tick()->events[0]);
+
+        $players = (new \ReflectionProperty(WorldSimulation::class, 'players'))->getValue($simulation);
+        self::assertInstanceOf(\Bedriox\Server\Player\PlayerRegistry::class, $players);
+        $player = $players->player('one');
+        self::assertNotNull($player);
+        $applyDose = new \ReflectionMethod(WorldSimulation::class, 'applyPotionDoseToPlayer');
+        $dose = new PotionEffectDose(new EffectInstance(EffectType::INSTANT_DAMAGE, 1));
+
+        $tippedArrowDamage = $applyDose->invoke($simulation, $player, $dose, EffectCause::TIPPED_ARROW);
+        self::assertInstanceOf(PlayerDamaged::class, $tippedArrowDamage);
+        self::assertSame(13.0, $player->vitals->health);
+
+        $unrelatedDamage = $applyDose->invoke($simulation, $player, $dose, EffectCause::SPLASH_POTION);
+        self::assertInstanceOf(CommandRejected::class, $unrelatedDamage);
+        self::assertSame('damage_cooldown', $unrelatedDamage->reason);
+        self::assertSame([
+            DamageCause::Projectile->value,
+            DamageCause::Magic->value,
+        ], $damageCauses);
+    }
+
+    public function testTippedArrowInstantEffectsRemainInvertedForUndeadEntities(): void
+    {
+        $simulation = new WorldSimulation();
+        $skeleton = new SkeletonEntity(
+            EntityUuid::random(),
+            2,
+            'world',
+            new Position(1.0, 64.0, 0.0),
+            health: 10.0,
+        );
+        $applyDose = new \ReflectionMethod(WorldSimulation::class, 'applyPotionDoseToEntity');
+
+        $applyDose->invoke(
+            $simulation,
+            $skeleton,
+            new PotionEffectDose(new EffectInstance(EffectType::INSTANT_HEALTH, 1)),
+            EffectCause::TIPPED_ARROW,
+        );
+        self::assertSame(4.0, $skeleton->getHealth());
+
+        $applyDose->invoke(
+            $simulation,
+            $skeleton,
+            new PotionEffectDose(new EffectInstance(EffectType::INSTANT_DAMAGE, 1)),
+            EffectCause::TIPPED_ARROW,
+        );
+        self::assertSame(8.0, $skeleton->getHealth());
+    }
+
     public function testKickEventCanChangeMessagesOrCancelTheRequest(): void
     {
         [$dispatcher, $bridge] = self::bridge();

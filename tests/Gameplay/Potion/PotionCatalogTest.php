@@ -72,4 +72,57 @@ final class PotionCatalogTest extends TestCase
             self::assertSame($type, $arrows->resolve($auxValue));
         }
     }
+
+    public function testCurrentBedrockTippedArrowMetadataUsesTheArrowSpecificOffset(): void
+    {
+        $arrows = new TippedArrowCatalog();
+        $expected = [
+            6 => PotionType::NIGHT_VISION,
+            7 => PotionType::LONG_NIGHT_VISION,
+            8 => PotionType::INVISIBILITY,
+            9 => PotionType::LONG_INVISIBILITY,
+            10 => PotionType::LEAPING,
+            11 => PotionType::LONG_LEAPING,
+            12 => PotionType::STRONG_LEAPING,
+            13 => PotionType::FIRE_RESISTANCE,
+            14 => PotionType::LONG_FIRE_RESISTANCE,
+            15 => PotionType::SWIFTNESS,
+            16 => PotionType::LONG_SWIFTNESS,
+            17 => PotionType::STRONG_SWIFTNESS,
+            18 => PotionType::SLOWNESS,
+            19 => PotionType::LONG_SLOWNESS,
+            20 => PotionType::WATER_BREATHING,
+            21 => PotionType::LONG_WATER_BREATHING,
+            22 => PotionType::HEALING,
+            23 => PotionType::STRONG_HEALING,
+            24 => PotionType::HARMING,
+            25 => PotionType::STRONG_HARMING,
+            26 => PotionType::POISON,
+            27 => PotionType::LONG_POISON,
+            28 => PotionType::STRONG_POISON,
+            29 => PotionType::REGENERATION,
+            30 => PotionType::LONG_REGENERATION,
+            31 => PotionType::STRONG_REGENERATION,
+            32 => PotionType::STRENGTH,
+            33 => PotionType::LONG_STRENGTH,
+            34 => PotionType::STRONG_STRENGTH,
+            35 => PotionType::WEAKNESS,
+            36 => PotionType::LONG_WEAKNESS,
+            37 => PotionType::WITHER,
+            38 => PotionType::TURTLE_MASTER,
+            39 => PotionType::LONG_TURTLE_MASTER,
+            40 => PotionType::STRONG_TURTLE_MASTER,
+            41 => PotionType::SLOW_FALLING,
+            42 => PotionType::LONG_SLOW_FALLING,
+            43 => PotionType::STRONG_SLOWNESS,
+            44 => PotionType::WIND_CHARGED,
+            45 => PotionType::WEAVING,
+            46 => PotionType::OOZING,
+            47 => PotionType::INFESTED,
+        ];
+
+        foreach ($expected as $auxValue => $type) {
+            self::assertSame($type, $arrows->resolve($auxValue), "Arrow metadata $auxValue resolved incorrectly.");
+        }
+    }
 }

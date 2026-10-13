@@ -24,6 +24,7 @@ use Bedriox\Api\Effect\EffectType;
 use Bedriox\Api\Entity\Value\MooshroomStewEffect;
 use Bedriox\Api\Inventory\ItemUseKind;
 use Bedriox\Api\Player\GameMode;
+use Bedriox\Api\Potion\PotionType;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Gameplay\Item\ItemBehaviorRegistry;
 use Bedriox\Server\Gameplay\Item\ItemUseBehavior;
@@ -344,7 +345,55 @@ final class ItemUseSimulationTest extends TestCase
         self::assertInstanceOf(CommandRejected::class, $world->tick()->events[0]);
     }
 
-    public function testCrossbowCompletedUseLoadsOneRegularArrowThenFiresOnItsNextUse(): void
+    public function testBowLaunchUsesTippedArrowMetadataInsteadOfPotionMetadata(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $palette = FixedFlatBlockPalette::fromRegistry(new BlockStateRegistry(
+            $data->blockStateRegistry()->states(),
+        ));
+        $world = new WorldSimulation(blockPalette: $palette);
+        $factory = new SimulationCommandFactory();
+        $bootstrap = new PlayerBootstrap(
+            new PlayerIdentity('12345678-1234-5678-9abc-123456789abc', 'Player'),
+            'world',
+            new Position(0.0, 64.0, 0.0),
+            0.0,
+            0.0,
+            new PlayerInventoryState([
+                new PlayerInventoryEntry(0, new PlayerInventoryStackState('minecraft:bow', 1)),
+                new PlayerInventoryEntry(1, new PlayerInventoryStackState(
+                    'minecraft:arrow',
+                    1,
+                    auxValue: 28,
+                )),
+            ], 0),
+            1,
+            2,
+        );
+        $world->enqueue($factory->join(
+            'session',
+            $bootstrap->identity->uuid,
+            $bootstrap->identity->displayName,
+            bootstrap: $bootstrap,
+        ));
+        $world->tick();
+        $world->enqueue($factory->useItem('session', 0));
+        $world->tick();
+        for ($tick = 0; $tick < 20; ++$tick) {
+            $world->tick();
+        }
+        $world->enqueue($factory->releaseItem('session', 0));
+        $events = $world->tick()->events;
+        $spawned = array_values(array_filter(
+            $events,
+            static fn(object $event): bool => $event instanceof ProjectileSpawned,
+        ));
+
+        self::assertCount(1, $spawned);
+        self::assertSame(PotionType::STRONG_POISON, $spawned[0]->projectile->potionType);
+    }
+
+    public function testCrossbowCompletedUsePreservesTippedArrowMetadataThenFiresOnItsNextUse(): void
     {
         $data = BedrockDataSet::bundled();
         $palette = FixedFlatBlockPalette::fromRegistry(new BlockStateRegistry(
@@ -360,7 +409,11 @@ final class ItemUseSimulationTest extends TestCase
             0.0,
             new PlayerInventoryState([
                 new PlayerInventoryEntry(0, new PlayerInventoryStackState('minecraft:crossbow', 1)),
-                new PlayerInventoryEntry(1, new PlayerInventoryStackState('minecraft:arrow', 4)),
+                new PlayerInventoryEntry(1, new PlayerInventoryStackState(
+                    'minecraft:arrow',
+                    4,
+                    auxValue: 47,
+                )),
             ], 0),
             1,
             2,
@@ -388,10 +441,12 @@ final class ItemUseSimulationTest extends TestCase
         $world->enqueue($factory->useItem('session', 0));
         $fired = $world->tick()->events;
         self::assertInstanceOf(InstantItemUsed::class, $fired[0]);
-        self::assertCount(1, array_filter(
+        $spawned = array_values(array_filter(
             $fired,
             static fn(object $event): bool => $event instanceof ProjectileSpawned,
         ));
+        self::assertCount(1, $spawned);
+        self::assertSame(PotionType::INFESTED, $spawned[0]->projectile->potionType);
         self::assertNull($world->pluginPlayers()[0]->getInventory()->getItem(0)->nbt);
     }
 
