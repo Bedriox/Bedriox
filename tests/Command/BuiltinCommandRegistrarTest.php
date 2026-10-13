@@ -92,7 +92,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
             $permissions,
             static fn(): array => [],
             static function (): void {},
-            static fn(): array => [],
+            static fn(): array => ['minecraft:stone'],
         ))->register();
 
         self::assertSame(17, $registry->count());
@@ -233,7 +233,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
             $permissions,
             static fn(): array => [],
             static function (): void {},
-            static fn(): array => [],
+            static fn(): array => ['minecraft:stone'],
             killTarget: static fn(
                 \Bedriox\Api\Player\Player|\Bedriox\Api\Entity\Entity $target,
             ): bool => true,
@@ -263,7 +263,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
             $permissions,
             static fn(): array => [$zed, $amy],
             static function (): void {},
-            static fn(): array => [],
+            static fn(): array => ['minecraft:stone'],
         ))->register();
         $sender = new BuiltinCommandSender();
 
@@ -308,7 +308,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
             static function () use (&$stops): void {
                 ++$stops;
             },
-            static fn(): array => [],
+            static fn(): array => ['minecraft:stone'],
         ))->register();
         $sender = new BuiltinCommandSender();
 
@@ -343,7 +343,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
             $permissions,
             static fn(): array => [$player],
             static function (): void {},
-            static fn(): array => [],
+            static fn(): array => ['minecraft:stone'],
         ))->register();
         $sender = new BuiltinCommandSender(CommandSenderType::PLAYER);
 
@@ -400,7 +400,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
             $permissions,
             static fn(): array => [],
             static function (): void {},
-            static fn(): array => [],
+            static fn(): array => ['minecraft:stone'],
             status: static fn(): PerformanceSnapshot => new PerformanceSnapshot(
                 90_061,
                 20.0,
@@ -512,7 +512,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
             $permissions,
             static fn(): array => [],
             static function (): void {},
-            static fn(): array => [],
+            static fn(): array => ['minecraft:stone'],
             garbageCollectionStatus: static function () use (&$statusCalls): GarbageCollectionStatus {
                 ++$statusCalls;
 
@@ -569,7 +569,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
             $permissions,
             static fn(): array => [],
             static function (): void {},
-            static fn(): array => [],
+            static fn(): array => ['minecraft:stone'],
             status: static fn(): PerformanceSnapshot => new PerformanceSnapshot(
                 1,
                 20.0,

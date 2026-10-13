@@ -24,7 +24,7 @@ use Bedriox\Server\World\Block\InternalBlockStateId;
 use InvalidArgumentException;
 
 /** Immutable palette-backed block storage for one subchunk layer. */
-final readonly class SubChunkBlockStorage
+final class SubChunkBlockStorage
 {
     public const BLOCK_COUNT = 4096;
     private const MAX_PALETTE_SIZE = 256;
@@ -38,11 +38,15 @@ final readonly class SubChunkBlockStorage
     private int $networkBitsPerEntry;
 
     /** Bedrock X-Z-Y ordered little-endian words. */
-    private string $networkWordArray;
+    private ?string $networkWordArray;
 
     /** @param list<mixed> $palette */
-    private function __construct(array $palette, string $paletteIndices, ?string $networkWordArray = null)
-    {
+    private function __construct(
+        array $palette,
+        string $paletteIndices,
+        ?string $networkWordArray = null,
+        bool $validateIndices = true,
+    ) {
         if ($palette === [] || count($palette) > self::MAX_PALETTE_SIZE) {
             throw new InvalidArgumentException('Block-storage palette must contain between 1 and 256 states.');
         }
@@ -55,21 +59,22 @@ final readonly class SubChunkBlockStorage
             }
         }
         $paletteSize = count($palette);
-        for ($offset = 0; $offset < self::BLOCK_COUNT; ++$offset) {
-            if (ord($paletteIndices[$offset]) >= $paletteSize) {
-                throw new InvalidArgumentException('Block storage contains an out-of-range palette index.');
+        if ($validateIndices) {
+            for ($offset = 0; $offset < self::BLOCK_COUNT; ++$offset) {
+                if (ord($paletteIndices[$offset]) >= $paletteSize) {
+                    throw new InvalidArgumentException('Block storage contains an out-of-range palette index.');
+                }
             }
         }
         $this->palette = $palette;
         $this->paletteIndices = $paletteIndices;
         $this->networkBitsPerEntry = PackedPaletteWords::bitsForPaletteSize($paletteSize);
-        $this->networkWordArray = $networkWordArray
-            ?? PackedPaletteWords::packNetworkOrder($paletteIndices, $this->networkBitsPerEntry);
+        $this->networkWordArray = $networkWordArray;
         $expectedWords = $this->networkBitsPerEntry === 0 ? 0 : intdiv(
             self::BLOCK_COUNT + intdiv(32, $this->networkBitsPerEntry) - 1,
             intdiv(32, $this->networkBitsPerEntry),
         ) * 4;
-        if (strlen($this->networkWordArray) !== $expectedWords) {
+        if ($this->networkWordArray !== null && strlen($this->networkWordArray) !== $expectedWords) {
             throw new InvalidArgumentException('Block-storage packed word array has an invalid length.');
         }
     }
@@ -112,6 +117,12 @@ final readonly class SubChunkBlockStorage
         return new self($palette, $paletteIndices);
     }
 
+    /** @param list<mixed> $palette Palette indices already validated by a trusted builder. */
+    public static function fromTrustedPaletteIndices(array $palette, string $paletteIndices): self
+    {
+        return new self($palette, $paletteIndices, validateIndices: false);
+    }
+
     public function blockStateAt(int $localX, int $localY, int $localZ): InternalBlockStateId
     {
         return $this->palette[$this->paletteIndexAt($localX, $localY, $localZ)];
@@ -135,7 +146,10 @@ final readonly class SubChunkBlockStorage
 
     public function networkWordArray(): string
     {
-        return $this->networkWordArray;
+        return $this->networkWordArray ??= PackedPaletteWords::packNetworkOrder(
+            $this->paletteIndices,
+            $this->networkBitsPerEntry,
+        );
     }
 
     public function paletteIndexAt(int $localX, int $localY, int $localZ): int
@@ -182,7 +196,7 @@ final readonly class SubChunkBlockStorage
         $newBits = PackedPaletteWords::bitsForPaletteSize(count($palette));
         $words = $newBits === $this->networkBitsPerEntry && $newBits !== 0
             ? PackedPaletteWords::replaceNetworkIndex(
-                $this->networkWordArray,
+                $this->networkWordArray(),
                 $newBits,
                 $localX,
                 $localY,

@@ -101,6 +101,75 @@ final readonly class OverworldTerrainSampler
         return max(Chunk::MIN_Y + 6, min(196, (int) round($height)));
     }
 
+    /**
+     * Refines an already classified continental height without turning ocean
+     * cells into a repeated field of threshold islands. Land detail may carve
+     * low shoreline cells into coves; submerged detail remains submerged and
+     * only varies the shallow seafloor.
+     */
+    public function coastalLandSignal(int $x, int $z): int
+    {
+        return intdiv(
+            $this->noise->sample2d($x, $z, 112, 1_013)
+            + $this->noise->sample2d($x, $z, 32, 1_207),
+            2,
+        );
+    }
+
+    public function coastalFloorSignal(int $x, int $z): int
+    {
+        return intdiv(
+            $this->noise->sample2d($x, $z, 88, 1_313)
+            + $this->noise->sample2d($x, $z, 31, 1_409) * 2
+            + $this->noise->sample2d($x, $z, 13, 1_507) * 4
+            + $this->noise->sample2d($x, $z, 7, 1_603) * 3,
+            10,
+        );
+    }
+
+    public function coastalFloorMicroOffset(int $x, int $z): int
+    {
+        return match ($this->noise->scatteredChance($x, 0, $z, 1_709, 7)) {
+            0 => -1,
+            1 => 1,
+            default => 0,
+        };
+    }
+
+    public function refineCoastalHeight(
+        int $height,
+        int $landSignal,
+        int $floorSignal,
+        int $floorMicroOffset = 0,
+    ): int {
+        if ($height < self::SEA_LEVEL) {
+            $depth = self::SEA_LEVEL - $height;
+            if ($depth <= 4) {
+                // A symmetric offset is clipped at sea level and turns shallow
+                // shelves into enormous Y=61 plates. Shallow bathymetry only cuts
+                // downward, producing sandbars, channels, and gradual coves without
+                // promoting an ocean cell into land.
+                $floorOffset = -(int) round((($floorSignal + 32_768) / 65_536) * 7.0)
+                    + $floorMicroOffset;
+            } else {
+                $amplitude = 5.0 + min(7.0, $depth / 4.0);
+                $floorOffset = (int) round(($floorSignal / 32_768) * $amplitude)
+                    + $floorMicroOffset;
+            }
+
+            return min(self::SEA_LEVEL - 1, max(Chunk::MIN_Y + 6, $height + $floorOffset));
+        }
+        $heightAboveSea = $height - self::SEA_LEVEL;
+        if ($heightAboveSea > 10) {
+            return $height;
+        }
+        $shoreWeight = (10 - $heightAboveSea) / 10;
+        $shoreOffset = (int) round(($landSignal / 32_768) * 4.5 * $shoreWeight);
+        $minimum = $height >= self::SEA_LEVEL + 2 ? self::SEA_LEVEL : Chunk::MIN_Y + 6;
+
+        return max($minimum, min(196, $height + $shoreOffset));
+    }
+
     public function riverStrength(OverworldClimate $climate): int
     {
         if ($climate->continentalness < -3_000) {

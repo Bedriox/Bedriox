@@ -28,6 +28,7 @@ use Bedriox\Protocol\Packet\ChunkSerializer;
 use Bedriox\Protocol\Packet\LevelChunkPacket;
 use Bedriox\Protocol\Packet\PalettedStorage;
 use Bedriox\Server\Runtime\BedrockChunkPacketSerializer;
+use Bedriox\Server\World\Biome;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
@@ -220,6 +221,25 @@ final class BedrockChunkPacketSerializerTest extends TestCase
         ))->serialize($chunk);
 
         self::assertNotSame('', $packet->data);
+    }
+
+    public function testBiomeAboveHighestBlockSectionRepeatsTheHighestTransmittedStorage(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $network = $data->blockStateRegistry();
+        $internal = new BlockStateRegistry($network->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($internal);
+        $serializer = new BedrockChunkPacketSerializer(new BlockNetworkTranslator($internal, $network));
+        $chunk = (new FlatWorldGenerator($palette))->generate(new ChunkPosition(0, 0));
+
+        self::assertSame(
+            $serializer->serialize($chunk)->data,
+            $serializer->serialize($chunk->withBiome(0, Chunk::MAX_Y, 0, Biome::forest()))->data,
+        );
+        self::assertNotSame(
+            $serializer->serialize($chunk)->data,
+            $serializer->serialize($chunk->withBiome(0, 63, 0, Biome::forest()))->data,
+        );
     }
 
     #[DataProvider('nonOverworldDimensions')]

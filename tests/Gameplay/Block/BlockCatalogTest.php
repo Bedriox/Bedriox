@@ -37,13 +37,16 @@ final class BlockCatalogTest extends TestCase
     {
         $catalog = BlockCatalog::vanilla();
 
-        self::assertCount(30, $catalog->all());
+        self::assertCount(40, $catalog->all());
         self::assertFalse($catalog->type('minecraft:bedrock')->isBreakable());
         self::assertFalse($catalog->type('minecraft:water')->isBreakable());
         self::assertSame(0.6, $catalog->type('minecraft:grass_block')->hardness);
         self::assertSame(ToolType::Pickaxe, $catalog->type('minecraft:diamond_ore')->preferredTool);
         self::assertSame(ToolTier::Iron, $catalog->type('minecraft:diamond_ore')->requiredTier);
         self::assertSame(BlockDropKind::CobbledDeepslate, $catalog->type('minecraft:deepslate')->dropKind);
+        self::assertSame(BlockDropKind::Diamond, $catalog->type('minecraft:deepslate_diamond_ore')->dropKind);
+        self::assertSame(BlockDropKind::Emerald, $catalog->type('minecraft:emerald_ore')->dropKind);
+        self::assertSame(BlockDropKind::Lapis, $catalog->type('minecraft:deepslate_lapis_ore')->dropKind);
         self::assertSame(BlockDropKind::Self, $catalog->type('minecraft:cobblestone')->dropKind);
         self::assertSame(BlockDropKind::Self, $catalog->type('minecraft:cobbled_deepslate')->dropKind);
     }
@@ -82,7 +85,7 @@ final class BlockCatalogTest extends TestCase
         $generation = GenerationBlockPalette::fromRegistry($states);
         $catalog = BlockCatalog::vanilla($states);
 
-        foreach ($generation->states() as $state) {
+        foreach ($generation->generationStates() as $state) {
             self::assertNotNull($catalog->findTypeForInternalId($state, $states));
         }
         self::assertTrue($catalog->type('minecraft:short_grass')->isBreakable());

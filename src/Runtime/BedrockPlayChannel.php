@@ -168,6 +168,8 @@ use Throwable;
 /** Owns post-login protocol framing, live ciphers, and validated play input. */
 final class BedrockPlayChannel
 {
+    /** The center chunk is sufficient to enter play; the remaining view streams after admission. */
+    private const int INITIAL_SPAWN_RADIUS = 0;
     private const int PROTOCOL_TRACE_SUMMARY_INTERVAL_NANOSECONDS = 30_000_000_000;
     private const int CHUNK_PREPARATION_NANOSECONDS_PER_TICK = 5_000_000;
     private const int CHUNK_PREPARATION_BYTES_PER_TICK = 4_194_304;
@@ -3460,21 +3462,30 @@ final class BedrockPlayChannel
             ++$sent;
             $spawnChunkX = (int) floor($this->spawnX / 16.0);
             $spawnChunkZ = (int) floor($this->spawnZ / 16.0);
-            $requiredRadius = min($this->spawnRadius, $view->radius());
+            $requiredRadius = self::INITIAL_SPAWN_RADIUS;
             if (abs($position->x - $spawnChunkX) <= $requiredRadius
                 && abs($position->z - $spawnChunkZ) <= $requiredRadius) {
                 $this->sentSpawnChunks[$key] = true;
             }
-        }
-        $requiredRadius = min($this->spawnRadius, $view->radius());
-        $requiredChunks = (2 * $requiredRadius + 1) ** 2;
-        if (!$this->spawnStatusQueued && count($this->sentSpawnChunks) >= $requiredChunks) {
-            if (!$this->queuePacket(new PlayStatusPacket(PlayStatus::PlayerSpawn))) {
+            if (!$this->queueInitialSpawnStatus()) {
                 return !$this->closed;
             }
-            $this->spawnStatusQueued = true;
-            $this->bootstrapSent = true;
         }
+
+        return true;
+    }
+
+    private function queueInitialSpawnStatus(): bool
+    {
+        $requiredChunks = (2 * self::INITIAL_SPAWN_RADIUS + 1) ** 2;
+        if ($this->spawnStatusQueued || count($this->sentSpawnChunks) < $requiredChunks) {
+            return true;
+        }
+        if (!$this->queuePacket(new PlayStatusPacket(PlayStatus::PlayerSpawn))) {
+            return false;
+        }
+        $this->spawnStatusQueued = true;
+        $this->bootstrapSent = true;
 
         return true;
     }

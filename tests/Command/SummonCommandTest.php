@@ -184,7 +184,7 @@ final class SummonCommandTest extends TestCase
             $permissions,
             static fn(): array => [],
             static function (): void {},
-            static fn(): array => [],
+            static fn(): array => ['minecraft:stone'],
             entityIdentifiers: static fn(): array => [
                 'minecraft:zombie',
                 'example:guardian',
@@ -237,7 +237,7 @@ final class SummonCommandTest extends TestCase
             $permissions,
             static fn(): array => [],
             static function (): void {},
-            static fn(): array => [],
+            static fn(): array => ['minecraft:stone'],
             entityIdentifiers: static fn(): array => ['minecraft:cow'],
         ))->register();
 

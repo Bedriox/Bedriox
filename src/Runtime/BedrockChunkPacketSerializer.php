@@ -109,7 +109,11 @@ final class BedrockChunkPacketSerializer
         /** @var \WeakMap<\Bedriox\Server\World\BiomeStorage, PackedPalettedStorage> $projectedBiomeStorages */
         $projectedBiomeStorages = new \WeakMap();
         for ($sectionY = $minimumSectionY; $sectionY <= $maximumSectionY; ++$sectionY) {
-            $storage = $chunk->biomeStorage($sectionY);
+            // Bedrock extends the biome storage paired with the highest transmitted
+            // block section through the remaining dimension height. The server may
+            // retain richer biome data above that boundary internally, but sending it
+            // would produce a different client-visible column and a larger payload.
+            $storage = $chunk->biomeStorage(min($sectionY, $highestSectionY));
             $projected = $projectedBiomeStorages[$storage] ?? null;
             if (!$projected instanceof PackedPalettedStorage) {
                 $palette = [];

@@ -50,4 +50,31 @@ final class GameplayTrafficGuardTest extends TestCase
         self::assertTrue($packets->admitPackets(3, 0));
         self::assertFalse($packets->admitPackets(1, 0));
     }
+
+    public function testDefaultGuardAcceptsBoundedRetailCatchUpAfterMainThreadStall(): void
+    {
+        $guard = new GameplayTrafficGuard(startedNanoseconds: 0);
+
+        // Consume some initial capacity, then model the seven-second cold-teleport
+        // stall observed in production. A retail client delivered 142 queued
+        // movement envelopes when the main process resumed.
+        for ($envelope = 0; $envelope < 100; ++$envelope) {
+            self::assertTrue($guard->admitEnvelope(128, 0));
+            self::assertTrue($guard->admitPackets(1, 0));
+        }
+        for ($envelope = 0; $envelope < 142; ++$envelope) {
+            self::assertTrue($guard->admitEnvelope(128, 7_000_000_000));
+            self::assertTrue($guard->admitPackets(1, 7_000_000_000));
+        }
+    }
+
+    public function testDefaultEnvelopeCatchUpRemainsStrictlyBounded(): void
+    {
+        $guard = new GameplayTrafficGuard(startedNanoseconds: 0);
+
+        for ($envelope = 0; $envelope < 512; ++$envelope) {
+            self::assertTrue($guard->admitEnvelope(1, 0));
+        }
+        self::assertFalse($guard->admitEnvelope(1, 0));
+    }
 }

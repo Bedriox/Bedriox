@@ -74,11 +74,11 @@ final readonly class BlockCollisionRegistry
             return new self($shapes);
         }
         $shapes = [];
-        foreach ($palette->states() as $stateId) {
+        foreach ($palette->generationStates() as $stateId) {
             $shapes[$stateId->value] = self::shapeForState($states->state($stateId));
         }
         $generationStateCount = count($shapes);
-        if ($generationStateCount !== count($palette->states())) {
+        if ($generationStateCount !== count($palette->generationStates())) {
             throw new LogicException('Generation collision definitions are incomplete or duplicated.');
         }
         foreach ($states->states() as $value => $state) {
@@ -221,6 +221,8 @@ final readonly class BlockCollisionRegistry
             'minecraft:nether_sprouts',
             'minecraft:weeping_vines',
             'minecraft:twisting_vines',
+            'minecraft:trip_wire',
+            'minecraft:portal',
             'minecraft:end_portal',
         ];
     }
@@ -249,7 +251,11 @@ final readonly class BlockCollisionRegistry
             'minecraft:pale_oak_planks', 'minecraft:hay_block', 'minecraft:coal_ore',
             'minecraft:iron_ore', 'minecraft:copper_ore', 'minecraft:gold_ore',
             'minecraft:redstone_ore', 'minecraft:diamond_ore', 'minecraft:emerald_ore',
-            'minecraft:lapis_ore', 'minecraft:dripstone_block', 'minecraft:sculk',
+            'minecraft:lapis_ore', 'minecraft:deepslate_coal_ore', 'minecraft:deepslate_iron_ore',
+            'minecraft:deepslate_copper_ore', 'minecraft:deepslate_gold_ore',
+            'minecraft:deepslate_redstone_ore', 'minecraft:deepslate_diamond_ore',
+            'minecraft:deepslate_emerald_ore', 'minecraft:deepslate_lapis_ore',
+            'minecraft:dripstone_block', 'minecraft:sculk',
             'minecraft:azalea_leaves', 'minecraft:azalea_leaves_flowered', 'minecraft:dirt_with_roots',
             'minecraft:amethyst_block', 'minecraft:budding_amethyst', 'minecraft:mycelium',
             'minecraft:blue_ice', 'minecraft:tube_coral_block', 'minecraft:brain_coral_block',
@@ -267,6 +273,10 @@ final readonly class BlockCollisionRegistry
             'minecraft:warped_wart_block', 'minecraft:crimson_nylium', 'minecraft:warped_nylium',
             'minecraft:shroomlight', 'minecraft:crimson_stem', 'minecraft:warped_stem',
             'minecraft:end_stone', 'minecraft:purpur_block', 'minecraft:purpur_pillar',
+            'minecraft:furnace', 'minecraft:barrel', 'minecraft:end_portal_frame',
+            'minecraft:suspicious_gravel', 'minecraft:bone_block', 'minecraft:dispenser',
+            'minecraft:tnt', 'minecraft:mob_spawner', 'minecraft:trial_spawner', 'minecraft:vault',
+            'minecraft:sulfur', 'minecraft:cinnabar', 'minecraft:potent_sulfur', 'minecraft:sulfur_spike',
         ];
     }
 }

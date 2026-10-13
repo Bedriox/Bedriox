@@ -108,6 +108,17 @@ final class ChunkGenerationTaskTest extends TestCase
         self::assertNotSame($first->position->key(), $second->position->key());
     }
 
+    public function testDefaultGeneratorWorkerOutputMatchesSynchronousGeneration(): void
+    {
+        $states = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $position = new ChunkPosition(3, -2);
+        $worker = $this->generate(new GenerateChunkTask(), 12_345, $position, $states);
+        $synchronous = (new DefaultWorldGenerator(12_345, $states))->generate($position);
+        $codec = new ChunkTransferCodec();
+
+        self::assertSame($codec->encode($synchronous, $states), $codec->encode($worker, $states));
+    }
+
     public function testCachedGeneratorsRemainIsolatedByWorldSeed(): void
     {
         $task = new GenerateChunkTask();

@@ -25,14 +25,14 @@ use Bedriox\Server\World\Biome;
 /** Resolves column biomes from terrain and climate without chunk-local state. */
 final class OverworldBiomeResolver
 {
-    public function resolve(OverworldTerrainSample $sample): Biome
+    public function resolve(OverworldTerrainSample $sample, bool $allowBeach = true): Biome
     {
         $height = $sample->surfaceHeight;
         $climate = $sample->climate;
         $temperature = $climate->temperature;
         $humidity = $climate->humidity;
         $variant = abs($climate->detail + $climate->ridge * 3 + $climate->erosion * 5);
-        if ($height <= 53) {
+        if ($height < OverworldTerrainSampler::SEA_LEVEL && $climate->continentalness < -15_700) {
             return new Biome(match (true) {
                 $temperature < -14_000 => 'minecraft:deep_frozen_ocean',
                 $temperature < -5_000 => 'minecraft:deep_cold_ocean',
@@ -41,21 +41,21 @@ final class OverworldBiomeResolver
                 default => 'minecraft:deep_ocean',
             });
         }
-        if ($height < OverworldTerrainSampler::SEA_LEVEL - 1) {
-            return new Biome(match (true) {
-                $temperature < -14_000 => 'minecraft:frozen_ocean',
-                $temperature < -5_000 => 'minecraft:cold_ocean',
-                $temperature > 14_000 => 'minecraft:warm_ocean',
-                $temperature > 5_000 => 'minecraft:lukewarm_ocean',
-                default => 'minecraft:ocean',
-            });
+        if ($height < OverworldTerrainSampler::SEA_LEVEL && $climate->continentalness < -6_200) {
+            return new Biome(self::oceanBiome($temperature));
         }
-        if ($sample->riverStrength >= 420 && $height <= OverworldTerrainSampler::SEA_LEVEL + 1) {
+        if ($sample->riverStrength >= 940 && $height <= OverworldTerrainSampler::SEA_LEVEL + 1) {
             return new Biome($temperature < -9_000 ? 'minecraft:frozen_river' : 'minecraft:river');
         }
-        if ($height <= OverworldTerrainSampler::SEA_LEVEL && $climate->continentalness < 1_500) {
+        // A submerged transitional shelf is still ocean floor, not a beach. Keeping
+        // beaches on dry columns prevents broad sand-bottomed pools from being
+        // presented as irregular inland beaches.
+        if ($height < OverworldTerrainSampler::SEA_LEVEL && $climate->continentalness < -1_800) {
+            return new Biome(self::oceanBiome($temperature));
+        }
+        if ($allowBeach && $height <= OverworldTerrainSampler::SEA_LEVEL + 4 && $climate->continentalness < -1_800) {
             return new Biome(match (true) {
-                $sample->slope >= 5 => 'minecraft:stone_beach',
+                $sample->slope >= 4 => 'minecraft:stone_beach',
                 $temperature < -9_000 => 'minecraft:cold_beach',
                 default => 'minecraft:beach',
             });
@@ -166,6 +166,30 @@ final class OverworldBiomeResolver
             return new Biome('minecraft:cherry_grove');
         }
 
+        if ($humidity > -2_500) {
+            return new Biome(match (true) {
+                $sample->slope >= 7 && $variant % 37 === 0 => 'minecraft:forest_hills',
+                default => 'minecraft:forest',
+            });
+        }
+
         return new Biome($variant % 13 === 0 ? 'minecraft:sunflower_plains' : 'minecraft:plains');
+    }
+
+    /** Resolves the neighboring inland biome when a low coastal candidate is not actually shoreline. */
+    public function resolveDryLand(OverworldTerrainSample $sample): Biome
+    {
+        return $this->resolve($sample, false);
+    }
+
+    private static function oceanBiome(int $temperature): string
+    {
+        return match (true) {
+            $temperature < -14_000 => 'minecraft:frozen_ocean',
+            $temperature < -5_000 => 'minecraft:cold_ocean',
+            $temperature > 14_000 => 'minecraft:warm_ocean',
+            $temperature > 5_000 => 'minecraft:lukewarm_ocean',
+            default => 'minecraft:ocean',
+        };
     }
 }

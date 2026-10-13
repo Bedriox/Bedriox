@@ -64,6 +64,48 @@ final class SeededNoiseTest extends TestCase
         self::assertNotSame($base, (new SeededNoise(100))->sample3d(-31, 14, 72, 32, 5));
     }
 
+    public function testScatteredChanceAvoidsLongCoordinateHashBands(): void
+    {
+        $noise = new SeededNoise(0);
+        $present = [];
+        $count = 0;
+        for ($z = -64; $z < 64; ++$z) {
+            for ($x = -64; $x < 64; ++$x) {
+                $value = $noise->scatteredChance($x, 0, $z, 8_663, 128) < 28;
+                $present[$z][$x] = $value;
+                $count += (int) $value;
+            }
+        }
+
+        $maximumDiagonalRun = 0;
+        foreach ([[1, 1], [1, -1]] as [$offsetX, $offsetZ]) {
+            for ($z = -64; $z < 64; ++$z) {
+                for ($x = -64; $x < 64; ++$x) {
+                    if (!$present[$z][$x] || ($present[$z - $offsetZ][$x - $offsetX] ?? false)) {
+                        continue;
+                    }
+                    $run = 0;
+                    $cellX = $x;
+                    $cellZ = $z;
+                    while ($present[$cellZ][$cellX] ?? false) {
+                        ++$run;
+                        $cellX += $offsetX;
+                        $cellZ += $offsetZ;
+                    }
+                    $maximumDiagonalRun = max($maximumDiagonalRun, $run);
+                }
+            }
+        }
+
+        self::assertGreaterThan(2_500, $count);
+        self::assertLessThan(4_700, $count);
+        self::assertLessThanOrEqual(8, $maximumDiagonalRun);
+        self::assertSame(
+            $noise->scatteredChance(-31, 0, 72, 8_663, 128),
+            (new SeededNoise(0))->scatteredChance(-31, 0, 72, 8_663, 128),
+        );
+    }
+
     public function testFractalParametersAreBounded(): void
     {
         $this->expectException(InvalidArgumentException::class);

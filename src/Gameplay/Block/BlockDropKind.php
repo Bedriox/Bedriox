@@ -35,6 +35,8 @@ enum BlockDropKind
     case RawGold;
     case Redstone;
     case Diamond;
+    case Emerald;
+    case Lapis;
     case ClayBalls;
     case Snowballs;
     case Ice;

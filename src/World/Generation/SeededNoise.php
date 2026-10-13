@@ -129,6 +129,33 @@ final readonly class SeededNoise
         return $this->hash($x, $y, $z, $salt) % $outOf;
     }
 
+    /**
+     * Returns deterministic feature scatter without the diagonal residue produced
+     * by reducing the affine lattice hash directly. This is intended for visible
+     * per-block placement, while chance() remains stable for existing schedules.
+     */
+    public function scatteredChance(int $x, int $y, int $z, int $salt, int $outOf): int
+    {
+        if ($outOf < 1) {
+            throw new InvalidArgumentException('Chance divisor must be positive.');
+        }
+
+        $mixed = (($x % 1_000_003) * 73_856_093)
+            + (($y % 1_000_033) * 19_349_663)
+            + (($z % 1_000_037) * 83_492_791)
+            + (($this->seed % 1_000_081) * 15_485_863)
+            + (($salt % 1_000_099) * 49_979_687);
+        $mixed %= self::PRIME;
+        if ($mixed < 0) {
+            $mixed += self::PRIME;
+        }
+        $mixed = (($mixed * $mixed) + 2_654_435_769) % self::PRIME;
+        $mixed ^= $mixed >> 16;
+        $mixed = (($mixed * $mixed) + 1_013_904_223) % self::PRIME;
+
+        return $mixed % $outOf;
+    }
+
     private function lattice(int $x, int $z, int $salt): int
     {
         return ($this->hash($x, 0, $z, $salt) % self::UNIT) - 32_768;

@@ -110,6 +110,7 @@ use Bedriox\Protocol\Packet\PlayerBlockAction;
 use Bedriox\Protocol\Packet\PlayerPositionProjection;
 use Bedriox\Protocol\Packet\PlayerSkin;
 use Bedriox\Protocol\Packet\PlayerSkinPacket;
+use Bedriox\Protocol\Packet\PlayStatusPacket;
 use Bedriox\Protocol\Packet\RequestAbilityPacket;
 use Bedriox\Protocol\Packet\RequestChunkRadiusPacket;
 use Bedriox\Protocol\Packet\RespawnPacket;
@@ -1990,6 +1991,7 @@ final class BedrockPlayChannelTest extends TestCase
 
         $coordinates = [];
         $spawnStatus = 0;
+        $chunksWhenSpawned = null;
         for ($poll = 0; $poll < 64 && count($coordinates) < 81; ++$poll) {
             self::assertTrue($channel->worldTick());
             $outgoingThisTick = $channel->drainOutgoing();
@@ -2000,11 +2002,13 @@ final class BedrockPlayChannelTest extends TestCase
                     $coordinates[$packet->chunkX . ':' . $packet->chunkZ] = true;
                 } elseif ($packet instanceof \Bedriox\Protocol\Packet\PlayStatusPacket) {
                     ++$spawnStatus;
+                    $chunksWhenSpawned ??= count($coordinates);
                 }
             }
         }
         self::assertCount(81, $coordinates);
         self::assertSame(1, $spawnStatus);
+        self::assertSame(1, $chunksWhenSpawned, 'Admission must wait only for the nearest playable chunk.');
         self::assertArrayHasKey('-4:-4', $coordinates);
         self::assertArrayHasKey('4:4', $coordinates);
         self::assertTrue($channel->hasSentChunkAt(0.0, 0.0));
@@ -2319,8 +2323,9 @@ final class BedrockPlayChannelTest extends TestCase
 
         self::assertTrue($channel->worldTick());
         $first = $channel->drainOutgoing();
-        self::assertCount(1, $first);
+        self::assertCount(2, $first);
         self::assertInstanceOf(LevelChunkPacket::class, $this->decode($server->decryptEnvelope($first[0]->payload)));
+        self::assertInstanceOf(PlayStatusPacket::class, $this->decode($server->decryptEnvelope($first[1]->payload)));
 
         $world->setBlockState(-16, 63, 0, $palette->air);
         self::assertTrue($channel->worldTick());
@@ -2383,7 +2388,7 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertTrue($channel->worldTick());
         $outgoing = $channel->drainOutgoing();
         self::assertNotEmpty($outgoing);
-        self::assertLessThanOrEqual(2, count($outgoing));
+        self::assertLessThanOrEqual(3, count($outgoing));
         $preparedPayload = $outgoing[0] ?? null;
         self::assertInstanceOf(\Bedriox\Server\Runtime\OutgoingPlayPayload::class, $preparedPayload);
         self::assertInstanceOf(LevelChunkPacket::class, $this->decode($server->decryptEnvelope($preparedPayload->payload)));
@@ -2511,10 +2516,11 @@ final class BedrockPlayChannelTest extends TestCase
 
         self::assertTrue($channel->worldTick());
         $initial = $channel->drainOutgoing();
-        self::assertCount(1, $initial);
+        self::assertCount(2, $initial);
         $initialChunk = $this->decode($server->decryptEnvelope($initial[0]->payload));
         self::assertInstanceOf(LevelChunkPacket::class, $initialChunk);
         self::assertSame([0, 0], [$initialChunk->chunkX, $initialChunk->chunkZ]);
+        self::assertInstanceOf(PlayStatusPacket::class, $this->decode($server->decryptEnvelope($initial[1]->payload)));
         self::assertGreaterThan(0, $channel->queuedGeneratedChunkCount());
 
         self::assertTrue($channel->updateChunkView(64.0, 64.0, 0.0));

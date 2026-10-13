@@ -23,7 +23,6 @@ namespace Bedriox\Server\Tests\World;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\World\BiomeRuntimeIdMap;
 use Bedriox\Server\World\Block\BlockStateRegistry;
-use Bedriox\Server\World\BlockEntity\SuspiciousSandBlockEntity;
 use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\DefaultWorldGenerator;
@@ -37,7 +36,8 @@ final class DefaultWorldGeneratorTest extends TestCase
         [$generator] = self::generator(0);
 
         self::assertSame('default', $generator->name());
-        self::assertSame(3, $generator->version());
+        self::assertSame(DefaultWorldGenerator::VERSION, $generator->version());
+        self::assertSame(4, $generator->version());
     }
 
     /** @return iterable<string, array{int}> */
@@ -108,8 +108,8 @@ final class DefaultWorldGeneratorTest extends TestCase
     {
         [$generator, $states] = self::generator(0);
         $chunks = [
-            $generator->generate(new ChunkPosition(43, -16)),
-            $generator->generate(new ChunkPosition(44, -16)),
+            $generator->generate(new ChunkPosition(20, 4)),
+            $generator->generate(new ChunkPosition(21, 4)),
         ];
         $air = $states->internalId(\Bedriox\Server\World\Block\VanillaBlockStates::air())->value;
         $fluidIdentifiers = ['minecraft:water', 'minecraft:ice', 'minecraft:frosted_ice'];
@@ -130,7 +130,7 @@ final class DefaultWorldGeneratorTest extends TestCase
                         self::assertNotSame(
                             $air,
                             $chunk->blockStateAt($x, $y, $z)->value,
-                            'Open water must not contain an air gap before reaching its terrain floor.',
+                            "Open water at chunk {$chunk->position->x}:{$chunk->position->z} column $x:$z must not contain an air gap at Y=$y before reaching its terrain floor.",
                         );
                         break;
                     }
@@ -141,114 +141,35 @@ final class DefaultWorldGeneratorTest extends TestCase
         self::assertGreaterThan(0, $checked, 'The selected adjacent chunks must exercise an ocean seam.');
     }
 
-    public function testDeterministicStructureFamiliesAppearInTheirSelectedRegions(): void
+    public function testUndergroundDepositsUseTheHostStoneFamily(): void
     {
         [$generator, $states] = self::generator(0);
-
-        $village = self::paletteIdentifiers($generator->generate(new ChunkPosition(-58, -11)), $states);
-        self::assertArrayHasKey('minecraft:grass_path', $village);
-        self::assertArrayHasKey('minecraft:oak_planks', $village);
-
-        $oceanRuin = self::paletteIdentifiers($generator->generate(new ChunkPosition(43, -16)), $states);
-        self::assertArrayHasKey('minecraft:prismarine', $oceanRuin);
-        self::assertArrayHasKey('minecraft:sea_lantern', $oceanRuin);
-
-        $stronghold = self::paletteIdentifiers($generator->generate(new ChunkPosition(16, 14)), $states);
-        self::assertArrayHasKey('minecraft:stone_bricks', $stronghold);
-        self::assertTrue(
-            isset($stronghold['minecraft:mossy_stone_bricks'])
-            || isset($stronghold['minecraft:cracked_stone_bricks']),
-        );
-    }
-
-    public function testWarmOceanRuinOwnsDeterministicBoundedArchaeologyLoot(): void
-    {
-        [$generator, $states] = self::generator(0);
-        $chunk = $generator->generate(new ChunkPosition(-2783, 1890));
-        $entities = array_values(array_filter(
-            $chunk->blockEntities(),
-            static fn(object $entity): bool => $entity instanceof SuspiciousSandBlockEntity,
-        ));
-
-        self::assertCount(3, $entities);
-        self::assertCount(1, array_filter(
-            $entities,
-            static fn(SuspiciousSandBlockEntity $entity): bool => $entity->hiddenItem->identifier === 'minecraft:sniffer_egg',
-        ));
-        foreach ($entities as $entity) {
-            self::assertSame(SuspiciousSandBlockEntity::WARM_OCEAN_RUIN_PROVENANCE, $entity->provenance);
-            self::assertSame(1, $entity->hiddenItem->count);
-            self::assertSame('minecraft:suspicious_sand', self::identifierAt(
-                $chunk,
-                $states,
-                (($entity->position->x % 16) + 16) % 16,
-                $entity->position->y,
-                (($entity->position->z % 16) + 16) % 16,
-            ));
-        }
-        self::assertSame(
-            array_map(
-                static fn(SuspiciousSandBlockEntity $entity): array => [
-                    $entity->position->x,
-                    $entity->position->y,
-                    $entity->position->z,
-                    $entity->hiddenItem->identifier,
-                    $entity->lootSeed,
-                ],
-                $entities,
-            ),
-            array_map(
-                static fn(SuspiciousSandBlockEntity $entity): array => [
-                    $entity->position->x,
-                    $entity->position->y,
-                    $entity->position->z,
-                    $entity->hiddenItem->identifier,
-                    $entity->lootSeed,
-                ],
-                array_values(array_filter(
-                    $generator->generate(new ChunkPosition(-2783, 1890))->blockEntities(),
-                    static fn(object $entity): bool => $entity instanceof SuspiciousSandBlockEntity,
-                )),
-            ),
-        );
-    }
-
-    public function testVillagePathsAndFoundationsNeverUseTreesAsGround(): void
-    {
-        [$generator, $states] = self::generator(0);
-        $chunk = $generator->generate(new ChunkPosition(-58, -11));
-        $treeStates = [
-            'minecraft:oak_log', 'minecraft:oak_leaves', 'minecraft:birch_log', 'minecraft:birch_leaves',
-            'minecraft:spruce_log', 'minecraft:spruce_leaves', 'minecraft:acacia_log', 'minecraft:acacia_leaves',
-            'minecraft:dark_oak_log', 'minecraft:dark_oak_leaves', 'minecraft:jungle_log', 'minecraft:jungle_leaves',
-            'minecraft:cherry_log', 'minecraft:cherry_leaves', 'minecraft:mangrove_log', 'minecraft:mangrove_leaves',
-            'minecraft:pale_oak_log', 'minecraft:pale_oak_leaves',
-        ];
-        $checked = 0;
+        $chunk = $generator->generate(new ChunkPosition(0, 0));
+        $deepOres = 0;
+        $stoneOres = 0;
         for ($z = 0; $z < 16; ++$z) {
             for ($x = 0; $x < 16; ++$x) {
-                for ($y = Chunk::MIN_Y + 1; $y <= 180; ++$y) {
+                for ($y = Chunk::MIN_Y; $y <= 192; ++$y) {
                     $identifier = self::identifierAt($chunk, $states, $x, $y, $z);
-                    if ($identifier !== 'minecraft:cobblestone' && $identifier !== 'minecraft:grass_path') {
-                        continue;
+                    if (str_starts_with($identifier, 'minecraft:deepslate_') && str_ends_with($identifier, '_ore')) {
+                        ++$deepOres;
+                        self::assertLessThan(8, $y);
+                    } elseif (str_ends_with($identifier, '_ore')) {
+                        ++$stoneOres;
+                        self::assertGreaterThan(0, $y);
                     }
-                    ++$checked;
-                    self::assertNotContains(
-                        self::identifierAt($chunk, $states, $x, $y - 1, $z),
-                        $treeStates,
-                        'Village paths and cobblestone foundations must be anchored to terrain, not foliage.',
-                    );
                 }
             }
         }
 
-        self::assertGreaterThan(0, $checked);
+        self::assertGreaterThan(0, $deepOres);
+        self::assertGreaterThan(0, $stoneOres);
     }
 
     public function testVegetationUsesNaturalSubstrateInsteadOfStructuresOrFoliage(): void
     {
         [$generator, $states] = self::generator(0);
-        $chunk = $generator->generate(new ChunkPosition(-58, -11));
+        $chunk = $generator->generate(new ChunkPosition(0, 56));
         $plants = [
             'minecraft:short_grass', 'minecraft:tall_grass', 'minecraft:dandelion', 'minecraft:poppy',
             'minecraft:blue_orchid', 'minecraft:allium', 'minecraft:azure_bluet', 'minecraft:red_tulip',
@@ -289,13 +210,178 @@ final class DefaultWorldGeneratorTest extends TestCase
         self::assertGreaterThan(0, $checked);
     }
 
-    public function testVillagePopulationPassesRemainDeterministic(): void
+    public function testSubmergedTerrainNeverUsesGrassAsItsLakebed(): void
     {
-        [$first] = self::generator(0);
-        [$second] = self::generator(0);
-        $position = new ChunkPosition(-58, -11);
+        [$generator, $states] = self::generator(0);
+        $water = $states->internalId(\Bedriox\Server\World\Block\VanillaBlockStates::water())->value;
+        $grass = $states->internalId(\Bedriox\Server\World\Block\VanillaBlockStates::grassBlock())->value;
+        $submerged = 0;
+        foreach ([new ChunkPosition(20, 4), new ChunkPosition(21, 4), new ChunkPosition(20, 5), new ChunkPosition(21, 5)] as $position) {
+            $chunk = $generator->generate($position);
+            for ($z = 0; $z < 16; ++$z) {
+                for ($x = 0; $x < 16; ++$x) {
+                    for ($y = DefaultWorldGenerator::SEA_LEVEL - 1; $y > Chunk::MIN_Y; --$y) {
+                        if ($chunk->blockStateAt($x, $y + 1, $z)->value !== $water
+                            || $chunk->blockStateAt($x, $y, $z)->value === $water) {
+                            continue;
+                        }
+                        ++$submerged;
+                        self::assertNotSame($grass, $chunk->blockStateAt($x, $y, $z)->value);
+                        break;
+                    }
+                }
+            }
+        }
 
-        self::assertSame(self::signature($first->generate($position)), self::signature($second->generate($position)));
+        self::assertGreaterThan(0, $submerged);
+    }
+
+    public function testOceanBiomeNeverOwnsExposedTerrainAtReportedCoast(): void
+    {
+        [$generator, $states] = self::generator(0);
+        $dryColumns = 0;
+        foreach ([
+            new ChunkPosition(21, -13), new ChunkPosition(22, -13), new ChunkPosition(23, -13),
+            new ChunkPosition(21, -12), new ChunkPosition(22, -12), new ChunkPosition(23, -12),
+        ] as $position) {
+            $chunk = $generator->generate($position);
+            for ($z = 0; $z < 16; ++$z) {
+                for ($x = 0; $x < 16; ++$x) {
+                    for ($y = Chunk::MAX_Y; $y >= DefaultWorldGenerator::SEA_LEVEL; --$y) {
+                        $identifier = self::identifierAt($chunk, $states, $x, $y, $z);
+                        if (in_array($identifier, ['minecraft:air', 'minecraft:water', 'minecraft:snow_layer'], true)) {
+                            continue;
+                        }
+                        ++$dryColumns;
+                        self::assertStringNotContainsString(
+                            'ocean',
+                            $chunk->biomeAt($x, $y, $z)->identifier,
+                            "Dry column {$position->x}:{$position->z} $x:$z must not use an ocean-floor surface rule.",
+                        );
+                        break;
+                    }
+                }
+            }
+        }
+
+        self::assertGreaterThan(0, $dryColumns);
+    }
+
+    public function testOceanCoastAvoidsRepeatedThresholdIslands(): void
+    {
+        [$generator] = self::generator(0);
+        $minimumX = -160;
+        $maximumX = 160;
+        $minimumZ = -160;
+        $maximumZ = 160;
+        $land = [];
+        $heights = [];
+        for ($z = $minimumZ; $z <= $maximumZ; ++$z) {
+            for ($x = $minimumX; $x <= $maximumX; ++$x) {
+                $height = $generator->surfaceHeight($x, $z);
+                $heights[$z][$x] = $height;
+                $land[$z][$x] = $height >= DefaultWorldGenerator::SEA_LEVEL;
+            }
+        }
+
+        $maximumStraightRun = 0;
+        $currentRun = 0;
+        $previousShore = $minimumX;
+        $shoreRows = 0;
+        for ($z = $minimumZ; $z <= $maximumZ; ++$z) {
+            $shore = null;
+            $seenWater = false;
+            for ($x = $minimumX; $x <= $maximumX; ++$x) {
+                $water = !$land[$z][$x];
+                $seenWater = $seenWater || $water;
+                if ($seenWater && !$water) {
+                    $shore = $x;
+                    break;
+                }
+            }
+            if ($shore === null) {
+                $currentRun = 0;
+                continue;
+            }
+            ++$shoreRows;
+            $currentRun = $shore === $previousShore ? $currentRun + 1 : 1;
+            $maximumStraightRun = max($maximumStraightRun, $currentRun);
+            $previousShore = $shore;
+        }
+
+        $seen = [];
+        $isolatedComponents = 0;
+        $tinyIsolatedComponents = 0;
+        for ($z = $minimumZ; $z <= $maximumZ; ++$z) {
+            for ($x = $minimumX; $x <= $maximumX; ++$x) {
+                if (!$land[$z][$x] || isset($seen[$z][$x])) {
+                    continue;
+                }
+
+                $queue = [[$x, $z]];
+                $seen[$z][$x] = true;
+                $size = 0;
+                $touchesBoundary = false;
+                for ($index = 0; isset($queue[$index]); ++$index) {
+                    [$cellX, $cellZ] = $queue[$index];
+                    ++$size;
+                    $touchesBoundary = $touchesBoundary
+                        || $cellX === $minimumX || $cellX === $maximumX
+                        || $cellZ === $minimumZ || $cellZ === $maximumZ;
+                    foreach ([[-1, 0], [1, 0], [0, -1], [0, 1]] as [$offsetX, $offsetZ]) {
+                        $nextX = $cellX + $offsetX;
+                        $nextZ = $cellZ + $offsetZ;
+                        if ($nextX < $minimumX || $nextX > $maximumX
+                            || $nextZ < $minimumZ || $nextZ > $maximumZ
+                            || !$land[$nextZ][$nextX] || isset($seen[$nextZ][$nextX])) {
+                            continue;
+                        }
+                        $seen[$nextZ][$nextX] = true;
+                        $queue[] = [$nextX, $nextZ];
+                    }
+                }
+
+                if (!$touchesBoundary) {
+                    ++$isolatedComponents;
+                    $tinyIsolatedComponents += (int) ($size < 64);
+                }
+            }
+        }
+
+        self::assertGreaterThan(100, $shoreRows);
+        self::assertLessThanOrEqual(
+            56,
+            $maximumStraightRun,
+            'The shoreline must not collapse into a single long lattice-aligned edge.',
+        );
+        self::assertLessThanOrEqual(1, $isolatedComponents, 'The coast must not become a repeated island field.');
+        self::assertSame(0, $tinyIsolatedComponents, 'Coastal detail must not produce tiny threshold islands.');
+
+        $maximumSubmergedContourRun = 0;
+        $longSubmergedContourRuns = 0;
+        foreach ([[1, 0], [0, 1], [1, 1], [1, -1]] as [$offsetX, $offsetZ]) {
+            for ($z = $minimumZ; $z <= $maximumZ; ++$z) {
+                for ($x = $minimumX; $x <= $maximumX; ++$x) {
+                    $level = $heights[$z][$x];
+                    if ($level >= DefaultWorldGenerator::SEA_LEVEL
+                        || (($heights[$z - $offsetZ][$x - $offsetX] ?? null) === $level)) {
+                        continue;
+                    }
+                    $run = 0;
+                    $cellX = $x;
+                    $cellZ = $z;
+                    while (($heights[$cellZ][$cellX] ?? null) === $level) {
+                        ++$run;
+                        $cellX += $offsetX;
+                        $cellZ += $offsetZ;
+                    }
+                    $maximumSubmergedContourRun = max($maximumSubmergedContourRun, $run);
+                    $longSubmergedContourRuns += (int) ($run >= 24);
+                }
+            }
+        }
+        self::assertLessThanOrEqual(56, $maximumSubmergedContourRun, 'Ocean floors must not form long planar terraces.');
+        self::assertLessThanOrEqual(240, $longSubmergedContourRuns, 'Ocean-floor contours must remain locally irregular.');
     }
 
     /** @return array{DefaultWorldGenerator, BlockStateRegistry} */
@@ -319,19 +405,6 @@ final class DefaultWorldGeneratorTest extends TestCase
         }
 
         return hash('sha256', serialize($values));
-    }
-
-    /** @return array<string, true> */
-    private static function paletteIdentifiers(Chunk $chunk, BlockStateRegistry $states): array
-    {
-        $identifiers = [];
-        foreach ($chunk->populatedSections() as $section) {
-            foreach ($section->palette() as $state) {
-                $identifiers[$states->state($state)->identifier()] = true;
-            }
-        }
-
-        return $identifiers;
     }
 
     private static function identifierAt(

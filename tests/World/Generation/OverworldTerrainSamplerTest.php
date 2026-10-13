@@ -21,6 +21,8 @@ declare(strict_types=1);
 namespace Bedriox\Server\Tests\World\Generation;
 
 use Bedriox\Server\World\Generation\OverworldBiomeResolver;
+use Bedriox\Server\World\Generation\OverworldClimate;
+use Bedriox\Server\World\Generation\OverworldTerrainSample;
 use Bedriox\Server\World\Generation\OverworldTerrainSampler;
 use Bedriox\Server\World\Generation\SeededNoise;
 use PHPUnit\Framework\TestCase;
@@ -63,5 +65,34 @@ final class OverworldTerrainSamplerTest extends TestCase
                 self::assertLessThanOrEqual(4, abs($height - $terrain->heightAt($x, $z + 1)));
             }
         }
+    }
+
+    public function testSubmergedCoastalShelfRemainsOceanAndDryShoreBecomesBeach(): void
+    {
+        $resolver = new OverworldBiomeResolver();
+        $climate = new OverworldClimate(-4_000, 0, 0, 0, 0, 0, 8_000, 0);
+
+        self::assertSame(
+            'minecraft:ocean',
+            $resolver->resolve(new OverworldTerrainSample($climate, OverworldTerrainSampler::SEA_LEVEL - 1, 1, 0))->identifier,
+        );
+        self::assertSame(
+            'minecraft:beach',
+            $resolver->resolve(new OverworldTerrainSample($climate, OverworldTerrainSampler::SEA_LEVEL, 1, 0))->identifier,
+        );
+        self::assertSame(
+            'minecraft:stone_beach',
+            $resolver->resolve(new OverworldTerrainSample($climate, OverworldTerrainSampler::SEA_LEVEL + 2, 5, 0))->identifier,
+        );
+
+        $oceanicClimate = new OverworldClimate(-8_000, 0, 0, 0, 0, 0, 8_000, 0);
+        self::assertStringContainsString(
+            'ocean',
+            $resolver->resolve(new OverworldTerrainSample($oceanicClimate, OverworldTerrainSampler::SEA_LEVEL - 1, 1, 0))->identifier,
+        );
+        self::assertStringNotContainsString(
+            'ocean',
+            $resolver->resolveDryLand(new OverworldTerrainSample($oceanicClimate, OverworldTerrainSampler::SEA_LEVEL + 1, 1, 0))->identifier,
+        );
     }
 }

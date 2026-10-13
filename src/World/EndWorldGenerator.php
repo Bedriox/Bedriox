@@ -22,30 +22,33 @@ namespace Bedriox\Server\World;
 
 use Bedriox\Server\World\Block\BlockAxis;
 use Bedriox\Server\World\Block\BlockStateRegistry;
+use Bedriox\Server\World\BlockEntity\BlockEntityType;
+use Bedriox\Server\World\BlockEntity\ContainerBlockEntity;
+use Bedriox\Server\World\BlockEntity\ContainerInventory;
+use Bedriox\Server\World\BlockEntity\ContainerItemStack;
 use Bedriox\Server\World\Generation\GenerationBlockPalette;
 use Bedriox\Server\World\Generation\MutableChunkBuilder;
 use Bedriox\Server\World\Generation\SeededNoise;
+use Bedriox\Server\World\Generation\Structure\End\EndInfrastructureCatalog;
+use Bedriox\Server\World\Generation\Structure\End\EndStructureKind;
+use Bedriox\Server\World\Generation\Structure\End\EndStructureLocation;
+use Bedriox\Server\World\Generation\Structure\End\EndStructurePlan;
+use Bedriox\Server\World\Generation\Structure\End\EndStructurePlanner;
 
 /** Deterministic bounded island, landmark, and structure terrain for the built-in End dimension. */
 final readonly class EndWorldGenerator implements VersionedWorldGenerator
 {
-    public const int VERSION = 4;
-    private const int CITY_REGION = 512;
-    private const int CITY_RADIUS = 104;
-
-    /** @var list<array{int, int, int, int}> x, z, radius, height */
-    private const array PILLARS = [
-        [42, 0, 3, 76], [34, 25, 3, 79], [13, 40, 4, 82], [-13, 40, 4, 85], [-34, 25, 4, 88],
-        [-42, 0, 5, 91], [-34, -25, 5, 94], [-13, -40, 5, 97], [13, -40, 6, 100], [34, -25, 6, 103],
-    ];
+    public const int VERSION = 5;
 
     private GenerationBlockPalette $blocks;
     private SeededNoise $noise;
+    private EndStructurePlanner $structurePlanner;
 
     public function __construct(int $seed, BlockStateRegistry $states)
     {
         $this->blocks = GenerationBlockPalette::fromRegistry($states);
         $this->noise = new SeededNoise($seed ^ 0x454e4421);
+        $this->structurePlanner = new EndStructurePlanner($seed);
     }
 
     public function name(): string
@@ -92,12 +95,61 @@ final readonly class EndWorldGenerator implements VersionedWorldGenerator
             $builder->sections(),
             new Biome('minecraft:the_end'),
             finalizationState: ChunkFinalizationState::Done,
+            blockEntities: $builder->blockEntities(),
         );
     }
 
     public function defaultSpawn(): SpawnPosition
     {
         return new SpawnPosition(100, 49, 0);
+    }
+
+    public function locateStructure(
+        EndStructureKind $kind,
+        int $fromX = 0,
+        int $fromZ = 0,
+        int $maximumRegionRadius = 64,
+    ): ?EndStructurePlan {
+        foreach ($this->structurePlanner->candidates($kind, $fromX, $fromZ, $maximumRegionRadius) as $candidate) {
+            if (hypot((float) $candidate->centerX, (float) $candidate->centerZ) >= 1_150.0
+                && $this->surfaceAt($candidate->centerX, $candidate->centerZ) !== null) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    public function locateStructureLocation(
+        EndStructureKind $kind,
+        int $fromX = 0,
+        int $fromZ = 0,
+        int $maximumRegionRadius = 64,
+    ): ?EndStructureLocation {
+        $plan = $this->locateStructure($kind, $fromX, $fromZ, $maximumRegionRadius);
+        if ($plan === null) {
+            return null;
+        }
+        $surface = $this->surfaceAt($plan->centerX, $plan->centerZ)
+            ?? throw new \LogicException('Qualified End structure lost its supporting island.');
+        $baseY = $surface + 1;
+        $shipTeleport = null;
+        if ($plan->kind === EndStructureKind::CityWithShip) {
+            $shipX = $plan->centerX + ($plan->alongX ? 34 : 62);
+            $shipZ = $plan->centerZ + ($plan->alongX ? 62 : 34);
+            $shipTeleport = new BlockPosition(
+                $shipX + ($plan->alongX ? 0 : 2),
+                $surface + 21,
+                $shipZ + ($plan->alongX ? 2 : 0),
+            );
+        }
+
+        return new EndStructureLocation(
+            $plan,
+            $baseY,
+            new BlockPosition($plan->centerX, $baseY + 1, $plan->centerZ),
+            $shipTeleport,
+        );
     }
 
     private function surfaceAt(int $x, int $z): ?int
@@ -164,7 +216,7 @@ final readonly class EndWorldGenerator implements VersionedWorldGenerator
         $chunkMaximumX = $chunkMinimumX + 15;
         $chunkMinimumZ = $builder->position->z * 16;
         $chunkMaximumZ = $chunkMinimumZ + 15;
-        foreach (self::PILLARS as [$centerX, $centerZ, $radius, $height]) {
+        foreach (EndInfrastructureCatalog::pillarDefinitions() as [$centerX, $centerZ, $radius, $height]) {
             if ($centerX + $radius < $chunkMinimumX || $centerX - $radius > $chunkMaximumX
                 || $centerZ + $radius < $chunkMinimumZ || $centerZ - $radius > $chunkMaximumZ) {
                 continue;
@@ -189,6 +241,13 @@ final readonly class EndWorldGenerator implements VersionedWorldGenerator
                         $builder->setWorld($centerX + $offset, $y, $centerZ + 2, $this->blocks->state('minecraft:iron_bars'));
                     }
                 }
+                for ($offsetX = -2; $offsetX <= 2; ++$offsetX) {
+                    for ($offsetZ = -2; $offsetZ <= 2; ++$offsetZ) {
+                        if (abs($offsetX) === 2 || abs($offsetZ) === 2) {
+                            $builder->setWorld($centerX + $offsetX, $height + 4, $centerZ + $offsetZ, $this->blocks->state('minecraft:iron_bars'));
+                        }
+                    }
+                }
             }
         }
 
@@ -206,6 +265,15 @@ final readonly class EndWorldGenerator implements VersionedWorldGenerator
         for ($y = 70; $y <= 73; ++$y) {
             $builder->setWorld(0, $y, 0, $this->blocks->state('minecraft:bedrock'));
         }
+        for ($ring = 4; $ring <= 6; ++$ring) {
+            $y = 69 - ($ring - 3);
+            for ($offset = -$ring; $offset <= $ring; ++$offset) {
+                $builder->setWorld($offset, $y, -$ring, $this->blocks->state('minecraft:end_stone'));
+                $builder->setWorld($offset, $y, $ring, $this->blocks->state('minecraft:end_stone'));
+                $builder->setWorld(-$ring, $y, $offset, $this->blocks->state('minecraft:end_stone'));
+                $builder->setWorld($ring, $y, $offset, $this->blocks->state('minecraft:end_stone'));
+            }
+        }
 
         $air = $this->blocks->state('minecraft:air');
         for ($x = 98; $x <= 102; ++$x) {
@@ -220,54 +288,28 @@ final readonly class EndWorldGenerator implements VersionedWorldGenerator
 
     private function decorateCities(MutableChunkBuilder $builder, ChunkPosition $position): void
     {
-        $chunkMinimumX = $position->x * 16;
-        $chunkMaximumX = $chunkMinimumX + 15;
-        $chunkMinimumZ = $position->z * 16;
-        $chunkMaximumZ = $chunkMinimumZ + 15;
-        $minimumX = $chunkMinimumX - self::CITY_RADIUS;
-        $maximumX = $chunkMaximumX + self::CITY_RADIUS;
-        $minimumZ = $chunkMinimumZ - self::CITY_RADIUS;
-        $maximumZ = $chunkMaximumZ + self::CITY_RADIUS;
-        for ($regionX = self::floorDiv($minimumX, self::CITY_REGION); $regionX <= self::floorDiv($maximumX, self::CITY_REGION); ++$regionX) {
-            for ($regionZ = self::floorDiv($minimumZ, self::CITY_REGION); $regionZ <= self::floorDiv($maximumZ, self::CITY_REGION); ++$regionZ) {
-                if ($this->noise->chance($regionX, 0, $regionZ, 1_901, 4) !== 0) {
-                    continue;
-                }
-                $centerX = $regionX * self::CITY_REGION + 128 + $this->noise->chance($regionX, 1, $regionZ, 1_907, 256);
-                $centerZ = $regionZ * self::CITY_REGION + 128 + $this->noise->chance($regionX, 2, $regionZ, 1_913, 256);
-                if ($centerX + self::CITY_RADIUS < $chunkMinimumX || $centerX - self::CITY_RADIUS > $chunkMaximumX
-                    || $centerZ + self::CITY_RADIUS < $chunkMinimumZ || $centerZ - self::CITY_RADIUS > $chunkMaximumZ) {
-                    continue;
-                }
-                if (hypot((float) $centerX, (float) $centerZ) < 1_150.0) {
-                    continue;
-                }
-                $surface = $this->surfaceAt($centerX, $centerZ);
-                if ($surface === null) {
-                    continue;
-                }
-                $this->renderEndCity(
+        foreach ($this->structurePlanner->intersecting($position) as $plan) {
+            if (hypot((float) $plan->centerX, (float) $plan->centerZ) < 1_150.0) {
+                continue;
+            }
+            $surface = $this->surfaceAt($plan->centerX, $plan->centerZ);
+            if ($surface === null) {
+                continue;
+            }
+            $this->renderEndCity($builder, $plan->centerX, $surface + 1, $plan->centerZ, $plan->alongX, $plan->variant);
+            if ($plan->kind === EndStructureKind::CityWithShip) {
+                $this->renderEndShip(
                     $builder,
-                    $centerX,
-                    $surface + 1,
-                    $centerZ,
-                    $this->noise->chance($regionX, 3, $regionZ, 1_919, 2) === 0,
+                    $plan->centerX + ($plan->alongX ? 34 : 62),
+                    $surface + 20,
+                    $plan->centerZ + ($plan->alongX ? 62 : 34),
+                    $plan->alongX,
                 );
-                if ($this->noise->chance($regionX, 4, $regionZ, 1_921, 2) === 0) {
-                    $alongX = $this->noise->chance($regionX, 3, $regionZ, 1_919, 2) === 0;
-                    $this->renderEndShip(
-                        $builder,
-                        $centerX + ($alongX ? 34 : 62),
-                        $surface + 20,
-                        $centerZ + ($alongX ? 62 : 34),
-                        $alongX,
-                    );
-                }
             }
         }
     }
 
-    private function renderEndCity(MutableChunkBuilder $builder, int $centerX, int $baseY, int $centerZ, bool $alongX): void
+    private function renderEndCity(MutableChunkBuilder $builder, int $centerX, int $baseY, int $centerZ, bool $alongX, int $variant): void
     {
         $purpur = $this->blocks->state('minecraft:purpur_block');
         $pillar = $this->blocks->state('minecraft:purpur_pillar', BlockAxis::Y);
@@ -283,6 +325,24 @@ final readonly class EndWorldGenerator implements VersionedWorldGenerator
                         $builder->setWorld($centerX + $dx, $floorY + $dy, $centerZ + $dz, $edge ? $pillar : $air);
                     }
                     $builder->setWorld($centerX + $dx, $floorY + 6, $centerZ + $dz, $purpur);
+                }
+            }
+        }
+
+        if ($variant >= 2) {
+            $towerX = $centerX + ($alongX ? -14 : 0);
+            $towerZ = $centerZ + ($alongX ? 0 : -14);
+            for ($level = 0; $level < 2; ++$level) {
+                $floorY = $baseY + 4 + $level * 7;
+                for ($dx = -3; $dx <= 3; ++$dx) {
+                    for ($dz = -3; $dz <= 3; ++$dz) {
+                        $edge = abs($dx) === 3 || abs($dz) === 3;
+                        $builder->setWorld($towerX + $dx, $floorY, $towerZ + $dz, $purpur);
+                        for ($dy = 1; $dy <= 5; ++$dy) {
+                            $builder->setWorld($towerX + $dx, $floorY + $dy, $towerZ + $dz, $edge ? $pillar : $air);
+                        }
+                        $builder->setWorld($towerX + $dx, $floorY + 6, $towerZ + $dz, $purpur);
+                    }
                 }
             }
         }
@@ -306,6 +366,39 @@ final readonly class EndWorldGenerator implements VersionedWorldGenerator
                 }
                 $builder->setWorld($roomX + $dx, $bridgeY + 7, $roomZ + $dz, $purpur);
             }
+        }
+
+        // Anchor the city into the island and give each deterministic variant a distinct skyline.
+        foreach ([[-3, -3], [3, -3], [-3, 3], [3, 3]] as [$dx, $dz]) {
+            for ($depth = 1; $depth <= 10; ++$depth) {
+                $builder->setWorld($centerX + $dx, $baseY - $depth, $centerZ + $dz, $pillar);
+            }
+        }
+        for ($offset = -4; $offset <= 4; $offset += 2) {
+            $builder->setWorld($centerX + $offset, $baseY + 20, $centerZ - 5, $this->blocks->state('minecraft:end_rod'), true);
+            $builder->setWorld($centerX + $offset, $baseY + 20, $centerZ + 5, $this->blocks->state('minecraft:end_rod'), true);
+        }
+        if (($variant & 1) === 1) {
+            $secondRoomX = $centerX + ($alongX ? 0 : -28);
+            $secondRoomZ = $centerZ + ($alongX ? -28 : 0);
+            for ($offset = 6; $offset <= 24; ++$offset) {
+                $x = $centerX + ($alongX ? 0 : -$offset);
+                $z = $centerZ + ($alongX ? -$offset : 0);
+                for ($side = -1; $side <= 1; ++$side) {
+                    $builder->setWorld($x + ($alongX ? $side : 0), $baseY + 6, $z + ($alongX ? 0 : $side), $purpur);
+                }
+            }
+            for ($dx = -4; $dx <= 4; ++$dx) {
+                for ($dz = -4; $dz <= 4; ++$dz) {
+                    $edge = abs($dx) === 4 || abs($dz) === 4;
+                    $builder->setWorld($secondRoomX + $dx, $baseY + 6, $secondRoomZ + $dz, $purpur);
+                    for ($dy = 1; $dy <= 8; ++$dy) {
+                        $builder->setWorld($secondRoomX + $dx, $baseY + 6 + $dy, $secondRoomZ + $dz, $edge ? $pillar : $air);
+                    }
+                    $builder->setWorld($secondRoomX + $dx, $baseY + 15, $secondRoomZ + $dz, $purpur);
+                }
+            }
+            $builder->setWorld($secondRoomX, $baseY + 16, $secondRoomZ, $this->blocks->state('minecraft:end_rod'));
         }
     }
 
@@ -331,6 +424,27 @@ final readonly class EndWorldGenerator implements VersionedWorldGenerator
             }
         }
 
+        // A raised forecastle and tapered keel make the ship readable from below and at distance.
+        for ($forward = 10; $forward <= 18; ++$forward) {
+            $halfWidth = max(1, 4 - intdiv($forward - 10, 3));
+            for ($side = -$halfWidth; $side <= $halfWidth; ++$side) {
+                $x = $centerX + ($alongX ? $forward : $side);
+                $z = $centerZ + ($alongX ? $side : $forward);
+                $builder->setWorld($x, $baseY + 2, $z, $purpur, true);
+                if (abs($side) === $halfWidth) {
+                    $builder->setWorld($x, $baseY + 3, $z, $pillar, true);
+                }
+            }
+        }
+        for ($forward = -18; $forward <= 18; ++$forward) {
+            $x = $centerX + ($alongX ? $forward : 0);
+            $z = $centerZ + ($alongX ? 0 : $forward);
+            $depth = 2 + intdiv(18 - abs($forward), 6);
+            for ($offset = 1; $offset <= $depth; ++$offset) {
+                $builder->setWorld($x, $baseY - $offset, $z, $pillar, true);
+            }
+        }
+
         for ($forward = -5; $forward <= 5; ++$forward) {
             for ($side = -4; $side <= 4; ++$side) {
                 $x = $centerX + ($alongX ? $forward : $side);
@@ -348,6 +462,15 @@ final readonly class EndWorldGenerator implements VersionedWorldGenerator
         for ($height = 1; $height <= 13; ++$height) {
             $builder->setWorld($mastX, $baseY + $height, $mastZ, $pillar, true);
         }
+        for ($spar = -6; $spar <= 6; ++$spar) {
+            $builder->setWorld(
+                $mastX + ($alongX ? 0 : $spar),
+                $baseY + 10,
+                $mastZ + ($alongX ? $spar : 0),
+                $pillar,
+                true,
+            );
+        }
         $bowX = $centerX + ($alongX ? $length + 1 : 0);
         $bowZ = $centerZ + ($alongX ? 0 : $length + 1);
         $builder->setWorld($bowX, $baseY - 1, $bowZ, $this->blocks->state('minecraft:dragon_head'), true);
@@ -359,6 +482,21 @@ final readonly class EndWorldGenerator implements VersionedWorldGenerator
             $this->blocks->state('minecraft:chest'),
             true,
         );
+        $chestPosition = new BlockPosition(
+            $centerX + ($alongX ? -3 : 0),
+            $baseY + 1,
+            $centerZ + ($alongX ? 0 : -3),
+        );
+        $builder->addBlockEntity(new ContainerBlockEntity(
+            BlockEntityType::Chest,
+            $chestPosition,
+            new ContainerInventory(ContainerBlockEntity::STORAGE_SLOT_COUNT, [
+                4 => new ContainerItemStack('minecraft:diamond', 2),
+                11 => new ContainerItemStack('minecraft:iron_ingot', 7),
+                19 => new ContainerItemStack('minecraft:shulker_shell', 1),
+                23 => new ContainerItemStack('minecraft:elytra', 1),
+            ]),
+        ));
         $builder->setWorld($mastX, $baseY + 14, $mastZ, $this->blocks->state('minecraft:end_rod'), true);
     }
 

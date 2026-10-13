@@ -100,6 +100,8 @@ final class BlockDropRules
                 self::redstoneCount($fortuneLevel, $random),
             )],
             BlockDropKind::Diamond => [new BlockDrop('minecraft:diamond', self::fortuneCount(1, $fortuneLevel, $random))],
+            BlockDropKind::Emerald => [new BlockDrop('minecraft:emerald', self::fortuneCount(1, $fortuneLevel, $random))],
+            BlockDropKind::Lapis => [new BlockDrop('minecraft:lapis_lazuli', self::fortuneCount(4, $fortuneLevel, $random))],
             BlockDropKind::ClayBalls => [new BlockDrop('minecraft:clay_ball', 4)],
             BlockDropKind::Snowballs => [new BlockDrop('minecraft:snowball', 4)],
             BlockDropKind::Ice => [],

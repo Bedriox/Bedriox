@@ -27,6 +27,7 @@ use Bedriox\Server\Gameplay\Item\ToolType;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\InternalBlockStateId;
 use Bedriox\Server\World\Block\VanillaBlockStates;
+use Bedriox\Server\World\Generation\GenerationBlockPalette;
 use InvalidArgumentException;
 
 /** Bounded gameplay definitions for generated terrain and admitted block-item states. */
@@ -94,6 +95,16 @@ final readonly class BlockCatalog
             new BlockType(VanillaBlockStates::goldOre(), 3.0, $pickaxe, ToolTier::Iron, BlockDropKind::RawGold),
             new BlockType(VanillaBlockStates::redstoneOre(), 3.0, $pickaxe, ToolTier::Iron, BlockDropKind::Redstone),
             new BlockType(VanillaBlockStates::diamondOre(), 3.0, $pickaxe, ToolTier::Iron, BlockDropKind::Diamond),
+            new BlockType(CanonicalBlockState::from('minecraft:emerald_ore'), 3.0, $pickaxe, ToolTier::Iron, BlockDropKind::Emerald),
+            new BlockType(CanonicalBlockState::from('minecraft:lapis_ore'), 3.0, $pickaxe, ToolTier::Stone, BlockDropKind::Lapis),
+            new BlockType(CanonicalBlockState::from('minecraft:deepslate_coal_ore'), 4.5, $pickaxe, ToolTier::Wood, BlockDropKind::Coal),
+            new BlockType(CanonicalBlockState::from('minecraft:deepslate_iron_ore'), 4.5, $pickaxe, ToolTier::Stone, BlockDropKind::RawIron),
+            new BlockType(CanonicalBlockState::from('minecraft:deepslate_copper_ore'), 4.5, $pickaxe, ToolTier::Stone, BlockDropKind::RawCopper),
+            new BlockType(CanonicalBlockState::from('minecraft:deepslate_gold_ore'), 4.5, $pickaxe, ToolTier::Iron, BlockDropKind::RawGold),
+            new BlockType(CanonicalBlockState::from('minecraft:deepslate_redstone_ore'), 4.5, $pickaxe, ToolTier::Iron, BlockDropKind::Redstone),
+            new BlockType(CanonicalBlockState::from('minecraft:deepslate_diamond_ore'), 4.5, $pickaxe, ToolTier::Iron, BlockDropKind::Diamond),
+            new BlockType(CanonicalBlockState::from('minecraft:deepslate_emerald_ore'), 4.5, $pickaxe, ToolTier::Iron, BlockDropKind::Emerald),
+            new BlockType(CanonicalBlockState::from('minecraft:deepslate_lapis_ore'), 4.5, $pickaxe, ToolTier::Stone, BlockDropKind::Lapis),
             new BlockType(VanillaBlockStates::birchLog(), 2.0, $axe, null, BlockDropKind::Self),
             new BlockType(VanillaBlockStates::birchLeaves(), 0.2, ToolType::Hoe, null, BlockDropKind::BirchLeaves),
             new BlockType(VanillaBlockStates::spruceLog(), 2.0, $axe, null, BlockDropKind::Self),
@@ -105,8 +116,10 @@ final readonly class BlockCatalog
             $indicesByIdentifier[$type->identifier()] = $index;
             $explicitIdentifiers[$type->identifier()] = true;
         }
+        $explicitIdentifiers = array_fill_keys(array_keys($indicesByIdentifier), true);
         if ($registry !== null) {
-            foreach ($registry->states() as $state) {
+            foreach (GenerationBlockPalette::fromRegistry($registry)->generationStates() as $stateId) {
+                $state = $registry->state($stateId);
                 if (!isset($indicesByIdentifier[$state->identifier()])) {
                     $types[] = self::generatedType($state);
                     $indicesByIdentifier[$state->identifier()] = count($types) - 1;
@@ -119,7 +132,9 @@ final readonly class BlockCatalog
                 }
                 $index = $indicesByIdentifier[$blockIdentifier] ?? null;
                 if ($index !== null) {
-                    $types[$index] = $types[$index]->withItemIdentifier($itemIdentifier);
+                    $types[$index] = isset($explicitIdentifiers[$blockIdentifier])
+                        ? $types[$index]->withItemIdentifier($itemIdentifier)
+                        : self::mappedType($state, $itemIdentifier);
                     continue;
                 }
                 $types[] = self::mappedType($state, $itemIdentifier);
@@ -297,6 +312,7 @@ final readonly class BlockCatalog
             'minecraft:brewing_stand' => 'minecraft:brewing_stand',
             'minecraft:campfire' => 'minecraft:campfire',
             'minecraft:cauldron' => 'minecraft:cauldron',
+            'minecraft:oak_slab' => 'minecraft:oak_double_slab',
             'minecraft:soul_campfire' => 'minecraft:soul_campfire',
             'minecraft:stonecutter' => 'minecraft:stonecutter',
         ];

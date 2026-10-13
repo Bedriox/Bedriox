@@ -30,7 +30,10 @@ final class GameplayTrafficGuard
 
     public function __construct(
         private readonly int $envelopesPerSecond = 400,
-        private readonly int $envelopeBurst = 100,
+        // A retail client may queue one movement envelope per tick while the main
+        // process is occupied by a cold teleport. Keep enough bounded headroom to
+        // accept that catch-up traffic without weakening the sustained-rate cap.
+        private readonly int $envelopeBurst = 512,
         private readonly int $bytesPerSecond = 8_388_608,
         private readonly int $byteBurst = 2_097_152,
         private readonly int $packetsPerSecond = 1_200,

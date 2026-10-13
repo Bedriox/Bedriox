@@ -97,7 +97,7 @@ final class ParticleApiTest extends TestCase
         self::assertGreaterThan(0, (new ScalarParticle(ScalarParticleType::SMOKE, 2))->estimatedBytes());
         self::assertGreaterThan(0, (new DragonEggTeleportParticle(-12, 4, 255))->estimatedBytes());
         self::assertGreaterThan(0, (new MobSpawnParticle(2, 3))->estimatedBytes());
-        self::assertCount(88, StandardParticleType::cases());
+        self::assertCount(89, StandardParticleType::cases());
         self::assertCount(6, ScalarParticleType::cases());
         self::assertCount(5, ColoredParticleType::cases());
     }

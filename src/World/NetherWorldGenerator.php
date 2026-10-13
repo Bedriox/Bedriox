@@ -25,26 +25,32 @@ use Bedriox\Server\World\Block\InternalBlockStateId;
 use Bedriox\Server\World\Generation\GenerationBlockPalette;
 use Bedriox\Server\World\Generation\MutableChunkBuilder;
 use Bedriox\Server\World\Generation\SeededNoise;
+use Bedriox\Server\World\Generation\Structure\Nether\NetherStructureKind;
+use Bedriox\Server\World\Generation\Structure\Nether\NetherStructureLocation;
+use Bedriox\Server\World\Generation\Structure\Nether\NetherStructurePlan;
+use Bedriox\Server\World\Generation\Structure\Nether\NetherStructurePlanner;
+use Bedriox\Server\World\Generation\Structure\Nether\NetherStructureRenderer;
 
 /** Deterministic bounded cavern terrain and structures for the built-in Nether dimension. */
 final readonly class NetherWorldGenerator implements VersionedWorldGenerator
 {
-    public const int VERSION = 3;
+    public const int VERSION = 4;
     private const int MAXIMUM_Y = 127;
     private const int LAVA_LEVEL = 31;
     private const int SPAWN_SEARCH_CHUNK_RADIUS = 4;
     private const int SPAWN_MINIMUM_FLOOR_Y = self::LAVA_LEVEL + 2;
     private const int SPAWN_MAXIMUM_FLOOR_Y = 120;
-    private const int STRUCTURE_REGION = 384;
-    private const int STRUCTURE_RADIUS = 42;
-
     private GenerationBlockPalette $blocks;
     private SeededNoise $noise;
+    private NetherStructurePlanner $structurePlanner;
+    private NetherStructureRenderer $structureRenderer;
 
     public function __construct(int $seed, BlockStateRegistry $states)
     {
         $this->blocks = GenerationBlockPalette::fromRegistry($states);
         $this->noise = new SeededNoise($seed ^ 0x4e455448);
+        $this->structurePlanner = new NetherStructurePlanner($seed);
+        $this->structureRenderer = new NetherStructureRenderer($this->blocks);
     }
 
     public function name(): string
@@ -111,6 +117,7 @@ final readonly class NetherWorldGenerator implements VersionedWorldGenerator
             new Biome($biome),
             finalizationState: ChunkFinalizationState::Done,
             biomeStorages: array_fill(0, 8, $biomeStorage),
+            blockEntities: $builder->blockEntities(),
         );
     }
 
@@ -155,6 +162,40 @@ final readonly class NetherWorldGenerator implements VersionedWorldGenerator
         }
 
         throw new \RuntimeException('Nether generation did not produce a safe default spawn within the bounded search area.');
+    }
+
+    public function locateStructure(
+        NetherStructureKind $kind,
+        int $fromX = 0,
+        int $fromZ = 0,
+        int $maximumRegionRadius = 64,
+    ): ?NetherStructurePlan {
+        return $this->structurePlanner->nearest($kind, $fromX, $fromZ, $maximumRegionRadius);
+    }
+
+    public function locateStructureLocation(
+        NetherStructureKind $kind,
+        int $fromX = 0,
+        int $fromZ = 0,
+        int $maximumRegionRadius = 64,
+    ): ?NetherStructureLocation {
+        $plan = $this->locateStructure($kind, $fromX, $fromZ, $maximumRegionRadius);
+        if ($plan === null) {
+            return null;
+        }
+
+        return $this->locationForPlan($plan);
+    }
+
+    private function locationForPlan(NetherStructurePlan $plan): NetherStructureLocation
+    {
+        $kind = $plan->kind;
+        [$x, $z] = $kind === NetherStructureKind::BastionTreasure
+            ? [$plan->centerX + 5, $plan->centerZ + 5]
+            : [$plan->centerX, $plan->centerZ];
+        $teleportY = $plan->baseY + ($kind === NetherStructureKind::BastionTreasure ? 2 : 1);
+
+        return new NetherStructureLocation($plan, new BlockPosition($x, $teleportY, $z));
     }
 
     private function biomeAt(int $x, int $z): string
@@ -396,63 +437,8 @@ final readonly class NetherWorldGenerator implements VersionedWorldGenerator
 
     private function decorateStructures(MutableChunkBuilder $builder, ChunkPosition $position): void
     {
-        $chunkMinimumX = $position->x * 16;
-        $chunkMaximumX = $chunkMinimumX + 15;
-        $chunkMinimumZ = $position->z * 16;
-        $chunkMaximumZ = $chunkMinimumZ + 15;
-        $minimumX = $chunkMinimumX - self::STRUCTURE_RADIUS;
-        $maximumX = $chunkMaximumX + self::STRUCTURE_RADIUS;
-        $minimumZ = $chunkMinimumZ - self::STRUCTURE_RADIUS;
-        $maximumZ = $chunkMaximumZ + self::STRUCTURE_RADIUS;
-        for ($regionX = self::floorDiv($minimumX, self::STRUCTURE_REGION); $regionX <= self::floorDiv($maximumX, self::STRUCTURE_REGION); ++$regionX) {
-            for ($regionZ = self::floorDiv($minimumZ, self::STRUCTURE_REGION); $regionZ <= self::floorDiv($maximumZ, self::STRUCTURE_REGION); ++$regionZ) {
-                if ($this->noise->chance($regionX, 0, $regionZ, 1_701, 3) !== 0) {
-                    continue;
-                }
-                $centerX = $regionX * self::STRUCTURE_REGION + 96 + $this->noise->chance($regionX, 1, $regionZ, 1_709, 192);
-                $centerZ = $regionZ * self::STRUCTURE_REGION + 96 + $this->noise->chance($regionX, 2, $regionZ, 1_717, 192);
-                if ($centerX + 34 < $chunkMinimumX || $centerX - 34 > $chunkMaximumX
-                    || $centerZ + 34 < $chunkMinimumZ || $centerZ - 34 > $chunkMaximumZ) {
-                    continue;
-                }
-                $baseY = 48 + $this->noise->chance($regionX, 3, $regionZ, 1_723, 23);
-                $this->renderNetherStructure(
-                    $builder,
-                    $centerX,
-                    $baseY,
-                    $centerZ,
-                    $this->noise->chance($regionX, 4, $regionZ, 1_727, 4) === 0,
-                );
-            }
-        }
-    }
-
-    private function renderNetherStructure(MutableChunkBuilder $builder, int $centerX, int $baseY, int $centerZ, bool $bastion): void
-    {
-        $material = $this->blocks->state($bastion ? 'minecraft:polished_blackstone_bricks' : 'minecraft:nether_brick');
-        $air = $this->blocks->state('minecraft:air');
-        for ($x = $centerX - 34; $x <= $centerX + 34; ++$x) {
-            for ($z = $centerZ - 34; $z <= $centerZ + 34; ++$z) {
-                $dx = abs($x - $centerX);
-                $dz = abs($z - $centerZ);
-                $corridor = ($dx <= 3 && $dz <= 34) || ($dz <= 3 && $dx <= 34);
-                $room = ($dx >= 25 && $dz <= 8) || ($dz >= 25 && $dx <= 8) || ($dx <= 8 && $dz <= 8);
-                if (!$corridor && !$room) {
-                    continue;
-                }
-                $edge = ($dx === 3 && $dz <= 24) || ($dz === 3 && $dx <= 24)
-                    || ($room && ($dx === 8 || $dz === 8 || $dx === 25 || $dz === 25 || $dx === 34 || $dz === 34));
-                $builder->setWorld($x, $baseY, $z, $material);
-                for ($y = $baseY + 1; $y <= $baseY + 5; ++$y) {
-                    $builder->setWorld($x, $y, $z, $edge ? $material : $air);
-                }
-                if ($room || ($x - $centerX) % 7 === 0 || ($z - $centerZ) % 7 === 0) {
-                    $builder->setWorld($x, $baseY + 6, $z, $material);
-                }
-            }
-        }
-        if ($bastion) {
-            $builder->setWorld($centerX, $baseY + 1, $centerZ, $this->blocks->state('minecraft:gold_block'));
+        foreach ($this->structurePlanner->intersecting($position) as $plan) {
+            $this->structureRenderer->render($builder, $plan);
         }
     }
 

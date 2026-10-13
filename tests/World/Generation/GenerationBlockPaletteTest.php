@@ -21,8 +21,10 @@ declare(strict_types=1);
 namespace Bedriox\Server\Tests\World\Generation;
 
 use Bedriox\Data\BedrockDataSet;
+use Bedriox\Data\CanonicalBlockState;
 use Bedriox\Server\World\Block\BlockAxis;
 use Bedriox\Server\World\Block\BlockStateRegistry;
+use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\Generation\GenerationBlockPalette;
 use Bedriox\Server\World\Generation\MutableChunkBuilder;
@@ -31,14 +33,33 @@ use PHPUnit\Framework\TestCase;
 
 final class GenerationBlockPaletteTest extends TestCase
 {
+    public function testImmutablePaletteIsReusedForTheSameRegistryInstance(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+
+        self::assertSame(
+            GenerationBlockPalette::fromRegistry($registry),
+            GenerationBlockPalette::fromRegistry($registry),
+        );
+    }
+
     public function testPinnedRegistryProvidesEveryRequiredGenerationState(): void
     {
         $data = BedrockDataSet::bundled();
         $palette = GenerationBlockPalette::fromRegistry(new BlockStateRegistry($data->blockStateRegistry()->states()));
 
-        self::assertLessThanOrEqual(256, count($palette->states()));
+        self::assertGreaterThan(256, count($palette->states()));
+        self::assertLessThanOrEqual(65_536, count($palette->states()));
         self::assertSame($palette->state('minecraft:air'), $palette->states()[$palette->index($palette->state('minecraft:air'))]);
         self::assertNotSame($palette->state('minecraft:oak_log')->value, $palette->state('minecraft:acacia_log')->value);
+        foreach (['minecraft:bone_block', 'minecraft:nether_brick_fence', 'minecraft:gilded_blackstone', 'minecraft:end_gateway'] as $identifier) {
+            $state = array_values(array_filter(
+                $data->blockStateRegistry()->states(),
+                static fn(CanonicalBlockState $state): bool => $state->identifier() === $identifier,
+            ))[0];
+            $registryId = $palette->canonical($state);
+            self::assertSame($registryId->value, $palette->states()[$palette->index($registryId)]->value);
+        }
     }
 
     public function testPillarStatesDefaultToVerticalAndExposeEveryExactAxisVariant(): void
@@ -107,5 +128,36 @@ final class GenerationBlockPaletteTest extends TestCase
         self::assertSame($palette->state('minecraft:grass_block')->value, $sections[0]->blockStateAt(0, 0, 0)->value);
         self::assertSame($palette->state('minecraft:oak_log')->value, $sections[0]->blockStateAt(15, 1, 15)->value);
         self::assertLessThanOrEqual(3, count($sections[0]->palette()));
+    }
+
+    public function testMutableBuilderAcceptsGlobalPaletteIndicesAboveOneByte(): void
+    {
+        $palette = GenerationBlockPalette::fromRegistry(new BlockStateRegistry(
+            BedrockDataSet::bundled()->blockStateRegistry()->states(),
+        ));
+        $state = $palette->states()[300];
+        $builder = new MutableChunkBuilder(new ChunkPosition(0, 0), $palette);
+        $builder->set(3, 70, 4, $state);
+
+        self::assertSame($state, $builder->state(3, 70, 4));
+        self::assertSame($state, $builder->sections()[0]->blockStateAt(3, 6, 4));
+    }
+
+    public function testMutableBuilderFindsSolidBlocksAcrossFluidsAndPromotedSections(): void
+    {
+        $palette = GenerationBlockPalette::fromRegistry(new BlockStateRegistry(
+            BedrockDataSet::bundled()->blockStateRegistry()->states(),
+        ));
+        $builder = new MutableChunkBuilder(new ChunkPosition(0, 0), $palette);
+        $builder->set(2, 60, 3, $palette->state('minecraft:stone'));
+        $builder->set(2, 70, 3, $palette->state('minecraft:water'));
+
+        self::assertSame(60, $builder->highestSolid(2, 3));
+
+        $promotedState = $palette->states()[300];
+        $builder->set(2, 71, 3, $promotedState);
+
+        self::assertSame(71, $builder->highestSolid(2, 3));
+        self::assertSame(Chunk::MIN_Y, $builder->highestSolid(-1, 3));
     }
 }

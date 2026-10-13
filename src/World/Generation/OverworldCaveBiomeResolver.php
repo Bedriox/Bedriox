@@ -34,16 +34,16 @@ final readonly class OverworldCaveBiomeResolver
         }
         $region = $this->noise->sample3d($x, intdiv($y, 2), $z, 260, 4_101);
         $detail = $this->noise->sample3d($x, $y, $z, 96, 4_211);
-        if ($y < -28 && $region < -10_500 && $detail < 5_000) {
+        if ($y < -28 && $region < -24_000 && $detail < -4_000) {
             return new Biome('minecraft:deep_dark');
         }
-        if ($region > 12_000 && $detail > -7_000) {
+        if ($region > 22_000 && $detail > 4_000) {
             return new Biome('minecraft:lush_caves');
         }
-        if ($region < -12_500 && $detail > -3_000) {
+        if ($region < -22_000 && $detail > 4_000) {
             return new Biome('minecraft:dripstone_caves');
         }
-        if ($y < 24 && abs($region) < 4_500 && $detail > 9_500) {
+        if ($y < 24 && abs($region) < 2_000 && $detail > 24_000) {
             return new Biome('minecraft:sulfur_caves');
         }
 

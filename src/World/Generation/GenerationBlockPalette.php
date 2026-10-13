@@ -29,6 +29,8 @@ use InvalidArgumentException;
 /** Bounded set of canonical block states used by the built-in overworld generator. */
 final readonly class GenerationBlockPalette
 {
+    private const int MAX_STATES = 65_536;
+
     /** @var array<string, InternalBlockStateId> */
     private array $statesByIdentifier;
 
@@ -38,15 +40,30 @@ final readonly class GenerationBlockPalette
     /** @var list<InternalBlockStateId> */
     private array $states;
 
+    /** @var list<InternalBlockStateId> */
+    private array $generationStates;
+
     /** @var array<int, int> */
     private array $indicesByState;
+
+    /** @var array<string, InternalBlockStateId> */
+    private array $statesByCanonicalKey;
+
+    /** @var array<int, string> */
+    private array $fastBytesByState;
+
+    private string $emptySection;
 
     /**
      * @param array<string, InternalBlockStateId> $statesByIdentifier
      * @param array<string, array<string, InternalBlockStateId>> $pillarStatesByIdentifier
+     * @param array<string, InternalBlockStateId>                $statesByCanonicalKey
      */
-    private function __construct(array $statesByIdentifier, array $pillarStatesByIdentifier)
-    {
+    private function __construct(
+        array $statesByIdentifier,
+        array $pillarStatesByIdentifier,
+        array $statesByCanonicalKey,
+    ) {
         $states = [];
         $seen = [];
         foreach ($statesByIdentifier as $state) {
@@ -61,8 +78,15 @@ final readonly class GenerationBlockPalette
                 }
             }
         }
-        if ($states === [] || count($states) > 256) {
-            throw new InvalidArgumentException('Generation block palette must contain between 1 and 256 states.');
+        $this->generationStates = $states;
+        foreach ($statesByCanonicalKey as $state) {
+            if (!isset($seen[$state->value])) {
+                $states[] = $state;
+                $seen[$state->value] = true;
+            }
+        }
+        if ($states === [] || count($states) > self::MAX_STATES) {
+            throw new InvalidArgumentException('Generation block palette must contain between 1 and 65536 states.');
         }
         $indices = [];
         foreach ($states as $index => $state) {
@@ -72,10 +96,28 @@ final readonly class GenerationBlockPalette
         $this->pillarStatesByIdentifier = $pillarStatesByIdentifier;
         $this->states = $states;
         $this->indicesByState = $indices;
+        $this->statesByCanonicalKey = $statesByCanonicalKey;
+        $fastBytesByState = [];
+        foreach (array_slice($states, 0, 256) as $index => $state) {
+            $fastBytesByState[$state->value] = chr($index);
+        }
+        $this->fastBytesByState = $fastBytesByState;
+        $air = $statesByIdentifier['minecraft:air'] ?? null;
+        if (!$air instanceof InternalBlockStateId || ($indices[$air->value] ?? 256) > 255) {
+            throw new InvalidArgumentException('Generation air state must remain in the fast byte palette.');
+        }
+        $this->emptySection = str_repeat(chr($indices[$air->value]), 4096);
     }
 
     public static function fromRegistry(BlockStateRegistry $registry): self
     {
+        /** @var \WeakMap<BlockStateRegistry, self>|null $cache */
+        static $cache = null;
+        $cache ??= new \WeakMap();
+        $cached = $cache[$registry] ?? null;
+        if ($cached instanceof self) {
+            return $cached;
+        }
         $firstByIdentifier = [];
         foreach ($registry->states() as $state) {
             $firstByIdentifier[$state->identifier()] ??= $state;
@@ -107,7 +149,11 @@ final readonly class GenerationBlockPalette
             'minecraft:pink_tulip', 'minecraft:oxeye_daisy', 'minecraft:lily_of_the_valley',
             'minecraft:coal_ore', 'minecraft:iron_ore', 'minecraft:copper_ore', 'minecraft:gold_ore',
             'minecraft:redstone_ore', 'minecraft:diamond_ore', 'minecraft:emerald_ore',
-            'minecraft:lapis_ore', 'minecraft:dripstone_block', 'minecraft:pointed_dripstone',
+            'minecraft:lapis_ore', 'minecraft:deepslate_coal_ore', 'minecraft:deepslate_iron_ore',
+            'minecraft:deepslate_copper_ore', 'minecraft:deepslate_gold_ore',
+            'minecraft:deepslate_redstone_ore', 'minecraft:deepslate_diamond_ore',
+            'minecraft:deepslate_emerald_ore', 'minecraft:deepslate_lapis_ore',
+            'minecraft:dripstone_block', 'minecraft:pointed_dripstone',
             'minecraft:sculk', 'minecraft:glow_lichen', 'minecraft:azalea_leaves',
             'minecraft:azalea_leaves_flowered', 'minecraft:dirt_with_roots', 'minecraft:hanging_roots',
             'minecraft:spore_blossom', 'minecraft:amethyst_block', 'minecraft:budding_amethyst',
@@ -130,9 +176,13 @@ final readonly class GenerationBlockPalette
             'minecraft:crimson_roots', 'minecraft:warped_roots', 'minecraft:nether_sprouts',
             'minecraft:weeping_vines', 'minecraft:twisting_vines', 'minecraft:end_stone',
             'minecraft:chorus_plant', 'minecraft:chorus_flower', 'minecraft:purpur_block',
-            'minecraft:purpur_pillar', 'minecraft:dragon_head', 'minecraft:brewing_stand',
-            'minecraft:chest', 'minecraft:end_rod', 'minecraft:end_portal',
-            'minecraft:rail', 'minecraft:bookshelf', 'minecraft:torch', 'minecraft:fire', 'minecraft:soul_fire',
+            'minecraft:purpur_pillar', 'minecraft:dragon_head', 'minecraft:brewing_stand', 'minecraft:furnace',
+            'minecraft:chest', 'minecraft:barrel', 'minecraft:end_rod', 'minecraft:end_portal',
+            'minecraft:end_portal_frame', 'minecraft:rail', 'minecraft:bookshelf', 'minecraft:torch',
+            'minecraft:fire', 'minecraft:soul_fire', 'minecraft:suspicious_gravel', 'minecraft:bone_block',
+            'minecraft:dispenser', 'minecraft:tnt', 'minecraft:trip_wire', 'minecraft:mob_spawner',
+            'minecraft:trial_spawner', 'minecraft:vault', 'minecraft:sulfur', 'minecraft:cinnabar',
+            'minecraft:potent_sulfur', 'minecraft:sulfur_spike',
         ];
         $resolved = [];
         $pillarStates = [];
@@ -163,7 +213,12 @@ final readonly class GenerationBlockPalette
             }
         }
 
-        return new self($resolved, $pillarStates);
+        $canonicalStates = [];
+        foreach ($registry->states() as $state) {
+            $canonicalStates[$state->canonicalKey()] = $registry->internalId($state);
+        }
+
+        return $cache[$registry] = new self($resolved, $pillarStates, $canonicalStates);
     }
 
     public function state(string $identifier, ?BlockAxis $axis = null): InternalBlockStateId
@@ -183,9 +238,32 @@ final readonly class GenerationBlockPalette
             ?? throw new InvalidArgumentException('Block state is outside the generation palette.');
     }
 
+    public function canonical(CanonicalBlockState $state): InternalBlockStateId
+    {
+        return $this->statesByCanonicalKey[$state->canonicalKey()]
+            ?? throw new InvalidArgumentException('Canonical block state is outside the generation palette.');
+    }
+
     /** @return list<InternalBlockStateId> */
     public function states(): array
     {
         return $this->states;
+    }
+
+    /** @return list<InternalBlockStateId> */
+    public function generationStates(): array
+    {
+        return $this->generationStates;
+    }
+
+    /** @return array<int, string> */
+    public function fastBytesByState(): array
+    {
+        return $this->fastBytesByState;
+    }
+
+    public function emptySection(): string
+    {
+        return $this->emptySection;
     }
 }

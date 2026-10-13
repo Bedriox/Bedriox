@@ -8,7 +8,7 @@ The client journey is Bedriox's cumulative user-visible regression baseline. A m
 2. The client proceeds from discovery through RakNet offline and connected negotiation.
 3. Authentication, encryption, resource-pack negotiation, and login complete without downgrade.
 4. The client receives initialization and enters the world exactly once.
-5. The spawn-radius terrain contains the expected grass, dirt, bedrock, air, biome, and height semantics.
+5. The center admission chunk contains the expected grass, dirt, bedrock, air, biome, and height semantics before the player enters play.
 6. The negotiated view continues loading nearest-first beyond the spawn column.
 7. Walking across positive and negative chunk boundaries loads only the new edge without voids, stalls, excessive resend, or unbounded memory.
 8. Standing, looking, walking, jumping, landing, sprinting, and crouching preserve authoritative position, gravity, collision, and breathing state; bounded correction and movement-prediction synchronization leave later movement and block interaction playable without importing client-reported authority.

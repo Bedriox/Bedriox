@@ -1,5 +1,22 @@
 # Changelog
 
+- Keep submerged coastal shelves in ocean biomes and constrain beaches to a
+  noise-varied shoreline beside actual open water. Multiscale coastal relief
+  breaks up climate-lattice polygons and shallow seafloor bands; exposed lowlands
+  retain their inland biome instead of becoming broad sand fields, while ocean
+  floors use coherent clay, gravel, and sand patches.
+- Admit joining players as soon as their center chunk is delivered, then stream
+  the remaining configured view by distance in the background.
+- Build uniform terrain sections and layers in bulk, reuse immutable generation
+  palettes across dimensions, and use a bounded coarse spawn search to reduce
+  cold chunk and first-world preparation latency without changing terrain output.
+- Prevent legitimate Bedrock movement catch-up traffic after a cold-world
+  teleport from being rejected by the authenticated play-session rate limiter;
+  sustained traffic and byte or packet limits remain bounded.
+- Add Bedriox-owned deterministic villages, dungeons, mineshafts, strongholds,
+  Nether fortresses, bastions, End cities, and End ships; terrain-match village
+  roads and full foundations; widen natural beach transitions; and defer packed
+  chunk projection work to reduce cold Overworld generation latency.
 - Add authoritative regular, powered, detector, and activator rail geometry;
   rideable minecarts; persistent chest minecarts; bounded track physics;
   structural damage and drops; and typed movement, rail-transition, and vehicle
