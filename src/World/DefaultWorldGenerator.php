@@ -20,11 +20,15 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World;
 
+use Bedriox\Server\World\Block\BlockAxis;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\InternalBlockStateId;
 use Bedriox\Server\World\Generation\GenerationBlockPalette;
 use Bedriox\Server\World\Generation\Geology\OverworldGeologyGenerator;
+use Bedriox\Server\World\Generation\Landform\OverworldLandformField;
 use Bedriox\Server\World\Generation\MutableChunkBuilder;
+use Bedriox\Server\World\Generation\Noise\OverworldBaseDensitySampler;
+use Bedriox\Server\World\Generation\Noise\OverworldDensityLattice;
 use Bedriox\Server\World\Generation\OverworldBiomeResolver;
 use Bedriox\Server\World\Generation\OverworldCaveBiomeResolver;
 use Bedriox\Server\World\Generation\OverworldClimate;
@@ -34,23 +38,34 @@ use Bedriox\Server\World\Generation\SeededNoise;
 use Bedriox\Server\World\Generation\Structure\Overworld\OverworldStructureFamily;
 use Bedriox\Server\World\Generation\Structure\Overworld\OverworldStructureGenerator;
 use Bedriox\Server\World\Generation\Structure\Overworld\OverworldStructureLocation;
+use Bedriox\Server\World\Generation\Surface\OverworldSurfaceContext;
+use Bedriox\Server\World\Generation\Surface\OverworldSurfaceField;
+use Bedriox\Server\World\Generation\Surface\OverworldSurfaceMaterial;
+use Bedriox\Server\World\Generation\Vegetation\OverworldVegetationPlanner;
+use Bedriox\Server\World\Generation\Vegetation\TreeArchetype;
+use Bedriox\Server\World\Generation\Vegetation\VegetationTreePlan;
 
 /** Deterministic three-dimensional overworld generator for the built-in default world profile. */
 final class DefaultWorldGenerator implements VersionedWorldGenerator
 {
-    public const int VERSION = 4;
+    public const int VERSION = 5;
     public const int SEA_LEVEL = OverworldTerrainSampler::SEA_LEVEL;
     private const int SPAWN_SEARCH_STEP = 64;
     private const int MAXIMUM_BEACH_WIDTH = 6;
-    private const int TERRAIN_SAMPLE_MARGIN = 3;
+    private const int TERRAIN_SAMPLE_MARGIN = 2;
+    private const int CLIMATE_SAMPLE_STEP = 4;
     private const int COASTAL_SAMPLE_STEP = 4;
     private readonly GenerationBlockPalette $blocks;
     private readonly SeededNoise $noise;
     private readonly OverworldTerrainSampler $terrain;
+    private readonly OverworldBaseDensitySampler $density;
+    private readonly OverworldLandformField $landforms;
+    private readonly OverworldSurfaceField $surfaceField;
     private readonly OverworldBiomeResolver $biomes;
     private readonly OverworldCaveBiomeResolver $caveBiomes;
     private readonly OverworldGeologyGenerator $geology;
     private readonly OverworldStructureGenerator $structures;
+    private readonly OverworldVegetationPlanner $vegetation;
     /** @var array<int, true> */
     private readonly array $treeSubstrates;
     /** @var array<int, true> */
@@ -61,10 +76,34 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
     private array $columnCache = [];
     /** @var list<string> */
     private array $columnCacheOrder = [];
-    /** @var array<string, int> */
-    private array $surfaceHeightCache = [];
+    /** @var array<string, OverworldTerrainSample> */
+    private array $regionalSampleCache = [];
     /** @var list<string> */
-    private array $surfaceHeightCacheOrder = [];
+    private array $regionalSampleCacheOrder = [];
+    /** @var array<string, int> */
+    private array $planningHeightCache = [];
+    /** @var list<string> */
+    private array $planningHeightCacheOrder = [];
+    /** @var array<string, int> */
+    private array $volumeSurfaceHeightCache = [];
+    /** @var list<string> */
+    private array $volumeSurfaceHeightCacheOrder = [];
+    /** @var array<string, int> */
+    private array $rawDensitySurfaceCache = [];
+    /** @var list<string> */
+    private array $rawDensitySurfaceCacheOrder = [];
+    /** @var array<string, OverworldDensityLattice> */
+    private array $volumeSurfaceLatticeCache = [];
+    /** @var list<string> */
+    private array $volumeSurfaceLatticeCacheOrder = [];
+    /** @var array<string, array{int, int}> */
+    private array $surfaceLatticeBoundsCache = [];
+    /** @var list<string> */
+    private array $surfaceLatticeBoundsCacheOrder = [];
+    /** @var array<string, non-empty-list<int>> */
+    private array $rawSurfaceChunkCache = [];
+    /** @var list<string> */
+    private array $rawSurfaceChunkCacheOrder = [];
     /** @var array<string, array{int, int}> */
     private array $coastalSignalCache = [];
     /** @var list<string> */
@@ -79,10 +118,14 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
         $this->blocks = GenerationBlockPalette::fromRegistry($states);
         $this->noise = new SeededNoise($seed);
         $this->terrain = new OverworldTerrainSampler($this->noise);
+        $this->density = new OverworldBaseDensitySampler($seed);
+        $this->landforms = new OverworldLandformField($this->noise);
+        $this->surfaceField = new OverworldSurfaceField($this->noise);
         $this->biomes = new OverworldBiomeResolver();
         $this->caveBiomes = new OverworldCaveBiomeResolver($this->noise);
         $this->geology = new OverworldGeologyGenerator($seed, $this->blocks);
         $this->structures = new OverworldStructureGenerator($this->blocks, $this->noise);
+        $this->vegetation = new OverworldVegetationPlanner($this->noise);
         $this->treeSubstrates = $this->stateSet([
             'minecraft:dirt', 'minecraft:grass_block', 'minecraft:coarse_dirt', 'minecraft:podzol',
             'minecraft:mud', 'minecraft:moss_block', 'minecraft:pale_moss_block', 'minecraft:mycelium',
@@ -94,6 +137,8 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
         ]);
         $this->vegetationReplaceable = $this->stateSet([
             'minecraft:air', 'minecraft:snow_layer', 'minecraft:short_grass', 'minecraft:tall_grass',
+            'minecraft:fern', 'minecraft:pale_moss_carpet', 'minecraft:closed_eyeblossom',
+            'minecraft:open_eyeblossom',
             'minecraft:dandelion', 'minecraft:poppy', 'minecraft:blue_orchid', 'minecraft:allium',
             'minecraft:azure_bluet', 'minecraft:red_tulip', 'minecraft:white_tulip', 'minecraft:pink_tulip',
             'minecraft:oxeye_daisy', 'minecraft:lily_of_the_valley', 'minecraft:deadbush',
@@ -126,13 +171,29 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
         $deepslate = $this->blocks->state('minecraft:deepslate');
         $water = $this->blocks->state('minecraft:water');
         $lava = $this->blocks->state('minecraft:lava');
+        $lattice = $this->volumeSurfaceLatticeForChunk($position->x, $position->z);
+
+        $rawSurfaceHeights = $this->rawSurfaceHeightsForChunk($position->x, $position->z, $lattice);
 
         for ($localZ = 0; $localZ < 16; ++$localZ) {
             for ($localX = 0; $localX < 16; ++$localX) {
-                $sample = $samples[$originZ + $localZ][$originX + $localX];
-                $terrainHeights[$localX + $localZ * 16] = $sample->surfaceHeight;
+                $worldX = $originX + $localX;
+                $worldZ = $originZ + $localZ;
+                $column = $localX + $localZ * 16;
+                $sample = $samples[$worldZ][$worldX];
+                $rawHeight = $rawSurfaceHeights[$column];
+                $height = $this->landforms->surfaceHeight(
+                    $worldX,
+                    $worldZ,
+                    $rawHeight,
+                    $sample->climate,
+                    $sample->riverStrength,
+                );
+                $terrainHeights[$column] = $height;
+                $this->rememberVolumeSurfaceHeight($worldX, $worldZ, $height);
             }
         }
+        $terrainHeights = array_values($terrainHeights);
         $builder->initializeTerrainColumns($terrainHeights, self::SEA_LEVEL, $deepslate, $stone, $water);
         for ($localZ = 0; $localZ < 16; ++$localZ) {
             for ($localX = 0; $localX < 16; ++$localX) {
@@ -148,6 +209,7 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
 
         $this->fillOpenWaterColumns($builder);
         $this->applyBedrock($builder, $originX, $originZ);
+        $samples = $this->replaceGeneratedTerrainSamples($samples, $position, $terrainHeights);
         [$surfaceHeights, $surfaceBiomes] = $this->applySurfaces(
             $builder,
             $samples,
@@ -166,7 +228,6 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
         for ($sectionY = Chunk::MIN_SECTION_Y; $sectionY <= Chunk::MAX_SECTION_Y; ++$sectionY) {
             $biomeStorages[$sectionY] = $biomeStorage;
         }
-
         return new Chunk(
             $position,
             $this->blocks->state('minecraft:air'),
@@ -196,8 +257,9 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
         }
         foreach ($candidates as [$x, $z]) {
             $sample = $this->regionalSample($x, $z);
+            $surfaceHeight = $this->densitySurfaceHeightAt($x, $z);
             $biome = $this->biomes->resolve($sample)->identifier;
-            if ($sample->surfaceHeight <= self::SEA_LEVEL + 1 || $sample->slope > 5
+            if ($surfaceHeight <= self::SEA_LEVEL + 1 || $sample->slope > 5
                 || !in_array($biome, [
                     'minecraft:plains', 'minecraft:sunflower_plains', 'minecraft:forest',
                     'minecraft:birch_forest', 'minecraft:taiga', 'minecraft:savanna',
@@ -207,12 +269,16 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
             }
             return $this->candidateSpawn = new SpawnPosition(
                 $x,
-                $sample->surfaceHeight + 1,
+                $surfaceHeight + 1,
                 $z,
             );
         }
 
-        return $this->candidateSpawn = new SpawnPosition(0, $this->densitySurfaceHeightAt(0, 0) + 1, 0);
+        return $this->candidateSpawn = new SpawnPosition(
+            0,
+            $this->densitySurfaceHeightAt(0, 0) + 1,
+            0,
+        );
     }
 
     /** @return non-empty-list<array{int, int}> */
@@ -233,7 +299,7 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
 
     public function surfaceHeight(int $x, int $z, ?Biome $biome = null): int
     {
-        return $this->densitySurfaceHeight($x, $z);
+        return $this->densitySurfaceHeightAt($x, $z);
     }
 
     public function biomeAt(int $x, int $z): Biome
@@ -327,11 +393,12 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
     }
 
     /**
-     * Carves deterministic, continuous cave tunnels from neighboring source chunks.
-     * Feature-based carving avoids evaluating multiple 3D noise stacks at every block.
+     * Carves deterministic continuous tunnels from neighboring source chunks.
+     * Feature paths keep cave work proportional to actual cave geometry instead
+     * of evaluating a three-dimensional noise graph for every terrain block.
      *
-     * @param array<int, int> $surfaceHeights
-     * @return array<int, array{int, int}> Local column index to inclusive carved Y range.
+     * @param list<int> $surfaceHeights
+     * @return array<int, array{int, int}>
      */
     private function carveCaves(
         MutableChunkBuilder $builder,
@@ -404,6 +471,59 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
     }
 
     /**
+     * Reconciles climate samples with the final volumetric surface used by the
+     * generated chunk. Neighboring margin samples remain available for stable
+     * biome and feature decisions at chunk borders.
+     *
+     * @param array<int, array<int, OverworldTerrainSample>> $samples
+     * @param list<int> $surfaceHeights
+     * @return array<int, array<int, OverworldTerrainSample>>
+     */
+    private function replaceGeneratedTerrainSamples(
+        array $samples,
+        ChunkPosition $position,
+        array $surfaceHeights,
+    ): array {
+        $originX = $position->x * 16;
+        $originZ = $position->z * 16;
+        for ($localZ = 0; $localZ < 16; ++$localZ) {
+            for ($localX = 0; $localX < 16; ++$localX) {
+                $worldX = $originX + $localX;
+                $worldZ = $originZ + $localZ;
+                $height = $surfaceHeights[$localX + $localZ * 16];
+                $heightAt = function (int $x, int $z) use ($samples, $surfaceHeights, $originX, $originZ): int {
+                    $localX = $x - $originX;
+                    $localZ = $z - $originZ;
+                    if ($localX >= 0 && $localX < 16 && $localZ >= 0 && $localZ < 16) {
+                        return $surfaceHeights[$localX + $localZ * 16];
+                    }
+
+                    return $samples[$z][$x]->surfaceHeight;
+                };
+                $sample = $samples[$worldZ][$worldX];
+                $east = $heightAt($worldX + 2, $worldZ);
+                $west = $heightAt($worldX - 2, $worldZ);
+                $south = $heightAt($worldX, $worldZ + 2);
+                $north = $heightAt($worldX, $worldZ - 2);
+                $samples[$worldZ][$worldX] = new OverworldTerrainSample(
+                    $sample->climate,
+                    $height,
+                    intdiv(max(
+                        abs($height - $east),
+                        abs($height - $west),
+                        abs($height - $south),
+                        abs($height - $north),
+                    ) + 1, 2),
+                    $sample->riverStrength,
+                    max(-64, min(64, intdiv($east + $west + $south + $north - 4 * $height, 4))),
+                );
+            }
+        }
+
+        return $samples;
+    }
+
+    /**
      * @param array<int, array<int, OverworldTerrainSample>> $samples
      * @param array<int, int> $terrainHeights
      * @return array{list<int>, list<Biome>}
@@ -471,6 +591,21 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
     {
         $id = $biome->identifier;
         $depth = 3 + $this->noise->chance($x, 0, $z, 5_211, 3);
+        $coherent = $this->surfaceField->sample(new OverworldSurfaceContext(
+            $x,
+            $z,
+            $sample->surfaceHeight,
+            self::SEA_LEVEL,
+            min(64, $sample->slope),
+            $sample->curvature,
+            0,
+            $this->isBeachBiome($biome) || $id === 'minecraft:river' || $id === 'minecraft:frozen_river'
+                ? 2
+                : 16,
+            $sample->riverStrength,
+            $sample->climate->temperature,
+            $sample->climate->humidity,
+        ));
         if (str_contains($id, 'mesa')) {
             $colors = ['minecraft:orange_terracotta', 'minecraft:red_terracotta', 'minecraft:yellow_terracotta'];
             $state = $this->blocks->state($colors[abs(intdiv($sample->climate->detail, 3_000)) % count($colors)]);
@@ -481,8 +616,8 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
             return [$this->blocks->state('minecraft:sand'), $this->blocks->state('minecraft:sandstone'), 5, false];
         }
         if (in_array($id, ['minecraft:beach', 'minecraft:cold_beach'], true)) {
-            $patch = $sample->climate->detail + intdiv($sample->climate->erosion, 2);
-            $gravel = $id === 'minecraft:cold_beach' && $patch < 2_500;
+            $gravel = $coherent->material === OverworldSurfaceMaterial::GravelShore
+                || ($id === 'minecraft:cold_beach' && $coherent->sedimentMask < 2_500);
             $state = $this->blocks->state($gravel ? 'minecraft:gravel' : 'minecraft:sand');
 
             return [$state, $this->blocks->state('minecraft:sand'), min(4, $depth), false];
@@ -504,18 +639,47 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
             return [$state, $this->blocks->state('minecraft:stone'), 2, false];
         }
         if (str_contains($id, 'peak') || str_contains($id, 'extreme_hills')) {
-            return [$this->blocks->state('minecraft:stone'), $this->blocks->state('minecraft:stone'), 2, str_contains($id, 'frozen') || str_contains($id, 'jagged')];
+            $snow = str_contains($id, 'frozen') || str_contains($id, 'jagged');
+            if ($coherent->material === OverworldSurfaceMaterial::Stone
+                || $coherent->material === OverworldSurfaceMaterial::GravelScree) {
+                return $this->surfaceMaterialRule($coherent->material, 2, $snow);
+            }
+
+            return [$this->blocks->state('minecraft:grass_block'), $this->blocks->state('minecraft:dirt'), $depth, $snow];
         }
         if (str_contains($id, 'snow') || str_contains($id, 'ice_') || str_contains($id, 'grove') || str_contains($id, 'cold_taiga')) {
+            if ($coherent->material === OverworldSurfaceMaterial::Stone
+                || $coherent->material === OverworldSurfaceMaterial::GravelScree) {
+                $rock = $this->blocks->state($coherent->material === OverworldSurfaceMaterial::Stone
+                    ? 'minecraft:stone'
+                    : 'minecraft:gravel');
+
+                return [$rock, $this->blocks->state('minecraft:stone'), 2, true];
+            }
             return [$this->blocks->state('minecraft:grass_block'), $this->blocks->state('minecraft:dirt'), $depth, true];
         }
         if (str_contains($id, 'taiga')) {
-            $top = $this->noise->chance($x, 0, $z, 5_401, 4) === 0 ? 'minecraft:coarse_dirt' : 'minecraft:podzol';
+            $top = match ($coherent->material) {
+                OverworldSurfaceMaterial::CoarseDirt => 'minecraft:coarse_dirt',
+                OverworldSurfaceMaterial::Podzol => 'minecraft:podzol',
+                default => 'minecraft:grass_block',
+            };
 
             return [$this->blocks->state($top), $this->blocks->state('minecraft:dirt'), $depth, false];
         }
         if ($id === 'minecraft:mangrove_swamp') {
             return [$this->blocks->state('minecraft:mud'), $this->blocks->state('minecraft:dirt'), $depth + 1, false];
+        }
+        if (str_contains($id, 'swamp')) {
+            $mud = $sample->surfaceHeight <= self::SEA_LEVEL + 1
+                || $coherent->sedimentMask > 8_000;
+
+            return [
+                $this->blocks->state($mud ? 'minecraft:mud' : 'minecraft:grass_block'),
+                $this->blocks->state('minecraft:dirt'),
+                $depth,
+                false,
+            ];
         }
         if ($id === 'minecraft:pale_garden') {
             return [$this->blocks->state('minecraft:pale_moss_block'), $this->blocks->state('minecraft:dirt'), $depth, false];
@@ -524,7 +688,7 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
             return [$this->blocks->state('minecraft:mycelium'), $this->blocks->state('minecraft:dirt'), $depth, false];
         }
 
-        return [$this->blocks->state('minecraft:grass_block'), $this->blocks->state('minecraft:dirt'), $depth, false];
+        return $this->surfaceMaterialRule($coherent->material, $depth, false);
     }
 
     /**
@@ -532,16 +696,51 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
      */
     private function submergedSurfaceRule(OverworldTerrainSample $sample, int $x, int $z): array
     {
-        $patch = $sample->climate->detail + intdiv($sample->climate->humidity, 3);
-        $identifier = match (true) {
-            $sample->slope >= 7 => 'minecraft:gravel',
-            $sample->climate->humidity > 9_000 && $patch < -5_000 => 'minecraft:clay',
-            $patch > 12_000 => 'minecraft:gravel',
+        $surface = $this->surfaceField->sample(new OverworldSurfaceContext(
+            $x,
+            $z,
+            $sample->surfaceHeight,
+            self::SEA_LEVEL,
+            min(64, $sample->slope),
+            $sample->curvature,
+            max(1, self::SEA_LEVEL - $sample->surfaceHeight),
+            0,
+            $sample->riverStrength,
+            $sample->climate->temperature,
+            $sample->climate->humidity,
+        ));
+        $identifier = match ($surface->material) {
+            OverworldSurfaceMaterial::GravelShore, OverworldSurfaceMaterial::GravelScree => 'minecraft:gravel',
+            OverworldSurfaceMaterial::MudBed => 'minecraft:mud',
+            OverworldSurfaceMaterial::ClayBed => 'minecraft:clay',
             default => 'minecraft:sand',
         };
         $state = $this->blocks->state($identifier);
 
         return [$state, $state, 2 + $this->noise->chance($x, 0, $z, 5_311, 3), false];
+    }
+
+    /**
+     * @return array{InternalBlockStateId, InternalBlockStateId, int, bool}
+     */
+    private function surfaceMaterialRule(
+        OverworldSurfaceMaterial $material,
+        int $depth,
+        bool $snow,
+    ): array {
+        [$top, $filler, $maximumDepth] = match ($material) {
+            OverworldSurfaceMaterial::Grass => ['minecraft:grass_block', 'minecraft:dirt', $depth],
+            OverworldSurfaceMaterial::CoarseDirt => ['minecraft:coarse_dirt', 'minecraft:dirt', $depth],
+            OverworldSurfaceMaterial::Podzol => ['minecraft:podzol', 'minecraft:dirt', $depth],
+            OverworldSurfaceMaterial::Stone => ['minecraft:stone', 'minecraft:stone', 2],
+            OverworldSurfaceMaterial::GravelScree => ['minecraft:gravel', 'minecraft:stone', 2],
+            OverworldSurfaceMaterial::Sand => ['minecraft:sand', 'minecraft:sandstone', min(4, $depth)],
+            OverworldSurfaceMaterial::GravelShore => ['minecraft:gravel', 'minecraft:sand', min(3, $depth)],
+            OverworldSurfaceMaterial::ClayBed => ['minecraft:clay', 'minecraft:clay', min(3, $depth)],
+            OverworldSurfaceMaterial::MudBed => ['minecraft:mud', 'minecraft:dirt', min(4, $depth)],
+        };
+
+        return [$this->blocks->state($top), $this->blocks->state($filler), $maximumDepth, $snow];
     }
 
     /** @param array<int, array<int, OverworldTerrainSample>> $samples */
@@ -562,7 +761,7 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
             $sample,
             fn(int $sampleX, int $sampleZ): int => isset($samples[$sampleZ][$sampleX])
                 ? $samples[$sampleZ][$sampleX]->surfaceHeight
-                : $this->regionalHeight($sampleX, $sampleZ),
+                : $this->planningHeightAt($sampleX, $sampleZ),
         ) ? $resolved : $this->biomes->resolveDryLand($sample);
     }
 
@@ -672,26 +871,19 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
     ): void {
         $originX = $position->x * 16;
         $originZ = $position->z * 16;
-        // The widest canopy radius is three blocks, so only sources in this exact halo
-        // can affect the target chunk.
-        for ($worldZ = $originZ - 3; $worldZ <= $originZ + 18; ++$worldZ) {
-            for ($worldX = $originX - 3; $worldX <= $originX + 18; ++$worldX) {
+        $groundSignals = [];
+        for ($localZ = 0; $localZ < 16; ++$localZ) {
+            for ($localX = 0; $localX < 16; ++$localX) {
+                $worldX = $originX + $localX;
+                $worldZ = $originZ + $localZ;
+                $sample = $samples[$worldZ][$worldX];
+                $biome = $surfaceBiomes[$localX + $localZ * 16]->identifier;
                 if ($this->candidateSpawn !== null
                     && abs($worldX - $this->candidateSpawn->x) <= 4
                     && abs($worldZ - $this->candidateSpawn->z) <= 4) {
                     continue;
                 }
-                $localX = $worldX - $originX;
-                $localZ = $worldZ - $originZ;
-                $inside = $localX >= 0 && $localX < 16 && $localZ >= 0 && $localZ < 16;
-                $sample = $samples[$worldZ][$worldX] ?? $this->terrain->sample($worldX, $worldZ);
-                $biome = $inside
-                    ? $surfaceBiomes[$localX + $localZ * 16]->identifier
-                    : $this->biomes->resolve($sample)->identifier;
                 if (str_contains($biome, 'ocean')) {
-                    if (!$inside) {
-                        continue;
-                    }
                     $this->placeAquaticFeature(
                         $builder,
                         $position,
@@ -703,23 +895,13 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
                     );
                     continue;
                 }
-                [$frequency, $log, $leaves] = $this->treeRule($biome);
-                if ($frequency > 0 && $this->noise->chance($worldX, 0, $worldZ, 8_101, $frequency) === 0) {
-                    $this->placeTree(
-                        $builder,
-                        $position,
-                        $surfaceHeights,
-                        $worldX,
-                        $worldZ,
-                        $biome,
-                        $log,
-                        $leaves,
-                    );
-                    continue;
-                }
-                if (!$inside) {
-                    continue;
-                }
+                $signalX = self::floorDiv($worldX, 4);
+                $signalZ = self::floorDiv($worldZ, 4);
+                $signalKey = $signalX . ':' . $signalZ;
+                $signals = $groundSignals[$signalKey] ??= [
+                    $this->noise->sample2d($signalX * 4, $signalZ * 4, 28, 8_409),
+                    $this->noise->sample2d($signalX * 4, $signalZ * 4, 36, 8_419),
+                ];
                 $this->placeGroundFeature(
                     $builder,
                     $position,
@@ -727,86 +909,655 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
                     $worldX,
                     $worldZ,
                     $biome,
+                    $signals[0],
+                    $signals[1],
                 );
             }
         }
-    }
 
-    /** @return array{int, string, string} */
-    private function treeRule(string $biome): array
-    {
-        return match (true) {
-            str_contains($biome, 'bamboo_jungle') => [12, 'minecraft:jungle_log', 'minecraft:jungle_leaves'],
-            str_contains($biome, 'jungle') => [17, 'minecraft:jungle_log', 'minecraft:jungle_leaves'],
-            str_contains($biome, 'birch') => [20, 'minecraft:birch_log', 'minecraft:birch_leaves'],
-            str_contains($biome, 'taiga'), str_contains($biome, 'grove') => [18, 'minecraft:spruce_log', 'minecraft:spruce_leaves'],
-            str_contains($biome, 'savanna') => [38, 'minecraft:acacia_log', 'minecraft:acacia_leaves'],
-            str_contains($biome, 'roofed') => [14, 'minecraft:dark_oak_log', 'minecraft:dark_oak_leaves'],
-            str_contains($biome, 'cherry') => [16, 'minecraft:cherry_log', 'minecraft:cherry_leaves'],
-            str_contains($biome, 'mangrove') => [14, 'minecraft:mangrove_log', 'minecraft:mangrove_leaves'],
-            str_contains($biome, 'pale_garden') => [13, 'minecraft:pale_oak_log', 'minecraft:pale_oak_leaves'],
-            str_contains($biome, 'forest') => [20, 'minecraft:oak_log', 'minecraft:oak_leaves'],
-            $biome === 'minecraft:plains' => [150, 'minecraft:oak_log', 'minecraft:oak_leaves'],
-            default => [0, 'minecraft:oak_log', 'minecraft:oak_leaves'],
-        };
+        $planningHeightAt = fn(int $x, int $z): int => $this->planningHeightAt($x, $z);
+        $plans = $this->vegetation->plansAffecting(
+            $originX,
+            $originX + 15,
+            $originZ,
+            $originZ + 15,
+            fn(int $x, int $z): string => $this->planningBiomeAt($x, $z)->identifier,
+            $planningHeightAt,
+            $planningHeightAt,
+        );
+        foreach ($plans as $plan) {
+            if ($this->candidateSpawn !== null
+                && abs($plan->x - $this->candidateSpawn->x) <= OverworldVegetationPlanner::MAXIMUM_REACH + 2
+                && abs($plan->z - $this->candidateSpawn->z) <= OverworldVegetationPlanner::MAXIMUM_REACH + 2) {
+                continue;
+            }
+            $this->placeTreePlan($builder, $position, $surfaceHeights, $plan);
+        }
     }
 
     /** @param list<int> $surfaceHeights */
-    private function placeTree(
+    private function placeTreePlan(
         MutableChunkBuilder $builder,
         ChunkPosition $position,
         array $surfaceHeights,
-        int $x,
-        int $z,
-        string $biome,
-        string $log,
-        string $leaves,
+        VegetationTreePlan $plan,
     ): void {
-        $localX = $x - $position->x * 16;
-        $localZ = $z - $position->z * 16;
-        $ground = $this->terrainSurfaceHeight($surfaceHeights, $position, $x, $z);
-        if ($ground <= self::SEA_LEVEL || $ground > 230) {
+        $localX = $plan->x - $position->x * 16;
+        $localZ = $plan->z - $position->z * 16;
+        $ground = $this->densitySurfaceHeightAt($plan->x, $plan->z);
+        if (!$this->treePlanOwnsTerrain($plan, $ground)) {
             return;
         }
-        $height = 5 + $this->noise->chance($x, 0, $z, 8_211, str_contains($biome, 'jungle') ? 8 : 4);
-        if (str_contains($biome, 'savanna')) {
-            $height += 2;
-        }
-        if ($localX >= 0 && $localX < 16 && $localZ >= 0 && $localZ < 16
-            && !$this->isTreeSubstrate($builder->state($localX, $ground, $localZ))) {
+        $inside = $localX >= 0 && $localX < 16 && $localZ >= 0 && $localZ < 16;
+        $waterTolerant = in_array($plan->archetype, [
+            TreeArchetype::MangroveArched,
+            TreeArchetype::MangroveBroad,
+            TreeArchetype::SwampOak,
+        ], true) || in_array($plan->profile, ['swamp', 'mangrove'], true);
+        if ($ground < ($waterTolerant ? self::SEA_LEVEL - 2 : self::SEA_LEVEL + 1) || $ground > 230) {
             return;
         }
-        for ($y = $ground + 1; $y <= $ground + $height; ++$y) {
-            if (!$this->isVegetationReplaceable($this->worldState($builder, $position, $x, $y, $z))) {
-                return;
-            }
+        if ($inside && ($surfaceHeights[$localX + $localZ * 16] !== $ground
+            || !$this->isTreeSubstrate($builder->state($localX, $ground, $localZ)))) {
+            return;
         }
-        $logState = $this->blocks->state($log);
-        $leafState = $this->blocks->state($leaves);
-        if ($localX >= 0 && $localX < 16 && $localZ >= 0 && $localZ < 16) {
-            for ($y = $ground + 1; $y <= $ground + $height; ++$y) {
-                $builder->set($localX, $y, $localZ, $logState);
-            }
-        }
-        $chunkMinimumX = $position->x * 16;
-        $chunkMinimumZ = $position->z * 16;
-        $chunkMaximumX = $chunkMinimumX + 15;
-        $chunkMaximumZ = $chunkMinimumZ + 15;
-        $top = $ground + $height;
-        for ($y = $top - 3; $y <= $top + 1; ++$y) {
-            $radius = $y >= $top ? 1 : (str_contains($biome, 'taiga') || str_contains($biome, 'grove')
-                ? max(1, 3 - intdiv($y - ($top - 3), 2))
-                : 2);
-            for ($leafZ = max($z - $radius, $chunkMinimumZ); $leafZ <= min($z + $radius, $chunkMaximumZ); ++$leafZ) {
-                for ($leafX = max($x - $radius, $chunkMinimumX); $leafX <= min($x + $radius, $chunkMaximumX); ++$leafX) {
-                    if (abs($leafX - $x) === $radius && abs($leafZ - $z) === $radius
-                        && $this->noise->chance($leafX, $y, $leafZ, 8_307, 3) === 0) {
-                        continue;
-                    }
-                    $builder->setWorld($leafX, $y, $leafZ, $leafState, true);
+        if ($inside) {
+            for ($y = $ground + 1; $y <= $ground + $plan->height; ++$y) {
+                if (!$this->isVegetationReplaceable($builder->state($localX, $y, $localZ))) {
+                    return;
                 }
             }
         }
+
+        switch ($plan->archetype) {
+            case TreeArchetype::OakCompact:
+                $this->renderCompactTree($builder, $position, $plan, $ground);
+                break;
+            case TreeArchetype::OakBroad:
+                $this->renderBroadTree($builder, $position, $plan, $ground, 3, 3);
+                break;
+            case TreeArchetype::OakTall:
+                $this->renderBroadTree($builder, $position, $plan, $ground, 2, 2);
+                break;
+            case TreeArchetype::OakForked:
+            case TreeArchetype::BirchForked:
+                $this->renderForkedTree($builder, $position, $plan, $ground);
+                break;
+            case TreeArchetype::OakLeaning:
+            case TreeArchetype::SwampOak:
+                $this->renderLeaningTree($builder, $position, $plan, $ground);
+                break;
+            case TreeArchetype::BirchSlender:
+                $this->renderColumnTree($builder, $position, $plan, $ground, 2, 2);
+                break;
+            case TreeArchetype::BirchTall:
+                $this->renderColumnTree($builder, $position, $plan, $ground, 2, 3);
+                break;
+            case TreeArchetype::SpruceConical:
+            case TreeArchetype::SpruceTall:
+            case TreeArchetype::SpruceWide:
+                $this->renderSpruceTree($builder, $position, $plan, $ground);
+                break;
+            case TreeArchetype::DarkOakBroad:
+            case TreeArchetype::DarkOakTall:
+                $this->renderDarkOakTree($builder, $position, $plan, $ground);
+                break;
+            case TreeArchetype::PaleOakGnarled:
+            case TreeArchetype::PaleOakTall:
+                $this->renderPaleOakTree($builder, $position, $plan, $ground);
+                break;
+            case TreeArchetype::AcaciaFlat:
+            case TreeArchetype::AcaciaSplit:
+                $this->renderAcaciaTree($builder, $position, $plan, $ground);
+                break;
+            case TreeArchetype::JungleTall:
+            case TreeArchetype::JungleBranching:
+                $this->renderJungleTree($builder, $position, $plan, $ground);
+                break;
+            case TreeArchetype::MangroveArched:
+            case TreeArchetype::MangroveBroad:
+                $this->renderMangroveTree($builder, $position, $plan, $ground);
+                break;
+            case TreeArchetype::CherryWide:
+            case TreeArchetype::CherryTall:
+                $this->renderCherryTree($builder, $position, $plan, $ground);
+                break;
+        }
+    }
+
+    /** Every chunk touched by a tree independently validates the same root owner. */
+    private function treePlanOwnsTerrain(VegetationTreePlan $plan, int $ground): bool
+    {
+        $waterTolerant = in_array($plan->archetype, [
+            TreeArchetype::MangroveArched,
+            TreeArchetype::MangroveBroad,
+            TreeArchetype::SwampOak,
+        ], true) || in_array($plan->profile, ['swamp', 'mangrove'], true);
+        if ($ground < ($waterTolerant ? self::SEA_LEVEL - 2 : self::SEA_LEVEL + 1) || $ground > 230) {
+            return false;
+        }
+        if (!$waterTolerant && $ground <= self::SEA_LEVEL + 3
+            && $this->isBeachBiome($this->biomeAt($plan->x, $plan->z))) {
+            return false;
+        }
+        $shapeHeight = $this->planningHeightAt($plan->x, $plan->z);
+        $slope = max(
+            abs($shapeHeight - $this->planningHeightAt($plan->x + 2, $plan->z)),
+            abs($shapeHeight - $this->planningHeightAt($plan->x - 2, $plan->z)),
+            abs($shapeHeight - $this->planningHeightAt($plan->x, $plan->z + 2)),
+            abs($shapeHeight - $this->planningHeightAt($plan->x, $plan->z - 2)),
+        );
+
+        $maximumSlope = match ($plan->profile) {
+            'old_growth_taiga', 'taiga' => 10,
+            'swamp', 'mangrove' => 9,
+            default => 7,
+        };
+
+        return $slope < $maximumSlope;
+    }
+
+    private function renderCompactTree(
+        MutableChunkBuilder $builder,
+        ChunkPosition $position,
+        VegetationTreePlan $plan,
+        int $ground,
+    ): void {
+        $this->placeVerticalTrunk($builder, $position, $plan, $ground, $plan->height);
+        $this->placeLeafEllipsoid(
+            $builder,
+            $position,
+            $plan,
+            $plan->x,
+            $ground + $plan->height,
+            $plan->z,
+            2,
+            2,
+            2,
+            0,
+        );
+    }
+
+    private function renderBroadTree(
+        MutableChunkBuilder $builder,
+        ChunkPosition $position,
+        VegetationTreePlan $plan,
+        int $ground,
+        int $branchCount,
+        int $crownRadius,
+    ): void {
+        $this->placeVerticalTrunk($builder, $position, $plan, $ground, $plan->height);
+        $top = $ground + $plan->height;
+        $this->placeLeafEllipsoid($builder, $position, $plan, $plan->x, $top, $plan->z, $crownRadius, 2, $crownRadius, 1);
+        for ($branch = 0; $branch < $branchCount; ++$branch) {
+            [$dx, $dz] = self::direction($plan->rotation + $branch + ($plan->shapeSeed >> ($branch * 2) & 1));
+            $length = 2 + (($plan->shapeSeed >> (4 + $branch * 2)) & 1);
+            [$endX, $endY, $endZ] = $this->placeBranch(
+                $builder,
+                $position,
+                $plan,
+                $plan->x,
+                $top - 2 + ($branch & 1),
+                $plan->z,
+                $dx,
+                $dz,
+                $length,
+                1,
+            );
+            $this->placeLeafEllipsoid($builder, $position, $plan, $endX, $endY, $endZ, 2, 2, 2, 10 + $branch);
+        }
+    }
+
+    private function renderForkedTree(
+        MutableChunkBuilder $builder,
+        ChunkPosition $position,
+        VegetationTreePlan $plan,
+        int $ground,
+    ): void {
+        $trunkHeight = max(4, $plan->height - 3);
+        $this->placeVerticalTrunk($builder, $position, $plan, $ground, $trunkHeight);
+        $startY = $ground + $trunkHeight;
+        for ($fork = 0; $fork < 2; ++$fork) {
+            [$dx, $dz] = self::direction($plan->rotation + $fork * 2 + (($plan->shapeSeed >> $fork) & 1));
+            [$endX, $endY, $endZ] = $this->placeBranch(
+                $builder,
+                $position,
+                $plan,
+                $plan->x,
+                $startY,
+                $plan->z,
+                $dx,
+                $dz,
+                3 + (($plan->shapeSeed >> (4 + $fork)) & 1),
+                2,
+            );
+            $this->placeLeafEllipsoid($builder, $position, $plan, $endX, $endY, $endZ, 2, 2, 2, 20 + $fork);
+        }
+        $this->placeLeafEllipsoid($builder, $position, $plan, $plan->x, $startY + 2, $plan->z, 2, 2, 2, 24);
+    }
+
+    private function renderLeaningTree(
+        MutableChunkBuilder $builder,
+        ChunkPosition $position,
+        VegetationTreePlan $plan,
+        int $ground,
+    ): void {
+        [$dx, $dz] = self::direction($plan->rotation);
+        $bendStart = intdiv($plan->height, 2);
+        $x = $plan->x;
+        $z = $plan->z;
+        for ($level = 1; $level <= $plan->height; ++$level) {
+            if ($level > $bendStart && ($level - $bendStart) % 2 === 0) {
+                $x += $dx;
+                $z += $dz;
+            }
+            $axis = $level > $bendStart && ($level - $bendStart) % 2 === 0
+                ? ($dx !== 0 ? BlockAxis::X : BlockAxis::Z)
+                : BlockAxis::Y;
+            $this->placeTreeBlock($builder, $position, $x, $ground + $level, $z, $plan->archetype->logIdentifier(), $axis);
+        }
+        $radius = $plan->archetype === TreeArchetype::SwampOak ? 3 : 2;
+        $this->placeLeafEllipsoid($builder, $position, $plan, $x, $ground + $plan->height, $z, $radius, 2, $radius, 30);
+        [$sideX, $sideZ] = self::direction($plan->rotation + 1);
+        $this->placeLeafEllipsoid($builder, $position, $plan, $x + $sideX * 2, $ground + $plan->height - 1, $z + $sideZ * 2, 2, 2, 2, 31);
+    }
+
+    private function renderColumnTree(
+        MutableChunkBuilder $builder,
+        ChunkPosition $position,
+        VegetationTreePlan $plan,
+        int $ground,
+        int $radius,
+        int $verticalRadius,
+    ): void {
+        $this->placeVerticalTrunk($builder, $position, $plan, $ground, $plan->height);
+        $this->placeLeafEllipsoid(
+            $builder,
+            $position,
+            $plan,
+            $plan->x,
+            $ground + $plan->height - 1,
+            $plan->z,
+            $radius,
+            $verticalRadius,
+            $radius,
+            40,
+        );
+    }
+
+    private function renderSpruceTree(
+        MutableChunkBuilder $builder,
+        ChunkPosition $position,
+        VegetationTreePlan $plan,
+        int $ground,
+    ): void {
+        $this->placeVerticalTrunk($builder, $position, $plan, $ground, $plan->height);
+        $top = $ground + $plan->height;
+        $wide = $plan->archetype === TreeArchetype::SpruceWide ? 1 : 0;
+        $crownDepth = min($plan->height - 2, 5 + $wide * 2 + ($plan->shapeSeed & 1));
+        for ($depth = 0; $depth <= $crownDepth; ++$depth) {
+            $y = $top - $depth;
+            $wave = ($depth + ($plan->shapeSeed & 1)) % 3;
+            $radius = min(3 + $wide, 1 + intdiv($depth + 1, 2));
+            if ($wave === 0 && $depth > 1) {
+                --$radius;
+            }
+            $this->placeLeafDisc($builder, $position, $plan, $plan->x, $y, $plan->z, max(1, $radius), 50 + $depth);
+        }
+        $this->placeTreeBlock($builder, $position, $plan->x, $top + 1, $plan->z, $plan->archetype->leavesIdentifier());
+    }
+
+    private function renderDarkOakTree(
+        MutableChunkBuilder $builder,
+        ChunkPosition $position,
+        VegetationTreePlan $plan,
+        int $ground,
+    ): void {
+        $height = $plan->height;
+        foreach ([[0, 0], [1, 0], [0, 1], [1, 1]] as [$offsetX, $offsetZ]) {
+            $this->placeVerticalTrunk($builder, $position, $plan, $ground, $height, $offsetX, $offsetZ);
+        }
+        $top = $ground + $height;
+        $this->placeLeafEllipsoid($builder, $position, $plan, $plan->x, $top, $plan->z, 4, 2, 4, 60);
+        for ($branch = 0; $branch < 4; ++$branch) {
+            [$dx, $dz] = self::direction($plan->rotation + $branch);
+            [$endX, $endY, $endZ] = $this->placeBranch(
+                $builder,
+                $position,
+                $plan,
+                $plan->x,
+                $top - 2 + ($branch & 1),
+                $plan->z,
+                $dx,
+                $dz,
+                3,
+                1,
+            );
+            $this->placeLeafEllipsoid($builder, $position, $plan, $endX, $endY, $endZ, 2, 2, 2, 61 + $branch);
+        }
+    }
+
+    private function renderPaleOakTree(
+        MutableChunkBuilder $builder,
+        ChunkPosition $position,
+        VegetationTreePlan $plan,
+        int $ground,
+    ): void {
+        $trunkHeight = max(5, $plan->height - 3);
+        $this->placeVerticalTrunk($builder, $position, $plan, $ground, $trunkHeight);
+        $startY = $ground + $trunkHeight - 1;
+        $branches = $plan->archetype === TreeArchetype::PaleOakGnarled ? 4 : 3;
+        for ($branch = 0; $branch < $branches; ++$branch) {
+            [$dx, $dz] = self::direction($plan->rotation + $branch);
+            $length = 3 + (($plan->shapeSeed >> ($branch * 2)) & 1);
+            [$endX, $endY, $endZ] = $this->placeBranch(
+                $builder,
+                $position,
+                $plan,
+                $plan->x,
+                $startY + ($branch & 1),
+                $plan->z,
+                $dx,
+                $dz,
+                $length,
+                2,
+            );
+            $this->placeLeafEllipsoid($builder, $position, $plan, $endX, $endY, $endZ, 3, 2, 3, 70 + $branch);
+        }
+        $this->placeLeafEllipsoid($builder, $position, $plan, $plan->x, $startY + 3, $plan->z, 3, 2, 3, 76);
+    }
+
+    private function renderAcaciaTree(
+        MutableChunkBuilder $builder,
+        ChunkPosition $position,
+        VegetationTreePlan $plan,
+        int $ground,
+    ): void {
+        [$dx, $dz] = self::direction($plan->rotation);
+        $straight = max(3, $plan->height - 3);
+        $this->placeVerticalTrunk($builder, $position, $plan, $ground, $straight);
+        [$endX, $endY, $endZ] = $this->placeBranch(
+            $builder,
+            $position,
+            $plan,
+            $plan->x,
+            $ground + $straight,
+            $plan->z,
+            $dx,
+            $dz,
+            3,
+            2,
+        );
+        $this->placeLeafEllipsoid($builder, $position, $plan, $endX, $endY, $endZ, 4, 1, 3, 80);
+        if ($plan->archetype === TreeArchetype::AcaciaSplit) {
+            [$sideX, $sideZ] = self::direction($plan->rotation + 2);
+            [$sideEndX, $sideEndY, $sideEndZ] = $this->placeBranch(
+                $builder,
+                $position,
+                $plan,
+                $plan->x,
+                $ground + $straight - 1,
+                $plan->z,
+                $sideX,
+                $sideZ,
+                2,
+                1,
+            );
+            $this->placeLeafEllipsoid($builder, $position, $plan, $sideEndX, $sideEndY, $sideEndZ, 3, 1, 2, 81);
+        }
+    }
+
+    private function renderJungleTree(
+        MutableChunkBuilder $builder,
+        ChunkPosition $position,
+        VegetationTreePlan $plan,
+        int $ground,
+    ): void {
+        $thick = $plan->archetype === TreeArchetype::JungleBranching;
+        $this->placeVerticalTrunk($builder, $position, $plan, $ground, $plan->height);
+        if ($thick) {
+            $this->placeVerticalTrunk($builder, $position, $plan, $ground, $plan->height - 2, 1, 0);
+            $this->placeVerticalTrunk($builder, $position, $plan, $ground, $plan->height - 3, 0, 1);
+            $this->placeVerticalTrunk($builder, $position, $plan, $ground, $plan->height - 4, 1, 1);
+        }
+        $top = $ground + $plan->height;
+        $this->placeLeafEllipsoid($builder, $position, $plan, $plan->x, $top, $plan->z, $thick ? 4 : 3, 2, $thick ? 4 : 3, 90);
+        $branchCount = $thick ? 4 : 2;
+        for ($branch = 0; $branch < $branchCount; ++$branch) {
+            [$dx, $dz] = self::direction($plan->rotation + $branch);
+            [$endX, $endY, $endZ] = $this->placeBranch(
+                $builder,
+                $position,
+                $plan,
+                $plan->x,
+                $top - 3 - $branch,
+                $plan->z,
+                $dx,
+                $dz,
+                3,
+                1,
+            );
+            $this->placeLeafEllipsoid($builder, $position, $plan, $endX, $endY, $endZ, 2, 2, 2, 91 + $branch);
+        }
+    }
+
+    private function renderMangroveTree(
+        MutableChunkBuilder $builder,
+        ChunkPosition $position,
+        VegetationTreePlan $plan,
+        int $ground,
+    ): void {
+        $this->placeVerticalTrunk($builder, $position, $plan, $ground, $plan->height);
+        for ($root = 0; $root < 4; ++$root) {
+            [$dx, $dz] = self::direction($plan->rotation + $root);
+            $this->placeBranch(
+                $builder,
+                $position,
+                $plan,
+                $plan->x,
+                $ground + 3,
+                $plan->z,
+                $dx,
+                $dz,
+                2 + (($plan->shapeSeed >> $root) & 1),
+                -2,
+            );
+        }
+        $top = $ground + $plan->height;
+        $radius = $plan->archetype === TreeArchetype::MangroveBroad ? 4 : 3;
+        $this->placeLeafEllipsoid($builder, $position, $plan, $plan->x, $top, $plan->z, $radius, 2, $radius, 100);
+        for ($branch = 0; $branch < 3; ++$branch) {
+            [$dx, $dz] = self::direction($plan->rotation + $branch);
+            [$endX, $endY, $endZ] = $this->placeBranch(
+                $builder,
+                $position,
+                $plan,
+                $plan->x,
+                $top - 2,
+                $plan->z,
+                $dx,
+                $dz,
+                3,
+                1,
+            );
+            $this->placeLeafEllipsoid($builder, $position, $plan, $endX, $endY, $endZ, 2, 2, 2, 101 + $branch);
+        }
+    }
+
+    private function renderCherryTree(
+        MutableChunkBuilder $builder,
+        ChunkPosition $position,
+        VegetationTreePlan $plan,
+        int $ground,
+    ): void {
+        $trunkHeight = max(4, $plan->height - 3);
+        $this->placeVerticalTrunk($builder, $position, $plan, $ground, $trunkHeight);
+        $startY = $ground + $trunkHeight;
+        $branches = $plan->archetype === TreeArchetype::CherryWide ? 4 : 3;
+        for ($branch = 0; $branch < $branches; ++$branch) {
+            [$dx, $dz] = self::direction($plan->rotation + $branch);
+            [$endX, $endY, $endZ] = $this->placeBranch(
+                $builder,
+                $position,
+                $plan,
+                $plan->x,
+                $startY,
+                $plan->z,
+                $dx,
+                $dz,
+                2 + (($plan->shapeSeed >> $branch) & 1),
+                2,
+            );
+            $this->placeLeafEllipsoid($builder, $position, $plan, $endX, $endY, $endZ, 3, 1, 3, 110 + $branch);
+        }
+        $this->placeLeafEllipsoid($builder, $position, $plan, $plan->x, $startY + 3, $plan->z, 2, 2, 2, 116);
+    }
+
+    private function placeVerticalTrunk(
+        MutableChunkBuilder $builder,
+        ChunkPosition $position,
+        VegetationTreePlan $plan,
+        int $ground,
+        int $height,
+        int $offsetX = 0,
+        int $offsetZ = 0,
+    ): void {
+        for ($level = 1; $level <= $height; ++$level) {
+            $this->placeTreeBlock(
+                $builder,
+                $position,
+                $plan->x + $offsetX,
+                $ground + $level,
+                $plan->z + $offsetZ,
+                $plan->archetype->logIdentifier(),
+                BlockAxis::Y,
+            );
+        }
+    }
+
+    /** @return array{int, int, int} */
+    private function placeBranch(
+        MutableChunkBuilder $builder,
+        ChunkPosition $position,
+        VegetationTreePlan $plan,
+        int $startX,
+        int $startY,
+        int $startZ,
+        int $directionX,
+        int $directionZ,
+        int $length,
+        int $rise,
+    ): array {
+        $x = $startX;
+        $y = $startY;
+        $z = $startZ;
+        $axis = $directionX !== 0 ? BlockAxis::X : BlockAxis::Z;
+        for ($step = 1; $step <= $length; ++$step) {
+            $x += $directionX;
+            $z += $directionZ;
+            $nextY = $startY + intdiv($step * $rise, max(1, $length));
+            if ($nextY !== $y) {
+                $this->placeTreeBlock($builder, $position, $x - $directionX, $nextY, $z - $directionZ, $plan->archetype->logIdentifier(), BlockAxis::Y);
+                $y = $nextY;
+            }
+            $this->placeTreeBlock($builder, $position, $x, $y, $z, $plan->archetype->logIdentifier(), $axis);
+        }
+
+        return [$x, $y, $z];
+    }
+
+    private function placeLeafEllipsoid(
+        MutableChunkBuilder $builder,
+        ChunkPosition $position,
+        VegetationTreePlan $plan,
+        int $centerX,
+        int $centerY,
+        int $centerZ,
+        int $radiusX,
+        int $radiusY,
+        int $radiusZ,
+        int $salt,
+    ): void {
+        $offsetX = (($plan->shapeSeed >> ($salt % 11)) & 1) === 0 ? 0 : 1;
+        $offsetZ = (($plan->shapeSeed >> (($salt + 5) % 13)) & 1) === 0 ? 0 : -1;
+        $centerX += $offsetX;
+        $centerZ += $offsetZ;
+        for ($y = $centerY - $radiusY; $y <= $centerY + $radiusY; ++$y) {
+            for ($z = $centerZ - $radiusZ; $z <= $centerZ + $radiusZ; ++$z) {
+                for ($x = $centerX - $radiusX; $x <= $centerX + $radiusX; ++$x) {
+                    $distance = (($x - $centerX) / max(1, $radiusX)) ** 2
+                        + (($y - $centerY) / max(1, $radiusY)) ** 2
+                        + (($z - $centerZ) / max(1, $radiusZ)) ** 2;
+                    if ($distance > 1.12) {
+                        continue;
+                    }
+                    if ($distance > 0.72 && self::shapeRoll($x, $y, $z, $plan->shapeSeed + $salt, 7) < 2) {
+                        continue;
+                    }
+                    $this->placeTreeBlock($builder, $position, $x, $y, $z, $plan->archetype->leavesIdentifier());
+                }
+            }
+        }
+    }
+
+    private function placeLeafDisc(
+        MutableChunkBuilder $builder,
+        ChunkPosition $position,
+        VegetationTreePlan $plan,
+        int $centerX,
+        int $y,
+        int $centerZ,
+        int $radius,
+        int $salt,
+    ): void {
+        for ($z = $centerZ - $radius; $z <= $centerZ + $radius; ++$z) {
+            for ($x = $centerX - $radius; $x <= $centerX + $radius; ++$x) {
+                $distance = ($x - $centerX) ** 2 + ($z - $centerZ) ** 2;
+                if ($distance > $radius * $radius + 1
+                    || ($distance > ($radius - 1) ** 2
+                        && self::shapeRoll($x, $y, $z, $plan->shapeSeed + $salt, 5) === 0)) {
+                    continue;
+                }
+                $this->placeTreeBlock($builder, $position, $x, $y, $z, $plan->archetype->leavesIdentifier());
+            }
+        }
+    }
+
+    private function placeTreeBlock(
+        MutableChunkBuilder $builder,
+        ChunkPosition $position,
+        int $x,
+        int $y,
+        int $z,
+        string $identifier,
+        ?BlockAxis $axis = null,
+    ): void {
+        $localX = $x - $position->x * 16;
+        $localZ = $z - $position->z * 16;
+        if ($localX < 0 || $localX >= 16 || $localZ < 0 || $localZ >= 16) {
+            return;
+        }
+        if (!$this->isVegetationReplaceable($builder->state($localX, $y, $localZ))) {
+            return;
+        }
+        $builder->set($localX, $y, $localZ, $this->blocks->state($identifier, $axis));
+    }
+
+    /** @return array{int, int} */
+    private static function direction(int $rotation): array
+    {
+        return match ($rotation & 3) {
+            0 => [1, 0],
+            1 => [0, 1],
+            2 => [-1, 0],
+            default => [0, -1],
+        };
+    }
+
+    private static function shapeRoll(int $x, int $y, int $z, int $seed, int $outOf): int
+    {
+        $mixed = ($x * 73_856_093) ^ ($y * 19_349_663) ^ ($z * 83_492_791) ^ ($seed * 31_337);
+        return abs($mixed ^ ($mixed >> 13)) % $outOf;
     }
 
     /** @param list<int> $surfaceHeights */
@@ -817,6 +1568,8 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
         int $x,
         int $z,
         string $biome,
+        int $patch,
+        int $flowerPatch,
     ): void {
         $localX = $x - $position->x * 16;
         $localZ = $z - $position->z * 16;
@@ -827,20 +1580,31 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
         if ($ground <= self::SEA_LEVEL) {
             return;
         }
-        $roll = $this->noise->chance($x, 0, $z, 8_401, 96);
+        $roll = $this->noise->scatteredChance($x, 0, $z, 8_401, 128);
         $feature = match (true) {
             str_contains($biome, 'desert') && $roll < 3 => 'minecraft:cactus',
-            str_contains($biome, 'desert') && $roll < 10 => 'minecraft:deadbush',
-            str_contains($biome, 'bamboo') && $roll < 22 => 'minecraft:bamboo',
-            str_contains($biome, 'swamp') && $roll < 6 => 'minecraft:blue_orchid',
-            str_contains($biome, 'flower') && $roll < 24 => ['minecraft:allium', 'minecraft:azure_bluet', 'minecraft:oxeye_daisy'][$roll % 3],
-            str_contains($biome, 'cherry') && $roll < 12 => 'minecraft:pink_tulip',
-            str_contains($biome, 'mushroom') && $roll < 24 => $roll % 2 === 0
+            str_contains($biome, 'desert') && $roll < 11 => 'minecraft:deadbush',
+            str_contains($biome, 'pale_garden') && $patch > -4_000 && $roll < 38 => 'minecraft:pale_moss_carpet',
+            str_contains($biome, 'pale_garden') && $patch < -9_000 && $roll < 5 => 'minecraft:closed_eyeblossom',
+            str_contains($biome, 'pale_garden') && $roll < 10 => 'minecraft:brown_mushroom',
+            str_contains($biome, 'bamboo') && $patch > -8_000 && $roll < 36 => 'minecraft:bamboo',
+            str_contains($biome, 'swamp') && $flowerPatch > 4_000 && $roll < 10 => 'minecraft:blue_orchid',
+            str_contains($biome, 'flower') && $flowerPatch > -8_000 && $roll < 38 => [
+                'minecraft:allium', 'minecraft:azure_bluet', 'minecraft:oxeye_daisy',
+                'minecraft:red_tulip', 'minecraft:pink_tulip',
+            ][$this->noise->scatteredChance($x, 0, $z, 8_421, 5)],
+            str_contains($biome, 'cherry') && $flowerPatch > -2_000 && $roll < 20 => 'minecraft:pink_tulip',
+            (str_contains($biome, 'taiga') || str_contains($biome, 'forest'))
+                && $patch > 5_000 && $roll < 28 => 'minecraft:fern',
+            (str_contains($biome, 'roofed') || str_contains($biome, 'taiga')) && $roll < 9 => $roll % 2 === 0
                 ? 'minecraft:red_mushroom'
                 : 'minecraft:brown_mushroom',
-            $roll < 4 => 'minecraft:dandelion',
-            $roll < 8 => 'minecraft:poppy',
-            $roll < 34 => 'minecraft:short_grass',
+            str_contains($biome, 'mushroom') && $roll < 34 => $roll % 2 === 0
+                ? 'minecraft:red_mushroom'
+                : 'minecraft:brown_mushroom',
+            $flowerPatch > 8_000 && $roll < 4 => 'minecraft:dandelion',
+            $flowerPatch > 4_000 && $roll < 8 => 'minecraft:poppy',
+            $patch > -10_000 && $roll < 44 => 'minecraft:short_grass',
             default => null,
         };
         if ($feature === null) {
@@ -938,17 +1702,168 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
 
     private function densitySurfaceHeightAt(int $worldX, int $worldZ): int
     {
-        return $this->generatedSurfaceHeightAt($worldX, $worldZ);
+        $key = self::coordinateKey($worldX, $worldZ);
+        $cached = $this->volumeSurfaceHeightCache[$key] ?? null;
+        if (is_int($cached)) {
+            return $cached;
+        }
+        $rawHeight = $this->rawDensitySurfaceAt($worldX, $worldZ);
+        $climate = $this->interpolatedClimateAt($worldX, $worldZ);
+        $height = $this->landforms->surfaceHeight(
+            $worldX,
+            $worldZ,
+            $rawHeight,
+            $climate,
+            $this->terrain->riverStrength($climate),
+        );
+        $this->rememberVolumeSurfaceHeight($worldX, $worldZ, $height);
+
+        return $height;
     }
 
-    private function worldState(
-        MutableChunkBuilder $builder,
-        ChunkPosition $position,
-        int $worldX,
-        int $y,
-        int $worldZ,
-    ): InternalBlockStateId {
-        return $builder->state($worldX - $position->x * 16, $y, $worldZ - $position->z * 16);
+    private function rawDensitySurfaceAt(int $worldX, int $worldZ): int
+    {
+        $key = self::coordinateKey($worldX, $worldZ);
+        $cached = $this->rawDensitySurfaceCache[$key] ?? null;
+        if (is_int($cached)) {
+            return $cached;
+        }
+        $chunkX = self::floorDiv($worldX, 16);
+        $chunkZ = self::floorDiv($worldZ, 16);
+        [$minimumY, $maximumY] = $this->surfaceLatticeBoundsForChunk($chunkX, $chunkZ);
+        $height = $this->density->interpolatedSurfaceHeight(
+            $worldX,
+            $worldZ,
+            $chunkX * 16,
+            $chunkZ * 16,
+            $minimumY,
+            $maximumY,
+            16,
+            8,
+        );
+        $this->rememberRawDensitySurface($worldX, $worldZ, $height);
+
+        return $height;
+    }
+
+    private function rememberRawDensitySurface(int $worldX, int $worldZ, int $height): void
+    {
+        $key = self::coordinateKey($worldX, $worldZ);
+        if (isset($this->rawDensitySurfaceCache[$key])) {
+            return;
+        }
+        $this->rawDensitySurfaceCache[$key] = $height;
+        $this->rawDensitySurfaceCacheOrder[] = $key;
+        if (count($this->rawDensitySurfaceCacheOrder) > 8_192) {
+            foreach (array_splice($this->rawDensitySurfaceCacheOrder, 0, 1_024) as $expired) {
+                unset($this->rawDensitySurfaceCache[$expired]);
+            }
+        }
+    }
+
+    private function volumeSurfaceLatticeForChunk(int $chunkX, int $chunkZ): OverworldDensityLattice
+    {
+        $key = $chunkX . ':' . $chunkZ;
+        $cached = $this->volumeSurfaceLatticeCache[$key] ?? null;
+        if ($cached instanceof OverworldDensityLattice) {
+            return $cached;
+        }
+        $originX = $chunkX * 16;
+        $originZ = $chunkZ * 16;
+        [$minimumY, $maximumY] = $this->surfaceLatticeBoundsForChunk($chunkX, $chunkZ);
+        $lattice = new OverworldDensityLattice(
+            $this->density,
+            null,
+            $originX,
+            $originZ,
+            $minimumY,
+            $maximumY,
+            16,
+            8,
+        );
+        $this->volumeSurfaceLatticeCache[$key] = $lattice;
+        $this->volumeSurfaceLatticeCacheOrder[] = $key;
+        if (count($this->volumeSurfaceLatticeCacheOrder) > 32) {
+            foreach (array_splice($this->volumeSurfaceLatticeCacheOrder, 0, 4) as $expired) {
+                unset($this->volumeSurfaceLatticeCache[$expired]);
+            }
+        }
+
+        return $lattice;
+    }
+
+    /** @return array{int, int} */
+    private function surfaceLatticeBoundsForChunk(int $chunkX, int $chunkZ): array
+    {
+        $key = $chunkX . ':' . $chunkZ;
+        $cached = $this->surfaceLatticeBoundsCache[$key] ?? null;
+        if (is_array($cached)) {
+            return $cached;
+        }
+        $originX = $chunkX * 16;
+        $originZ = $chunkZ * 16;
+        $preliminaryMinimum = Chunk::MAX_Y;
+        $preliminaryMaximum = Chunk::MIN_Y;
+        for ($z = $originZ; $z <= $originZ + 16; $z += 8) {
+            for ($x = $originX; $x <= $originX + 16; $x += 8) {
+                $surface = $this->planningHeightAt($x, $z);
+                $preliminaryMinimum = min($preliminaryMinimum, $surface);
+                $preliminaryMaximum = max($preliminaryMaximum, $surface);
+            }
+        }
+        $minimumY = max(Chunk::MIN_Y, self::floorDiv($preliminaryMinimum - 32, 8) * 8);
+        $maximumY = min(192, self::floorDiv($preliminaryMaximum + 39, 8) * 8);
+
+        $bounds = [$minimumY, $maximumY];
+        $this->surfaceLatticeBoundsCache[$key] = $bounds;
+        $this->surfaceLatticeBoundsCacheOrder[] = $key;
+        if (count($this->surfaceLatticeBoundsCacheOrder) > 128) {
+            foreach (array_splice($this->surfaceLatticeBoundsCacheOrder, 0, 16) as $expired) {
+                unset($this->surfaceLatticeBoundsCache[$expired]);
+            }
+        }
+
+        return $bounds;
+    }
+
+    /** @return non-empty-list<int> */
+    private function rawSurfaceHeightsForChunk(
+        int $chunkX,
+        int $chunkZ,
+        ?OverworldDensityLattice $lattice = null,
+    ): array {
+        $key = $chunkX . ':' . $chunkZ;
+        $cached = $this->rawSurfaceChunkCache[$key] ?? null;
+        if (is_array($cached)) {
+            return $cached;
+        }
+        $lattice ??= $this->volumeSurfaceLatticeForChunk($chunkX, $chunkZ);
+        $heights = $lattice->surfaceHeightsForChunk();
+        $this->rawSurfaceChunkCache[$key] = $heights;
+        $this->rawSurfaceChunkCacheOrder[] = $key;
+        if (count($this->rawSurfaceChunkCacheOrder) > 32) {
+            foreach (array_splice($this->rawSurfaceChunkCacheOrder, 0, 4) as $expired) {
+                unset($this->rawSurfaceChunkCache[$expired]);
+            }
+        }
+
+        return $heights;
+    }
+
+    private function rememberVolumeSurfaceHeight(int $worldX, int $worldZ, int $height): void
+    {
+        $key = self::coordinateKey($worldX, $worldZ);
+        if (isset($this->volumeSurfaceHeightCache[$key])) {
+            return;
+        }
+        $this->volumeSurfaceHeightCache[$key] = $height;
+        $this->volumeSurfaceHeightCacheOrder[] = $key;
+        if (count($this->volumeSurfaceHeightCacheOrder) > 8_192) {
+            foreach (array_splice($this->volumeSurfaceHeightCacheOrder, 0, 1_024) as $expired) {
+                unset($this->volumeSurfaceHeightCache[$expired]);
+            }
+        }
+
     }
 
     private function isTreeSubstrate(InternalBlockStateId $state): bool
@@ -1024,10 +1939,8 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
         $this->structures->populate(
             $builder,
             $position,
-            fn(int $x, int $z): string => $this->biomes->resolve(
-                $samples[$z][$x] ?? $this->regionalSample($x, $z),
-            )->identifier,
-            fn(int $x, int $z): int => $this->terrainSurfaceHeight($surfaceHeights, $position, $x, $z),
+            fn(int $x, int $z): string => $this->biomeAt($x, $z)->identifier,
+            fn(int $x, int $z): int => $this->densitySurfaceHeightAt($x, $z),
         );
     }
 
@@ -1041,9 +1954,9 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
         $maximumX = $originX + 15 + $margin + 2;
         $minimumZ = $originZ - $margin - 2;
         $maximumZ = $originZ + 15 + $margin + 2;
-        // The narrowest surface climate wavelength is 145 blocks. A 16-block lattice
-        // remains comfortably above Nyquist while avoiding redundant per-column noise.
-        $gridStep = 16;
+        // Quart-resolution climate sampling keeps transitions smooth without
+        // imprinting chunk-sized rectangular terraces on biome and surface rules.
+        $gridStep = self::CLIMATE_SAMPLE_STEP;
         $gridMinimumX = self::floorDiv($minimumX, $gridStep) * $gridStep;
         $gridMaximumX = self::floorDiv($maximumX, $gridStep) * $gridStep + $gridStep;
         $gridMinimumZ = self::floorDiv($minimumZ, $gridStep) * $gridStep;
@@ -1133,13 +2046,21 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
                 $samples[$z][$x] = new OverworldTerrainSample(
                     $climate,
                     $height,
-                    max(
+                    intdiv(max(
                         abs($height - $heights[$z][$x + 2]),
                         abs($height - $heights[$z][$x - 2]),
                         abs($height - $heights[$z + 2][$x]),
                         abs($height - $heights[$z - 2][$x]),
-                    ),
+                    ) + 1, 2),
                     $this->terrain->riverStrength($climate),
+                    max(-64, min(64, intdiv(
+                        $heights[$z][$x + 2]
+                            + $heights[$z][$x - 2]
+                            + $heights[$z + 2][$x]
+                            + $heights[$z - 2][$x]
+                            - 4 * $height,
+                        4,
+                    ))),
                 );
             }
         }
@@ -1202,12 +2123,13 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
         return $climate;
     }
 
-    private function regionalSample(int $x, int $z): OverworldTerrainSample
+    private function interpolatedClimateAt(int $x, int $z): OverworldClimate
     {
-        $step = 16;
+        $step = self::CLIMATE_SAMPLE_STEP;
         $leftX = self::floorDiv($x, $step) * $step;
         $topZ = self::floorDiv($z, $step) * $step;
-        $climate = self::interpolateClimate(
+
+        return self::interpolateClimate(
             $this->climateAt($leftX, $topZ),
             $this->climateAt($leftX + $step, $topZ),
             $this->climateAt($leftX, $topZ + $step),
@@ -1216,88 +2138,109 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
             $z - $topZ,
             $step,
         );
+    }
+
+    private function regionalSample(int $x, int $z): OverworldTerrainSample
+    {
+        $key = self::coordinateKey($x, $z);
+        $cached = $this->regionalSampleCache[$key] ?? null;
+        if ($cached instanceof OverworldTerrainSample) {
+            return $cached;
+        }
+        $climate = $this->interpolatedClimateAt($x, $z);
         $height = $this->regionalHeight($x, $z);
 
-        return new OverworldTerrainSample(
+        $east = $this->regionalHeight($x + 2, $z);
+        $west = $this->regionalHeight($x - 2, $z);
+        $south = $this->regionalHeight($x, $z + 2);
+        $north = $this->regionalHeight($x, $z - 2);
+
+        $sample = new OverworldTerrainSample(
             $climate,
             $height,
-            max(
-                abs($height - $this->regionalHeight($x + 2, $z)),
-                abs($height - $this->regionalHeight($x - 2, $z)),
-                abs($height - $this->regionalHeight($x, $z + 2)),
-                abs($height - $this->regionalHeight($x, $z - 2)),
-            ),
+            intdiv(max(
+                abs($height - $east),
+                abs($height - $west),
+                abs($height - $south),
+                abs($height - $north),
+            ) + 1, 2),
+            $this->terrain->riverStrength($climate),
+            max(-64, min(64, intdiv($east + $west + $south + $north - 4 * $height, 4))),
+        );
+        $this->regionalSampleCache[$key] = $sample;
+        $this->regionalSampleCacheOrder[] = $key;
+        if (count($this->regionalSampleCacheOrder) > 32_768) {
+            foreach (array_splice($this->regionalSampleCacheOrder, 0, 4_096) as $expired) {
+                unset($this->regionalSampleCache[$expired]);
+            }
+        }
+
+        return $sample;
+    }
+
+    private function planningBiomeAt(int $x, int $z): Biome
+    {
+        $climate = $this->interpolatedClimateAt($x, $z);
+        $shapeHeight = $this->planningHeightAt($x, $z);
+        $east = $this->planningHeightAt($x + 2, $z);
+        $west = $this->planningHeightAt($x - 2, $z);
+        $south = $this->planningHeightAt($x, $z + 2);
+        $north = $this->planningHeightAt($x, $z - 2);
+
+        $sample = new OverworldTerrainSample(
+            $climate,
+            $shapeHeight,
+            intdiv(max(
+                abs($shapeHeight - $east),
+                abs($shapeHeight - $west),
+                abs($shapeHeight - $south),
+                abs($shapeHeight - $north),
+            ) + 1, 2),
+            $this->terrain->riverStrength($climate),
+            max(-64, min(64, intdiv($east + $west + $south + $north - 4 * $shapeHeight, 4))),
+        );
+        $resolved = $this->biomes->resolve($sample);
+        if (!$this->isBeachBiome($resolved)) {
+            return $resolved;
+        }
+
+        return $this->isNaturalShoreline(
+            $x,
+            $z,
+            $sample,
+            fn(int $sampleX, int $sampleZ): int => $this->planningHeightAt($sampleX, $sampleZ),
+        ) ? $resolved : $this->biomes->resolveDryLand($sample);
+    }
+
+    private function planningHeightAt(int $x, int $z): int
+    {
+        $key = self::coordinateKey($x, $z);
+        $cached = $this->planningHeightCache[$key] ?? null;
+        if (is_int($cached)) {
+            return $cached;
+        }
+        $climate = $this->climateAt($x, $z);
+        $height = $this->landforms->surfaceHeight(
+            $x,
+            $z,
+            $this->terrain->surfaceHeight($climate),
+            $climate,
             $this->terrain->riverStrength($climate),
         );
+        $this->planningHeightCache[$key] = $height;
+        $this->planningHeightCacheOrder[] = $key;
+        if (count($this->planningHeightCacheOrder) > 32_768) {
+            foreach (array_splice($this->planningHeightCacheOrder, 0, 4_096) as $expired) {
+                unset($this->planningHeightCache[$expired]);
+            }
+        }
+
+        return $height;
     }
 
     private function regionalHeight(int $x, int $z): int
     {
-        return $this->generatedSurfaceHeightAt($x, $z);
-    }
-
-    private function densitySurfaceHeight(int $x, int $z): int
-    {
-        $key = self::coordinateKey($x, $z);
-        $cached = $this->surfaceHeightCache[$key] ?? null;
-        if (is_int($cached)) {
-            return $cached;
-        }
-        $height = $this->generatedSurfaceHeightAt($x, $z);
-        $this->rememberSurfaceHeight($x, $z, $height);
-
-        return $height;
-    }
-
-    private function generatedSurfaceHeightAt(int $x, int $z): int
-    {
-        $key = self::coordinateKey($x, $z);
-        $cached = $this->surfaceHeightCache[$key] ?? null;
-        if (is_int($cached)) {
-            return $cached;
-        }
-        $step = 16;
-        $leftX = self::floorDiv($x, $step) * $step;
-        $topZ = self::floorDiv($z, $step) * $step;
-        $cornerHeight = function (int $cornerX, int $cornerZ): int {
-            return $this->terrain->surfaceHeight($this->climateAt($cornerX, $cornerZ));
-        };
-        $baseHeight = self::bilinear(
-            $cornerHeight($leftX, $topZ),
-            $cornerHeight($leftX + $step, $topZ),
-            $cornerHeight($leftX, $topZ + $step),
-            $cornerHeight($leftX + $step, $topZ + $step),
-            $x - $leftX,
-            $z - $topZ,
-            $step,
-        );
-        [$landSignal, $floorSignal] = $this->interpolatedCoastalSignals($x, $z);
-        $height = $this->terrain->refineCoastalHeight(
-            $baseHeight,
-            $landSignal,
-            $floorSignal,
-            $baseHeight < self::SEA_LEVEL
-                ? $this->terrain->coastalFloorMicroOffset($x, $z)
-                : 0,
-        );
-        $this->rememberSurfaceHeight($x, $z, $height);
-
-        return $height;
-    }
-
-    private function rememberSurfaceHeight(int $x, int $z, int $height): void
-    {
-        $key = self::coordinateKey($x, $z);
-        if (isset($this->surfaceHeightCache[$key])) {
-            return;
-        }
-        $this->surfaceHeightCache[$key] = $height;
-        $this->surfaceHeightCacheOrder[] = $key;
-        if (count($this->surfaceHeightCacheOrder) > 32_768) {
-            foreach (array_splice($this->surfaceHeightCacheOrder, 0, 4_096) as $expired) {
-                unset($this->surfaceHeightCache[$expired]);
-            }
-        }
+        return $this->densitySurfaceHeightAt($x, $z);
     }
 
     /** @return array{int, int} */
@@ -1321,23 +2264,6 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
         }
 
         return $signals;
-    }
-
-    /** @return array{int, int} */
-    private function interpolatedCoastalSignals(int $x, int $z): array
-    {
-        $step = self::COASTAL_SAMPLE_STEP;
-        $leftX = self::floorDiv($x, $step) * $step;
-        $topZ = self::floorDiv($z, $step) * $step;
-        [$landNorthWest, $floorNorthWest] = $this->coastalSignalsAt($leftX, $topZ);
-        [$landNorthEast, $floorNorthEast] = $this->coastalSignalsAt($leftX + $step, $topZ);
-        [$landSouthWest, $floorSouthWest] = $this->coastalSignalsAt($leftX, $topZ + $step);
-        [$landSouthEast, $floorSouthEast] = $this->coastalSignalsAt($leftX + $step, $topZ + $step);
-
-        return [
-            self::bilinear($landNorthWest, $landNorthEast, $landSouthWest, $landSouthEast, $x - $leftX, $z - $topZ, $step),
-            self::bilinear($floorNorthWest, $floorNorthEast, $floorSouthWest, $floorSouthEast, $x - $leftX, $z - $topZ, $step),
-        ];
     }
 
     private static function coordinateKey(int $x, int $z): string

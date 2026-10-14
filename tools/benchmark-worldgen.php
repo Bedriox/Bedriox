@@ -26,8 +26,13 @@ use Bedriox\Server\World\DefaultWorldGenerator;
 require dirname(__DIR__) . '/vendor/autoload.php';
 
 $iterations = filter_var($argv[1] ?? '24', FILTER_VALIDATE_INT);
+$mode = $argv[2] ?? 'contiguous';
 if (!is_int($iterations) || $iterations < 4 || $iterations > 500) {
-    fwrite(STDERR, "Usage: php tools/benchmark-worldgen.php [iterations:4-500]\n");
+    fwrite(STDERR, "Usage: php tools/benchmark-worldgen.php [iterations:4-500] [contiguous|isolated]\n");
+    exit(2);
+}
+if (!in_array($mode, ['contiguous', 'isolated'], true)) {
+    fwrite(STDERR, "World-generation benchmark mode must be contiguous or isolated.\n");
     exit(2);
 }
 
@@ -36,8 +41,10 @@ $generator = new DefaultWorldGenerator(0, $registry);
 $samples = [];
 $checksum = '';
 for ($index = 0; $index < $iterations; ++$index) {
-    // A diagonal with gaps keeps every sample cold while still exercising cache reuse at shared borders.
-    $position = new ChunkPosition(1000 + $index * 3, -1000 - $index * 5);
+    $width = (int) ceil(sqrt($iterations));
+    $position = $mode === 'contiguous'
+        ? new ChunkPosition(1000 + $index % $width, -1000 + intdiv($index, $width))
+        : new ChunkPosition(1000 + $index * 3, -1000 - $index * 5);
     $started = hrtime(true);
     $chunk = $generator->generate($position);
     $samples[] = (hrtime(true) - $started) / 1_000_000;
@@ -52,6 +59,7 @@ $percentile = static function (float $percentile) use ($sorted): float {
     return $sorted[$index];
 };
 $result = [
+    'mode' => $mode,
     'chunks' => count($samples),
     'mean_ms' => array_sum($samples) / count($samples),
     'p50_ms' => $percentile(0.50),

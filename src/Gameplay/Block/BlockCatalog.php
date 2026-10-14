@@ -329,6 +329,8 @@ final readonly class BlockCatalog
     {
         return [
             'minecraft:wheat', 'minecraft:deadbush', 'minecraft:short_grass', 'minecraft:tall_grass',
+            'minecraft:fern', 'minecraft:pale_moss_carpet', 'minecraft:closed_eyeblossom',
+            'minecraft:open_eyeblossom',
             'minecraft:dandelion', 'minecraft:poppy', 'minecraft:blue_orchid', 'minecraft:allium',
             'minecraft:azure_bluet', 'minecraft:red_tulip', 'minecraft:white_tulip',
             'minecraft:pink_tulip', 'minecraft:oxeye_daisy', 'minecraft:lily_of_the_valley',

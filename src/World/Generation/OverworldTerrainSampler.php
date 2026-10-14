@@ -40,7 +40,16 @@ final readonly class OverworldTerrainSampler
             abs($height - $this->heightAt($x, $z - 2)),
         );
 
-        return new OverworldTerrainSample($center, $height, $slope, $this->riverStrength($center));
+        $curvature = intdiv(
+            $this->heightAt($x + 2, $z)
+                + $this->heightAt($x - 2, $z)
+                + $this->heightAt($x, $z + 2)
+                + $this->heightAt($x, $z - 2)
+                - 4 * $height,
+            4,
+        );
+
+        return new OverworldTerrainSample($center, $height, $slope, $this->riverStrength($center), $curvature);
     }
 
     public function heightAt(int $x, int $z): int

@@ -76,7 +76,7 @@ final class SnifferLifecycleQualificationTest extends TestCase
         foreach ($stages as $stage) {
             self::assertTrue($scheduler->schedule($position, EnvironmentTickType::SNIFFER_EGG, 0, 0));
             $events = $simulation->tick()->events;
-            self::assertCount(1, self::eventsOf($events, BlockChanged::class));
+            self::assertCount(1, self::blockChangesAt($events, $position));
             self::assertSame($stage, self::blockProperties($world, $states, $position)['cracked_state'] ?? null);
             self::assertSame([], self::eventsOf($events, EntityActorSpawned::class));
             self::assertTrue($scheduler->cancel($position, EnvironmentTickType::SNIFFER_EGG));
@@ -84,7 +84,7 @@ final class SnifferLifecycleQualificationTest extends TestCase
 
         self::assertTrue($scheduler->schedule($position, EnvironmentTickType::SNIFFER_EGG, 0, 0));
         $events = self::advanceEnvironmentalBlocks($simulation);
-        self::assertCount(1, self::eventsOf($events, BlockChanged::class));
+        self::assertCount(1, self::blockChangesAt($events, $position));
         array_push($events, ...$simulation->tick()->events);
         $spawns = self::eventsOf($events, EntityActorSpawned::class);
         self::assertCount(1, $spawns);
@@ -344,6 +344,18 @@ final class SnifferLifecycleQualificationTest extends TestCase
     private static function eventsOf(array $events, string $class): array
     {
         return array_values(array_filter($events, static fn(object $event): bool => $event instanceof $class));
+    }
+
+    /**
+     * @param list<object> $events
+     * @return list<BlockChanged>
+     */
+    private static function blockChangesAt(array $events, BlockPosition $position): array
+    {
+        return array_values(array_filter(
+            self::eventsOf($events, BlockChanged::class),
+            static fn(BlockChanged $event): bool => $event->position == $position,
+        ));
     }
 
     /** @param callable(): bool $condition */

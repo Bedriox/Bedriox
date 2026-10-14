@@ -398,8 +398,12 @@ final class BedrockPlayChannel
             return $this->fail('invalid_transport');
         }
         $receivedNanoseconds = hrtime(true);
-        if (!$this->trafficGuard->admitEnvelope(strlen($event->payload), $receivedNanoseconds)) {
-            $this->diagnostics->record('play.security_rate_limited', ['scope' => 'envelope']);
+        $envelopeBytes = strlen($event->payload);
+        if (!$this->trafficGuard->admitEnvelope($envelopeBytes, $receivedNanoseconds)) {
+            $this->diagnostics->record(
+                'play.security_rate_limited',
+                $this->trafficLimitContext('envelope', $envelopeBytes),
+            );
 
             return $this->fail('input_rate_limit');
         }
@@ -421,8 +425,22 @@ final class BedrockPlayChannel
             if (count($batch->packets) > $this->limits->maximumCommandsPerPayload) {
                 return $this->fail('command_limit');
             }
-            if (!$this->trafficGuard->admitPackets(count($batch->packets), $receivedNanoseconds)) {
-                $this->diagnostics->record('play.security_rate_limited', ['scope' => 'packet']);
+            $packetCount = count($batch->packets);
+            $movementPackets = 0;
+            foreach ($batch->packets as $frame) {
+                $movementPackets += (int) ($frame->header->packetId === PacketIds::PLAYER_AUTH_INPUT);
+            }
+            if (!$this->trafficGuard->admitPacketBatch($packetCount, $movementPackets, $receivedNanoseconds)) {
+                $this->diagnostics->record(
+                    'play.security_rate_limited',
+                    $this->trafficLimitContext(
+                        'packet',
+                        $envelopeBytes,
+                        $packetCount,
+                        $movementPackets,
+                        $batch->packets[0]->header->packetId ?? null,
+                    ),
+                );
 
                 return $this->fail('input_rate_limit');
             }
@@ -3122,6 +3140,35 @@ final class BedrockPlayChannel
     private function diagnose(string $message): void
     {
         $this->diagnostics->record('play.protocol_trace', ['detail' => $message]);
+    }
+
+    /** @return array<string, int|string|bool> */
+    private function trafficLimitContext(
+        string $scope,
+        int $envelopeBytes,
+        int $packets = 0,
+        int $movementPackets = 0,
+        ?int $firstPacketId = null,
+    ): array {
+        $fields = [
+            'scope' => $scope,
+            'requested_envelope_bytes' => $envelopeBytes,
+            'requested_packets' => $packets,
+            'movement_packets' => $movementPackets,
+            'command_backlog' => $this->commands->count(),
+            'outgoing_backlog' => $this->outgoing->count(),
+            'outgoing_bytes' => $this->outgoingBytes,
+            'chunk_request_backlog' => count($this->pendingChunkRequests),
+            'chunk_queue_backlog' => count($this->queuedChunkKeys),
+            'compression_backlog' => $this->deferredCompressionBatches->count(),
+            'world_switch_gated' => $this->worldSwitchInputGated,
+            ...$this->trafficGuard->diagnosticSnapshot(),
+        ];
+        if ($firstPacketId !== null) {
+            $fields['first_packet_id'] = $firstPacketId;
+        }
+
+        return $fields;
     }
 
     private function recordInboundTrace(int $packetId, int $bytes): void

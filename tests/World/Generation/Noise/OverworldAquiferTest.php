@@ -21,6 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Tests\World\Generation\Noise;
 
 use Bedriox\Server\World\Generation\Noise\OverworldAquifer;
+use Bedriox\Server\World\Generation\Noise\OverworldAquiferMaterial;
 use Bedriox\Server\World\Generation\Noise\OverworldBaseDensitySampler;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -51,6 +52,39 @@ final class OverworldAquiferTest extends TestCase
             ],
             $nearest,
         ));
+    }
+
+    public function testBatchedColumnMatchesIndividualMaterialQueries(): void
+    {
+        $aquifer = $this->aquifer();
+        $densities = [-0.5, -0.25, 0.0, 0.25];
+        $materials = $aquifer->materialsForColumn(-48, -32, 30, 33, $densities);
+
+        foreach ($materials as $offset => $material) {
+            self::assertSame($aquifer->materialAt(-48, 30 + $offset, -32, $densities[$offset]), $material);
+        }
+    }
+
+    public function testRejectsMismatchedBatchedColumn(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+
+        $this->aquifer()->materialsForColumn(-48, -32, 30, 33, [-0.5]);
+    }
+
+    public function testOpenAirAboveRaisedLandIsNotFilledByAnAquifer(): void
+    {
+        $density = new OverworldBaseDensitySampler(0);
+        $aquifer = new OverworldAquifer(0, $density, -256, 144);
+
+        self::assertSame(72, $density->preliminarySurfaceLevel(-256, 144, -64, 320));
+        self::assertSame(OverworldAquiferMaterial::Air, $aquifer->materialAt(-256, 72, 144, -0.1));
+    }
+
+    public function testOceanColumnStillFillsToGlobalSeaLevel(): void
+    {
+        self::assertSame(OverworldAquiferMaterial::Water, $this->aquifer()->materialAt(-48, 40, -32, -0.1));
+        self::assertSame(OverworldAquiferMaterial::Air, $this->aquifer()->materialAt(-48, 63, -32, -0.1));
     }
 
     #[DataProvider('fluidCells')]

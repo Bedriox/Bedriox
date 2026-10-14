@@ -31,7 +31,10 @@ final class OverworldBiomeResolver
         $climate = $sample->climate;
         $temperature = $climate->temperature;
         $humidity = $climate->humidity;
-        $variant = abs($climate->detail + $climate->ridge * 3 + $climate->erosion * 5);
+        // Variant selection uses continuous climate bands. Modulo tests on a
+        // changing per-column value produce salt-and-pepper biome islands and
+        // visibly repeated tree/material cells at otherwise smooth boundaries.
+        $detail = $climate->detail;
         if ($height < OverworldTerrainSampler::SEA_LEVEL && $climate->continentalness < -15_700) {
             return new Biome(match (true) {
                 $temperature < -14_000 => 'minecraft:deep_frozen_ocean',
@@ -81,51 +84,51 @@ final class OverworldBiomeResolver
                 $temperature > 9_000 && $humidity < -2_000 => 'minecraft:savanna_plateau',
                 $temperature > 7_000 && $humidity > 8_000 => 'minecraft:jungle_hills',
                 $humidity > 8_000 => 'minecraft:forest_hills',
-                $variant % 29 === 0 => 'minecraft:extreme_hills_plus_trees_mutated',
-                $variant % 23 === 0 => 'minecraft:extreme_hills_mutated',
+                $detail > 24_000 => 'minecraft:extreme_hills_plus_trees_mutated',
+                $detail < -24_000 => 'minecraft:extreme_hills_mutated',
                 $sample->slope >= 11 => 'minecraft:extreme_hills_edge',
-                $variant % 7 === 0 => 'minecraft:extreme_hills_plus_trees',
+                $climate->humidity > 10_000 => 'minecraft:extreme_hills_plus_trees',
                 default => 'minecraft:extreme_hills',
             });
         }
-        if ($climate->continentalness > 18_000 && $humidity < -16_000 && $variant % 83 === 0) {
+        if ($climate->continentalness > 18_000 && $humidity < -16_000 && $detail > 27_000) {
             return new Biome($height <= OverworldTerrainSampler::SEA_LEVEL + 2
                 ? 'minecraft:mushroom_island_shore'
                 : 'minecraft:mushroom_island');
         }
         if ($temperature < -10_500) {
-            return new Biome($variant % 13 === 0 ? 'minecraft:ice_plains_spikes' : 'minecraft:ice_plains');
+            return new Biome($detail > 22_000 ? 'minecraft:ice_plains_spikes' : 'minecraft:ice_plains');
         }
         if ($temperature < -3_500) {
             return new Biome(match (true) {
                 $humidity > 13_500 && $sample->slope >= 4 => 'minecraft:redwood_taiga_hills_mutated',
-                $humidity > 12_000 && $variant % 5 === 0 => 'minecraft:redwood_taiga_mutated',
+                $humidity > 12_000 && $detail > 18_000 => 'minecraft:redwood_taiga_mutated',
                 $humidity > 9_000 && $sample->slope >= 4 => 'minecraft:mega_taiga_hills',
                 $humidity > 9_000 => 'minecraft:mega_taiga',
-                $variant % 17 === 0 => 'minecraft:cold_taiga_mutated',
+                $detail < -24_000 => 'minecraft:cold_taiga_mutated',
                 $temperature < -7_500 => 'minecraft:cold_taiga',
-                $variant % 13 === 0 => 'minecraft:taiga_mutated',
-                $variant % 11 === 0 => 'minecraft:taiga_hills',
+                $detail > 23_000 => 'minecraft:taiga_mutated',
+                $sample->slope >= 4 => 'minecraft:taiga_hills',
                 default => 'minecraft:taiga',
             });
         }
         if ($temperature > 11_000 && $humidity < -8_000) {
             return new Biome(match (true) {
-                $climate->uplift > 13_000 && $variant % 5 === 0 => 'minecraft:mesa_bryce',
-                $climate->uplift > 12_000 && $variant % 17 === 0 => 'minecraft:mesa_plateau_stone_mutated',
-                $climate->uplift > 11_000 && $variant % 11 === 0 => 'minecraft:mesa_plateau_mutated',
+                $climate->uplift > 13_000 && $detail > 18_000 => 'minecraft:mesa_bryce',
+                $climate->uplift > 12_000 && $detail < -20_000 => 'minecraft:mesa_plateau_stone_mutated',
+                $climate->uplift > 11_000 && $detail > 12_000 => 'minecraft:mesa_plateau_mutated',
                 $climate->uplift > 10_000 && $humidity < -16_000 => 'minecraft:mesa_plateau_stone',
                 $climate->uplift > 9_000 => 'minecraft:mesa_plateau',
                 $climate->uplift > 6_000 => 'minecraft:mesa',
-                $variant % 19 === 0 => 'minecraft:desert_mutated',
+                $detail > 24_000 => 'minecraft:desert_mutated',
                 $sample->slope >= 4 => 'minecraft:desert_hills',
                 default => 'minecraft:desert',
             });
         }
         if ($temperature > 7_000 && $humidity < 3_500) {
             return new Biome(match (true) {
-                $sample->slope >= 5 && $variant % 7 === 0 => 'minecraft:savanna_plateau_mutated',
-                $variant % 17 === 0 => 'minecraft:savanna_mutated',
+                $sample->slope >= 5 && $detail > 18_000 => 'minecraft:savanna_plateau_mutated',
+                $detail < -24_000 => 'minecraft:savanna_mutated',
                 $sample->slope >= 4 => 'minecraft:savanna_plateau',
                 default => 'minecraft:savanna',
             });
@@ -133,47 +136,47 @@ final class OverworldBiomeResolver
         if ($height <= OverworldTerrainSampler::SEA_LEVEL + 3 && $humidity > 11_000) {
             return new Biome(match (true) {
                 $temperature > 6_500 => 'minecraft:mangrove_swamp',
-                $variant % 13 === 0 => 'minecraft:swampland_mutated',
+                $detail > 22_000 => 'minecraft:swampland_mutated',
                 default => 'minecraft:swampland',
             });
         }
         if ($temperature > 6_000 && $humidity > 10_000) {
             return new Biome(match (true) {
-                $sample->slope >= 5 && $variant % 5 === 0 => 'minecraft:bamboo_jungle_hills',
-                $variant % 11 === 0 => 'minecraft:bamboo_jungle',
+                $sample->slope >= 5 && $detail > 18_000 => 'minecraft:bamboo_jungle_hills',
+                $detail > 18_000 => 'minecraft:bamboo_jungle',
                 $sample->slope >= 4 => 'minecraft:jungle_hills',
-                $humidity < 14_000 && $variant % 7 === 0 => 'minecraft:jungle_edge_mutated',
+                $humidity < 14_000 && $detail < -20_000 => 'minecraft:jungle_edge_mutated',
                 $humidity < 14_000 => 'minecraft:jungle_edge',
-                $variant % 23 === 0 => 'minecraft:jungle_mutated',
+                $detail < -23_000 => 'minecraft:jungle_mutated',
                 default => 'minecraft:jungle',
             });
         }
         if ($humidity > 7_000) {
             return new Biome(match (true) {
-                $temperature < 1_500 && $variant % 7 === 0 => 'minecraft:pale_garden',
-                $temperature < 3_500 && $variant % 5 === 0 => 'minecraft:dappled_forest',
-                $temperature > 4_500 && $variant % 11 === 0 => 'minecraft:flower_forest',
-                $variant % 31 === 0 => 'minecraft:roofed_forest_mutated',
-                $variant % 13 === 0 => 'minecraft:roofed_forest',
-                $sample->slope >= 4 && $variant % 17 === 0 => 'minecraft:birch_forest_hills_mutated',
-                $sample->slope >= 4 && $variant % 7 === 0 => 'minecraft:birch_forest_hills',
-                $variant % 23 === 0 => 'minecraft:birch_forest_mutated',
-                $variant % 5 === 0 => 'minecraft:birch_forest',
+                $temperature < 1_500 && $detail < -22_000 => 'minecraft:pale_garden',
+                $temperature < 3_500 && $detail < -13_000 => 'minecraft:dappled_forest',
+                $temperature > 4_500 && $detail > 21_000 => 'minecraft:flower_forest',
+                $humidity > 14_000 && $detail < -18_000 => 'minecraft:roofed_forest_mutated',
+                $humidity > 13_000 && $detail < -8_000 => 'minecraft:roofed_forest',
+                $sample->slope >= 4 && $detail > 23_000 => 'minecraft:birch_forest_hills_mutated',
+                $sample->slope >= 4 && $detail > 12_000 => 'minecraft:birch_forest_hills',
+                $detail > 24_000 => 'minecraft:birch_forest_mutated',
+                $detail > 8_000 => 'minecraft:birch_forest',
                 default => 'minecraft:forest',
             });
         }
-        if ($temperature > 1_500 && $humidity > 1_000 && $variant % 19 === 0) {
+        if ($temperature > 1_500 && $humidity > 1_000 && $detail > 24_000) {
             return new Biome('minecraft:cherry_grove');
         }
 
         if ($humidity > -2_500) {
             return new Biome(match (true) {
-                $sample->slope >= 7 && $variant % 37 === 0 => 'minecraft:forest_hills',
+                $sample->slope >= 7 && $detail > 18_000 => 'minecraft:forest_hills',
                 default => 'minecraft:forest',
             });
         }
 
-        return new Biome($variant % 13 === 0 ? 'minecraft:sunflower_plains' : 'minecraft:plains');
+        return new Biome($detail > 22_000 ? 'minecraft:sunflower_plains' : 'minecraft:plains');
     }
 
     /** Resolves the neighboring inland biome when a low coastal candidate is not actually shoreline. */

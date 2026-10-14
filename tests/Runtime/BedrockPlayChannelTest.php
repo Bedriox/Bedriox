@@ -146,6 +146,7 @@ use Bedriox\Server\Runtime\BedrockWorldEventPacketEncoder;
 use Bedriox\Server\Runtime\GameModePacketProjector;
 use Bedriox\Server\Runtime\RuntimeDiagnostics;
 use Bedriox\Server\Runtime\RuntimeLimits;
+use Bedriox\Server\Security\GameplayTrafficGuard;
 use Bedriox\Server\Simulation\ArmSwingSource;
 use Bedriox\Server\Simulation\BlockBreakAction;
 use Bedriox\Server\Simulation\BrushAction;
@@ -486,6 +487,73 @@ final class BedrockPlayChannelTest extends TestCase
         )));
         self::assertTrue($channel->isClosed());
         self::assertSame([], $channel->drainCommands());
+    }
+
+    public function testPacketRateLimitReportsBoundedBudgetAndBacklogContext(): void
+    {
+        $lines = [];
+        $diagnostics = new RuntimeDiagnostics(static function (string $line) use (&$lines): void {
+            $lines[] = $line;
+        });
+        [$channel, $client, , $entityId] = $this->channel(diagnostics: $diagnostics);
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        $guardProperty = new \ReflectionProperty($channel, 'trafficGuard');
+        $guard = $guardProperty->getValue($channel);
+        self::assertInstanceOf(GameplayTrafficGuard::class, $guard);
+        (new \ReflectionProperty($guard, 'packetTokens'))->setValue($guard, -1_000.0);
+
+        self::assertFalse($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new ChatPacket('RealName', 'bounded diagnostic')])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        $diagnostic = implode('', $lines);
+        self::assertStringContainsString('"event":"play.security_rate_limited"', $diagnostic);
+        self::assertStringContainsString('"scope":"packet"', $diagnostic);
+        self::assertStringContainsString('"decision":"packet_budget"', $diagnostic);
+        self::assertStringContainsString('"requested_envelope_bytes":', $diagnostic);
+        self::assertStringContainsString('"requested_packets":1', $diagnostic);
+        self::assertStringContainsString('"first_packet_id":', $diagnostic);
+        self::assertStringContainsString('"packet_budget":0', $diagnostic);
+        self::assertStringContainsString('"chunk_request_backlog":0', $diagnostic);
+        self::assertStringNotContainsString('bounded diagnostic', $diagnostic);
+    }
+
+    public function testDelayedMovementCatchUpIsAdmittedThroughThePlayChannel(): void
+    {
+        [$channel, $client, , $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        $guardProperty = new \ReflectionProperty($channel, 'trafficGuard');
+        $guard = $guardProperty->getValue($channel);
+        self::assertInstanceOf(GameplayTrafficGuard::class, $guard);
+        (new \ReflectionProperty($guard, 'packetTokens'))->setValue($guard, 0.0);
+        (new \ReflectionProperty($guard, 'lastRefillNanoseconds'))->setValue($guard, hrtime(true) - 7_000_000_000);
+
+        $tick = 1;
+        for ($batchIndex = 0; $batchIndex < 5; ++$batchIndex) {
+            $packets = [];
+            for ($packetIndex = 0; $packetIndex < 64; ++$packetIndex) {
+                $packets[] = $this->movementPacket(UnsignedLong::fromInt($tick++));
+            }
+            self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+                $client->encryptEnvelope($this->encode($packets)),
+                Reliability::ReliableOrdered,
+                0,
+            )));
+        }
+
+        self::assertSame('admitted', $guard->diagnosticSnapshot()['decision']);
     }
 
     public function testEncryptedMovementPredictionSyncIsConsumedWithoutTrustingReportedState(): void

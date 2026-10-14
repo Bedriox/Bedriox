@@ -1,5 +1,21 @@
 # Changelog
 
+- Replace heightmap-only Overworld filling and feature tunnels with a bounded
+  three-dimensional density lattice, continuous cavification, and pressure-aware
+  aquifers. Terrain now supports connected underground cave systems, rare natural
+  entrances, dry and flooded chambers, deep lava, and generation-order-stable seams.
+- Make the final volumetric surface authoritative for biome, structure, and
+  vegetation decisions; add connected lowland wetland relief and varied ocean-floor
+  erosion; replace speckled biome variants with continuous climate regions; and
+  prevent neighboring chunks from emitting foliage for rejected or submerged roots.
+- Add coherent surface and ecology fields for terrain-following rock, scree,
+  sediment, forest floors, biome-scale vegetation density, and submerged or steep
+  terrain exclusions. Add a deterministic black-box qualification report for
+  terrain contours, cave connectivity, ecology, seams, and generation latency.
+- Replace per-column forest rolls with deterministic, biome-specific vegetation
+  planning: coherent groves and clearings, enforced tree spacing, 24 procedural
+  tree forms, varied trunks and crowns, and cross-chunk-stable ground cover make
+  wooded travel readable without repeating wall-like rows or a uniform canopy.
 - Keep submerged coastal shelves in ocean biomes and constrain beaches to a
   noise-varied shoreline beside actual open water. Multiscale coastal relief
   breaks up climate-lattice polygons and shallow seafloor bands; exposed lowlands
@@ -11,8 +27,9 @@
   palettes across dimensions, and use a bounded coarse spawn search to reduce
   cold chunk and first-world preparation latency without changing terrain output.
 - Prevent legitimate Bedrock movement catch-up traffic after a cold-world
-  teleport from being rejected by the authenticated play-session rate limiter;
-  sustained traffic and byte or packet limits remain bounded.
+  teleport from being rejected by the authenticated play-session rate limiter.
+  Only delayed authenticated movement earns bounded catch-up credit; ordinary
+  packets, sustained traffic, bytes, malformed input, and queueing remain bounded.
 - Add Bedriox-owned deterministic villages, dungeons, mineshafts, strongholds,
   Nether fortresses, bastions, End cities, and End ships; terrain-match village
   roads and full foundations; widen natural beach transitions; and defer packed

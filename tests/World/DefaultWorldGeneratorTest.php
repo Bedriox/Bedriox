@@ -37,7 +37,7 @@ final class DefaultWorldGeneratorTest extends TestCase
 
         self::assertSame('default', $generator->name());
         self::assertSame(DefaultWorldGenerator::VERSION, $generator->version());
-        self::assertSame(4, $generator->version());
+        self::assertSame(5, $generator->version());
     }
 
     /** @return iterable<string, array{int}> */
@@ -82,7 +82,11 @@ final class DefaultWorldGeneratorTest extends TestCase
         for ($z = 0; $z < 16; ++$z) {
             $westHeight = self::highestTerrain($west, 15, $z);
             $eastHeight = self::highestTerrain($east, 0, $z);
-            self::assertLessThanOrEqual(12, abs($westHeight - $eastHeight));
+            self::assertLessThanOrEqual(
+                24,
+                abs($westHeight - $eastHeight),
+                'Shared density borders must remain continuous while allowing intentional cliffs and ravines.',
+            );
             BiomeRuntimeIdMap::bundled()->id($west->biomeAt(15, $westHeight, $z));
             BiomeRuntimeIdMap::bundled()->id($east->biomeAt(0, $eastHeight, $z));
         }
@@ -139,6 +143,17 @@ final class DefaultWorldGeneratorTest extends TestCase
         }
 
         self::assertGreaterThan(0, $checked, 'The selected adjacent chunks must exercise an ocean seam.');
+    }
+
+    public function testCavifiedDensityProducesAHorizontalSurfaceEntrance(): void
+    {
+        [$generator, $states] = self::generator(4_242);
+        $chunk = $generator->generate(new ChunkPosition(10, 7));
+
+        self::assertSame('minecraft:air', self::identifierAt($chunk, $states, 7, 63, 8));
+        self::assertNotSame('minecraft:air', self::identifierAt($chunk, $states, 7, 64, 8));
+        self::assertSame('minecraft:air', self::identifierAt($chunk, $states, 8, 63, 8));
+        self::assertSame('minecraft:air', self::identifierAt($chunk, $states, 8, 64, 8));
     }
 
     public function testUndergroundDepositsUseTheHostStoneFamily(): void

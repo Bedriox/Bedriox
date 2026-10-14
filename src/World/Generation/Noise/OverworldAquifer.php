@@ -50,7 +50,13 @@ final class OverworldAquifer
     private array $statusCache = [];
     /** @var array<string, int> */
     private array $surfaceCache = [];
-    private readonly int $skipSamplingAboveY;
+    private int $lastSurfaceX = PHP_INT_MIN;
+    private int $lastSurfaceZ = PHP_INT_MIN;
+    private int $lastSurfaceLevel = self::DRY_LEVEL;
+    private int $lastNearestX = PHP_INT_MIN;
+    private int $lastNearestZ = PHP_INT_MIN;
+    /** @var array<int, list<array{center: array{x: int, y: int, z: int}, horizontalDistance: int}>> */
+    private array $lastColumnCenters = [];
 
     public function __construct(
         int $seed,
@@ -72,18 +78,10 @@ final class OverworldAquifer
             [1.0],
         );
         $this->lava = new DoublePerlinNoise($factory->forString('minecraft:aquifer_lava'), -1, [1.0]);
-        $minGridX = self::floorDiv($chunkOriginX - 5, 16);
-        $maxGridX = self::floorDiv($chunkOriginX + 10, 16) + 1;
-        $minGridZ = self::floorDiv($chunkOriginZ - 5, 16);
-        $maxGridZ = self::floorDiv($chunkOriginZ + 10, 16) + 1;
-        $maximumSurface = -64;
-        for ($x = $minGridX * 16; $x <= $maxGridX * 16 + 9; $x += 4) {
-            for ($z = $minGridZ * 16; $z <= $maxGridZ * 16 + 9; $z += 4) {
-                $maximumSurface = max($maximumSurface, $this->preliminarySurface($x, $z));
-            }
-        }
-        $skipGridY = self::floorDiv($maximumSurface + 20, 12) + 1;
-        $this->skipSamplingAboveY = $skipGridY * 12 + 10;
+        $this->preliminarySurface(
+            self::floorDiv($chunkOriginX, 4) * 4,
+            self::floorDiv($chunkOriginZ, 4) * 4,
+        );
     }
 
     public function materialAt(int $x, int $y, int $z, float $density): OverworldAquiferMaterial
@@ -94,11 +92,25 @@ final class OverworldAquifer
         if ($y < self::GLOBAL_LAVA_LEVEL) {
             return OverworldAquiferMaterial::Lava;
         }
-        if ($y > $this->skipSamplingAboveY) {
-            return OverworldAquiferMaterial::Air;
+        $localSurface = $this->localSurface($x, $z);
+        if ($y >= $localSurface) {
+            return $localSurface < self::GLOBAL_WATER_LEVEL && $y < self::GLOBAL_WATER_LEVEL
+                ? OverworldAquiferMaterial::Water
+                : OverworldAquiferMaterial::Air;
         }
 
-        $nearest = $this->nearest($x, $y, $z);
+        return $this->materialBelowSurface($x, $y, $z, $density);
+    }
+
+    /** @param null|list<array{center: array{x: int, y: int, z: int}, distance: int}> $nearest */
+    private function materialBelowSurface(
+        int $x,
+        int $y,
+        int $z,
+        float $density,
+        ?array $nearest = null,
+    ): OverworldAquiferMaterial {
+        $nearest ??= $this->nearest($x, $y, $z);
         $first = $this->status($nearest[0]['center']);
         $material = $this->materialAtLevel($first, $y);
         $similarity12 = self::similarity($nearest[0]['distance'], $nearest[1]['distance']);
@@ -128,47 +140,116 @@ final class OverworldAquifer
         return $material;
     }
 
+    /**
+     * Resolves one contiguous column without requiring the generator to repeat
+     * bounds bookkeeping around every aquifer query.
+     *
+     * @param list<float> $densities one density for every Y from minimum through maximum
+     * @return list<OverworldAquiferMaterial>
+     */
+    public function materialsForColumn(int $x, int $z, int $minimumY, int $maximumY, array $densities): array
+    {
+        $expected = $maximumY - $minimumY + 1;
+        if ($minimumY > $maximumY || count($densities) !== $expected) {
+            throw new \InvalidArgumentException('Aquifer density column must exactly match its inclusive Y bounds.');
+        }
+
+        $localSurface = $this->localSurface($x, $z);
+        $materials = [];
+        foreach ($densities as $offset => $density) {
+            $y = $minimumY + $offset;
+            if ($density > 0.0) {
+                $materials[] = OverworldAquiferMaterial::Stone;
+            } elseif ($y < self::GLOBAL_LAVA_LEVEL) {
+                $materials[] = OverworldAquiferMaterial::Lava;
+            } elseif ($y >= $localSurface) {
+                $materials[] = $localSurface < self::GLOBAL_WATER_LEVEL && $y < self::GLOBAL_WATER_LEVEL
+                    ? OverworldAquiferMaterial::Water
+                    : OverworldAquiferMaterial::Air;
+            } else {
+                $materials[] = $this->materialBelowSurface($x, $y, $z, $density);
+            }
+        }
+
+        return $materials;
+    }
+
     /** @return list<array{center: array{x: int, y: int, z: int}, distance: int}> */
     public function nearest(int $x, int $y, int $z): array
     {
         $anchorX = self::floorDiv($x - 5, 16);
         $anchorY = self::floorDiv($y + 1, 12);
         $anchorZ = self::floorDiv($z - 5, 16);
-        $neighborhoodKey = $anchorX . ':' . $anchorY . ':' . $anchorZ;
-        $centers = $this->neighborhoodCache[$neighborhoodKey] ?? null;
+        if ($x !== $this->lastNearestX || $z !== $this->lastNearestZ) {
+            $this->lastNearestX = $x;
+            $this->lastNearestZ = $z;
+            $this->lastColumnCenters = [];
+        }
+        $centers = $this->lastColumnCenters[$anchorY] ?? null;
         if ($centers === null) {
             $centers = [];
-            for ($offsetX = 0; $offsetX <= 1; ++$offsetX) {
-                for ($offsetY = -1; $offsetY <= 1; ++$offsetY) {
-                    for ($offsetZ = 0; $offsetZ <= 1; ++$offsetZ) {
-                        $centers[] = $this->center(
-                            $anchorX + $offsetX,
-                            $anchorY + $offsetY,
-                            $anchorZ + $offsetZ,
-                        );
+            foreach ($this->neighborhood($anchorX, $anchorY, $anchorZ) as $center) {
+                $dx = $center['x'] - $x;
+                $dz = $center['z'] - $z;
+                $centers[] = [
+                    'center' => $center,
+                    'horizontalDistance' => $dx * $dx + $dz * $dz,
+                ];
+            }
+            $this->lastColumnCenters[$anchorY] = $centers;
+        }
+        $nearestCenters = [null, null, null, null];
+        $nearestDistances = [PHP_INT_MAX, PHP_INT_MAX, PHP_INT_MAX, PHP_INT_MAX];
+        foreach ($centers as $entry) {
+            $center = $entry['center'];
+            $dy = $center['y'] - $y;
+            $distance = $entry['horizontalDistance'] + $dy * $dy;
+            for ($insert = 0; $insert < 4; ++$insert) {
+                if ($distance < $nearestDistances[$insert]) {
+                    for ($shift = 3; $shift > $insert; --$shift) {
+                        $nearestDistances[$shift] = $nearestDistances[$shift - 1];
+                        $nearestCenters[$shift] = $nearestCenters[$shift - 1];
                     }
+                    $nearestDistances[$insert] = $distance;
+                    $nearestCenters[$insert] = $center;
+                    break;
                 }
             }
-            $this->neighborhoodCache[$neighborhoodKey] = $centers;
         }
-        /** @var list<array{center: array{x: int, y: int, z: int}, distance: int}> $nearest */
+
         $nearest = [];
-        foreach ($centers as $center) {
-            $dx = $center['x'] - $x;
-            $dy = $center['y'] - $y;
-            $dz = $center['z'] - $z;
-            $candidate = ['center' => $center, 'distance' => $dx * $dx + $dy * $dy + $dz * $dz];
-            $insert = 0;
-            while ($insert < count($nearest) && $nearest[$insert]['distance'] <= $candidate['distance']) {
-                ++$insert;
-            }
-            array_splice($nearest, $insert, 0, [$candidate]);
-            if (count($nearest) > 4) {
-                array_pop($nearest);
+        foreach ($nearestCenters as $index => $center) {
+            if ($center !== null) {
+                $nearest[] = ['center' => $center, 'distance' => $nearestDistances[$index]];
             }
         }
 
         return $nearest;
+    }
+
+    /** @return list<array{x: int, y: int, z: int}> */
+    private function neighborhood(int $anchorX, int $anchorY, int $anchorZ): array
+    {
+        $neighborhoodKey = $anchorX . ':' . $anchorY . ':' . $anchorZ;
+        $centers = $this->neighborhoodCache[$neighborhoodKey] ?? null;
+        if ($centers !== null) {
+            return $centers;
+        }
+
+        $centers = [];
+        for ($offsetX = 0; $offsetX <= 1; ++$offsetX) {
+            for ($offsetY = -1; $offsetY <= 1; ++$offsetY) {
+                for ($offsetZ = 0; $offsetZ <= 1; ++$offsetZ) {
+                    $centers[] = $this->center(
+                        $anchorX + $offsetX,
+                        $anchorY + $offsetY,
+                        $anchorZ + $offsetZ,
+                    );
+                }
+            }
+        }
+
+        return $this->neighborhoodCache[$neighborhoodKey] = $centers;
     }
 
     /** @param array{x: int, y: int, z: int} $center */
@@ -276,8 +357,13 @@ final class OverworldAquifer
      * @param array{level: int, material: OverworldAquiferMaterial} $first
      * @param array{level: int, material: OverworldAquiferMaterial} $second
      */
-    private function pressure(int $x, int $y, int $z, array $first, array $second): float
-    {
+    private function pressure(
+        int $x,
+        int $y,
+        int $z,
+        array $first,
+        array $second,
+    ): float {
         if ($first['material'] !== $second['material']
             && ($first['material'] === OverworldAquiferMaterial::Lava
                 || $second['material'] === OverworldAquiferMaterial::Lava)) {
@@ -310,6 +396,19 @@ final class OverworldAquifer
         $key = $x . ':' . $z;
 
         return $this->surfaceCache[$key] ??= $this->density->preliminarySurfaceLevel($x, $z, -64, 320);
+    }
+
+    private function localSurface(int $x, int $z): int
+    {
+        $sampleX = self::floorDiv($x, 4) * 4;
+        $sampleZ = self::floorDiv($z, 4) * 4;
+        if ($sampleX !== $this->lastSurfaceX || $sampleZ !== $this->lastSurfaceZ) {
+            $this->lastSurfaceX = $sampleX;
+            $this->lastSurfaceZ = $sampleZ;
+            $this->lastSurfaceLevel = $this->preliminarySurface($sampleX, $sampleZ);
+        }
+
+        return $this->lastSurfaceLevel;
     }
 
     private static function floorDiv(int $value, int $divisor): int

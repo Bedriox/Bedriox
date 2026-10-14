@@ -60,12 +60,45 @@ final class GameplayTrafficGuardTest extends TestCase
         // movement envelopes when the main process resumed.
         for ($envelope = 0; $envelope < 100; ++$envelope) {
             self::assertTrue($guard->admitEnvelope(128, 0));
-            self::assertTrue($guard->admitPackets(1, 0));
+            self::assertTrue($guard->admitPacketBatch(3, 1, 0));
         }
         for ($envelope = 0; $envelope < 142; ++$envelope) {
             self::assertTrue($guard->admitEnvelope(128, 7_000_000_000));
-            self::assertTrue($guard->admitPackets(1, 7_000_000_000));
+            self::assertTrue($guard->admitPacketBatch(3, 1, 7_000_000_000));
         }
+    }
+
+    public function testDelayedCreditCannotAdmitOrdinaryPacketFlood(): void
+    {
+        $guard = new GameplayTrafficGuard(startedNanoseconds: 0);
+
+        self::assertTrue($guard->admitPackets(300, 0));
+        self::assertFalse($guard->admitPacketBatch(301, 0, 7_000_000_000));
+        self::assertSame('packet_budget', $guard->diagnosticSnapshot()['decision']);
+    }
+
+    public function testDelayedMovementCreditIsBoundedAndReported(): void
+    {
+        $guard = new GameplayTrafficGuard(startedNanoseconds: 0);
+
+        self::assertTrue($guard->admitPackets(300, 0));
+        self::assertTrue($guard->admitPacketBatch(440, 140, 30_000_000_000));
+        self::assertFalse($guard->admitPacketBatch(117, 117, 30_000_000_000));
+
+        $snapshot = $guard->diagnosticSnapshot();
+        self::assertSame('packet_budget', $snapshot['decision']);
+        self::assertSame(0, $snapshot['packet_budget']);
+        self::assertSame(116, $snapshot['delayed_movement_budget']);
+        self::assertSame(30_000, $snapshot['observation_gap_ms']);
+    }
+
+    public function testNormalCadenceDoesNotEarnDelayedMovementCredit(): void
+    {
+        $guard = new GameplayTrafficGuard(1, 1, 1_000, 1_000, 1, 1, 0);
+
+        self::assertTrue($guard->admitPackets(1, 0));
+        self::assertFalse($guard->admitPacketBatch(1, 1, 50_000_000));
+        self::assertSame(0, $guard->diagnosticSnapshot()['delayed_movement_budget']);
     }
 
     public function testDefaultEnvelopeCatchUpRemainsStrictlyBounded(): void

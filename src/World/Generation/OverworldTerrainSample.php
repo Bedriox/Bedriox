@@ -28,5 +28,6 @@ final readonly class OverworldTerrainSample
         public int $surfaceHeight,
         public int $slope,
         public int $riverStrength,
+        public int $curvature = 0,
     ) {}
 }

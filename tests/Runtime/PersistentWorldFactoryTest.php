@@ -209,7 +209,7 @@ final class PersistentWorldFactoryTest extends TestCase
         }
     }
 
-    public function testVersionThreeDefaultWorldFailsClosedAfterStructureUpgrade(): void
+    public function testVersionFourDefaultWorldFailsClosedAfterVegetationUpgrade(): void
     {
         $path = $this->workingDirectory . DIRECTORY_SEPARATOR . 'worlds' . DIRECTORY_SEPARATOR . 'world';
         self::assertTrue(mkdir($path, 0775, true));
@@ -217,7 +217,7 @@ final class PersistentWorldFactoryTest extends TestCase
             new WorldMetadata('Legacy Terrain', 1),
             'default',
             new SpawnPosition(0, 80, 0),
-            generatorVersion: 3,
+            generatorVersion: 4,
         ));
 
         try {
@@ -225,9 +225,9 @@ final class PersistentWorldFactoryTest extends TestCase
                 self::config(),
                 BedrockDataSet::bundled(),
             );
-            self::fail('A version-three world was accepted by the version-four generator.');
+            self::fail('A version-four world was accepted by the version-five generator.');
         } catch (\RuntimeException $failure) {
-            self::assertStringContainsString('version 3 is not supported; expected version 4', $failure->getMessage());
+            self::assertStringContainsString('version 4 is not supported; expected version 5', $failure->getMessage());
             self::assertTrue($providers->provider?->closed);
         }
     }

@@ -20,6 +20,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World\Generation\Noise;
 
+use InvalidArgumentException;
+
 /** Three-dimensional terrain field blended between two limit stacks by a selector stack. */
 final readonly class BlendedTerrainNoise
 {
@@ -94,6 +96,81 @@ final readonly class BlendedTerrainNoise
         $upper /= self::LIMIT_DIVISOR;
 
         return ($lower + $blend * ($upper - $lower)) / self::OUTPUT_DIVISOR;
+    }
+
+    /** @return list<float> */
+    public function sampleColumn(float $x, float $z, int $minimumY, int $maximumY, int $step): array
+    {
+        if ($minimumY > $maximumY || $step < 1) {
+            throw new InvalidArgumentException('Terrain-noise column bounds and step must describe a non-empty column.');
+        }
+
+        $scaledHorizontal = self::BASE_SCALE * $this->horizontalScale;
+        $scaledVertical = self::BASE_SCALE * $this->verticalScale;
+        $selectorHorizontal = $scaledHorizontal / $this->horizontalFactor;
+        $selectorVertical = $scaledVertical / $this->verticalFactor;
+        $selectorVerticalWrap = $selectorVertical * $this->verticalWrapMultiplier;
+        $limitVerticalWrap = $scaledVertical * $this->verticalWrapMultiplier;
+        $selectorCoordinates = [];
+        $frequency = 1.0;
+        foreach ($this->selectorLevels as $_) {
+            $selectorCoordinates[] = [
+                self::maintainPrecision($x * $selectorHorizontal * $frequency),
+                self::maintainPrecision($z * $selectorHorizontal * $frequency),
+                $selectorVerticalWrap * $frequency,
+                $frequency,
+            ];
+            $frequency /= 2.0;
+        }
+        $limitCoordinates = [];
+        $frequency = 1.0;
+        foreach ($this->lowerLevels as $_) {
+            $limitCoordinates[] = [
+                self::maintainPrecision($x * $scaledHorizontal * $frequency),
+                self::maintainPrecision($z * $scaledHorizontal * $frequency),
+                $limitVerticalWrap * $frequency,
+                $frequency,
+            ];
+            $frequency /= 2.0;
+        }
+
+        $samples = [];
+        for ($y = $minimumY; $y <= $maximumY; $y += $step) {
+            $selector = 0.0;
+            foreach ($this->selectorLevels as $index => $level) {
+                [$sampleX, $sampleZ, $sampleWrap, $frequency] = $selectorCoordinates[$index];
+                $minimumSampleY = $y * $selectorVertical * $frequency;
+                $selector += $level->sample(
+                    $sampleX,
+                    self::maintainPrecision($minimumSampleY),
+                    $sampleZ,
+                    $sampleWrap,
+                    $minimumSampleY,
+                ) / $frequency;
+            }
+            $blend = max(0.0, min(2.0, ($selector / self::SELECTOR_DIVISOR) + 1.0)) * 0.5;
+            $lower = 0.0;
+            $upper = 0.0;
+            foreach ($this->lowerLevels as $index => $lowerLevel) {
+                [$sampleX, $sampleZ, $sampleWrap, $frequency] = $limitCoordinates[$index];
+                $minimumSampleY = $y * $scaledVertical * $frequency;
+                $sampleY = self::maintainPrecision($minimumSampleY);
+                if ($blend < 1.0) {
+                    $lower += $lowerLevel->sample($sampleX, $sampleY, $sampleZ, $sampleWrap, $minimumSampleY)
+                        / $frequency;
+                }
+                if ($blend > 0.0) {
+                    $upper += $this->upperLevels[$index]
+                        ->sample($sampleX, $sampleY, $sampleZ, $sampleWrap, $minimumSampleY) / $frequency;
+                }
+            }
+
+            $lower /= self::LIMIT_DIVISOR;
+            $upper /= self::LIMIT_DIVISOR;
+            $samples[] = ($lower + $blend * ($upper - $lower)) / self::OUTPUT_DIVISOR;
+        }
+
+        return $samples;
     }
 
     /** @return list<GradientNoiseLevel> */

@@ -95,4 +95,24 @@ final class OverworldTerrainSamplerTest extends TestCase
             $resolver->resolveDryLand(new OverworldTerrainSample($oceanicClimate, OverworldTerrainSampler::SEA_LEVEL + 1, 1, 0))->identifier,
         );
     }
+
+    public function testForestVariantsOccupyContinuousClimateBandsInsteadOfAlternatingCells(): void
+    {
+        $resolver = new OverworldBiomeResolver();
+        $previous = null;
+        $transitions = 0;
+        $runs = [];
+        for ($detail = -32_000; $detail <= 32_000; $detail += 250) {
+            $climate = new OverworldClimate(8_000, 0, 2_000, 12_000, 0, 0, 0, $detail);
+            $biome = $resolver->resolve(new OverworldTerrainSample($climate, 72, 1, 0))->identifier;
+            $runs[$biome] = true;
+            if ($previous !== null && $previous !== $biome) {
+                ++$transitions;
+            }
+            $previous = $biome;
+        }
+
+        self::assertGreaterThanOrEqual(3, count($runs));
+        self::assertLessThanOrEqual(6, $transitions);
+    }
 }
