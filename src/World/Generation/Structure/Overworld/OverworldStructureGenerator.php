@@ -165,6 +165,7 @@ final readonly class OverworldStructureGenerator
     /**
      * @param callable(int, int): string $biomeAt
      * @param callable(int, int): int    $surfaceAt
+     * @param null|callable(int, int): bool $accept
      */
     public function locateNatural(
         OverworldStructureFamily $family,
@@ -173,6 +174,7 @@ final readonly class OverworldStructureGenerator
         callable $biomeAt,
         callable $surfaceAt,
         int $maximumRegionRadius = 128,
+        ?callable $accept = null,
     ): ?OverworldStructureLocation {
         self::validateRadius($maximumRegionRadius);
         $definition = OverworldStructureCatalog::get($family);
@@ -188,9 +190,13 @@ final readonly class OverworldStructureGenerator
                 if ($start === null) {
                     continue;
                 }
+                $location = new OverworldStructureLocation($start, $this->placementY($start, $surface));
+                if ($accept !== null && !$accept($location->start->x, $location->start->z)) {
+                    continue;
+                }
                 $distance = self::distanceSquared($start, $originX, $originZ);
                 if ($distance < $bestDistance) {
-                    $best = new OverworldStructureLocation($start, $this->placementY($start, $surface));
+                    $best = $location;
                     $bestDistance = $distance;
                 }
             }

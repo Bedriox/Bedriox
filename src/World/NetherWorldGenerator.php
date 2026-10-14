@@ -178,13 +178,16 @@ final readonly class NetherWorldGenerator implements VersionedWorldGenerator
         int $fromX = 0,
         int $fromZ = 0,
         int $maximumRegionRadius = 64,
+        ?callable $accept = null,
     ): ?NetherStructureLocation {
-        $plan = $this->locateStructure($kind, $fromX, $fromZ, $maximumRegionRadius);
-        if ($plan === null) {
-            return null;
+        foreach ($this->structurePlanner->candidates($kind, $fromX, $fromZ, $maximumRegionRadius) as $plan) {
+            $location = $this->locationForPlan($plan);
+            if ($accept === null || $accept($location->safeTeleport->x, $location->safeTeleport->z)) {
+                return $location;
+            }
         }
 
-        return $this->locationForPlan($plan);
+        return null;
     }
 
     private function locationForPlan(NetherStructurePlan $plan): NetherStructureLocation
@@ -198,7 +201,8 @@ final readonly class NetherWorldGenerator implements VersionedWorldGenerator
         return new NetherStructureLocation($plan, new BlockPosition($x, $teleportY, $z));
     }
 
-    private function biomeAt(int $x, int $z): string
+    /** Deterministic biome sample used by generation and location tooling. */
+    public function biomeAt(int $x, int $z): string
     {
         $climate = $this->noise->fractal2d($x, $z, 224, 3, 55, 1_109);
         $humidity = $this->noise->fractal2d($x, $z, 192, 3, 58, 1_213);

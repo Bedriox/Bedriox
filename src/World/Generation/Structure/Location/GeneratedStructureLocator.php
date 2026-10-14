@@ -44,27 +44,29 @@ final readonly class GeneratedStructureLocator
         $this->end = new EndWorldGenerator($seed, $states);
     }
 
-    public function locate(DimensionType $dimension, string $name, int $x, int $z): ?StructureLocation
+    /** @param null|callable(int, int): bool $accept */
+    public function locate(DimensionType $dimension, string $name, int $x, int $z, ?callable $accept = null): ?StructureLocation
     {
         $name = strtolower($name);
 
         return match ($dimension) {
-            DimensionType::OVERWORLD => $this->locateOverworld($name, $x, $z),
-            DimensionType::NETHER => $this->locateNether($name, $x, $z),
-            DimensionType::END => $this->locateEnd($name, $x, $z),
+            DimensionType::OVERWORLD => $this->locateOverworld($name, $x, $z, $accept),
+            DimensionType::NETHER => $this->locateNether($name, $x, $z, $accept),
+            DimensionType::END => $this->locateEnd($name, $x, $z, $accept),
         };
     }
 
-    private function locateOverworld(string $name, int $x, int $z): ?StructureLocation
+    private function locateOverworld(string $name, int $x, int $z, ?callable $accept): ?StructureLocation
     {
         $families = match ($name) {
             'stronghold' => [OverworldStructureFamily::Stronghold],
             'village' => [OverworldStructureFamily::Village],
+            'mineshaft' => [OverworldStructureFamily::Mineshaft],
             default => [],
         };
         $locations = [];
         foreach ($families as $family) {
-            $candidate = $this->overworld->locateStructure($family, $x, $z, 32);
+            $candidate = $this->overworld->locateStructure($family, $x, $z, 32, $accept);
             if ($candidate !== null) {
                 $inspection = OverworldStructureInspection::position($candidate);
                 $locations[] = new StructureLocation(
@@ -81,7 +83,7 @@ final readonly class GeneratedStructureLocator
         return self::nearest($locations, $x, $z);
     }
 
-    private function locateNether(string $name, int $x, int $z): ?StructureLocation
+    private function locateNether(string $name, int $x, int $z, ?callable $accept): ?StructureLocation
     {
         $kinds = match ($name) {
             'fortress' => [NetherStructureKind::Fortress],
@@ -95,7 +97,7 @@ final readonly class GeneratedStructureLocator
         };
         $locations = [];
         foreach ($kinds as $kind) {
-            $candidate = $this->nether->locateStructureLocation($kind, $x, $z, 32);
+            $candidate = $this->nether->locateStructureLocation($kind, $x, $z, 32, $accept);
             if ($candidate === null) {
                 continue;
             }
@@ -117,12 +119,12 @@ final readonly class GeneratedStructureLocator
         return self::nearest($locations, $x, $z);
     }
 
-    private function locateEnd(string $name, int $x, int $z): ?StructureLocation
+    private function locateEnd(string $name, int $x, int $z, ?callable $accept): ?StructureLocation
     {
         if ($name !== 'endcity' && $name !== 'end_city') {
             return null;
         }
-        $candidate = $this->end->locateStructureLocation(EndStructureKind::City, $x, $z, 32);
+        $candidate = $this->end->locateStructureLocation(EndStructureKind::City, $x, $z, 32, $accept);
         if ($candidate === null) {
             return null;
         }

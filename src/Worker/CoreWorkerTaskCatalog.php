@@ -23,12 +23,14 @@ namespace Bedriox\Server\Worker;
 use Bedriox\Server\Plugin\Scheduler\Worker\PluginAsyncTaskHandler;
 use Bedriox\Server\Update\UpdateTaskCodec;
 use Bedriox\Server\Worker\Chunk\ChunkPreparationRequestCodec;
+use Bedriox\Server\Worker\Location\GeneratedFeatureSearchCodec;
 use Bedriox\Server\Worker\Navigation\NavigationPathCodec;
 use Bedriox\Server\Worker\Navigation\NavigationSearchRequestCodec;
 use Bedriox\Server\Worker\Network\BatchCompressionTask;
 use Bedriox\Server\Worker\Task\CheckForUpdatesTask;
 use Bedriox\Server\Worker\Task\FindNavigationPathTask;
 use Bedriox\Server\Worker\Task\GenerateChunkTask;
+use Bedriox\Server\Worker\Task\LocateGeneratedFeatureTask;
 use Bedriox\Server\Worker\Task\PrepareChunkTask;
 use Bedriox\Server\Worker\Task\PrepareWorldTask;
 use Bedriox\Server\Worker\Task\SelfTestTask;
@@ -46,6 +48,7 @@ final class CoreWorkerTaskCatalog
     public const SPAWN_WORLD_STORAGE_OWNER = 7;
     public const PREPARE_WORLD = 8;
     public const CHECK_FOR_UPDATES = 9;
+    public const LOCATE_GENERATED_FEATURE = 10;
 
     public static function create(): WorkerTaskRegistry
     {
@@ -149,6 +152,18 @@ final class CoreWorkerTaskCatalog
             UpdateTaskCodec::MAXIMUM_RESPONSE_BYTES,
             5_000,
             cancellable: false,
+        ));
+        $registry->register(new WorkerTaskDefinition(
+            self::LOCATE_GENERATED_FEATURE,
+            1,
+            'generated-feature-location',
+            WorkerLane::WORLD,
+            LocateGeneratedFeatureTask::class,
+            GeneratedFeatureSearchCodec::MAXIMUM_REQUEST_BYTES,
+            GeneratedFeatureSearchCodec::MAXIMUM_RESULT_BYTES,
+            30_000,
+            cancellable: true,
+            retryWhenNotStarted: true,
         ));
 
         return $registry;

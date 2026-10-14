@@ -223,11 +223,7 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
         $this->populateVegetation($builder, $position, $samples, $surfaceHeights, $surfaceBiomes);
 
         $sections = $builder->sections();
-        $biomeStorage = BiomeStorage::fromColumns($surfaceBiomes);
-        $biomeStorages = [];
-        for ($sectionY = Chunk::MIN_SECTION_Y; $sectionY <= Chunk::MAX_SECTION_Y; ++$sectionY) {
-            $biomeStorages[$sectionY] = $biomeStorage;
-        }
+        $biomeStorages = $this->biomeStorages($position, $surfaceBiomes, $surfaceHeights);
         return new Chunk(
             $position,
             $this->blocks->state('minecraft:air'),
@@ -318,12 +314,83 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
         ) ? $resolved : $this->biomes->resolveDryLand($sample);
     }
 
+    /** Bounded deterministic biome sample used by location tooling without generating or loading a chunk. */
+    public function locateBiomeAt(int $x, int $y, int $z): Biome
+    {
+        $surfaceBiome = $this->planningBiomeAt($x, $z);
+
+        return $this->caveBiomes->resolve($x, $y, $z, $this->planningHeightAt($x, $z), $surfaceBiome);
+    }
+
+    /** Returns the same inexpensive planning surface used to qualify generated structures. */
+    public function locateSurfaceHeight(int $x, int $z): int
+    {
+        return $this->planningHeightAt($x, $z);
+    }
+
+    /**
+     * @param list<Biome> $surfaceBiomes
+     * @param list<int>   $surfaceHeights
+     * @return array<int, BiomeStorage>
+     */
+    private function biomeStorages(ChunkPosition $position, array $surfaceBiomes, array $surfaceHeights): array
+    {
+        $surfaceStorage = BiomeStorage::fromColumns($surfaceBiomes);
+        $storages = [];
+        for ($sectionY = Chunk::MIN_SECTION_Y; $sectionY <= Chunk::MAX_SECTION_Y; ++$sectionY) {
+            if ($sectionY >= 3) {
+                $storages[$sectionY] = $surfaceStorage;
+                continue;
+            }
+            $palette = [];
+            $paletteByIdentifier = [];
+            $cellIndices = [];
+            for ($cellY = 0; $cellY < 16; $cellY += 8) {
+                $worldY = $sectionY * 16 + $cellY + 4;
+                for ($cellZ = 0; $cellZ < 16; $cellZ += 8) {
+                    for ($cellX = 0; $cellX < 16; $cellX += 8) {
+                        $column = $cellX + $cellZ * 16;
+                        $biome = $this->caveBiomes->resolve(
+                            $position->x * 16 + $cellX + 4,
+                            $worldY,
+                            $position->z * 16 + $cellZ + 4,
+                            $surfaceHeights[$column],
+                            $surfaceBiomes[$column],
+                        );
+                        $paletteIndex = $paletteByIdentifier[$biome->identifier] ?? null;
+                        if (!is_int($paletteIndex)) {
+                            $paletteIndex = count($palette);
+                            $palette[] = $biome;
+                            $paletteByIdentifier[$biome->identifier] = $paletteIndex;
+                        }
+                        $encoded = chr($paletteIndex);
+                        $cellIndices[intdiv($cellY, 8)][intdiv($cellZ, 8)][intdiv($cellX, 8)] = $encoded;
+                    }
+                }
+            }
+            $indices = '';
+            for ($cellY = 0; $cellY < 2; ++$cellY) {
+                $layer = '';
+                for ($cellZ = 0; $cellZ < 2; ++$cellZ) {
+                    $row = str_repeat($cellIndices[$cellY][$cellZ][0], 8)
+                        . str_repeat($cellIndices[$cellY][$cellZ][1], 8);
+                    $layer .= str_repeat($row, 8);
+                }
+                $indices .= str_repeat($layer, 8);
+            }
+            $storages[$sectionY] = BiomeStorage::fromPaletteIndices($palette, $indices);
+        }
+
+        return $storages;
+    }
+
     /** Bounded internal lookup using the same eligibility path used during chunk generation. */
     public function locateStructure(
         OverworldStructureFamily $family,
         int $x,
         int $z,
         int $maximumRegionRadius = 64,
+        ?callable $accept = null,
     ): ?OverworldStructureLocation {
         return $this->structures->locateNatural(
             $family,
@@ -332,6 +399,7 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
             fn(int $worldX, int $worldZ): string => $this->biomeAt($worldX, $worldZ)->identifier,
             fn(int $worldX, int $worldZ): int => $this->surfaceHeight($worldX, $worldZ),
             $maximumRegionRadius,
+            $accept,
         );
     }
 

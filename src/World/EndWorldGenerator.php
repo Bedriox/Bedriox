@@ -125,31 +125,34 @@ final readonly class EndWorldGenerator implements VersionedWorldGenerator
         int $fromX = 0,
         int $fromZ = 0,
         int $maximumRegionRadius = 64,
+        ?callable $accept = null,
     ): ?EndStructureLocation {
-        $plan = $this->locateStructure($kind, $fromX, $fromZ, $maximumRegionRadius);
-        if ($plan === null) {
-            return null;
-        }
-        $surface = $this->surfaceAt($plan->centerX, $plan->centerZ)
-            ?? throw new \LogicException('Qualified End structure lost its supporting island.');
-        $baseY = $surface + 1;
-        $shipTeleport = null;
-        if ($plan->kind === EndStructureKind::CityWithShip) {
-            $shipX = $plan->centerX + ($plan->alongX ? 34 : 62);
-            $shipZ = $plan->centerZ + ($plan->alongX ? 62 : 34);
-            $shipTeleport = new BlockPosition(
-                $shipX + ($plan->alongX ? 0 : 2),
-                $surface + 21,
-                $shipZ + ($plan->alongX ? 2 : 0),
+        foreach ($this->structurePlanner->candidates($kind, $fromX, $fromZ, $maximumRegionRadius) as $plan) {
+            $surface = $this->surfaceAt($plan->centerX, $plan->centerZ);
+            if ($surface === null || ($accept !== null && !$accept($plan->centerX, $plan->centerZ))) {
+                continue;
+            }
+            $baseY = $surface + 1;
+            $shipTeleport = null;
+            if ($plan->kind === EndStructureKind::CityWithShip) {
+                $shipX = $plan->centerX + ($plan->alongX ? 34 : 62);
+                $shipZ = $plan->centerZ + ($plan->alongX ? 62 : 34);
+                $shipTeleport = new BlockPosition(
+                    $shipX + ($plan->alongX ? 0 : 2),
+                    $surface + 21,
+                    $shipZ + ($plan->alongX ? 2 : 0),
+                );
+            }
+
+            return new EndStructureLocation(
+                $plan,
+                $baseY,
+                new BlockPosition($plan->centerX, $baseY + 1, $plan->centerZ),
+                $shipTeleport,
             );
         }
 
-        return new EndStructureLocation(
-            $plan,
-            $baseY,
-            new BlockPosition($plan->centerX, $baseY + 1, $plan->centerZ),
-            $shipTeleport,
-        );
+        return null;
     }
 
     private function surfaceAt(int $x, int $z): ?int

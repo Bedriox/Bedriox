@@ -5,6 +5,10 @@
   apply authoritative void damage only to survival and adventure players.
 - Distinguish decoded input-validation and handler failures from malformed
   packet decoding in play-session diagnostics.
+- Add Bedrock-shaped `/locate structure` and `/locate biome` overloads with
+  bounded identifier suggestions, dimension-aware deterministic searches,
+  exact coordinate and distance feedback, new-chunks-only structure filtering,
+  and cancellable worker searches that keep command dispatch and server ticks responsive.
 - Replace heightmap-only Overworld filling and feature tunnels with a bounded
   three-dimensional density lattice, continuous cavification, and pressure-aware
   aquifers. Terrain now supports connected underground cave systems, rare natural

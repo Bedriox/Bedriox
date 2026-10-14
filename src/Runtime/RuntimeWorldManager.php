@@ -42,6 +42,7 @@ use Bedriox\Api\World\WorldOperationResult;
 use Bedriox\Api\World\WorldOperationState;
 use Bedriox\Api\World\WorldOperationType;
 use Bedriox\Api\World\WorldUnloadOptions;
+use Bedriox\Server\World\ChunkPosition;
 use Closure;
 use LogicException;
 use Throwable;
@@ -125,6 +126,18 @@ final class RuntimeWorldManager implements WorldManager
             ),
             $runtime->playerCount(),
         );
+    }
+
+    /** @internal Used by the built-in locate command's new-chunks-only filter. */
+    public function hasGeneratedChunk(World $world, ChunkPosition $position): bool
+    {
+        $runtime = $this->runtimes->get($world->id(), $world->getDimensionType())
+            ?? throw new LogicException('World is not loaded.');
+        if (!$runtime->handle->isSameLoad($world)) {
+            throw new LogicException('World handle belongs to an earlier load generation.');
+        }
+
+        return $runtime->opened->world->hasGeneratedChunk($position);
     }
 
     public function create(string $worldId, WorldCreationOptions $options = new WorldCreationOptions()): WorldOperation

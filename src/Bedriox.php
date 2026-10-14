@@ -234,6 +234,11 @@ final class Bedriox
                 $generatorRegistry,
             );
             $internalStates = $worldFactory->internalStates($data);
+            $featureSearches = new \Bedriox\Server\Worker\Location\GeneratedFeatureSearchDispatcher(
+                $coreWorkers,
+                CoreWorkerTaskCatalog::LOCATE_GENERATED_FEATURE,
+                2,
+            );
             $blockCatalog = \Bedriox\Server\Gameplay\Block\BlockCatalog::vanilla(
                 $internalStates,
                 $data->blockItemMappingRegistry(),
@@ -701,6 +706,129 @@ final class Bedriox
                     $composition->server?->runtime->remoteAddressForPlayer($name),
                 kickAddress: static fn(string $address, string $reason, string $actor): int =>
                     $composition->server?->runtime->kickAddress($address, $reason, $actor) ?? 0,
+                locateStructure: static function (
+                    \Bedriox\Api\Player\Player $player,
+                    \Bedriox\Api\World\World $world,
+                    \Bedriox\Api\World\Position $origin,
+                    \Bedriox\Server\Command\Default\LocateStructure $structure,
+                    bool $useNewChunksOnly,
+                    \Closure $completion,
+                ) use ($composition, $featureSearches): bool {
+                    $manager = $composition->server?->worldManager;
+                    if ($manager === null) {
+                        return false;
+                    }
+                    $info = $manager->info($world);
+                    $request = new \Bedriox\Server\Worker\Location\GeneratedFeatureSearchRequest(
+                        \Bedriox\Server\Worker\Location\GeneratedFeatureSearchMode::STRUCTURE,
+                        $world->getDimensionType(),
+                        $structure->value,
+                        $info->seed,
+                        (int) floor($origin->x),
+                        (int) floor($origin->y),
+                        (int) floor($origin->z),
+                    );
+                    $submit = null;
+                    $submit = static function (
+                        \Bedriox\Server\Worker\Location\GeneratedFeatureSearchRequest $candidateRequest,
+                    ) use (
+                        &$submit,
+                        $completion,
+                        $composition,
+                        $featureSearches,
+                        $manager,
+                        $player,
+                        $useNewChunksOnly,
+                        $world,
+                    ): bool {
+                        return $featureSearches->submit(
+                            $player->uuid,
+                            $candidateRequest,
+                            static function (
+                                ?\Bedriox\Server\World\Generation\Structure\Location\LocatedFeature $found,
+                                ?string $failure,
+                            ) use (
+                                &$submit,
+                                $candidateRequest,
+                                $completion,
+                                $composition,
+                                $manager,
+                                $player,
+                                $useNewChunksOnly,
+                                $world,
+                            ): void {
+                                $current = null;
+                                foreach ($composition->server->runtime->onlinePlayers() as $online) {
+                                    if ($online->uuid === $player->uuid) {
+                                        $current = $online;
+                                        break;
+                                    }
+                                }
+                                if ($current === null || !$current->isConnected()
+                                    || !$current->getWorld()->isSameLoad($world)) {
+                                    return;
+                                }
+                                if ($failure !== null || !$useNewChunksOnly || $found === null) {
+                                    $completion($found, $failure);
+                                    return;
+                                }
+                                $chunkX = $found->x >= 0 ? intdiv($found->x, 16) : -intdiv(-$found->x + 15, 16);
+                                $chunkZ = $found->z >= 0 ? intdiv($found->z, 16) : -intdiv(-$found->z + 15, 16);
+                                if (!$manager->hasGeneratedChunk(
+                                    $world,
+                                    new \Bedriox\Server\World\ChunkPosition($chunkX, $chunkZ),
+                                )) {
+                                    $completion($found, null);
+                                    return;
+                                }
+                                if (count($candidateRequest->excludedLocations) >= 32
+                                    || !$submit($candidateRequest->excluding($found->x, $found->z))) {
+                                    $completion(null, 'The locate search could not find an ungenerated structure.');
+                                }
+                            },
+                        );
+                    };
+
+                    return $submit($request);
+                },
+                locateBiome: static function (
+                    \Bedriox\Api\Player\Player $player,
+                    \Bedriox\Api\World\World $world,
+                    \Bedriox\Api\World\Position $origin,
+                    string $identifier,
+                    \Closure $completion,
+                ) use ($composition, $featureSearches): bool {
+                    $manager = $composition->server?->worldManager;
+                    if ($manager === null) {
+                        return false;
+                    }
+                    $info = $manager->info($world);
+
+                    return $featureSearches->submit(
+                        $player->uuid,
+                        new \Bedriox\Server\Worker\Location\GeneratedFeatureSearchRequest(
+                            \Bedriox\Server\Worker\Location\GeneratedFeatureSearchMode::BIOME,
+                            $world->getDimensionType(),
+                            $identifier,
+                            $info->seed,
+                            (int) floor($origin->x),
+                            (int) floor($origin->y),
+                            (int) floor($origin->z),
+                        ),
+                        static function (
+                            ?\Bedriox\Server\World\Generation\Structure\Location\LocatedFeature $found,
+                            ?string $failure,
+                        ) use ($completion, $composition, $player, $world): void {
+                            foreach ($composition->server->runtime->onlinePlayers() as $online) {
+                                if ($online->uuid === $player->uuid && $online->isConnected()
+                                    && $online->getWorld()->isSameLoad($world)) {
+                                    $completion($found, $failure);
+                                    return;
+                                }
+                            }
+                        },
+                    );
+                },
                 latestUpdate: static fn(): ?\Bedriox\Api\Update\UpdateInfo =>
                     $composition->updates?->latestAvailable(),
             ))->register();

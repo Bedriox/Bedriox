@@ -44,6 +44,7 @@ use Bedriox\Server\Command\Default\HelpCommand;
 use Bedriox\Server\Command\Default\KickCommand;
 use Bedriox\Server\Command\Default\KillCommand;
 use Bedriox\Server\Command\Default\ListCommand;
+use Bedriox\Server\Command\Default\LocateCommand;
 use Bedriox\Server\Command\Default\MeCommand;
 use Bedriox\Server\Command\Default\OnlinePlayerResolver;
 use Bedriox\Server\Command\Default\OpCommand;
@@ -144,6 +145,8 @@ final readonly class BuiltinCommandRegistrar
         private ?Closure $playerAddress = null,
         private ?Closure $kickAddress = null,
         private ?Closure $latestUpdate = null,
+        private ?Closure $locateStructure = null,
+        private ?Closure $locateBiome = null,
     ) {}
 
     public function register(): CommandSoftEnum
@@ -200,6 +203,9 @@ final readonly class BuiltinCommandRegistrar
         }
         if ($this->worldSeed !== null) {
             $commands[] = new SeedCommand($this->worldSeed);
+        }
+        if ($this->locateStructure !== null && $this->locateBiome !== null) {
+            $commands[] = new LocateCommand($this->locateStructure, $this->locateBiome);
         }
         if ($this->setBlock !== null) {
             $commands[] = new SetBlockCommand($this->setBlock);

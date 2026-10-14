@@ -173,6 +173,19 @@ final class World
         return $this->chunks->contains($position);
     }
 
+    /**
+     * Reports whether a chunk has already entered this world's generated history.
+     * Storage is inspected without installing the chunk or changing repository retention.
+     */
+    public function hasGeneratedChunk(ChunkPosition $position): bool
+    {
+        if ($this->chunks->contains($position)) {
+            return true;
+        }
+
+        return $this->provider?->loadChunk($position, $this->dimension) !== null;
+    }
+
     /** Returns the currently loaded immutable snapshot without loading, generating, or changing LRU state. */
     public function loadedChunk(ChunkPosition $position): ?Chunk
     {
