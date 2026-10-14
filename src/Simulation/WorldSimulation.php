@@ -540,6 +540,7 @@ use Bedriox\Server\World\Collision\BlockCollisionQuery;
 use Bedriox\Server\World\Collision\BlockCollisionRegistry;
 use Bedriox\Server\World\Collision\PlayerCollisionResolver;
 use Bedriox\Server\World\Collision\PlayerCollisionShape;
+use Bedriox\Server\World\DimensionTypeBounds;
 use Bedriox\Server\World\Environment\EnvironmentTickScheduler;
 use Bedriox\Server\World\Environment\EnvironmentTickType;
 use Bedriox\Server\World\Environment\Fluid\FluidCurrentResolver;
@@ -580,6 +581,8 @@ final class WorldSimulation
     private const float FIRE_TICK_DAMAGE = 1.0;
     private const float DROWNING_DAMAGE = 2.0;
     private const float LAVA_CONTACT_DAMAGE = 4.0;
+    private const float VOID_DAMAGE = 10.0;
+    private const int VOID_DAMAGE_DEPTH = 16;
     private const float MINECART_PLACEMENT_OFFSET_Y = 0.5;
 
     private const int MAXIMUM_ITEM_ENTITIES_SPAWNED_PER_COMMAND = 256;
@@ -9157,7 +9160,7 @@ final class WorldSimulation
             return new CommandRejected($command->session, 'damage_cooldown');
         }
         $baseDamage = $command->amount;
-        $reducedDamage = $isKill ? $baseDamage : $this->effectReducedDamage(
+        $reducedDamage = $isKill || $command->cause === DamageCause::Void ? $baseDamage : $this->effectReducedDamage(
             $player,
             $this->armorReducedDamage($player, $baseDamage, $command->cause),
         );
@@ -11894,6 +11897,10 @@ final class WorldSimulation
             ),
             $cause === DamageCause::Explosion => new TranslatableMessage(
                 'death.attack.explosion',
+                [$player->identity->displayName],
+            ),
+            $cause === DamageCause::Void => new TranslatableMessage(
+                'death.attack.outOfWorld',
                 [$player->identity->displayName],
             ),
             $cause === DamageCause::Kill,
@@ -19052,25 +19059,83 @@ final class WorldSimulation
     /** @return list<WorldEvent> */
     private function advancePlayerEnvironment(): array
     {
-        if ($this->blockWorld === null) {
-            return [];
-        }
         $events = [];
+        $minimumY = DimensionTypeBounds::minimumY($this->dimension);
+        $maximumY = DimensionTypeBounds::maximumY($this->dimension);
         foreach ($this->players->players() as $player) {
             if (!$player->vitals->isAlive()) {
                 continue;
             }
+            $position = $player->movement->position;
+            if ($position->y <= $minimumY - self::VOID_DAMAGE_DEPTH && $player->gameMode()->takesDamage()) {
+                $voidDamage = $this->damage(new DamagePlayer(
+                    $player->sessionId,
+                    self::VOID_DAMAGE,
+                    DamageCause::Void,
+                ));
+                $events[] = $voidDamage;
+                array_push($events, ...$this->drainDeferredEvents());
+                if ($voidDamage instanceof PlayerDamaged && !$voidDamage->player->alive) {
+                    continue;
+                }
+            }
+            if ($this->blockWorld === null) {
+                continue;
+            }
+            $headBlockY = (int) floor($position->y + 1.62);
+            $feetBlockY = (int) floor($position->y + 0.1);
+            if ($headBlockY < $minimumY || $headBlockY > $maximumY
+                || $feetBlockY < $minimumY || $feetBlockY > $maximumY) {
+                $this->portalContacts->leave($player->sessionId);
+                $previousAir = $player->vitals->airTicks;
+                $previousFire = $player->vitals->fireTicks;
+                $player->vitals->airTicks = min(
+                    \Bedriox\Server\Player\PlayerVitals::MAX_AIR_TICKS,
+                    $player->vitals->airTicks + 4,
+                );
+                if (VanillaEffectBehavior::hasFireResistance($player->effects->snapshot())) {
+                    $player->vitals->fireTicks = 0;
+                } elseif ($player->vitals->fireTicks > 0) {
+                    --$player->vitals->fireTicks;
+                    if ($player->vitals->fireTicks % 20 === 0) {
+                        $events[] = $this->damage(new DamagePlayer(
+                            $player->sessionId,
+                            self::FIRE_TICK_DAMAGE,
+                            DamageCause::Fire,
+                        ));
+                        array_push($events, ...$this->drainDeferredEvents());
+                    }
+                }
+                $airChanged = $player->vitals->airTicks !== $previousAir;
+                $publishAir = $airChanged && (
+                    ($this->tick + $player->runtimeActorId) % 20 === 0
+                    || $player->vitals->airTicks === \Bedriox\Server\Player\PlayerVitals::MAX_AIR_TICKS
+                );
+                $fireStateChanged = ($previousFire > 0) !== ($player->vitals->fireTicks > 0);
+                if ($airChanged || $player->vitals->fireTicks !== $previousFire) {
+                    $player->markDirty();
+                }
+                if ($publishAir || $fireStateChanged) {
+                    $events[] = new PlayerEnvironmentChanged(
+                        $player->snapshot(),
+                        $this->players->recipients(),
+                        $this->tick,
+                        $publishAir,
+                        $fireStateChanged,
+                    );
+                }
+                continue;
+            }
             $previousAir = $player->vitals->airTicks;
             $previousFire = $player->vitals->fireTicks;
-            $position = $player->movement->position;
             $headState = $this->blockWorld->blockStateAt(
                 (int) floor($position->x),
-                (int) floor($position->y + 1.62),
+                $headBlockY,
                 (int) floor($position->z),
             );
             $feetState = $this->blockWorld->blockStateAt(
                 (int) floor($position->x),
-                (int) floor($position->y + 0.1),
+                $feetBlockY,
                 (int) floor($position->z),
             );
             $portalEvent = $this->advancePlayerPortal($player, $feetState, $headState);
@@ -19373,6 +19438,9 @@ final class WorldSimulation
         }
         $position = $player->movement->position;
         $headY = $position->y + 1.62;
+        if (!$this->isInsideDimensionHeight((int) floor($headY))) {
+            return false;
+        }
         $headState = $this->blockWorld->blockStateAt(
             (int) floor($position->x),
             (int) floor($headY),
@@ -19408,23 +19476,32 @@ final class WorldSimulation
         }
         if ($this->blockWorld !== null && $this->blockStateRegistry !== null) {
             $position = $player->movement->position;
-            $below = $this->blockWorld->blockStateAt(
-                (int) floor($position->x),
-                (int) floor($position->y - 0.1),
-                (int) floor($position->z),
-            );
-            $identifier = $this->blockStateRegistry->state($below)->identifier();
-            if ($identifier === 'minecraft:soul_sand' || $identifier === 'minecraft:soul_soil') {
-                $soulSpeed = $this->armorEnchantmentLevel(
-                    $player,
-                    ArmorSlot::Feet,
-                    VanillaEnchantments::SOUL_SPEED,
+            $belowY = (int) floor($position->y - 0.1);
+            if ($this->isInsideDimensionHeight($belowY)) {
+                $below = $this->blockWorld->blockStateAt(
+                    (int) floor($position->x),
+                    $belowY,
+                    (int) floor($position->z),
                 );
-                $multiplier = max($multiplier, 1.0 + (min(3, $soulSpeed) * 0.105));
+                $identifier = $this->blockStateRegistry->state($below)->identifier();
+                if ($identifier === 'minecraft:soul_sand' || $identifier === 'minecraft:soul_soil') {
+                    $soulSpeed = $this->armorEnchantmentLevel(
+                        $player,
+                        ArmorSlot::Feet,
+                        VanillaEnchantments::SOUL_SPEED,
+                    );
+                    $multiplier = max($multiplier, 1.0 + (min(3, $soulSpeed) * 0.105));
+                }
             }
         }
 
         return $multiplier;
+    }
+
+    private function isInsideDimensionHeight(int $y): bool
+    {
+        return $y >= DimensionTypeBounds::minimumY($this->dimension)
+            && $y <= DimensionTypeBounds::maximumY($this->dimension);
     }
 
     private function applyFrostWalker(Player $player): void
@@ -19550,7 +19627,7 @@ final class WorldSimulation
     ): float {
         $effectiveDefense = $player->inventory->defensePoints()
             * (1.0 - min(0.6, max(0, $breachLevel) * 0.15));
-        $afterArmor = $cause === DamageCause::Fall
+        $afterArmor = $cause === DamageCause::Fall || $cause === DamageCause::Void
             ? $damage
             : max(0.0, $damage * (1.0 - ($effectiveDefense * 0.04)));
         $protection = EnchantmentEffects::protectionFactor($this->armorEnchantments($player), $cause);
@@ -19636,7 +19713,7 @@ final class WorldSimulation
 
     private function damageArmor(Player $player, float $baseDamage, DamageCause $cause): bool
     {
-        if ($cause === DamageCause::Fall || $this->itemCatalog === null) {
+        if ($cause === DamageCause::Fall || $cause === DamageCause::Void || $this->itemCatalog === null) {
             return false;
         }
         $defaultWear = max((int) floor($baseDamage / 4.0), 1);

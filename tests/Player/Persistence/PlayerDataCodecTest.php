@@ -67,6 +67,27 @@ final class PlayerDataCodecTest extends TestCase
         );
     }
 
+    public function testPersistsSpectatorPositionBelowTheTerrainFloor(): void
+    {
+        $profile = self::profile();
+        $profile = new PlayerBootstrap(
+            $profile->identity,
+            $profile->worldName,
+            new Position(12.5, -96.25, -4.5),
+            $profile->yaw,
+            $profile->pitch,
+            $profile->inventory,
+            $profile->firstPlayedAt,
+            $profile->lastPlayedAt,
+            gamemode: 'spectator',
+        );
+
+        $decoded = (new PlayerDataCodec())->decode((new PlayerDataCodec())->encode($profile));
+
+        self::assertEquals(new Position(12.5, -96.25, -4.5), $decoded->position);
+        self::assertSame('spectator', $decoded->gamemode);
+    }
+
     public function testRejectsUnsupportedDimension(): void
     {
         $root = self::root();

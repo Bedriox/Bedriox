@@ -1,5 +1,10 @@
 # Changelog
 
+- Allow spectators to fly below a dimension's terrain floor without being
+  disconnected, keep creative and spectator players immune to the void, and
+  apply authoritative void damage only to survival and adventure players.
+- Distinguish decoded input-validation and handler failures from malformed
+  packet decoding in play-session diagnostics.
 - Replace heightmap-only Overworld filling and feature tunnels with a bounded
   three-dimensional density lattice, continuous cavification, and pressure-aware
   aquifers. Terrain now supports connected underground cave systems, rare natural

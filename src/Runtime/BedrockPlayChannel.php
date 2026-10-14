@@ -149,6 +149,7 @@ use Bedriox\Server\Simulation\Command\MovePlayer;
 use Bedriox\Server\Simulation\Command\WorkstationRequest;
 use Bedriox\Server\Simulation\Command\WorkstationRequestType;
 use Bedriox\Server\Simulation\Command\WorldCommand;
+use Bedriox\Server\Simulation\CommandValidationException;
 use Bedriox\Server\Simulation\MovementMode;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
 use Bedriox\Server\Transport\NetworkCompressionPolicy;
@@ -458,7 +459,12 @@ final class BedrockPlayChannel
                 $packet = BedrockPacketCodec::decode($packetId, $frame->payload, $this->protocolVersion);
                 $handleStartedNanoseconds = hrtime(true);
                 $this->traceInboundDecodeNanoseconds += $handleStartedNanoseconds - $decodeStartedNanoseconds;
-                $handled = $this->handle($packet);
+                try {
+                    $handled = $this->handle($packet);
+                } catch (Throwable $error) {
+                    $this->traceInboundHandleNanoseconds += hrtime(true) - $handleStartedNanoseconds;
+                    return $this->failHandling($packetId, $packet, $error);
+                }
                 $this->traceInboundHandleNanoseconds += hrtime(true) - $handleStartedNanoseconds;
                 if (!$handled) {
                     $this->diagnose("rejected packet {$packetId} (" . $packet::class . '): invalid play state');
@@ -3135,6 +3141,18 @@ final class BedrockPlayChannel
         $this->close($reason, $packetId, $exception);
 
         return false;
+    }
+
+    private function failHandling(int $packetId, Packet $packet, Throwable $error): bool
+    {
+        if ($error instanceof CommandValidationException) {
+            $this->diagnose("rejected packet {$packetId} (" . $packet::class . '): command validation');
+
+            return $this->fail('input_validation_failed', $packetId, $error);
+        }
+        $this->diagnose("failed handling packet {$packetId} (" . $packet::class . '): ' . $error::class);
+
+        return $this->fail('handler_failed', $packetId, $error);
     }
 
     private function diagnose(string $message): void

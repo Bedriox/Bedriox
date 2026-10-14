@@ -67,7 +67,7 @@ final readonly class PlayerBootstrap
             }
         }
         if (abs($this->position->x) > 30_000_000.0 || abs($this->position->z) > 30_000_000.0
-            || $this->position->y < -64.0 || $this->position->y > 319.0) {
+            || abs($this->position->y) > 30_000_000.0) {
             throw new InvalidArgumentException('Player position exceeds the supported world boundary.');
         }
         if ($this->yaw < -360.0 || $this->yaw > 360.0 || $this->pitch < -90.0 || $this->pitch > 90.0) {

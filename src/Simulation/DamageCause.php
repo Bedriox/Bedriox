@@ -33,4 +33,5 @@ enum DamageCause: string
     case Fire = 'fire';
     case Explosion = 'explosion';
     case Thorns = 'thorns';
+    case Void = 'void';
 }

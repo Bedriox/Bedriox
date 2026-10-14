@@ -154,7 +154,7 @@ final readonly class SimulationCommandFactory
         if (abs($x) > $this->limits->maximumCoordinate || abs($z) > $this->limits->maximumCoordinate) {
             throw new CommandValidationException('Horizontal position exceeds the world boundary.');
         }
-        if ($y < -64.0 || $y > 1024.0) {
+        if (abs($y) > $this->limits->maximumCoordinate) {
             throw new CommandValidationException('Vertical position exceeds the world boundary.');
         }
         if ($yaw < -360.0 || $yaw > 360.0 || ($headYaw !== null && ($headYaw < -360.0 || $headYaw > 360.0)) || $pitch < -90.0 || $pitch > 90.0) {

@@ -477,6 +477,67 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertFalse($channel->isClosed());
     }
 
+    public function testMovementBelowTerrainFloorRemainsAValidDecodedCommand(): void
+    {
+        $lines = [];
+        $diagnostics = new RuntimeDiagnostics(static function (string $line) use (&$lines): void {
+            $lines[] = $line;
+        });
+        [$channel, $client, , $entityId] = $this->channel(diagnostics: $diagnostics);
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([
+                $this->movementPacket(UnsignedLong::fromInt(1), y: -65.0),
+            ])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        self::assertFalse($channel->isClosed());
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(MovePlayer::class, $commands[0]);
+        self::assertEqualsWithDelta(-65.0, $commands[0]->position->y, 0.000_01);
+        $diagnostic = implode('', $lines);
+        self::assertStringNotContainsString('failed decoding packet 144', $diagnostic);
+        self::assertStringNotContainsString('"reason":"decode_failed"', $diagnostic);
+        self::assertStringNotContainsString('"event":"play.session_closed"', $diagnostic);
+    }
+
+    public function testDecodedMovementValidationHasItsOwnFailureClassification(): void
+    {
+        $lines = [];
+        $diagnostics = new RuntimeDiagnostics(static function (string $line) use (&$lines): void {
+            $lines[] = $line;
+        });
+        [$channel, $client, , $entityId] = $this->channel(diagnostics: $diagnostics);
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        self::assertFalse($channel->accept(new ConnectedPayloadEvent(
+            $client->encryptEnvelope($this->encode([
+                $this->movementPacket(UnsignedLong::fromInt(1), pitch: 100.0),
+            ])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        self::assertTrue($channel->isClosed());
+        $diagnostic = implode('', $lines);
+        self::assertStringContainsString('"reason":"input_validation_failed"', $diagnostic);
+        self::assertStringContainsString('"packet_id":144', $diagnostic);
+        self::assertStringNotContainsString('failed decoding packet 144', $diagnostic);
+        self::assertStringNotContainsString('"reason":"decode_failed"', $diagnostic);
+    }
+
     public function testGameplayBeforeInitializationFailsClosed(): void
     {
         [$channel, $client] = $this->channel();

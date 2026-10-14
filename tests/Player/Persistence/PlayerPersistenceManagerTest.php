@@ -99,6 +99,39 @@ final class PlayerPersistenceManagerTest extends TestCase
         self::assertSame($stored, $store->profile);
     }
 
+    public function testSnapshotsAndRestoresSpectatorBelowTheTerrainFloor(): void
+    {
+        $palette = self::palette();
+        $store = new MemoryPlayerDataStore();
+        $manager = new PlayerPersistenceManager(
+            $store,
+            'world',
+            new Position(0.0, 64.0, 0.0),
+            static fn(): int => 300,
+        );
+        $player = new Player(
+            'session',
+            1,
+            new PlayerIdentity(self::UUID, 'Player', '1'),
+            new Position(2.25, -96.25, -9.5),
+            4,
+            0,
+            64.0,
+            PlayerInventory::starter($palette),
+            'world',
+            100,
+            gamemode: 'spectator',
+        );
+        $player->markDirty();
+
+        self::assertTrue($manager->save($player));
+        self::assertEquals(new Position(2.25, -96.25, -9.5), $store->profile?->position);
+        self::assertEquals(
+            new Position(2.25, -96.25, -9.5),
+            $manager->load(self::login())->position,
+        );
+    }
+
     public function testSavedWorldIsPreservedForRuntimeAvailabilityResolution(): void
     {
         $palette = self::palette();

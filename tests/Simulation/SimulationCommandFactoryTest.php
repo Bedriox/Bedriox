@@ -91,7 +91,7 @@ final class SimulationCommandFactoryTest extends TestCase
         yield 'infinite head yaw' => [static fn(SimulationCommandFactory $factory) => $factory->move('session', 1, 0.0, 64.0, 0.0, 0.0, 0.0, MovementMode::WALKING, headYaw: INF)];
         yield 'head yaw out of range' => [static fn(SimulationCommandFactory $factory) => $factory->move('session', 1, 0.0, 64.0, 0.0, 0.0, 0.0, MovementMode::WALKING, headYaw: 361.0)];
         yield 'extreme horizontal coordinate' => [static fn(SimulationCommandFactory $factory) => $factory->move('session', 1, 30_000_001.0, 64.0, 0.0, 0.0, 0.0, MovementMode::WALKING)];
-        yield 'extreme vertical coordinate' => [static fn(SimulationCommandFactory $factory) => $factory->move('session', 1, 0.0, 1025.0, 0.0, 0.0, 0.0, MovementMode::WALKING)];
+        yield 'extreme vertical coordinate' => [static fn(SimulationCommandFactory $factory) => $factory->move('session', 1, 0.0, 30_000_001.0, 0.0, 0.0, 0.0, MovementMode::WALKING)];
         yield 'pitch out of range' => [static fn(SimulationCommandFactory $factory) => $factory->move('session', 1, 0.0, 64.0, 0.0, 0.0, 91.0, MovementMode::WALKING)];
         yield 'movement delta out of range' => [static fn(SimulationCommandFactory $factory) => $factory->move('session', 1, 0.0, 64.0, 0.0, 0.0, 0.0, MovementMode::WALKING, 13.0)];
         yield 'negative chat sequence' => [static fn(SimulationCommandFactory $factory) => $factory->chat('session', -1, 'hello')];
@@ -116,5 +116,21 @@ final class SimulationCommandFactoryTest extends TestCase
 
         $this->expectException(CommandValidationException::class);
         $operation($factory);
+    }
+
+    public function testAcceptsMovementBelowTheOverworldTerrainFloor(): void
+    {
+        $move = (new SimulationCommandFactory())->move(
+            'session',
+            1,
+            0.0,
+            -65.0,
+            0.0,
+            0.0,
+            0.0,
+            MovementMode::WALKING,
+        );
+
+        self::assertSame(-65.0, $move->position->y);
     }
 }
