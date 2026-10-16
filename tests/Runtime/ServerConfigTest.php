@@ -70,6 +70,10 @@ final class ServerConfigTest extends TestCase
         self::assertTrue($defaults->movementSecurityEnabled);
         self::assertTrue($defaults->correctInvalidMovement);
         self::assertTrue($defaults->kickRepeatedMovementViolations);
+        self::assertSame(10, $defaults->protocolSoftStrikeLimit);
+        self::assertSame(15, $defaults->protocolStrikeDecaySeconds);
+        self::assertTrue($defaults->traceUnsupportedPackets);
+        self::assertSame(5, $defaults->unsupportedPacketLogLimit);
 
         $config = ServerConfig::fromArguments([
             '--bind=127.0.0.1',
@@ -167,6 +171,10 @@ final class ServerConfigTest extends TestCase
                 'security.movement.enabled=false',
                 'security.movement.correct-invalid-movement=false',
                 'security.movement.kick-repeated-violations=false',
+                'network.protocol-soft-strike-limit=7',
+                'network.protocol-strike-decay-seconds=30',
+                'network.trace-unsupported-packets=false',
+                'network.unsupported-packet-log-limit=2',
             ]) . "\n");
             $custom = ServerConfig::fromConfigurationFiles($properties, $settings, []);
             self::assertSame(NetworkSecurityProfile::CUSTOM, $custom->networkSecurityProfile);
@@ -178,6 +186,10 @@ final class ServerConfigTest extends TestCase
             self::assertFalse($custom->movementSecurityEnabled);
             self::assertFalse($custom->correctInvalidMovement);
             self::assertFalse($custom->kickRepeatedMovementViolations);
+            self::assertSame(7, $custom->protocolSoftStrikeLimit);
+            self::assertSame(30, $custom->protocolStrikeDecaySeconds);
+            self::assertFalse($custom->traceUnsupportedPackets);
+            self::assertSame(2, $custom->unsupportedPacketLogLimit);
         } finally {
             @unlink($properties);
             @unlink($settings);

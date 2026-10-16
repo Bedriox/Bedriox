@@ -139,6 +139,9 @@ use Bedriox\Server\Player\InventorySlotReference;
 use Bedriox\Server\Player\InventoryStackRequestAction;
 use Bedriox\Server\Player\InventoryStackRequestActionType;
 use Bedriox\Server\Player\PlayerInventory;
+use Bedriox\Server\Runtime\Input\InboundDisposition;
+use Bedriox\Server\Runtime\Input\InboundOrigin;
+use Bedriox\Server\Runtime\Input\InboundResult;
 use Bedriox\Server\Security\GameplayTrafficGuard;
 use Bedriox\Server\Simulation\ArmSwingSource;
 use Bedriox\Server\Simulation\BlockBreakAction;
@@ -222,6 +225,8 @@ final class BedrockPlayChannel
     private ?ContainerType $pendingStorageCloseType = null;
     private ?int $pendingHotbarSlot = null;
     private bool $closed = false;
+    /** Input is terminal while a final disconnect notice is still allowed to drain. */
+    private bool $terminalInputFailure = false;
     private bool $spawnStatusQueued = false;
     private ?NetworkChunkPublisherUpdatePacket $pendingChunkPublisherUpdate = null;
     private ?PendingWorldSwitch $pendingWorldSwitch = null;
@@ -260,6 +265,8 @@ final class BedrockPlayChannel
 
     /** @var array<int, array{packets: int, bytes: int}> */
     private array $traceInboundPackets = [];
+    /** @var array<int, int> */
+    private array $unsupportedPacketTraceCounts = [];
     /** @var array<string, array{batches: int, packets: int, bytes: int}> */
     private array $traceOutboundBatches = [];
     private int $tracePreparedChunks = 0;
@@ -313,6 +320,8 @@ final class BedrockPlayChannel
         int $compressionTaskTypeId = 0,
         private ?PreparedChunkCache $preparedChunks = null,
         private readonly ?PreparedPlayBatchCache $preparedPlayBatches = null,
+        private readonly bool $traceUnsupportedPackets = true,
+        private readonly int $unsupportedPacketLogLimit = 5,
     ) {
         $this->login = $ready->login;
         $this->encryptor = $ready->encryptor;
@@ -356,7 +365,8 @@ final class BedrockPlayChannel
                 || $this->chunksSendPerTick < 1 || $this->chunksSendPerTick > 64
                 || $this->chunkPrefetchRadius < 0 || $this->chunkPrefetchRadius > 8
                 || $this->viewDistance + $this->chunkPrefetchRadius > 32
-                || $this->chunkGenerationQueueSize < 1 || $this->chunkGenerationQueueSize > 65_536) {
+                || $this->chunkGenerationQueueSize < 1 || $this->chunkGenerationQueueSize > 65_536
+                || $this->unsupportedPacketLogLimit < 0 || $this->unsupportedPacketLogLimit > 1_000) {
                 throw new \InvalidArgumentException('Chunk streaming configuration is invalid.');
             }
             if (count($initializationPackets) > $this->limits->maximumOutgoingPayloadsPerSession) {
@@ -394,12 +404,28 @@ final class BedrockPlayChannel
         $this->close();
     }
 
+    /** Accepts one transport payload and reports whether the session remains usable. */
     public function accept(ConnectedPayloadEvent $event): bool
     {
-        if ($this->closed
-            || $event->reliability !== Reliability::ReliableOrdered
-            || $event->orderingChannel !== 0) {
-            return $this->fail('invalid_transport');
+        return $this->acceptInput($event)->keepsSessionOpen();
+    }
+
+    /** Accepts one transport payload with the classified result used by runtime policy. */
+    public function acceptInput(ConnectedPayloadEvent $event): InboundResult
+    {
+        if ($this->closed || $this->terminalInputFailure) {
+            return new InboundResult(
+                InboundDisposition::SESSION_FATAL,
+                InboundOrigin::ADMISSION,
+                'session_closed',
+            );
+        }
+        if ($event->reliability !== Reliability::ReliableOrdered || $event->orderingChannel !== 0) {
+            return $this->fatalInput(
+                InboundDisposition::PROTOCOL_VIOLATION,
+                InboundOrigin::TRANSPORT,
+                'invalid_transport',
+            );
         }
         $receivedNanoseconds = hrtime(true);
         $envelopeBytes = strlen($event->payload);
@@ -409,15 +435,31 @@ final class BedrockPlayChannel
                 $this->trafficLimitContext('envelope', $envelopeBytes),
             );
 
-            return $this->fail('input_rate_limit');
+            return $this->fatalInput(
+                InboundDisposition::PROTOCOL_VIOLATION,
+                InboundOrigin::TRANSPORT,
+                'input_rate_limit',
+            );
         }
+        ++$this->traceInboundEnvelopes;
+        $stageStartedNanoseconds = hrtime(true);
+        try {
+            $envelope = $this->decryptor->decryptEnvelope($event->payload);
+        } catch (Throwable $error) {
+            $this->traceInboundDecryptNanoseconds += hrtime(true) - $stageStartedNanoseconds;
+            $this->diagnose('failed decrypting play envelope: ' . $error::class);
+
+            return $this->fatalInput(
+                InboundDisposition::PROTOCOL_VIOLATION,
+                InboundOrigin::ENVELOPE,
+                'decrypt_failed',
+                exception: $error,
+            );
+        }
+        $stageCompletedNanoseconds = hrtime(true);
+        $this->traceInboundDecryptNanoseconds += $stageCompletedNanoseconds - $stageStartedNanoseconds;
         $packetId = null;
         try {
-            ++$this->traceInboundEnvelopes;
-            $stageStartedNanoseconds = hrtime(true);
-            $envelope = $this->decryptor->decryptEnvelope($event->payload);
-            $stageCompletedNanoseconds = hrtime(true);
-            $this->traceInboundDecryptNanoseconds += $stageCompletedNanoseconds - $stageStartedNanoseconds;
             $batch = BedrockBatchCodec::decode(
                 $envelope,
                 CompressionMode::NegotiatedZlib,
@@ -426,78 +468,169 @@ final class BedrockPlayChannel
             );
             $nextStageNanoseconds = hrtime(true);
             $this->traceInboundBatchNanoseconds += $nextStageNanoseconds - $stageCompletedNanoseconds;
-            if (count($batch->packets) > $this->limits->maximumCommandsPerPayload) {
-                return $this->fail('command_limit');
-            }
-            $packetCount = count($batch->packets);
-            $movementPackets = 0;
-            foreach ($batch->packets as $frame) {
-                $movementPackets += (int) ($frame->header->packetId === PacketIds::PLAYER_AUTH_INPUT);
-            }
-            if (!$this->trafficGuard->admitPacketBatch($packetCount, $movementPackets, $receivedNanoseconds)) {
-                $this->diagnostics->record(
-                    'play.security_rate_limited',
-                    $this->trafficLimitContext(
-                        'packet',
-                        $envelopeBytes,
-                        $packetCount,
-                        $movementPackets,
-                        $batch->packets[0]->header->packetId ?? null,
-                    ),
-                );
-
-                return $this->fail('input_rate_limit');
-            }
-            foreach ($batch->packets as $frame) {
-                $packetId = $frame->header->packetId;
-                $this->recordInboundTrace($packetId, strlen($frame->payload));
-                if ($frame->header->senderSubclientId !== 0 || $frame->header->targetSubclientId !== 0) {
-                    $this->diagnose("rejected packet {$packetId}: non-zero subclient routing");
-                    return $this->fail('subclient_routing', $packetId);
-                }
-                if (!$this->initialized && $frame->header->packetId === PacketIds::PLAYER_AUTH_INPUT) {
-                    continue;
-                }
-                $decodeStartedNanoseconds = hrtime(true);
-                $packet = BedrockPacketCodec::decode($packetId, $frame->payload, $this->protocolVersion);
-                $handleStartedNanoseconds = hrtime(true);
-                $this->traceInboundDecodeNanoseconds += $handleStartedNanoseconds - $decodeStartedNanoseconds;
-                try {
-                    $handled = $this->handle($packet);
-                } catch (Throwable $error) {
-                    $this->traceInboundHandleNanoseconds += hrtime(true) - $handleStartedNanoseconds;
-                    return $this->failHandling($packetId, $packet, $error);
-                }
-                $this->traceInboundHandleNanoseconds += hrtime(true) - $handleStartedNanoseconds;
-                if (!$handled) {
-                    $this->diagnose("rejected packet {$packetId} (" . $packet::class . '): invalid play state');
-                    return $this->fail('invalid_play_state', $packetId);
-                }
-            }
-
-            return true;
         } catch (Throwable $error) {
-            $context = $packetId === null ? 'play envelope' : "packet {$packetId}";
-            $this->diagnose("failed decoding {$context}: " . $error::class);
-            if ($error instanceof ItemStackRequestDecodeException
-                && ($packetId === PacketIds::ITEM_STACK_REQUEST || $packetId === PacketIds::PLAYER_AUTH_INPUT)) {
-                $this->diagnostics->record('play.inventory_decode.protocol_trace', [
-                    'packet_id' => $packetId,
-                    'stage' => $error->stage,
-                    'detail' => $error->detailCode,
-                    'byte_offset' => $error->byteOffset,
-                    'action_index' => $error->actionIndex,
-                    'action_type' => $error->actionType,
-                ]);
-            } elseif ($packetId === PacketIds::ITEM_STACK_REQUEST) {
-                $this->diagnostics->record('play.inventory_decode.protocol_trace', [
-                    'packet_id' => $packetId,
-                    'stage' => 'packet',
-                    'detail' => self::itemStackPacketDecodeDetail($error),
-                ]);
-            }
-            return $this->fail('decode_failed', $packetId, $error);
+            $this->traceInboundBatchNanoseconds += hrtime(true) - $stageCompletedNanoseconds;
+            $this->diagnose('failed decoding play batch: ' . $error::class);
+
+            return $this->fatalInput(
+                InboundDisposition::PROTOCOL_VIOLATION,
+                InboundOrigin::ENVELOPE,
+                'batch_decode_failed',
+                exception: $error,
+            );
         }
+        if (count($batch->packets) > $this->limits->maximumCommandsPerPayload) {
+            return $this->fatalInput(
+                InboundDisposition::PROTOCOL_VIOLATION,
+                InboundOrigin::ADMISSION,
+                'command_limit',
+            );
+        }
+        $packetCount = count($batch->packets);
+        $movementPackets = 0;
+        foreach ($batch->packets as $frame) {
+            $movementPackets += (int) ($frame->header->packetId === PacketIds::PLAYER_AUTH_INPUT);
+        }
+        if (!$this->trafficGuard->admitPacketBatch($packetCount, $movementPackets, $receivedNanoseconds)) {
+            $this->diagnostics->record(
+                'play.security_rate_limited',
+                $this->trafficLimitContext(
+                    'packet',
+                    $envelopeBytes,
+                    $packetCount,
+                    $movementPackets,
+                    $batch->packets[0]->header->packetId ?? null,
+                ),
+            );
+
+            return $this->fatalInput(
+                InboundDisposition::PROTOCOL_VIOLATION,
+                InboundOrigin::ADMISSION,
+                'input_rate_limit',
+            );
+        }
+
+        $result = InboundResult::handled();
+        foreach ($batch->packets as $frame) {
+            $packetId = $frame->header->packetId;
+            $this->recordInboundTrace($packetId, strlen($frame->payload));
+            if ($frame->header->senderSubclientId !== 0 || $frame->header->targetSubclientId !== 0) {
+                $this->diagnose("rejected packet {$packetId}: non-zero subclient routing");
+
+                return $this->fatalInput(
+                    InboundDisposition::PROTOCOL_VIOLATION,
+                    InboundOrigin::TRANSPORT,
+                    'subclient_routing',
+                    $packetId,
+                );
+            }
+            if (!$this->initialized && $packetId === PacketIds::PLAYER_AUTH_INPUT) {
+                $ignored = new InboundResult(
+                    InboundDisposition::IGNORED,
+                    InboundOrigin::ADMISSION,
+                    'initialization_pending',
+                    $packetId,
+                );
+                $this->recordInputDisposition($ignored);
+                $result = $result->merge($ignored);
+                continue;
+            }
+            if (!BedrockPacketCodec::supportsDecoding($packetId, $this->protocolVersion)) {
+                $ignored = new InboundResult(
+                    InboundDisposition::IGNORED,
+                    InboundOrigin::PACKET_DECODE,
+                    'unsupported_packet',
+                    $packetId,
+                );
+                $this->recordInputDisposition($ignored);
+                $result = $result->merge($ignored);
+                continue;
+            }
+
+            $decodeStartedNanoseconds = hrtime(true);
+            try {
+                $packet = BedrockPacketCodec::decode($packetId, $frame->payload, $this->protocolVersion);
+            } catch (Throwable $error) {
+                $this->traceInboundDecodeNanoseconds += hrtime(true) - $decodeStartedNanoseconds;
+                $this->recordPacketDecodeFailure($packetId, $error);
+
+                return $this->fatalInput(
+                    InboundDisposition::PROTOCOL_VIOLATION,
+                    InboundOrigin::PACKET_DECODE,
+                    'packet_decode_failed',
+                    $packetId,
+                    $error,
+                );
+            }
+            $handleStartedNanoseconds = hrtime(true);
+            $this->traceInboundDecodeNanoseconds += $handleStartedNanoseconds - $decodeStartedNanoseconds;
+            if ($this->spoofsSessionActor($packet)) {
+                $this->traceInboundHandleNanoseconds += hrtime(true) - $handleStartedNanoseconds;
+                $this->diagnose("rejected packet {$packetId} (" . $packet::class . '): actor identity mismatch');
+
+                return $this->semanticViolation(
+                    InboundOrigin::PACKET_HANDLE,
+                    'actor_identity_mismatch',
+                    $packetId,
+                );
+            }
+            try {
+                $handled = $this->handle($packet);
+            } catch (CommandValidationException $error) {
+                $this->traceInboundHandleNanoseconds += hrtime(true) - $handleStartedNanoseconds;
+                $rejected = new InboundResult(
+                    InboundDisposition::REJECTED,
+                    InboundOrigin::PACKET_HANDLE,
+                    'input_validation_failed',
+                    $packetId,
+                    $error::class,
+                );
+                $this->diagnose("rejected packet {$packetId} (" . $packet::class . '): command validation');
+                $this->recordInputDisposition($rejected);
+                $result = $result->merge($rejected);
+                continue;
+            } catch (Throwable $error) {
+                $this->traceInboundHandleNanoseconds += hrtime(true) - $handleStartedNanoseconds;
+                $this->diagnose("failed handling packet {$packetId} (" . $packet::class . '): ' . $error::class);
+
+                return $this->fatalInput(
+                    InboundDisposition::SESSION_FATAL,
+                    InboundOrigin::PACKET_HANDLE,
+                    'handler_failed',
+                    $packetId,
+                    $error,
+                );
+            }
+            $this->traceInboundHandleNanoseconds += hrtime(true) - $handleStartedNanoseconds;
+            if (!$handled) {
+                $rejected = new InboundResult(
+                    InboundDisposition::REJECTED,
+                    InboundOrigin::PACKET_HANDLE,
+                    'invalid_play_state',
+                    $packetId,
+                );
+                $this->diagnose("rejected packet {$packetId} (" . $packet::class . '): invalid play state');
+                $this->recordInputDisposition($rejected);
+                $result = $result->merge($rejected);
+            }
+        }
+
+        return $result;
+    }
+
+    private function spoofsSessionActor(Packet $packet): bool
+    {
+        if ($packet instanceof AnimatePacket
+            || $packet instanceof EmotePacket
+            || $packet instanceof EmoteListPacket
+            || $packet instanceof MobEquipmentPacket
+            || $packet instanceof MobArmorEquipmentPacket
+            || $packet instanceof PlayerActionPacket
+            || $packet instanceof SetLocalPlayerAsInitializedPacket) {
+            return !$packet->runtimeEntityId->equals($this->runtimeEntityId);
+        }
+
+        return false;
     }
 
     public function queuePacket(Packet $packet): bool
@@ -1002,7 +1135,7 @@ final class BedrockPlayChannel
 
     public function isClosed(): bool
     {
-        return $this->closed;
+        return $this->closed || $this->terminalInputFailure;
     }
 
     public function queuedGeneratedChunkCount(): int
@@ -3246,16 +3379,92 @@ final class BedrockPlayChannel
         return false;
     }
 
-    private function failHandling(int $packetId, Packet $packet, Throwable $error): bool
-    {
-        if ($error instanceof CommandValidationException) {
-            $this->diagnose("rejected packet {$packetId} (" . $packet::class . '): command validation');
-
-            return $this->fail('input_validation_failed', $packetId, $error);
+    private function fatalInput(
+        InboundDisposition $disposition,
+        InboundOrigin $origin,
+        string $reason,
+        ?int $packetId = null,
+        ?Throwable $exception = null,
+    ): InboundResult {
+        if (!$disposition->requiresDisconnect()) {
+            throw new \LogicException('Fatal input result must require a disconnect.');
         }
-        $this->diagnose("failed handling packet {$packetId} (" . $packet::class . '): ' . $error::class);
+        $result = new InboundResult(
+            $disposition,
+            $origin,
+            $reason,
+            $packetId,
+            $exception === null ? null : $exception::class,
+        );
+        $this->terminalInputFailure = true;
+        $this->recordInputDisposition($result);
 
-        return $this->fail('handler_failed', $packetId, $error);
+        return $result;
+    }
+
+    private function semanticViolation(
+        InboundOrigin $origin,
+        string $reason,
+        ?int $packetId = null,
+    ): InboundResult {
+        $result = new InboundResult(
+            InboundDisposition::SEMANTIC_VIOLATION,
+            $origin,
+            $reason,
+            $packetId,
+        );
+        $this->recordInputDisposition($result);
+
+        return $result;
+    }
+
+    private function recordPacketDecodeFailure(int $packetId, Throwable $error): void
+    {
+        $this->diagnose("failed decoding packet {$packetId}: " . $error::class);
+        if ($error instanceof ItemStackRequestDecodeException
+            && ($packetId === PacketIds::ITEM_STACK_REQUEST || $packetId === PacketIds::PLAYER_AUTH_INPUT)) {
+            $this->diagnostics->record('play.inventory_decode.protocol_trace', [
+                'packet_id' => $packetId,
+                'stage' => $error->stage,
+                'detail' => $error->detailCode,
+                'byte_offset' => $error->byteOffset,
+                'action_index' => $error->actionIndex,
+                'action_type' => $error->actionType,
+            ]);
+        } elseif ($packetId === PacketIds::ITEM_STACK_REQUEST) {
+            $this->diagnostics->record('play.inventory_decode.protocol_trace', [
+                'packet_id' => $packetId,
+                'stage' => 'packet',
+                'detail' => self::itemStackPacketDecodeDetail($error),
+            ]);
+        }
+    }
+
+    private function recordInputDisposition(InboundResult $result): void
+    {
+        $event = 'play.input_disposition';
+        if ($result->reason === 'unsupported_packet') {
+            if (!$this->traceUnsupportedPackets || $this->unsupportedPacketLogLimit === 0
+                || $result->packetId === null
+                || ($this->unsupportedPacketTraceCounts[$result->packetId] ?? 0) >= $this->unsupportedPacketLogLimit) {
+                return;
+            }
+            $this->unsupportedPacketTraceCounts[$result->packetId]
+                = ($this->unsupportedPacketTraceCounts[$result->packetId] ?? 0) + 1;
+            $event = 'play.unsupported_packet.protocol_trace';
+        }
+        $fields = [
+            'disposition' => strtolower($result->disposition->name),
+            'origin' => $result->origin->value,
+            'reason' => $result->reason,
+        ];
+        if ($result->packetId !== null) {
+            $fields['packet_id'] = $result->packetId;
+        }
+        if ($result->exceptionClass !== null) {
+            $fields['exception'] = $result->exceptionClass;
+        }
+        $this->diagnostics->record($event, $fields);
     }
 
     private function diagnose(string $message): void

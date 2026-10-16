@@ -152,6 +152,10 @@ Both files use one `key=value` entry per line. Blank lines and lines beginning w
 | `players.autosave-interval-ticks` | `6000` | 20 through 72000 ticks between player autosave scheduling cycles |
 | `players.save-per-tick` | `8` | 1 through 64 dirty player profiles saved during each autosave tick |
 | `movement.rewind-history-size` | `40` | 1 through 1200 processed input ticks retained by the client for authoritative movement correction |
+| `network.protocol-soft-strike-limit` | `10` | 1 through 100 repeated impossible semantic actions, such as supplying another actor's runtime identity, before the affected session is closed; unsupported, stale, and correctable input does not count |
+| `network.protocol-strike-decay-seconds` | `15` | 1 through 3600 violation-free seconds per expired soft strike |
+| `network.trace-unsupported-packets` | `true` | Exactly `true` or `false`; records bounded packet metadata only when protocol tracing is enabled |
+| `network.unsupported-packet-log-limit` | `5` | 0 through 1000 trace entries retained per unsupported packet ID and session; zero disables these entries |
 | `updates.enabled` | `true` | Exactly `true` or `false`; controls asynchronous release checks |
 | `updates.notify-operators` | `true` | Exactly `true` or `false`; controls in-game notices for players with `bedriox.update.notify` |
 | `plugins.maximum` | `64` | 0–256 total admitted plugins |

@@ -53,6 +53,7 @@ use Bedriox\Server\Plugin\PluginExecutionFrame;
 use Bedriox\Server\Plugin\PluginOwnershipRegistry;
 use Bedriox\Server\Plugin\PluginRuntimeControl;
 use Bedriox\Server\Runtime\ChunkStreamingSnapshot;
+use Bedriox\Server\Runtime\Input\InboundMetricsSnapshot;
 use Bedriox\Server\Worker\Chunk\PreparedChunkCacheSnapshot;
 use Bedriox\Server\Worker\WorkerPoolSnapshot;
 use Bedriox\Server\World\ChunkRepositorySnapshot;
@@ -439,6 +440,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
                 preparedChunkCache: new PreparedChunkCacheSnapshot(12, 24_576, 3, 6_144, 80, 20, 2, 4, 1),
                 entityRuntime: new EntityRuntimeMetrics(40, 12, 10, 28, 2, 1, 8, 3, 1_250_000, true),
                 transportSecurity: new TransportSecuritySnapshot(500, 32_768, 81, 1, 3, 1, 0, 1, 0),
+                inbound: new InboundMetricsSnapshot(100, 4, 3, 2, 1, 1, 1, 1, 2, 3, 103, 2),
             ),
         ))->register();
 
@@ -471,6 +473,9 @@ final class BuiltinCommandRegistrarTest extends TestCase
         self::assertContains('Prepared chunk lookups: hits 80, misses 20, evictions 2, invalidations 4, failures 1, hit ratio 80.0%', $advanced->messages);
         self::assertContains('Asynchronous tasks: 2 pending, 64 completions per tick maximum', $advanced->messages);
         self::assertContains('Session queues: 5 outgoing payloads', $advanced->messages);
+        self::assertContains('Play input: 100 handled, 4 ignored, 3 corrected, 2 rejected', $advanced->messages);
+        self::assertContains('Play input violations: 1 semantic, 1 fatal protocol, 1 internal failures', $advanced->messages);
+        self::assertContains('Play input origins: 1 transport, 2 envelope, 3 decode, 103 handler, 2 admission', $advanced->messages);
         self::assertContains('Admission: 500 datagrams (32.0 KiB), 81 dropped, 3 malformed', $advanced->messages);
         self::assertContains('Protection: 0 active blocks, 1 blocks issued, 1 rate-limit hits', $advanced->messages);
         self::assertContains('World persistence: 2 queued, 1 in flight, 3 completions (4.0 KiB)', $advanced->messages);

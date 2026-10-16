@@ -147,6 +147,7 @@ use Bedriox\Server\Runtime\BedrockInventoryPacketProjector;
 use Bedriox\Server\Runtime\BedrockPlayChannel;
 use Bedriox\Server\Runtime\BedrockWorldEventPacketEncoder;
 use Bedriox\Server\Runtime\GameModePacketProjector;
+use Bedriox\Server\Runtime\Input\InboundDisposition;
 use Bedriox\Server\Runtime\RuntimeDiagnostics;
 use Bedriox\Server\Runtime\RuntimeLimits;
 use Bedriox\Server\Security\GameplayTrafficGuard;
@@ -385,7 +386,7 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertFalse($channel->isClosed());
     }
 
-    public function testWrongReliabilityAndWrongEntityFailClosedAndClearWork(): void
+    public function testWrongReliabilityFailsClosedWhileWrongEntityAddsOneSemanticStrike(): void
     {
         [$wrongReliability, $client] = $this->channel();
         self::assertFalse($wrongReliability->accept(new ConnectedPayloadEvent(
@@ -397,12 +398,13 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertSame([], $wrongReliability->drainCommands());
 
         [$wrongEntity, $client] = $this->channel();
-        self::assertFalse($wrongEntity->accept(new ConnectedPayloadEvent(
+        $result = $wrongEntity->acceptInput(new ConnectedPayloadEvent(
             $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket(UnsignedLong::fromInt(99))])),
             Reliability::ReliableOrdered,
             0,
-        )));
-        self::assertTrue($wrongEntity->isClosed());
+        ));
+        self::assertSame(InboundDisposition::SEMANTIC_VIOLATION, $result->disposition);
+        self::assertFalse($wrongEntity->isClosed());
     }
 
     public function testUnsignedClientTicksAreOrderedBeforeCreatingLocalSequences(): void
@@ -539,15 +541,21 @@ final class BedrockPlayChannelTest extends TestCase
             0,
         )));
 
-        self::assertFalse($channel->accept(new ConnectedPayloadEvent(
+        $result = $channel->acceptInput(new ConnectedPayloadEvent(
             $client->encryptEnvelope($this->encode([
                 $this->movementPacket(UnsignedLong::fromInt(1), pitch: 100.0),
+                new ChatPacket('ignored', 'still handled'),
             ])),
             Reliability::ReliableOrdered,
             0,
-        )));
+        ));
 
-        self::assertTrue($channel->isClosed());
+        self::assertSame(InboundDisposition::REJECTED, $result->disposition);
+        self::assertFalse($channel->isClosed());
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(SendChat::class, $commands[0]);
+        self::assertSame('still handled', $commands[0]->message);
         $diagnostic = implode('', $lines);
         self::assertStringContainsString('"reason":"input_validation_failed"', $diagnostic);
         self::assertStringContainsString('"packet_id":144', $diagnostic);
@@ -555,15 +563,16 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertStringNotContainsString('"reason":"decode_failed"', $diagnostic);
     }
 
-    public function testGameplayBeforeInitializationFailsClosed(): void
+    public function testGameplayBeforeInitializationIsRejectedWithoutClosing(): void
     {
         [$channel, $client] = $this->channel();
-        self::assertFalse($channel->accept(new ConnectedPayloadEvent(
+        $result = $channel->acceptInput(new ConnectedPayloadEvent(
             $client->encryptEnvelope($this->encode([new ChatPacket('ignored', 'too early')])),
             Reliability::ReliableOrdered,
             0,
-        )));
-        self::assertTrue($channel->isClosed());
+        ));
+        self::assertSame(InboundDisposition::REJECTED, $result->disposition);
+        self::assertFalse($channel->isClosed());
         self::assertSame([], $channel->drainCommands());
     }
 
@@ -868,15 +877,16 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertSame(4, $command->hotbarSlot);
     }
 
-    public function testSpoofedEquipmentNotificationBeforeInitializationFailsClosed(): void
+    public function testSpoofedEquipmentNotificationBeforeInitializationAddsOneSemanticStrike(): void
     {
         [$channel, $client] = $this->channel();
-        self::assertFalse($channel->accept(new ConnectedPayloadEvent(
+        $result = $channel->acceptInput(new ConnectedPayloadEvent(
             $client->encryptEnvelope($this->encode([new MobEquipmentPacket(UnsignedLong::fromInt(8))])),
             Reliability::ReliableOrdered,
             0,
-        )));
-        self::assertTrue($channel->isClosed());
+        ));
+        self::assertSame(InboundDisposition::SEMANTIC_VIOLATION, $result->disposition);
+        self::assertFalse($channel->isClosed());
         self::assertSame([], $channel->drainCommands());
     }
 
@@ -950,29 +960,31 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertFalse($channel->isClosed());
     }
 
-    public function testWrongEntityEmoteListFailsClosed(): void
+    public function testWrongEntityEmoteListAddsOneSemanticStrike(): void
     {
         [$channel, $client] = $this->channel();
-        self::assertFalse($channel->accept(new ConnectedPayloadEvent(
+        $result = $channel->acceptInput(new ConnectedPayloadEvent(
             $client->encryptEnvelope($this->encode([
                 new EmoteListPacket(UnsignedLong::fromInt(8), ['00112233-4455-6677-8899-aabbccddeeff']),
             ])),
             Reliability::ReliableOrdered,
             0,
-        )));
-        self::assertTrue($channel->isClosed());
+        ));
+        self::assertSame(InboundDisposition::SEMANTIC_VIOLATION, $result->disposition);
+        self::assertFalse($channel->isClosed());
     }
 
     public function testEmoteRequiresInitializationAndOwnRuntimeActor(): void
     {
         $emoteId = '00112233-4455-6677-8899-aabbccddeeff';
         [$premature, $client, , $entityId] = $this->channel();
-        self::assertFalse($premature->accept(new ConnectedPayloadEvent(
+        $result = $premature->acceptInput(new ConnectedPayloadEvent(
             $client->encryptEnvelope($this->encode([new EmotePacket($entityId, $emoteId, 0, '', '')])),
             Reliability::ReliableOrdered,
             0,
-        )));
-        self::assertTrue($premature->isClosed());
+        ));
+        self::assertSame(InboundDisposition::REJECTED, $result->disposition);
+        self::assertFalse($premature->isClosed());
 
         [$wrongActor, $client, , $entityId] = $this->channel();
         self::assertTrue($wrongActor->accept(new ConnectedPayloadEvent(
@@ -980,7 +992,7 @@ final class BedrockPlayChannelTest extends TestCase
             Reliability::ReliableOrdered,
             0,
         )));
-        self::assertFalse($wrongActor->accept(new ConnectedPayloadEvent(
+        $result = $wrongActor->acceptInput(new ConnectedPayloadEvent(
             $client->encryptEnvelope($this->encode([new EmotePacket(
                 UnsignedLong::fromInt(8),
                 $emoteId,
@@ -990,8 +1002,9 @@ final class BedrockPlayChannelTest extends TestCase
             )])),
             Reliability::ReliableOrdered,
             0,
-        )));
-        self::assertTrue($wrongActor->isClosed());
+        ));
+        self::assertSame(InboundDisposition::SEMANTIC_VIOLATION, $result->disposition);
+        self::assertFalse($wrongActor->isClosed());
     }
 
     public function testEmoteInputQueuesOnlyValidatedIdentityFreeIntent(): void
@@ -1691,7 +1704,7 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertSame(0, $commands[0]->hotbarSlot);
     }
 
-    public function testLiteralInventoryTransactionBeforeInitializationFailsClosed(): void
+    public function testLiteralInventoryTransactionBeforeInitializationIsRejectedWithoutClosing(): void
     {
         $lines = [];
         $diagnostics = new RuntimeDiagnostics(static function (string $line) use (&$lines): void {
@@ -1699,19 +1712,20 @@ final class BedrockPlayChannelTest extends TestCase
         });
         [$channel, $client] = $this->channel([], $diagnostics);
 
-        self::assertFalse($channel->accept(new ConnectedPayloadEvent(
+        $result = $channel->acceptInput(new ConnectedPayloadEvent(
             $client->encryptEnvelope($this->encodeFrames([$this->inventoryTransactionFrame()])),
             Reliability::ReliableOrdered,
             0,
-        )));
+        ));
 
-        self::assertTrue($channel->isClosed());
+        self::assertSame(InboundDisposition::REJECTED, $result->disposition);
+        self::assertFalse($channel->isClosed());
         self::assertSame([], $channel->drainOutgoing());
         self::assertSame([], $channel->drainCommands());
         $diagnostic = implode('', $lines);
         self::assertStringContainsString('"reason":"invalid_play_state"', $diagnostic);
         self::assertStringContainsString('"packet_id":30', $diagnostic);
-        self::assertStringNotContainsString('"reason":"decode_failed"', $diagnostic);
+        self::assertStringNotContainsString('"reason":"packet_decode_failed"', $diagnostic);
     }
 
     public function testMalformedLiteralInventoryTransactionFailsDecodeClosed(): void
@@ -1741,7 +1755,7 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertSame([], $channel->drainOutgoing());
         self::assertSame([], $channel->drainCommands());
         $diagnostic = implode('', $lines);
-        self::assertStringContainsString('"reason":"decode_failed"', $diagnostic);
+        self::assertStringContainsString('"reason":"packet_decode_failed"', $diagnostic);
         self::assertStringContainsString('"packet_id":30', $diagnostic);
     }
 
@@ -1829,12 +1843,14 @@ final class BedrockPlayChannelTest extends TestCase
                 Reliability::ReliableOrdered,
                 0,
             )));
-            self::assertFalse($channel->accept(new ConnectedPayloadEvent(
+            $result = $channel->acceptInput(new ConnectedPayloadEvent(
                 $client->encryptEnvelope($this->encode([$packet])),
                 Reliability::ReliableOrdered,
                 0,
-            )));
-            self::assertTrue($channel->isClosed());
+            ));
+            self::assertSame(InboundDisposition::SEMANTIC_VIOLATION, $result->disposition);
+            self::assertSame('actor_identity_mismatch', $result->reason);
+            self::assertFalse($channel->isClosed());
         }
     }
 
@@ -1853,13 +1869,13 @@ final class BedrockPlayChannelTest extends TestCase
         )));
 
         self::assertCount(2, $lines);
-        self::assertStringContainsString('"event":"play.session_closed"', $lines[1]);
-        self::assertStringContainsString('"reason":"decode_failed"', $lines[1]);
+        self::assertStringContainsString('"event":"play.input_disposition"', $lines[1]);
+        self::assertStringContainsString('"reason":"decrypt_failed"', $lines[1]);
         self::assertStringContainsString('"exception":', $lines[1]);
         self::assertStringNotContainsString('untrusted-secret-payload', implode('', $lines));
     }
 
-    public function testMalformedTypedAndUnknownPacketsStillFailClosed(): void
+    public function testMalformedTypedPacketsFailButUnknownPacketsAreIgnored(): void
     {
         [$malformed, $malformedClient] = $this->channel();
         self::assertFalse($malformed->accept(new ConnectedPayloadEvent(
@@ -1872,17 +1888,64 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertTrue($malformed->isClosed());
 
         [$unknown, $unknownClient] = $this->channel();
-        self::assertFalse($unknown->accept(new ConnectedPayloadEvent(
+        $result = $unknown->acceptInput(new ConnectedPayloadEvent(
             $unknownClient->encryptEnvelope($this->encodeFrames([
                 new PacketFrame(new PacketHeader(1023), ''),
             ])),
             Reliability::ReliableOrdered,
             0,
+        ));
+        self::assertSame(InboundDisposition::IGNORED, $result->disposition);
+        self::assertFalse($unknown->isClosed());
+
+        [$mixed, $mixedClient, , $entityId] = $this->channel();
+        $result = $mixed->acceptInput(new ConnectedPayloadEvent(
+            $mixedClient->encryptEnvelope($this->encodeFrames([
+                new PacketFrame(new PacketHeader(1023), 'ignored'),
+                new PacketFrame(
+                    new PacketHeader(PacketIds::SET_LOCAL_PLAYER_AS_INITIALIZED),
+                    BedrockPacketCodec::encode(new SetLocalPlayerAsInitializedPacket($entityId)),
+                ),
+            ])),
+            Reliability::ReliableOrdered,
+            0,
+        ));
+        self::assertSame(InboundDisposition::IGNORED, $result->disposition);
+        self::assertTrue($mixed->accept(new ConnectedPayloadEvent(
+            $mixedClient->encryptEnvelope($this->encode([new ChatPacket('ignored', 'after unknown')])),
+            Reliability::ReliableOrdered,
+            0,
         )));
-        self::assertTrue($unknown->isClosed());
+        self::assertCount(1, $mixed->drainCommands());
     }
 
-    public function testBossEventMembershipAndQueryAreAdvisoryButClientMutationFailsClosed(): void
+    public function testUnsupportedPacketTracingIsBoundedPerPacketId(): void
+    {
+        $lines = [];
+        $diagnostics = new RuntimeDiagnostics(static function (string $line) use (&$lines): void {
+            $lines[] = $line;
+        });
+        [$channel, $client] = $this->channel(
+            diagnostics: $diagnostics,
+            unsupportedPacketLogLimit: 2,
+        );
+        for ($attempt = 0; $attempt < 5; ++$attempt) {
+            self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+                $client->encryptEnvelope($this->encodeFrames([
+                    new PacketFrame(new PacketHeader(1023), 'ignored'),
+                ])),
+                Reliability::ReliableOrdered,
+                0,
+            )));
+        }
+
+        self::assertCount(2, array_filter(
+            $lines,
+            static fn(string $line): bool => str_contains($line, 'play.unsupported_packet.protocol_trace'),
+        ));
+    }
+
+    public function testBossEventMembershipAndQueryAreAdvisoryAndClientMutationIsRejected(): void
     {
         foreach ([
             BossEventAction::REGISTER_PLAYER,
@@ -1901,14 +1964,15 @@ final class BedrockPlayChannelTest extends TestCase
         }
 
         [$mutation, $mutationClient] = $this->channel();
-        self::assertFalse($mutation->accept(new ConnectedPayloadEvent(
+        $result = $mutation->acceptInput(new ConnectedPayloadEvent(
             $mutationClient->encryptEnvelope($this->encode([
                 new BossEventPacket(-1, BossEventAction::UPDATE_NAME, 'client-owned'),
             ])),
             Reliability::ReliableOrdered,
             0,
-        )));
-        self::assertTrue($mutation->isClosed());
+        ));
+        self::assertSame(InboundDisposition::REJECTED, $result->disposition);
+        self::assertFalse($mutation->isClosed());
     }
 
     public function testCreativeRequestDecodeFailureReportsActionWithoutPacketBytes(): void
@@ -2087,16 +2151,17 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertStringNotContainsString('offsets":[', implode('', $lines));
     }
 
-    public function testOversizedSubChunkRequestFailsClosedBeforeQueueingResponse(): void
+    public function testOversizedSubChunkRequestIsRejectedBeforeQueueingResponse(): void
     {
         [$channel, $client] = $this->channel();
         $offsets = array_fill(0, 65, ['x' => 0, 'y' => 0, 'z' => 0]);
-        self::assertFalse($channel->accept(new ConnectedPayloadEvent(
+        $result = $channel->acceptInput(new ConnectedPayloadEvent(
             $client->encryptEnvelope($this->encode([new SubChunkRequestPacket(0, 0, 3, 0, $offsets)])),
             Reliability::ReliableOrdered,
             0,
-        )));
-        self::assertTrue($channel->isClosed());
+        ));
+        self::assertSame(InboundDisposition::REJECTED, $result->disposition);
+        self::assertFalse($channel->isClosed());
         self::assertSame([], $channel->drainOutgoing());
     }
 
@@ -2945,12 +3010,13 @@ final class BedrockPlayChannelTest extends TestCase
             new BasicInventoryTransaction(InventoryTransactionType::Normal),
         );
 
-        self::assertFalse($channel->accept(new ConnectedPayloadEvent(
+        $result = $channel->acceptInput(new ConnectedPayloadEvent(
             $clientEncryptor->encryptEnvelope($this->encode([$packet])),
             Reliability::ReliableOrdered,
             0,
-        )));
-        self::assertTrue($channel->isClosed());
+        ));
+        self::assertSame(InboundDisposition::REJECTED, $result->disposition);
+        self::assertFalse($channel->isClosed());
         self::assertSame([], $channel->drainCommands());
     }
 
@@ -4384,6 +4450,8 @@ final class BedrockPlayChannelTest extends TestCase
         ?CompressionWorkerDispatcher $compressionWorkers = null,
         int $prefetchRadius = 0,
         ?PreparedChunkCache $preparedChunks = null,
+        bool $traceUnsupportedPackets = true,
+        int $unsupportedPacketLogLimit = 5,
     ): array {
         $key = str_repeat("\x42", 32);
         $keys = (new OpenSslEphemeralKeyFactory(dirname(__DIR__) . '/Fixtures/openssl.cnf'))->generate();
@@ -4420,6 +4488,8 @@ final class BedrockPlayChannelTest extends TestCase
                 compressionWorkers: $compressionWorkers,
                 compressionTaskTypeId: $compressionWorkers === null ? 0 : 3,
                 preparedChunks: $preparedChunks,
+                traceUnsupportedPackets: $traceUnsupportedPackets,
+                unsupportedPacketLogLimit: $unsupportedPacketLogLimit,
             ),
             new BedrockEncryptor($key),
             new BedrockDecryptor($key),

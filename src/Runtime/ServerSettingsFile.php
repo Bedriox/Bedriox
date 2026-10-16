@@ -119,13 +119,14 @@ movement.rewind-history-size=40
 # Network protection. Changes take effect after restart.
 # enabled: true or false. Keep true for every public server.
 security.network.enabled=true
-# automatic-blocking: true temporarily blocks abusive source addresses; false only drops over-limit traffic.
+# automatic-blocking: true temporarily blocks a validated abusive IP-and-port endpoint.
+# Unauthenticated over-limit traffic is always dropped without automatically blocking a shared IP address.
 security.network.automatic-blocking=true
 # profile: lenient, balanced, strict, or custom.
 # balanced is recommended. Lenient permits larger bursts; strict is for smaller controlled deployments.
 # custom reads the security.network.custom.* values below.
 security.network.profile=balanced
-# Initial block duration in seconds. Accepted range: 1 through 300.
+# Initial validated-endpoint block duration in seconds. Accepted range: 1 through 300.
 security.network.block-base-seconds=10
 # Maximum block duration in seconds. Accepted range: the base duration through 86400.
 security.network.block-maximum-seconds=1800
@@ -141,8 +142,26 @@ security.network.custom.connected-datagram-burst=240
 # Handshake rate: 10 through 10000; burst: 5 through 2000.
 security.network.custom.handshakes-per-second=250
 security.network.custom.handshake-burst=128
-# Malformed datagrams from one address before a temporary block. Accepted range: 1 through 20.
+# Malformed connected datagrams from one validated endpoint before a temporary endpoint block.
+# Unauthenticated malformed traffic is counted and dropped without an automatic address block.
+# Accepted range: 1 through 20.
 security.network.custom.malformed-threshold=3
+
+# Authenticated Bedrock packet handling. These limits do not apply to unknown supported-version
+# notifications, stale input, or gameplay mistakes that Bedriox can safely ignore or correct.
+# Repeated impossible semantic actions, such as another actor's runtime identity, close only the
+# affected session after this many soft strikes. Unsupported, stale, and correctable input never counts.
+# Accepted range: 1 through 100. The recommended default is 10.
+network.protocol-soft-strike-limit=10
+# One accumulated soft strike expires after this many violation-free seconds.
+# Accepted range: 1 through 3600. The recommended default is 15.
+network.protocol-strike-decay-seconds=15
+# When true, bounded metadata for unsupported packet IDs is written to protocol tracing.
+# This never logs packet bodies, identity tokens, encryption material, or credentials.
+network.trace-unsupported-packets=true
+# Maximum trace entries retained for each unsupported packet ID during one session.
+# Accepted range: 0 through 1000. Zero disables these entries without changing packet handling.
+network.unsupported-packet-log-limit=5
 
 # Movement authority. These switches never make client positions authoritative.
 # enabled records high-confidence violations such as unauthorized survival flight.

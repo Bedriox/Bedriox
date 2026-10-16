@@ -87,6 +87,10 @@ final readonly class ServerConfig
         'security.network.custom.handshakes-per-second' => '250',
         'security.network.custom.handshake-burst' => '128',
         'security.network.custom.malformed-threshold' => '3',
+        'network.protocol-soft-strike-limit' => '10',
+        'network.protocol-strike-decay-seconds' => '15',
+        'network.trace-unsupported-packets' => 'true',
+        'network.unsupported-packet-log-limit' => '5',
         'security.movement.enabled' => 'true',
         'security.movement.correct-invalid-movement' => 'true',
         'security.movement.kick-repeated-violations' => 'true',
@@ -160,6 +164,10 @@ final readonly class ServerConfig
         'security.network.custom.handshakes-per-second' => true,
         'security.network.custom.handshake-burst' => true,
         'security.network.custom.malformed-threshold' => true,
+        'network.protocol-soft-strike-limit' => true,
+        'network.protocol-strike-decay-seconds' => true,
+        'network.trace-unsupported-packets' => true,
+        'network.unsupported-packet-log-limit' => true,
         'security.movement.enabled' => true,
         'security.movement.correct-invalid-movement' => true,
         'security.movement.kick-repeated-violations' => true,
@@ -283,6 +291,10 @@ final readonly class ServerConfig
         public bool $movementSecurityEnabled = true,
         public bool $correctInvalidMovement = true,
         public bool $kickRepeatedMovementViolations = true,
+        public int $protocolSoftStrikeLimit = 10,
+        public int $protocolStrikeDecaySeconds = 15,
+        public bool $traceUnsupportedPackets = true,
+        public int $unsupportedPacketLogLimit = 5,
     ) {
         if (filter_var($this->bindAddress, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
             throw new InvalidArgumentException('Bind address must be a literal IPv4 address.');
@@ -331,6 +343,9 @@ final readonly class ServerConfig
         self::range($this->playersAutosaveIntervalTicks, 20, 72_000, 'Player autosave interval');
         self::range($this->playersSavePerTick, 1, 64, 'Players saved per tick');
         self::range($this->movementRewindHistorySize, 1, 1_200, 'Movement rewind history size');
+        self::range($this->protocolSoftStrikeLimit, 1, 100, 'Protocol soft strike limit');
+        self::range($this->protocolStrikeDecaySeconds, 1, 3_600, 'Protocol strike decay interval');
+        self::range($this->unsupportedPacketLogLimit, 0, 1_000, 'Unsupported packet log limit');
         self::range($this->ticksPerSecond, 1, 100, 'Ticks per second');
         self::range($this->workerCoreCount, 0, 32, 'Core worker count');
         self::range($this->pluginWorkerCount, 0, 32, 'Plugin worker count');
@@ -571,6 +586,28 @@ final readonly class ServerConfig
             kickRepeatedMovementViolations: self::boolean(
                 $values['security.movement.kick-repeated-violations'],
                 'security.movement.kick-repeated-violations',
+            ),
+            protocolSoftStrikeLimit: self::integer(
+                $values['network.protocol-soft-strike-limit'],
+                'network.protocol-soft-strike-limit',
+                1,
+                100,
+            ),
+            protocolStrikeDecaySeconds: self::integer(
+                $values['network.protocol-strike-decay-seconds'],
+                'network.protocol-strike-decay-seconds',
+                1,
+                3_600,
+            ),
+            traceUnsupportedPackets: self::boolean(
+                $values['network.trace-unsupported-packets'],
+                'network.trace-unsupported-packets',
+            ),
+            unsupportedPacketLogLimit: self::integer(
+                $values['network.unsupported-packet-log-limit'],
+                'network.unsupported-packet-log-limit',
+                0,
+                1_000,
             ),
         );
     }

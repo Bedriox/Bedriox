@@ -895,6 +895,13 @@ final class WorldSimulation
     /** @var list<WorldEvent> */
     private array $deferredEvents = [];
 
+    /**
+     * Read-only authoritative corrections reserved outside the saturated gameplay queue.
+     *
+     * @var array<string, array<string, WorldEvent>> session key => semantic correction key => event
+     */
+    private array $admissionReconciliationEvents = [];
+
     /** @var list<WorldEvent> Dependency updates which must precede the current command's primary event. */
     private array $precedingCommandEvents = [];
 
@@ -1837,33 +1844,130 @@ final class WorldSimulation
 
     public function enqueue(WorldCommand $command): bool
     {
+        return $this->admit($command)->accepted();
+    }
+
+    public function admit(WorldCommand $command): WorldCommandAdmission
+    {
         if (!$this->isValid($command)) {
-            return false;
+            return WorldCommandAdmission::INVALID;
         }
         if ($command instanceof DisconnectPlayer) {
-            return $this->enqueueDisconnect($command);
+            return $this->enqueueDisconnect($command)
+                ? WorldCommandAdmission::ACCEPTED
+                : WorldCommandAdmission::CAPACITY_EXHAUSTED;
         }
         if (!$this->acceptingCommands) {
-            return false;
+            return WorldCommandAdmission::NOT_ACCEPTING;
         }
         if (isset($this->pendingDisconnects[self::sessionKey($command->sessionId())])) {
-            return false;
+            return WorldCommandAdmission::SESSION_CLOSING;
         }
         if ($command instanceof MovePlayer) {
-            return $this->enqueueMovement($command);
+            return $this->enqueueMovement($command)
+                ? WorldCommandAdmission::ACCEPTED
+                : WorldCommandAdmission::CAPACITY_EXHAUSTED;
         }
         $bytes = $command->estimatedBytes();
         if (
             $this->commands->count() + count($this->movements) >= $this->limits->maximumQueuedCommands
             || $bytes > $this->limits->maximumQueuedBytes - $this->queuedCommandBytes
         ) {
-            return false;
+            return WorldCommandAdmission::CAPACITY_EXHAUSTED;
         }
         $this->commands->enqueue($command);
         $this->queuedCommandBytes += $bytes;
         $this->queuedBytes += $bytes;
 
-        return true;
+        return WorldCommandAdmission::ACCEPTED;
+    }
+
+    /**
+     * Reserves the smallest authoritative correction needed after a gameplay command could not be admitted.
+     * Corrections are coalesced per session and bypass the saturated intent queue, but never mutate world state.
+     */
+    public function reconcileAdmissionFailure(
+        WorldCommand $command,
+        WorldCommandAdmission $admission,
+    ): void {
+        if ($admission->accepted() || $admission === WorldCommandAdmission::SESSION_CLOSING) {
+            return;
+        }
+        $player = $this->players->player($command->sessionId());
+        if ($player === null) {
+            return;
+        }
+        $sessionKey = self::sessionKey($player->sessionId);
+        $reason = 'admission_' . $admission->value;
+
+        if ($command instanceof MovePlayer) {
+            $this->reserveAdmissionReconciliation($sessionKey, 'movement', new MovementCorrected(
+                $player->snapshot(),
+                $reason,
+                clientTick: $command->clientTick,
+                attemptedPosition: $command->position,
+            ));
+
+            return;
+        }
+
+        if ($command instanceof PlaceBlock) {
+            $this->reserveAdmissionBlockCorrection($player->sessionId, $sessionKey, $command->clickedPosition);
+            $adjacent = self::adjacentBlock($command->clickedPosition, $command->face);
+            if ($adjacent !== null) {
+                $this->reserveAdmissionBlockCorrection($player->sessionId, $sessionKey, $adjacent);
+            }
+        } elseif (($command instanceof BreakBlock || $command instanceof BrushBlock) && $command->position !== null) {
+            $this->reserveAdmissionBlockCorrection($player->sessionId, $sessionKey, $command->position, true);
+        }
+
+        if ($command instanceof ApplyInventoryStackRequest) {
+            $this->reserveAdmissionReconciliation(
+                $sessionKey,
+                'inventory-request:' . $command->requestId,
+                $this->admissionInventoryCorrection(
+                    $player,
+                    $command->requestId,
+                    $command->responseMode,
+                    $reason,
+                ),
+            );
+
+            return;
+        }
+        if ($command instanceof DropItem) {
+            $this->reserveAdmissionReconciliation(
+                $sessionKey,
+                'inventory-request:' . $command->requestId,
+                $this->admissionInventoryCorrection(
+                    $player,
+                    $command->requestId,
+                    $command->responseMode,
+                    $reason,
+                ),
+            );
+
+            return;
+        }
+        if ($command instanceof PlaceBlock
+            || $command instanceof SelectHotbarSlot
+            || $command instanceof PickBlock
+            || $command instanceof PickEntity
+            || $command instanceof UseItem
+            || $command instanceof ReleaseItem
+            || $command instanceof SyncInventory
+            || $command instanceof SyncInventorySlots) {
+            $this->reserveAdmissionReconciliation(
+                $sessionKey,
+                'inventory-full',
+                $this->admissionInventoryCorrection(
+                    $player,
+                    0,
+                    InventoryResponseMode::LegacySlotSync,
+                    $reason,
+                ),
+            );
+        }
     }
 
     public function tick(): SimulationTick
@@ -1873,7 +1977,9 @@ final class WorldSimulation
         $this->particlesThisTick = 0;
         $this->particlesByPluginThisTick = [];
         $this->blockWorld?->advanceTime();
-        [$processed, $events] = $this->processLifecycleCommands($this->limits->maximumCommandsPerTick);
+        $events = $this->drainAdmissionReconciliationEvents($this->limits->maximumCommandsPerTick);
+        [$processed, $lifecycleEvents] = $this->processLifecycleCommands($this->limits->maximumCommandsPerTick);
+        array_push($events, ...$lifecycleEvents);
         $stageCompletedNanoseconds = hrtime(true);
         $stages = ['lifecycle' => $stageCompletedNanoseconds - $stageStartedNanoseconds];
 
@@ -12562,6 +12668,90 @@ final class WorldSimulation
     {
         $events = $this->deferredEvents;
         $this->deferredEvents = [];
+
+        return $events;
+    }
+
+    private function reserveAdmissionReconciliation(string $sessionKey, string $key, WorldEvent $event): void
+    {
+        $pending = $this->admissionReconciliationEvents[$sessionKey] ?? [];
+        if (!isset($pending[$key]) && count($pending) >= 16) {
+            return;
+        }
+        $pending[$key] = $event;
+        $this->admissionReconciliationEvents[$sessionKey] = $pending;
+    }
+
+    private function reserveAdmissionBlockCorrection(
+        string $sessionId,
+        string $sessionKey,
+        BlockPosition $position,
+        bool $stopBreaking = false,
+    ): void {
+        $state = $this->blockWorld?->loadedBlockStateAt($position->x, $position->y, $position->z);
+        if ($state === null) {
+            return;
+        }
+        $this->reserveAdmissionReconciliation(
+            $sessionKey,
+            sprintf('block:%d:%d:%d', $position->x, $position->y, $position->z),
+            new BlockChanged($sessionId, $position, $state, [$sessionId], $stopBreaking),
+        );
+    }
+
+    private function admissionInventoryCorrection(
+        Player $player,
+        int $requestId,
+        InventoryResponseMode $responseMode,
+        string $reason,
+    ): InventoryStackRequestProcessed {
+        $affected = [];
+        for ($slot = 0; $slot < PlayerInventory::SLOT_COUNT; ++$slot) {
+            $affected[] = new InventorySlotReference(InventoryContainer::Main, $slot, 0);
+        }
+        $container = $this->openContainers[self::sessionKey($player->sessionId)] ?? null;
+
+        return new InventoryStackRequestProcessed(
+            $player->sessionId,
+            $requestId,
+            false,
+            $affected,
+            $player->inventory->slots(),
+            $player->inventory->cursorStack(),
+            $player->inventory->selectedHotbarSlot(),
+            $player->inventory->selectedStack(),
+            true,
+            $player->runtimeActorId,
+            [],
+            $reason,
+            $responseMode,
+            fullSync: true,
+            armorInventory: $player->inventory->armorSlots(),
+            offhandStack: $player->inventory->offhandStack(),
+            craftingInventory: $player->inventory->craftingSlots(),
+            openedContainerInventory: $container?->projection->slots() ?? [],
+            openedContainerWindowId: $container?->windowId,
+        );
+    }
+
+    /** @return list<WorldEvent> */
+    private function drainAdmissionReconciliationEvents(int $limit): array
+    {
+        $events = [];
+        foreach ($this->admissionReconciliationEvents as $sessionKey => $pending) {
+            foreach ($pending as $key => $event) {
+                if ($limit-- === 0) {
+                    return $events;
+                }
+                $events[] = $event;
+                unset($pending[$key]);
+            }
+            if ($pending === []) {
+                unset($this->admissionReconciliationEvents[$sessionKey]);
+            } else {
+                $this->admissionReconciliationEvents[$sessionKey] = $pending;
+            }
+        }
 
         return $events;
     }

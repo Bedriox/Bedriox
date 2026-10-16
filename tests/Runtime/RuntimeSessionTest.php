@@ -53,5 +53,6 @@ final class RuntimeSessionTest extends TestCase
         );
 
         self::assertSame(DimensionType::OVERWORLD, $session->dimension);
+        self::assertSame(0, $session->protocolViolations->snapshot(0)['soft_strikes']);
     }
 }

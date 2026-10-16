@@ -730,7 +730,7 @@ final class ServerRuntimeTest extends TestCase
         }
     }
 
-    public function testWorldTransferFailureAfterTargetAttachDoesNotLeakPlayerOwnership(): void
+    public function testWorldTransferProjectionFailureRetainsTargetOwnershipWithoutDisconnectingPlayer(): void
     {
         $data = BedrockDataSet::bundled();
         $network = $data->blockStateRegistry();
@@ -796,20 +796,24 @@ final class ServerRuntimeTest extends TestCase
                 $identity,
                 new \Bedriox\Api\World\Position(32.5, 64.0, 32.5, world: $targetRuntime->handle),
             ));
-            for ($poll = 0; $poll < 16 && $runtime->sessionCount() > 0; ++$poll) {
+            for ($poll = 0; $poll < 16; ++$poll) {
                 self::assertTrue($runtime->poll());
                 $clock->advance(50_000_000);
             }
 
             self::assertNull($runtime->failure());
-            self::assertSame(0, $runtime->sessionCount());
+            self::assertSame(1, $runtime->sessionCount());
+            self::assertSame([], $transport->removed);
             self::assertTrue(array_any(
                 $events->events,
                 static fn(WorldEvent $event): bool => $event instanceof PlayerJoined
                     && $event->player->position->x === 32.5,
             ), 'The failure fixture must run after destination ownership has attached.');
             self::assertNull($sourceSimulation->authoritativePlayer($identity));
-            self::assertNull($targetSimulation->authoritativePlayer($identity));
+            self::assertSame(
+                'arena',
+                $targetSimulation->authoritativePlayer($identity)?->worldName(),
+            );
         } finally {
             $runtime->close();
         }
@@ -1080,7 +1084,7 @@ final class ServerRuntimeTest extends TestCase
             $secondId = '42@127.0.0.1:20002';
             $event = new EntityActorMoved($entity, 17, [$firstId, $secondId], true);
             $packetsBySession = self::emptyPacketFrameMap();
-            $frameCache = new \SplObjectStorage();
+            $frameCache = new \WeakMap();
             $recipientAvailability = [];
             $directedCount = 0;
             $collect = new \ReflectionMethod(ServerRuntime::class, 'collectMovementPackets');
@@ -1269,6 +1273,31 @@ final class ServerRuntimeTest extends TestCase
         self::assertSame([['127.0.0.1', 20_002]], $transport->removed);
     }
 
+    public function testCompletedLoginsProgressAcrossPollsWhenNoWorldTickIsDue(): void
+    {
+        $transport = new FakeConnectedTransport();
+        $clock = new RuntimeTestClock();
+        $world = new WorldSimulation();
+        $factory = new RuntimeLoginFactory(uniqueIdentities: true, uniqueDisplayNames: true);
+        $runtime = new ServerRuntime(
+            $transport,
+            $factory,
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $world,
+            new FixedRateWorldLoop($world, $clock),
+            new RecordingEventEncoder(),
+        );
+        $first = new SessionInfo('127.0.0.1', 20_001, 41, 1_400, 11);
+        $second = new SessionInfo('127.0.0.1', 20_002, 42, 1_400, 11);
+
+        $this->advanceToInitializing($runtime, $transport, $first, $factory);
+        $this->advanceToInitializing($runtime, $transport, $second, $factory);
+
+        self::assertSame(1, $clock->nowNanoseconds(), 'The world clock must remain below its first due tick.');
+        self::assertNotNull($this->runtimeSession($runtime, '41@127.0.0.1:20001')->play);
+        self::assertNotNull($this->runtimeSession($runtime, '42@127.0.0.1:20002')->play);
+    }
+
     public function testPlayerKickSendsEncryptedDisconnectBeforeTransportRemoval(): void
     {
         $transport = new FakeConnectedTransport();
@@ -1302,6 +1331,193 @@ final class ServerRuntimeTest extends TestCase
         $clock->advance(10_000_000_001);
         self::assertTrue($runtime->poll());
         self::assertSame([['127.0.0.1', 20_001]], $transport->removed);
+    }
+
+    public function testMalformedPlayPacketReceivesGenericReferenceBeforeTransportRemoval(): void
+    {
+        $transport = new FakeConnectedTransport();
+        $clock = new RuntimeTestClock();
+        $world = new WorldSimulation();
+        $factory = new RuntimeLoginFactory();
+        $runtime = new ServerRuntime(
+            $transport,
+            $factory,
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $world,
+            new FixedRateWorldLoop($world, $clock),
+            new RecordingEventEncoder(),
+            closeClock: $clock,
+        );
+        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $client = $this->advanceToInitializing($runtime, $transport, $info, $factory);
+        $decoder = $factory->clientDecryptor();
+        $this->decodeEncryptedPackets($transport->sent, $decoder);
+        $transport->sent = [];
+        $malformed = BedrockBatchCodec::encode(new BedrockBatch(
+            [new PacketFrame(new PacketHeader(PacketIds::TEXT), "\xff")],
+            CompressionMode::NegotiatedZlib,
+            NetworkCompressionPolicy::THRESHOLD_BYTES,
+        ), new BatchLimits());
+        $this->receive($transport, $info, $client->encryptEnvelope($malformed));
+
+        self::assertTrue($runtime->poll());
+        // Application state is released immediately after the final notice is
+        // flushed; only the transport remains during the graceful-close window.
+        self::assertSame(0, $runtime->sessionCount());
+        self::assertSame([], $transport->removed);
+        $packets = $this->decodeEncryptedPackets($transport->sent, $decoder);
+        self::assertCount(1, $packets);
+        self::assertInstanceOf(DisconnectPacket::class, $packets[0]);
+        self::assertMatchesRegularExpression(
+            '/\AConnection closed due to a network error\. Reference: [A-F0-9]{8}\z/',
+            $packets[0]->kickMessage,
+        );
+        self::assertStringNotContainsString('packet', strtolower($packets[0]->kickMessage));
+        self::assertStringNotContainsString('limit', strtolower($packets[0]->kickMessage));
+        $inbound = $runtime->inboundMetricsSnapshot();
+        self::assertSame(1, $inbound->protocolViolations);
+        self::assertSame(1, $inbound->packetDecodeOrigins);
+        self::assertSame(1, $inbound->total());
+
+        $clock->advance(10_000_000_001);
+        self::assertTrue($runtime->poll());
+        self::assertSame([['127.0.0.1', 20_001]], $transport->removed);
+    }
+
+    public function testUnexpectedPlayRuntimeFailureReceivesGenericReferenceBeforeTransportRemoval(): void
+    {
+        $transport = new FakeConnectedTransport();
+        $clock = new RuntimeTestClock();
+        $world = new WorldSimulation();
+        $factory = new RuntimeLoginFactory();
+        $runtime = new ServerRuntime(
+            $transport,
+            $factory,
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $world,
+            new FixedRateWorldLoop($world, $clock),
+            new RecordingEventEncoder(),
+            closeClock: $clock,
+        );
+        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $this->advanceToInitializing($runtime, $transport, $info, $factory);
+        $decoder = $factory->clientDecryptor();
+        $this->decodeEncryptedPackets($transport->sent, $decoder);
+        $transport->sent = [];
+        $session = $this->runtimeSession($runtime, '42@127.0.0.1:20001');
+
+        (new \ReflectionMethod(ServerRuntime::class, 'disconnectForPlayFailure'))->invoke(
+            $runtime,
+            '127.0.0.1:20001',
+            $session,
+            'world_projection_secret',
+            new \RuntimeException('sensitive implementation detail'),
+        );
+
+        self::assertSame(0, $runtime->sessionCount());
+        self::assertSame([], $transport->removed);
+        $packets = $this->decodeEncryptedPackets($transport->sent, $decoder);
+        self::assertCount(1, $packets);
+        self::assertInstanceOf(DisconnectPacket::class, $packets[0]);
+        self::assertMatchesRegularExpression(
+            '/\AAn internal server error occurred\. Reference: [A-F0-9]{8}\z/',
+            $packets[0]->kickMessage,
+        );
+        self::assertStringNotContainsString('projection', strtolower($packets[0]->kickMessage));
+        self::assertStringNotContainsString('sensitive', strtolower($packets[0]->kickMessage));
+
+        $clock->advance(10_000_000_001);
+        self::assertTrue($runtime->poll());
+        self::assertSame([['127.0.0.1', 20_001]], $transport->removed);
+    }
+
+    public function testInvalidPostLoginTransportMetadataReceivesGenericNetworkReference(): void
+    {
+        $transport = new FakeConnectedTransport();
+        $clock = new RuntimeTestClock();
+        $world = new WorldSimulation();
+        $factory = new RuntimeLoginFactory();
+        $runtime = new ServerRuntime(
+            $transport,
+            $factory,
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $world,
+            new FixedRateWorldLoop($world, $clock),
+            new RecordingEventEncoder(),
+            closeClock: $clock,
+        );
+        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $this->advanceToInitializing($runtime, $transport, $info, $factory);
+        $decoder = $factory->clientDecryptor();
+        $this->decodeEncryptedPackets($transport->sent, $decoder);
+        $transport->sent = [];
+        $transport->payloads[] = new ReceivedPayload(
+            $info->remoteAddress,
+            $info->remotePort,
+            'not-decoded',
+            Reliability::Unreliable,
+            null,
+        );
+
+        self::assertTrue($runtime->poll());
+        self::assertSame(0, $runtime->sessionCount());
+        self::assertSame([], $transport->removed);
+        $packets = $this->decodeEncryptedPackets($transport->sent, $decoder);
+        self::assertCount(1, $packets);
+        self::assertInstanceOf(DisconnectPacket::class, $packets[0]);
+        self::assertMatchesRegularExpression(
+            '/\AConnection closed due to a network error\. Reference: [A-F0-9]{8}\z/',
+            $packets[0]->kickMessage,
+        );
+        self::assertStringNotContainsString('metadata', strtolower($packets[0]->kickMessage));
+    }
+
+    public function testRepeatedActorIdentitySpoofClosesOnlyAfterSoftStrikeLimit(): void
+    {
+        $transport = new FakeConnectedTransport();
+        $clock = new RuntimeTestClock();
+        $world = new WorldSimulation();
+        $factory = new RuntimeLoginFactory();
+        $runtime = new ServerRuntime(
+            $transport,
+            $factory,
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $world,
+            new FixedRateWorldLoop($world, $clock),
+            new RecordingEventEncoder(),
+            closeClock: $clock,
+            protocolSoftStrikeLimit: 2,
+        );
+        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $client = $this->advanceToInitializing($runtime, $transport, $info, $factory);
+        $decoder = $factory->clientDecryptor();
+        $this->decodeEncryptedPackets($transport->sent, $decoder);
+        $transport->sent = [];
+        $spoof = new MobEquipmentPacket(UnsignedLong::fromInt(999), 0, 0, 0);
+
+        $this->receiveEncrypted($transport, $info, $client, $spoof);
+        self::assertTrue($runtime->poll());
+        self::assertSame(1, $runtime->sessionCount());
+        self::assertSame([], $transport->sent);
+        self::assertSame([], $transport->removed);
+
+        $this->receiveEncrypted($transport, $info, $client, $spoof);
+        self::assertTrue($runtime->poll());
+        self::assertSame(0, $runtime->sessionCount());
+        self::assertSame([], $transport->removed);
+        $packets = $this->decodeEncryptedPackets($transport->sent, $decoder);
+        self::assertCount(1, $packets);
+        self::assertInstanceOf(DisconnectPacket::class, $packets[0]);
+        self::assertMatchesRegularExpression(
+            '/\AConnection closed due to a network error\. Reference: [A-F0-9]{8}\z/',
+            $packets[0]->kickMessage,
+        );
+        self::assertStringNotContainsString('actor', strtolower($packets[0]->kickMessage));
+        self::assertStringNotContainsString('strike', strtolower($packets[0]->kickMessage));
+        $inbound = $runtime->inboundMetricsSnapshot();
+        self::assertSame(2, $inbound->semanticViolations);
+        self::assertSame(1, $inbound->protocolViolations);
+        self::assertSame(3, $inbound->total());
     }
 
     public function testLateCloseForKickedEndpointCannotRemoveReplacementSession(): void
@@ -1576,8 +1792,10 @@ final class ServerRuntimeTest extends TestCase
             $this->receiveEncrypted($transport, $first, $firstClient, new SetLocalPlayerAsInitializedPacket(UnsignedLong::fromInt(1)));
             $this->receiveEncrypted($transport, $second, $secondClient, new SetLocalPlayerAsInitializedPacket(UnsignedLong::fromInt(2)));
             self::assertTrue($runtime->poll());
-            $clock->advance(50_000_000);
-            self::assertTrue($runtime->poll());
+            for ($tick = 0; $tick < 21; ++$tick) {
+                $clock->advance(50_000_000);
+                self::assertTrue($runtime->poll());
+            }
 
             $joinedPackets = $this->decodeEncryptedPackets(self::sentTo($transport->sent, $first), $firstDecryptor);
             $joinedUpdates = array_values(array_filter(
@@ -1593,8 +1811,10 @@ final class ServerRuntimeTest extends TestCase
             $transport->sent = [];
             $transport->events[] = new SessionClosedEvent($second, SessionCloseReason::RemoteDisconnect);
             self::assertTrue($runtime->poll());
-            $clock->advance(50_000_000);
-            self::assertTrue($runtime->poll());
+            for ($tick = 0; $tick < 21; ++$tick) {
+                $clock->advance(50_000_000);
+                self::assertTrue($runtime->poll());
+            }
 
             $disconnectedPackets = $this->decodeEncryptedPackets(self::sentTo($transport->sent, $first), $firstDecryptor);
             $disconnectedUpdates = array_values(array_filter(
@@ -1864,6 +2084,7 @@ final class ServerRuntimeTest extends TestCase
             $world,
             new FixedRateWorldLoop($world, $clock),
             new RecordingEventEncoder(),
+            closeClock: $clock,
         );
         $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
         $clientEncryptor = $this->advanceToInitializing($runtime, $transport, $info, $loginFactory);
@@ -2225,6 +2446,7 @@ final class ServerRuntimeTest extends TestCase
             $world,
             new FixedRateWorldLoop($world, $clock),
             new RecordingEventEncoder(),
+            closeClock: $clock,
         );
         $bad = new SessionInfo('127.0.0.1', 20_001, 41, 1_400, 11);
         $good = new SessionInfo('127.0.0.1', 20_002, 42, 1_400, 11);
@@ -2236,17 +2458,26 @@ final class ServerRuntimeTest extends TestCase
         self::assertTrue($runtime->poll());
         self::assertFalse($runtime->isClosed());
         self::assertSame(1, $runtime->sessionCount());
+        self::assertNotContains(['127.0.0.1', 20_001], $transport->removed);
+        self::assertNotContains(['127.0.0.1', 20_002], $transport->removed);
+
+        $clock->advance(10_000_000_001);
+        self::assertTrue($runtime->poll());
         self::assertContains(['127.0.0.1', 20_001], $transport->removed);
         self::assertNotContains(['127.0.0.1', 20_002], $transport->removed);
     }
 
-    public function testEventEncodingFailureDisconnectsOnlyItsCausalSession(): void
+    public function testEventEncodingFailureRetriesOnlyItsRecipientsWithoutDisconnectingTheActionOwner(): void
     {
         $transport = new FakeConnectedTransport();
         $clock = new RuntimeTestClock();
         $world = new WorldSimulation();
         $loginFactory = new RuntimeLoginFactory(uniqueIdentities: true);
-        $events = new RecordingEventEncoder(failOnClass: ChatBroadcast::class);
+        $events = new RecordingEventEncoder(
+            failOnClass: ChatBroadcast::class,
+            failuresRemaining: 1,
+            projectToEventRecipients: true,
+        );
         $runtime = new ServerRuntime(
             $transport,
             $loginFactory,
@@ -2257,27 +2488,41 @@ final class ServerRuntimeTest extends TestCase
         );
         $causal = new SessionInfo('127.0.0.1', 20_001, 41, 1_400, 11);
         $recipient = new SessionInfo('127.0.0.1', 20_002, 42, 1_400, 11);
-        $causalEncryptor = $this->advanceToInitializing($runtime, $transport, $causal, $loginFactory);
-        $recipientEncryptor = $this->advanceToInitializing($runtime, $transport, $recipient, $loginFactory);
-        $this->receiveEncrypted($transport, $causal, $causalEncryptor, new SetLocalPlayerAsInitializedPacket(UnsignedLong::fromInt(1)));
-        $this->receiveEncrypted($transport, $recipient, $recipientEncryptor, new SetLocalPlayerAsInitializedPacket(UnsignedLong::fromInt(2)));
-        self::assertTrue($runtime->poll());
-        $clock->advance(50_000_000);
-        self::assertTrue($runtime->poll());
-        self::assertCount(2, $world->snapshot()->players);
-
-        $this->receiveEncrypted($transport, $causal, $causalEncryptor, new ChatPacket('spoofed', 'fan out'));
-        self::assertTrue($runtime->poll());
+        $this->advanceToInitializing($runtime, $transport, $causal, $loginFactory);
+        $this->advanceToInitializing($runtime, $transport, $recipient, $loginFactory);
+        $causalSession = $this->runtimeSession($runtime, '41@127.0.0.1:20001');
+        $recipientSession = $this->runtimeSession($runtime, '42@127.0.0.1:20002');
+        $event = new ChatBroadcast(
+            $causalSession->id,
+            'identity-causal',
+            'Causal',
+            1,
+            'fan out',
+            [$causalSession->id, $recipientSession->id],
+        );
+        $directedCount = 0;
+        self::assertTrue((new \ReflectionMethod(ServerRuntime::class, 'dispatchWorldEvent'))->invokeArgs(
+            $runtime,
+            [$event, &$directedCount],
+        ));
         $clock->advance(50_000_000);
 
         self::assertTrue($runtime->poll());
         self::assertFalse($runtime->isClosed());
-        self::assertSame(1, $runtime->sessionCount());
-        self::assertContains(['127.0.0.1', 20_001], $transport->removed);
+        self::assertSame(2, $runtime->sessionCount());
+        self::assertNotContains(['127.0.0.1', 20_001], $transport->removed);
         self::assertNotContains(['127.0.0.1', 20_002], $transport->removed);
+        self::assertSame(2, count(array_filter(
+            $events->classes,
+            static fn(string $class): bool => $class === ChatBroadcast::class,
+        )));
+        self::assertCount(2, array_filter(
+            $events->directedPackets,
+            static fn(DirectedPacket $directed): bool => $directed->packet instanceof ChatPacket,
+        ));
     }
 
-    public function testDirectedPacketBudgetFailureDisconnectsOnlyItsCausalSession(): void
+    public function testOversizedProjectionResynchronizesRecipientsWithoutDisconnectingItsCausalSession(): void
     {
         $transport = new FakeConnectedTransport();
         $clock = new RuntimeTestClock();
@@ -2296,23 +2541,29 @@ final class ServerRuntimeTest extends TestCase
         );
         $causal = new SessionInfo('127.0.0.1', 20_001, 41, 1_400, 11);
         $recipient = new SessionInfo('127.0.0.1', 20_002, 42, 1_400, 11);
-        $causalEncryptor = $this->advanceToInitializing($runtime, $transport, $causal, $loginFactory);
-        $recipientEncryptor = $this->advanceToInitializing($runtime, $transport, $recipient, $loginFactory);
-        $this->receiveEncrypted($transport, $causal, $causalEncryptor, new SetLocalPlayerAsInitializedPacket(UnsignedLong::fromInt(1)));
-        $this->receiveEncrypted($transport, $recipient, $recipientEncryptor, new SetLocalPlayerAsInitializedPacket(UnsignedLong::fromInt(2)));
-        self::assertTrue($runtime->poll());
-        $clock->advance(50_000_000);
-        self::assertTrue($runtime->poll());
-        self::assertCount(2, $world->snapshot()->players);
-
-        $this->receiveEncrypted($transport, $causal, $causalEncryptor, new ChatPacket('spoofed', 'bounded fan out'));
-        self::assertTrue($runtime->poll());
+        $this->advanceToInitializing($runtime, $transport, $causal, $loginFactory);
+        $this->advanceToInitializing($runtime, $transport, $recipient, $loginFactory);
+        $causalSession = $this->runtimeSession($runtime, '41@127.0.0.1:20001');
+        $recipientSession = $this->runtimeSession($runtime, '42@127.0.0.1:20002');
+        $event = new ChatBroadcast(
+            $causalSession->id,
+            'identity-causal',
+            'Causal',
+            1,
+            'bounded fan out',
+            [$causalSession->id, $recipientSession->id],
+        );
+        $directedCount = 0;
+        self::assertTrue((new \ReflectionMethod(ServerRuntime::class, 'dispatchWorldEvent'))->invokeArgs(
+            $runtime,
+            [$event, &$directedCount],
+        ));
         $clock->advance(50_000_000);
 
         self::assertTrue($runtime->poll());
         self::assertFalse($runtime->isClosed());
-        self::assertSame(1, $runtime->sessionCount());
-        self::assertContains(['127.0.0.1', 20_001], $transport->removed);
+        self::assertSame(2, $runtime->sessionCount());
+        self::assertNotContains(['127.0.0.1', 20_001], $transport->removed);
         self::assertNotContains(['127.0.0.1', 20_002], $transport->removed);
     }
 
@@ -3582,6 +3833,8 @@ final class RecordingEventEncoder implements WorldEventPacketEncoder
         private readonly int $packetCount = 0,
         private readonly ?WorldEventPacketEncoder $delegate = null,
         private readonly ?float $failOnPlayerJoinedX = null,
+        private int $failuresRemaining = PHP_INT_MAX,
+        private readonly bool $projectToEventRecipients = false,
     ) {}
 
     public function clearEvents(): void
@@ -3598,7 +3851,7 @@ final class RecordingEventEncoder implements WorldEventPacketEncoder
     {
         $this->classes[] = $event::class;
         $this->events[] = $event;
-        if ($event::class === $this->failOnClass) {
+        if ($event::class === $this->failOnClass && $this->failuresRemaining-- > 0) {
             throw new \RuntimeException('event fixture failure');
         }
         if ($event instanceof PlayerJoined && $event->player->position->x === $this->failOnPlayerJoinedX) {
@@ -3614,6 +3867,18 @@ final class RecordingEventEncoder implements WorldEventPacketEncoder
                 $packets[] = new DirectedPacket($sessionId, new ChatPacket('server', 'fixture'));
             }
 
+            $this->directedPackets = [...$this->directedPackets, ...$packets];
+
+            return $packets;
+        }
+        if ($this->projectToEventRecipients && $event::class === $this->failOnClass) {
+            $packets = array_map(
+                static fn(string $sessionId): DirectedPacket => new DirectedPacket(
+                    $sessionId,
+                    new ChatPacket('server', 'fixture'),
+                ),
+                $event->recipients(),
+            );
             $this->directedPackets = [...$this->directedPackets, ...$packets];
 
             return $packets;

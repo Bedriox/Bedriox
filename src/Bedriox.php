@@ -489,6 +489,7 @@ final class Bedriox
                         entityNavigation: $runtime?->entityNavigationMetrics(),
                         transportSecurity: $runtime?->transportSecuritySnapshot(),
                         pluginAsyncQueue: $pluginAsync?->snapshot(),
+                        inbound: $runtime?->inboundMetricsSnapshot(),
                     );
                 },
                 static fn(

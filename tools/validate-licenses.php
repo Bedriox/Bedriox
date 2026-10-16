@@ -46,7 +46,7 @@ $approvedProduction = [
     ],
     'bedriox/protocol' => [
         'version' => '0.1.0-alpha.1',
-        'reference' => '878603d57252f466f69e25749bd740d8d9ed4606',
+        'reference' => '2892caf863b45a84071f877bedf1865940cea5ea',
         'license' => 'GPL-3.0-only',
     ],
     'bedriox/data' => [
@@ -56,7 +56,7 @@ $approvedProduction = [
     ],
     'bedriox/raknet' => [
         'version' => '0.1.0-alpha.3',
-        'reference' => 'efd20d678ad4bea45da23d3a55886f405b197ec8',
+        'reference' => '2f0d0b87a915b8e6a6795cce8fcad506f4d8f804',
         'license' => 'GPL-3.0-only',
     ],
     'symfony/deprecation-contracts' => [

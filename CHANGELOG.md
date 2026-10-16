@@ -1,5 +1,6 @@
 # Changelog
 
+- Keep optional unsupported login and play input from disconnecting healthy players, require decaying repeated evidence before actor-identity mismatches close a session, repair rejected predictions from authoritative state, separate decode failures from gameplay rejection, and retry outbound projection failures for only the affected recipients.
 - Allow spectators to fly below a dimension's terrain floor without being
   disconnected, keep creative and spectator players immune to the void, and
   apply authoritative void damage only to survival and adventure players.

@@ -60,6 +60,8 @@ final class BedrockPlayChannelFactory implements PlayChannelFactory
         private ?PreparedChunkCache $preparedChunks = null,
         private ?PreparedPlayBatchCache $preparedPlayBatches = null,
         private ?Closure $worldBinding = null,
+        private bool $traceUnsupportedPackets = true,
+        private int $unsupportedPacketLogLimit = 5,
     ) {}
 
     public function create(LoginChannelReady $ready, string $sessionId, UnsignedLong $runtimeEntityId, ?PlayerBootstrap $bootstrap = null): BedrockPlayChannel
@@ -139,6 +141,8 @@ final class BedrockPlayChannelFactory implements PlayChannelFactory
             $this->compressionTaskTypeId,
             $preparedChunks,
             $this->preparedPlayBatches,
+            $this->traceUnsupportedPackets,
+            $this->unsupportedPacketLogLimit,
         );
         $completedNanoseconds = hrtime(true);
         $this->diagnostics?->record('runtime.play_channel_factory.protocol_trace', [

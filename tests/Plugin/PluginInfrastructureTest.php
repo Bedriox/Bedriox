@@ -52,10 +52,14 @@ final class PluginInfrastructureTest extends TestCase
         }
     }
 
-    public function testCommitFailureRemainsDiscardableWithoutMaskingOriginalFailure(): void
+    public function testCommitFailureRemainsDiscardableButDoesNotUndoCompletedRootActions(): void
     {
         $buffer = new PluginActionBuffer();
+        $completed = false;
         $buffer->begin();
+        $buffer->stage(static function () use (&$completed): void {
+            $completed = true;
+        });
         $buffer->stage(static function (): void {
             throw new RuntimeException('commit failed');
         });
@@ -65,10 +69,52 @@ final class PluginInfrastructureTest extends TestCase
             self::fail('A failing staged action was accepted.');
         } catch (RuntimeException $exception) {
             self::assertSame('commit failed', $exception->getMessage());
+            self::assertTrue($completed);
             self::assertTrue($buffer->isCapturing());
             $buffer->discard();
             self::assertFalse($buffer->isCapturing());
         }
+    }
+
+    public function testNestedCommitRemainsStagedUntilOutermostTransactionCommits(): void
+    {
+        $buffer = new PluginActionBuffer();
+        $committed = [];
+        $buffer->begin();
+        $buffer->stage(static function () use (&$committed): void {
+            $committed[] = 'outer';
+        });
+        $buffer->begin();
+        $buffer->stage(static function () use (&$committed): void {
+            $committed[] = 'nested';
+        });
+
+        $buffer->commit();
+
+        self::assertSame([], $committed);
+        self::assertTrue($buffer->isCapturing());
+
+        $buffer->commit();
+
+        self::assertSame(['outer', 'nested'], $committed);
+        self::assertFalse($buffer->isCapturing());
+    }
+
+    public function testDiscardingOuterTransactionAlsoDiscardsCommittedNestedActions(): void
+    {
+        $buffer = new PluginActionBuffer();
+        $committed = false;
+        $buffer->begin();
+        $buffer->begin();
+        $buffer->stage(static function () use (&$committed): void {
+            $committed = true;
+        });
+
+        $buffer->commit();
+        $buffer->discard();
+
+        self::assertFalse($committed);
+        self::assertFalse($buffer->isCapturing());
     }
 
     public function testOwnershipCleanupRunsInReverseOrderAndContainsFailures(): void

@@ -43,6 +43,7 @@ use Bedriox\Server\Player\InventoryStackRequestAction;
 use Bedriox\Server\Player\InventoryStackRequestActionType;
 use Bedriox\Server\Player\PlayerBootstrap;
 use Bedriox\Server\Player\PlayerIdentity;
+use Bedriox\Server\Player\PlayerInventory;
 use Bedriox\Server\Player\PlayerInventoryEntry;
 use Bedriox\Server\Player\PlayerInventoryStackState;
 use Bedriox\Server\Player\PlayerInventoryState;
@@ -51,6 +52,7 @@ use Bedriox\Server\Simulation\BlockBreakAction;
 use Bedriox\Server\Simulation\ClientInputTick;
 use Bedriox\Server\Simulation\Command\CraftingRequest;
 use Bedriox\Server\Simulation\Command\JoinPlayer as UnvalidatedJoinPlayer;
+use Bedriox\Server\Simulation\Command\SelectHotbarSlot;
 use Bedriox\Server\Simulation\Event\ArmSwung;
 use Bedriox\Server\Simulation\Event\BlockBreakStarted;
 use Bedriox\Server\Simulation\Event\BlockChanged;
@@ -82,6 +84,7 @@ use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
 use Bedriox\Server\Simulation\SimulationLimits;
 use Bedriox\Server\Simulation\VerticalState;
+use Bedriox\Server\Simulation\WorldCommandAdmission;
 use Bedriox\Server\Simulation\WorldSimulation;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Block\BlockStateRegistry;
@@ -3146,7 +3149,10 @@ final class WorldSimulationTest extends TestCase
         $world = new WorldSimulation($limits);
         self::assertTrue($world->enqueue($factory->join('a', 'identity-a', 'A')));
         self::assertTrue($world->enqueue($factory->join('b', 'identity-b', 'B')));
-        self::assertFalse($world->enqueue($factory->join('c', 'identity-c', 'C')));
+        self::assertSame(
+            \Bedriox\Server\Simulation\WorldCommandAdmission::CAPACITY_EXHAUSTED,
+            $world->admit($factory->join('c', 'identity-c', 'C')),
+        );
         self::assertSame(2, $world->queuedCommands());
         self::assertGreaterThan(0, $world->queuedBytes());
         self::assertSame(1, $world->tick()->processedCommands);
@@ -3155,13 +3161,86 @@ final class WorldSimulationTest extends TestCase
         self::assertSame(0, $world->queuedBytes());
 
         $tiny = new WorldSimulation(new SimulationLimits(maximumQueuedBytes: 10));
-        self::assertFalse($tiny->enqueue($factory->join('a', 'identity-a', 'A')));
+        self::assertSame(
+            \Bedriox\Server\Simulation\WorldCommandAdmission::CAPACITY_EXHAUSTED,
+            $tiny->admit($factory->join('a', 'identity-a', 'A')),
+        );
+    }
+
+    public function testSaturatedInventoryIntentIsRejectedWithAnAuthoritativeFullSync(): void
+    {
+        $limits = new SimulationLimits(maximumQueuedCommands: 1, maximumCommandsPerTick: 1);
+        $factory = new SimulationCommandFactory($limits);
+        $world = new WorldSimulation($limits);
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->chat('one', 1, 'fills the gameplay queue')));
+        $request = $factory->inventoryStackRequest('one', 71, [], 'admission_test');
+        $admission = $world->admit($request);
+        self::assertSame(WorldCommandAdmission::CAPACITY_EXHAUSTED, $admission);
+
+        $world->reconcileAdmissionFailure($request, $admission);
+        $events = $world->tick()->events;
+
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $events[0]);
+        self::assertSame(71, $events[0]->requestId);
+        self::assertFalse($events[0]->success);
+        self::assertTrue($events[0]->fullSync);
+        self::assertSame('admission_capacity_exhausted', $events[0]->reason);
+        self::assertCount(PlayerInventory::SLOT_COUNT, $events[0]->affectedSlots);
+        self::assertInstanceOf(ChatBroadcast::class, $events[1]);
+    }
+
+    public function testSaturatedMovementIsCorrectedWithoutEnteringTheGameplayQueue(): void
+    {
+        $limits = new SimulationLimits(maximumQueuedCommands: 1, maximumCommandsPerTick: 1);
+        $factory = new SimulationCommandFactory($limits);
+        $world = new WorldSimulation($limits);
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        $world->tick();
+        self::assertTrue($world->enqueue($factory->chat('one', 1, 'fills the gameplay queue')));
+        $movement = $factory->move('one', 1, 10.0, 64.0, 10.0, 90.0, 0.0, MovementMode::WALKING);
+        $admission = $world->admit($movement);
+        self::assertSame(WorldCommandAdmission::CAPACITY_EXHAUSTED, $admission);
+
+        $world->reconcileAdmissionFailure($movement, $admission);
+        $events = $world->tick()->events;
+
+        self::assertInstanceOf(MovementCorrected::class, $events[0]);
+        self::assertSame('admission_capacity_exhausted', $events[0]->reason);
+        self::assertSame(0.0, $events[0]->authoritativePlayer->position->x);
+        self::assertSame(10.0, $events[0]->attemptedPosition?->x);
+        self::assertInstanceOf(ChatBroadcast::class, $events[1]);
+    }
+
+    public function testInvalidPredictedInventoryIntentReceivesAnAuthoritativeCorrection(): void
+    {
+        $factory = new SimulationCommandFactory();
+        $world = new WorldSimulation();
+        self::assertTrue($world->enqueue($factory->join('one', 'identity-one', 'One')));
+        $world->tick();
+        $invalid = new SelectHotbarSlot('one', 99);
+        $admission = $world->admit($invalid);
+        self::assertSame(WorldCommandAdmission::INVALID, $admission);
+
+        $world->reconcileAdmissionFailure($invalid, $admission);
+        $events = $world->tick()->events;
+
+        self::assertCount(1, $events);
+        self::assertInstanceOf(InventoryStackRequestProcessed::class, $events[0]);
+        self::assertFalse($events[0]->success);
+        self::assertTrue($events[0]->fullSync);
+        self::assertSame('admission_invalid', $events[0]->reason);
+        self::assertSame(0, $events[0]->selectedHotbarSlot);
     }
 
     public function testQueueRevalidatesCommandsCreatedOutsideTheBoundary(): void
     {
         $world = new WorldSimulation();
-        self::assertFalse($world->enqueue(new UnvalidatedJoinPlayer('', 'identity', 'Player')));
+        self::assertSame(
+            \Bedriox\Server\Simulation\WorldCommandAdmission::INVALID,
+            $world->admit(new UnvalidatedJoinPlayer('', 'identity', 'Player')),
+        );
         self::assertSame(0, $world->queuedCommands());
     }
 

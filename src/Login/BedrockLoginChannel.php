@@ -81,6 +81,12 @@ final class BedrockLoginChannel
                 if ($frame->header->senderSubclientId !== 0 || $frame->header->targetSubclientId !== 0) {
                     return $this->fail(LoginFailureCode::INPUT_LIMIT);
                 }
+                // A future client may send an optional packet which this server
+                // does not yet understand. Framing has already been validated,
+                // so skip that frame without losing later login packets.
+                if (!BedrockPacketCodec::supportsDecoding($frame->header->packetId)) {
+                    continue;
+                }
                 $packet = BedrockPacketCodec::decode($frame->header->packetId, $frame->payload);
                 if (!$this->session->enqueue(new LoginInput($packet, strlen($frame->payload) + 1, $encrypted))) {
                     return $this->fail($this->session->failure() ?? LoginFailureCode::INPUT_LIMIT);

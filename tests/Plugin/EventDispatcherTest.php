@@ -106,6 +106,27 @@ final class EventDispatcherTest extends TestCase
         self::assertSame(0, $dispatcher->listenerCount());
     }
 
+    public function testOuterListenerFailureDiscardsActionsStagedByNestedDispatch(): void
+    {
+        [$dispatcher, $control, $actions] = $this->dispatcher();
+        $committed = false;
+        $dispatcher->register('Example', NestedTestEvent::class, static function () use ($actions, &$committed): void {
+            $actions->stage(static function () use (&$committed): void {
+                $committed = true;
+            });
+        });
+        $dispatcher->register('Example', TestEvent::class, static function () use ($dispatcher): void {
+            $dispatcher->dispatch(new NestedTestEvent());
+            throw new RuntimeException('outer listener failed');
+        });
+
+        $dispatcher->dispatch(new TestEvent());
+
+        self::assertFalse($committed);
+        self::assertCount(1, $control->failures);
+        self::assertSame('outer listener failed', $control->failures[0][1]->getMessage());
+    }
+
     public function testMonitorCannotStageServerActions(): void
     {
         [$dispatcher, $control, $actions] = $this->dispatcher();
@@ -191,6 +212,8 @@ final class FakeRuntimeControl implements PluginRuntimeControl
 }
 
 final class TestEvent extends Event {}
+
+final class NestedTestEvent extends Event {}
 
 final class TestCancellableEvent extends CancellableEvent {}
 

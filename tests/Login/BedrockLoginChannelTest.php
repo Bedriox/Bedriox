@@ -122,6 +122,23 @@ final class BedrockLoginChannelTest extends TestCase
         self::assertCount(1, $channel->drainOutgoing());
     }
 
+    public function testUnsupportedLoginFrameDoesNotDiscardFollowingKnownFrame(): void
+    {
+        [$channel, $client] = $this->channel();
+        [, $encryptor] = $this->advanceToCryptoWithPair($channel, $client);
+        self::assertTrue($channel->accept($this->event($encryptor->encryptEnvelope($this->encode(new ClientToServerHandshakePacket(), CompressionMode::NegotiatedZlib)))));
+        $channel->drainOutgoing();
+
+        $combined = BedrockBatchCodec::encode(new BedrockBatch([
+            new PacketFrame(new PacketHeader(0x3ff), "\xde\xad"),
+            $this->frame(new ResourcePackClientResponsePacket(ResourcePackResponseStatus::HaveAllPacks, [])),
+        ], CompressionMode::NegotiatedZlib, NetworkCompressionPolicy::THRESHOLD_BYTES), new BatchLimits());
+
+        self::assertTrue($channel->accept($this->event($encryptor->encryptEnvelope($combined))));
+        self::assertSame(LoginState::WAIT_PACK_STACK_RESPONSE, $channel->state());
+        self::assertCount(1, $channel->drainOutgoing());
+    }
+
     public function testPlaintextAfterCryptoAndCorruptionFailClosed(): void
     {
         [$plain, $plainClient] = $this->channel();

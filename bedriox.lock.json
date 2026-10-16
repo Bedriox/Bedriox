@@ -16,12 +16,12 @@
         "raknet": {
             "package": "bedriox/raknet",
             "version": "0.1.0-alpha.3",
-            "commit": "efd20d678ad4bea45da23d3a55886f405b197ec8"
+            "commit": "2f0d0b87a915b8e6a6795cce8fcad506f4d8f804"
         },
         "protocol": {
             "package": "bedriox/protocol",
             "version": "0.1.0-alpha.1",
-            "commit": "878603d57252f466f69e25749bd740d8d9ed4606"
+            "commit": "2892caf863b45a84071f877bedf1865940cea5ea"
         },
         "data": {
             "package": "bedriox/data",

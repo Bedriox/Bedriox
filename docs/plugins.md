@@ -62,7 +62,7 @@ $config->save();
 
 An entry point extends `Bedriox\Api\Plugin\Plugin` and may implement `onLoad()`, `onEnable()`, and `onDisable()`. Required dependencies load first. A missing, incompatible, cyclic, or failed dependency prevents only affected plugins from enabling.
 
-If ordinary plugin code throws, Bedriox attributes the active plugin and operation, restores controlled event state, discards that listener's staged API work, disables the plugin and required dependants, releases listeners, and continues serving healthy players. PHP code cannot be unloaded safely; installing changed code requires a restart.
+If ordinary plugin code throws before its callback completes, Bedriox attributes the active plugin and operation, restores controlled event state, discards that callback's staged API work (including work staged by nested callbacks), disables the plugin and required dependants, releases listeners, and continues serving healthy players. A failure raised while an outermost staged action is being admitted remains isolated to that plugin and discards work that has not run, but arbitrary PHP mutations completed by an earlier action cannot be generically rolled back. Authoritative simulation inputs still undergo their ordinary validation before gameplay state changes. PHP code cannot be unloaded safely; installing changed code requires a restart.
 
 ## Typed events
 

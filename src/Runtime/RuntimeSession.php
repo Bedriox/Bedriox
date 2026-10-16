@@ -26,6 +26,7 @@ use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\RakNet\SessionInfo;
 use Bedriox\Server\Login\BedrockLoginChannel;
 use Bedriox\Server\Player\PlayerBootstrap;
+use Bedriox\Server\Security\ProtocolViolationTracker;
 use LogicException;
 
 final class RuntimeSession
@@ -38,6 +39,7 @@ final class RuntimeSession
     public ?PlayerSkin $playerSkin = null;
     public string $worldId;
     public DimensionType $dimension;
+    public readonly ProtocolViolationTracker $protocolViolations;
 
     public function __construct(
         public readonly SessionInfo $transport,
@@ -46,9 +48,11 @@ final class RuntimeSession
         public ?BedrockLoginChannel $login,
         string $worldId = 'world',
         DimensionType $dimension = DimensionType::OVERWORLD,
+        ?ProtocolViolationTracker $protocolViolations = null,
     ) {
         $this->worldId = WorldRuntimeManager::canonicalId($worldId);
         $this->dimension = $dimension;
+        $this->protocolViolations = $protocolViolations ?? new ProtocolViolationTracker();
     }
 
     public function promote(BedrockPlayChannel $play): void

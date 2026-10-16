@@ -60,7 +60,7 @@
             "dist": {
                 "type": "path",
                 "url": "../Protocol",
-                "reference": "878603d57252f466f69e25749bd740d8d9ed4606"
+                "reference": "2892caf863b45a84071f877bedf1865940cea5ea"
             },
             "require": {
                 "ext-openssl": "*",
@@ -116,7 +116,7 @@
             "dist": {
                 "type": "path",
                 "url": "../RakNet",
-                "reference": "efd20d678ad4bea45da23d3a55886f405b197ec8"
+                "reference": "2f0d0b87a915b8e6a6795cce8fcad506f4d8f804"
             },
             "require": {
                 "ext-sockets": "*",

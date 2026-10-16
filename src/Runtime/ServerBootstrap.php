@@ -663,6 +663,8 @@ final class ServerBootstrap
                     compressionTaskTypeId: CoreWorkerTaskCatalog::COMPRESS_BATCH,
                     preparedChunks: $preparedChunks,
                     preparedPlayBatches: $preparedPlayBatches,
+                    traceUnsupportedPackets: $config->traceUnsupportedPackets,
+                    unsupportedPacketLogLimit: $config->unsupportedPacketLogLimit,
                     worldBinding: static function (\Bedriox\Server\Player\PlayerBootstrap $bootstrap) use (
                         $worldRuntimes,
                         $initialization,
@@ -734,6 +736,8 @@ final class ServerBootstrap
                 whitelist: $whitelist,
                 bans: $bans,
                 playerLifecycleLogger: $playerLifecycleLogger,
+                protocolSoftStrikeLimit: $config->protocolSoftStrikeLimit,
+                protocolStrikeDecaySeconds: $config->protocolStrikeDecaySeconds,
             );
         } catch (Throwable $exception) {
             $discovery?->close();

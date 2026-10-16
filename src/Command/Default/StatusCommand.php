@@ -348,6 +348,31 @@ final readonly class StatusCommand implements BuiltinCommand
         self::send($sender, TextFormat::GRAY, $status->chunkStreaming === null
             ? 'Session queues: unavailable'
             : sprintf('Session queues: %d outgoing payloads', $status->chunkStreaming->outgoingQueued));
+        if ($status->inbound !== null) {
+            self::send($sender, TextFormat::AQUA, sprintf(
+                'Play input: %d handled, %d ignored, %d corrected, %d rejected',
+                $status->inbound->handled,
+                $status->inbound->ignored,
+                $status->inbound->corrected,
+                $status->inbound->rejected,
+            ));
+            self::send($sender, TextFormat::GRAY, sprintf(
+                'Play input violations: %d semantic, %d fatal protocol, %d internal failures',
+                $status->inbound->semanticViolations,
+                $status->inbound->protocolViolations,
+                $status->inbound->sessionFatals,
+            ));
+            self::send($sender, TextFormat::GRAY, sprintf(
+                'Play input origins: %d transport, %d envelope, %d decode, %d handler, %d admission',
+                $status->inbound->transportOrigins,
+                $status->inbound->envelopeOrigins,
+                $status->inbound->packetDecodeOrigins,
+                $status->inbound->packetHandleOrigins,
+                $status->inbound->admissionOrigins,
+            ));
+        } else {
+            self::send($sender, TextFormat::GRAY, 'Play input metrics: unavailable');
+        }
         if ($status->transportSecurity !== null) {
             self::send($sender, TextFormat::AQUA, sprintf(
                 'Admission: %d datagrams (%s), %d dropped, %d malformed',

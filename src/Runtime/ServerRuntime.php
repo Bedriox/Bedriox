@@ -118,6 +118,12 @@ use Bedriox\Server\Plugin\Display\DisplayChange;
 use Bedriox\Server\Plugin\Display\DisplayRegistry;
 use Bedriox\Server\Plugin\PluginActionBuffer;
 use Bedriox\Server\Runtime\BossBar\ActorBackedBossBarDelivery;
+use Bedriox\Server\Runtime\Input\InboundDisposition;
+use Bedriox\Server\Runtime\Input\InboundMetrics;
+use Bedriox\Server\Runtime\Input\InboundMetricsSnapshot;
+use Bedriox\Server\Runtime\Input\InboundOrigin;
+use Bedriox\Server\Runtime\Input\InboundResult;
+use Bedriox\Server\Security\ProtocolViolationTracker;
 use Bedriox\Server\Simulation\Event\AreaEffectCloudRemoved;
 use Bedriox\Server\Simulation\Event\AreaEffectCloudSpawned;
 use Bedriox\Server\Simulation\Event\AreaEffectCloudUpdated;
@@ -211,9 +217,13 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private const int ACTOR_VISIBILITY_PAIRS_PER_TICK = 16;
     private const int ACTOR_VISIBILITY_BUDGET_NANOSECONDS = 5_000_000;
     private const int PLAYER_ADMISSIONS_PER_TICK = 2;
-    private const int PLAYER_PROMOTIONS_PER_TICK = 1;
+    private const int PLAYER_PROMOTIONS_PER_POLL = 1;
     private const int CHAT_BROADCASTS_PER_TICK = 4;
     private const int MAXIMUM_PENDING_CHAT_BROADCASTS = 4_096;
+    private const int MAXIMUM_PENDING_PROJECTION_RETRIES = 4_096;
+    private const int PROJECTION_RETRIES_PER_TICK = 16;
+    private const int MAXIMUM_PROJECTION_ENCODING_ATTEMPTS = 2;
+    private const int MAXIMUM_PROJECTION_DELIVERY_ATTEMPTS = 8;
     private const int PLAY_SESSION_MAINTENANCE_INTERVAL_NANOSECONDS = 50_000_000;
     private const int CHUNK_STREAMING_BUDGET_NANOSECONDS = 8_000_000;
     private const int WORLD_AUTOSAVE_BUDGET_MICROSECONDS = 3_000;
@@ -239,6 +249,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private int $serverTick = 0;
     private readonly SimulationCommandFactory $commands;
     private readonly RuntimeDiagnostics $diagnostics;
+    private readonly InboundMetrics $inboundMetrics;
     private readonly PlayerActorVisibilityRegistry $actorVisibility;
     private readonly PlayerConnectionDirectory $playerConnections;
     private ?Throwable $failure = null;
@@ -290,6 +301,19 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private readonly SplQueue $pendingActorVisibilityPairs;
     /** @var SplQueue<ChatBroadcast> */
     private readonly SplQueue $pendingChatBroadcasts;
+    /**
+     * @var SplQueue<array{
+     *     event: WorldEvent,
+     *     recipients: non-empty-list<string>,
+     *     world: string|null,
+     *     encoding_attempts: int,
+     *     delivery_attempts: int,
+     *     key: string
+     * }>
+     */
+    private readonly SplQueue $pendingProjectionRetries;
+    /** @var array<string, true> */
+    private array $pendingProjectionRetryKeys = [];
     /** @var array<string, true> */
     private array $pendingActorVisibilityPairKeys = [];
     private int $deferredWorldPacketCursor = 0;
@@ -299,7 +323,6 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private int $nextPlaySessionMaintenanceNanoseconds = 0;
     private int $admissionCommandsQueued = 0;
     private int $playerPromotionsQueued = 0;
-    private int $playerPromotionBudgetTick = -1;
     private ?string $processingWorldId = null;
     /** @var array<string, PendingPlayerWorldTransfer> Runtime session ID => staged transfer. */
     private array $pendingPlayerWorldTransfers = [];
@@ -404,22 +427,28 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         private readonly ?WhitelistManager $whitelist = null,
         private readonly ?BanManager $bans = null,
         private readonly ?PlayerLifecycleLogger $playerLifecycleLogger = null,
+        private readonly int $protocolSoftStrikeLimit = 10,
+        private readonly int $protocolStrikeDecaySeconds = 15,
     ) {
         $this->defaultGameMode = $this->playerPersistence?->defaultGameMode() ?? GameMode::SURVIVAL;
         if ($this->autosaveIntervalTicks < 1 || $this->autosaveChunkBudget < 1
             || $this->playerAutosaveIntervalTicks < 1 || $this->playerAutosaveBudget < 1
             || $this->chunkUnloadPerTick < 1 || $this->chunkUnloadPerTick > 1_024
             || $this->chunksGeneratePerTick < 1 || $this->chunksGeneratePerTick > 64
-            || $this->chunksSendPerTick < 1 || $this->chunksSendPerTick > 64) {
+            || $this->chunksSendPerTick < 1 || $this->chunksSendPerTick > 64
+            || $this->protocolSoftStrikeLimit < 1 || $this->protocolSoftStrikeLimit > 100
+            || $this->protocolStrikeDecaySeconds < 1 || $this->protocolStrikeDecaySeconds > 3_600) {
             throw new InvalidArgumentException('Autosave interval and chunk budget must be positive.');
         }
         $this->commands = $commands ?? new SimulationCommandFactory();
         $this->diagnostics = $diagnostics ?? RuntimeDiagnostics::disabled();
+        $this->inboundMetrics = new InboundMetrics();
         $this->actorVisibility = new PlayerActorVisibilityRegistry($this->limits->maximumSessions);
         $this->actorBackedBossBars = new ActorBackedBossBarDelivery();
         $this->packetFrameCache = new WeakMap();
         $this->pendingActorVisibilityPairs = new SplQueue();
         $this->pendingChatBroadcasts = new SplQueue();
+        $this->pendingProjectionRetries = new SplQueue();
         $this->playerConnections = $playerConnections ?? new PlayerConnectionDirectory();
         $this->closeClock = $closeClock ?? new SystemSimulationClock();
         $this->chunkStreamingGovernor = new ChunkStreamingGovernor();
@@ -447,6 +476,11 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         return $this->transport instanceof SecurityObservableTransport
             ? $this->transport->securitySnapshot()
             : null;
+    }
+
+    public function inboundMetricsSnapshot(): InboundMetricsSnapshot
+    {
+        return $this->inboundMetrics->snapshot();
     }
 
     public function enforceWhitelist(): void
@@ -645,7 +679,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         foreach ($this->sessions as $key => $session) {
             if ($session->joined && $session->play !== null && $session->worldId === $runtime->handle->id()
                 && !$this->queueWorldPacket($session, $packet)) {
-                $this->disconnect($key, 'world_difficulty_backlog_exhausted');
+                $this->disconnectForPlayFailure($key, $session, 'world_difficulty_backlog_exhausted');
             }
         }
 
@@ -679,7 +713,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             if ($session->joined && $session->play !== null && $session->worldId === $runtime->handle->id()
                 && $session->dimension === $dimension
                 && !$this->queueWorldPacket($session, $packet)) {
-                $this->disconnect($key, 'world_spawn_backlog_exhausted');
+                $this->disconnectForPlayFailure($key, $session, 'world_spawn_backlog_exhausted');
             }
         }
 
@@ -939,7 +973,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 $session->play->abortWorldSwitch();
                 $key = $this->sessionEndpoints[$sessionId] ?? null;
                 if ($key !== null) {
-                    $this->disconnect($key, 'world_transfer_failed');
+                    $this->disconnectForPlayFailure($key, $session, 'world_transfer_failed');
                 }
             }
         }
@@ -1360,12 +1394,12 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     $gameMode,
                 ),
             )) {
-                $this->disconnect($key, 'authority_abilities_update_failed');
+                $this->disconnectForPlayFailure($key, $session, 'authority_abilities_update_failed');
 
                 return;
             }
             if (!$session->play->queuePacket($projector->availableCommands($uuid, $this->onlinePlayers()))) {
-                $this->disconnect($key, 'authority_commands_update_failed');
+                $this->disconnectForPlayFailure($key, $session, 'authority_commands_update_failed');
             }
 
             return;
@@ -1451,7 +1485,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             }
             $packet ??= $this->craftingCatalog->protocolPacket();
             if (!$this->queueWorldPacket($session, $packet)) {
-                $this->disconnect($key, 'crafting_catalog_backlog_exhausted');
+                $this->disconnectForPlayFailure($key, $session, 'crafting_catalog_backlog_exhausted');
                 continue;
             }
             $session->craftingCatalogRevision = $revision;
@@ -1466,6 +1500,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
         $pollStarted = hrtime(true);
         $completedTicks = 0;
+        $this->playerPromotionsQueued = 0;
         $this->performance?->beginTick($pollStarted);
         try {
             $this->ensureDisplayBindings();
@@ -1556,7 +1591,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     $this->promoteIfReady($key, $session);
                 } elseif ($maintainPlaySessions && $session->play !== null) {
                     if (!$session->play->tick()) {
-                        $this->disconnect($key, 'play_tick_failed');
+                        $this->disconnectForPlayFailure($key, $session, 'play_tick_failed');
                     } elseif (!$this->tryQueueAdmission($key, $session)) {
                         continue;
                     }
@@ -1622,6 +1657,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     $this->admissionCommandsQueued = 0;
                     $tickStartedNanoseconds = hrtime(true);
                     $this->drainDeferredWorldPackets();
+                    $this->drainProjectionRetries($worldId, $directedCount);
                     /** @var array<string, list<PacketFrame>> $pendingMovementPackets */
                     $pendingMovementPackets = [];
                     /** @var array<string, list<PacketFrame>> $authoritativeMovementPackets */
@@ -2801,7 +2837,10 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             }
             $play = $this->sessions[$key]->play ?? null;
             if ($play !== null && !$play->worldTick($budget->slice(1, 1, 1))) {
-                $this->disconnect($key, 'world_stream_tick_failed');
+                $session = $this->sessions[$key] ?? null;
+                if ($session instanceof RuntimeSession) {
+                    $this->disconnectForPlayFailure($key, $session, 'world_stream_tick_failed');
+                }
             }
         }
     }
@@ -3161,7 +3200,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 continue;
             }
             if (!$this->queueWorldPacket($session, $packet)) {
-                $this->disconnect($key, 'world_time_backlog_exhausted');
+                $this->disconnectForPlayFailure($key, $session, 'world_time_backlog_exhausted');
             }
         }
     }
@@ -3271,6 +3310,11 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             UnsignedLong::fromInt($this->nextRuntimeEntityId++),
             $login,
             $this->worldRuntimes?->default()->handle->id() ?? 'world',
+            protocolViolations: new ProtocolViolationTracker(
+                $this->protocolSoftStrikeLimit,
+                $this->protocolStrikeDecaySeconds * 1_000_000_000,
+                hrtime(true),
+            ),
         );
         $this->sessions[$key] = $session;
         $this->sessionEndpoints[$id] = $key;
@@ -3285,7 +3329,18 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             || $payload->reliability !== Reliability::ReliableOrdered
             || $payload->orderingChannel !== 0) {
             if ($session instanceof RuntimeSession) {
-                $this->disconnect($key, 'invalid_transport_payload_metadata');
+                if ($session->play !== null) {
+                    $this->disconnectPlayWithReference(
+                        $key,
+                        $session,
+                        true,
+                        'invalid_transport_payload_metadata',
+                        'protocol_violation',
+                        'transport',
+                    );
+                } else {
+                    $this->disconnect($key, 'invalid_transport_payload_metadata');
+                }
             }
 
             return;
@@ -3321,13 +3376,46 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 || $session->phase === SessionPhase::SPAWNED)
             && $session->play !== null) {
             try {
-                $accepted = $session->play->accept($event);
+                $result = $session->play->acceptInput($event);
             } catch (Throwable $exception) {
                 $this->diagnostics->record('play.input_failed', ['exception' => $exception::class]);
-                $accepted = false;
+                $result = new InboundResult(
+                    InboundDisposition::SESSION_FATAL,
+                    InboundOrigin::PACKET_HANDLE,
+                    'uncontained_input_failure',
+                    exceptionClass: $exception::class,
+                );
             }
-            if (!$accepted) {
-                $this->disconnect($key, 'play_input_rejected');
+            $this->inboundMetrics->record($result);
+            if ($result->disposition === InboundDisposition::SEMANTIC_VIOLATION) {
+                $violationNanoseconds = hrtime(true);
+                $exhausted = $session->protocolViolations->recordSoftViolation($violationNanoseconds);
+                $snapshot = $session->protocolViolations->snapshot($violationNanoseconds);
+                $this->diagnostics->record('play.semantic_violation', [
+                    'reason' => $result->reason,
+                    'packet_id' => $result->packetId ?? -1,
+                    'soft_strikes' => $snapshot['soft_strikes'],
+                    'soft_strike_limit' => $snapshot['soft_strike_limit'],
+                    'threshold_exhausted' => $exhausted,
+                ]);
+                if ($exhausted) {
+                    $fatalResult = new InboundResult(
+                        InboundDisposition::PROTOCOL_VIOLATION,
+                        $result->origin,
+                        'repeated_semantic_violation',
+                        $result->packetId,
+                    );
+                    $this->inboundMetrics->record($fatalResult);
+                    $this->disconnectForInboundFailure($key, $session, $fatalResult);
+
+                    return;
+                }
+            }
+            if ($result->requiresDisconnect()) {
+                if ($result->disposition === InboundDisposition::PROTOCOL_VIOLATION) {
+                    $session->protocolViolations->recordHardViolation();
+                }
+                $this->disconnectForInboundFailure($key, $session, $result);
 
                 return;
             }
@@ -3346,33 +3434,45 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $commands = $session->play->drainCommands();
             $simulation = $this->simulationForSession($session);
             if ($simulation === null) {
-                $this->disconnect($key, 'world_runtime_missing');
+                $this->disconnectForPlayFailure($key, $session, 'world_runtime_missing');
 
                 return;
             }
             foreach ($commands as $command) {
-                if (!$simulation->enqueue($command)) {
-                    $this->disconnect($key, 'world_command_queue_exhausted');
-
-                    return;
+                $admission = $simulation->admit($command);
+                if (!$admission->accepted()) {
+                    $this->diagnostics->record('play.world_command_dropped', [
+                        'command' => $command::class,
+                        'reason' => $admission->value,
+                    ]);
+                    $simulation->reconcileAdmissionFailure($command, $admission);
                 }
             }
             foreach ($session->play->drainSkinChanges() as $skinChange) {
-                if (!$this->changePlayerSkin($session, $skinChange)) {
-                    $this->disconnect($key, 'player_skin_change_failed');
-
-                    return;
+                try {
+                    $changed = $this->changePlayerSkin($session, $skinChange);
+                } catch (Throwable $exception) {
+                    $this->diagnostics->record('play.skin_change_failed', [
+                        'exception' => $exception::class,
+                    ]);
+                    continue;
+                }
+                if (!$changed) {
+                    $this->diagnostics->record('play.skin_change_rejected');
                 }
             }
             if (!$this->dispatchPlayerCommands($session)) {
-                $this->disconnect($key, 'player_command_dispatch_failed');
-                return;
+                $this->diagnostics->record('play.player_command_output_dropped');
             }
             $this->flush($key, $session);
 
             return;
         }
-        $this->disconnect($key, 'payload_for_unknown_phase');
+        if ($session->play !== null) {
+            $this->disconnectForPlayFailure($key, $session, 'payload_for_unknown_phase');
+        } else {
+            $this->disconnect($key, 'payload_for_unknown_phase');
+        }
     }
 
     private function dispatchPlayerCommands(RuntimeSession $session): bool
@@ -3455,11 +3555,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         if ($session->phase !== SessionPhase::LOGIN || $session->login === null) {
             return;
         }
-        if ($this->playerPromotionBudgetTick !== $this->serverTick) {
-            $this->playerPromotionBudgetTick = $this->serverTick;
-            $this->playerPromotionsQueued = 0;
-        }
-        if ($this->playerPromotionsQueued >= self::PLAYER_PROMOTIONS_PER_TICK) {
+        if ($this->playerPromotionsQueued >= self::PLAYER_PROMOTIONS_PER_POLL) {
             return;
         }
         $ready = $session->login->takeReady();
@@ -3710,9 +3806,13 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 'exception' => $exception::class,
                 'message' => $exception->getMessage(),
             ]);
-            $ready->encryptor->close();
-            $ready->decryptor->close();
-            $this->disconnect($key, 'admission_projection_failed');
+            if ($session->play !== null) {
+                $this->disconnectForPlayFailure($key, $session, 'admission_projection_failed', $exception);
+            } else {
+                $ready->encryptor->close();
+                $ready->decryptor->close();
+                $this->disconnect($key, 'admission_projection_failed');
+            }
         }
     }
 
@@ -3742,18 +3842,18 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             );
         } catch (Throwable $exception) {
             $this->diagnostics->record('play.admission_command_failed', ['exception' => $exception::class]);
-            $this->disconnect($key, 'admission_command_failed');
+            $this->disconnectForPlayFailure($key, $session, 'admission_command_failed', $exception);
 
             return false;
         }
         $simulation = $this->simulationForSession($session);
         if ($simulation === null) {
-            $this->disconnect($key, 'world_runtime_missing');
+            $this->disconnectForPlayFailure($key, $session, 'world_runtime_missing');
 
             return false;
         }
         if (!$simulation->enqueue($join)) {
-            $this->disconnect($key, 'lifecycle_queue_exhausted');
+            $this->disconnectForPlayFailure($key, $session, 'lifecycle_queue_exhausted');
 
             return false;
         }
@@ -3862,6 +3962,100 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         ]);
         $this->removeTransportSession($session->transport);
         $this->removeRuntimeSession($key, PlayerQuitCause::CONNECTION_LOST, self::readableInternalDisconnectReason($reason));
+    }
+
+    private function disconnectForInboundFailure(
+        string $key,
+        RuntimeSession $session,
+        InboundResult $result,
+    ): void {
+        $this->disconnectPlayWithReference(
+            $key,
+            $session,
+            $result->disposition === InboundDisposition::PROTOCOL_VIOLATION,
+            $result->reason,
+            strtolower($result->disposition->name),
+            $result->origin->value,
+            $result->packetId,
+            $result->exceptionClass,
+        );
+    }
+
+    private function disconnectForPlayFailure(
+        string $key,
+        RuntimeSession $session,
+        string $reason,
+        ?Throwable $exception = null,
+    ): void {
+        $this->disconnectPlayWithReference(
+            $key,
+            $session,
+            false,
+            $reason,
+            'session_fatal',
+            'runtime',
+            exceptionClass: $exception !== null ? $exception::class : null,
+        );
+    }
+
+    private function disconnectPlayWithReference(
+        string $key,
+        RuntimeSession $session,
+        bool $protocolViolation,
+        string $reason,
+        string $disposition,
+        string $origin,
+        ?int $packetId = null,
+        ?string $exceptionClass = null,
+    ): void {
+        if (($this->sessions[$key] ?? null) !== $session || $session->play === null) {
+            return;
+        }
+        try {
+            $reference = strtoupper(bin2hex(random_bytes(4)));
+        } catch (Throwable) {
+            $reference = strtoupper(substr(hash('sha256', $session->id . ':' . hrtime(true)), 0, 8));
+        }
+        $message = ($protocolViolation
+            ? 'Connection closed due to a network error. Reference: '
+            : 'An internal server error occurred. Reference: ') . $reference;
+        $this->diagnostics->record('play.disconnect_notice', [
+            'reference' => $reference,
+            'disposition' => $disposition,
+            'origin' => $origin,
+            'reason' => $reason,
+            'packet_id' => $packetId ?? -1,
+            'exception' => $exceptionClass ?? '',
+        ]);
+        try {
+            $packet = new DisconnectPacket(
+                $protocolViolation ? DisconnectReason::BAD_PACKET : DisconnectReason::DISCONNECTED,
+                false,
+                $message,
+                $message,
+            );
+            if (!$session->play->queuePacket($packet)) {
+                $this->disconnect($key, 'play_disconnect_notice_queue_failed');
+
+                return;
+            }
+            $this->flush($key, $session);
+            if (($this->sessions[$key] ?? null) !== $session) {
+                return;
+            }
+            $this->deferTransportClose(
+                $key,
+                $session,
+                PlayerQuitCause::CONNECTION_LOST,
+                $protocolViolation ? 'Network protocol error' : 'Internal server error',
+            );
+        } catch (Throwable $exception) {
+            $this->diagnostics->record('play.disconnect_notice_failed', [
+                'reference' => $reference,
+                'exception' => $exception::class,
+            ]);
+            $this->disconnect($key, 'play_disconnect_notice_failed');
+        }
     }
 
     private function closeEndpoint(SessionInfo $info, PlayerQuitCause $cause, string $reason): void
@@ -4200,32 +4394,87 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     }
 
     /**
-     * Contains a causal event failure without penalizing healthy recipients.
+     * Contains an outbound projection failure without blaming the player whose
+     * already-committed action produced the event.
      *
      * @param array<string, bool|int|string|null> $fields
      */
     private function containEventFailure(WorldEvent $event, string $diagnostic, array $fields = []): bool
     {
         $ownerSessionId = $this->eventOwnerSessionId($event);
-        $this->diagnostics->record($diagnostic, ['event_type' => $event::class] + $fields);
-        if ($event instanceof ItemEntitySpawned || $event instanceof ItemEntityMoved
-            || $event instanceof ItemEntityPickedUp || $event instanceof ItemEntityDespawned
-            || $event instanceof EntityActorSpawned || $event instanceof EntityActorMoved
-            || $event instanceof EntityActorDamaged || $event instanceof EntityActorDied
-            || $event instanceof EntityActorRemoved || $event instanceof \Bedriox\Server\Simulation\Event\EntityActorEffectChanged
-            || $event instanceof ProjectileSpawned || $event instanceof ProjectileMoved
-            || $event instanceof PotionSplashImpacted || $event instanceof ProjectileRemoved
-            || $event instanceof AreaEffectCloudSpawned
-            || $event instanceof AreaEffectCloudUpdated || $event instanceof AreaEffectCloudRemoved) {
+        $recipients = $this->liveProjectionRecipients($event->recipients());
+        $retained = $recipients === [] || $this->enqueueProjectionRetry(
+            $event,
+            $recipients,
+            $this->processingWorldId,
+            0,
+            0,
+        );
+        if (!$retained) {
+            $this->scheduleProjectionResynchronization($recipients, $event);
+        }
+        $this->diagnostics->record($diagnostic, [
+            'event_type' => $event::class,
+            'owner_session' => $ownerSessionId,
+            'contained' => true,
+            'recipients' => count($recipients),
+            'retry_retained' => $retained,
+        ] + $fields);
+
+        return true;
+    }
+
+    /**
+     * @param list<string> $recipients
+     * @return list<string>
+     */
+    private function liveProjectionRecipients(array $recipients): array
+    {
+        $live = [];
+        foreach (array_values(array_unique($recipients)) as $recipient) {
+            $session = $this->sessionById($recipient);
+            if ($session?->play !== null && $session->phase !== SessionPhase::CLOSING) {
+                $live[] = $recipient;
+            }
+        }
+
+        return $live;
+    }
+
+    /** @param non-empty-list<string> $recipients */
+    private function enqueueProjectionRetry(
+        WorldEvent $event,
+        array $recipients,
+        ?string $worldId,
+        int $encodingAttempts,
+        int $deliveryAttempts,
+    ): bool {
+        $recipients = $this->liveProjectionRecipients($recipients);
+        if ($recipients === []) {
             return true;
         }
-        if ($ownerSessionId === null) {
-            return $this->failRuntime('ownerless_event_failure');
+        sort($recipients, SORT_STRING);
+        $key = spl_object_id($event) . "\0" . implode("\0", $recipients);
+        if (isset($this->pendingProjectionRetryKeys[$key])) {
+            return true;
         }
-        $key = $this->sessionEndpoints[$ownerSessionId] ?? null;
-        if ($key !== null) {
-            $this->disconnect($key, 'owned_event_failure');
+        if ($this->pendingProjectionRetries->count() >= self::MAXIMUM_PENDING_PROJECTION_RETRIES) {
+            $this->diagnostics->record('runtime.projection_retry_queue_exhausted', [
+                'event_type' => $event::class,
+                'recipients' => count($recipients),
+            ]);
+
+            return false;
         }
+        $this->pendingProjectionRetryKeys[$key] = true;
+        $this->pendingProjectionRetries->enqueue([
+            'event' => $event,
+            'recipients' => $recipients,
+            'world' => $worldId,
+            'encoding_attempts' => $encodingAttempts,
+            'delivery_attempts' => $deliveryAttempts,
+            'key' => $key,
+        ]);
 
         return true;
     }
@@ -5321,7 +5570,15 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                             ? $this->deferredWorldPackets[$session->id]->count()
                             : 0,
                     ]);
-                    $this->disconnect(self::endpointKey($session->transport), 'world_packet_backlog_exhausted');
+                    if (!$this->enqueueProjectionRetry(
+                        $event,
+                        [$session->id],
+                        $this->processingWorldId,
+                        0,
+                        0,
+                    )) {
+                        $this->scheduleProjectionResynchronization([$session->id], $event);
+                    }
                 }
             }
         }
@@ -5667,6 +5924,199 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             if ($queue->isEmpty()) {
                 unset($this->deferredWorldPackets[$sessionId]);
             }
+        }
+    }
+
+    /** Retries committed authoritative projections only for recipients which have not received them. */
+    private function drainProjectionRetries(string $worldId, int &$directedCount): void
+    {
+        $scanned = $this->pendingProjectionRetries->count();
+        $processed = 0;
+        while ($scanned-- > 0 && $processed < self::PROJECTION_RETRIES_PER_TICK
+            && !$this->pendingProjectionRetries->isEmpty()) {
+            /** @var array{event: WorldEvent, recipients: non-empty-list<string>, world: string|null, encoding_attempts: int, delivery_attempts: int, key: string} $retry */
+            $retry = $this->pendingProjectionRetries->dequeue();
+            unset($this->pendingProjectionRetryKeys[$retry['key']]);
+            $liveRecipients = $this->liveProjectionRecipients($retry['recipients']);
+            $worldRecipients = $retry['world'] === null ? $liveRecipients : array_values(array_filter(
+                $liveRecipients,
+                function (string $recipient) use ($retry): bool {
+                    $session = $this->sessionById($recipient);
+
+                    return $session !== null && $this->runtimePollKeyForSession($session) === $retry['world'];
+                },
+            ));
+            $movedRecipients = array_values(array_diff($liveRecipients, $worldRecipients));
+            if ($movedRecipients !== []) {
+                $this->scheduleProjectionResynchronization($movedRecipients, $retry['event']);
+            }
+            if ($worldRecipients === []) {
+                continue;
+            }
+            if ($retry['world'] !== null && $retry['world'] !== $worldId) {
+                $this->enqueueProjectionRetry(
+                    $retry['event'],
+                    $worldRecipients,
+                    $retry['world'],
+                    $retry['encoding_attempts'],
+                    $retry['delivery_attempts'],
+                );
+                continue;
+            }
+            ++$processed;
+            $recipients = $worldRecipients;
+            try {
+                $directedPackets = array_values(array_filter(
+                    $this->eventEncoder->encode($retry['event'], $this->sessionEndpointsById()),
+                    static fn(DirectedPacket $directed): bool => in_array(
+                        $directed->sessionId,
+                        $recipients,
+                        true,
+                    ),
+                ));
+            } catch (Throwable $exception) {
+                $attempts = $retry['encoding_attempts'] + 1;
+                $retained = $attempts < self::MAXIMUM_PROJECTION_ENCODING_ATTEMPTS
+                    && $this->enqueueProjectionRetry(
+                        $retry['event'],
+                        $recipients,
+                        $retry['world'],
+                        $attempts,
+                        $retry['delivery_attempts'],
+                    );
+                if (!$retained) {
+                    $this->scheduleProjectionResynchronization($recipients, $retry['event']);
+                }
+                $this->diagnostics->record($retained
+                    ? 'runtime.projection_retry_deferred'
+                    : 'runtime.projection_retry_exhausted', [
+                        'event_type' => $retry['event']::class,
+                        'recipients' => count($recipients),
+                        'encoding_attempts' => $attempts,
+                        'exception' => $exception::class,
+                    ]);
+                continue;
+            }
+            $remainingBudget = $this->limits->maximumDirectedPacketsPerPoll - $directedCount;
+            if (count($directedPackets) > $this->limits->maximumDirectedPacketsPerPoll) {
+                $this->scheduleProjectionResynchronization($recipients, $retry['event']);
+                $this->diagnostics->record('runtime.projection_retry_oversized', [
+                    'event_type' => $retry['event']::class,
+                    'recipients' => count($recipients),
+                    'packets' => count($directedPackets),
+                ]);
+                continue;
+            }
+            if (count($directedPackets) > $remainingBudget) {
+                $this->enqueueProjectionRetry(
+                    $retry['event'],
+                    $recipients,
+                    $retry['world'],
+                    $retry['encoding_attempts'],
+                    $retry['delivery_attempts'],
+                );
+                continue;
+            }
+            $directedCount += count($directedPackets);
+            /** @var array<string, list<Packet>> $packetsByRecipient */
+            $packetsByRecipient = [];
+            foreach ($directedPackets as $directed) {
+                $packetsByRecipient[$directed->sessionId][] = $directed->packet;
+            }
+            foreach ($packetsByRecipient as $recipient => $packets) {
+                $session = $this->sessionById($recipient);
+                if ($session?->play === null) {
+                    continue;
+                }
+                try {
+                    $frames = [];
+                    foreach ($packets as $packet) {
+                        if (!isset($this->packetFrameCache[$packet])) {
+                            $this->packetFrameCache[$packet] = new PacketFrame(
+                                new PacketHeader(BedrockPacketCodec::packetId($packet)),
+                                BedrockPacketCodec::encode($packet),
+                            );
+                        }
+                        $frames[] = $this->packetFrameCache[$packet];
+                    }
+                    $clearEnvelope = BedrockBatchCodec::encode(
+                        new BedrockBatch(
+                            $frames,
+                            CompressionMode::NegotiatedZlib,
+                            NetworkCompressionPolicy::THRESHOLD_BYTES,
+                        ),
+                        new BatchLimits(maximumPackets: $this->limits->maximumPacketsPerPayload),
+                    );
+                } catch (Throwable $exception) {
+                    $attempts = $retry['encoding_attempts'] + 1;
+                    $retained = $attempts < self::MAXIMUM_PROJECTION_ENCODING_ATTEMPTS
+                        && $this->enqueueProjectionRetry(
+                            $retry['event'],
+                            [$recipient],
+                            $retry['world'],
+                            $attempts,
+                            $retry['delivery_attempts'],
+                        );
+                    if (!$retained) {
+                        $this->scheduleProjectionResynchronization([$recipient], $retry['event']);
+                    }
+                    $this->diagnostics->record($retained
+                        ? 'runtime.projection_retry_deferred'
+                        : 'runtime.projection_retry_exhausted', [
+                            'event_type' => $retry['event']::class,
+                            'recipients' => 1,
+                            'encoding_attempts' => $attempts,
+                            'exception' => $exception::class,
+                        ]);
+                    continue;
+                }
+                if (!$this->queuePreparedWorldPackets($session, $packets, $frames, $clearEnvelope)) {
+                    $attempts = $retry['delivery_attempts'] + 1;
+                    $retained = $attempts < self::MAXIMUM_PROJECTION_DELIVERY_ATTEMPTS
+                        && $this->enqueueProjectionRetry(
+                            $retry['event'],
+                            [$recipient],
+                            $retry['world'],
+                            $retry['encoding_attempts'],
+                            $attempts,
+                        );
+                    if (!$retained) {
+                        $this->scheduleProjectionResynchronization([$recipient], $retry['event']);
+                        $this->diagnostics->record('runtime.projection_delivery_retry_exhausted', [
+                            'event_type' => $retry['event']::class,
+                            'session_id' => $recipient,
+                            'delivery_attempts' => $attempts,
+                        ]);
+                    }
+                    continue;
+                }
+                $this->diagnostics->record('runtime.projection_retry_delivered.protocol_trace', [
+                    'event_type' => $retry['event']::class,
+                    'session_id' => $recipient,
+                    'packets' => count($packets),
+                ]);
+            }
+        }
+    }
+
+    /**
+     * Falls back to current authoritative inventory and actor state after an exact projection
+     * cannot be retained any longer. Recovery remains scoped to the affected recipients.
+     *
+     * @param list<string> $recipients
+     */
+    private function scheduleProjectionResynchronization(array $recipients, WorldEvent $event): void
+    {
+        foreach ($this->liveProjectionRecipients($recipients) as $recipient) {
+            $session = $this->sessionById($recipient);
+            $simulation = $session === null ? null : $this->simulationForSession($session);
+            $inventoryQueued = $simulation?->enqueue($this->commands->syncInventory($recipient)) ?? false;
+            $this->enqueueActorVisibilityReconciliation($recipient, true, true);
+            $this->diagnostics->record('runtime.projection_recipient_resynchronization_queued', [
+                'event_type' => $event::class,
+                'session_id' => $recipient,
+                'inventory_queued' => $inventoryQueued,
+            ]);
         }
     }
 
@@ -6372,7 +6822,11 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     }
                     foreach ($authoritativePackets as $packet) {
                         if (!$this->queueWorldPacket($session, $packet)) {
-                            $this->disconnect(self::endpointKey($session->transport), 'world_packet_backlog_exhausted');
+                            $this->disconnectForPlayFailure(
+                                self::endpointKey($session->transport),
+                                $session,
+                                'world_packet_backlog_exhausted',
+                            );
                             break;
                         }
                     }
@@ -6542,7 +6996,11 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         if ($session->play->updateChunkView($player->position->x, $player->position->y, $player->position->z)) {
             return true;
         }
-        $this->disconnect(self::endpointKey($session->transport), 'movement_projection_failed');
+        $this->disconnectForPlayFailure(
+            self::endpointKey($session->transport),
+            $session,
+            'movement_projection_failed',
+        );
 
         return false;
     }

@@ -67,16 +67,35 @@ final class PluginActionBuffer
         $this->transactions[$index]['actions'][] = $action;
     }
 
+    /**
+     * Nested commits are savepoints: their work is adopted by the parent and is
+     * executed only when the outermost callback succeeds. A failure while an
+     * outermost action itself is executing remains discardable, but arbitrary
+     * PHP mutations completed by an earlier action cannot be generically undone.
+     */
     public function commit(): void
     {
         $index = array_key_last($this->transactions);
         if ($index === null) {
             throw new LogicException('No plugin action transaction is active.');
         }
-        foreach ($this->transactions[$index]['actions'] as $action) {
-            $action();
+
+        $transaction = array_pop($this->transactions);
+        $parentIndex = array_key_last($this->transactions);
+        if ($parentIndex !== null) {
+            array_push($this->transactions[$parentIndex]['actions'], ...$transaction['actions']);
+
+            return;
         }
-        array_pop($this->transactions);
+
+        try {
+            foreach ($transaction['actions'] as $action) {
+                $action();
+            }
+        } catch (Throwable $throwable) {
+            $this->transactions[] = $transaction;
+            throw $throwable;
+        }
     }
 
     public function discard(): void
