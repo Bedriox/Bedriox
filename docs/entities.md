@@ -296,6 +296,16 @@ inventory, effect and item-damage boundaries. Focused leash, storage attachment,
 trust, entity item consumption, brushing and goat-ram events cover mutations
 which do not have a truthful general-purpose boundary.
 
+## Villagers and trading
+
+Villagers expose typed profession, biome type, level, experience, and immutable
+trade-list state through the public `Villager` contract. Generated villages
+provide beds, bells, workstations, and durable population markers; bounded
+population work admits each planned resident once and claims its workstation
+without synchronously loading terrain. Profession offers, atomic trade input
+and output, use counts, progression, daily workstation restocking, and plugin
+event boundaries are described in [villages, villagers, and trading](villages-and-trading.md).
+
 ## Common hostile mobs
 
 The specialized hostile roster now includes husks, zombie villagers, strays, bogged, parched, wither skeletons, spiders, cave spiders, creepers, slimes, magma cubes, endermen, endermites, silverfish, and witches in addition to zombies and skeletons. Each admitted species has its own public `Vanilla` contract and internal implementation rather than sharing a generic catalog actor. Exact dimensions, health, daylight sensitivity, equipment, loot, persistence, spawn-egg identity, metadata, and natural-spawn eligibility remain definition-owned.
@@ -314,6 +324,11 @@ distance-despawn policy. Overworld and Nether selection use their qualified
 environment-appropriate subsets. Infestation-created and other event-owned
 species remain available through admitted explicit spawn paths until their
 owning gameplay system provides the required context.
+
+Ordinary and trial spawners use persistent block-entity state and submit actors
+through the same authoritative spawn path. Their activation, trial phases,
+plugin boundaries, and bounded ticking model are documented in
+[mob spawners and trial spawners](spawners.md).
 
 ## Nether entities
 

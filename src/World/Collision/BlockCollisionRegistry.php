@@ -125,6 +125,7 @@ final readonly class BlockCollisionRegistry
         return match ($identifier) {
             'minecraft:snow_layer' => self::box(0.0, 0.0, 0.0, 1.0, self::snowLayerHeight($state), 1.0),
             'minecraft:farmland', 'minecraft:grass_path' => self::box(0.0, 0.0, 0.0, 1.0, 15.0 / 16.0, 1.0),
+            'minecraft:bed' => self::box(0.0, 0.0, 0.0, 1.0, 9.0 / 16.0, 1.0),
             'minecraft:cactus' => self::box(1.0 / 16.0, 0.0, 1.0 / 16.0, 15.0 / 16.0, 15.0 / 16.0, 15.0 / 16.0),
             'minecraft:bamboo' => self::box(0.0, 0.0, 0.0, 3.0 / 16.0, 1.0, 3.0 / 16.0),
             'minecraft:glass_pane', 'minecraft:iron_bars' => self::box(
@@ -278,6 +279,9 @@ final readonly class BlockCollisionRegistry
             'minecraft:shroomlight', 'minecraft:crimson_stem', 'minecraft:warped_stem',
             'minecraft:end_stone', 'minecraft:purpur_block', 'minecraft:purpur_pillar',
             'minecraft:furnace', 'minecraft:barrel', 'minecraft:end_portal_frame',
+            'minecraft:composter', 'minecraft:loom', 'minecraft:fletching_table', 'minecraft:lectern',
+            'minecraft:cartography_table', 'minecraft:blast_furnace', 'minecraft:grindstone',
+            'minecraft:smithing_table', 'minecraft:smoker', 'minecraft:cauldron', 'minecraft:stonecutter',
             'minecraft:suspicious_gravel', 'minecraft:bone_block', 'minecraft:dispenser',
             'minecraft:tnt', 'minecraft:mob_spawner', 'minecraft:trial_spawner', 'minecraft:vault',
             'minecraft:sulfur', 'minecraft:cinnabar', 'minecraft:potent_sulfur', 'minecraft:sulfur_spike',

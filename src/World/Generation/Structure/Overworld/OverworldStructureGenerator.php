@@ -30,6 +30,7 @@ use Bedriox\Server\World\Generation\Structure\Overworld\Stronghold\StrongholdRen
 use Bedriox\Server\World\Generation\Structure\Overworld\Underground\UndergroundStructureRenderer;
 use Bedriox\Server\World\Generation\Structure\Overworld\Village\VillagePlanner;
 use Bedriox\Server\World\Generation\Structure\Overworld\Village\VillageRenderer;
+use Bedriox\Server\World\Generation\Structure\PlacedStructureMarker;
 
 /** Production orchestration for qualified original Overworld structure families. */
 final readonly class OverworldStructureGenerator
@@ -66,6 +67,39 @@ final readonly class OverworldStructureGenerator
                 $this->render($builder, $start, $surface, $surfaceAt);
             }
         }
+    }
+
+    /**
+     * Reconstructs the deterministic village population intent owned by one finalized chunk.
+     *
+     * @param callable(int, int): string $biomeAt
+     * @param callable(int, int): int    $surfaceAt
+     * @return list<PlacedStructureMarker>
+     */
+    public function villageMarkersInChunk(ChunkPosition $chunk, callable $biomeAt, callable $surfaceAt): array
+    {
+        $minimumX = $chunk->x * 16;
+        $minimumZ = $chunk->z * 16;
+        $markers = [];
+        foreach ($this->locator->intersecting($chunk) as $start) {
+            if ($start->family !== OverworldStructureFamily::Village) {
+                continue;
+            }
+            $surface = $surfaceAt($start->x, $start->z);
+            $eligible = $this->eligibleStart($start, $biomeAt($start->x, $start->z), $surface, $surfaceAt);
+            if ($eligible === null) {
+                continue;
+            }
+            foreach ($this->villagePlanner->plan($eligible, $surfaceAt)->markers as $marker) {
+                if ($marker->coordinate->x < $minimumX || $marker->coordinate->x > $minimumX + 15
+                    || $marker->coordinate->z < $minimumZ || $marker->coordinate->z > $minimumZ + 15) {
+                    continue;
+                }
+                $markers[] = $marker;
+            }
+        }
+
+        return $markers;
     }
 
     /** Replays one known qualified start for deterministic validation and internal preview tooling. */

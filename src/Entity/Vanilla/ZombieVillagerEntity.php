@@ -46,8 +46,10 @@ final class ZombieVillagerEntity extends ZombieFamilyEntity implements ZombieVil
         private int $profession = 0,
         private int $biomeVariant = 0,
         private int $cureTicks = 0,
+        private ?string $villagerState = null,
     ) {
         self::validateState($profession, $biomeVariant, $cureTicks);
+        self::validateVillagerState($villagerState);
         parent::__construct(
             $uniqueId,
             $runtimeId,
@@ -78,6 +80,27 @@ final class ZombieVillagerEntity extends ZombieFamilyEntity implements ZombieVil
         return $this->cureTicks;
     }
 
+    public function getVillagerState(): ?string
+    {
+        return $this->villagerState;
+    }
+
+    /** @internal Preserves the authoritative villager state for a later cure. */
+    public function preserveVillagerState(VillagerEntity $villager): void
+    {
+        $state = json_encode([
+            'variant' => $villager->persistenceVariant(),
+            'schema' => $villager->persistenceSchemaVersion(),
+            'data' => $villager->persistenceData(),
+        ], JSON_THROW_ON_ERROR);
+        self::validateVillagerState($state);
+        $this->profession = $villager->getProfession()->value;
+        $this->biomeVariant = $villager->getVillagerType()->value;
+        $this->setBaby($villager->isBaby());
+        $this->villagerState = $state;
+        $this->markChanged();
+    }
+
     /** @internal */
     public function setCureTicks(int $ticks): void
     {
@@ -95,7 +118,7 @@ final class ZombieVillagerEntity extends ZombieFamilyEntity implements ZombieVil
 
     public function persistenceSchemaVersion(): int
     {
-        return 1;
+        return 2;
     }
 
     public function persistenceData(): string
@@ -104,12 +127,13 @@ final class ZombieVillagerEntity extends ZombieFamilyEntity implements ZombieVil
             ...$this->zombieFamilyPersistenceData(),
             'biomeVariant' => $this->biomeVariant,
             'cureTicks' => $this->cureTicks,
+            'villagerState' => $this->villagerState,
         ], JSON_THROW_ON_ERROR);
     }
 
     public function restorePersistenceState(int|string|null $variant, int $schemaVersion, string $data): void
     {
-        if (!is_int($variant) || $schemaVersion !== 1 || strlen($data) > 128) {
+        if (!is_int($variant) || !in_array($schemaVersion, [1, 2], true) || strlen($data) > 65_536) {
             throw new InvalidArgumentException('Persisted zombie-villager state has an unsupported schema.');
         }
         try {
@@ -117,8 +141,13 @@ final class ZombieVillagerEntity extends ZombieFamilyEntity implements ZombieVil
         } catch (JsonException $error) {
             throw new InvalidArgumentException('Persisted zombie-villager state is malformed.', previous: $error);
         }
-        if (!is_array($decoded) || array_keys($decoded) !== ['baby', 'biomeVariant', 'cureTicks']
-            || !is_int($decoded['biomeVariant']) || !is_int($decoded['cureTicks'])) {
+        $expectedKeys = $schemaVersion === 1
+            ? ['baby', 'biomeVariant', 'cureTicks']
+            : ['baby', 'biomeVariant', 'cureTicks', 'villagerState'];
+        if (!is_array($decoded) || array_keys($decoded) !== $expectedKeys
+            || !is_int($decoded['biomeVariant']) || !is_int($decoded['cureTicks'])
+            || ($schemaVersion === 2 && $decoded['villagerState'] !== null
+                && !is_string($decoded['villagerState']))) {
             throw new InvalidArgumentException('Persisted zombie-villager state is malformed.');
         }
         self::validateState($variant, $decoded['biomeVariant'], $decoded['cureTicks']);
@@ -126,6 +155,10 @@ final class ZombieVillagerEntity extends ZombieFamilyEntity implements ZombieVil
         $this->profession = $variant;
         $this->biomeVariant = $decoded['biomeVariant'];
         $this->cureTicks = $decoded['cureTicks'];
+        $this->villagerState = $schemaVersion === 2
+            ? self::decodeVillagerState($decoded['villagerState'])
+            : null;
+        self::validateVillagerState($this->villagerState);
     }
 
     private static function validateState(int $profession, int $biomeVariant, int $cureTicks): void
@@ -134,5 +167,22 @@ final class ZombieVillagerEntity extends ZombieFamilyEntity implements ZombieVil
             || $cureTicks < 0 || $cureTicks > 6_000) {
             throw new InvalidArgumentException('Zombie-villager state is outside its supported bounds.');
         }
+    }
+
+    private static function validateVillagerState(?string $state): void
+    {
+        if ($state !== null && strlen($state) > 65_000) {
+            throw new InvalidArgumentException('Preserved villager state exceeds its supported bound.');
+        }
+    }
+
+    private static function decodeVillagerState(mixed $state): ?string
+    {
+        if ($state !== null && !is_string($state)) {
+            throw new InvalidArgumentException('Preserved villager state is malformed.');
+        }
+        self::validateVillagerState($state);
+
+        return $state;
     }
 }

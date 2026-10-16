@@ -35,6 +35,7 @@ enum ContainerType: string
     case CHEST_BOAT = 'chest_boat';
     case CHEST_MINECART = 'chest_minecart';
     case HORSE = 'horse';
+    case TRADE = 'trade';
     case BREWING_STAND = 'brewing_stand';
     case FURNACE = 'furnace';
     case BLAST_FURNACE = 'blast_furnace';
@@ -57,7 +58,7 @@ enum ContainerType: string
             self::HORSE => null,
             self::BREWING_STAND => 5,
             self::FURNACE, self::BLAST_FURNACE, self::SMOKER,
-            self::ANVIL, self::GRINDSTONE, self::CARTOGRAPHY_TABLE => 3,
+            self::ANVIL, self::GRINDSTONE, self::CARTOGRAPHY_TABLE, self::TRADE => 3,
             self::STONECUTTER, self::ENCHANTING_TABLE => 2,
             self::SMITHING_TABLE, self::LOOM => 4,
         };
@@ -82,7 +83,7 @@ enum ContainerType: string
     {
         return match ($this) {
             self::FURNACE, self::BLAST_FURNACE, self::SMOKER,
-            self::ANVIL, self::GRINDSTONE, self::CARTOGRAPHY_TABLE => 2,
+            self::ANVIL, self::GRINDSTONE, self::CARTOGRAPHY_TABLE, self::TRADE => 2,
             self::STONECUTTER => 1,
             self::SMITHING_TABLE, self::LOOM => 3,
             default => null,
@@ -99,6 +100,7 @@ enum ContainerType: string
             self::ENCHANTING_TABLE,
             self::LOOM,
             self::CARTOGRAPHY_TABLE,
+            self::TRADE,
         ], true);
     }
 }

@@ -351,6 +351,31 @@ final class AsynchronousWorldPersistenceTest extends TestCase
         self::assertSame(3, $world->dirtyChunkCount());
     }
 
+    public function testChunkUnloadStopsSubmittingAfterItsElapsedTimeBudget(): void
+    {
+        [, , $generator] = self::worldDependencies();
+        $provider = new FakeAsynchronousWorldProvider(self::worldData());
+        $provider->enqueueDelayMicroseconds = 1_000;
+        $world = new World(
+            new WorldMetadata('world', 7),
+            $generator,
+            new ChunkRepository(4),
+            provider: $provider,
+            chunkUnloads: new ChunkUnloadManager(0),
+        );
+        foreach ([new ChunkPosition(0, 0), new ChunkPosition(1, 0), new ChunkPosition(2, 0)] as $position) {
+            $world->retainChunk($position);
+            $world->releaseChunk($position);
+        }
+
+        $result = $world->processChunkUnloads(3, 500);
+
+        self::assertSame(1, $result->examined);
+        self::assertSame(1, $result->saveSubmissions);
+        self::assertCount(1, $provider->submittedKeys);
+        self::assertSame(3, $result->remainingQueued);
+    }
+
     public function testDirtyChunkEvictsOnlyAfterExactAsynchronousAcknowledgement(): void
     {
         [, , $generator] = self::worldDependencies();

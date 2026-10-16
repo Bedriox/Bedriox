@@ -26,7 +26,7 @@ final readonly class RuntimeLimits
 {
     public function __construct(
         public int $maximumSessions = 1_024,
-        public int $maximumDatagramsPerPoll = 512,
+        public int $maximumDatagramsPerPoll = 64,
         public int $maximumSessionEventsPerPoll = 2_048,
         public int $maximumPayloadsPerPoll = 4_096,
         public int $maximumOutgoingPayloadsPerSession = 512,

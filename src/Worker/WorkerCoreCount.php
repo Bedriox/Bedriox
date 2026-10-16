@@ -29,7 +29,14 @@ final class WorkerCoreCount
         if ($value === 'auto') {
             $logicalProcessors ??= self::detectLogicalProcessors();
 
-            return $logicalProcessors === null ? 1 : max(1, min(8, $logicalProcessors - 1));
+            if ($logicalProcessors === null) {
+                return 1;
+            }
+
+            // Chunk generation is CPU-bound. Reserve approximately two physical cores for the
+            // authoritative loop, transport, persistence and the host instead of treating SMT
+            // threads as independent worker capacity.
+            return max(1, min(8, intdiv($logicalProcessors, 2) - 2));
         }
         if (!preg_match('/^(?:0|[1-9][0-9]?)$/D', $value)) {
             throw new InvalidArgumentException('workers.core-count must be auto or an integer from 0 through 32.');
@@ -42,7 +49,7 @@ final class WorkerCoreCount
         return $count;
     }
 
-    private static function detectLogicalProcessors(): ?int
+    public static function detectLogicalProcessors(): ?int
     {
         foreach (['NUMBER_OF_PROCESSORS', 'BEDRIOX_LOGICAL_PROCESSORS'] as $name) {
             $value = getenv($name);

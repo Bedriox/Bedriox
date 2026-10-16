@@ -25,6 +25,7 @@ use Bedriox\Server\World\BlockEntity\BlockEntityType;
 use Bedriox\Server\World\BlockEntity\ContainerBlockEntity;
 use Bedriox\Server\World\BlockEntity\ContainerInventory;
 use Bedriox\Server\World\BlockEntity\ContainerItemStack;
+use Bedriox\Server\World\BlockEntity\MobSpawnerBlockEntity;
 use Bedriox\Server\World\BlockPosition;
 use Bedriox\Server\World\Generation\GenerationBlockPalette;
 use Bedriox\Server\World\Generation\MutableChunkBuilder;
@@ -72,6 +73,7 @@ final readonly class NetherStructureRenderer
         }
         $this->set($builder, $plan, 0, 6, 0, $this->blocks->state('minecraft:glowstone'));
         $this->set($builder, $plan, 27, 1, 0, $this->blocks->state('minecraft:mob_spawner'));
+        $this->spawner($builder, $plan, 27, 1, 0, 'minecraft:blaze');
         for ($x = -4; $x <= 4; ++$x) {
             for ($z = 25; $z <= 29; ++$z) {
                 $this->set($builder, $plan, $x, 0, $z, $this->blocks->state('minecraft:soul_sand'));
@@ -311,6 +313,21 @@ final readonly class NetherStructureRenderer
             BlockEntityType::Chest,
             $position,
             new ContainerInventory(ContainerBlockEntity::STORAGE_SLOT_COUNT, $contents),
+        ));
+    }
+
+    private function spawner(
+        MutableChunkBuilder $builder,
+        NetherStructurePlan $plan,
+        int $x,
+        int $y,
+        int $z,
+        string $entityIdentifier,
+    ): void {
+        [$rotatedX, $rotatedZ] = $this->rotate($x, $z, $plan->rotation);
+        $builder->addBlockEntity(MobSpawnerBlockEntity::create(
+            new BlockPosition($plan->centerX + $rotatedX, $plan->baseY + $y, $plan->centerZ + $rotatedZ),
+            $entityIdentifier,
         ));
     }
 

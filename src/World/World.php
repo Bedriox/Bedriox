@@ -34,6 +34,7 @@ use Bedriox\Server\Persistence\World\ChunkLoadCompletion;
 use Bedriox\Server\Worker\Chunk\AsyncChunkGenerator;
 use Bedriox\Server\World\Block\InternalBlockStateId;
 use Bedriox\Server\World\BlockEntity\BlockEntity;
+use Bedriox\Server\World\Generation\Structure\Overworld\VillagePopulationIntentProvider;
 use Bedriox\Server\World\Generator\GeneratorOptions;
 use Bedriox\Server\World\Provider\AsynchronousWorldDataProvider;
 use Bedriox\Server\World\Provider\AsynchronousWorldProvider;
@@ -70,7 +71,7 @@ final class World
     /** @var array<string, ChunkLoadCompletion> */
     private array $completedChunkLoads = [];
 
-    /** @var array<string, true> storage or generation requests not yet installed */
+    /** @var array<string, array<string, true>> chunk key => demand owner => true */
     private array $pendingChunkRetains = [];
 
     /** @var array<string, int> Newest revision queued or in flight with the asynchronous provider. */
@@ -207,14 +208,22 @@ final class World
      * Returns true only when the chunk is installed and retained. A false
      * result is retried by the existing bounded chunk-streaming loop.
      */
-    public function requestRetainChunk(ChunkPosition $position, bool $pollCompletions = true): bool
-    {
+    public function requestRetainChunk(
+        ChunkPosition $position,
+        bool $pollCompletions = true,
+        ?string $demandOwner = null,
+    ): bool {
         $key = $position->key();
+        $demandOwner ??= 'bedriox:internal';
+        if ($demandOwner === '' || strlen($demandOwner) > 256) {
+            throw new InvalidArgumentException('Chunk demand owner must contain between 1 and 256 bytes.');
+        }
+        $this->pendingChunkRetains[$key][$demandOwner] = true;
         if ($pollCompletions) {
             $this->pollAsynchronousCompletions();
         }
         if ($this->chunks->contains($position)) {
-            unset($this->pendingChunkRetains[$key]);
+            $this->clearChunkDemand($key, $demandOwner);
             $this->chunks->retain($position, $this->loadChunk(...), $this->evictionSaver());
             $this->entityPersistence?->activateChunk($position);
             $this->chunkUnloads->cancel($position);
@@ -225,13 +234,12 @@ final class World
             $completion = $this->completedChunkLoads[$key] ?? null;
             if (!$completion instanceof ChunkLoadCompletion) {
                 $this->provider->requestChunkLoad($position, $this->dimension);
-                $this->pendingChunkRetains[$key] = true;
 
                 return false;
             }
             unset($this->completedChunkLoads[$key]);
-            unset($this->pendingChunkRetains[$key]);
             if ($completion->failureCode !== null) {
+                $this->clearChunkDemand($key, $demandOwner);
                 throw new \RuntimeException('Asynchronous chunk storage load failed: ' . $completion->failureCode);
             }
             if ($completion->loaded !== null) {
@@ -240,10 +248,12 @@ final class World
                     : $completion->loaded->chunk;
                 $this->chunks->retain($position, static fn(ChunkPosition $_position): Chunk => $chunk, $this->evictionSaver());
                 $this->entityPersistence?->activateChunk($position);
+                $this->clearChunkDemand($key, $demandOwner);
 
                 return true;
             }
             if (!$completion->missing) {
+                $this->clearChunkDemand($key, $demandOwner);
                 throw new \RuntimeException('Asynchronous chunk storage returned no outcome.');
             }
         } elseif ($this->provider !== null) {
@@ -252,11 +262,13 @@ final class World
                 $chunk = $loaded->upgraded ? self::markDirty($loaded->chunk) : $loaded->chunk;
                 $this->chunks->retain($position, static fn(ChunkPosition $_position): Chunk => $chunk, $this->evictionSaver());
                 $this->entityPersistence?->activateChunk($position);
+                $this->clearChunkDemand($key, $demandOwner);
 
                 return true;
             }
         }
-        if ($this->asyncChunks === null) {
+        $asyncChunks = $this->asyncChunks;
+        if ($asyncChunks === null) {
             $chunk = $this->generator->generate($position);
             if ($this->provider !== null) {
                 $chunk = self::markDirty($chunk);
@@ -272,15 +284,17 @@ final class World
             }
             $this->chunks->retain($position, static fn(ChunkPosition $_position): Chunk => $chunk, $this->evictionSaver());
             $this->entityPersistence?->activateChunk($position);
+            $this->clearChunkDemand($key, $demandOwner);
 
             return true;
         }
-        if ($this->asyncChunks->isPending($position)) {
-            $this->pendingChunkRetains[$key] = true;
+        if ($asyncChunks->isPending($position)) {
             return false;
         }
-        $accepted = $this->asyncChunks->request($position, function (Chunk $chunk) use ($position, $key): void {
-            unset($this->pendingChunkRetains[$key]);
+        $accepted = $asyncChunks->request($position, function (Chunk $chunk) use ($position, $key): void {
+            if (($this->pendingChunkRetains[$key] ?? []) === []) {
+                return;
+            }
             if ($this->provider !== null) {
                 $chunk = self::markDirty($chunk);
             } else {
@@ -300,12 +314,11 @@ final class World
             }
         });
         if ($accepted) {
-            $this->pendingChunkRetains[$key] = true;
             return false;
         }
 
-        unset($this->pendingChunkRetains[$key]);
-        if (!$this->asyncChunks->allowsSynchronousFallback()) {
+        $this->clearChunkDemand($key, $demandOwner);
+        if (!$asyncChunks->allowsSynchronousFallback()) {
             return false;
         }
         $this->retainChunk($position);
@@ -315,7 +328,23 @@ final class World
 
     public function isChunkRetainPending(ChunkPosition $position): bool
     {
-        return isset($this->pendingChunkRetains[$position->key()]);
+        return ($this->pendingChunkRetains[$position->key()] ?? []) !== [];
+    }
+
+    /** Releases one consumer's pending request without disturbing shared demand. */
+    public function cancelChunkDemand(ChunkPosition $position, ?string $demandOwner = null): bool
+    {
+        $key = $position->key();
+        $demandOwner ??= 'bedriox:internal';
+        if (!isset($this->pendingChunkRetains[$key][$demandOwner])) {
+            return false;
+        }
+        $this->clearChunkDemand($key, $demandOwner);
+        if (($this->pendingChunkRetains[$key] ?? []) === []) {
+            $this->asyncChunks?->cancel($position);
+        }
+
+        return true;
     }
 
     /** Keeps the configured world spawn available without blocking on asynchronous storage or generation. */
@@ -342,6 +371,14 @@ final class World
             } else {
                 $this->chunkUnloads->queue($position);
             }
+        }
+    }
+
+    private function clearChunkDemand(string $key, string $demandOwner): void
+    {
+        unset($this->pendingChunkRetains[$key][$demandOwner]);
+        if (($this->pendingChunkRetains[$key] ?? []) === []) {
+            unset($this->pendingChunkRetains[$key]);
         }
     }
 
@@ -514,6 +551,19 @@ final class World
         return $this->generator->name();
     }
 
+    /**
+     * Internal deterministic population intent for a finalized village chunk.
+     *
+     * @return list<\Bedriox\Server\World\Generation\Structure\PlacedStructureMarker>
+     */
+    public function villageMarkersInChunk(ChunkPosition $position): array
+    {
+        return $this->dimension === DimensionType::OVERWORLD
+            && $this->generator instanceof VillagePopulationIntentProvider
+            ? $this->generator->villageMarkersInChunk($position)
+            : [];
+    }
+
     public function difficulty(): int
     {
         return $this->difficulty;
@@ -667,13 +717,28 @@ final class World
      */
     public function processChunkUnloads(int $maximumChunks = 96, int $timeBudgetMicroseconds = 2_000): ChunkUnloadResult
     {
+        if ($maximumChunks < 1 || $maximumChunks > 100_000) {
+            throw new InvalidArgumentException('Chunk unload processing count is outside the queue bounds.');
+        }
+        if ($timeBudgetMicroseconds < 1 || $timeBudgetMicroseconds > 1_000_000) {
+            throw new InvalidArgumentException('Chunk unload processing time budget must be between 1 and 1000000 microseconds.');
+        }
+        $startedNanoseconds = hrtime(true);
         $this->pollAsynchronousCompletions();
-        $due = $this->chunkUnloads->due($maximumChunks, $timeBudgetMicroseconds);
+        $elapsedMicroseconds = intdiv(hrtime(true) - $startedNanoseconds, 1_000);
+        $remainingMicroseconds = max(1, $timeBudgetMicroseconds - $elapsedMicroseconds);
+        $due = $elapsedMicroseconds >= $timeBudgetMicroseconds
+            ? []
+            : $this->chunkUnloads->due($maximumChunks, $remainingMicroseconds);
         $examined = 0;
         $evicted = 0;
         $saveSubmissions = 0;
         $saturated = false;
         foreach ($due as $position) {
+            if ($examined > 0
+                && intdiv(hrtime(true) - $startedNanoseconds, 1_000) >= $timeBudgetMicroseconds) {
+                break;
+            }
             ++$examined;
             if (!$this->chunks->contains($position)) {
                 $this->chunkUnloads->cancel($position);
@@ -988,7 +1053,10 @@ final class World
             return;
         }
         foreach ($this->provider->pollChunkLoads($maximumLoads, $this->dimension) as $completion) {
-            $this->completedChunkLoads[$completion->position->key()] = $completion;
+            $key = $completion->position->key();
+            if (($this->pendingChunkRetains[$key] ?? []) !== []) {
+                $this->completedChunkLoads[$key] = $completion;
+            }
         }
         foreach ($this->provider->pollChunkSaves($maximumSaves, $this->dimension) as $completion) {
             $position = self::positionFromPersistenceKey($completion->key);

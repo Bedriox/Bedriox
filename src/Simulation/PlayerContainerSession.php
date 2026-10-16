@@ -20,6 +20,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Simulation;
 
+use Bedriox\Api\Entity\Trade\VillagerTradeList;
+use Bedriox\Api\Entity\Trade\VillagerTradeOffer;
 use Bedriox\Api\Inventory\ContainerLayout;
 use Bedriox\Api\Inventory\ContainerType;
 use Bedriox\Api\Processing\EnchantingOption;
@@ -37,6 +39,24 @@ final class PlayerContainerSession
     public array $enchantingOptions = [];
 
     public int $nextEnchantingOptionNetworkId = 1;
+
+    /** Offer network ID staged by a successful authoritative result extraction. */
+    public ?int $completedTradeNetworkId = null;
+
+    /** Plugin-adjusted offer validated before the staged inventory transaction commits. */
+    public ?VillagerTradeOffer $completedTradeOffer = null;
+
+    /** Number of uses staged by the current atomic trade request. */
+    public int $completedTradeCount = 0;
+
+    /** Internal rejection detail retained for protocol tracing and targeted client correction. */
+    public ?string $workstationFailureReason = null;
+
+    /** Offer-list generation captured when this trade window was opened. */
+    public ?int $tradeGeneration = null;
+
+    /** @var array<int, string> Client-visible recipe network ID to canonical offer key. */
+    private array $tradeOfferKeysByNetworkId = [];
 
     public function __construct(
         public readonly int $windowId,
@@ -56,4 +76,24 @@ final class PlayerContainerSession
         public readonly array $animalEquipmentSlots = [],
         public ?WorkstationRequest $workstationRequest = null,
     ) {}
+
+    public function replaceTradeOfferNetworkMap(VillagerTradeList $trades): void
+    {
+        $this->tradeOfferKeysByNetworkId = [];
+        foreach ($trades->offers as $index => $offer) {
+            $this->tradeOfferKeysByNetworkId[$index + 1] = $offer->key;
+        }
+    }
+
+    public function tradeOfferKey(int $networkId): ?string
+    {
+        return $this->tradeOfferKeysByNetworkId[$networkId] ?? null;
+    }
+
+    public function tradeOfferNetworkId(string $key): ?int
+    {
+        $networkId = array_search($key, $this->tradeOfferKeysByNetworkId, true);
+
+        return is_int($networkId) ? $networkId : null;
+    }
 }

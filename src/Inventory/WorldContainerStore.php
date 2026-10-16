@@ -324,6 +324,7 @@ final class WorldContainerStore
         string $identifier,
     ): bool {
         return match ($entity->type) {
+            BlockEntityType::Bed => false,
             BlockEntityType::Chest => $identifier === 'minecraft:chest' || $identifier === 'minecraft:trapped_chest',
             BlockEntityType::Barrel => $identifier === 'minecraft:barrel',
             BlockEntityType::ShulkerBox => self::isShulkerBox($identifier),
@@ -339,6 +340,8 @@ final class WorldContainerStore
             BlockEntityType::Sign => false,
             BlockEntityType::HangingSign => false,
             BlockEntityType::Shelf => false,
+            BlockEntityType::MobSpawner => false,
+            BlockEntityType::TrialSpawner => false,
         };
     }
 
@@ -377,6 +380,8 @@ final class WorldContainerStore
             $identifier === 'minecraft:blast_furnace', $identifier === 'minecraft:lit_blast_furnace' => BlockEntityType::BlastFurnace,
             $identifier === 'minecraft:smoker', $identifier === 'minecraft:lit_smoker' => BlockEntityType::Smoker,
             $identifier === 'minecraft:campfire', $identifier === 'minecraft:soul_campfire' => BlockEntityType::Campfire,
+            $identifier === 'minecraft:mob_spawner' => BlockEntityType::MobSpawner,
+            $identifier === 'minecraft:trial_spawner' => BlockEntityType::TrialSpawner,
             default => null,
         };
     }

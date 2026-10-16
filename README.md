@@ -50,7 +50,7 @@ The installers support Windows x86-64, Linux x86-64 and ARM64, and macOS x86-64 
 
 ## Create your server
 
-- **Vanilla-style gameplay** — build survival or creative communities with persistent worlds, inventories, crafting, containers, processing stations, experience, enchantments, effects, combat, weather, fluids, mobs, breeding, taming, mounts, and more.
+- **Vanilla-style gameplay** — build survival or creative communities with persistent worlds, inventories, crafting, containers, processing stations, experience, enchantments, effects, combat, weather, fluids, mobs, breeding, taming, mounts, villages, villager trading, spawners, and more.
 - **Multiplayer from the start** — synchronized players, movement, chat, commands, permissions, operators, whitelists, player-versus-player combat, death, respawning, and world transfers are server-owned and multiplayer-aware.
 - **Worlds worth exploring** — generate seeded continents, mountains, valleys, rivers, forests, deserts, oceans, caves, ores, and snowy highlands, or choose a classic flat world.
 - **Durable worlds and players** — Mojang-compatible LevelDB world storage preserves terrain, block changes, containers, entities, and world state, while player profiles retain their authoritative progress.

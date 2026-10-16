@@ -24,6 +24,7 @@ use Bedriox\Api\Effect\EffectInstance;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\World\DimensionType;
 use Bedriox\Server\Player\InventoryStack;
+use Bedriox\Server\World\BlockPosition;
 
 final readonly class PlayerSnapshot
 {
@@ -70,5 +71,7 @@ final readonly class PlayerSnapshot
         public bool $invisible = false,
         public float $scale = 1.0,
         public bool $gravityEnabled = true,
+        public bool $sleeping = false,
+        public ?BlockPosition $sleepingBed = null,
     ) {}
 }

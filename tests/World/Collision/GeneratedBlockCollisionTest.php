@@ -100,8 +100,8 @@ final class GeneratedBlockCollisionTest extends TestCase
         }
 
         self::assertNotNull($door);
-        self::assertTrue($door->intersectsAt(new AxisAlignedBox(0.4, 0.0, 0.01, 0.6, 1.0, 0.1), 0, 0, 0));
-        self::assertFalse($door->intersectsAt(new AxisAlignedBox(0.4, 0.0, 0.3, 0.6, 1.0, 0.9), 0, 0, 0));
+        self::assertTrue($door->intersectsAt(new AxisAlignedBox(0.01, 0.0, 0.4, 0.1, 1.0, 0.6), 0, 0, 0));
+        self::assertFalse($door->intersectsAt(new AxisAlignedBox(0.3, 0.0, 0.4, 0.9, 1.0, 0.6), 0, 0, 0));
     }
 
     public function testPitcherCropCollisionExtendingBelowItsCellIsQueriedFromTheCellAbove(): void

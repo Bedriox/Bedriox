@@ -101,7 +101,7 @@ final readonly class DoorBlockStateResolver
     }
 
     /**
-     * Bedrock door cardinal values are rotated from the logical direction used by the server.
+     * Bedrock stores door directions one clockwise turn from their logical facing.
      * Player yaw uses the same convention as entity motion: zero points south.
      */
     private static function doorDirection(float $yaw): string

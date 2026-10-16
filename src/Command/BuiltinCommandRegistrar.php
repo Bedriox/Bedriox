@@ -295,9 +295,14 @@ final readonly class BuiltinCommandRegistrar
             if (isset($normalized[$identifier])) {
                 throw new \InvalidArgumentException('Summon entity identifiers must be unique.');
             }
-            $normalized[$identifier] = str_starts_with($identifier, 'minecraft:')
-                ? substr($identifier, strlen('minecraft:'))
-                : $identifier;
+            $commandIdentifier = match ($identifier) {
+                'minecraft:villager_v2' => 'minecraft:villager',
+                'minecraft:zombie_villager_v2' => 'minecraft:zombie_villager',
+                default => $identifier,
+            };
+            $normalized[$identifier] = str_starts_with($commandIdentifier, 'minecraft:')
+                ? substr($commandIdentifier, strlen('minecraft:'))
+                : $commandIdentifier;
         }
         $values = array_values($normalized);
         usort($values, static fn(string $left, string $right): int =>

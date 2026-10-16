@@ -22,6 +22,7 @@ namespace Bedriox\Server\Simulation\Event;
 
 use Bedriox\Server\Simulation\ClientInputTick;
 use Bedriox\Server\Simulation\PlayerSnapshot;
+use Bedriox\Server\Simulation\Position;
 
 final readonly class MovementCorrected implements WorldEvent
 {
@@ -32,6 +33,7 @@ final readonly class MovementCorrected implements WorldEvent
         public array $peerSessionIds = [],
         public bool $postureChanged = false,
         public ?ClientInputTick $clientTick = null,
+        public ?Position $attemptedPosition = null,
     ) {}
 
     public function recipients(): array

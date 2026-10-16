@@ -143,6 +143,7 @@ use Bedriox\Server\Simulation\Event\PlayerJoined;
 use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
 use Bedriox\Server\Simulation\Event\PlayerMotionChanged;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
+use Bedriox\Server\Simulation\Event\SystemMessageSent;
 use Bedriox\Server\Simulation\Event\WeatherChanged;
 use Bedriox\Server\Simulation\ItemUseCancellationReason;
 use Bedriox\Server\Simulation\MovementMode;
@@ -821,11 +822,17 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
             'Using a minecart must not overwrite the clicked rail with predicted adjacent air.',
         );
 
-        $equipment = $encoder->encode(new HeldItemChanged('one', 41, 0, $remaining, ['two']), []);
-        self::assertCount(1, $equipment);
+        $equipment = $encoder->encode(new HeldItemChanged('one', 41, 0, $remaining, ['two', 'three']), []);
+        self::assertCount(2, $equipment);
         self::assertSame('two', $equipment[0]->sessionId);
         self::assertInstanceOf(MobEquipmentPacket::class, $equipment[0]->packet);
         self::assertSame(63, $equipment[0]->packet->item->count);
+        self::assertSame('three', $equipment[1]->sessionId);
+        self::assertSame(
+            $equipment[0]->packet,
+            $equipment[1]->packet,
+            'Identical peer equipment projection must reuse one immutable packet for shared compression.',
+        );
 
         $damagedTool = new InventoryStack('minecraft:iron_pickaxe', 1, 9, damage: 7);
         $correctedTool = $encoder->encode(new HeldItemChanged(
@@ -967,6 +974,53 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         self::assertSame(36, $container->slots[0]->slot);
         self::assertSame(2, $container->slots[0]->amount);
         self::assertSame(19, $container->slots[0]->stackNetworkId);
+    }
+
+    public function testTradeInputResponseAlsoProjectsTheVirtualUiSlotWithoutRefreshingInventory(): void
+    {
+        [$encoder] = $this->inventoryEncoder();
+        $trade = [new InventoryStack('minecraft:emerald', 8, 29), null, null];
+        $event = new InventoryStackRequestProcessed(
+            'one',
+            -22,
+            true,
+            [new InventorySlotReference(
+                InventoryContainer::OpenedContainer,
+                0,
+                0,
+                FullContainerName::TRADE_TWO_INGREDIENT_ONE,
+                responseSlot: 4,
+            )],
+            array_fill(0, 36, null),
+            null,
+            0,
+            null,
+            false,
+            41,
+            [],
+            openedContainerInventory: $trade,
+            openedContainerWindowId: 7,
+        );
+
+        $packets = $encoder->encode($event, []);
+
+        self::assertCount(2, $packets);
+        self::assertInstanceOf(ItemStackResponsePacket::class, $packets[0]->packet);
+        $response = $packets[0]->packet->responses[0]->containers[0];
+        self::assertSame(FullContainerName::TRADE_TWO_INGREDIENT_ONE, $response->containerName->containerNameId);
+        self::assertSame(4, $response->slots[0]->slot);
+        self::assertSame(8, $response->slots[0]->amount);
+        self::assertSame(29, $response->slots[0]->stackNetworkId);
+        self::assertInstanceOf(InventorySlotPacket::class, $packets[1]->packet);
+        self::assertSame(7, $packets[1]->packet->containerId);
+        self::assertSame(4, $packets[1]->packet->slot);
+        self::assertSame(8, $packets[1]->packet->item->count);
+        self::assertSame(29, $packets[1]->packet->item->stackNetworkId);
+        self::assertSame(
+            FullContainerName::TRADE_TWO_INGREDIENT_ONE,
+            $packets[1]->packet->containerName?->containerNameId,
+        );
+        self::assertSame(7, $packets[1]->packet->containerName->dynamicId);
     }
 
     public function testRejectedTableCraftCorrectsAllNineGridSlots(): void
@@ -1438,14 +1492,14 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         self::assertInstanceOf(AddPlayerPacket::class, $shown[0]->packet);
         self::assertTrue($shown[0]->packet->runtimeEntityId->equals(UnsignedLong::fromInt(7)));
         self::assertSame(BuildPlatform::Unknown, $shown[0]->packet->buildPlatform);
-        self::assertCount(14, $shown[0]->packet->metadata);
+        self::assertCount(15, $shown[0]->packet->metadata);
         $baselineFlags = $shown[0]->packet->metadata[0]->value;
         self::assertIsInt($baselineFlags);
         self::assertSame(
             ActorFlag::Sneaking->mask(),
             $baselineFlags & ActorFlag::Sneaking->mask(),
         );
-        self::assertSame(130, $shown[0]->packet->metadata[13]->id);
+        self::assertSame(130, $shown[0]->packet->metadata[14]->id);
         self::assertInstanceOf(PlayerSkinPacket::class, $shown[1]->packet);
         self::assertSame('00000000-0000-0000-0000-000000000007', $shown[1]->packet->uuid);
         self::assertSame('skin-joined', $shown[1]->packet->newSkinName);
@@ -1707,6 +1761,106 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
             new MovementCorrected($player, 'plugin_teleport_collision'),
             [],
         ));
+    }
+
+    public function testSleepAndMorningProjectAuthoritativeMetadataAndTime(): void
+    {
+        $sleeping = new PlayerSnapshot(
+            'owner',
+            'identity-owner',
+            'Owner',
+            new Position(4.5, 65.0, 6.5),
+            0.0,
+            0.0,
+            MovementMode::STOPPED,
+            8,
+            VerticalState::GROUNDED,
+            0.0,
+            41,
+            sleeping: true,
+            sleepingBed: new \Bedriox\Server\World\BlockPosition(4, 64, 6),
+        );
+        $encoder = new BedrockWorldEventPacketEncoder();
+        $started = $encoder->encode(new \Bedriox\Server\Simulation\Event\PlayerSleepChanged(
+            $sleeping,
+            true,
+            ['owner', 'peer'],
+        ), []);
+
+        self::assertCount(2, $started);
+        foreach ($started as $directed) {
+            self::assertInstanceOf(SetActorDataPacket::class, $directed->packet);
+            $metadata = [];
+            foreach ($directed->packet->metadata as $entry) {
+                $metadata[$entry->id] = $entry;
+            }
+            self::assertSame(2, $metadata[26]->value);
+            self::assertInstanceOf(\Bedriox\Protocol\Packet\BlockPosition::class, $metadata[28]->value);
+            self::assertSame([4, 64, 6], [
+                $metadata[28]->value->x,
+                $metadata[28]->value->y,
+                $metadata[28]->value->z,
+            ]);
+        }
+
+        $awake = new PlayerSnapshot(
+            'owner',
+            'identity-owner',
+            'Owner',
+            new Position(4.5, 65.0, 6.5),
+            0.0,
+            0.0,
+            MovementMode::STOPPED,
+            9,
+            VerticalState::GROUNDED,
+            0.0,
+            41,
+        );
+        $stopped = $encoder->encode(new \Bedriox\Server\Simulation\Event\PlayerSleepChanged(
+            $awake,
+            false,
+            ['owner', 'peer'],
+        ), []);
+        self::assertCount(3, $stopped);
+        self::assertInstanceOf(SetActorDataPacket::class, $stopped[0]->packet);
+        self::assertInstanceOf(SetActorDataPacket::class, $stopped[1]->packet);
+        self::assertInstanceOf(AnimatePacket::class, $stopped[2]->packet);
+        self::assertSame(3, $stopped[2]->packet->action);
+        self::assertCount(0, array_filter(
+            $stopped[0]->packet->metadata,
+            static fn(ActorMetadata $entry): bool => $entry->id === 28,
+        ));
+
+        $time = $encoder->encode(new \Bedriox\Server\Simulation\Event\WorldTimeChanged(
+            24_000,
+            ['owner', 'peer'],
+        ), []);
+        self::assertCount(2, $time);
+        self::assertInstanceOf(\Bedriox\Protocol\Packet\SetTimePacket::class, $time[0]->packet);
+        self::assertSame(24_000, $time[0]->packet->time);
+    }
+
+    public function testBedFeedbackUsesTargetedSystemAndTranslationPackets(): void
+    {
+        $encoder = new BedrockWorldEventPacketEncoder();
+
+        $translated = $encoder->encode(new SystemMessageSent(
+            new TranslatableMessage('tile.bed.noSleep'),
+            ['owner'],
+        ), []);
+        self::assertCount(1, $translated);
+        self::assertSame('owner', $translated[0]->sessionId);
+        self::assertInstanceOf(TranslatedTextPacket::class, $translated[0]->packet);
+        self::assertSame('tile.bed.noSleep', $translated[0]->packet->message);
+
+        $plain = $encoder->encode(new SystemMessageSent(
+            'You may not rest now; there are monsters nearby.',
+            ['owner'],
+        ), []);
+        self::assertCount(1, $plain);
+        self::assertSame('owner', $plain[0]->sessionId);
+        self::assertInstanceOf(SystemTextPacket::class, $plain[0]->packet);
+        self::assertSame('You may not rest now; there are monsters nearby.', $plain[0]->packet->message);
     }
 
     /** @param list<InventoryStack|null> $armor */

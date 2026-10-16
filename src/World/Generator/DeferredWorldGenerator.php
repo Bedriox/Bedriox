@@ -22,13 +22,15 @@ namespace Bedriox\Server\World\Generator;
 
 use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkPosition;
+use Bedriox\Server\World\Generation\Structure\Overworld\VillagePopulationIntentProvider;
+use Bedriox\Server\World\Generation\Structure\PlacedStructureMarker;
 use Bedriox\Server\World\SpawnPosition;
 use Bedriox\Server\World\VersionedWorldGenerator;
 use Closure;
 use RuntimeException;
 
 /** Keeps normal generation on workers while retaining a lazy built-in recovery path. */
-final class DeferredWorldGenerator implements VersionedWorldGenerator
+final class DeferredWorldGenerator implements VersionedWorldGenerator, VillagePopulationIntentProvider
 {
     private ?VersionedWorldGenerator $resolved = null;
 
@@ -58,6 +60,16 @@ final class DeferredWorldGenerator implements VersionedWorldGenerator
     public function defaultSpawn(): SpawnPosition
     {
         return $this->spawn;
+    }
+
+    /** @return list<PlacedStructureMarker> */
+    public function villageMarkersInChunk(ChunkPosition $position): array
+    {
+        $resolved = $this->resolve();
+
+        return $resolved instanceof VillagePopulationIntentProvider
+            ? $resolved->villageMarkersInChunk($position)
+            : [];
     }
 
     private function resolve(): VersionedWorldGenerator

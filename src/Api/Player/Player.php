@@ -37,6 +37,7 @@ use Bedriox\Api\Inventory\OffHandInventory;
 use Bedriox\Api\Inventory\PlayerInventory;
 use Bedriox\Api\Inventory\PlayerInventoryActions;
 use Bedriox\Api\TranslatableMessage;
+use Bedriox\Api\World\BlockPosition;
 use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\Position;
 use Bedriox\Api\World\World;
@@ -83,6 +84,8 @@ final readonly class Player
         private ?Closure $setExperience = null,
         private ?Skin $skin = null,
         private Motion $motion = new Motion(),
+        private bool $sleeping = false,
+        private ?BlockPosition $bedPosition = null,
     ) {
         $this->inventorySnapshot = $inventory;
         $armor = new ArmorInventory(
@@ -131,6 +134,16 @@ final readonly class Player
     public function getMotion(): Motion
     {
         return $this->motion;
+    }
+
+    public function isSleeping(): bool
+    {
+        return $this->sleeping;
+    }
+
+    public function getBedPosition(): ?BlockPosition
+    {
+        return $this->bedPosition;
     }
 
     public function setMotion(Motion $motion): void
@@ -298,6 +311,8 @@ final readonly class Player
             $setExperience,
             $this->skin,
             $this->motion,
+            $this->sleeping,
+            $this->bedPosition,
         );
     }
 
@@ -330,6 +345,8 @@ final readonly class Player
             $this->setExperience,
             $skin,
             $this->motion,
+            $this->sleeping,
+            $this->bedPosition,
         );
     }
 

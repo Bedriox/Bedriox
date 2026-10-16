@@ -20,6 +20,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World\Generation\Structure\Overworld\Stronghold;
 
+use Bedriox\Server\World\BlockEntity\MobSpawnerBlockEntity;
+use Bedriox\Server\World\BlockPosition;
 use Bedriox\Server\World\Generation\MutableChunkBuilder;
 use Bedriox\Server\World\Generation\Structure\Overworld\Family\PlannedStructurePiece;
 use Bedriox\Server\World\Generation\Structure\Overworld\Family\StructureCanvas;
@@ -41,6 +43,10 @@ final readonly class StrongholdRenderer
                 ]);
             } elseif ($marker->type === \Bedriox\Server\World\Generation\Structure\StructureMarkerType::Spawner) {
                 $this->canvas->block($builder, $marker->coordinate->x, $marker->coordinate->y, $marker->coordinate->z, 'minecraft:mob_spawner');
+                $builder->addBlockEntity(MobSpawnerBlockEntity::create(
+                    new BlockPosition($marker->coordinate->x, $marker->coordinate->y, $marker->coordinate->z),
+                    $marker->identifier,
+                ));
             } elseif ($marker->type === \Bedriox\Server\World\Generation\Structure\StructureMarkerType::PointOfInterest) {
                 $this->portal($builder, $marker->coordinate->x, $marker->coordinate->y, $marker->coordinate->z);
             }

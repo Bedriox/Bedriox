@@ -42,6 +42,9 @@ use Bedriox\Server\World\Block\InternalBlockStateId;
 /** Sole translation boundary between authoritative inventory values and the active Bedrock registry. */
 final class BedrockInventoryPacketProjector
 {
+    /** @var \WeakMap<InventoryStack, ProtocolInventoryItemStack> */
+    private \WeakMap $projectedStacks;
+
     /** @var array<int, DataCreativeInventoryEntry|ItemType> */
     private array $creativeEntries = [];
 
@@ -55,6 +58,7 @@ final class BedrockInventoryPacketProjector
     private array $baseCreativeIdentifiers = [];
 
     private int $creativeRevision = -1;
+    private ?CreativeContentPacket $creativePacket = null;
 
     public function __construct(
         private ItemNetworkRegistry $items,
@@ -62,6 +66,7 @@ final class BedrockInventoryPacketProjector
         private BlockNetworkTranslator $blocks,
         private CreativeInventoryRegistry $creative,
     ) {
+        $this->projectedStacks = new \WeakMap();
         foreach ($this->creative->entries() as $entry) {
             $item = $entry->item();
             $this->baseCreativeIdentifiers[$item->identifier()] = true;
@@ -94,6 +99,10 @@ final class BedrockInventoryPacketProjector
         if ($stack === null) {
             return ProtocolInventoryItemStack::empty();
         }
+        $cached = $this->projectedStacks[$stack] ?? null;
+        if ($cached !== null) {
+            return $cached;
+        }
         $type = $this->gameplayItems->type($stack->identifier);
         $definition = $this->items->definitionForIdentifier($stack->identifier);
         $itemBlockState = $stack->placedBlockState ?? ($type->itemBlockState() === null
@@ -103,7 +112,7 @@ final class BedrockInventoryPacketProjector
             ? 0
             : $this->blocks->toNetwork($itemBlockState)->signed();
 
-        return new ProtocolInventoryItemStack(
+        return $this->projectedStacks[$stack] = new ProtocolInventoryItemStack(
             $definition->networkRuntimeId(),
             $stack->count,
             $stack->auxValue,
@@ -151,6 +160,9 @@ final class BedrockInventoryPacketProjector
     public function creativeContent(): CreativeContentPacket
     {
         $this->synchronizeCreativeEntries();
+        if ($this->creativePacket !== null) {
+            return $this->creativePacket;
+        }
         $groups = [];
         $groupIndexes = [];
         $firstItemsGroup = null;
@@ -189,7 +201,7 @@ final class BedrockInventoryPacketProjector
             );
         }
 
-        return new CreativeContentPacket($groups, $entries);
+        return $this->creativePacket = new CreativeContentPacket($groups, $entries);
     }
 
     public function toItemActorProtocol(InventoryStack $stack): ProtocolInventoryItemStack
@@ -316,6 +328,7 @@ final class BedrockInventoryPacketProjector
         ksort($entries, SORT_NUMERIC);
         $this->creativeEntries = $entries;
         $this->creativeRevision = $this->gameplayItems->revision();
+        $this->creativePacket = null;
     }
 
     private function isAdmittedBlockState(string $identifier, ItemType $type, ?InternalBlockStateId $placed): bool

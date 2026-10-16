@@ -20,6 +20,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Gameplay\Block;
 
+use Bedriox\Api\World\BlockTag;
+use Bedriox\Api\World\BlockTagRegistry;
 use Bedriox\Server\Gameplay\Item\ToolTier;
 use Bedriox\Server\Gameplay\Item\ToolType;
 
@@ -33,6 +35,17 @@ final class VanillaBlockMiningRegistry
 
     public static function definition(string $identifier): ?BlockMiningDefinition
     {
+        if (BlockTagRegistry::contains(BlockTag::DOOR, $identifier)) {
+            if ($identifier === 'minecraft:iron_door') {
+                return new BlockMiningDefinition(5.0, ToolType::Pickaxe, null);
+            }
+            if (str_contains($identifier, 'copper_door')) {
+                return new BlockMiningDefinition(3.0, ToolType::Pickaxe, null);
+            }
+
+            return new BlockMiningDefinition(3.0, ToolType::Axe, null);
+        }
+
         return self::definitions()[$identifier] ?? null;
     }
 

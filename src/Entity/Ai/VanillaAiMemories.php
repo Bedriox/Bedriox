@@ -34,6 +34,7 @@ final class VanillaAiMemories
     private static ?AiMemoryType $rangedIntent = null;
     private static ?AiMemoryType $temptingPlayer = null;
     private static ?AiMemoryType $aquaticWanderMotionY = null;
+    private static ?AiMemoryType $ironGolemAttackAt = null;
 
     public static function wanderUntil(): AiMemoryType
     {
@@ -93,5 +94,10 @@ final class VanillaAiMemories
     public static function aquaticWanderMotionY(): AiMemoryType
     {
         return self::$aquaticWanderMotionY ??= new AiMemoryType(11, 'bedriox:aquatic_wander_motion_y');
+    }
+
+    public static function ironGolemAttackAt(): AiMemoryType
+    {
+        return self::$ironGolemAttackAt ??= new AiMemoryType(12, 'bedriox:iron_golem_attack_at');
     }
 }

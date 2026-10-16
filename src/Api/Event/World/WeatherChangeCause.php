@@ -26,4 +26,5 @@ enum WeatherChangeCause: string
     case NATURAL = 'natural';
     case COMMAND = 'command';
     case PLUGIN = 'plugin';
+    case SLEEPING = 'sleeping';
 }

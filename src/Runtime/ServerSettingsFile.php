@@ -85,7 +85,13 @@ class ServerSettingsFile
 
 # Runtime and workers
 runtime.ticks-per-second=20
+# Number of workers reserved for chunk generation and other server-owned background work.
+# Use auto for a conservative CPU-based value, 0 to disable core workers, or an integer from 1 through 32.
 workers.core-count=auto
+# Number of workers shared fairly by asynchronous plugin tasks. Auto allocates independent plugin
+# capacity while reserving CPU for the main tick, networking, storage and Bedriox core workers.
+# Use auto for most servers, 0 to disable plugin async execution, or an integer from 1 through 32.
+workers.plugin-count=auto
 
 # Chunk orchestration
 chunk-sending.spawn-radius=4

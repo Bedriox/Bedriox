@@ -28,6 +28,7 @@ use Bedriox\Server\Effect\ActiveEffectPersistenceState;
 use Bedriox\Server\Simulation\PlayerSnapshot;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\Simulation\VerticalState;
+use Bedriox\Server\World\BlockPosition;
 use Closure;
 use InvalidArgumentException;
 use OverflowException;
@@ -60,6 +61,7 @@ final class Player
     private bool $invisible = false;
     private float $scale = 1.0;
     private bool $gravityEnabled = true;
+    private ?BlockPosition $sleepingBed = null;
 
     /** @var null|Closure(): bool */
     private ?Closure $ridingStateResolver = null;
@@ -160,7 +162,37 @@ final class Player
             $this->invisible,
             $this->scale,
             $this->gravityEnabled,
+            $this->sleepingBed !== null,
+            $this->sleepingBed,
         );
+    }
+
+    public function isSleeping(): bool
+    {
+        return $this->sleepingBed !== null;
+    }
+
+    public function sleepingBed(): ?BlockPosition
+    {
+        return $this->sleepingBed;
+    }
+
+    public function startSleeping(BlockPosition $bed): bool
+    {
+        if ($this->sleepingBed?->equals($bed) === true) {
+            return false;
+        }
+        $this->sleepingBed = $bed;
+
+        return true;
+    }
+
+    public function stopSleeping(): ?BlockPosition
+    {
+        $bed = $this->sleepingBed;
+        $this->sleepingBed = null;
+
+        return $bed;
     }
 
     public function nameTag(): string

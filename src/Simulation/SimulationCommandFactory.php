@@ -615,6 +615,13 @@ final readonly class SimulationCommandFactory
         return new RespawnPlayer($session);
     }
 
+    public function leaveBed(string $session): \Bedriox\Server\Simulation\Command\LeaveBed
+    {
+        $this->assertOpaqueId($session, 128, 'session');
+
+        return new \Bedriox\Server\Simulation\Command\LeaveBed($session);
+    }
+
     public function acknowledgeRespawn(string $session): AcknowledgeRespawn
     {
         $this->assertOpaqueId($session, 128, 'session');

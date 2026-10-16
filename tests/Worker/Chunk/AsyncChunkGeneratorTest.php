@@ -103,11 +103,35 @@ final class AsyncChunkGeneratorTest extends TestCase
         self::assertFalse($world->hasLoadedChunk($position));
         self::assertSame(1, $dispatcher->submissions);
     }
+
+    public function testWorkerGenerationIsCancelledOnlyAfterItsLastDemandOwnerLeaves(): void
+    {
+        $states = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $blocks = FixedFlatBlockPalette::fromRegistry($states);
+        $generator = new FlatWorldGenerator($blocks);
+        $dispatcher = new FakeChunkWorkerDispatcher();
+        $async = new AsyncChunkGenerator($dispatcher, 2, 'flat', 1, 99, $states, allowSynchronousFallback: false);
+        $world = new World(new WorldMetadata('world', 99), $generator, new ChunkRepository(16), asyncChunks: $async);
+        $position = new ChunkPosition(8, 9);
+
+        self::assertFalse($world->requestRetainChunk($position, demandOwner: 'session:first'));
+        self::assertFalse($world->requestRetainChunk($position, demandOwner: 'session:second'));
+        self::assertSame(1, $dispatcher->submissions);
+
+        self::assertTrue($world->cancelChunkDemand($position, 'session:first'));
+        self::assertSame(0, $dispatcher->cancellations);
+        self::assertTrue($world->cancelChunkDemand($position, 'session:second'));
+        self::assertSame(1, $dispatcher->cancellations);
+
+        $dispatcher->complete((new ChunkTransferCodec())->encode($generator->generate($position), $states));
+        self::assertFalse($world->hasLoadedChunk($position));
+    }
 }
 
 final class FakeChunkWorkerDispatcher implements WorkerDispatcher
 {
     public int $submissions = 0;
+    public int $cancellations = 0;
     public string $payload = '';
     private Closure $completion;
     private WorkerReceipt $receipt;
@@ -134,6 +158,8 @@ final class FakeChunkWorkerDispatcher implements WorkerDispatcher
 
     public function cancel(WorkerReceipt $receipt): bool
     {
+        ++$this->cancellations;
+
         return true;
     }
 

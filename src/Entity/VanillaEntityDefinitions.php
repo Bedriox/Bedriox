@@ -45,6 +45,7 @@ use Bedriox\Server\Entity\Vanilla\ExpandedLandEntityRegistrations;
 use Bedriox\Server\Entity\Vanilla\GlowSquidEntity;
 use Bedriox\Server\Entity\Vanilla\GuardianEntity;
 use Bedriox\Server\Entity\Vanilla\HuskEntity;
+use Bedriox\Server\Entity\Vanilla\IronGolemEntity;
 use Bedriox\Server\Entity\Vanilla\MagmaCubeEntity;
 use Bedriox\Server\Entity\Vanilla\Misc\LeashKnotEntity;
 use Bedriox\Server\Entity\Vanilla\Misc\PrimedTntEntity;
@@ -64,6 +65,7 @@ use Bedriox\Server\Entity\Vanilla\SquidEntity;
 use Bedriox\Server\Entity\Vanilla\StrayEntity;
 use Bedriox\Server\Entity\Vanilla\TropicalFishEntity;
 use Bedriox\Server\Entity\Vanilla\TurtleEntity;
+use Bedriox\Server\Entity\Vanilla\VillagerEntity;
 use Bedriox\Server\Entity\Vanilla\WitchEntity;
 use Bedriox\Server\Entity\Vanilla\WitherSkeletonEntity;
 use Bedriox\Server\Entity\Vanilla\ZombieEntity;
@@ -145,6 +147,30 @@ final class VanillaEntityDefinitions
             1.95,
             20.0,
             burnsInDaylight: true,
+        );
+    }
+
+    public static function villager(): EntityDefinition
+    {
+        return self::$passive[VanillaEntityType::VILLAGER->value] ??= new EntityDefinition(
+            VanillaEntityType::VILLAGER,
+            EntityCategory::VILLAGER,
+            VanillaEntityType::VILLAGER->value,
+            0.6,
+            1.9,
+            20.0,
+        );
+    }
+
+    public static function ironGolem(): EntityDefinition
+    {
+        return self::$passive[VanillaEntityType::IRON_GOLEM->value] ??= new EntityDefinition(
+            VanillaEntityType::IRON_GOLEM,
+            EntityCategory::VILLAGER,
+            VanillaEntityType::IRON_GOLEM->value,
+            1.4,
+            2.7,
+            100.0,
         );
     }
 
@@ -593,6 +619,16 @@ final class VanillaEntityDefinitions
                 self::zombie(),
                 static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): ZombieEntity =>
                     new ZombieEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch),
+            ),
+            new RegisteredEntityDefinition(
+                self::villager(),
+                static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): VillagerEntity =>
+                    new VillagerEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch),
+            ),
+            new RegisteredEntityDefinition(
+                self::ironGolem(),
+                static fn(string $uuid, int $runtimeId, string $world, Position $position, float $yaw, float $pitch): IronGolemEntity =>
+                    new IronGolemEntity($uuid, $runtimeId, $world, $position, yaw: $yaw, pitch: $pitch),
             ),
             new RegisteredEntityDefinition(
                 self::sheep(),

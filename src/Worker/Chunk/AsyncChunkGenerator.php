@@ -132,6 +132,20 @@ final class AsyncChunkGenerator
         return count($this->pending);
     }
 
+    /** Cancels generation when the world no longer has a consumer for this chunk. */
+    public function cancel(ChunkPosition $position): bool
+    {
+        $key = $position->key();
+        $receipt = $this->pending[$key] ?? null;
+        if (!$receipt instanceof WorkerReceipt) {
+            return false;
+        }
+        unset($this->pending[$key], $this->failed[$key]);
+        $this->workers->cancel($receipt);
+
+        return true;
+    }
+
     public function allowsSynchronousFallback(): bool
     {
         return $this->allowSynchronousFallback;

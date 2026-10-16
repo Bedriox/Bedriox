@@ -27,7 +27,7 @@ use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\World;
 
 /** Resolves state-owned collision geometry against the current authoritative world. */
-final readonly class BlockCollisionQuery implements LoadedCollisionBoxQuery
+final readonly class BlockCollisionQuery implements LoadedNavigationCellQuery
 {
     /** @var array<int, true> */
     private array $nonSolid;
@@ -55,6 +55,31 @@ final readonly class BlockCollisionQuery implements LoadedCollisionBoxQuery
     public function boxesIntersectingLoaded(AxisAlignedBox $area): ?array
     {
         return $this->collectBoxes($area, true);
+    }
+
+    public function isNavigationCellWalkableLoaded(
+        int $x,
+        int $y,
+        int $z,
+        float $width,
+        float $height,
+    ): ?bool {
+        $halfWidth = $width / 2.0;
+        $body = new AxisAlignedBox(
+            $x + 0.5 - $halfWidth,
+            $y,
+            $z + 0.5 - $halfWidth,
+            $x + 0.5 + $halfWidth,
+            $y + $height,
+            $z + 0.5 + $halfWidth,
+        );
+        $bodyCollision = $this->hasLoadedCollision($body);
+        if ($bodyCollision !== false) {
+            return $bodyCollision === null ? null : false;
+        }
+        $supportCollision = $this->hasLoadedCollision($body->offset(0.0, -0.1, 0.0));
+
+        return $supportCollision;
     }
 
     public function hasCollision(AxisAlignedBox $area): bool
@@ -229,6 +254,52 @@ final readonly class BlockCollisionQuery implements LoadedCollisionBoxQuery
         }
 
         return $boxes;
+    }
+
+    /** Null means that the query crossed terrain which is not currently loaded. */
+    private function hasLoadedCollision(AxisAlignedBox $area): ?bool
+    {
+        $minY = max(Chunk::MIN_Y, (int) floor($area->minY) - ($this->shapes === null ? 0 : 1));
+        $maxY = min(
+            Chunk::MAX_Y,
+            self::maximumCell($area->minY, $area->maxY) + ($this->shapes === null ? 0 : 1),
+        );
+        if ($minY > $maxY) {
+            return false;
+        }
+        $minX = (int) floor($area->minX);
+        $maxX = self::maximumCell($area->minX, $area->maxX);
+        $minZ = (int) floor($area->minZ);
+        $maxZ = self::maximumCell($area->minZ, $area->maxZ);
+        /** @var array<string, Chunk> $chunks */
+        $chunks = [];
+        for ($z = $minZ; $z <= $maxZ; ++$z) {
+            for ($x = $minX; $x <= $maxX; ++$x) {
+                $chunkX = (int) floor($x / 16);
+                $chunkZ = (int) floor($z / 16);
+                $chunkKey = $chunkX . ':' . $chunkZ;
+                $chunk = $chunks[$chunkKey] ?? null;
+                if (!$chunk instanceof Chunk) {
+                    $chunk = $this->world->loadedChunk(new ChunkPosition($chunkX, $chunkZ));
+                    if (!$chunk instanceof Chunk) {
+                        return null;
+                    }
+                    $chunks[$chunkKey] = $chunk;
+                }
+                for ($y = $minY; $y <= $maxY; ++$y) {
+                    $state = $chunk->blockStateAt(self::localCoordinate($x), $y, self::localCoordinate($z));
+                    $shape = $this->shapes?->find($state);
+                    if ($shape?->isEmpty() === true || ($shape === null && isset($this->nonSolid[$state->value]))) {
+                        continue;
+                    }
+                    if ($shape !== null ? $shape->intersectsAt($area, $x, $y, $z) : AxisAlignedBox::unitAt($x, $y, $z)->intersects($area)) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 
     /** @return list<AxisAlignedBox> */

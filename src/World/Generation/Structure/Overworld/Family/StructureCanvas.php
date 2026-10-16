@@ -20,7 +20,10 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World\Generation\Structure\Overworld\Family;
 
+use Bedriox\Api\World\BedColor;
 use Bedriox\Data\CanonicalBlockState;
+use Bedriox\Server\Gameplay\Block\BedDirection;
+use Bedriox\Server\World\BlockEntity\BedBlockEntity;
 use Bedriox\Server\World\BlockEntity\BlockEntityType;
 use Bedriox\Server\World\BlockEntity\ContainerBlockEntity;
 use Bedriox\Server\World\BlockEntity\ContainerInventory;
@@ -59,6 +62,30 @@ final readonly class StructureCanvas
             return;
         }
         $builder->setWorld($x, $y, $z, $this->blocks->canonical(CanonicalBlockState::from($identifier, $properties)));
+    }
+
+    public function bed(
+        MutableChunkBuilder $builder,
+        int $footX,
+        int $y,
+        int $footZ,
+        BedDirection $direction,
+        BedColor $color = BedColor::RED,
+    ): void {
+        [$offsetX, $offsetZ] = $direction->offset();
+        foreach ([[0, 0, 0], [$offsetX, $offsetZ, 1]] as [$xOffset, $zOffset, $head]) {
+            $x = $footX + $xOffset;
+            $z = $footZ + $zOffset;
+            if (!$this->inside($builder, $x, $z)) {
+                continue;
+            }
+            $this->canonicalBlock($builder, $x, $y, $z, 'minecraft:bed', [
+                'direction' => $direction->value,
+                'head_piece_bit' => $head,
+                'occupied_bit' => 0,
+            ]);
+            $builder->addBlockEntity(new BedBlockEntity(new BlockPosition($x, $y, $z), $color));
+        }
     }
 
     public function box(MutableChunkBuilder $builder, int $x1, int $y1, int $z1, int $x2, int $y2, int $z2, string $identifier): void

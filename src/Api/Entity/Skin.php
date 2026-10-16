@@ -20,6 +20,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\Entity;
 
+use Bedriox\Api\Entity\Value\SkinPersonaPiece;
+use Bedriox\Api\Entity\Value\SkinPersonaTint;
 use InvalidArgumentException;
 use JsonException;
 
@@ -28,8 +30,16 @@ final readonly class Skin
 {
     /** @var list<SkinAnimation> */
     public array $animations;
+    /** @var list<SkinPersonaPiece> */
+    public array $personaPieces;
+    /** @var list<SkinPersonaTint> */
+    public array $personaTints;
 
-    /** @param array<array-key, mixed> $animations */
+    /**
+     * @param array<array-key, mixed> $animations
+     * @param array<array-key, mixed> $personaPieces
+     * @param array<array-key, mixed> $personaTints
+     */
     public function __construct(
         public string $id,
         public int $width,
@@ -48,6 +58,15 @@ final readonly class Skin
         public string $skinColor = '',
         public bool $premium = false,
         public bool $capeOnClassic = false,
+        public bool $persona = false,
+        array $personaPieces = [],
+        array $personaTints = [],
+        public string $playFabId = '',
+        public string $fullSkinId = '',
+        public bool $primaryUser = false,
+        public bool $overridingPlayerAppearance = false,
+        public string $profileHash = '',
+        public bool $trusted = false,
     ) {
         self::boundedText($id, 256, 'Skin ID', false);
         self::image($width, $height, $rgba, 262_144, false, 'Skin');
@@ -59,6 +78,9 @@ final readonly class Skin
         self::boundedText($geometryEngineVersion, 128, 'Geometry engine version');
         self::boundedText($armSize, 32, 'Skin arm size');
         self::boundedText($skinColor, 32, 'Skin color');
+        self::boundedText($playFabId, 65_536, 'Skin PlayFab ID');
+        self::boundedText($fullSkinId, 65_536, 'Full skin ID');
+        self::boundedText($profileHash, 4_096, 'Skin profile hash');
         if (!in_array(strtolower($armSize), ['', 'slim', 'wide'], true)) {
             throw new InvalidArgumentException('Skin arm size must be empty, slim, or wide.');
         }
@@ -74,6 +96,24 @@ final readonly class Skin
             }
         }
         $this->animations = $animations;
+        if (!array_is_list($personaPieces) || count($personaPieces) > 128) {
+            throw new InvalidArgumentException('Persona piece count exceeds its limit.');
+        }
+        foreach ($personaPieces as $piece) {
+            if (!$piece instanceof SkinPersonaPiece) {
+                throw new InvalidArgumentException('Persona pieces must contain SkinPersonaPiece values.');
+            }
+        }
+        $this->personaPieces = $personaPieces;
+        if (!array_is_list($personaTints) || count($personaTints) > 32) {
+            throw new InvalidArgumentException('Persona tint count exceeds its limit.');
+        }
+        foreach ($personaTints as $tint) {
+            if (!$tint instanceof SkinPersonaTint) {
+                throw new InvalidArgumentException('Persona tints must contain SkinPersonaTint values.');
+            }
+        }
+        $this->personaTints = $personaTints;
         self::json($resourcePatchJson, 65_536, 'Skin resource patch', false);
         self::json($geometryJson, 65_536, 'Skin geometry');
         self::json($animationDataJson, 65_536, 'Skin animation data');

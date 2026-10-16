@@ -71,6 +71,7 @@ use Bedriox\Protocol\Packet\MobEquipmentPacket;
 use Bedriox\Protocol\Packet\Packet;
 use Bedriox\Protocol\Packet\ShulkerActorMetadata;
 use Bedriox\Protocol\Packet\ShulkerAttachmentFace;
+use Bedriox\Protocol\Packet\VillagerActorMetadata;
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\Server\Entity\AbstractLivingEntity;
 use Bedriox\Server\Entity\BreedableAnimalEntity;
@@ -85,6 +86,7 @@ use Bedriox\Server\Entity\Vanilla\Misc\PrimedTntEntity;
 use Bedriox\Server\Entity\Vanilla\Nether\StriderEntity;
 use Bedriox\Server\Entity\Vanilla\SkeletonHorseEntity;
 use Bedriox\Server\Entity\Vanilla\TraderLlamaEntity;
+use Bedriox\Server\Entity\Vanilla\VillagerEntity;
 use Bedriox\Server\Entity\Vehicle\BoatEntity;
 use Bedriox\Server\Entity\Vehicle\Minecart\AbstractMinecartEntity;
 use Bedriox\Server\Entity\Vehicle\Minecart\ChestMinecartEntity;
@@ -190,6 +192,22 @@ final class BedrockLivingActorProjector
                 : -1),
             ActorMetadata::float(38, $entity->scale()),
             ActorMetadata::short(42, 400),
+            ...($entity instanceof VillagerEntity ? VillagerActorMetadata::tradeState(
+                $entity->getProfession()->value,
+                $entity->getVillagerType()->value,
+                $entity->getActiveTraderRuntimeId() ?? -1,
+                $entity->getVillagerLevel()->value - 1,
+                4,
+                $entity->getVillagerExperience(),
+            ) : []),
+            ...($entity instanceof VillagerEntity && $entity->getBed() !== null ? [ActorMetadata::blockPosition(
+                28,
+                new ProtocolBlockPosition(
+                    $entity->getBed()->x,
+                    $entity->getBed()->y,
+                    $entity->getBed()->z,
+                ),
+            )] : []),
             ...($entity instanceof ApiLlama ? [ActorMetadata::int(43, $entity instanceof TraderLlamaEntity ? 1 : 0)] : []),
             ...($entity instanceof ChestedAnimal ? [
                 ActorMetadata::byte(44, 12),
@@ -284,6 +302,9 @@ final class BedrockLivingActorProjector
         if ($entity instanceof Ageable && $entity->isBaby()) {
             $flags |= ActorFlag::Baby->mask();
         }
+        if ($entity instanceof VillagerEntity && $entity->getActiveTraderRuntimeId() !== null) {
+            $flags |= ActorFlag::TradeInterest->mask();
+        }
         if ($entity instanceof Pig && $entity->isSaddled()) {
             $flags |= ActorFlag::Saddled->mask();
         }
@@ -350,6 +371,9 @@ final class BedrockLivingActorProjector
             $flags |= ActorFlag::Trusting->mask();
         }
         if ($entity instanceof Fox && $entity->isSleeping()) {
+            $flags |= ActorFlag::Sleeping->mask();
+        }
+        if ($entity instanceof VillagerEntity && $entity->isSleeping()) {
             $flags |= ActorFlag::Sleeping->mask();
         }
         if ($entity instanceof Fox && $entity->isFaceplanted()) {

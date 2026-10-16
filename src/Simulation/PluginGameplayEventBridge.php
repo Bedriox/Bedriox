@@ -44,12 +44,16 @@ use Bedriox\Api\Entity\KnockbackVector;
 use Bedriox\Api\Entity\LivingEntity as ApiLivingEntity;
 use Bedriox\Api\Entity\Skin;
 use Bedriox\Api\Entity\SpawnCause;
+use Bedriox\Api\Entity\Trade\VillagerTradeList;
+use Bedriox\Api\Entity\Trade\VillagerTradeOffer;
 use Bedriox\Api\Entity\Value\EntityBlockChangeReason;
 use Bedriox\Api\Entity\Value\EntityTransformReason;
 use Bedriox\Api\Entity\Value\LeashDetachReason;
 use Bedriox\Api\Entity\Value\Motion;
 use Bedriox\Api\Entity\Value\MountReason;
 use Bedriox\Api\Entity\Value\MountSeat;
+use Bedriox\Api\Entity\Value\VillagerLevel;
+use Bedriox\Api\Entity\Value\VillagerProfession;
 use Bedriox\Api\Entity\Vanilla\Armadillo as ApiArmadillo;
 use Bedriox\Api\Entity\Vanilla\Goat as ApiGoat;
 use Bedriox\Api\Entity\Vanilla\Ocelot as ApiOcelot;
@@ -151,6 +155,14 @@ use Bedriox\Api\Event\Entity\ProjectileLaunchedEvent;
 use Bedriox\Api\Event\Entity\ProjectileLaunchEvent;
 use Bedriox\Api\Event\Entity\ProjectileReflectedEvent;
 use Bedriox\Api\Event\Entity\ProjectileReflectEvent;
+use Bedriox\Api\Event\Entity\Villager\VillagerOffersPreparedEvent;
+use Bedriox\Api\Event\Entity\Villager\VillagerOffersPrepareEvent;
+use Bedriox\Api\Event\Entity\Villager\VillagerProfessionChangedEvent;
+use Bedriox\Api\Event\Entity\Villager\VillagerProfessionChangeEvent;
+use Bedriox\Api\Event\Entity\Villager\VillagerRestockedEvent;
+use Bedriox\Api\Event\Entity\Villager\VillagerRestockEvent;
+use Bedriox\Api\Event\Entity\Villager\VillagerTradedEvent;
+use Bedriox\Api\Event\Entity\Villager\VillagerTradeEvent;
 use Bedriox\Api\Event\Event;
 use Bedriox\Api\Event\Inventory\InventoryChangedEvent;
 use Bedriox\Api\Event\Inventory\InventoryChangeEvent;
@@ -162,6 +174,11 @@ use Bedriox\Api\Event\Inventory\InventoryTransactionCommittedEvent;
 use Bedriox\Api\Event\Inventory\InventoryTransactionEvent;
 use Bedriox\Api\Event\Player\PlayerAttackedEvent;
 use Bedriox\Api\Event\Player\PlayerAttackEvent;
+use Bedriox\Api\Event\Player\PlayerBedEnteredEvent;
+use Bedriox\Api\Event\Player\PlayerBedEnterEvent;
+use Bedriox\Api\Event\Player\PlayerBedEnterResult;
+use Bedriox\Api\Event\Player\PlayerBedLeaveEvent;
+use Bedriox\Api\Event\Player\PlayerBedLeaveReason;
 use Bedriox\Api\Event\Player\PlayerBlockPickEvent;
 use Bedriox\Api\Event\Player\PlayerChatBroadcastEvent;
 use Bedriox\Api\Event\Player\PlayerChatEvent;
@@ -218,6 +235,8 @@ use Bedriox\Api\Event\Player\PlayerRespawnedEvent;
 use Bedriox\Api\Event\Player\PlayerRespawnEvent;
 use Bedriox\Api\Event\Player\PlayerSkinChangedEvent;
 use Bedriox\Api\Event\Player\PlayerSkinChangeEvent;
+use Bedriox\Api\Event\Player\PlayerSpawnPointChangedEvent;
+use Bedriox\Api\Event\Player\PlayerSpawnPointChangeEvent;
 use Bedriox\Api\Event\Player\PlayerTeleportedEvent;
 use Bedriox\Api\Event\Player\PlayerTeleportEvent;
 use Bedriox\Api\Event\Processing\AnvilProcessedEvent;
@@ -250,6 +269,10 @@ use Bedriox\Api\Event\Processing\SmithingProcessedEvent;
 use Bedriox\Api\Event\Processing\SmithingProcessEvent;
 use Bedriox\Api\Event\Processing\StonecutterProcessedEvent;
 use Bedriox\Api\Event\Processing\StonecutterProcessEvent;
+use Bedriox\Api\Event\Spawner\SpawnerActivateEvent;
+use Bedriox\Api\Event\Spawner\SpawnerCompleteEvent;
+use Bedriox\Api\Event\Spawner\SpawnerSpawnEvent;
+use Bedriox\Api\Event\Spawner\TrialSpawnerStateChangeEvent;
 use Bedriox\Api\Event\Vehicle\MinecartRailChangedEvent;
 use Bedriox\Api\Event\Vehicle\MinecartRailChangeEvent;
 use Bedriox\Api\Event\Vehicle\VehicleCollidedEvent;
@@ -262,6 +285,8 @@ use Bedriox\Api\Event\Vehicle\VehicleMoveEvent;
 use Bedriox\Api\Event\World\WeatherChangeCause;
 use Bedriox\Api\Event\World\WeatherChangedEvent;
 use Bedriox\Api\Event\World\WeatherChangeEvent;
+use Bedriox\Api\Event\World\WorldTimeSkipEvent;
+use Bedriox\Api\Event\World\WorldTimeSkipReason;
 use Bedriox\Api\Inventory\ConsumptionResult;
 use Bedriox\Api\Inventory\Container;
 use Bedriox\Api\Inventory\ContainerView;
@@ -300,10 +325,12 @@ use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\PortalType;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\Rail\RailSegment;
+use Bedriox\Api\World\Spawner\TrialSpawnerPhase;
 use Bedriox\Api\World\WeatherState;
 use Bedriox\Server\Entity\AbstractLivingEntity;
 use Bedriox\Server\Entity\AbstractMobEntity;
 use Bedriox\Server\Entity\EntityMotion;
+use Bedriox\Server\Entity\Vanilla\VillagerEntity;
 use Bedriox\Server\Gameplay\Potion\BrewingStandBlockEntity;
 use Bedriox\Server\Gameplay\Projectile\Projectile;
 use Bedriox\Server\Gameplay\Projectile\ProjectileType;
@@ -351,6 +378,62 @@ final readonly class PluginGameplayEventBridge
     public function resolveWorld(string $worldId, DimensionType $dimension): ?\Bedriox\Api\World\World
     {
         return $this->worldResolver === null ? null : ($this->worldResolver)($worldId, $dimension);
+    }
+
+    public function spawnerActivate(
+        \Bedriox\Api\World\World $world,
+        ApiBlockPosition $position,
+        bool $trial,
+        bool $ominous = false,
+    ): bool {
+        $event = new SpawnerActivateEvent($world, $position, $trial, $ominous);
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function spawnerSpawn(
+        \Bedriox\Api\World\World $world,
+        ApiBlockPosition $spawnerPosition,
+        string $entityIdentifier,
+        ApiPosition $spawnPosition,
+        bool $trial,
+        bool $ominous = false,
+    ): bool {
+        $event = new SpawnerSpawnEvent(
+            $world,
+            $spawnerPosition,
+            $entityIdentifier,
+            $spawnPosition,
+            $trial,
+            $ominous,
+        );
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function trialSpawnerStateChange(
+        \Bedriox\Api\World\World $world,
+        ApiBlockPosition $position,
+        TrialSpawnerPhase $oldPhase,
+        TrialSpawnerPhase $newPhase,
+        bool $ominous,
+    ): bool {
+        $event = new TrialSpawnerStateChangeEvent($world, $position, $oldPhase, $newPhase, $ominous);
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    /** @param list<string> $participantIds */
+    public function spawnerCompleted(
+        \Bedriox\Api\World\World $world,
+        ApiBlockPosition $position,
+        array $participantIds,
+        bool $ominous,
+    ): void {
+        $this->events->dispatch(new SpawnerCompleteEvent($world, $position, $participantIds, $ominous));
     }
 
     public function enderDragonPhaseChange(
@@ -1735,6 +1818,25 @@ final readonly class PluginGameplayEventBridge
         $this->events->dispatch(new PlayerRespawnedEvent($this->playerView($player)));
     }
 
+    public function allowSpawnPointChange(Player $player, Position $position): bool
+    {
+        $event = new PlayerSpawnPointChangeEvent(
+            $this->playerView($player),
+            $this->positionFor($player, $position),
+        );
+        $this->events->dispatch($event);
+
+        return !$event->isCancelled();
+    }
+
+    public function spawnPointChanged(Player $player, Position $position): void
+    {
+        $this->events->dispatch(new PlayerSpawnPointChangedEvent(
+            $this->playerView($player),
+            $this->positionFor($player, $position),
+        ));
+    }
+
     public function gameModeChange(Player $player, GameMode $gameMode): ?GameMode
     {
         $event = new PlayerGameModeChangeEvent($this->playerView($player), $player->gameMode(), $gameMode);
@@ -2046,6 +2148,55 @@ final readonly class PluginGameplayEventBridge
         }
     }
 
+    public function bedEnter(
+        Player $player,
+        BlockPosition $bed,
+        PlayerBedEnterResult $result,
+        string|TranslatableMessage|null $message,
+    ): PlayerBedEnterEvent {
+        $event = new PlayerBedEnterEvent(
+            $this->playerView($player),
+            new ApiBlockPosition($bed->x, $bed->y, $bed->z),
+            $result,
+            $message,
+        );
+        $this->events->dispatch($event);
+
+        return $event;
+    }
+
+    public function bedEntered(Player $player, BlockPosition $bed): void
+    {
+        $this->events->dispatch(new PlayerBedEnteredEvent(
+            $this->playerView($player),
+            new ApiBlockPosition($bed->x, $bed->y, $bed->z),
+        ));
+    }
+
+    public function bedLeft(Player $player, BlockPosition $bed, PlayerBedLeaveReason $reason): void
+    {
+        $this->events->dispatch(new PlayerBedLeaveEvent(
+            $this->playerView($player),
+            new ApiBlockPosition($bed->x, $bed->y, $bed->z),
+            $reason,
+        ));
+    }
+
+    public function allowTimeSkip(
+        string $worldName,
+        DimensionType $dimension,
+        int $targetTime,
+    ): ?int {
+        $world = $this->resolveWorld($worldName, $dimension);
+        if ($world === null) {
+            return $targetTime;
+        }
+        $event = new WorldTimeSkipEvent($world, $targetTime, WorldTimeSkipReason::PLAYERS_SLEEPING);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->targetTime();
+    }
+
     public function allowChestPair(Player $player, BlockPosition $left, BlockPosition $right, string $identifier): bool
     {
         $event = new ChestPairEvent(
@@ -2252,6 +2403,88 @@ final readonly class PluginGameplayEventBridge
                 $outputs,
             ),
         ));
+    }
+
+    public function villagerProfessionChange(
+        VillagerEntity $villager,
+        VillagerProfession $previousProfession,
+        VillagerProfession $profession,
+    ): ?VillagerProfession {
+        $event = new VillagerProfessionChangeEvent($villager, $previousProfession, $profession);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->profession();
+    }
+
+    public function villagerProfessionChanged(
+        VillagerEntity $villager,
+        VillagerProfession $previousProfession,
+        VillagerProfession $profession,
+    ): void {
+        $this->events->dispatch(new VillagerProfessionChangedEvent($villager, $previousProfession, $profession));
+    }
+
+    public function villagerOffersPrepare(
+        VillagerEntity $villager,
+        VillagerTradeList $offers,
+    ): VillagerTradeList {
+        $event = new VillagerOffersPrepareEvent($villager, $offers);
+        $this->events->dispatch($event);
+
+        return $event->offers();
+    }
+
+    public function villagerOffersPrepared(VillagerEntity $villager, VillagerTradeList $offers): void
+    {
+        $this->events->dispatch(new VillagerOffersPreparedEvent($villager, $offers));
+    }
+
+    public function villagerTrade(
+        Player $player,
+        VillagerEntity $villager,
+        VillagerTradeOffer $offer,
+        int $tradeCount = 1,
+    ): ?VillagerTradeOffer {
+        $event = new VillagerTradeEvent($this->playerView($player), $villager, $offer, $tradeCount);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->offer();
+    }
+
+    public function villagerTraded(
+        Player $player,
+        VillagerEntity $villager,
+        VillagerTradeOffer $offer,
+        VillagerLevel $villagerLevel,
+        int $villagerExperience,
+        int $playerExperience,
+        int $tradeCount = 1,
+    ): void {
+        $this->events->dispatch(new VillagerTradedEvent(
+            $this->playerView($player),
+            $villager,
+            $offer,
+            $villagerLevel,
+            $villagerExperience,
+            $playerExperience,
+            $tradeCount,
+        ));
+    }
+
+    public function villagerRestock(
+        VillagerEntity $villager,
+        int $worldDay,
+        VillagerTradeList $offers,
+    ): ?VillagerTradeList {
+        $event = new VillagerRestockEvent($villager, $worldDay, $offers);
+        $this->events->dispatch($event);
+
+        return $event->isCancelled() ? null : $event->offers();
+    }
+
+    public function villagerRestocked(VillagerEntity $villager, int $worldDay, VillagerTradeList $offers): void
+    {
+        $this->events->dispatch(new VillagerRestockedEvent($villager, $worldDay, $offers));
     }
 
     public function dropItem(Player $player, InventoryStack $stack): ?int
@@ -3128,6 +3361,12 @@ final readonly class PluginGameplayEventBridge
                 $player->movement->verticalVelocity,
                 $player->movement->velocityZ,
             ),
+            sleeping: $snapshot->sleeping,
+            bedPosition: $snapshot->sleepingBed === null ? null : new ApiBlockPosition(
+                $snapshot->sleepingBed->x,
+                $snapshot->sleepingBed->y,
+                $snapshot->sleepingBed->z,
+            ),
         );
 
         return $this->playerActions === null || $this->playerInventoryActions === null || $this->maximumStackSize === null
@@ -3178,6 +3417,12 @@ final readonly class PluginGameplayEventBridge
                 $player->movement->velocityX,
                 $player->movement->verticalVelocity,
                 $player->movement->velocityZ,
+            ),
+            sleeping: $snapshot->sleeping,
+            bedPosition: $snapshot->sleepingBed === null ? null : new ApiBlockPosition(
+                $snapshot->sleepingBed->x,
+                $snapshot->sleepingBed->y,
+                $snapshot->sleepingBed->z,
             ),
         );
     }

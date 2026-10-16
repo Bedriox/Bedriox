@@ -110,6 +110,9 @@ use Bedriox\Protocol\Packet\PlayerBlockAction;
 use Bedriox\Protocol\Packet\PlayerPositionProjection;
 use Bedriox\Protocol\Packet\PlayerSkin;
 use Bedriox\Protocol\Packet\PlayerSkinPacket;
+use Bedriox\Protocol\Packet\PlayerSkinPersonaPiece;
+use Bedriox\Protocol\Packet\PlayerSkinPersonaPieceType;
+use Bedriox\Protocol\Packet\PlayerSkinPersonaTint;
 use Bedriox\Protocol\Packet\PlayStatusPacket;
 use Bedriox\Protocol\Packet\RequestAbilityPacket;
 use Bedriox\Protocol\Packet\RequestChunkRadiusPacket;
@@ -207,6 +210,20 @@ use PHPUnit\Framework\TestCase;
 
 final class BedrockPlayChannelTest extends TestCase
 {
+    public function testProtocolTraceSummariesUseDeterministicSessionPhases(): void
+    {
+        $method = new \ReflectionMethod(BedrockPlayChannel::class, 'protocolTraceInitialDelayNanoseconds');
+        $first = $method->invoke(null, 'session-one');
+        $second = $method->invoke(null, 'session-two');
+
+        self::assertIsInt($first);
+        self::assertIsInt($second);
+        self::assertSame($first, $method->invoke(null, 'session-one'));
+        self::assertNotSame($first, $second);
+        self::assertGreaterThanOrEqual(500_000_000, $first);
+        self::assertLessThan(30_000_000_000, $first);
+    }
+
     private const string BLOCK_ACTION_INPUT = '00000000000000000000803ff43d8342000000c000000000000000000000000001460100000000000000000000070000000000000000000000000000010100027e030200000000000000000000000000000000803f000000000000000000000000';
     private const string ITEM_USE_INPUT = '000000000000000000000000f43d8342000000000000000000000000000000000144010000000000000000000000000000000000000000000000010000000201027e0301000000000000000000000000000000008042000000000000003f0000003f0000003f0001000000000000000000000000000000000000000000000000000000000000000000';
     private const int INVENTORY_TRANSACTION_PACKET_ID = 30;
@@ -1047,7 +1064,7 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertSame([], $channel->drainSkinChanges());
     }
 
-    public function testPlayerSkinUpdateRejectsAnotherIdentity(): void
+    public function testPersonaSkinPacketUuidDoesNotOverrideAuthenticatedSessionIdentity(): void
     {
         [$channel, $client, , $entityId] = $this->channel();
         self::assertTrue($channel->accept(new ConnectedPayloadEvent(
@@ -1055,7 +1072,7 @@ final class BedrockPlayChannelTest extends TestCase
             Reliability::ReliableOrdered,
             0,
         )));
-        $appearance = new VerifiedClientData(
+        $appearance = new PlayerSkin(
             64,
             32,
             str_repeat("\x01", 64 * 32 * 4),
@@ -1064,22 +1081,36 @@ final class BedrockPlayChannelTest extends TestCase
             '',
             '{}',
             [],
-            skinId: 'skin',
-            skinResourcePatchJson: '{"geometry":{"default":"geometry.humanoid.custom"}}',
+            'skin',
+            '',
+            '{"geometry":{"default":"geometry.humanoid.custom"}}',
+            persona: true,
+            personaPieces: [new PlayerSkinPersonaPiece(
+                'piece',
+                PlayerSkinPersonaPieceType::Top,
+                '00112233-4455-6677-8899-aabbccddeeff',
+                true,
+                'product',
+            )],
+            personaTints: [new PlayerSkinPersonaTint(PlayerSkinPersonaPieceType::Top, [1, 2, 3, 4])],
         );
 
-        self::assertFalse($channel->accept(new ConnectedPayloadEvent(
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
             $client->encryptEnvelope($this->encode([new PlayerSkinPacket(
                 '00000000-0000-0000-0000-000000000002',
-                PlayerSkin::fromVerifiedClientData($appearance),
+                $appearance,
                 'new',
                 'old',
             )])),
             Reliability::ReliableOrdered,
             0,
         )));
-        self::assertTrue($channel->isClosed());
-        self::assertSame([], $channel->drainSkinChanges());
+        self::assertFalse($channel->isClosed());
+        $skinChanges = $channel->drainSkinChanges();
+        self::assertCount(1, $skinChanges);
+        self::assertSame('skin', $skinChanges[0]->skin->skinId);
+        self::assertTrue($skinChanges[0]->skin->persona);
+        self::assertCount(1, $skinChanges[0]->skin->personaPieces);
     }
 
     public function testRecognizedRoutineNotificationsArePostSpawnSafeNoOps(): void
@@ -3136,6 +3167,81 @@ final class BedrockPlayChannelTest extends TestCase
             ),
         );
         self::assertFalse($channel->isClosed());
+    }
+
+    public function testTradeSelectionProjectsBothCurrentTradeSlotFamilies(): void
+    {
+        [$channel, $clientEncryptor, , $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        self::assertTrue($channel->queuePacket(new ContainerOpenPacket(
+            9,
+            ContainerType::Trade,
+            new BlockPosition(0, 0, 0),
+            41,
+        )));
+        $channel->drainOutgoing();
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([
+                new ItemStackRequest(-400, [new CraftRecipeItemStackRequestAction(1, 1)]),
+            ])])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(ApplyInventoryStackRequest::class, $commands[0]);
+        $workstation = $commands[0]->workstation;
+        self::assertNotNull($workstation);
+        self::assertSame(WorkstationRequestType::TRADE, $workstation->type);
+        self::assertSame([
+            ContainerSlotType::TradeIngredientOne->value,
+            ContainerSlotType::TradeIngredientTwo->value,
+            ContainerSlotType::TradeTwoIngredientOne->value,
+            ContainerSlotType::TradeTwoIngredientTwo->value,
+            FullContainerName::CREATED_OUTPUT,
+        ], array_map(
+            static fn(InventorySlotReference $slot): ?int => $slot->responseContainerId,
+            $workstation->responseSlots,
+        ));
+        self::assertSame([6, 7, 4, 5, 50], array_map(
+            static fn(InventorySlotReference $slot): int => $slot->responseSlotId(),
+            $workstation->responseSlots,
+        ));
+    }
+
+    public function testTradeTwoSlotsMapToTheAuthoritativeTradeInventory(): void
+    {
+        [$channel, $clientEncryptor, , $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+        $request = new ItemStackRequest(-401, [new TakeItemStackRequestAction(
+            1,
+            new ItemStackRequestSlot(new FullContainerName(ContainerSlotType::TradeTwoIngredientTwo), 1, 17),
+            new ItemStackRequestSlot(new FullContainerName(FullContainerName::HOTBAR), 0, 0),
+        )]);
+
+        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
+            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([$request])])),
+            Reliability::ReliableOrdered,
+            0,
+        )));
+
+        $commands = $channel->drainCommands();
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(ApplyInventoryStackRequest::class, $commands[0]);
+        $source = $commands[0]->actions[0]->source;
+        self::assertSame(InventoryContainer::OpenedContainer, $source->container);
+        self::assertSame(1, $source->slot);
+        self::assertSame(ContainerSlotType::TradeTwoIngredientTwo->value, $source->responseContainerId);
     }
 
     public function testStonecutterSelectionUsesTheAuthoritativeWorkstationPath(): void

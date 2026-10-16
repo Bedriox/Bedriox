@@ -369,6 +369,12 @@ final class WorldNaturalSpawnRuntime
         return count($this->naturalRuntimeIds);
     }
 
+    /** Shares the authoritative loaded-terrain queries with other bounded spawn sources. */
+    public function environment(): WorldNaturalSpawnEnvironment
+    {
+        return $this->environment;
+    }
+
     /** Restores durable natural-distance ownership after spawn or chunk activation. */
     public function restoreDespawnOwnership(AbstractLivingEntity $entity): void
     {

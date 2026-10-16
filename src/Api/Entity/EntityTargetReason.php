@@ -23,6 +23,7 @@ namespace Bedriox\Api\Entity;
 enum EntityTargetReason: string
 {
     case CLOSEST_PLAYER = 'closest_player';
+    case CLOSEST_ENTITY = 'closest_entity';
     case RETALIATION = 'retaliation';
     case GROUP_PROVOCATION = 'group_provocation';
     case PLUGIN = 'plugin';

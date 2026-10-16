@@ -22,6 +22,7 @@ namespace Bedriox\Server\Tests\Simulation;
 
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Data\BedrockDataSet;
+use Bedriox\Data\CanonicalBlockState;
 use Bedriox\Server\Gameplay\Block\BlockCatalog;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Simulation\ArmSwingSource;
@@ -255,6 +256,86 @@ final class GeneratedBlockInteractionRegressionTest extends TestCase
         self::assertInstanceOf(BlockChanged::class, $changed);
         self::assertEquals($flat->air, $changed->state);
         self::assertSame($flat->air->value, $blocks->blockStateAt($position->x, $position->y, $position->z)->value);
+    }
+
+    public function testBreakingEitherDoorHalfRemovesTheWholeDoor(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $states = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $flat = FixedFlatBlockPalette::fromRegistry($states);
+        $catalog = BlockCatalog::vanilla($states, $data->blockItemMappingRegistry());
+        $items = ItemCatalog::vanilla(
+            $data->itemNetworkRegistry(),
+            $catalog,
+            $data->creativeInventoryRegistry(),
+            $data->blockItemMappingRegistry(),
+        );
+
+        foreach ([0, 1] as $brokenHalf) {
+            $blocks = new World(
+                new WorldMetadata('door-break-regression-' . $brokenHalf, 0),
+                new FlatWorldGenerator($flat),
+                new ChunkRepository(4),
+            );
+            $lower = new BlockPosition(1, 64, 0);
+            $upper = new BlockPosition(1, 65, 0);
+            foreach ([[$lower, 0], [$upper, 1]] as [$position, $upperBit]) {
+                $blocks->setBlockState(
+                    $position->x,
+                    $position->y,
+                    $position->z,
+                    $states->internalId(CanonicalBlockState::from('minecraft:wooden_door', [
+                        'door_hinge_bit' => 0,
+                        'minecraft:cardinal_direction' => 'south',
+                        'open_bit' => 0,
+                        'upper_block_bit' => $upperBit,
+                    ])),
+                );
+            }
+            $simulation = new WorldSimulation(
+                blockWorld: $blocks,
+                blockPalette: $flat,
+                itemCatalog: $items,
+                blockCatalog: $catalog,
+                blockStateRegistry: $states,
+            );
+            $commands = new SimulationCommandFactory();
+            self::assertTrue($simulation->enqueue($commands->join('player', 'identity', 'Player')));
+            $simulation->tick();
+            $target = $brokenHalf === 0 ? $lower : $upper;
+            self::assertTrue($simulation->enqueue($commands->breakBlock(
+                'player',
+                1,
+                BlockBreakAction::Start,
+                $target,
+                1,
+            )));
+            $simulation->tick();
+            self::assertTrue($simulation->enqueue($commands->breakBlock(
+                'player',
+                2,
+                BlockBreakAction::Complete,
+                $target,
+                1,
+            )));
+
+            $events = $simulation->tick()->events;
+            $changed = array_values(array_filter(
+                $events,
+                static fn(object $event): bool => $event instanceof BlockChanged,
+            ));
+            $drops = array_values(array_filter(
+                $events,
+                static fn(object $event): bool => $event instanceof ItemEntitySpawned,
+            ));
+            self::assertCount(2, $changed);
+            self::assertSame($flat->air->value, $blocks->blockStateAt(1, 64, 0)->value);
+            self::assertSame($flat->air->value, $blocks->blockStateAt(1, 65, 0)->value);
+            self::assertCount($brokenHalf === 0 ? 1 : 0, $drops);
+            if ($brokenHalf === 0) {
+                self::assertSame('minecraft:wooden_door', $drops[0]->entity->stack->identifier);
+            }
+        }
     }
 
     public function testAuthoritativeMovementPassesThroughGeneratedVegetation(): void

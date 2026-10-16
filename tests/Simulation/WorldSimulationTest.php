@@ -25,6 +25,7 @@ use Bedriox\Api\Entity\VanillaEntityType;
 use Bedriox\Api\Player\ExperienceChangeCause;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Data\BedrockDataSet;
+use Bedriox\Data\CanonicalBlockState;
 use Bedriox\Protocol\Packet\MultiCraftingRecipe;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
 use Bedriox\Server\Entity\Item\ItemEntityRegistry;
@@ -2613,6 +2614,143 @@ final class WorldSimulationTest extends TestCase
         self::assertInstanceOf(MovementCorrected::class, $unannounced);
         self::assertSame('jump_required', $unannounced->reason);
         self::assertSame(64.0, $unannounced->authoritativePlayer->position->y);
+    }
+
+    public function testGroundedMovementAcceptsTheHeightDifferenceBetweenPathAndGrass(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $states = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $flat = FixedFlatBlockPalette::fromRegistry($states);
+        $generation = GenerationBlockPalette::fromRegistry($states);
+        $blocks = new World(
+            new WorldMetadata('surface-transition-test', 17),
+            new FlatWorldGenerator($flat),
+            new ChunkRepository(4),
+        );
+        $blocks->chunk(new ChunkPosition(0, 0));
+        $blocks->setBlockState(0, 63, 0, $generation->state('minecraft:grass_path'));
+        foreach ([1, 2] as $z) {
+            $blocks->setBlockState(0, 63, $z, $generation->state('minecraft:grass_block'));
+        }
+        foreach ([0, 1] as $upper) {
+            $blocks->setBlockState(
+                0,
+                64 + $upper,
+                1,
+                $states->internalId(CanonicalBlockState::from('minecraft:wooden_door', [
+                    'door_hinge_bit' => 0,
+                    'minecraft:cardinal_direction' => 'east',
+                    'open_bit' => 1,
+                    'upper_block_bit' => $upper,
+                ])),
+            );
+        }
+        $world = new WorldSimulation(
+            spawn: new Position(0.5, 63.9375, 0.5),
+            blockWorld: $blocks,
+            blockPalette: $flat,
+            blockStateRegistry: $states,
+            blockCollisionRegistry: BlockCollisionRegistry::forGenerationPalette($states, $generation),
+        );
+        $factory = new SimulationCommandFactory();
+        $world->enqueue($factory->join('session', 'identity', 'Player'));
+        $world->tick();
+        foreach ([
+            [1, 0.65, 63.953125],
+            [2, 0.8, 63.96875],
+            [3, 1.0, 64.0],
+        ] as [$sequence, $z, $y]) {
+            $world->enqueue($factory->move(
+                'session',
+                $sequence,
+                0.5,
+                $y,
+                $z,
+                0.0,
+                0.0,
+                MovementMode::WALKING,
+                deltaY: $y - $world->snapshot()->players[0]->position->y,
+            ));
+
+            $event = $world->tick()->events[0];
+            self::assertInstanceOf(PlayerMoved::class, $event);
+            self::assertSame(VerticalState::GROUNDED, $event->player->verticalState);
+        }
+        self::assertEqualsWithDelta(1.0, $world->snapshot()->players[0]->position->z, 0.000001);
+        self::assertEqualsWithDelta(64.0, $world->snapshot()->players[0]->position->y, 0.000001);
+    }
+
+    public function testGroundedMovementPassesThroughGeneratedVillageDoorway(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $states = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $flat = FixedFlatBlockPalette::fromRegistry($states);
+        $generation = GenerationBlockPalette::fromRegistry($states);
+        $blocks = new World(
+            new WorldMetadata('village-doorway-test', 17),
+            new FlatWorldGenerator($flat),
+            new ChunkRepository(4),
+        );
+        $blocks->chunk(new ChunkPosition(0, 0));
+        $blocks->setBlockState(0, 63, 1, $generation->state('minecraft:grass_path'));
+        $blocks->setBlockState(1, 63, 1, $generation->state('minecraft:oak_planks'));
+        $blocks->setBlockState(1, 66, 1, $generation->state('minecraft:oak_planks'));
+        foreach ([0, 2] as $z) {
+            $blocks->setBlockState(1, 63, $z, $generation->state('minecraft:oak_planks'));
+            $blocks->setBlockState(1, 64, $z, $generation->state('minecraft:oak_planks'));
+            $blocks->setBlockState(1, 65, $z, $generation->state('minecraft:oak_planks'));
+        }
+        foreach ([0, 1] as $upper) {
+            $blocks->setBlockState(
+                1,
+                64 + $upper,
+                1,
+                $states->internalId(CanonicalBlockState::from('minecraft:wooden_door', [
+                    'door_hinge_bit' => 0,
+                    'minecraft:cardinal_direction' => 'north',
+                    'open_bit' => 1,
+                    'upper_block_bit' => $upper,
+                ])),
+            );
+        }
+        $world = new WorldSimulation(
+            spawn: new Position(0.5, 63.9375, 1.5),
+            blockWorld: $blocks,
+            blockPalette: $flat,
+            blockStateRegistry: $states,
+            blockCollisionRegistry: BlockCollisionRegistry::forGenerationPalette(
+                $states,
+                $generation,
+                $data->voxelShapeRegistry(),
+            ),
+        );
+        $factory = new SimulationCommandFactory();
+        $world->enqueue($factory->join('session', 'identity', 'Player'));
+        $world->tick();
+        foreach ([
+            // Retail first approaches the raised plank to within one player half-width.
+            [1, 0.7, 63.9375, 1.50350952148438],
+            // Captured retail frame at a generated village threshold.
+            [2, 1.0340576171875, 63.99901037597657, 1.47166442871094],
+        ] as [$sequence, $x, $y, $z]) {
+            $world->enqueue($factory->move(
+                'session',
+                $sequence,
+                $x,
+                $y,
+                $z,
+                0.0,
+                0.0,
+                MovementMode::WALKING,
+                deltaY: $y - $world->snapshot()->players[0]->position->y,
+            ));
+
+            $event = $world->tick()->events[0];
+            self::assertInstanceOf(PlayerMoved::class, $event);
+            self::assertSame(VerticalState::GROUNDED, $event->player->verticalState);
+        }
+        self::assertEqualsWithDelta(1.0340576171875, $world->snapshot()->players[0]->position->x, 0.000001);
+        self::assertEqualsWithDelta(64.0, $world->snapshot()->players[0]->position->y, 0.000001);
     }
 
     public function testGroundedJumpEdgeAuthorizesTheFollowingUpwardFrame(): void

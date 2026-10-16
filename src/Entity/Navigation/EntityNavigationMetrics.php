@@ -28,5 +28,13 @@ final readonly class EntityNavigationMetrics
         public int $rejected,
         public int $pending,
         public int $cached,
+        public int $building = 0,
+        public int $buildsQueued = 0,
+        public int $buildsCompleted = 0,
+        public int $cellsScanned = 0,
+        public int $preparationNanoseconds = 0,
+        public int $maximumPreparationNanoseconds = 0,
+        public int $pathsReused = 0,
+        public int $repathsSuppressed = 0,
     ) {}
 }

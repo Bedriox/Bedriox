@@ -68,6 +68,9 @@ use Bedriox\Api\Entity\Value\PandaActivity;
 use Bedriox\Api\Entity\Value\PandaGene;
 use Bedriox\Api\Entity\Value\RabbitVariant;
 use Bedriox\Api\Entity\Value\SlimeSize;
+use Bedriox\Api\Entity\Value\VillagerActivity;
+use Bedriox\Api\Entity\Value\VillagerProfession;
+use Bedriox\Api\Entity\Value\VillagerWorkstation;
 use Bedriox\Api\Entity\Value\WoolColor;
 use Bedriox\Api\Entity\Vanilla\Llama as ApiLlama;
 use Bedriox\Api\Entity\Vanilla\Skeleton as ApiSkeleton;
@@ -78,6 +81,8 @@ use Bedriox\Api\Event\Block\BlockStateChangeReason;
 use Bedriox\Api\Event\Entity\EntityDamageByEntityEvent;
 use Bedriox\Api\Event\Entity\EntityExplodedEvent;
 use Bedriox\Api\Event\Inventory\InventoryCloseReason as ApiInventoryCloseReason;
+use Bedriox\Api\Event\Player\PlayerBedEnterResult;
+use Bedriox\Api\Event\Player\PlayerBedLeaveReason;
 use Bedriox\Api\Event\World\WeatherChangeCause;
 use Bedriox\Api\Inventory\ConsumptionResult as ApiConsumptionResult;
 use Bedriox\Api\Inventory\Container as ApiContainer;
@@ -93,6 +98,7 @@ use Bedriox\Api\Inventory\InventoryView as ApiInventoryView;
 use Bedriox\Api\Inventory\ItemDamageCause as ApiItemDamageCause;
 use Bedriox\Api\Inventory\ItemStack as ApiItemStack;
 use Bedriox\Api\Inventory\ItemUseKind as ApiItemUseKind;
+use Bedriox\Api\Inventory\VanillaItems;
 use Bedriox\Api\Player\FoodLevelChangeCause as ApiFoodLevelChangeCause;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\Player\HealthRegainCause as ApiHealthRegainCause;
@@ -103,6 +109,7 @@ use Bedriox\Api\Processing\CartographyOperation;
 use Bedriox\Api\Processing\SmithingRecipeType;
 use Bedriox\Api\TextFormat;
 use Bedriox\Api\TranslatableMessage;
+use Bedriox\Api\World\BedColor;
 use Bedriox\Api\World\Block as ApiBlock;
 use Bedriox\Api\World\BlockFace as ApiBlockFace;
 use Bedriox\Api\World\BlockPosition as ApiBlockPosition;
@@ -118,6 +125,8 @@ use Bedriox\Api\World\WeatherType;
 use Bedriox\Data\BlockPropertyRegistry;
 use Bedriox\Data\CanonicalBlockState;
 use Bedriox\Data\EntityTypeRegistry;
+use Bedriox\Protocol\Packet\ContainerSlotType;
+use Bedriox\Protocol\Packet\FullContainerName;
 use Bedriox\Server\Effect\VanillaEffectBehavior;
 use Bedriox\Server\Entity\AbstractEntity;
 use Bedriox\Server\Entity\AbstractLivingEntity;
@@ -191,6 +200,9 @@ use Bedriox\Server\Entity\Spawn\Structure\EndCityPlacement;
 use Bedriox\Server\Entity\Spawn\Structure\EndCityShulkerPopulationRuntime;
 use Bedriox\Server\Entity\Spawn\Structure\EndCityShulkerPopulationState;
 use Bedriox\Server\Entity\Spawn\Structure\EndCityShulkerPopulationStateRepository;
+use Bedriox\Server\Entity\Spawn\Structure\VillagePopulationRuntime;
+use Bedriox\Server\Entity\Spawn\Structure\VillagePopulationState;
+use Bedriox\Server\Entity\Spawn\Structure\VillagePopulationStateRepository;
 use Bedriox\Server\Entity\TameableAnimalEntity;
 use Bedriox\Server\Entity\Vanilla\ArmadilloEntity;
 use Bedriox\Server\Entity\Vanilla\AxolotlEntity;
@@ -209,6 +221,7 @@ use Bedriox\Server\Entity\Vanilla\EndermanEntity;
 use Bedriox\Server\Entity\Vanilla\FoxEntity;
 use Bedriox\Server\Entity\Vanilla\GoatEntity;
 use Bedriox\Server\Entity\Vanilla\HorseEntity;
+use Bedriox\Server\Entity\Vanilla\IronGolemEntity;
 use Bedriox\Server\Entity\Vanilla\LlamaEntity;
 use Bedriox\Server\Entity\Vanilla\MagmaCubeEntity;
 use Bedriox\Server\Entity\Vanilla\Misc\LeashKnotEntity;
@@ -236,11 +249,13 @@ use Bedriox\Server\Entity\Vanilla\SnifferEntity;
 use Bedriox\Server\Entity\Vanilla\StrayEntity;
 use Bedriox\Server\Entity\Vanilla\TraderLlamaEntity;
 use Bedriox\Server\Entity\Vanilla\TurtleEntity;
+use Bedriox\Server\Entity\Vanilla\VillagerEntity;
 use Bedriox\Server\Entity\Vanilla\WitchEntity;
 use Bedriox\Server\Entity\Vanilla\WitherSkeletonEntity;
 use Bedriox\Server\Entity\Vanilla\WolfEntity;
 use Bedriox\Server\Entity\Vanilla\ZombieFamilyEntity;
 use Bedriox\Server\Entity\Vanilla\ZombieHorseEntity;
+use Bedriox\Server\Entity\Vanilla\ZombieVillagerEntity;
 use Bedriox\Server\Entity\Vehicle\BoatEntity;
 use Bedriox\Server\Entity\Vehicle\Minecart\AbstractMinecartEntity;
 use Bedriox\Server\Entity\Vehicle\Minecart\ChestMinecartEntity;
@@ -248,6 +263,7 @@ use Bedriox\Server\Entity\Vehicle\Minecart\MinecartRailPhysics;
 use Bedriox\Server\Entity\Vehicle\Minecart\RideableMinecartEntity;
 use Bedriox\Server\Entity\Vehicle\VehicleInventoryOwner;
 use Bedriox\Server\Entity\WorldEntityEnvironment;
+use Bedriox\Server\Gameplay\Block\BedBlockStateResolver;
 use Bedriox\Server\Gameplay\Block\BlockBreakContext;
 use Bedriox\Server\Gameplay\Block\BlockBreakEffect;
 use Bedriox\Server\Gameplay\Block\BlockBreakRules;
@@ -350,6 +366,8 @@ use Bedriox\Server\Gameplay\Projectile\ProjectileRegistry;
 use Bedriox\Server\Gameplay\Projectile\ProjectileState;
 use Bedriox\Server\Gameplay\Projectile\ProjectileType;
 use Bedriox\Server\Gameplay\Projectile\ShulkerBulletGuidance;
+use Bedriox\Server\Gameplay\Trading\VillagerScheduleRules;
+use Bedriox\Server\Gameplay\Trading\VillagerTradeNetworkNbt;
 use Bedriox\Server\Inventory\ContainerInventory as LiveContainerInventory;
 use Bedriox\Server\Inventory\ContainerRevisionMismatchException;
 use Bedriox\Server\Inventory\ResolvedWorldContainer;
@@ -393,6 +411,7 @@ use Bedriox\Server\Simulation\Command\DropItem;
 use Bedriox\Server\Simulation\Command\GiveItem;
 use Bedriox\Server\Simulation\Command\InteractEntity;
 use Bedriox\Server\Simulation\Command\JoinPlayer;
+use Bedriox\Server\Simulation\Command\LeaveBed;
 use Bedriox\Server\Simulation\Command\MountPlayer;
 use Bedriox\Server\Simulation\Command\MovePlayer;
 use Bedriox\Server\Simulation\Command\PerformEmote;
@@ -507,6 +526,7 @@ use Bedriox\Server\Simulation\Event\PlayerMotionChanged;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
 use Bedriox\Server\Simulation\Event\PlayerPresentationChanged;
 use Bedriox\Server\Simulation\Event\PlayerRespawned;
+use Bedriox\Server\Simulation\Event\PlayerSleepChanged;
 use Bedriox\Server\Simulation\Event\PortalTransferRequested;
 use Bedriox\Server\Simulation\Event\PotionSplashImpacted;
 use Bedriox\Server\Simulation\Event\ProjectileMoved;
@@ -514,25 +534,35 @@ use Bedriox\Server\Simulation\Event\ProjectileRemoved;
 use Bedriox\Server\Simulation\Event\ProjectileSpawned;
 use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
 use Bedriox\Server\Simulation\Event\SignEditorOpened;
+use Bedriox\Server\Simulation\Event\SystemMessageSent;
 use Bedriox\Server\Simulation\Event\TameAttemptPresented;
 use Bedriox\Server\Simulation\Event\TextDisplayActorRemoved;
 use Bedriox\Server\Simulation\Event\TextDisplayActorSpawned;
 use Bedriox\Server\Simulation\Event\TextDisplayActorUpdated;
 use Bedriox\Server\Simulation\Event\TntPrimed;
+use Bedriox\Server\Simulation\Event\VillagerTradeCompleted;
+use Bedriox\Server\Simulation\Event\VillagerTradeOffersUpdated;
 use Bedriox\Server\Simulation\Event\WeatherChanged;
 use Bedriox\Server\Simulation\Event\WorldEvent;
+use Bedriox\Server\Simulation\Event\WorldTimeChanged;
+use Bedriox\Server\Simulation\Spawner\MobSpawnerEnvironmentAdapter;
+use Bedriox\Server\Simulation\Spawner\SpawnerSpawnSiteAdmission;
+use Bedriox\Server\Simulation\Spawner\TrialSpawnerEnvironmentAdapter;
 use Bedriox\Server\Worker\WorkerDispatcher;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\Block\InternalBlockStateId;
+use Bedriox\Server\World\BlockEntity\BedBlockEntity;
 use Bedriox\Server\World\BlockEntity\BlockEntityType;
 use Bedriox\Server\World\BlockEntity\ContainerBlockEntity;
 use Bedriox\Server\World\BlockEntity\ContainerItemStack;
+use Bedriox\Server\World\BlockEntity\MobSpawnerBlockEntity;
 use Bedriox\Server\World\BlockEntity\ShelfBlockEntity;
 use Bedriox\Server\World\BlockEntity\SignBlockEntity;
 use Bedriox\Server\World\BlockEntity\SignText;
 use Bedriox\Server\World\BlockEntity\SimpleBlockEntity;
 use Bedriox\Server\World\BlockEntity\SuspiciousSandBlockEntity;
+use Bedriox\Server\World\BlockEntity\TrialSpawnerBlockEntity;
 use Bedriox\Server\World\BlockPosition;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\Collision\AxisAlignedBox;
@@ -553,8 +583,14 @@ use Bedriox\Server\World\Environment\Fluid\LoadedWorldFluidView;
 use Bedriox\Server\World\Physics\FallingBlockBehavior;
 use Bedriox\Server\World\Physics\FallingBlockBehaviorRegistry;
 use Bedriox\Server\World\Physics\FallingBlockKind;
+use Bedriox\Server\World\Settlement\VillagePointOfInterest;
+use Bedriox\Server\World\Settlement\VillagePointOfInterestIndex;
+use Bedriox\Server\World\Settlement\VillagePointOfInterestType;
+use Bedriox\Server\World\Spawner\MobSpawnerRuntime;
+use Bedriox\Server\World\Spawner\TrialSpawnerRuntime;
 use Bedriox\Server\World\SubChunk;
 use Bedriox\Server\World\World;
+use Bedriox\Server\World\WorldTimeRules;
 use InvalidArgumentException;
 use OverflowException;
 use SplPriorityQueue;
@@ -562,6 +598,10 @@ use SplQueue;
 
 final class WorldSimulation
 {
+    private const int SPAWNER_DISCOVERY_CHUNKS_PER_TICK = 2;
+    private const int SPAWNERS_PER_TICK = 64;
+    private const int ORDINARY_SPAWNER_TICK_INTERVAL = 20;
+
     /** @var array<string, int> */
     private array $lastTickStageNanoseconds = [];
 
@@ -603,6 +643,12 @@ final class WorldSimulation
     private const int MAXIMUM_PARTICLES_PER_WORLD_PER_TICK = 1_024;
     private const int MAXIMUM_DISPLAY_VISIBILITY_CHECKS_PER_TICK = 256;
     private const int FIRST_DISPLAY_RUNTIME_ID = 4_000_000_000;
+    private const int SLEEP_DELAY_TICKS = 60;
+    private const int NIGHT_START_TICK = 13_000;
+    private const int SUNRISE_TICK = 23_000;
+    private const int SLEEPING_PERCENTAGE = 100;
+
+    private ?int $sleepRequirementMetTick = null;
 
     /** @var SplQueue<WorldCommand> */
     private SplQueue $commands;
@@ -636,6 +682,8 @@ final class WorldSimulation
     private readonly ?BlockToolTransformRegistry $blockToolTransforms;
 
     private readonly ?DoorBlockStateResolver $doorStates;
+
+    private readonly ?BedBlockStateResolver $bedStates;
 
     private readonly ?InteractiveBlockStateResolver $interactiveBlockStates;
 
@@ -719,16 +767,52 @@ final class WorldSimulation
 
     private readonly ?WorldNaturalSpawnRuntime $naturalSpawns;
 
+    private readonly ?SpawnerSpawnSiteAdmission $spawnerSpawnAdmission;
+
     private readonly ?DriedGhastHydrationRuntime $driedGhastHydration;
 
     private readonly ?BastionBrutePopulationRuntime $bastionBrutePopulation;
 
     private readonly ?EndCityShulkerPopulationRuntime $endCityShulkerPopulation;
 
+    private readonly ?VillagePopulationRuntime $villagePopulation;
+
+    private readonly VillagePointOfInterestIndex $villagePointsOfInterest;
+
+    private int $villagerScheduleCursor = 0;
+
+    /** @var array<string, true> Villagers whose durable workstation claim has been rebound. */
+    private array $knownVillagerWorkstationClaims = [];
+
+    private int $villagerClaimCleanupCursor = 0;
+
+    /** @var array<string, array{position: BlockPosition, closeAt: int, villagerId: string}> */
+    private array $villagerOpenedDoors = [];
+
+    private readonly ?MobSpawnerRuntime $mobSpawners;
+
+    private readonly ?TrialSpawnerRuntime $trialSpawners;
+
+    /** @var array<string, BlockPosition> */
+    private array $knownSpawnerPositions = [];
+
+    /** @var array<string, int> Last coalesced ordinary-spawner advance tick by block position. */
+    private array $ordinarySpawnerTicks = [];
+
+    /** @var array<string, int> Last relative-deadline advance tick by trial-spawner position. */
+    private array $trialSpawnerTicks = [];
+
+    private int $spawnerDiscoveryCursor = 0;
+
+    private int $spawnerTickCursor = 0;
+
     private readonly ShulkerAttachmentResolver $shulkerAttachments;
 
     /** @var array<string, true> Loaded End chunks already admitted for structure population. */
     private array $knownEndPopulationChunks = [];
+
+    /** @var array<string, true> Loaded Overworld chunks already admitted for village population. */
+    private array $knownVillagePopulationChunks = [];
 
     private readonly HoglinRepellentIndex $hoglinRepellents;
 
@@ -1244,6 +1328,64 @@ final class WorldSimulation
                 $this->pluginEvents?->resolveWorld($worldName, $this->dimension)
                 ?? ($worldName === $this->worldId ? $this->fallbackPublicWorld : null),
         );
+        $this->mobSpawners = $blockWorld === null ? null : new MobSpawnerRuntime(
+            new MobSpawnerEnvironmentAdapter(
+                fn(string $identifier): ?EntityType => $this->entityDefinitions->get($identifier)?->definition->type,
+                fn(string $worldName, BlockPosition $position, int $range): bool =>
+                    $this->hasSpawnerPlayer($worldName, $position, $range),
+                fn(string $worldName, BlockPosition $position, string $identifier, int $range): int =>
+                    $this->spawnerNearbyEntityCount($worldName, $position, $identifier, $range),
+                fn(string $worldName, BlockPosition $position): bool =>
+                    $this->allowSpawnerActivation($worldName, $position, false, false),
+                fn(string $worldName, BlockPosition $spawner, string $identifier, Position $position): bool =>
+                    $this->allowSpawnerSpawn($worldName, $spawner, $identifier, $position, false, false),
+                fn(EntitySpawnRequest $request): EntitySpawnOutcome => $this->spawnEntity($request),
+            ),
+        );
+        $this->trialSpawners = $blockWorld === null ? null : new TrialSpawnerRuntime(
+            new TrialSpawnerEnvironmentAdapter(
+                fn(string $identifier): ?EntityType => $this->entityDefinitions->get($identifier)?->definition->type,
+                fn(string $worldName, BlockPosition $position, int $range): array =>
+                    $this->spawnerParticipantIds($worldName, $position, $range),
+                /** @param list<string> $entityIds */
+                fn(array $entityIds): array => $this->activeSpawnerEntityIds($entityIds),
+                fn(string $worldName, BlockPosition $position, bool $ominous): bool =>
+                    $this->allowSpawnerActivation($worldName, $position, true, $ominous),
+                fn(
+                    string $worldName,
+                    BlockPosition $position,
+                    \Bedriox\Api\World\Spawner\TrialSpawnerPhase $oldPhase,
+                    \Bedriox\Api\World\Spawner\TrialSpawnerPhase $newPhase,
+                    bool $ominous,
+                ): bool => $this->allowTrialSpawnerPhaseChange(
+                    $worldName,
+                    $position,
+                    $oldPhase,
+                    $newPhase,
+                    $ominous,
+                ),
+                fn(
+                    string $worldName,
+                    BlockPosition $spawner,
+                    string $identifier,
+                    Position $position,
+                    bool $ominous,
+                ): bool => $this->allowSpawnerSpawn(
+                    $worldName,
+                    $spawner,
+                    $identifier,
+                    $position,
+                    true,
+                    $ominous,
+                ),
+                fn(EntitySpawnRequest $request): EntitySpawnOutcome => $this->spawnEntity($request),
+                fn(string $worldName, BlockPosition $position, string $participantId, bool $ominous): bool =>
+                    $this->ejectTrialSpawnerReward($worldName, $position, $participantId, $ominous),
+                function (string $worldName, BlockPosition $position, array $participantIds, bool $ominous): void {
+                    $this->completeTrialSpawner($worldName, $position, $participantIds, $ominous);
+                },
+            ),
+        );
         $this->leashes = new LeashAttachmentRegistry($this->players, $this->entityRuntime->registry());
         $this->navigation = $collisionQuery !== null && $navigationWorkers !== null
             ? new AsyncNavigationCoordinator(
@@ -1306,6 +1448,10 @@ final class WorldSimulation
                 worldName: $this->worldId,
             )
             : null;
+        $naturalSpawnEnvironment = $this->naturalSpawns?->environment();
+        $this->spawnerSpawnAdmission = $naturalSpawnEnvironment === null
+            ? null
+            : new SpawnerSpawnSiteAdmission($naturalSpawnEnvironment, $this->entityDefinitions);
         $this->hoglinRepellents = new HoglinRepellentIndex();
         $this->driedGhastHydration = $blockWorld !== null && $blockStateRegistry !== null
             ? new DriedGhastHydrationRuntime(
@@ -1314,6 +1460,7 @@ final class WorldSimulation
             )
             : null;
         $bastionStore = $blockWorld?->transientEntityPersistenceStore();
+        $this->villagePointsOfInterest = new VillagePointOfInterestIndex();
         if ($this->dimension === DimensionType::NETHER && $blockWorld !== null) {
             $bastionRepository = $bastionStore === null
                 ? null
@@ -1341,6 +1488,19 @@ final class WorldSimulation
             );
         } else {
             $this->endCityShulkerPopulation = null;
+        }
+        if ($this->dimension === DimensionType::OVERWORLD && $blockWorld !== null) {
+            $villageRepository = $bastionStore === null
+                ? null : new VillagePopulationStateRepository($bastionStore);
+            $this->villagePopulation = new VillagePopulationRuntime(
+                $villageRepository?->load() ?? new VillagePopulationState(),
+                fn(EntitySpawnRequest $request): EntitySpawnOutcome => $this->spawnEntity($request),
+                fn(ChunkPosition $chunk): array => $blockWorld->villageMarkersInChunk($chunk),
+                $villageRepository,
+                $this->villagePointsOfInterest,
+            );
+        } else {
+            $this->villagePopulation = null;
         }
         $this->fallingBlocks = FallingBlockBehaviorRegistry::vanilla();
         if ($blockWorld !== null && $blockStateRegistry !== null && $blockCollisionRegistry !== null) {
@@ -1387,6 +1547,7 @@ final class WorldSimulation
             ? null
             : new BlockToolTransformRegistry($blockStateRegistry);
         $this->doorStates = $blockStateRegistry === null ? null : new DoorBlockStateResolver($blockStateRegistry);
+        $this->bedStates = $blockStateRegistry === null ? null : new BedBlockStateResolver($blockStateRegistry);
         $this->interactiveBlockStates = $blockStateRegistry === null
             ? null
             : new InteractiveBlockStateResolver($blockStateRegistry);
@@ -1778,10 +1939,14 @@ final class WorldSimulation
         $environmentStartedNanoseconds = hrtime(true);
         array_push($events, ...$this->advanceNetherLifecycle());
         $this->advanceEndStructurePopulation();
+        $this->advanceVillagePopulation();
+        $this->advanceVillagerSchedules();
+        $this->advanceSpawners();
         array_push($events, ...$this->advanceEnvironmentalBlocks());
         array_push($events, ...$this->advanceRandomBlockTicks());
         array_push($events, ...$this->advancePressurePlates());
         array_push($events, ...$this->advanceWeather());
+        array_push($events, ...$this->advanceSleepingPlayers());
         $stages['environment'] = hrtime(true) - $environmentStartedNanoseconds;
         array_push($events, ...$this->advancePlayerEnvironment());
         array_push($events, ...$this->advanceNutrition());
@@ -1901,6 +2066,9 @@ final class WorldSimulation
         $nextStageNanoseconds = hrtime(true);
         $stages['natural_entities'] = $nextStageNanoseconds - $stageCompletedNanoseconds;
         $stageCompletedNanoseconds = $nextStageNanoseconds;
+        $navigationStartedNanoseconds = hrtime(true);
+        $this->navigation?->advance($this->tick);
+        $stages['navigation_preparation'] = hrtime(true) - $navigationStartedNanoseconds;
         array_push($events, ...$this->advanceGeneralEntities());
         array_push($events, ...$this->closeInvalidEntityContainers());
         array_push($events, ...$this->reconcileDisplayVisibility());
@@ -2196,6 +2364,32 @@ final class WorldSimulation
     {
         $outcome = $this->entityRuntime->spawn($request);
         if ($outcome->entity instanceof AbstractLivingEntity) {
+            if ($outcome->entity instanceof VillagerEntity && $this->pluginEvents !== null) {
+                $profession = $outcome->entity->getProfession();
+                if ($profession !== VillagerProfession::UNEMPLOYED) {
+                    $selectedProfession = $this->pluginEvents->villagerProfessionChange(
+                        $outcome->entity,
+                        VillagerProfession::UNEMPLOYED,
+                        $profession,
+                    );
+                    if ($selectedProfession === null) {
+                        $outcome->entity->setProfession(VillagerProfession::UNEMPLOYED);
+                    } else {
+                        $outcome->entity->setProfession($selectedProfession);
+                        $this->pluginEvents->villagerProfessionChanged(
+                            $outcome->entity,
+                            VillagerProfession::UNEMPLOYED,
+                            $selectedProfession,
+                        );
+                    }
+                }
+                $offers = $this->pluginEvents->villagerOffersPrepare(
+                    $outcome->entity,
+                    $outcome->entity->getTrades(),
+                );
+                $outcome->entity->replaceTrades($offers);
+                $this->pluginEvents->villagerOffersPrepared($outcome->entity, $offers);
+            }
             $this->naturalSpawns?->restoreDespawnOwnership($outcome->entity);
             if ($this->entityPersistence !== null && $outcome->entity->isPersistent()) {
                 $this->entityPersistence->registerSpawned($outcome->entity);
@@ -3832,6 +4026,7 @@ final class WorldSimulation
             $this->advanceLlamaCaravans();
         }
         array_push($events, ...$this->advanceLandAnimalPredation());
+        array_push($events, ...$this->advanceZombieVillagerPredation());
         $this->advanceFoxDefenseAndAvoidance();
         array_push($events, ...$this->advanceGoatRams());
         $this->applyHoglinRepellentAvoidance();
@@ -4087,6 +4282,9 @@ final class WorldSimulation
             }
         }
         foreach ($tick->died as $entity) {
+            if ($entity instanceof VillagerEntity && $this->transformKilledVillager($entity)) {
+                continue;
+            }
             if ($entity instanceof \Bedriox\Server\Entity\Vanilla\End\EnderDragonEntity) {
                 $this->endEncounter?->confirmDragonDeath($entity->getUniqueId());
             }
@@ -4804,6 +5002,154 @@ final class WorldSimulation
         }
 
         return $events;
+    }
+
+    /** @return list<WorldEvent> */
+    private function advanceZombieVillagerPredation(): array
+    {
+        if ($this->tick % 5 !== 0) {
+            return [];
+        }
+        $events = [];
+        foreach ($this->entityRuntime->registry()->all() as $zombie) {
+            if (!$zombie instanceof AbstractMobEntity || !$zombie instanceof ApiZombie || !$zombie->isAlive()) {
+                continue;
+            }
+            $villager = null;
+            $distance = PHP_FLOAT_MAX;
+            foreach ($this->entityRuntime->registry()->nearby(
+                $zombie->getWorldName(),
+                $zombie->internalPosition(),
+                35.0,
+                24,
+            ) as $candidate) {
+                if (!$candidate instanceof VillagerEntity || !$candidate->isAlive()) {
+                    continue;
+                }
+                $candidateDistance = $zombie->internalPosition()->distanceTo($candidate->internalPosition());
+                if ($candidateDistance < $distance) {
+                    $villager = $candidate;
+                    $distance = $candidateDistance;
+                }
+            }
+            if (!$villager instanceof VillagerEntity) {
+                continue;
+            }
+            $nearestPlayer = $zombie->aiRuntime()->memory()->get(VanillaAiMemories::nearestPlayer(), $this->tick);
+            if ($nearestPlayer instanceof AiPlayerSnapshot
+                && $zombie->internalPosition()->distanceTo($nearestPlayer->position) <= $distance) {
+                continue;
+            }
+            if ($this->pluginEvents !== null) {
+                $previous = $this->entityTargets[$zombie->getRuntimeId()] ?? null;
+                if (self::entityTargetKey($previous) !== self::entityTargetKey($villager)) {
+                    $targetEvent = $this->pluginEvents->entityTarget(
+                        $zombie,
+                        $previous,
+                        $villager,
+                        EntityTargetReason::CLOSEST_ENTITY,
+                    );
+                    if ($targetEvent->isCancelled() || $targetEvent->target() !== $villager) {
+                        continue;
+                    }
+                    $this->entityTargets[$zombie->getRuntimeId()] = $villager;
+                    $this->pluginEvents->entityTargetChanged(
+                        $zombie,
+                        $previous,
+                        $villager,
+                        EntityTargetReason::CLOSEST_ENTITY,
+                    );
+                }
+            }
+            $villager->setSleeping(false);
+            $villager->setActivity(VillagerActivity::PANIC);
+            if ($distance > 1.8) {
+                HorizontalSteering::toward($zombie, $villager->internalPosition(), 0.20, $this->tick, $this->entityAiWorld);
+                $zombie->suppressAiMovementUntil($this->tick + 5);
+                continue;
+            }
+            if ($this->tick <= ($this->entityInvulnerableUntilTicks[$villager->getRuntimeId()] ?? -1)) {
+                continue;
+            }
+            $proposedDamage = $this->entityMeleeDamage($zombie, 3.0);
+            $damageEvent = $this->pluginEvents?->entityDamage(
+                $villager,
+                ApiEntityDamageCause::ATTACK,
+                $proposedDamage,
+                $zombie,
+            );
+            if ($this->pluginEvents !== null && $damageEvent === null) {
+                continue;
+            }
+            $result = $this->damageLivingEntity($villager, $damageEvent?->damage() ?? $proposedDamage);
+            if ($result === null || $result->appliedDamage <= 0.0) {
+                continue;
+            }
+            if ($damageEvent !== null) {
+                $this->entityLastDamageEvents[$villager->getRuntimeId()] = $damageEvent;
+            }
+            $this->entityInvulnerableUntilTicks[$villager->getRuntimeId()] =
+                $this->tick + CombatRules::DAMAGE_IMMUNITY_TICKS;
+            $events[] = new EntityActorDamaged($villager, $this->tick, $this->players->recipients());
+        }
+
+        return $events;
+    }
+
+    private function transformKilledVillager(VillagerEntity $villager): bool
+    {
+        $lastDamage = $this->entityLastDamageEvents[$villager->getRuntimeId()] ?? null;
+        if (!$lastDamage instanceof EntityDamageByEntityEvent || !$lastDamage->damager instanceof ApiZombie) {
+            return false;
+        }
+        $difficulty = $this->blockWorld?->difficulty() ?? 2;
+        $convert = match ($difficulty) {
+            3 => true,
+            2 => $this->dropRandom->integer(0, 1) === 1,
+            default => false,
+        };
+        if (!$convert) {
+            return false;
+        }
+        $targetType = VanillaEntityType::ZOMBIE_VILLAGER;
+        if ($this->pluginEvents !== null) {
+            $targetType = $this->pluginEvents->transformEntity(
+                $villager,
+                $targetType,
+                EntityTransformReason::INFECTION,
+            );
+            if ($targetType === null) {
+                return false;
+            }
+        }
+        $outcome = $this->spawnEntity(new EntitySpawnRequest(
+            $targetType,
+            SpawnCause::TRANSFORMATION,
+            $villager->getWorldName(),
+            $villager->internalPosition(),
+            $villager->getYaw(),
+            $villager->getPitch(),
+        ));
+        if (!$outcome->entity instanceof AbstractLivingEntity) {
+            return false;
+        }
+        $transformed = $outcome->entity;
+        if ($transformed instanceof ZombieVillagerEntity) {
+            $transformed->preserveVillagerState($villager);
+        }
+        $runtimeId = $villager->getRuntimeId();
+        $this->villagePointsOfInterest->releaseForVillager($villager->getUniqueId());
+        unset($this->knownVillagerWorkstationClaims[$villager->getUniqueId()]);
+        array_push(
+            $this->deferredEvents,
+            ...$this->closeEntityContainers($runtimeId, ApiInventoryCloseReason::ENTITY_REMOVED),
+        );
+        $this->entityPersistence?->forgetEntity($villager->getUniqueId());
+        $this->entityRuntime->remove($runtimeId);
+        unset($this->entityLastDamageEvents[$runtimeId], $this->entityInvulnerableUntilTicks[$runtimeId]);
+        $this->pluginEvents?->entityTransformed($villager, $transformed, EntityTransformReason::INFECTION);
+
+        return true;
     }
 
     private function armadilloIsThreatened(ArmadilloEntity $armadillo): bool
@@ -6234,6 +6580,10 @@ final class WorldSimulation
             : null;
         $candidateTarget = $candidatePlayer === null ? null : $this->pluginEvents->playerView($candidatePlayer);
         $previousTarget = $this->entityTargets[$runtimeId] ?? null;
+        if ($candidateTarget === null && $previousTarget instanceof VillagerEntity
+            && $entity instanceof ApiZombie && $previousTarget->isAlive()) {
+            return;
+        }
         if (self::entityTargetKey($previousTarget) === self::entityTargetKey($candidateTarget)) {
             return;
         }
@@ -6372,14 +6722,19 @@ final class WorldSimulation
             $directionZ = cos($yaw);
         }
         $movement = $target->movement;
+        [$horizontalKnockback, $verticalKnockback] = match (true) {
+            $attacker instanceof HoglinEntity => [0.9, 0.75],
+            $attacker instanceof IronGolemEntity => [0.52, 0.39],
+            default => [CombatRules::KNOCKBACK_FORCE, CombatRules::KNOCKBACK_FORCE],
+        };
         [$motionX, $motionY, $motionZ] = $this->resolveKnockback(
             $movement->velocityX,
             $movement->verticalVelocity,
             $movement->velocityZ,
             $directionX,
             $directionZ,
-            $attacker instanceof HoglinEntity ? 0.9 : CombatRules::KNOCKBACK_FORCE,
-            $attacker instanceof HoglinEntity ? 0.75 : CombatRules::KNOCKBACK_FORCE,
+            $horizontalKnockback,
+            $verticalKnockback,
             $movement->verticalState === VerticalState::GROUNDED,
             $target->inventory->knockbackResistance(),
         );
@@ -7952,6 +8307,7 @@ final class WorldSimulation
             $command instanceof ClearPlayerEffects => $this->clearPlayerEffects($command),
             $command instanceof SetPlayerExperience => $this->setPlayerExperience($command),
             $command instanceof RespawnPlayer => $this->respawn($command),
+            $command instanceof LeaveBed => $this->leaveBed($command),
             $command instanceof AcknowledgeRespawn => $this->acknowledgeRespawn($command),
             $command instanceof UseItem => $this->useItem($command),
             $command instanceof ReleaseItem => $this->releaseItem($command),
@@ -8653,6 +9009,9 @@ final class WorldSimulation
         }
         $movement->sequence = $command->sequence;
         $movement->clientTick = $command->clientTick;
+        if ($player->isSleeping()) {
+            return new MovementCorrected($player->snapshot(), 'sleeping', clientTick: $command->clientTick);
+        }
         if ($player->isImmobile()) {
             return new MovementCorrected($player->snapshot(), 'plugin_immobile', clientTick: $command->clientTick);
         }
@@ -8757,16 +9116,34 @@ final class WorldSimulation
             $stepped = $resolved->stepped;
             $collidedVertically = $resolved->collidedY;
             $terrainConstrained = $position->distanceTo($command->position) > $this->limits->flatGroundTolerance;
+            if ($stepped
+                && abs($position->x - $command->position->x) <= $this->limits->flatGroundTolerance
+                && abs($position->z - $command->position->z) <= $this->limits->flatGroundTolerance
+                && abs($position->y - $command->position->y)
+                    <= PlayerCollisionShape::STEP_HEIGHT + $this->limits->flatGroundTolerance) {
+                $terrainConstrained = false;
+            }
         }
+        $groundedSurfaceRise = $grounded
+            && $position->y > $movement->position->y + $this->limits->flatGroundTolerance
+            && $position->y <= $movement->position->y
+                + PlayerCollisionShape::STEP_HEIGHT
+                + $this->limits->flatGroundTolerance;
         if (
             !$flying
             && $wasGrounded
             && $position->y > $movement->position->y + $this->limits->flatGroundTolerance
             && !$stepped
+            && !$groundedSurfaceRise
             && !$command->jumpRequested
             && $this->tick > $movement->jumpAuthorizedUntilTick
         ) {
-            return new MovementCorrected($player->snapshot(), 'jump_required', clientTick: $command->clientTick);
+            return new MovementCorrected(
+                $player->snapshot(),
+                'jump_required',
+                clientTick: $command->clientTick,
+                attemptedPosition: $command->position,
+            );
         }
 
         if (
@@ -8868,6 +9245,7 @@ final class WorldSimulation
                 $this->players->recipients($player->sessionId),
                 $postureChanged,
                 $command->clientTick,
+                $command->position,
             );
         }
         if ($grounded) {
@@ -9174,6 +9552,15 @@ final class WorldSimulation
             return new CommandRejected($command->session, 'plugin_cancelled');
         }
         $applied = $player->vitals->applyDamage($damage);
+        if ($applied > 0.0) {
+            $sleepEvent = $this->wakePlayer(
+                $player,
+                $player->vitals->health > 0.0 ? PlayerBedLeaveReason::DAMAGE : PlayerBedLeaveReason::DEATH,
+            );
+            if ($sleepEvent !== null) {
+                $this->deferredEvents[] = $sleepEvent;
+            }
+        }
         if ($applied > 0.0 && $player->effects->has(EffectType::INFESTED)) {
             $this->triggerInfestedSpawn($player->movement->position);
         }
@@ -9739,6 +10126,7 @@ final class WorldSimulation
         if ($target instanceof MutableAngerState
             && !($target instanceof PolarBearEntity && $target->isBaby())
             && !($target instanceof PandaEntity && $target->getExpressedGene() !== PandaGene::AGGRESSIVE)
+            && !($target instanceof IronGolemEntity && $target->isPlayerCreated())
             && (!($target instanceof Tameable) || $target->getOwnerUniqueId() !== $attacker->identity->uuid)) {
             $target->setAngerTargetUniqueId($attacker->identity->uuid, $this->dropRandom->integer(400, 800));
             if ($target instanceof NetherAngerableEntity) {
@@ -10100,6 +10488,46 @@ final class WorldSimulation
             return new CommandRejected($command->session, 'plugin_cancelled');
         }
         $heldBefore = $player->inventory->selectedStack();
+        if ($target instanceof VillagerEntity) {
+            if ($target->isBaby() || !$target->getProfession()->canTrade() || $target->getTrades()->offers === []) {
+                return new EntityInteracted($command->session, $target->getRuntimeId(), $command->interaction);
+            }
+            if (!$target->beginTrading($player->runtimeActorId)) {
+                return new CommandRejected($command->session, 'villager_busy');
+            }
+            $inventory = new SimpleContainerInventory(
+                'villager_trade:' . $target->getRuntimeId() . ':' . $player->identity->uuid,
+                3,
+            );
+            $opened = $this->openContainerInventory(
+                $player,
+                ApiContainerType::TRADE,
+                $inventory,
+                title: $target->nameTag() === '' ? 'Villager' : $target->nameTag(),
+                entityRuntimeId: $target->getRuntimeId(),
+            );
+            if ($opened instanceof ContainerOpened) {
+                $tradeSession = $this->openContainers[self::sessionKey($player->sessionId)] ?? null;
+                if ($tradeSession instanceof PlayerContainerSession) {
+                    $tradeSession->tradeGeneration = $target->getTrades()->generation;
+                    $tradeSession->replaceTradeOfferNetworkMap($target->getTrades());
+                }
+                $this->deferredEvents[] = new VillagerTradeOffersUpdated(
+                    $player->sessionId,
+                    $opened->windowId,
+                    $target->getVillagerLevel()->value - 1,
+                    $target->getRuntimeId(),
+                    $player->runtimeActorId,
+                    $target->nameTag() === '' ? 'Villager' : $target->nameTag(),
+                    VillagerTradeNetworkNbt::encode($target->getTrades(), $target->getVillagerLevel()),
+                );
+                $this->pluginEvents?->entityInteracted($player, $target, $command->interaction, $heldBefore);
+            } else {
+                $target->endTrading($player->runtimeActorId);
+            }
+
+            return $opened;
+        }
         if ($target instanceof LeashKnotEntity) {
             if (!$this->removeLeashKnot($target, true, true, LeashDetachReason::INTERACTION)) {
                 return new CommandRejected($command->session, 'leash_knot_busy');
@@ -12239,6 +12667,10 @@ final class WorldSimulation
         if ($player === null) {
             return new CommandRejected($command->session, 'not_joined');
         }
+        $sleepEvent = $this->wakePlayer($player, PlayerBedLeaveReason::DISCONNECT);
+        if ($sleepEvent !== null) {
+            $this->deferredEvents[] = $sleepEvent;
+        }
         $remainingRecipients = $this->players->recipients($player->sessionId);
         foreach ($this->leashes->attachmentsToPlayer($player) as $animal) {
             if (!$this->detachAnimalLeash(
@@ -12407,6 +12839,7 @@ final class WorldSimulation
                     $command->responseMode,
                     $command->authoritativeCreativeStack,
                     $command->crafting,
+                    $command->workstation,
                 ),
                 $command instanceof DropItem => $this->validator->dropItem(
                     $command->session,
@@ -12551,6 +12984,7 @@ final class WorldSimulation
                     $command->cause,
                 ),
                 $command instanceof RespawnPlayer => $this->validator->respawn($command->session),
+                $command instanceof LeaveBed => $this->validator->leaveBed($command->session),
                 $command instanceof AcknowledgeRespawn => $this->validator->acknowledgeRespawn($command->session),
                 $command instanceof UseItem => $this->validator->useItem($command->session, $command->hotbarSlot),
                 $command instanceof ReleaseItem => $this->validator->releaseItem($command->session, $command->hotbarSlot),
@@ -13095,6 +13529,10 @@ final class WorldSimulation
         $identifier = $this->blockIdentifier($state->value);
         $doorCompanionPosition = null;
         $doorCompanionState = null;
+        $bedCompanionPosition = null;
+        $bedCompanionState = null;
+        $bedEntity = $this->blockWorld->blockEntityAt($position);
+        $brokenCanonical = null;
         if ($this->blockStateRegistry !== null) {
             $brokenCanonical = $this->blockStateRegistry->state($state);
             $brokenProperties = $brokenCanonical->properties();
@@ -13120,6 +13558,26 @@ final class WorldSimulation
                     // A door half on the build boundary has no valid companion coordinate.
                 }
             }
+            if ($brokenCanonical->identifier() === 'minecraft:bed' && $this->bedStates !== null) {
+                try {
+                    $candidatePosition = $this->bedStates->otherHalf($position, $brokenCanonical);
+                    $candidateState = $this->blockWorld->loadedBlockStateAt(
+                        $candidatePosition->x,
+                        $candidatePosition->y,
+                        $candidatePosition->z,
+                    );
+                    $candidate = $candidateState === null ? null : $this->blockStateRegistry->state($candidateState);
+                    if ($candidate !== null && $this->bedStates->isMatchingHalf($brokenCanonical, $candidate)) {
+                        $bedCompanionPosition = $candidatePosition;
+                        $bedCompanionState = $candidateState;
+                        if (!$bedEntity instanceof BedBlockEntity) {
+                            $bedEntity = $this->blockWorld->blockEntityAt($candidatePosition);
+                        }
+                    }
+                } catch (InvalidArgumentException) {
+                    // An incomplete bed at the build boundary is still safe to remove.
+                }
+            }
         }
         $heldType = $this->heldItemType($player);
         $survivalBreak = $player->gameMode() === GameMode::SURVIVAL
@@ -13135,6 +13593,11 @@ final class WorldSimulation
                 $heldEnchantments[VanillaEnchantments::FORTUNE] ?? 0,
             )
             : [];
+        if ($brokenCanonical !== null
+            && BlockTagRegistry::contains(BlockTag::DOOR, $brokenCanonical->identifier())
+            && ($brokenCanonical->properties()['upper_block_bit'] ?? 0) === 1) {
+            $resolvedDrops = [];
+        }
         $drops = array_map(
             static fn(\Bedriox\Server\Gameplay\Block\BlockDrop $drop): ApiItemStack => new ApiItemStack(
                 $drop->identifier,
@@ -13142,6 +13605,13 @@ final class WorldSimulation
             ),
             $resolvedDrops,
         );
+        if ($survivalBreak && $identifier === 'minecraft:bed') {
+            $drops = [new ApiItemStack(
+                'minecraft:bed',
+                1,
+                auxValue: $bedEntity instanceof BedBlockEntity ? $bedEntity->color->value : BedColor::RED->value,
+            )];
+        }
         if ($this->pluginEvents !== null) {
             $drops = $this->pluginEvents->blockBreak($player, $position, $identifier, $drops);
             if ($drops === null) {
@@ -13195,6 +13665,18 @@ final class WorldSimulation
         if (count($drops) + count($storageDrops) > $this->itemEntities->remainingCapacity()) {
             return new BlockChanged($command->session, $position, $state, [$command->session], $stopsActiveBreak);
         }
+        if ($identifier === 'minecraft:bed') {
+            foreach ($this->players->players() as $sleepingPlayer) {
+                if ($sleepingPlayer->sleepingBed()?->equals($position) !== true
+                    && $sleepingPlayer->sleepingBed()?->equals($bedCompanionPosition ?? $position) !== true) {
+                    continue;
+                }
+                $sleepEvent = $this->wakePlayer($sleepingPlayer, PlayerBedLeaveReason::BED_DESTROYED, false);
+                if ($sleepEvent !== null) {
+                    $this->deferredEvents[] = $sleepEvent;
+                }
+            }
+        }
         $swing = $this->armSwingEvent($player, ArmSwingSource::Mining);
         if ($swing !== null) {
             $this->deferredEvents[] = $swing;
@@ -13212,6 +13694,17 @@ final class WorldSimulation
                     $doorCompanionState,
                 );
             }
+            if ($bedCompanionPosition !== null) {
+                $this->setBlockStateAndSchedule($bedCompanionPosition, $this->blockPalette->air);
+                $this->deferredEvents[] = new BlockChanged(
+                    $command->session,
+                    $bedCompanionPosition,
+                    $this->blockPalette->air,
+                    $this->players->recipients(),
+                    false,
+                    $bedCompanionState,
+                );
+            }
         } catch (OverflowException) {
             return new BlockChanged(
                 $command->session,
@@ -13223,6 +13716,12 @@ final class WorldSimulation
         }
         $this->closeContainersAt($position, ApiInventoryCloseReason::BLOCK_REMOVED);
         $this->removeStorageBlockEntity($position, $storageEntity);
+        if ($identifier === 'minecraft:bed') {
+            $this->blockWorld->removeBlockEntity($position);
+            if ($bedCompanionPosition !== null) {
+                $this->blockWorld->removeBlockEntity($bedCompanionPosition);
+            }
+        }
         $this->refreshPlayerGroundStates();
         if ($survivalBreak) {
             $experience = BlockDropRules::experience($blockType, $heldType, $this->dropRandom, $silkTouch);
@@ -13355,7 +13854,14 @@ final class WorldSimulation
                             && $session->inventory->belongsTo($entity))))
                 || (($entity instanceof HorseFamilyEntity || $entity instanceof UndeadHorseEntity)
                     && $session->inventory instanceof HorseContainerInventory
-                    && $session->inventory->belongsTo($entity));
+                    && $session->inventory->belongsTo($entity))
+                || ($entity instanceof VillagerEntity
+                    && $session->type === ApiContainerType::TRADE
+                    && $entity->getActiveTraderRuntimeId() === $player->runtimeActorId
+                    && $session->inventory->identifier()
+                        === 'villager_trade:' . $entity->getRuntimeId() . ':' . $player->identity->uuid
+                    && $session->projection->identifier === $session->inventory->identifier()
+                    && in_array($player->identity->uuid, $session->inventory->viewerUuids(), true));
             if (!$validEntityContainer || $entity->isRemoved()
                 || !$entity instanceof AbstractLivingEntity || !$entity->isAlive()) {
                 $reason = ApiInventoryCloseReason::ENTITY_REMOVED;
@@ -17596,6 +18102,718 @@ final class WorldSimulation
         }
     }
 
+    private function advanceVillagePopulation(): void
+    {
+        if ($this->villagePopulation === null || $this->blockWorld === null) {
+            return;
+        }
+        $loaded = [];
+        $inspected = 0;
+        foreach ($this->blockWorld->loadedChunks() as $chunk) {
+            $key = $chunk->position->key();
+            $loaded[$key] = true;
+            if (isset($this->knownVillagePopulationChunks[$key]) || $inspected >= 8) {
+                continue;
+            }
+            ++$inspected;
+            if ($chunk->finalizationState === \Bedriox\Server\World\ChunkFinalizationState::Done) {
+                $this->villagePopulation->populateFinalizedChunk($this->worldId, $chunk->position);
+                $this->knownVillagePopulationChunks[$key] = true;
+            }
+        }
+        foreach (array_keys($this->knownVillagePopulationChunks) as $key) {
+            if (!isset($loaded[$key])) {
+                unset($this->knownVillagePopulationChunks[$key]);
+            }
+        }
+    }
+
+    /** Advances a bounded rotating villager work schedule and rebinds durable workstation claims. */
+    private function advanceVillagerSchedules(): void
+    {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null || $this->tick % 20 !== 0) {
+            return;
+        }
+        $this->closeExpiredVillagerDoors();
+        $entities = $this->entityRuntime->registry()->all();
+        if ($entities === []) {
+            $this->villagerScheduleCursor = 0;
+            $this->releaseMissingVillagerClaims();
+
+            return;
+        }
+        $count = count($entities);
+        $maximum = min(64, $count);
+        $worldDay = $this->blockWorld->day();
+        $timeOfDay = $this->blockWorld->timeOfDay();
+        $isWorkTime = VillagerScheduleRules::isWorkTime($timeOfDay);
+        $isRestTime = VillagerScheduleRules::isRestTime($timeOfDay);
+        for ($offset = 0; $offset < $maximum; ++$offset) {
+            $entity = $entities[($this->villagerScheduleCursor + $offset) % $count];
+            if (!$entity instanceof VillagerEntity || !$entity->isAlive()) {
+                continue;
+            }
+            $uniqueId = $entity->getUniqueId();
+            $this->advanceVillagerRestSchedule($entity, $isRestTime);
+            $workstation = $entity->getWorkstation();
+            if ($workstation === null) {
+                $entity->setActivity($isRestTime ? VillagerActivity::REST : VillagerActivity::IDLE);
+                continue;
+            }
+            $state = $this->blockWorld->loadedBlockStateAt(
+                $workstation->x,
+                $workstation->y,
+                $workstation->z,
+            );
+            if ($state === null) {
+                continue;
+            }
+            $identifier = $this->blockStateRegistry->state($state)->identifier();
+            $workstationType = VillagerWorkstation::tryFrom($identifier);
+            if ($workstationType?->profession() !== $entity->getProfession()) {
+                $this->villagePointsOfInterest->releaseForVillager(
+                    $uniqueId,
+                    VillagePointOfInterestType::WORKSTATION,
+                );
+                $entity->assignWorkstation(null);
+                continue;
+            }
+            $this->villagePointsOfInterest->register(new VillagePointOfInterest(
+                VillagePointOfInterestType::WORKSTATION,
+                $workstation,
+                $identifier,
+                $entity->getProfession(),
+            ));
+            if (!$this->villagePointsOfInterest->claim($workstation, $uniqueId)) {
+                $entity->assignWorkstation(null);
+                continue;
+            }
+            $this->knownVillagerWorkstationClaims[$uniqueId] = true;
+            if (!$isRestTime) {
+                $entity->setActivity($isWorkTime ? VillagerActivity::WORK : VillagerActivity::IDLE);
+            }
+            if (!$isWorkTime || $entity->isBaby() || !$entity->canRestock($worldDay)) {
+                continue;
+            }
+            $restocked = VillagerScheduleRules::restocked($entity->getTrades());
+            if ($this->pluginEvents !== null) {
+                $restocked = $this->pluginEvents->villagerRestock($entity, $worldDay, $restocked);
+                if ($restocked === null) {
+                    continue;
+                }
+            }
+            $entity->replaceTrades($restocked);
+            $entity->recordRestock($worldDay);
+            $this->pluginEvents?->villagerRestocked($entity, $worldDay, $restocked);
+            $this->refreshVillagerTradeViewers($entity);
+        }
+        $this->villagerScheduleCursor = ($this->villagerScheduleCursor + $maximum) % $count;
+        $this->releaseMissingVillagerClaims();
+    }
+
+    private function advanceVillagerRestSchedule(VillagerEntity $villager, bool $isRestTime): void
+    {
+        $uniqueId = $villager->getUniqueId();
+        if (!$isRestTime) {
+            if ($villager->isSleeping()) {
+                $villager->setSleeping(false);
+            }
+
+            return;
+        }
+        $bed = $villager->getBed();
+        if ($bed === null) {
+            $position = $villager->internalPosition();
+            $point = $this->villagePointsOfInterest->nearestAvailableBed(new BlockPosition(
+                (int) floor($position->x),
+                (int) floor($position->y),
+                (int) floor($position->z),
+            ), 48);
+            if ($point !== null && $this->villagePointsOfInterest->claim($point->position, $uniqueId)) {
+                $bed = $point->position;
+                $villager->assignBed($bed);
+            }
+        }
+        if ($bed === null) {
+            $villager->setActivity(VillagerActivity::REST);
+
+            return;
+        }
+        $state = $this->blockWorld?->loadedBlockStateAt($bed->x, $bed->y, $bed->z);
+        if ($state !== null && $this->blockStateRegistry !== null) {
+            $identifier = $this->blockStateRegistry->state($state)->identifier();
+            if ($identifier !== 'minecraft:bed' && !str_ends_with($identifier, '_bed')) {
+                $this->villagePointsOfInterest->releaseForVillager($uniqueId, VillagePointOfInterestType::BED);
+                $villager->assignBed(null);
+                $villager->setActivity(VillagerActivity::REST);
+
+                return;
+            }
+        }
+        $villager->setActivity(VillagerActivity::REST);
+        $position = $villager->internalPosition();
+        $distance = hypot(hypot($bed->x + 0.5 - $position->x, $bed->z + 0.5 - $position->z), $bed->y - $position->y);
+        if ($distance <= 1.75) {
+            $this->closeVillagerHomeDoors($villager);
+            $villager->setSleeping(true);
+
+            return;
+        }
+        $villager->setSleeping(false);
+        $this->openNearbyVillagerDoor($villager);
+        $villager->requestNavigation(new Position($bed->x + 0.5, (float) $bed->y, $bed->z + 0.5), 0.32);
+        $this->knownVillagerWorkstationClaims[$uniqueId] = true;
+    }
+
+    private function openNearbyVillagerDoor(VillagerEntity $villager): void
+    {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null || $this->doorStates === null) {
+            return;
+        }
+        $position = $villager->internalPosition();
+        $baseX = (int) floor($position->x);
+        $baseY = (int) floor($position->y);
+        $baseZ = (int) floor($position->z);
+        for ($y = $baseY - 1; $y <= $baseY + 1; ++$y) {
+            for ($x = $baseX - 2; $x <= $baseX + 2; ++$x) {
+                for ($z = $baseZ - 2; $z <= $baseZ + 2; ++$z) {
+                    $stateId = $this->blockWorld->loadedBlockStateAt($x, $y, $z);
+                    if ($stateId === null) {
+                        continue;
+                    }
+                    $state = $this->blockStateRegistry->state($stateId);
+                    if (!array_key_exists('upper_block_bit', $state->properties())
+                        || ($state->properties()['open_bit'] ?? 0) === 1
+                        || !$this->doorStates->canPlayerToggle($state)) {
+                        continue;
+                    }
+                    $lower = $state->properties()['upper_block_bit'] === 1
+                        ? new BlockPosition($x, $y - 1, $z)
+                        : new BlockPosition($x, $y, $z);
+                    if ($this->toggleVillagerDoor($lower)) {
+                        $this->villagerOpenedDoors[self::blockPositionKey($lower)] = [
+                            'position' => $lower,
+                            'closeAt' => $this->tick + 60,
+                            'villagerId' => $villager->getUniqueId(),
+                        ];
+                    }
+
+                    return;
+                }
+            }
+        }
+    }
+
+    private function closeExpiredVillagerDoors(): void
+    {
+        foreach ($this->villagerOpenedDoors as $key => $door) {
+            if ($this->tick < $door['closeAt']) {
+                continue;
+            }
+            $occupied = false;
+            $center = new Position($door['position']->x + 0.5, $door['position']->y, $door['position']->z + 0.5);
+            foreach ($this->entityRuntime->registry()->nearby($this->worldId, $center, 1.5, 8) as $entity) {
+                if ($entity instanceof VillagerEntity && $entity->isAlive() && !$entity->isSleeping()) {
+                    $occupied = true;
+                    break;
+                }
+            }
+            if ($occupied) {
+                $this->villagerOpenedDoors[$key]['closeAt'] = $this->tick + 20;
+                continue;
+            }
+            $stateId = $this->blockWorld?->loadedBlockStateAt(
+                $door['position']->x,
+                $door['position']->y,
+                $door['position']->z,
+            );
+            if ($stateId !== null && $this->blockStateRegistry !== null
+                && ($this->blockStateRegistry->state($stateId)->properties()['open_bit'] ?? 0) === 1) {
+                $this->toggleVillagerDoor($door['position']);
+            }
+            unset($this->villagerOpenedDoors[$key]);
+        }
+    }
+
+    private function closeVillagerHomeDoors(VillagerEntity $villager): void
+    {
+        foreach ($this->villagerOpenedDoors as $key => $door) {
+            if ($door['villagerId'] !== $villager->getUniqueId()) {
+                continue;
+            }
+            $stateId = $this->blockWorld?->loadedBlockStateAt(
+                $door['position']->x,
+                $door['position']->y,
+                $door['position']->z,
+            );
+            if ($stateId !== null && $this->blockStateRegistry !== null
+                && ($this->blockStateRegistry->state($stateId)->properties()['open_bit'] ?? 0) === 1) {
+                $this->toggleVillagerDoor($door['position']);
+            }
+            unset($this->villagerOpenedDoors[$key]);
+        }
+    }
+
+    private function toggleVillagerDoor(BlockPosition $lowerPosition): bool
+    {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null || $this->doorStates === null) {
+            return false;
+        }
+        $upperPosition = new BlockPosition($lowerPosition->x, $lowerPosition->y + 1, $lowerPosition->z);
+        $lowerId = $this->blockWorld->loadedBlockStateAt($lowerPosition->x, $lowerPosition->y, $lowerPosition->z);
+        $upperId = $this->blockWorld->loadedBlockStateAt($upperPosition->x, $upperPosition->y, $upperPosition->z);
+        if ($lowerId === null || $upperId === null) {
+            return false;
+        }
+        $lower = $this->blockStateRegistry->state($lowerId);
+        $upper = $this->blockStateRegistry->state($upperId);
+        try {
+            $pair = $this->doorStates->toggle($lower, $upper);
+        } catch (InvalidArgumentException) {
+            return false;
+        }
+        $nextLower = $this->blockStateRegistry->state($pair->lower);
+        $nextUpper = $this->blockStateRegistry->state($pair->upper);
+        if ($this->pluginEvents !== null
+            && (!$this->pluginEvents->allowBlockStateChange(
+                $lowerPosition,
+                $lower->identifier(),
+                $lower->properties(),
+                $nextLower->identifier(),
+                $nextLower->properties(),
+                BlockStateChangeReason::INTERACTION,
+            ) || !$this->pluginEvents->allowBlockStateChange(
+                $upperPosition,
+                $upper->identifier(),
+                $upper->properties(),
+                $nextUpper->identifier(),
+                $nextUpper->properties(),
+                BlockStateChangeReason::INTERACTION,
+            ))) {
+            return false;
+        }
+        $this->setBlockStateAndSchedule($lowerPosition, $pair->lower);
+        $this->setBlockStateAndSchedule($upperPosition, $pair->upper);
+        $this->pluginEvents?->blockStateChanged(
+            $lowerPosition,
+            $lower->identifier(),
+            $lower->properties(),
+            $nextLower->identifier(),
+            $nextLower->properties(),
+            BlockStateChangeReason::INTERACTION,
+        );
+        $this->pluginEvents?->blockStateChanged(
+            $upperPosition,
+            $upper->identifier(),
+            $upper->properties(),
+            $nextUpper->identifier(),
+            $nextUpper->properties(),
+            BlockStateChangeReason::INTERACTION,
+        );
+        $recipients = $this->players->recipients();
+        $this->deferredEvents[] = new BlockChanged('', $lowerPosition, $pair->lower, $recipients);
+        $this->deferredEvents[] = new BlockChanged('', $upperPosition, $pair->upper, $recipients);
+
+        return true;
+    }
+
+    private function releaseMissingVillagerClaims(): void
+    {
+        $uniqueIds = array_keys($this->knownVillagerWorkstationClaims);
+        $count = count($uniqueIds);
+        if ($count === 0) {
+            $this->villagerClaimCleanupCursor = 0;
+
+            return;
+        }
+        $maximum = min(64, $count);
+        for ($offset = 0; $offset < $maximum; ++$offset) {
+            $uniqueId = $uniqueIds[($this->villagerClaimCleanupCursor + $offset) % $count];
+            try {
+                $entity = $this->entityRuntime->registry()->getByUniqueId($uniqueId);
+            } catch (InvalidArgumentException) {
+                $entity = null;
+            }
+            if ($entity instanceof VillagerEntity && $entity->isAlive() && !$entity->isRemoved()) {
+                continue;
+            }
+            $this->villagePointsOfInterest->releaseForVillager($uniqueId);
+            unset($this->knownVillagerWorkstationClaims[$uniqueId]);
+        }
+        $remaining = count($this->knownVillagerWorkstationClaims);
+        $this->villagerClaimCleanupCursor = $remaining === 0
+            ? 0
+            : ($this->villagerClaimCleanupCursor + $maximum) % $remaining;
+    }
+
+    private function refreshVillagerTradeViewers(VillagerEntity $villager): void
+    {
+        foreach ($this->openContainers as $sessionKey => $session) {
+            if ($session->type !== ApiContainerType::TRADE
+                || $session->entityRuntimeId !== $villager->getRuntimeId()) {
+                continue;
+            }
+            $player = $this->players->player(substr($sessionKey, strlen('session:')));
+            if ($player === null) {
+                continue;
+            }
+            $session->tradeGeneration = $villager->getTrades()->generation;
+            $session->replaceTradeOfferNetworkMap($villager->getTrades());
+            $this->deferredEvents[] = new VillagerTradeOffersUpdated(
+                $player->sessionId,
+                $session->windowId,
+                $villager->getVillagerLevel()->value - 1,
+                $villager->getRuntimeId(),
+                $player->runtimeActorId,
+                $villager->nameTag() === '' ? 'Villager' : $villager->nameTag(),
+                VillagerTradeNetworkNbt::encode($villager->getTrades(), $villager->getVillagerLevel()),
+            );
+        }
+    }
+
+    /**
+     * Discovers a bounded chunk window and advances a bounded rotating set of loaded spawners.
+     * Ordinary countdowns are coalesced into one persisted update per second; trial encounters
+     * retain tick-precise phase and spawn timing.
+     */
+    private function advanceSpawners(): void
+    {
+        if ($this->blockWorld === null || $this->mobSpawners === null || $this->trialSpawners === null) {
+            return;
+        }
+        $chunks = $this->blockWorld->loadedChunkWindow(
+            $this->spawnerDiscoveryCursor,
+            self::SPAWNER_DISCOVERY_CHUNKS_PER_TICK,
+        );
+        $this->spawnerDiscoveryCursor += count($chunks);
+        foreach ($chunks as $chunk) {
+            foreach ($chunk->blockEntities() as $entity) {
+                if ($entity instanceof MobSpawnerBlockEntity || $entity instanceof TrialSpawnerBlockEntity) {
+                    $this->knownSpawnerPositions[self::blockPositionKey($entity->position)] = $entity->position;
+                }
+            }
+        }
+        if ($this->knownSpawnerPositions === []) {
+            $this->spawnerTickCursor = 0;
+
+            return;
+        }
+
+        $positions = array_values($this->knownSpawnerPositions);
+        $count = count($positions);
+        $maximum = min(self::SPAWNERS_PER_TICK, $count);
+        for ($offset = 0; $offset < $maximum; ++$offset) {
+            $index = ($this->spawnerTickCursor + $offset) % $count;
+            $position = $positions[$index];
+            $chunkPosition = new ChunkPosition(
+                (int) floor($position->x / 16),
+                (int) floor($position->z / 16),
+            );
+            $chunk = $this->blockWorld->loadedChunk($chunkPosition);
+            $entity = $chunk?->blockEntityAt($position);
+            if (!$entity instanceof MobSpawnerBlockEntity && !$entity instanceof TrialSpawnerBlockEntity) {
+                $key = self::blockPositionKey($position);
+                unset(
+                    $this->knownSpawnerPositions[$key],
+                    $this->ordinarySpawnerTicks[$key],
+                    $this->trialSpawnerTicks[$key],
+                );
+                continue;
+            }
+
+            if ($entity instanceof MobSpawnerBlockEntity) {
+                $key = self::blockPositionKey($position);
+                $previousTick = $this->ordinarySpawnerTicks[$key] ?? null;
+                $this->ordinarySpawnerTicks[$key] = $this->tick;
+                if ($previousTick === null) {
+                    continue;
+                }
+                $elapsedTicks = min(1_200, $this->tick - $previousTick);
+                if ($elapsedTicks < self::ORDINARY_SPAWNER_TICK_INTERVAL) {
+                    $this->ordinarySpawnerTicks[$key] = $previousTick;
+                    continue;
+                }
+                $state = $entity->state;
+                for ($step = 0; $step < $elapsedTicks; ++$step) {
+                    $result = $this->mobSpawners->tick($state, $this->worldId, $position);
+                    $state = $result->state;
+                    if ($result->attempted > 0) {
+                        break;
+                    }
+                }
+                $replacement = $entity->withState($state);
+            } else {
+                $key = self::blockPositionKey($position);
+                $previousTick = $this->trialSpawnerTicks[$key] ?? null;
+                $this->trialSpawnerTicks[$key] = $this->tick;
+                $elapsedTicks = $previousTick === null ? 1 : min(1_200, max(1, $this->tick - $previousTick));
+                $result = $this->trialSpawners->tick(
+                    $entity->state,
+                    $this->worldId,
+                    $position,
+                    $elapsedTicks,
+                );
+                $replacement = $entity->withState($result->state);
+            }
+            if ($replacement === $entity) {
+                continue;
+            }
+            $this->blockWorld->setBlockEntity($replacement);
+            if ($entity instanceof TrialSpawnerBlockEntity
+                && ($entity->state->phase !== $replacement->state->phase
+                    || $entity->state->ominous !== $replacement->state->ominous)) {
+                $this->projectTrialSpawnerBlockState($replacement);
+            }
+            $this->deferredEvents[] = new BlockEntityChanged($replacement, $this->players->recipients());
+        }
+        $this->spawnerTickCursor = ($this->spawnerTickCursor + $maximum) % max(1, $count);
+    }
+
+    private static function blockPositionKey(BlockPosition $position): string
+    {
+        return $position->x . ':' . $position->y . ':' . $position->z;
+    }
+
+    private function projectTrialSpawnerBlockState(TrialSpawnerBlockEntity $entity): void
+    {
+        if ($this->blockStateRegistry === null || $this->blockWorld === null) {
+            return;
+        }
+        $stateValue = match ($entity->state->phase) {
+            \Bedriox\Api\World\Spawner\TrialSpawnerPhase::INACTIVE => 0,
+            \Bedriox\Api\World\Spawner\TrialSpawnerPhase::WAITING_FOR_PLAYERS => 1,
+            \Bedriox\Api\World\Spawner\TrialSpawnerPhase::ACTIVE => 2,
+            \Bedriox\Api\World\Spawner\TrialSpawnerPhase::EJECTING_REWARDS => 4,
+            \Bedriox\Api\World\Spawner\TrialSpawnerPhase::COOLDOWN => 5,
+        };
+        try {
+            $projected = $this->blockStateRegistry->internalId(CanonicalBlockState::from(
+                'minecraft:trial_spawner',
+                [
+                    'ominous' => $entity->state->ominous ? 1 : 0,
+                    'trial_spawner_state' => $stateValue,
+                ],
+            ));
+        } catch (InvalidArgumentException) {
+            return;
+        }
+        $previous = $this->setBlockStateAndSchedule($entity->position, $projected);
+        if ($previous->value !== $projected->value) {
+            $this->deferredEvents[] = new BlockChanged(
+                'server',
+                $entity->position,
+                $projected,
+                $this->players->recipients(),
+                destroyedState: $previous,
+            );
+        }
+    }
+
+    private function hasSpawnerPlayer(string $worldName, BlockPosition $position, int $range): bool
+    {
+        return $this->spawnerParticipantIds($worldName, $position, $range) !== [];
+    }
+
+    /** @return list<string> */
+    private function spawnerParticipantIds(string $worldName, BlockPosition $position, int $range): array
+    {
+        if ($worldName !== $this->worldId) {
+            return [];
+        }
+        $rangeSquared = $range * $range;
+        $participants = [];
+        foreach ($this->players->players() as $player) {
+            if (!$player->vitals->isAlive() || $player->worldName() !== $worldName
+                || $player->dimension() !== $this->dimension) {
+                continue;
+            }
+            $playerPosition = $player->movement->position;
+            $deltaX = $playerPosition->x - ($position->x + 0.5);
+            $deltaY = $playerPosition->y - ($position->y + 0.5);
+            $deltaZ = $playerPosition->z - ($position->z + 0.5);
+            if (($deltaX * $deltaX) + ($deltaY * $deltaY) + ($deltaZ * $deltaZ) <= $rangeSquared) {
+                $participants[] = $player->identity->uuid;
+            }
+        }
+        sort($participants, SORT_STRING);
+
+        return array_slice($participants, 0, 64);
+    }
+
+    private function spawnerNearbyEntityCount(
+        string $worldName,
+        BlockPosition $position,
+        string $identifier,
+        int $range,
+    ): int {
+        $type = $this->entityDefinitions->get($identifier)?->definition->type;
+        if ($type === null || $worldName !== $this->worldId) {
+            return 0;
+        }
+
+        $center = new Position($position->x + 0.5, $position->y + 0.5, $position->z + 0.5);
+        $nearby = $this->entityRuntime->registry()->nearby(
+            $worldName,
+            $center,
+            sqrt(3.0) * $range,
+            max(256, count($this->entityRuntime->registry()->all())),
+            type: $type,
+        );
+        $count = 0;
+        foreach ($nearby as $entity) {
+            $entityPosition = $entity->internalPosition();
+            if (abs($entityPosition->x - $center->x) <= $range
+                && abs($entityPosition->y - $center->y) <= $range
+                && abs($entityPosition->z - $center->z) <= $range) {
+                ++$count;
+            }
+        }
+
+        return $count;
+    }
+
+    /**
+     * @param list<string> $entityIds
+     * @return list<string>
+     */
+    private function activeSpawnerEntityIds(array $entityIds): array
+    {
+        $active = [];
+        foreach ($entityIds as $entityId) {
+            try {
+                $entity = $this->entityRuntime->registry()->getByUniqueId($entityId);
+            } catch (InvalidArgumentException) {
+                continue;
+            }
+            if ($entity instanceof AbstractLivingEntity && $entity->isAlive() && !$entity->isRemoved()) {
+                $active[] = $entityId;
+            }
+        }
+
+        return $active;
+    }
+
+    private function allowSpawnerActivation(
+        string $worldName,
+        BlockPosition $position,
+        bool $trial,
+        bool $ominous,
+    ): bool {
+        if ($worldName !== $this->worldId || $this->pluginEvents === null) {
+            return $worldName === $this->worldId;
+        }
+
+        return $this->pluginEvents->spawnerActivate(
+            $this->apiWorld(),
+            new ApiBlockPosition($position->x, $position->y, $position->z),
+            $trial,
+            $ominous,
+        );
+    }
+
+    private function allowSpawnerSpawn(
+        string $worldName,
+        BlockPosition $spawner,
+        string $identifier,
+        Position $position,
+        bool $trial,
+        bool $ominous,
+    ): bool {
+        if (!$this->spawnerSpawnSiteIsValid($worldName, $identifier, $position, $trial)) {
+            return false;
+        }
+        if ($this->pluginEvents === null) {
+            return true;
+        }
+
+        return $this->pluginEvents->spawnerSpawn(
+            $this->apiWorld(),
+            new ApiBlockPosition($spawner->x, $spawner->y, $spawner->z),
+            $identifier,
+            $this->apiPosition($position),
+            $trial,
+            $ominous,
+        );
+    }
+
+    /** Core loaded-world and species admission always runs before a plugin sees the spawn intent. */
+    private function spawnerSpawnSiteIsValid(
+        string $worldName,
+        string $identifier,
+        Position $position,
+        bool $trial,
+    ): bool {
+        return $worldName === $this->worldId
+            && $this->spawnerSpawnAdmission?->allows($worldName, $identifier, $position, $trial) === true;
+    }
+
+    private function allowTrialSpawnerPhaseChange(
+        string $worldName,
+        BlockPosition $position,
+        \Bedriox\Api\World\Spawner\TrialSpawnerPhase $oldPhase,
+        \Bedriox\Api\World\Spawner\TrialSpawnerPhase $newPhase,
+        bool $ominous,
+    ): bool {
+        if ($worldName !== $this->worldId || $this->pluginEvents === null) {
+            return $worldName === $this->worldId;
+        }
+
+        return $this->pluginEvents->trialSpawnerStateChange(
+            $this->apiWorld(),
+            new ApiBlockPosition($position->x, $position->y, $position->z),
+            $oldPhase,
+            $newPhase,
+            $ominous,
+        );
+    }
+
+    private function ejectTrialSpawnerReward(
+        string $worldName,
+        BlockPosition $position,
+        string $participantId,
+        bool $ominous,
+    ): bool {
+        unset($participantId);
+        $identifier = $ominous ? VanillaItems::OMINOUS_TRIAL_KEY : VanillaItems::TRIAL_KEY;
+        if ($worldName !== $this->worldId || $this->itemCatalog === null
+            || !$this->itemCatalog->has($identifier) || !$this->itemEntities->canSpawn()) {
+            return false;
+        }
+        $item = $this->itemEntities->spawn(
+            new InventoryStack($identifier, 1, 1),
+            new Position($position->x + 0.5, $position->y + 1.0, $position->z + 0.5),
+            new ItemEntityMotion(0.0, 0.2, 0.0),
+            10,
+        );
+        $this->deferredEvents[] = new ItemEntitySpawned($item, $this->players->recipients());
+
+        return true;
+    }
+
+    /** @param list<string> $participantIds */
+    private function completeTrialSpawner(
+        string $worldName,
+        BlockPosition $position,
+        array $participantIds,
+        bool $ominous,
+    ): void {
+        if ($worldName !== $this->worldId || $this->pluginEvents === null) {
+            return;
+        }
+        $this->pluginEvents->spawnerCompleted(
+            $this->apiWorld(),
+            new ApiBlockPosition($position->x, $position->y, $position->z),
+            $participantIds,
+            $ominous,
+        );
+    }
+
+    private function apiWorld(): \Bedriox\Api\World\World
+    {
+        return $this->pluginEvents?->resolveWorld($this->worldId, $this->dimension)
+            ?? $this->fallbackPublicWorld;
+    }
+
     /** @return list<Position> */
     private function endCityShulkerCandidates(EndCityPlacement $city, ChunkPosition $chunk): array
     {
@@ -19606,6 +20824,9 @@ final class WorldSimulation
 
     private function entityMeleeDamage(AbstractLivingEntity $entity, float $fallback): float
     {
+        if ($entity instanceof IronGolemEntity) {
+            return (float) $this->dropRandom->integer(7, 21);
+        }
         $held = $entity->equipmentState()->getItem(ApiEquipmentSlot::MAIN_HAND);
         if ($held === null || $this->itemCatalog === null || !$this->itemCatalog->has($held->identifier)) {
             return $fallback;
@@ -20339,6 +21560,12 @@ final class WorldSimulation
         if ($player === null) {
             return new CommandRejected($command->session, 'not_joined');
         }
+        $openSession = $this->openContainers[self::sessionKey($command->session)] ?? null;
+        if ($command->workstation !== null
+            && $openSession instanceof PlayerContainerSession
+            && $openSession->type->isTransient()) {
+            return $this->openedContainerStackRequest($player, $command);
+        }
         foreach ($command->actions as $action) {
             if ($action->source->container === InventoryContainer::OpenedContainer
                 || $action->destination->container === InventoryContainer::OpenedContainer) {
@@ -20678,6 +21905,7 @@ final class WorldSimulation
             }
         }
         $committedWorkstationResult = null;
+        $tradeCompletion = null;
         $workstationExperiencePrevious = null;
         $workstationExperienceTarget = null;
         $workstationExperienceCause = null;
@@ -20693,12 +21921,18 @@ final class WorldSimulation
                     $workstationRequest,
                 );
                 if ($workstationResult === false) {
-                    $result = new InventoryStackRequestResult(false, reason: 'workstation_result');
+                    $result = new InventoryStackRequestResult(
+                        false,
+                        reason: $session->workstationFailureReason ?? 'workstation_result',
+                    );
                 } else {
                     $committedWorkstationResult = $workstationResult;
                 }
-            } catch (InvalidArgumentException|OverflowException) {
-                $result = new InventoryStackRequestResult(false, reason: 'workstation_result');
+            } catch (InvalidArgumentException|OverflowException $exception) {
+                $result = new InventoryStackRequestResult(
+                    false,
+                    reason: $session->workstationFailureReason ?? self::workstationFailureReason($exception),
+                );
             }
             if ($result->success) {
                 $affected = [];
@@ -20714,8 +21948,22 @@ final class WorldSimulation
                         if (self::sameInventoryStack($beforeProjection->stackAt($slot), $stack)) {
                             continue;
                         }
-                        $reference = new InventorySlotReference(InventoryContainer::OpenedContainer, $slot, 0);
-                        $affected[$reference->responseKey()] = $reference;
+                        $hasExactClientSlot = false;
+                        foreach ($affected as $reference) {
+                            if ($reference->container === InventoryContainer::OpenedContainer
+                                && $reference->slot === $slot
+                                && $reference->responseContainerId !== null) {
+                                $hasExactClientSlot = true;
+                                break;
+                            }
+                        }
+                        if ($hasExactClientSlot) {
+                            continue;
+                        }
+                        $references = $this->transientWorkstationResponseSlots($session, $workstationRequest, $slot);
+                        foreach ($references as $reference) {
+                            $affected[$reference->responseKey()] = $reference;
+                        }
                     }
                 }
                 $result = new InventoryStackRequestResult(
@@ -20755,7 +22003,7 @@ final class WorldSimulation
             $result = new InventoryStackRequestResult(false, reason: 'shulker_nesting');
         }
         $transaction = null;
-        if ($result->success) {
+        if ($result->success && !$workstationSelection) {
             try {
                 $transaction = $this->containerTransactionView(
                     $player,
@@ -20785,6 +22033,16 @@ final class WorldSimulation
                 if (!$player->inventory->matchesState($beforePlayer)) {
                     throw new ContainerRevisionMismatchException();
                 }
+                if ($session->type === ApiContainerType::TRADE
+                    && $session->completedTradeNetworkId !== null) {
+                    $tradeCompletion = $this->prepareVillagerTradeCompletion(
+                        $session,
+                        $session->completedTradeNetworkId,
+                    );
+                    if ($tradeCompletion === null) {
+                        throw new ContainerRevisionMismatchException();
+                    }
+                }
                 if ($session->playerOwnedEnderChest) {
                     $this->stageEnderChestContents($proposedPlayer, $proposedProjection);
                 }
@@ -20803,6 +22061,15 @@ final class WorldSimulation
                     $proposedProjection->lastRequestIds(),
                 );
                 $session->canonicalRevision = $session->inventory->revision();
+                if ($session->type === ApiContainerType::TRADE
+                    && $session->completedTradeNetworkId !== null) {
+                    if (!$tradeCompletion instanceof VillagerTradeCompletion) {
+                        throw new \LogicException('A committed villager trade is missing its prevalidated completion.');
+                    }
+                    $this->completeVillagerTrade($player, $session, $tradeCompletion);
+                    $session->completedTradeNetworkId = null;
+                    $session->completedTradeCount = 0;
+                }
                 if (is_array($furnaceExtraction) && $session->position !== null && $this->blockWorld !== null) {
                     $furnace = $this->blockWorld->blockEntityAt($session->position);
                     if (!$furnace instanceof FurnaceBlockEntity
@@ -20912,6 +22179,71 @@ final class WorldSimulation
         );
     }
 
+    /** @return list<InventorySlotReference> */
+    private function transientWorkstationResponseSlots(
+        PlayerContainerSession $session,
+        ?WorkstationRequest $request,
+        int $slot,
+    ): array {
+        $matches = [];
+        if ($request !== null) {
+            foreach ($request->responseSlots as $reference) {
+                if ($reference->container === InventoryContainer::OpenedContainer && $reference->slot === $slot) {
+                    $matches[] = $reference;
+                }
+            }
+        }
+
+        if ($matches === [] && $session->type === ApiContainerType::TRADE) {
+            return match ($slot) {
+                0 => [
+                    new InventorySlotReference(
+                        InventoryContainer::OpenedContainer,
+                        0,
+                        0,
+                        ContainerSlotType::TradeIngredientOne->value,
+                        responseSlot: 6,
+                    ),
+                    new InventorySlotReference(
+                        InventoryContainer::OpenedContainer,
+                        0,
+                        0,
+                        ContainerSlotType::TradeTwoIngredientOne->value,
+                        responseSlot: 4,
+                    ),
+                ],
+                1 => [
+                    new InventorySlotReference(
+                        InventoryContainer::OpenedContainer,
+                        1,
+                        0,
+                        ContainerSlotType::TradeIngredientTwo->value,
+                        responseSlot: 7,
+                    ),
+                    new InventorySlotReference(
+                        InventoryContainer::OpenedContainer,
+                        1,
+                        0,
+                        ContainerSlotType::TradeTwoIngredientTwo->value,
+                        responseSlot: 5,
+                    ),
+                ],
+                2 => [new InventorySlotReference(
+                    InventoryContainer::OpenedContainer,
+                    2,
+                    0,
+                    FullContainerName::CREATED_OUTPUT,
+                    responseSlot: 50,
+                )],
+                default => [],
+            };
+        }
+
+        return $matches !== []
+            ? $matches
+            : [new InventorySlotReference(InventoryContainer::OpenedContainer, $slot, 0)];
+    }
+
     private function normalizeTransientWorkstationRequest(
         PlayerContainerSession $session,
         ApplyInventoryStackRequest $command,
@@ -20954,7 +22286,7 @@ final class WorldSimulation
                         $command->session,
                         $command->requestId,
                         [],
-                        'workstation_result',
+                        $session->workstationFailureReason ?? 'workstation_result',
                         $command->responseMode,
                         workstation: $command->workstation,
                     );
@@ -20975,7 +22307,7 @@ final class WorldSimulation
                         $command->session,
                         $command->requestId,
                         [],
-                        'workstation_result',
+                        $session->workstationFailureReason ?? 'workstation_result',
                         $command->responseMode,
                         workstation: $command->workstation,
                     );
@@ -21009,6 +22341,33 @@ final class WorldSimulation
         PlayerContainerSession $session,
         ?WorkstationRequest $request,
     ): void {
+        if ($session->type === ApiContainerType::TRADE) {
+            $resultSlot = ApiContainerType::TRADE->resultSlot()
+                ?? throw new \LogicException('Trade container has no result slot.');
+            $offer = $request?->type === \Bedriox\Server\Simulation\Command\WorkstationRequestType::TRADE
+                ? $this->villagerTradeOffer($session, $request)
+                : $this->villagerTradeOfferForInputs($session, $session->projection);
+            $tradeCount = $request?->type === \Bedriox\Server\Simulation\Command\WorkstationRequestType::TRADE
+                ? $request->requestedCrafts
+                : 1;
+            $session->workstationFailureReason = $offer === null ? 'trade_offer_unavailable' : null;
+            $output = $offer === null ? null : new ContainerItemStack(
+                $offer->result->identifier,
+                $offer->result->count * $tradeCount,
+                $offer->result->damage,
+                $offer->result->nbt,
+                $offer->result->auxValue,
+            );
+            $this->replaceWorkstationPreview($player->inventory, $session->projection, $resultSlot, $output);
+            $this->commitContainerContents($session, array_map(
+                static fn(?InventoryStack $stack): ?ApiItemStack => $stack === null
+                    ? null : self::apiInventoryStack($stack),
+                $session->projection->slots(),
+            ));
+            $session->canonicalRevision = $session->inventory->revision();
+            $session->workstationRequest = $request;
+            return;
+        }
         if ($this->transientWorkstations === null) {
             throw new InvalidArgumentException('Transient workstation processing is unavailable.');
         }
@@ -21047,6 +22406,13 @@ final class WorldSimulation
         \Bedriox\Server\Player\OpenedContainerInventory $proposed,
         ?WorkstationRequest $request,
     ): WorkstationResult|false|null {
+        $session->completedTradeNetworkId = null;
+        $session->completedTradeOffer = null;
+        $session->completedTradeCount = 0;
+        $session->workstationFailureReason = null;
+        if ($session->type === ApiContainerType::TRADE) {
+            return $this->stageVillagerTrade($session, $command, $before, $proposedPlayer, $proposed, $request);
+        }
         if ($this->transientWorkstations === null) {
             return false;
         }
@@ -21159,6 +22525,351 @@ final class WorldSimulation
         $this->replaceWorkstationPreview($proposedPlayer, $proposed, $resultSlot, $next?->outputs[0] ?? null);
 
         return $takingResult ? $authoritative : null;
+    }
+
+    private function stageVillagerTrade(
+        PlayerContainerSession $session,
+        ApplyInventoryStackRequest $command,
+        \Bedriox\Server\Player\OpenedContainerInventory $before,
+        PlayerInventory $proposedPlayer,
+        \Bedriox\Server\Player\OpenedContainerInventory $proposed,
+        ?WorkstationRequest $request,
+    ): WorkstationResult|false|null {
+        $resultSlot = ApiContainerType::TRADE->resultSlot()
+            ?? throw new \LogicException('Trade container has no result slot.');
+        $takingResult = false;
+        $takenCount = 0;
+        foreach ($command->actions as $action) {
+            if ($action->source->container === InventoryContainer::OpenedContainer
+                && $action->source->slot === $resultSlot) {
+                $takingResult = true;
+                $takenCount += $action->count;
+            }
+        }
+        $offer = $request?->type === \Bedriox\Server\Simulation\Command\WorkstationRequestType::TRADE
+            ? $this->villagerTradeOffer($session, $request)
+            : $this->villagerTradeOfferForInputs($session, $takingResult ? $before : $proposed);
+        $tradeCount = $request?->type === \Bedriox\Server\Simulation\Command\WorkstationRequestType::TRADE
+            ? $request->requestedCrafts
+            : 1;
+        if ($offer === null) {
+            if ($takingResult) {
+                $session->workstationFailureReason = 'trade_offer_unavailable';
+                return false;
+            }
+            $this->replaceWorkstationPreview($proposedPlayer, $proposed, $resultSlot, null);
+
+            return null;
+        }
+        if (!$takingResult) {
+            $this->replaceWorkstationPreview(
+                $proposedPlayer,
+                $proposed,
+                $resultSlot,
+                new ContainerItemStack(
+                    $offer->result->identifier,
+                    $offer->result->count * $tradeCount,
+                    $offer->result->damage,
+                    $offer->result->nbt,
+                    $offer->result->auxValue,
+                ),
+            );
+            return null;
+        }
+        if ($takenCount !== $offer->result->count * $tradeCount
+            || !self::tradeInputMatches($before->stackAt(0), $offer->firstInput, $tradeCount)
+            || ($offer->secondInput !== null
+                && !self::tradeInputMatches($before->stackAt(1), $offer->secondInput, $tradeCount))) {
+            $session->workstationFailureReason = 'trade_input_mismatch';
+            return false;
+        }
+        $preview = $before->stackAt($resultSlot);
+        $result = new ContainerItemStack(
+            $offer->result->identifier,
+            $offer->result->count * $tradeCount,
+            $offer->result->damage,
+            $offer->result->nbt,
+            $offer->result->auxValue,
+        );
+        if ($preview === null || !self::sameInventoryStack($preview, $this->inventoryStackFromContainerItem($result))) {
+            $session->workstationFailureReason = 'trade_preview_mismatch';
+            return false;
+        }
+        $villager = $session->entityRuntimeId === null
+            ? null : $this->entityRuntime->registry()->getByRuntimeId($session->entityRuntimeId);
+        $player = $this->players->player($command->session);
+        if (!$villager instanceof VillagerEntity || $player === null) {
+            $session->workstationFailureReason = 'trade_actor_unavailable';
+            return false;
+        }
+        if ($this->pluginEvents !== null) {
+            $authoritativeOffer = $offer;
+            $offer = $this->pluginEvents->villagerTrade($player, $villager, $authoritativeOffer, $tradeCount);
+            if ($offer === null
+                || !self::tradeAdjustmentIsAtomic($authoritativeOffer, $offer)
+                || $offer->uses + $tradeCount > $offer->maximumUses
+                || !self::tradeInputMatches($before->stackAt(0), $offer->firstInput, $tradeCount)
+                || ($offer->secondInput !== null
+                    && !self::tradeInputMatches($before->stackAt(1), $offer->secondInput, $tradeCount))) {
+                $session->workstationFailureReason = 'trade_plugin_rejected';
+                return false;
+            }
+        }
+        $consumed = [0 => $offer->firstInput->count * $tradeCount];
+        if ($offer->secondInput !== null) {
+            $consumed[1] = $offer->secondInput->count * $tradeCount;
+        }
+        $authoritative = new WorkstationResult(
+            $consumed,
+            [new ContainerItemStack(
+                $offer->result->identifier,
+                $offer->result->count * $tradeCount,
+                $offer->result->damage,
+                $offer->result->nbt,
+                $offer->result->auxValue,
+            )],
+        );
+        $indexed = $proposed->indexedStacks();
+        foreach ($consumed as $slot => $count) {
+            $input = $indexed[$slot] ?? null;
+            if (!$input instanceof InventoryStack || $input->count < $count) {
+                $session->workstationFailureReason = 'trade_staged_input_mismatch';
+                return false;
+            }
+            if ($input->count === $count) {
+                unset($indexed[$slot]);
+            } else {
+                $indexed[$slot] = $input->withCountAndNetworkId($input->count - $count, $input->stackNetworkId);
+            }
+        }
+        unset($indexed[$resultSlot]);
+        $proposed->commit($indexed, $proposed->lastRequestIds());
+        $session->completedTradeNetworkId = $this->villagerTradeOfferNetworkId($session, $offer);
+        if ($session->completedTradeNetworkId === null) {
+            $session->workstationFailureReason = 'trade_offer_identity';
+            return false;
+        }
+        $session->completedTradeOffer = $offer;
+        $session->completedTradeCount = $tradeCount;
+
+        return $authoritative;
+    }
+
+    private static function workstationFailureReason(InvalidArgumentException|OverflowException $exception): string
+    {
+        return match ($exception->getMessage()) {
+            'Opened-container inventory stack-network IDs must be unique.' => 'workstation_duplicate_stack_id',
+            'Inventory stack count is outside the supported range.' => 'workstation_stack_count',
+            default => 'workstation_validation',
+        };
+    }
+
+    private function villagerTradeOffer(
+        PlayerContainerSession $session,
+        ?WorkstationRequest $request,
+    ): ?\Bedriox\Api\Entity\Trade\VillagerTradeOffer {
+        if ($request?->type !== \Bedriox\Server\Simulation\Command\WorkstationRequestType::TRADE
+            || $request->recipeNetworkId < 1 || $request->requestedCrafts < 1
+            || $session->entityRuntimeId === null) {
+            return null;
+        }
+        $villager = $this->entityRuntime->registry()->getByRuntimeId($session->entityRuntimeId);
+        if (!$villager instanceof VillagerEntity
+            || $session->tradeGeneration !== $villager->getTrades()->generation) {
+            return null;
+        }
+        $offerKey = $session->tradeOfferKey($request->recipeNetworkId);
+        $offer = $offerKey === null ? null : $villager->getTrades()->offer($offerKey);
+        if ($offer === null || $offer->uses + $request->requestedCrafts > $offer->maximumUses
+            || $offer->level->value > $villager->getVillagerLevel()->value) {
+            return null;
+        }
+
+        $resultCount = $offer->result->count * $request->requestedCrafts;
+        $maximumStackSize = $this->itemCatalog?->type($offer->result->identifier)->maximumStackSize ?? 64;
+        if ($resultCount > $maximumStackSize) {
+            return null;
+        }
+
+        return $offer;
+    }
+
+    private function villagerTradeOfferForInputs(
+        PlayerContainerSession $session,
+        \Bedriox\Server\Player\OpenedContainerInventory $inventory,
+    ): ?\Bedriox\Api\Entity\Trade\VillagerTradeOffer {
+        if ($session->entityRuntimeId === null) {
+            return null;
+        }
+        $villager = $this->entityRuntime->registry()->getByRuntimeId($session->entityRuntimeId);
+        if (!$villager instanceof VillagerEntity
+            || $session->tradeGeneration !== $villager->getTrades()->generation) {
+            return null;
+        }
+        $first = $inventory->stackAt(0);
+        $second = $inventory->stackAt(1);
+        if ($first === null) {
+            return null;
+        }
+        $matchingOffer = null;
+        foreach ($villager->getTrades()->offers as $offer) {
+            if ($offer->isExhausted() || $offer->level->value > $villager->getVillagerLevel()->value
+                || !self::tradeInputMatches($first, $offer->firstInput)) {
+                continue;
+            }
+            if ($offer->secondInput === null ? $second === null : self::tradeInputMatches($second, $offer->secondInput)) {
+                if ($matchingOffer !== null) {
+                    return null;
+                }
+                $matchingOffer = $offer;
+            }
+        }
+
+        return $matchingOffer;
+    }
+
+    private function villagerTradeOfferNetworkId(
+        PlayerContainerSession $session,
+        \Bedriox\Api\Entity\Trade\VillagerTradeOffer $selected,
+    ): ?int {
+        if ($session->entityRuntimeId === null) {
+            return null;
+        }
+        $villager = $this->entityRuntime->registry()->getByRuntimeId($session->entityRuntimeId);
+        if (!$villager instanceof VillagerEntity) {
+            return null;
+        }
+        return $villager->getTrades()->offer($selected->key) === null
+            ? null
+            : $session->tradeOfferNetworkId($selected->key);
+    }
+
+    private static function tradeInputMatches(?InventoryStack $actual, ApiItemStack $required, int $tradeCount = 1): bool
+    {
+        return $actual !== null
+            && $tradeCount >= 1
+            && $actual->count >= $required->count * $tradeCount
+            && $actual->identifier === $required->identifier
+            && $actual->damage === $required->damage
+            && $actual->auxValue === $required->auxValue
+            && ($actual->nbt?->toBinary() ?? '') === ($required->nbt?->toBinary() ?? '');
+    }
+
+    private static function tradeAdjustmentIsAtomic(
+        \Bedriox\Api\Entity\Trade\VillagerTradeOffer $authoritative,
+        \Bedriox\Api\Entity\Trade\VillagerTradeOffer $adjusted,
+    ): bool {
+        return $authoritative->key === $adjusted->key
+            && !$adjusted->isExhausted()
+            && self::sameApiItemStack($authoritative->result, $adjusted->result);
+    }
+
+    private static function sameApiItemStack(ApiItemStack $left, ApiItemStack $right): bool
+    {
+        return $left->identifier === $right->identifier
+            && $left->count === $right->count
+            && $left->damage === $right->damage
+            && $left->auxValue === $right->auxValue
+            && ($left->nbt?->toBinary() ?? '') === ($right->nbt?->toBinary() ?? '');
+    }
+
+    private function completeVillagerTrade(
+        Player $player,
+        PlayerContainerSession $session,
+        VillagerTradeCompletion $completion,
+    ): void {
+        $offers = $completion->trades->offers;
+        $offers[$completion->offerIndex] = $completion->offer->withCompletedUses($completion->tradeCount);
+        $updated = new \Bedriox\Api\Entity\Trade\VillagerTradeList(
+            array_values($offers),
+            $completion->trades->generation + 1,
+        );
+        $experience = min(
+            10_000,
+            $completion->villager->getVillagerExperience()
+                + ($completion->offer->villagerExperience * $completion->tradeCount),
+        );
+        $level = \Bedriox\Api\Entity\Value\VillagerLevel::forExperience($experience);
+        $completion->villager->replaceTrades($updated);
+        $completion->villager->setTradeProgress($level, $experience);
+        $session->tradeGeneration = $updated->generation;
+        $session->replaceTradeOfferNetworkMap($updated);
+        $this->deferredEvents[] = new VillagerTradeCompleted(
+            $completion->villager->getRuntimeId(),
+            $this->players->recipients(),
+        );
+        $this->deferredEvents[] = new VillagerTradeOffersUpdated(
+            $player->sessionId,
+            $session->windowId,
+            $level->value - 1,
+            $completion->villager->getRuntimeId(),
+            $player->runtimeActorId,
+            $completion->villager->nameTag() === '' ? 'Villager' : $completion->villager->nameTag(),
+            VillagerTradeNetworkNbt::encode($updated, $level),
+        );
+        if ($completion->offer->rewardsPlayerExperience) {
+            $playerExperience = min(192, 3 * $completion->tradeCount);
+            array_push(
+                $this->deferredEvents,
+                ...$this->spawnExperienceOrbs($playerExperience, $completion->villager->internalPosition()),
+            );
+        }
+        $playerExperience = $completion->offer->rewardsPlayerExperience
+            ? min(192, 3 * $completion->tradeCount)
+            : 0;
+        $this->pluginEvents?->villagerTraded(
+            $player,
+            $completion->villager,
+            $completion->offer,
+            $level,
+            $experience,
+            $playerExperience,
+            $completion->tradeCount,
+        );
+        $session->completedTradeOffer = null;
+    }
+
+    private function prepareVillagerTradeCompletion(
+        PlayerContainerSession $session,
+        int $networkId,
+    ): ?VillagerTradeCompletion {
+        if ($networkId < 1 || $session->entityRuntimeId === null || $session->completedTradeOffer === null
+            || $session->completedTradeCount < 1) {
+            return null;
+        }
+        $villager = $this->entityRuntime->registry()->getByRuntimeId($session->entityRuntimeId);
+        if (!$villager instanceof VillagerEntity) {
+            return null;
+        }
+        $list = $villager->getTrades();
+        $offerKey = $session->tradeOfferKey($networkId);
+        $authoritative = $offerKey === null ? null : $list->offer($offerKey);
+        $index = null;
+        if ($authoritative !== null) {
+            foreach ($list->offers as $candidateIndex => $candidate) {
+                if ($candidate->key === $authoritative->key) {
+                    $index = $candidateIndex;
+                    break;
+                }
+            }
+        }
+
+        if ($session->tradeGeneration !== $list->generation) {
+            return null;
+        }
+        if ($list->generation >= 2_147_483_647 || $authoritative === null || $index === null
+            || $authoritative->uses + $session->completedTradeCount > $authoritative->maximumUses
+            || !self::tradeAdjustmentIsAtomic($authoritative, $session->completedTradeOffer)) {
+            return null;
+        }
+
+        return new VillagerTradeCompletion(
+            $villager,
+            $list,
+            $session->completedTradeOffer,
+            $index,
+            $session->completedTradeCount,
+        );
     }
 
     private function workstationContext(
@@ -22209,6 +23920,358 @@ final class WorldSimulation
         );
     }
 
+    private function explodeBed(BlockPosition $first, BlockPosition $second): void
+    {
+        if ($this->blockWorld === null || $this->blockPalette === null || $this->blockStateRegistry === null
+            || $this->blockProperties === null) {
+            return;
+        }
+        $center = new Position($first->x + 0.5, $first->y + 0.5, $first->z + 0.5);
+        $plan = (new ExplosionPlanningService())->plan(
+            new ExplosionRequest($center, 5.0, true, 0.0),
+            new LoadedWorldExplosionView($this->blockWorld, $this->blockStateRegistry, $this->blockProperties),
+        );
+        foreach ($plan->affectedBlocks as $position) {
+            $previous = $this->blockWorld->loadedBlockStateAt($position->x, $position->y, $position->z);
+            if ($previous === null || $previous->value === $this->blockPalette->air->value
+                || $this->blockIdentifier($previous->value) === 'minecraft:bedrock') {
+                continue;
+            }
+            try {
+                $this->setBlockStateAndSchedule($position, $this->blockPalette->air);
+            } catch (OverflowException) {
+                continue;
+            }
+            $this->blockWorld->removeBlockEntity($position);
+            $this->deferredEvents[] = new BlockChanged(
+                'server',
+                $position,
+                $this->blockPalette->air,
+                $this->players->recipients(),
+                destroyedState: $previous,
+            );
+        }
+        foreach ($this->players->players() as $target) {
+            if (!$target->vitals->isAlive() || !$target->gameMode()->takesDamage()) {
+                continue;
+            }
+            $distance = $target->movement->position->distanceTo($center);
+            if ($distance > 10.0) {
+                continue;
+            }
+            $impact = max(0.0, 1.0 - ($distance / 10.0));
+            if ($impact > 0.0) {
+                $this->deferredEvents[] = $this->damage(new DamagePlayer(
+                    $target->sessionId,
+                    max(1.0, (($impact * $impact + $impact) / 2.0) * 42.0 + 1.0),
+                    DamageCause::Explosion,
+                ));
+            }
+        }
+        foreach ($this->players->players() as $target) {
+            if ($target->sleepingBed()?->equals($first) === true || $target->sleepingBed()?->equals($second) === true) {
+                $event = $this->wakePlayer($target, PlayerBedLeaveReason::BED_DESTROYED, false);
+                if ($event !== null) {
+                    $this->deferredEvents[] = $event;
+                }
+            }
+        }
+    }
+
+    private function useBed(
+        Player $player,
+        BlockPosition $position,
+        InternalBlockStateId $state,
+    ): WorldEvent {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null || $this->bedStates === null) {
+            return new CommandRejected($player->sessionId, 'bed_unavailable');
+        }
+        try {
+            $canonical = $this->blockStateRegistry->state($state);
+            $otherPosition = $this->bedStates->otherHalf($position, $canonical);
+            $otherState = $this->blockWorld->loadedBlockStateAt(
+                $otherPosition->x,
+                $otherPosition->y,
+                $otherPosition->z,
+            );
+            $other = $otherState === null ? null : $this->blockStateRegistry->state($otherState);
+        } catch (InvalidArgumentException) {
+            return $this->resolveBedEnter(
+                $player,
+                $position,
+                PlayerBedEnterResult::INCOMPLETE,
+                'This bed is incomplete.',
+            );
+        }
+        if ($other === null || !$this->bedStates->isMatchingHalf($canonical, $other)) {
+            return $this->resolveBedEnter(
+                $player,
+                $position,
+                PlayerBedEnterResult::INCOMPLETE,
+                'This bed is incomplete.',
+            );
+        }
+        $headPosition = ($canonical->properties()['head_piece_bit'] ?? 0) === 1 ? $position : $otherPosition;
+        if ($this->dimension !== DimensionType::OVERWORLD) {
+            $this->explodeBed($position, $otherPosition);
+
+            return new EntityExplosionPresented(
+                new Position($headPosition->x + 0.5, $headPosition->y + 0.5, $headPosition->z + 0.5),
+                $this->players->recipients(),
+            );
+        }
+        $result = PlayerBedEnterResult::ALLOWED;
+        $message = null;
+        $playerPosition = $player->snapshot()->position;
+        if ($this->distanceSquared($playerPosition, $position) > 4.0
+            && $this->distanceSquared($playerPosition, $otherPosition) > 4.0) {
+            $result = PlayerBedEnterResult::TOO_FAR;
+            $message = new TranslatableMessage('tile.bed.tooFar');
+        } else {
+            $time = $this->blockWorld->timeOfDay();
+            $thundering = $this->blockWorld->weather()->weather->isThundering();
+            if (($time < self::NIGHT_START_TICK || $time >= self::SUNRISE_TICK) && !$thundering) {
+                $result = PlayerBedEnterResult::NOT_NIGHT;
+                $message = new TranslatableMessage('tile.bed.noSleep');
+            }
+        }
+        if ($result === PlayerBedEnterResult::ALLOWED && (
+            ($canonical->properties()['occupied_bit'] ?? 0) === 1
+            || ($other->properties()['occupied_bit'] ?? 0) === 1
+        )) {
+            $result = PlayerBedEnterResult::OCCUPIED;
+            $message = new TranslatableMessage('tile.bed.occupied');
+        }
+        if ($result === PlayerBedEnterResult::ALLOWED) {
+            foreach ($this->entityRuntime->registry()->nearby(
+                $this->worldId,
+                new Position($headPosition->x + 0.5, $headPosition->y + 0.5, $headPosition->z + 0.5),
+                8.0,
+                64,
+            ) as $entity) {
+                if ($entity instanceof AbstractLivingEntity && $entity->isAlive()
+                    && $entity->getCategory() === EntityCategory::MONSTER) {
+                    $result = PlayerBedEnterResult::MONSTERS_NEARBY;
+                    $message = 'You may not rest now; there are monsters nearby.';
+                    break;
+                }
+            }
+        }
+        if ($this->pluginEvents !== null) {
+            $event = $this->pluginEvents->bedEnter($player, $headPosition, $result, $message);
+            if ($event->isCancelled()) {
+                return $this->bedMessage($player, $event->message(), 'plugin_cancelled');
+            }
+            $result = $event->result();
+            $message = $event->message();
+        }
+        if ($result !== PlayerBedEnterResult::ALLOWED) {
+            return $this->bedMessage($player, $message, 'bed_denied');
+        }
+        try {
+            $occupied = $this->bedStates->withOccupied($canonical, true);
+            $otherOccupied = $this->bedStates->withOccupied($other, true);
+            $this->setBlockStateAndSchedule($position, $occupied);
+            $this->setBlockStateAndSchedule($otherPosition, $otherOccupied);
+        } catch (InvalidArgumentException|OverflowException) {
+            return new CommandRejected($player->sessionId, 'bed_state');
+        }
+        $player->startSleeping($headPosition);
+        $spawnPoint = new Position(
+            $headPosition->x + 0.5,
+            $headPosition->y + 1.0,
+            $headPosition->z + 0.5,
+        );
+        if ($this->pluginEvents === null || $this->pluginEvents->allowSpawnPointChange($player, $spawnPoint)) {
+            $player->setSpawnPoint($spawnPoint);
+            $this->pluginEvents?->spawnPointChanged($player, $spawnPoint);
+        }
+        $this->pluginEvents?->bedEntered($player, $headPosition);
+        $this->deferredEvents[] = new BlockChanged(
+            $player->sessionId,
+            $position,
+            $occupied,
+            $this->players->recipients(),
+            false,
+            $state,
+        );
+        $this->deferredEvents[] = new BlockChanged(
+            $player->sessionId,
+            $otherPosition,
+            $otherOccupied,
+            $this->players->recipients(),
+            false,
+            $otherState,
+        );
+
+        return new PlayerSleepChanged($player->snapshot(), true, $this->players->recipients());
+    }
+
+    private function resolveBedEnter(
+        Player $player,
+        BlockPosition $position,
+        PlayerBedEnterResult $result,
+        string|TranslatableMessage|null $message,
+    ): WorldEvent {
+        if ($this->pluginEvents !== null) {
+            $event = $this->pluginEvents->bedEnter($player, $position, $result, $message);
+            if ($event->isCancelled()) {
+                return $this->bedMessage($player, $event->message(), 'plugin_cancelled');
+            }
+            $result = $event->result();
+            $message = $event->message();
+        }
+
+        return $result === PlayerBedEnterResult::ALLOWED
+            ? new CommandRejected($player->sessionId, 'bed_invalid')
+            : $this->bedMessage($player, $message, 'bed_denied');
+    }
+
+    private function bedMessage(
+        Player $player,
+        string|TranslatableMessage|null $message,
+        string $silentReason,
+    ): WorldEvent {
+        return $message === null
+            ? new CommandRejected($player->sessionId, $silentReason)
+            : new SystemMessageSent($message, [$player->sessionId]);
+    }
+
+    private function distanceSquared(Position $player, BlockPosition $block): float
+    {
+        $x = $player->x - $block->x;
+        $y = $player->y - $block->y;
+        $z = $player->z - $block->z;
+
+        return $x * $x + $y * $y + $z * $z;
+    }
+
+    private function leaveBed(LeaveBed $command): WorldEvent
+    {
+        $player = $this->players->player($command->session);
+        if ($player === null) {
+            return new CommandRejected($command->session, 'not_joined');
+        }
+
+        return $this->wakePlayer($player, PlayerBedLeaveReason::VOLUNTARY)
+            ?? new CommandRejected($command->session, 'not_sleeping');
+    }
+
+    private function wakePlayer(
+        Player $player,
+        PlayerBedLeaveReason $reason,
+        bool $updateBed = true,
+    ): ?PlayerSleepChanged {
+        $bed = $player->stopSleeping();
+        if ($bed === null) {
+            return null;
+        }
+        if ($updateBed && $this->blockWorld !== null && $this->blockStateRegistry !== null && $this->bedStates !== null) {
+            $state = $this->blockWorld->loadedBlockStateAt($bed->x, $bed->y, $bed->z);
+            if ($state !== null) {
+                try {
+                    $canonical = $this->blockStateRegistry->state($state);
+                    $otherPosition = $this->bedStates->otherHalf($bed, $canonical);
+                    $otherState = $this->blockWorld->loadedBlockStateAt(
+                        $otherPosition->x,
+                        $otherPosition->y,
+                        $otherPosition->z,
+                    );
+                    $other = $otherState === null ? null : $this->blockStateRegistry->state($otherState);
+                    if ($other !== null && $this->bedStates->isMatchingHalf($canonical, $other)) {
+                        $awake = $this->bedStates->withOccupied($canonical, false);
+                        $otherAwake = $this->bedStates->withOccupied($other, false);
+                        $this->setBlockStateAndSchedule($bed, $awake);
+                        $this->setBlockStateAndSchedule($otherPosition, $otherAwake);
+                        $this->deferredEvents[] = new BlockChanged(
+                            $player->sessionId,
+                            $bed,
+                            $awake,
+                            $this->players->recipients(),
+                            false,
+                            $state,
+                        );
+                        $this->deferredEvents[] = new BlockChanged(
+                            $player->sessionId,
+                            $otherPosition,
+                            $otherAwake,
+                            $this->players->recipients(),
+                            false,
+                            $otherState,
+                        );
+                    }
+                } catch (InvalidArgumentException|OverflowException) {
+                    // A missing or changed bed must not trap the player in the sleeping state.
+                }
+            }
+        }
+        $this->pluginEvents?->bedLeft($player, $bed, $reason);
+
+        return new PlayerSleepChanged($player->snapshot(), false, $this->players->recipients());
+    }
+
+    /** @return list<WorldEvent> */
+    private function advanceSleepingPlayers(): array
+    {
+        if ($this->blockWorld === null || $this->dimension !== DimensionType::OVERWORLD) {
+            $this->sleepRequirementMetTick = null;
+
+            return [];
+        }
+        $eligible = [];
+        $sleeping = [];
+        foreach ($this->players->players() as $player) {
+            if (!$player->vitals->isAlive() || $player->gameMode() === GameMode::SPECTATOR) {
+                continue;
+            }
+            $eligible[] = $player;
+            if ($player->isSleeping()) {
+                $sleeping[] = $player;
+            }
+        }
+        if ($eligible === []) {
+            $this->sleepRequirementMetTick = null;
+
+            return [];
+        }
+        $required = max(1, intdiv(count($eligible) * self::SLEEPING_PERCENTAGE + 99, 100));
+        if (count($sleeping) < $required) {
+            $this->sleepRequirementMetTick = null;
+
+            return [];
+        }
+        $this->sleepRequirementMetTick ??= $this->tick;
+        if ($this->tick - $this->sleepRequirementMetTick < self::SLEEP_DELAY_TICKS) {
+            return [];
+        }
+        $current = $this->blockWorld->time();
+        $nextDay = (WorldTimeRules::day($current) + 1) * WorldTimeRules::TICKS_PER_DAY;
+        $target = $nextDay <= WorldTimeRules::MAXIMUM ? $nextDay : 0;
+        if ($this->pluginEvents !== null) {
+            $accepted = $this->pluginEvents->allowTimeSkip($this->worldId, $this->dimension, $target);
+            if ($accepted === null) {
+                $this->sleepRequirementMetTick = $this->tick;
+
+                return [];
+            }
+            $target = $accepted;
+        }
+        $this->blockWorld->setTime($target);
+        if ($this->blockWorld->weather()->weather->type !== WeatherType::CLEAR) {
+            $this->setWeather(new WeatherState(WeatherType::CLEAR, 12_000), WeatherChangeCause::SLEEPING);
+        }
+        $events = [new WorldTimeChanged($target, $this->players->recipients())];
+        foreach ($sleeping as $player) {
+            $event = $this->wakePlayer($player, PlayerBedLeaveReason::MORNING);
+            if ($event !== null) {
+                $events[] = $event;
+            }
+        }
+        $this->sleepRequirementMetTick = null;
+
+        return $events;
+    }
+
     private function placeBlock(PlaceBlock $command): WorldEvent
     {
         $player = $this->players->player($command->session);
@@ -22226,6 +24289,11 @@ final class WorldSimulation
         );
         $clickedIdentifier = $this->blockIdentifier($clickedState->value);
         $held = $player->inventory->selectedStack();
+        if ($clickedIdentifier === 'minecraft:bed'
+            && !$player->movement->sneaking
+            && $this->blockIsReachable($player->snapshot(), $command->clickedPosition)) {
+            return $this->useBed($player, $command->clickedPosition, $clickedState);
+        }
         if (self::isShelfIdentifier($clickedIdentifier)
             && !$player->movement->sneaking
             && $this->blockIsReachable($player->snapshot(), $command->clickedPosition)) {
@@ -22468,6 +24536,9 @@ final class WorldSimulation
         $doorPair = null;
         $doorUpperPosition = null;
         $doorUpperPrevious = null;
+        $bedPair = null;
+        $bedHeadPosition = null;
+        $bedHeadPrevious = null;
         try {
             if ($slabMergeState !== null) {
                 $placedBlockState = $slabMergeState;
@@ -22479,7 +24550,16 @@ final class WorldSimulation
                 );
             } elseif ($heldType?->placedBlockState !== null && $this->blockPlacementStates !== null) {
                 $itemState = $heldType->placedBlockState;
-                if (BlockTagRegistry::contains(BlockTag::DOOR, $itemState->identifier())
+                if ($itemState->identifier() === 'minecraft:bed' && $this->bedStates !== null) {
+                    $bedPair = $this->bedStates->placement($placedPosition, $player->movement->yaw);
+                    $placedBlockState = $bedPair['foot'];
+                    $bedHeadPosition = $bedPair['headPosition'];
+                    $bedHeadPrevious = $this->blockWorld->loadedBlockStateAt(
+                        $bedHeadPosition->x,
+                        $bedHeadPosition->y,
+                        $bedHeadPosition->z,
+                    );
+                } elseif (BlockTagRegistry::contains(BlockTag::DOOR, $itemState->identifier())
                     && $this->doorStates !== null) {
                     $doorPair = $this->resolveDoorPlacement($itemState, $placementContext, $placedPosition);
                     $placedBlockState = $doorPair->lower;
@@ -22544,8 +24624,21 @@ final class WorldSimulation
             $this->railPlacementLacksSupport($placedPosition, $placedBlockState) => 'unsupported',
             $doorPair !== null && ($doorUpperPrevious === null
                 || !$this->isReplaceablePlacementState($doorUpperPrevious)) => 'door_upper_occupied',
+            $bedPair !== null && $command->face !== 1 => 'bed_requires_top_face',
+            $bedPair !== null && ($bedHeadPrevious === null
+                || !$this->isReplaceablePlacementState($bedHeadPrevious)) => 'bed_head_occupied',
+            $bedPair !== null && (!$this->isOpaqueBlockState($this->loadedCanonicalStateAt(
+                $placedPosition->x,
+                $placedPosition->y - 1,
+                $placedPosition->z,
+            )) || $bedHeadPosition === null || !$this->isOpaqueBlockState($this->loadedCanonicalStateAt(
+                $bedHeadPosition->x,
+                $bedHeadPosition->y - 1,
+                $bedHeadPosition->z,
+            ))) => 'bed_unsupported',
             !$this->blockIsReachable($player->snapshot(), $command->clickedPosition) => 'reach',
             $this->placementIntersectsPlayer($placedPosition) => 'collision',
+            $bedHeadPosition !== null && $this->placementIntersectsPlayer($bedHeadPosition) => 'collision',
             default => null,
         };
         if ($command->sequence > $player->placementSequence) {
@@ -22565,7 +24658,9 @@ final class WorldSimulation
             );
         }
         if ($this->pluginEvents !== null
-            && !$this->pluginEvents->allowBlockPlace($player, $placedPosition, $held->identifier)) {
+            && (!$this->pluginEvents->allowBlockPlace($player, $placedPosition, $held->identifier)
+                || ($bedHeadPosition !== null
+                    && !$this->pluginEvents->allowBlockPlace($player, $bedHeadPosition, $held->identifier)))) {
             return new BlockPlacementCorrected(
                 $command->session,
                 $command->clickedPosition,
@@ -22596,7 +24691,33 @@ final class WorldSimulation
                     $doorUpperPrevious,
                 );
             }
+            if ($bedPair !== null && $bedHeadPosition !== null && $bedHeadPrevious !== null) {
+                $this->setBlockStateAndSchedule($bedHeadPosition, $bedPair['head']);
+                $this->deferredEvents[] = new BlockChanged(
+                    $command->session,
+                    $bedHeadPosition,
+                    $bedPair['head'],
+                    $this->players->recipients(),
+                    false,
+                    $bedHeadPrevious,
+                );
+            }
         } catch (OverflowException) {
+            if ($bedPair !== null && $bedHeadPosition !== null && $bedHeadPrevious !== null) {
+                // A bed is one logical placement. Restore both cells if either mutation could not finish.
+                $this->blockWorld->setBlockState(
+                    $placedPosition->x,
+                    $placedPosition->y,
+                    $placedPosition->z,
+                    $placedState,
+                );
+                $this->blockWorld->setBlockState(
+                    $bedHeadPosition->x,
+                    $bedHeadPosition->y,
+                    $bedHeadPosition->z,
+                    $bedHeadPrevious,
+                );
+            }
             return new BlockPlacementCorrected(
                 $command->session,
                 $command->clickedPosition,
@@ -22631,6 +24752,14 @@ final class WorldSimulation
         }
         if ($storageEntity !== null) {
             $this->installStorageBlockEntity($player, $storageEntity, $placedIdentifier);
+        }
+        if ($bedPair !== null && $bedHeadPosition !== null) {
+            $color = BedColor::tryFrom($held->auxValue) ?? BedColor::RED;
+            $footEntity = new BedBlockEntity($placedPosition, $color);
+            $headEntity = new BedBlockEntity($bedHeadPosition, $color);
+            $this->blockWorld->setBlockEntities($footEntity, $headEntity);
+            $this->deferredEvents[] = new BlockEntityChanged($footEntity, $this->players->recipients());
+            $this->deferredEvents[] = new BlockEntityChanged($headEntity, $this->players->recipients());
         }
         if ($signEntity !== null) {
             $this->blockWorld->setBlockEntity($signEntity);
@@ -23730,7 +25859,49 @@ final class WorldSimulation
         if ($failure === null && $type === null) {
             $failure = 'unsupported_entity';
         }
+        if ($failure === null && $this->blockWorld === null) {
+            $failure = 'world_unavailable';
+        }
+        $configuredSpawner = false;
         if ($failure === null) {
+            $spawner = $this->blockWorld->blockEntityAt($command->clickedPosition);
+            if ($spawner instanceof MobSpawnerBlockEntity) {
+                $configuration = $spawner->state->configuration;
+                $spawner = $spawner->withState($spawner->state->withConfiguration(
+                    new \Bedriox\Api\World\Spawner\SpawnerConfiguration(
+                        $definition->identifier(),
+                        $configuration->minimumDelayTicks,
+                        $configuration->maximumDelayTicks,
+                        $configuration->spawnCount,
+                        $configuration->maximumNearbyEntities,
+                        $configuration->requiredPlayerRange,
+                        $configuration->spawnRange,
+                    ),
+                ));
+                $this->blockWorld->setBlockEntity($spawner);
+                $this->deferredEvents[] = new BlockEntityChanged($spawner, $this->players->recipients());
+                $configuredSpawner = true;
+            } elseif ($spawner instanceof TrialSpawnerBlockEntity) {
+                $configuration = $spawner->state->configuration;
+                $spawner = $spawner->withState($spawner->state->withConfiguration(
+                    new \Bedriox\Api\World\Spawner\TrialSpawnerConfiguration(
+                        $definition->identifier(),
+                        $configuration->warmupTicks,
+                        $configuration->spawnIntervalTicks,
+                        $configuration->baseTotalMobs,
+                        $configuration->additionalMobsPerPlayer,
+                        $configuration->maximumSimultaneousMobs,
+                        $configuration->cooldownTicks,
+                        $configuration->requiredPlayerRange,
+                    ),
+                ));
+                $this->blockWorld->setBlockEntity($spawner);
+                $this->projectTrialSpawnerBlockState($spawner);
+                $this->deferredEvents[] = new BlockEntityChanged($spawner, $this->players->recipients());
+                $configuredSpawner = true;
+            }
+        }
+        if ($failure === null && !$configuredSpawner) {
             $outcome = $this->spawnEntity(new EntitySpawnRequest(
                 $type,
                 SpawnCause::SPAWN_EGG,
@@ -24502,6 +26673,12 @@ final class WorldSimulation
                 $position,
             );
         }
+        if ($type === BlockEntityType::MobSpawner) {
+            return MobSpawnerBlockEntity::create($position);
+        }
+        if ($type === BlockEntityType::TrialSpawner) {
+            return TrialSpawnerBlockEntity::create($position);
+        }
 
         return $type->ownsPersistentInventory()
             ? ContainerBlockEntity::empty($type, $position)
@@ -24779,6 +26956,12 @@ final class WorldSimulation
         }
         unset($this->openContainers[$key]);
         $session->inventory->removeViewer($player->identity->uuid);
+        if ($session->type === ApiContainerType::TRADE && $session->entityRuntimeId !== null) {
+            $villager = $this->entityRuntime->registry()->getByRuntimeId($session->entityRuntimeId);
+            if ($villager instanceof VillagerEntity) {
+                $villager->endTrading($player->runtimeActorId);
+            }
+        }
         if ($session->type->isTransient()) {
             $this->returnTransientWorkstationInputs($player, $session);
         }
@@ -25169,6 +27352,10 @@ final class WorldSimulation
         $yaw = $command->yaw ?? $player->movement->yaw;
         $pitch = $command->pitch ?? $player->movement->pitch;
         $from = $player->movement->position;
+        $sleepEvent = $this->wakePlayer($player, PlayerBedLeaveReason::TELEPORT);
+        if ($sleepEvent !== null) {
+            $this->deferredEvents[] = $sleepEvent;
+        }
         if ($this->pluginEvents !== null) {
             $decision = $this->pluginEvents->teleport($player, $destination, $yaw, $pitch);
             if ($decision === null) {

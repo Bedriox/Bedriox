@@ -42,21 +42,41 @@ final class AsyncNavigationCoordinator
     private const int VERTICAL_RADIUS = 3;
     private const int MAXIMUM_SUBMISSIONS_PER_TICK = 2;
     private const int RETRY_BACKOFF_TICKS = 20;
+    private const int MAXIMUM_PREPARATION_CELLS_PER_TICK = 128;
+    private const int MAXIMUM_PREPARATION_NANOSECONDS_PER_TICK = 1_500_000;
+    private const int DIRECT_PATH_REUSE_TICKS = 5;
+    private const float TARGET_REUSE_DISTANCE_SQUARED = 9.0;
 
-    /** @var array<int, array{identity: string, world: string, target: string, revision: string, terrain: string}> */
+    /** @var array<int, array{identity: string, world: string, target: Position, revision: string, terrain: string, generation: int}> */
     private array $pending = [];
 
-    /** @var array<int, array{target: string, points: list<NavigationPoint>, index: int}> */
+    /** @var array<int, array{target: Position, points: list<NavigationPoint>, index: int}> */
     private array $paths = [];
+
+    /** @var array<int, NavigationSnapshotBuild> */
+    private array $builds = [];
+
+    /** @var list<NavigationSnapshotBuild> */
+    private array $buildQueue = [];
+
+    /** @var array<int, array{target: Position, until: int}> */
+    private array $directPaths = [];
 
     /** @var array<int, int> */
     private array $retryAfter = [];
 
-    private int $budgetTick = -1;
     private int $submissionsThisTick = 0;
     private int $submitted = 0;
     private int $completed = 0;
     private int $rejected = 0;
+    private int $generation = 0;
+    private int $queuedBuilds = 0;
+    private int $completedBuilds = 0;
+    private int $cellsScanned = 0;
+    private int $preparationNanoseconds = 0;
+    private int $maximumPreparationNanoseconds = 0;
+    private int $pathsReused = 0;
+    private int $repathsSuppressed = 0;
 
     public function __construct(
         private readonly EntityRegistry $entities,
@@ -68,41 +88,138 @@ final class AsyncNavigationCoordinator
 
     public function waypoint(AbstractMobEntity $entity, Position $target, int $tick): Position
     {
-        if ($this->directPathIsClear($entity, $target)) {
-            unset($this->paths[$entity->getRuntimeId()], $this->pending[$entity->getRuntimeId()]);
-            return $target;
-        }
         $runtimeId = $entity->getRuntimeId();
-        $targetKey = self::pointKey($target);
         $path = $this->paths[$runtimeId] ?? null;
-        if ($path !== null && $path['target'] === $targetKey) {
+        if ($path !== null && self::targetsAreReusable($path['target'], $target)) {
             while (isset($path['points'][$path['index']])) {
                 $point = $path['points'][$path['index']];
                 $waypoint = new Position($point->x + 0.5, $point->y, $point->z + 0.5);
                 if ($entity->internalPosition()->distanceTo($waypoint) > 0.75) {
                     $this->paths[$runtimeId] = $path;
+                    ++$this->pathsReused;
                     return $waypoint;
                 }
                 ++$path['index'];
             }
             unset($this->paths[$runtimeId]);
         }
-        if (isset($this->pending[$runtimeId]) || ($this->retryAfter[$runtimeId] ?? 0) > $tick) {
+        if ($path !== null) {
+            unset($this->paths[$runtimeId]);
+        }
+        $direct = $this->directPaths[$runtimeId] ?? null;
+        if ($direct !== null && $direct['until'] >= $tick && self::targetsAreReusable($direct['target'], $target)) {
+            ++$this->pathsReused;
+            return $target;
+        }
+        unset($this->directPaths[$runtimeId]);
+        $pending = $this->pending[$runtimeId] ?? null;
+        if ($pending !== null && self::targetsAreReusable($pending['target'], $target)) {
+            ++$this->repathsSuppressed;
             return $entity->internalPosition();
         }
-        if ($this->budgetTick !== $tick) {
-            $this->budgetTick = $tick;
-            $this->submissionsThisTick = 0;
+        if ($pending !== null) {
+            unset($this->pending[$runtimeId]);
         }
-        if ($this->submissionsThisTick >= self::MAXIMUM_SUBMISSIONS_PER_TICK) {
+        $build = $this->builds[$runtimeId] ?? null;
+        if ($build !== null && self::targetsAreReusable($build->target, $target)) {
+            ++$this->repathsSuppressed;
             return $entity->internalPosition();
         }
-        $snapshot = $this->capture($entity, $target);
-        if ($snapshot === null) {
+        if ($build !== null) {
+            unset($this->builds[$runtimeId]);
+        }
+        if (($this->retryAfter[$runtimeId] ?? 0) > $tick) {
+            return $entity->internalPosition();
+        }
+        if ($this->directPathIsClear($entity, $target)) {
+            $this->directPaths[$runtimeId] = ['target' => $target, 'until' => $tick + self::DIRECT_PATH_REUSE_TICKS];
+            return $target;
+        }
+        $this->queueBuild($entity, $target);
+
+        return $entity->internalPosition();
+    }
+
+    /** Advances all queued terrain captures under one global main-thread budget. */
+    public function advance(
+        int $tick,
+        int $maximumCells = self::MAXIMUM_PREPARATION_CELLS_PER_TICK,
+        int $maximumNanoseconds = self::MAXIMUM_PREPARATION_NANOSECONDS_PER_TICK,
+    ): void {
+        $this->submissionsThisTick = 0;
+        $started = hrtime(true);
+        $scanned = 0;
+        $visits = count($this->buildQueue);
+        while ($this->buildQueue !== [] && $scanned < $maximumCells && $visits > 0) {
+            if ($scanned > 0 && hrtime(true) - $started >= $maximumNanoseconds) {
+                break;
+            }
+            $build = array_shift($this->buildQueue);
+            $runtimeId = $build->runtimeId;
+            $entity = $this->entities->getByRuntimeId($runtimeId);
+            if (($this->builds[$runtimeId] ?? null) !== $build
+                || $entity === null || $entity->getUniqueId() !== $build->identity
+                || $entity->getWorldName() !== $build->world) {
+                if (($this->builds[$runtimeId] ?? null) === $build) {
+                    unset($this->builds[$runtimeId]);
+                }
+                --$visits;
+                continue;
+            }
+            if (!$build->isComplete()) {
+                $build->advance($this->collisions);
+                ++$scanned;
+                ++$this->cellsScanned;
+            }
+            if ($build->isComplete() && $this->submissionsThisTick < self::MAXIMUM_SUBMISSIONS_PER_TICK) {
+                unset($this->builds[$runtimeId]);
+                ++$this->completedBuilds;
+                $this->submitBuild($build, $tick);
+                --$visits;
+                continue;
+            }
+            $this->buildQueue[] = $build;
+            --$visits;
+            if ($visits === 0 && $scanned < $maximumCells) {
+                $visits = count($this->buildQueue);
+            }
+        }
+        $elapsed = hrtime(true) - $started;
+        $this->preparationNanoseconds += $elapsed;
+        $this->maximumPreparationNanoseconds = max($this->maximumPreparationNanoseconds, $elapsed);
+    }
+
+    private function submitBuild(NavigationSnapshotBuild $build, int $tick): void
+    {
+        $runtimeId = $build->runtimeId;
+        if ($build->isUnavailable() || $build->walkablePoints() === []) {
             $this->retryAfter[$runtimeId] = $tick + self::RETRY_BACKOFF_TICKS;
-            return $entity->internalPosition();
+            return;
         }
-        [$volume, $start, $destination] = $snapshot;
+        if ($this->terrainRevision !== null
+            && ($this->terrainRevision)($build->origin, $build->target) !== $build->terrainRevision) {
+            $this->retryAfter[$runtimeId] = $tick + 1;
+            ++$this->rejected;
+            return;
+        }
+        $walkable = $build->walkablePoints();
+        $start = self::nearestWalkable($walkable, $build->origin);
+        $destination = self::nearestWalkable($walkable, $build->target);
+        if ($start === null || $destination === null) {
+            $this->retryAfter[$runtimeId] = $tick + self::RETRY_BACKOFF_TICKS;
+            return;
+        }
+        $revisionInput = implode(';', array_map(static fn(NavigationPoint $point): string => $point->key(), $walkable));
+        $volume = NavigationSnapshot::fromWalkablePoints(
+            $build->minimumX,
+            $build->minimumY,
+            $build->minimumZ,
+            $build->sizeX,
+            $build->sizeY,
+            $build->sizeZ,
+            $walkable,
+            hash('sha256', $revisionInput),
+        );
         $request = new NavigationSearchRequest(
             $volume,
             $start,
@@ -112,16 +229,21 @@ final class AsyncNavigationCoordinator
             2_048,
             25,
         );
-        $identity = $entity->getUniqueId();
-        $world = $entity->getWorldName();
+        $identity = $build->identity;
+        $world = $build->world;
         $revision = $volume->revision;
-        $terrain = $this->terrainRevision === null
-            ? ''
-            : ($this->terrainRevision)($entity->internalPosition(), $target);
+        $terrain = $build->terrainRevision;
+        $target = $build->target;
+        $generation = ++$this->generation;
         $submission = $this->workers->submit(
             CoreWorkerTaskCatalog::FIND_NAVIGATION_PATH,
             (new NavigationSearchRequestCodec())->encode($request),
-            function (WorkerResult $result) use ($runtimeId, $identity, $world, $target, $targetKey, $revision, $terrain): void {
+            function (WorkerResult $result) use ($runtimeId, $identity, $world, $target, $revision, $terrain, $generation): void {
+                $pending = $this->pending[$runtimeId] ?? null;
+                if ($pending === null || $pending['generation'] !== $generation) {
+                    ++$this->rejected;
+                    return;
+                }
                 unset($this->pending[$runtimeId]);
                 $entity = $this->entities->getByRuntimeId($runtimeId);
                 if ($result->status !== WorkerResultStatus::SUCCESS || $entity === null
@@ -136,7 +258,7 @@ final class AsyncNavigationCoordinator
                     ++$this->rejected;
                     return;
                 }
-                $this->paths[$runtimeId] = ['target' => $targetKey, 'points' => $path->points, 'index' => 1];
+                $this->paths[$runtimeId] = ['target' => $target, 'points' => $path->points, 'index' => 1];
                 ++$this->completed;
             },
             hrtime(true) + 100_000_000,
@@ -145,18 +267,17 @@ final class AsyncNavigationCoordinator
         if (!$submission->isAccepted()) {
             ++$this->rejected;
             $this->retryAfter[$runtimeId] = $tick + self::RETRY_BACKOFF_TICKS;
-            return $entity->internalPosition();
+            return;
         }
         $this->pending[$runtimeId] = [
             'identity' => $identity,
             'world' => $world,
-            'target' => $targetKey,
+            'target' => $target,
             'revision' => $revision,
             'terrain' => $terrain,
+            'generation' => $generation,
         ];
         ++$this->submitted;
-
-        return $entity->internalPosition();
     }
 
     public function metrics(): EntityNavigationMetrics
@@ -167,6 +288,14 @@ final class AsyncNavigationCoordinator
             $this->rejected,
             count($this->pending),
             count($this->paths),
+            count($this->builds),
+            $this->queuedBuilds,
+            $this->completedBuilds,
+            $this->cellsScanned,
+            $this->preparationNanoseconds,
+            $this->maximumPreparationNanoseconds,
+            $this->pathsReused,
+            $this->repathsSuppressed,
         );
     }
 
@@ -196,59 +325,55 @@ final class AsyncNavigationCoordinator
         return $obstacles !== null && $obstacles === [];
     }
 
-    /** @return null|array{NavigationSnapshot, NavigationPoint, NavigationPoint} */
-    private function capture(AbstractMobEntity $entity, Position $target): ?array
+    private function queueBuild(AbstractMobEntity $entity, Position $target): void
     {
         $origin = $entity->internalPosition();
-        $centerX = (int) floor(($origin->x + $target->x) / 2.0);
-        $centerZ = (int) floor(($origin->z + $target->z) / 2.0);
-        $minimumX = $centerX - self::HORIZONTAL_RADIUS;
-        $minimumZ = $centerZ - self::HORIZONTAL_RADIUS;
-        $minimumY = (int) floor(min($origin->y, $target->y)) - self::VERTICAL_RADIUS;
-        $sizeX = $sizeZ = (self::HORIZONTAL_RADIUS * 2) + 1;
-        $sizeY = (self::VERTICAL_RADIUS * 2) + 3;
-        $walkable = [];
-        $halfWidth = $entity->collisionWidth() / 2.0;
-        for ($y = $minimumY; $y < $minimumY + $sizeY; ++$y) {
-            for ($z = $minimumZ; $z < $minimumZ + $sizeZ; ++$z) {
-                for ($x = $minimumX; $x < $minimumX + $sizeX; ++$x) {
-                    $body = new AxisAlignedBox(
-                        $x + 0.5 - $halfWidth,
-                        $y,
-                        $z + 0.5 - $halfWidth,
-                        $x + 0.5 + $halfWidth,
-                        $y + $entity->collisionHeight(),
-                        $z + 0.5 + $halfWidth,
-                    );
-                    $bodyBlocks = $this->collisions->boxesIntersectingLoaded($body);
-                    $support = $this->collisions->boxesIntersectingLoaded($body->offset(0.0, -0.1, 0.0));
-                    if ($bodyBlocks === null || $support === null) {
-                        return null;
-                    }
-                    if ($bodyBlocks === [] && $support !== []) {
-                        $walkable[] = new NavigationPoint($x, $y, $z);
-                    }
-                }
-            }
+        $deltaX = abs($target->x - $origin->x);
+        $deltaZ = abs($target->z - $origin->z);
+        if ($deltaX <= 14.0 && $deltaZ <= 14.0) {
+            $minimumX = (int) floor(min($origin->x, $target->x)) - 2;
+            $minimumZ = (int) floor(min($origin->z, $target->z)) - 2;
+            $sizeX = min(
+                (self::HORIZONTAL_RADIUS * 2) + 1,
+                (int) floor(max($origin->x, $target->x)) + 3 - $minimumX,
+            );
+            $sizeZ = min(
+                (self::HORIZONTAL_RADIUS * 2) + 1,
+                (int) floor(max($origin->z, $target->z)) + 3 - $minimumZ,
+            );
+        } else {
+            $centerX = (int) floor(($origin->x + $target->x) / 2.0);
+            $centerZ = (int) floor(($origin->z + $target->z) / 2.0);
+            $minimumX = $centerX - self::HORIZONTAL_RADIUS;
+            $minimumZ = $centerZ - self::HORIZONTAL_RADIUS;
+            $sizeX = $sizeZ = (self::HORIZONTAL_RADIUS * 2) + 1;
         }
-        $start = self::nearestWalkable($walkable, $origin);
-        $destination = self::nearestWalkable($walkable, $target);
-        if ($start === null || $destination === null) {
-            return null;
-        }
-        $revisionInput = implode(';', array_map(static fn(NavigationPoint $point): string => $point->key(), $walkable));
-        $volume = NavigationSnapshot::fromWalkablePoints(
+        $minimumY = (int) floor(min($origin->y, $target->y)) - 2;
+        $sizeY = min(
+            (self::VERTICAL_RADIUS * 2) + 3,
+            (int) floor(max($origin->y, $target->y)) + 4 - $minimumY,
+        );
+        $runtimeId = $entity->getRuntimeId();
+        $terrain = $this->terrainRevision === null ? '' : ($this->terrainRevision)($origin, $target);
+        $build = new NavigationSnapshotBuild(
+            $runtimeId,
+            $entity->getUniqueId(),
+            $entity->getWorldName(),
+            $origin,
+            $target,
+            $terrain,
             $minimumX,
             $minimumY,
             $minimumZ,
             $sizeX,
             $sizeY,
             $sizeZ,
-            $walkable,
-            hash('sha256', $revisionInput),
+            $entity->collisionWidth(),
+            $entity->collisionHeight(),
         );
-
-        return [$volume, $start, $destination];
+        $this->builds[$runtimeId] = $build;
+        $this->buildQueue[] = $build;
+        ++$this->queuedBuilds;
     }
 
     /** @param list<NavigationPoint> $points */
@@ -269,8 +394,10 @@ final class AsyncNavigationCoordinator
         return $nearest;
     }
 
-    private static function pointKey(Position $position): string
+    private static function targetsAreReusable(Position $left, Position $right): bool
     {
-        return (int) floor($position->x) . ':' . (int) floor($position->y) . ':' . (int) floor($position->z);
+        return (($left->x - $right->x) ** 2) + (($left->z - $right->z) ** 2)
+            <= self::TARGET_REUSE_DISTANCE_SQUARED
+            && abs($left->y - $right->y) <= 1.5;
     }
 }

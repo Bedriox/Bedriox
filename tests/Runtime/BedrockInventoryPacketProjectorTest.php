@@ -204,6 +204,16 @@ final class BedrockInventoryPacketProjectorTest extends TestCase
         self::assertSame($nbt->toBinary(), $projector->fromProtocol($wire)->nbt?->toBinary());
     }
 
+    public function testRepeatedProjectionReusesAnImmutableWireStack(): void
+    {
+        $projector = $this->projector();
+        $stack = new InventoryStack('minecraft:diamond', 1, 13);
+
+        $first = $projector->toProtocol($stack);
+        self::assertSame($first, $projector->toProtocol($stack));
+        self::assertSame(str_repeat("\x00", 10), $first->userData);
+    }
+
     public function testDurabilityUsesTheBedrockDamageTagWithoutPollutingCustomNbt(): void
     {
         $nbt = ItemNbt::empty()->withString('bedriox:feature', 'durable');

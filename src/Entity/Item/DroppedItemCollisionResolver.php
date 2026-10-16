@@ -23,6 +23,7 @@ namespace Bedriox\Server\Entity\Item;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\Collision\AxisAlignedBox;
 use Bedriox\Server\World\Collision\CollisionBoxQuery;
+use Bedriox\Server\World\Collision\LoadedCollisionBoxQuery;
 use Bedriox\Server\World\Environment\Fluid\FluidCurrentResolver;
 
 /** Resolves a dropped item's quarter-block body against authoritative solid blocks. */
@@ -57,8 +58,15 @@ final readonly class DroppedItemCollisionResolver
             $from->y + self::HEIGHT,
             $from->z + self::HALF_WIDTH,
         );
-        [$box, $escapeX, $escapeY, $escapeZ] = $this->escapeEmbeddedBlock($box);
-        $obstacles = $this->query->boxesIntersecting($box->swept($motion->x, $motion->y, $motion->z));
+        $escaped = $this->escapeEmbeddedBlock($box);
+        if ($escaped === null) {
+            return $this->suspendUntilTerrainIsLoaded($advanced, $from);
+        }
+        [$box, $escapeX, $escapeY, $escapeZ] = $escaped;
+        $obstacles = $this->intersections($box->swept($motion->x, $motion->y, $motion->z));
+        if ($obstacles === null) {
+            return $this->suspendUntilTerrainIsLoaded($advanced, $from);
+        }
         $y = $motion->y;
         foreach ($obstacles as $obstacle) {
             $y = $obstacle->resolveY($box, $y);
@@ -98,10 +106,13 @@ final readonly class DroppedItemCollisionResolver
         );
     }
 
-    /** @return array{AxisAlignedBox, float, float, float} */
-    private function escapeEmbeddedBlock(AxisAlignedBox $box): array
+    /** @return array{AxisAlignedBox, float, float, float}|null */
+    private function escapeEmbeddedBlock(AxisAlignedBox $box): ?array
     {
-        $overlaps = $this->query->boxesIntersecting($box);
+        $overlaps = $this->intersections($box);
+        if ($overlaps === null) {
+            return null;
+        }
         if ($overlaps === []) {
             return [$box, 0.0, 0.0, 0.0];
         }
@@ -111,7 +122,11 @@ final readonly class DroppedItemCollisionResolver
         }
         $up = $highestSurface - $box->minY;
         $raised = $box->offset(0.0, $up, 0.0);
-        if (!$this->query->hasCollision($raised)) {
+        $raisedOverlaps = $this->intersections($raised);
+        if ($raisedOverlaps === null) {
+            return null;
+        }
+        if ($raisedOverlaps === []) {
             return [$raised, 0.0, $up, 0.0];
         }
 
@@ -126,11 +141,28 @@ final readonly class DroppedItemCollisionResolver
             (abs($left[0]) + abs($left[2])) <=> (abs($right[0]) + abs($right[2])));
         foreach ($candidates as [$x, $y, $z]) {
             $escaped = $box->offset($x, $y, $z);
-            if (!$this->query->hasCollision($escaped)) {
+            $escapedOverlaps = $this->intersections($escaped);
+            if ($escapedOverlaps === null) {
+                return null;
+            }
+            if ($escapedOverlaps === []) {
                 return [$escaped, $x, $y, $z];
             }
         }
 
         return [$box, 0.0, 0.0, 0.0];
+    }
+
+    /** @return list<AxisAlignedBox>|null */
+    private function intersections(AxisAlignedBox $area): ?array
+    {
+        return $this->query instanceof LoadedCollisionBoxQuery
+            ? $this->query->boxesIntersectingLoaded($area)
+            : $this->query->boxesIntersecting($area);
+    }
+
+    private function suspendUntilTerrainIsLoaded(DroppedItemEntity $advanced, Position $position): DroppedItemEntity
+    {
+        return $advanced->withPositionAndMotion($position, new ItemEntityMotion(0.0, 0.0, 0.0));
     }
 }

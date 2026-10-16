@@ -173,8 +173,43 @@ final readonly class PlayerCollisionResolver
         if ($obstacles === null) {
             return null;
         }
+
+        $heights = [PlayerCollisionShape::STEP_HEIGHT];
+        foreach ($obstacles as $obstacle) {
+            $height = $obstacle->maxY - $initial->minY;
+            if ($height > self::EPSILON && $height <= PlayerCollisionShape::STEP_HEIGHT + self::EPSILON) {
+                $heights[] = min(PlayerCollisionShape::STEP_HEIGHT, $height);
+            }
+        }
+        sort($heights, SORT_NUMERIC);
+
+        $best = null;
+        $bestDistance = -1.0;
+        foreach (array_unique($heights, SORT_REGULAR) as $height) {
+            $candidate = $this->resolveStepAtHeight($initial, $wantedX, $wantedZ, $height, $obstacles);
+            $distance = ($candidate[1] * $candidate[1]) + ($candidate[3] * $candidate[3]);
+            if ($distance > $bestDistance + self::EPSILON) {
+                $best = $candidate;
+                $bestDistance = $distance;
+            }
+        }
+
+        return $best;
+    }
+
+    /**
+     * @param list<AxisAlignedBox> $obstacles
+     * @return array{AxisAlignedBox, float, float, float, list<AxisAlignedBox>}
+     */
+    private function resolveStepAtHeight(
+        AxisAlignedBox $initial,
+        float $wantedX,
+        float $wantedZ,
+        float $height,
+        array $obstacles,
+    ): array {
         $box = $initial;
-        $up = PlayerCollisionShape::STEP_HEIGHT;
+        $up = $height;
         foreach ($obstacles as $obstacle) {
             $up = $obstacle->resolveY($box, $up);
         }

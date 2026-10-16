@@ -27,4 +27,5 @@ enum WorkstationRequestType: string
     case LOOM = 'loom';
     case CLIENT_COMPUTED = 'client_computed';
     case ENCHANT = 'enchant';
+    case TRADE = 'trade';
 }

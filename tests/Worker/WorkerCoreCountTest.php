@@ -27,10 +27,11 @@ use PHPUnit\Framework\TestCase;
 
 final class WorkerCoreCountTest extends TestCase
 {
-    public function testAutoUsesOneLessLogicalProcessorWithAcceptedBounds(): void
+    public function testAutoReservesCapacityForTheMainAndTransportThreads(): void
     {
         self::assertSame(1, WorkerCoreCount::parse('auto', 1));
-        self::assertSame(3, WorkerCoreCount::parse('auto', 4));
+        self::assertSame(1, WorkerCoreCount::parse('auto', 4));
+        self::assertSame(4, WorkerCoreCount::parse('auto', 12));
         self::assertSame(8, WorkerCoreCount::parse('auto', 64));
     }
 

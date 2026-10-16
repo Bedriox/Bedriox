@@ -27,6 +27,13 @@ window, or the server closes it. First-viewer and last-viewer transitions drive
 chest-style animations and the barrel's canonical `open_bit`; one viewer
 leaving cannot close the presentation for another viewer.
 
+Villager trading uses an entity-backed transient container rather than durable
+storage. Its two ingredient slots and result slot enter the same authoritative
+stack-request pipeline, but a result is granted only after the current
+villager, offer generation, level, use count, inputs, and destination capacity
+are revalidated as one transaction. See
+[villages, villagers, and trading](villages-and-trading.md).
+
 ## Plugin API
 
 `PluginContext::containers()` returns a plugin-scoped `ContainerManager`. World-container lookup requires the owning loaded-world handle plus a canonical block position; virtual creation remains world-independent:

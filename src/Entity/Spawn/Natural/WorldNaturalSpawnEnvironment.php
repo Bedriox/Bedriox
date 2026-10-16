@@ -35,12 +35,13 @@ use Bedriox\Server\World\Collision\AxisAlignedBox;
 use Bedriox\Server\World\Collision\BlockCollisionQuery;
 use Bedriox\Server\World\Collision\BlockCollisionRegistry;
 use Bedriox\Server\World\DimensionTypeBounds;
+use Bedriox\Server\World\Spawner\SpawnerSpawnSiteEnvironment;
 use Bedriox\Server\World\World;
 use InvalidArgumentException;
 use RuntimeException;
 
 /** Read-only adapter from the authoritative world/entity models to bounded natural-spawn queries. */
-final class WorldNaturalSpawnEnvironment implements NaturalSpawnEnvironment
+final class WorldNaturalSpawnEnvironment implements NaturalSpawnEnvironment, SpawnerSpawnSiteEnvironment
 {
     /** @var list<NaturalSpawnPlayer> */
     private array $players = [];

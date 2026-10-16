@@ -20,6 +20,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Gameplay\Block;
 
+use Bedriox\Api\World\BlockTag;
+use Bedriox\Api\World\BlockTagRegistry;
 use Bedriox\Data\BlockItemMappingRegistry;
 use Bedriox\Data\CanonicalBlockState;
 use Bedriox\Server\Gameplay\Item\ToolTier;
@@ -139,6 +141,16 @@ final readonly class BlockCatalog
                 }
                 $types[] = self::mappedType($state, $itemIdentifier);
                 $indicesByIdentifier[$blockIdentifier] = count($types) - 1;
+            }
+            foreach ($registry->states() as $state) {
+                $identifier = $state->identifier();
+                if (isset($indicesByIdentifier[$identifier])
+                    || !BlockTagRegistry::contains(BlockTag::DOOR, $identifier)
+                    || !self::isDoorItemState($state)) {
+                    continue;
+                }
+                $types[] = self::mappedType($state, $identifier);
+                $indicesByIdentifier[$identifier] = count($types) - 1;
             }
         }
         if ($blockItems !== null) {
@@ -277,6 +289,21 @@ final readonly class BlockCatalog
         }
         $generated = self::generatedType($state);
 
+        if (in_array($state->identifier(), [
+            'minecraft:short_grass',
+            'minecraft:tall_grass',
+        ], true)) {
+            return new BlockType(
+                $state,
+                $generated->hardness,
+                $generated->preferredTool,
+                $generated->requiredTier,
+                BlockDropKind::None,
+                true,
+                $itemIdentifier,
+            );
+        }
+
         return new BlockType(
             $state,
             $generated->hardness,
@@ -299,6 +326,16 @@ final readonly class BlockCatalog
         }
 
         return null;
+    }
+
+    private static function isDoorItemState(CanonicalBlockState $state): bool
+    {
+        $properties = $state->properties();
+
+        return ($properties['door_hinge_bit'] ?? null) === 0
+            && ($properties['minecraft:cardinal_direction'] ?? null) === 'south'
+            && ($properties['open_bit'] ?? null) === 0
+            && ($properties['upper_block_bit'] ?? null) === 0;
     }
 
     /**

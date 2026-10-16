@@ -30,6 +30,7 @@ use Bedriox\Server\Gameplay\Processing\CampfireType;
 use Bedriox\Server\Gameplay\Processing\CauldronBlockEntity;
 use Bedriox\Server\Gameplay\Processing\FurnaceBlockEntity;
 use Bedriox\Server\Gameplay\Processing\FurnaceType;
+use Bedriox\Server\World\BlockEntity\BedBlockEntity;
 use Bedriox\Server\World\BlockEntity\BlockEntity;
 use Bedriox\Server\World\BlockEntity\BlockEntityCollection;
 use Bedriox\Server\World\BlockEntity\BlockEntityRegistry;
@@ -37,12 +38,16 @@ use Bedriox\Server\World\BlockEntity\BlockEntityType;
 use Bedriox\Server\World\BlockEntity\ContainerBlockEntity;
 use Bedriox\Server\World\BlockEntity\ContainerInventory;
 use Bedriox\Server\World\BlockEntity\ContainerItemStack;
+use Bedriox\Server\World\BlockEntity\MobSpawnerBlockEntity;
 use Bedriox\Server\World\BlockEntity\ShelfBlockEntity;
 use Bedriox\Server\World\BlockEntity\SignBlockEntity;
 use Bedriox\Server\World\BlockEntity\SignText;
 use Bedriox\Server\World\BlockEntity\SuspiciousSandBlockEntity;
+use Bedriox\Server\World\BlockEntity\TrialSpawnerBlockEntity;
 use Bedriox\Server\World\BlockPosition;
 use Bedriox\Server\World\ChunkPosition;
+use Bedriox\Server\World\Spawner\MobSpawnerState;
+use Bedriox\Server\World\Spawner\TrialSpawnerState;
 use Bedriox\Server\World\Storage\Exception\CorruptWorldDataException;
 use Bedriox\Server\World\Storage\Nbt\LittleEndianNbtCodec;
 use Bedriox\Server\World\Storage\Nbt\LittleEndianNbtTag;
@@ -210,6 +215,11 @@ final readonly class PersistentBlockEntityCodec
             'z' => LittleEndianNbtTag::int($entity->position->z),
             'isMovable' => LittleEndianNbtTag::byte(1),
         ];
+        if ($entity instanceof BedBlockEntity) {
+            $root['color'] = LittleEndianNbtTag::byte($entity->color->value);
+
+            return $root;
+        }
         if ($entity instanceof FurnaceBlockEntity) {
             if ($entity->customName !== null) {
                 $root['CustomName'] = LittleEndianNbtTag::string($entity->customName);
@@ -270,6 +280,14 @@ final readonly class PersistentBlockEntityCodec
 
             return $root;
         }
+        if ($entity instanceof MobSpawnerBlockEntity) {
+            return array_replace($root, self::encodeMobSpawnerState($entity->state));
+        }
+        if ($entity instanceof TrialSpawnerBlockEntity) {
+            $root['BedrioxTrialSpawner'] = LittleEndianNbtTag::compound(self::encodeTrialSpawnerState($entity->state));
+
+            return $root;
+        }
         if ($entity instanceof SignBlockEntity) {
             $root['FrontText'] = LittleEndianNbtTag::compound(self::encodeSignText($entity->front));
             $root['BackText'] = LittleEndianNbtTag::compound(self::encodeSignText($entity->back));
@@ -320,6 +338,11 @@ final readonly class PersistentBlockEntityCodec
             'y' => LittleEndianNbtTag::int($entity->position->y),
             'z' => LittleEndianNbtTag::int($entity->position->z),
         ];
+        if ($entity instanceof BedBlockEntity) {
+            $root['color'] = LittleEndianNbtTag::byte($entity->color->value);
+
+            return $root;
+        }
         if ($entity instanceof FurnaceBlockEntity) {
             if ($entity->customName !== null) {
                 $root['CustomName'] = LittleEndianNbtTag::string($entity->customName);
@@ -361,6 +384,15 @@ final readonly class PersistentBlockEntityCodec
         if ($entity instanceof SuspiciousSandBlockEntity) {
             $root['item'] = LittleEndianNbtTag::compound($this->encodeItem(0, $entity->hiddenItem));
             $root['brush_count'] = LittleEndianNbtTag::int($entity->progress);
+
+            return $root;
+        }
+        if ($entity instanceof MobSpawnerBlockEntity) {
+            return array_replace($root, self::encodeMobSpawnerState($entity->state, persistent: false));
+        }
+        if ($entity instanceof TrialSpawnerBlockEntity) {
+            $root['BedrioxTrialPhase'] = LittleEndianNbtTag::string($entity->state->phase->value);
+            $root['BedrioxTrialOminous'] = LittleEndianNbtTag::byte($entity->state->ominous ? 1 : 0);
 
             return $root;
         }
@@ -409,6 +441,17 @@ final readonly class PersistentBlockEntityCodec
             self::integer(self::required($root, 'y'), LittleEndianNbtTag::INT, 'y'),
             self::integer(self::required($root, 'z'), LittleEndianNbtTag::INT, 'z'),
         );
+        if ($type === BlockEntityType::Bed) {
+            $color = isset($root['color'])
+                ? self::integer($root['color'], LittleEndianNbtTag::BYTE, 'color')
+                : \Bedriox\Api\World\BedColor::RED->value;
+
+            return new BedBlockEntity(
+                $position,
+                \Bedriox\Api\World\BedColor::tryFrom($color)
+                    ?? throw new InvalidArgumentException('Bed color is outside its supported range.'),
+            );
+        }
         if ($type === BlockEntityType::BrushableBlock) {
             $item = self::compound(self::required($root, 'item'), 'item');
             [, $hiddenItem] = $this->decodeItem($item, 1);
@@ -426,6 +469,18 @@ final readonly class PersistentBlockEntityCodec
                 : 0;
 
             return new SuspiciousSandBlockEntity($position, $hiddenItem, $seed, $provenance, $progress, $revision);
+        }
+        if ($type === BlockEntityType::MobSpawner) {
+            return new MobSpawnerBlockEntity($position, self::decodeMobSpawnerState($root));
+        }
+        if ($type === BlockEntityType::TrialSpawner) {
+            return new TrialSpawnerBlockEntity(
+                $position,
+                self::decodeTrialSpawnerState(self::compound(
+                    self::required($root, 'BedrioxTrialSpawner'),
+                    'BedrioxTrialSpawner',
+                )),
+            );
         }
         if ($type === BlockEntityType::Sign || $type === BlockEntityType::HangingSign) {
             return new SignBlockEntity(
@@ -639,6 +694,180 @@ final readonly class PersistentBlockEntityCodec
     }
 
     /** @return array<string, LittleEndianNbtTag> */
+    private static function encodeMobSpawnerState(MobSpawnerState $state, bool $persistent = true): array
+    {
+        $configuration = $state->configuration;
+        $tags = [
+            'EntityIdentifier' => LittleEndianNbtTag::string($configuration->entityIdentifier),
+            'Delay' => self::shortTag($state->remainingDelayTicks),
+            'MinSpawnDelay' => self::shortTag($configuration->minimumDelayTicks),
+            'MaxSpawnDelay' => self::shortTag($configuration->maximumDelayTicks),
+            'SpawnCount' => self::shortTag($configuration->spawnCount),
+            'MaxNearbyEntities' => self::shortTag($configuration->maximumNearbyEntities),
+            'RequiredPlayerRange' => self::shortTag($configuration->requiredPlayerRange),
+            'SpawnRange' => self::shortTag($configuration->spawnRange),
+        ];
+        if ($persistent) {
+            $tags['BedrioxSpawnerSchema'] = LittleEndianNbtTag::int(MobSpawnerState::SCHEMA_VERSION);
+            $tags['BedrioxMinimumDelayTicks'] = LittleEndianNbtTag::int($configuration->minimumDelayTicks);
+            $tags['BedrioxMaximumDelayTicks'] = LittleEndianNbtTag::int($configuration->maximumDelayTicks);
+            $tags['BedrioxRemainingDelayTicks'] = LittleEndianNbtTag::int($state->remainingDelayTicks);
+            $tags['BedrioxActive'] = LittleEndianNbtTag::byte($state->active ? 1 : 0);
+            $tags['BedrioxRevision'] = LittleEndianNbtTag::int($state->revision);
+        }
+
+        return $tags;
+    }
+
+    /** @param array<string, LittleEndianNbtTag> $root */
+    private static function decodeMobSpawnerState(array $root): MobSpawnerState
+    {
+        $minimum = self::optionalInteger($root, 'BedrioxMinimumDelayTicks', LittleEndianNbtTag::INT)
+            ?? self::integer(self::required($root, 'MinSpawnDelay'), LittleEndianNbtTag::SHORT, 'MinSpawnDelay');
+        $maximum = self::optionalInteger($root, 'BedrioxMaximumDelayTicks', LittleEndianNbtTag::INT)
+            ?? self::integer(self::required($root, 'MaxSpawnDelay'), LittleEndianNbtTag::SHORT, 'MaxSpawnDelay');
+        $state = [
+            'schema' => self::optionalInteger($root, 'BedrioxSpawnerSchema', LittleEndianNbtTag::INT)
+                ?? MobSpawnerState::SCHEMA_VERSION,
+            'entity_identifier' => self::string(self::required($root, 'EntityIdentifier'), 'EntityIdentifier'),
+            'minimum_delay_ticks' => $minimum,
+            'maximum_delay_ticks' => $maximum,
+            'spawn_count' => self::integer(self::required($root, 'SpawnCount'), LittleEndianNbtTag::SHORT, 'SpawnCount'),
+            'maximum_nearby_entities' => self::integer(
+                self::required($root, 'MaxNearbyEntities'),
+                LittleEndianNbtTag::SHORT,
+                'MaxNearbyEntities',
+            ),
+            'required_player_range' => self::integer(
+                self::required($root, 'RequiredPlayerRange'),
+                LittleEndianNbtTag::SHORT,
+                'RequiredPlayerRange',
+            ),
+            'spawn_range' => self::integer(self::required($root, 'SpawnRange'), LittleEndianNbtTag::SHORT, 'SpawnRange'),
+            'remaining_delay_ticks' => self::optionalInteger($root, 'BedrioxRemainingDelayTicks', LittleEndianNbtTag::INT)
+                ?? max(0, self::integer(self::required($root, 'Delay'), LittleEndianNbtTag::SHORT, 'Delay')),
+            'active' => (self::optionalInteger($root, 'BedrioxActive', LittleEndianNbtTag::BYTE) ?? 0) !== 0,
+            'revision' => self::optionalInteger($root, 'BedrioxRevision', LittleEndianNbtTag::INT) ?? 0,
+        ];
+
+        return MobSpawnerState::fromArray($state);
+    }
+
+    /** @return array<string, LittleEndianNbtTag> */
+    private static function encodeTrialSpawnerState(TrialSpawnerState $state): array
+    {
+        $configuration = $state->configuration;
+
+        return [
+            'Schema' => LittleEndianNbtTag::int(TrialSpawnerState::SCHEMA_VERSION),
+            'EntityIdentifier' => LittleEndianNbtTag::string($configuration->entityIdentifier),
+            'WarmupTicks' => LittleEndianNbtTag::int($configuration->warmupTicks),
+            'SpawnIntervalTicks' => LittleEndianNbtTag::int($configuration->spawnIntervalTicks),
+            'BaseTotalMobs' => LittleEndianNbtTag::int($configuration->baseTotalMobs),
+            'AdditionalMobsPerPlayer' => LittleEndianNbtTag::int($configuration->additionalMobsPerPlayer),
+            'MaximumSimultaneousMobs' => LittleEndianNbtTag::int($configuration->maximumSimultaneousMobs),
+            'CooldownTicks' => LittleEndianNbtTag::int($configuration->cooldownTicks),
+            'RequiredPlayerRange' => LittleEndianNbtTag::int($configuration->requiredPlayerRange),
+            'Phase' => LittleEndianNbtTag::string($state->phase->value),
+            'ParticipantIds' => self::stringListTag($state->participantIds),
+            'ActiveSpawnedEntityIds' => self::stringListTag($state->activeSpawnedEntityIds),
+            'SpawnedCount' => LittleEndianNbtTag::int($state->spawnedCount),
+            'RemainingActionTicks' => LittleEndianNbtTag::int($state->remainingActionTicks),
+            'RewardCursor' => LittleEndianNbtTag::int($state->rewardCursor),
+            'Ominous' => LittleEndianNbtTag::byte($state->ominous ? 1 : 0),
+            'Revision' => LittleEndianNbtTag::int($state->revision),
+        ];
+    }
+
+    /** @param array<string, LittleEndianNbtTag> $tags */
+    private static function decodeTrialSpawnerState(array $tags): TrialSpawnerState
+    {
+        return TrialSpawnerState::fromArray([
+            'schema' => self::integer(self::required($tags, 'Schema'), LittleEndianNbtTag::INT, 'Schema'),
+            'entity_identifier' => self::string(self::required($tags, 'EntityIdentifier'), 'EntityIdentifier'),
+            'warmup_ticks' => self::integer(self::required($tags, 'WarmupTicks'), LittleEndianNbtTag::INT, 'WarmupTicks'),
+            'spawn_interval_ticks' => self::integer(
+                self::required($tags, 'SpawnIntervalTicks'),
+                LittleEndianNbtTag::INT,
+                'SpawnIntervalTicks',
+            ),
+            'base_total_mobs' => self::integer(self::required($tags, 'BaseTotalMobs'), LittleEndianNbtTag::INT, 'BaseTotalMobs'),
+            'additional_mobs_per_player' => self::integer(
+                self::required($tags, 'AdditionalMobsPerPlayer'),
+                LittleEndianNbtTag::INT,
+                'AdditionalMobsPerPlayer',
+            ),
+            'maximum_simultaneous_mobs' => self::integer(
+                self::required($tags, 'MaximumSimultaneousMobs'),
+                LittleEndianNbtTag::INT,
+                'MaximumSimultaneousMobs',
+            ),
+            'cooldown_ticks' => self::integer(self::required($tags, 'CooldownTicks'), LittleEndianNbtTag::INT, 'CooldownTicks'),
+            'required_player_range' => self::integer(
+                self::required($tags, 'RequiredPlayerRange'),
+                LittleEndianNbtTag::INT,
+                'RequiredPlayerRange',
+            ),
+            'phase' => self::string(self::required($tags, 'Phase'), 'Phase'),
+            'participant_ids' => self::decodeStringList(self::required($tags, 'ParticipantIds'), 'ParticipantIds', 64),
+            'active_spawned_entity_ids' => self::decodeStringList(
+                self::required($tags, 'ActiveSpawnedEntityIds'),
+                'ActiveSpawnedEntityIds',
+                16,
+            ),
+            'spawned_count' => self::integer(self::required($tags, 'SpawnedCount'), LittleEndianNbtTag::INT, 'SpawnedCount'),
+            'remaining_action_ticks' => self::integer(
+                self::required($tags, 'RemainingActionTicks'),
+                LittleEndianNbtTag::INT,
+                'RemainingActionTicks',
+            ),
+            'reward_cursor' => self::integer(self::required($tags, 'RewardCursor'), LittleEndianNbtTag::INT, 'RewardCursor'),
+            'ominous' => self::integer(self::required($tags, 'Ominous'), LittleEndianNbtTag::BYTE, 'Ominous') !== 0,
+            'revision' => self::integer(self::required($tags, 'Revision'), LittleEndianNbtTag::INT, 'Revision'),
+        ]);
+    }
+
+    private static function shortTag(int $value): LittleEndianNbtTag
+    {
+        return new LittleEndianNbtTag(LittleEndianNbtTag::SHORT, min(32_767, max(0, $value)));
+    }
+
+    /** @param list<string> $values */
+    private static function stringListTag(array $values): LittleEndianNbtTag
+    {
+        return LittleEndianNbtTag::list(
+            LittleEndianNbtTag::STRING,
+            array_map(static fn(string $value): LittleEndianNbtTag => LittleEndianNbtTag::string($value), $values),
+        );
+    }
+
+    /** @return list<string> */
+    private static function decodeStringList(LittleEndianNbtTag $tag, string $name, int $maximum): array
+    {
+        if ($tag->type !== LittleEndianNbtTag::LIST
+            || ($tag->listType !== LittleEndianNbtTag::STRING
+                && !($tag->listType === LittleEndianNbtTag::END && $tag->value === []))
+            || !is_array($tag->value) || count($tag->value) > $maximum) {
+            throw new InvalidArgumentException("Block-entity NBT tag '$name' is malformed or exceeds its limit.");
+        }
+        $values = [];
+        foreach ($tag->value as $entry) {
+            if (!$entry instanceof LittleEndianNbtTag) {
+                throw new InvalidArgumentException("Block-entity NBT tag '$name' contains an invalid entry.");
+            }
+            $values[] = self::string($entry, $name);
+        }
+
+        return $values;
+    }
+
+    /** @param array<string, LittleEndianNbtTag> $tags */
+    private static function optionalInteger(array $tags, string $name, int $type): ?int
+    {
+        return isset($tags[$name]) ? self::integer($tags[$name], $type, $name) : null;
+    }
+
+    /** @return array<string, LittleEndianNbtTag> */
     private function encodeItem(int $slot, ContainerItemStack $stack): array
     {
         $item = [
@@ -743,6 +972,9 @@ final readonly class PersistentBlockEntityCodec
                 return isset($root['BedrioxStructureProvenance'])
                     && self::string($root['BedrioxStructureProvenance'], 'BedrioxStructureProvenance')
                         === SuspiciousSandBlockEntity::WARM_OCEAN_RUIN_PROVENANCE;
+            }
+            if ($type === BlockEntityType::TrialSpawner) {
+                return isset($root['BedrioxTrialSpawner']);
             }
 
             return true;

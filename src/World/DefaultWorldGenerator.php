@@ -38,6 +38,8 @@ use Bedriox\Server\World\Generation\SeededNoise;
 use Bedriox\Server\World\Generation\Structure\Overworld\OverworldStructureFamily;
 use Bedriox\Server\World\Generation\Structure\Overworld\OverworldStructureGenerator;
 use Bedriox\Server\World\Generation\Structure\Overworld\OverworldStructureLocation;
+use Bedriox\Server\World\Generation\Structure\Overworld\VillagePopulationIntentProvider;
+use Bedriox\Server\World\Generation\Structure\PlacedStructureMarker;
 use Bedriox\Server\World\Generation\Surface\OverworldSurfaceContext;
 use Bedriox\Server\World\Generation\Surface\OverworldSurfaceField;
 use Bedriox\Server\World\Generation\Surface\OverworldSurfaceMaterial;
@@ -46,7 +48,7 @@ use Bedriox\Server\World\Generation\Vegetation\TreeArchetype;
 use Bedriox\Server\World\Generation\Vegetation\VegetationTreePlan;
 
 /** Deterministic three-dimensional overworld generator for the built-in default world profile. */
-final class DefaultWorldGenerator implements VersionedWorldGenerator
+final class DefaultWorldGenerator implements VersionedWorldGenerator, VillagePopulationIntentProvider
 {
     public const int VERSION = 5;
     public const int SEA_LEVEL = OverworldTerrainSampler::SEA_LEVEL;
@@ -417,6 +419,16 @@ final class DefaultWorldGenerator implements VersionedWorldGenerator
             fn(int $worldX, int $worldZ): string => $this->biomeAt($worldX, $worldZ)->identifier,
             fn(int $worldX, int $worldZ): int => $this->surfaceHeight($worldX, $worldZ),
             $maximumRegionRadius,
+        );
+    }
+
+    /** @return list<PlacedStructureMarker> */
+    public function villageMarkersInChunk(ChunkPosition $position): array
+    {
+        return $this->structures->villageMarkersInChunk(
+            $position,
+            fn(int $x, int $z): string => $this->biomeAt($x, $z)->identifier,
+            fn(int $x, int $z): int => $this->surfaceHeight($x, $z),
         );
     }
 

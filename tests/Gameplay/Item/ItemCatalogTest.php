@@ -86,6 +86,15 @@ final class ItemCatalogTest extends TestCase
         self::assertSame(1, $catalog->type('minecraft:oak_chest_boat')->maximumStackSize);
         self::assertSame(1, $catalog->type('minecraft:bamboo_raft')->maximumStackSize);
         self::assertSame(1, $catalog->type('minecraft:bamboo_chest_raft')->maximumStackSize);
+        self::assertSame(1, $catalog->type('minecraft:bed')->maximumStackSize);
+        $bed = $catalog->type('minecraft:bed')->placedBlockState;
+        self::assertNotNull($bed);
+        self::assertSame('minecraft:bed', $bed->identifier());
+        self::assertSame([
+            'direction' => 0,
+            'head_piece_bit' => 0,
+            'occupied_bit' => 0,
+        ], $bed->properties());
         self::assertSame(
             'minecraft:undyed_shulker_box',
             $catalog->type('minecraft:shulker_box')->placedBlockState?->identifier(),
@@ -164,6 +173,37 @@ final class ItemCatalogTest extends TestCase
             'minecraft:stonecutter_block',
             $items->type('minecraft:stonecutter')->placedBlockState?->identifier(),
         );
+    }
+
+    public function testEveryVanillaDoorItemHasAValidPlaceableBlockState(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $states = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $items = ItemCatalog::vanilla(
+            $data->itemNetworkRegistry(),
+            creative: $data->creativeInventoryRegistry(),
+            blockItems: $data->blockItemMappingRegistry(),
+        );
+
+        $doors = 0;
+        foreach ($data->itemNetworkRegistry()->definitions() as $identifier => $_definition) {
+            if (!str_ends_with($identifier, '_door') || str_ends_with($identifier, '_trapdoor')) {
+                continue;
+            }
+            ++$doors;
+            $state = $items->type($identifier)->placedBlockState;
+            self::assertNotNull($state, $identifier);
+            self::assertSame($identifier, $state->identifier(), $identifier);
+            self::assertSame([
+                'door_hinge_bit' => 0,
+                'minecraft:cardinal_direction' => 'south',
+                'open_bit' => 0,
+                'upper_block_bit' => 0,
+            ], $state->properties(), $identifier);
+            self::assertGreaterThanOrEqual(0, $states->internalId($state)->value, $identifier);
+        }
+
+        self::assertGreaterThan(0, $doors);
     }
 
     public function testTieredToolsAndShearsHaveAuthoritativeProperties(): void

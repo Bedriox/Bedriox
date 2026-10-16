@@ -133,6 +133,38 @@ final class AiSchedulerTest extends TestCase
 
         self::assertSame([1, 2], $scheduled);
     }
+
+    public function testTimeBudgetIsRecheckedAfterEveryEntity(): void
+    {
+        $mobs = [];
+        $distances = [];
+        for ($id = 1; $id <= 20; ++$id) {
+            $mobs[] = new ZombieEntity(EntityUuid::random(), $id, 'world', new Position(0.0, 64.0, 0.0));
+            $distances[$id] = 1.0;
+        }
+        $metrics = (new AiScheduler(new AdvancingAiClock()))->tick(
+            $mobs,
+            new AiTickContext(1, new DistanceAiWorldView($distances)),
+            true,
+            new AiWorkBudget(20, 2_000_000),
+        );
+
+        self::assertSame(1, $metrics->considered);
+        self::assertSame(1, $metrics->ticked);
+        self::assertTrue($metrics->budgetExhausted);
+    }
+}
+
+final class AdvancingAiClock implements AiClock
+{
+    private int $nanoseconds = 0;
+
+    public function nanoseconds(): int
+    {
+        $this->nanoseconds += 3_000_000;
+
+        return $this->nanoseconds;
+    }
 }
 
 final class FixedAiClock implements AiClock

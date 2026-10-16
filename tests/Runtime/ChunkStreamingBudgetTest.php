@@ -86,4 +86,15 @@ final class ChunkStreamingBudgetTest extends TestCase
         self::assertFalse($slice->hasDeliveryCapacity());
         self::assertFalse($slice->claimDelivery());
     }
+
+    public function testPrefetchPermissionIsInheritedBySessionSlices(): void
+    {
+        $allowed = new ChunkStreamingBudget(1, 1, 1);
+        self::assertTrue($allowed->allowsPrefetch());
+        self::assertTrue($allowed->slice(1, 1, 1)->allowsPrefetch());
+
+        $blocked = new ChunkStreamingBudget(1, 1, 1, prefetchAllowed: false);
+        self::assertFalse($blocked->allowsPrefetch());
+        self::assertFalse($blocked->slice(1, 1, 1)->allowsPrefetch());
+    }
 }

@@ -39,7 +39,6 @@ use Bedriox\Api\World\Particle\StandardParticle;
 use Bedriox\Api\World\Particle\StandardParticleType;
 use Bedriox\Api\World\WeatherState;
 use Bedriox\Api\World\WeatherType;
-use Bedriox\Protocol\Codec\UnsignedVarInt;
 use Bedriox\Protocol\Identity\VerifiedAnimation;
 use Bedriox\Protocol\Packet\Ability;
 use Bedriox\Protocol\Packet\AbilityLayer;
@@ -128,6 +127,7 @@ use Bedriox\Protocol\Packet\SetActorDataPacket;
 use Bedriox\Protocol\Packet\SetActorLinkPacket;
 use Bedriox\Protocol\Packet\SetActorMotionPacket;
 use Bedriox\Protocol\Packet\SetPlayerGameTypePacket;
+use Bedriox\Protocol\Packet\SetTimePacket;
 use Bedriox\Protocol\Packet\SpawnParticleEffectPacket;
 use Bedriox\Protocol\Packet\SystemTextPacket;
 use Bedriox\Protocol\Packet\TakeItemActorPacket;
@@ -140,6 +140,7 @@ use Bedriox\Protocol\Packet\UpdateBlockPacket;
 use Bedriox\Protocol\Packet\UpdateBlockSyncedPacket;
 use Bedriox\Protocol\Packet\UpdateEquipPacket;
 use Bedriox\Protocol\Packet\UpdatePlayerGameTypePacket;
+use Bedriox\Protocol\Packet\UpdateTradePacket;
 use Bedriox\Protocol\Value\BuildPlatform;
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\Server\Entity\AbstractLivingEntity;
@@ -234,32 +235,40 @@ use Bedriox\Server\Simulation\Event\PlayerMotionChanged;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
 use Bedriox\Server\Simulation\Event\PlayerPresentationChanged;
 use Bedriox\Server\Simulation\Event\PlayerRespawned;
+use Bedriox\Server\Simulation\Event\PlayerSleepChanged;
 use Bedriox\Server\Simulation\Event\PotionSplashImpacted;
 use Bedriox\Server\Simulation\Event\ProjectileMoved;
 use Bedriox\Server\Simulation\Event\ProjectileRemoved;
 use Bedriox\Server\Simulation\Event\ProjectileSpawned;
 use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
 use Bedriox\Server\Simulation\Event\SignEditorOpened;
+use Bedriox\Server\Simulation\Event\SystemMessageSent;
 use Bedriox\Server\Simulation\Event\TameAttemptPresented;
 use Bedriox\Server\Simulation\Event\TextDisplayActorRemoved;
 use Bedriox\Server\Simulation\Event\TextDisplayActorSpawned;
 use Bedriox\Server\Simulation\Event\TextDisplayActorUpdated;
 use Bedriox\Server\Simulation\Event\TntPrimed;
+use Bedriox\Server\Simulation\Event\VillagerTradeCompleted;
+use Bedriox\Server\Simulation\Event\VillagerTradeOffersUpdated;
 use Bedriox\Server\Simulation\Event\WeatherChanged;
 use Bedriox\Server\Simulation\Event\WorldEvent;
+use Bedriox\Server\Simulation\Event\WorldTimeChanged;
 use Bedriox\Server\Simulation\PlayerSnapshot;
 use Bedriox\Server\Simulation\VerticalState;
 use Bedriox\Server\World\Storage\LevelDb\PersistentBlockEntityCodec;
+use WeakMap;
 
 /** Stateless current-Bedrock projection of authoritative simulation events. */
 final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder, EntityMovementPacketEncoder, PlayerMovementPacketEncoder, WorldEventPacketEncoder
 {
-    /** Leaves room for the packet header inside the protocol's 1 MiB packet-frame ceiling. */
-    private const int MAXIMUM_PLAYER_LIST_BODY_BYTES = 1_000_000;
+    private const int PLAYER_SLEEP_FLAG = 1 << 1;
 
     private readonly PersistentBlockEntityCodec $blockEntities;
 
     private readonly BedrockLivingActorProjector $livingActors;
+
+    /** @var WeakMap<PlayerSkin, PlayerListAddPacket> */
+    private readonly WeakMap $playerListPackets;
 
     public function __construct(
         private readonly ?BedrockChunkPacketSerializer $chunks = null,
@@ -269,6 +278,7 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
     ) {
         $this->blockEntities = $blockEntities ?? new PersistentBlockEntityCodec();
         $this->livingActors = $livingActors ?? new BedrockLivingActorProjector();
+        $this->playerListPackets = new WeakMap();
     }
 
     public function encode(WorldEvent $event, array $sessions): array
@@ -346,6 +356,24 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
                 ),
             )],
             $event instanceof ContainerOpened => $this->containerOpened($event),
+            $event instanceof VillagerTradeOffersUpdated => [new DirectedPacket(
+                $event->ownerSessionId,
+                UpdateTradePacket::fromLittleEndianOffers(
+                    $event->windowId,
+                    $event->tradeTier,
+                    $event->villagerUniqueId,
+                    $event->playerUniqueId,
+                    $event->displayName,
+                    $event->offersLittleEndianNbt,
+                ),
+            )],
+            $event instanceof VillagerTradeCompleted => $this->forRecipients(
+                new ActorEventPacket(
+                    UnsignedLong::fromInt($event->villagerRuntimeId),
+                    ActorEventType::CompleteTrade,
+                ),
+                $event->recipientSessionIds,
+            ),
             $event instanceof ContainerClosed => $this->containerClosed($event),
             $event instanceof ContainerContentsChanged => $this->containerContentsChanged($event),
             $event instanceof BrewingStandUpdated => $this->brewingStandUpdated($event),
@@ -455,12 +483,35 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             $event instanceof PlayerPresentationChanged => $this->playerPresentationChanged($event),
             $event instanceof PlayerDied => $this->died($event),
             $event instanceof PlayerRespawned => $this->respawned($event),
+            $event instanceof PlayerSleepChanged => $this->playerSleepChanged($event),
+            $event instanceof SystemMessageSent => $this->forRecipients(
+                $event->message instanceof TranslatableMessage
+                    ? new TranslatedTextPacket($event->message->key, $event->message->parameters)
+                    : new SystemTextPacket($event->message),
+                $event->recipientSessionIds,
+            ),
+            $event instanceof WorldTimeChanged => $this->forRecipients(
+                new SetTimePacket($event->time),
+                $event->recipientSessionIds,
+            ),
             $event instanceof RespawnAcknowledged => [new DirectedPacket(
                 $event->player->sessionId,
                 $this->respawnPacket($event->player, RespawnState::ServerReady),
             )],
             default => [],
         };
+    }
+
+    /**
+     * @param list<string> $recipients
+     * @return list<DirectedPacket>
+     */
+    private function forRecipients(\Bedriox\Protocol\Packet\Packet $packet, array $recipients): array
+    {
+        return array_map(
+            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
+            $recipients,
+        );
     }
 
     private function minecartDisplayBlockRuntimeId(AbstractLivingEntity $entity): ?int
@@ -920,6 +971,7 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
                 ApiContainerType::CHEST_BOAT => ContainerType::ChestBoat,
                 ApiContainerType::CHEST_MINECART => ContainerType::MinecartChest,
                 ApiContainerType::HORSE => ContainerType::Horse,
+                ApiContainerType::TRADE => ContainerType::Trade,
                 default => ContainerType::Container,
             };
         }
@@ -1348,7 +1400,7 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             return [];
         }
         $packets = [];
-        $joinedEntry = new PlayerListAddPacket([$this->listEntry($event->player, $joined)]);
+        $joinedEntry = $this->playerListPacket($event->player, $joined);
         foreach ($event->recipientSessionIds as $recipient) {
             // The joining client already received its own list entry in the bootstrap.
             if ($recipient === $event->player->sessionId) {
@@ -1356,16 +1408,15 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             }
             $packets[] = new DirectedPacket($recipient, $joinedEntry);
         }
-        $existingEntries = [];
         foreach ($event->existingPeers as $peer) {
             $session = $sessions[$peer->sessionId] ?? null;
             if (!$session instanceof RuntimeSession || $session->play === null) {
                 continue;
             }
-            $existingEntries[] = $this->listEntry($peer, $session);
-        }
-        foreach ($this->boundedPlayerListPackets($existingEntries) as $packet) {
-            $packets[] = new DirectedPacket($event->player->sessionId, $packet);
+            $packets[] = new DirectedPacket(
+                $event->player->sessionId,
+                $this->playerListPacket($peer, $session),
+            );
         }
         $environmentMetadata = array_values(array_filter(
             $this->playerMetadata($event->player),
@@ -1435,41 +1486,6 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
                 LevelEventPacket::weather(LevelEventType::StartThunder),
             ],
         };
-    }
-
-    /**
-     * Splits skin-heavy player-list snapshots before they reach the protocol packet-frame ceiling.
-     *
-     * @param list<PlayerListAddEntry> $entries
-     * @return list<PlayerListAddPacket>
-     */
-    private function boundedPlayerListPackets(array $entries): array
-    {
-        $packets = [];
-        $batch = [];
-        $entryBytes = 0;
-        foreach ($entries as $entry) {
-            $encodedEntryBytes = strlen((new PlayerListAddPacket([$entry]))->encode()) - 1;
-            $candidateCount = count($batch) + 1;
-            $candidateBytes = strlen(UnsignedVarInt::encode($candidateCount)) + $entryBytes + $encodedEntryBytes;
-            if ($batch !== [] && $candidateBytes > self::MAXIMUM_PLAYER_LIST_BODY_BYTES) {
-                $packets[] = new PlayerListAddPacket($batch);
-                $batch = [];
-                $entryBytes = 0;
-                $candidateCount = 1;
-                $candidateBytes = 1 + $encodedEntryBytes;
-            }
-            if ($candidateBytes > self::MAXIMUM_PLAYER_LIST_BODY_BYTES) {
-                throw new \UnexpectedValueException('A player-list entry exceeds the supported packet size.');
-            }
-            $batch[] = $entry;
-            $entryBytes += $encodedEntryBytes;
-        }
-        if ($batch !== []) {
-            $packets[] = new PlayerListAddPacket($batch);
-        }
-
-        return $packets;
     }
 
     /** @return non-empty-list<Packet> */
@@ -1602,10 +1618,23 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             $login->xuid,
             '',
             BuildPlatform::Unknown,
-            PlayerSkin::fromVerifiedClientData($login->clientData),
+            $session->playerSkin ?? PlayerSkin::fromVerifiedClientData($login->clientData),
             colorArgb: 0xffffffff,
             trustedSkin: false,
         );
+    }
+
+    private function playerListPacket(PlayerSnapshot $player, RuntimeSession $session): PlayerListAddPacket
+    {
+        $skin = $session->playerSkin;
+        if ($skin === null) {
+            return new PlayerListAddPacket([$this->listEntry($player, $session)]);
+        }
+        if (!isset($this->playerListPackets[$skin])) {
+            $this->playerListPackets[$skin] = new PlayerListAddPacket([$this->listEntry($player, $session)]);
+        }
+
+        return $this->playerListPackets[$skin];
     }
 
     private function addPlayer(PlayerSnapshot $player): AddPlayerPacket
@@ -1682,8 +1711,41 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
                 default => $entry,
             };
         }
+        $metadata[] = ActorMetadata::byte(26, $player->sleeping ? self::PLAYER_SLEEP_FLAG : 0);
+        if ($player->sleepingBed !== null) {
+            $metadata[] = ActorMetadata::blockPosition(
+                28,
+                new ProtocolBlockPosition(
+                    $player->sleepingBed->x,
+                    $player->sleepingBed->y,
+                    $player->sleepingBed->z,
+                ),
+            );
+        }
+        usort($metadata, static fn(ActorMetadata $left, ActorMetadata $right): int => $left->id <=> $right->id);
 
         return $metadata;
+    }
+
+    /** @return list<DirectedPacket> */
+    private function playerSleepChanged(PlayerSleepChanged $event): array
+    {
+        $packets = $this->forRecipients(
+            new SetActorDataPacket(
+                UnsignedLong::fromInt($event->player->runtimeActorId),
+                UnsignedLong::fromInt(max(0, $event->player->movementSequence)),
+                $this->playerMetadata($event->player),
+            ),
+            $event->recipientSessionIds,
+        );
+        if (!$event->sleeping) {
+            $packets[] = new DirectedPacket(
+                $event->player->sessionId,
+                new AnimatePacket(3, UnsignedLong::fromInt($event->player->runtimeActorId), 0.0, null),
+            );
+        }
+
+        return $packets;
     }
 
     /** @return list<DirectedPacket> */
@@ -1745,7 +1807,7 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             new DirectedPacket($event->recipientSessionId, $this->addPlayer($event->player)),
             new DirectedPacket($event->recipientSessionId, new PlayerSkinPacket(
                 $event->player->identity,
-                PlayerSkin::fromVerifiedClientData($login->clientData),
+                $session->playerSkin ?? PlayerSkin::fromVerifiedClientData($login->clientData),
                 $login->clientData->skinId,
                 '',
             )),
@@ -2365,15 +2427,16 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
                 $event->stack,
             )
             : [];
+        $equipment = new MobEquipmentPacket(
+            UnsignedLong::fromInt($event->runtimeActorId),
+            $event->hotbarSlot,
+            $event->hotbarSlot,
+            0,
+            $this->visualStack($event->stack),
+        );
 
         array_push($packets, ...array_map(
-            fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, new MobEquipmentPacket(
-                UnsignedLong::fromInt($event->runtimeActorId),
-                $event->hotbarSlot,
-                $event->hotbarSlot,
-                0,
-                $this->visualStack($event->stack),
-            )),
+            static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $equipment),
             $event->recipientSessionIds,
         ));
 
@@ -3393,6 +3456,33 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
                 $containers,
             );
             $packets[] = new DirectedPacket($event->ownerSessionId, new ItemStackResponsePacket([$response]));
+            if ($event->success) {
+                $projectedTradeSlots = [];
+                foreach ($event->affectedSlots as $reference) {
+                    $containerNameId = $reference->responseContainerId;
+                    if ($reference->container !== InventoryContainer::OpenedContainer
+                        || $containerNameId === null
+                        || !self::isTradeContainerName($containerNameId)) {
+                        continue;
+                    }
+                    $slot = $reference->responseSlotId();
+                    if (isset($projectedTradeSlots[$slot])) {
+                        continue;
+                    }
+                    $projectedTradeSlots[$slot] = true;
+                    $windowId = $event->openedContainerWindowId
+                        ?? throw new \LogicException('Trade-slot projection requires its active window ID.');
+                    $packets[] = new DirectedPacket(
+                        $event->ownerSessionId,
+                        new InventorySlotPacket(
+                            $windowId,
+                            $slot,
+                            $this->requireInventoryProjector()->toProtocol(self::processedStack($event, $reference)),
+                            new FullContainerName($containerNameId, $windowId),
+                        ),
+                    );
+                }
+            }
         }
         if ($event->fullSync) {
             $packets = [
@@ -3631,6 +3721,18 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             InventoryContainer::CreatedOutput => FullContainerName::CREATED_OUTPUT,
             InventoryContainer::OpenedContainer => FullContainerName::LEVEL_ENTITY,
         };
+    }
+
+    private static function isTradeContainerName(?int $containerNameId): bool
+    {
+        return in_array($containerNameId, [
+            FullContainerName::TRADE_INGREDIENT_ONE,
+            FullContainerName::TRADE_INGREDIENT_TWO,
+            FullContainerName::TRADE_RESULT,
+            FullContainerName::TRADE_TWO_INGREDIENT_ONE,
+            FullContainerName::TRADE_TWO_INGREDIENT_TWO,
+            FullContainerName::TRADE_TWO_RESULT,
+        ], true);
     }
 
     private static function windowId(InventoryContainer $container): int

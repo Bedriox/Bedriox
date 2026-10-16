@@ -28,6 +28,7 @@ use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\BlockPosition;
 use Bedriox\Server\World\Collision\AxisAlignedBox;
 use Bedriox\Server\World\Collision\CollisionBoxQuery;
+use Bedriox\Server\World\Collision\LoadedCollisionBoxQuery;
 use Bedriox\Server\World\Environment\Fluid\FluidCell;
 use Bedriox\Server\World\Environment\Fluid\FluidCurrentResolver;
 use Bedriox\Server\World\Environment\Fluid\FluidState;
@@ -166,6 +167,43 @@ final class DroppedItemCollisionResolverTest extends TestCase
 
         self::assertGreaterThan(0.5, $resolved->position->x);
         self::assertGreaterThan(0.0, $resolved->motion->x);
+    }
+
+    public function testMissingTerrainSuspendsPhysicsWithoutSynchronouslyLoadingAChunk(): void
+    {
+        $registry = new ItemEntityRegistry();
+        $entity = $registry->spawn(
+            new InventoryStack('minecraft:cobblestone', 1, 1),
+            new Position(0.5, 64.0, 0.5),
+            new ItemEntityMotion(0.25, 0.0, 0.0),
+        );
+        $query = new class implements LoadedCollisionBoxQuery {
+            public function boxesIntersecting(AxisAlignedBox $area): array
+            {
+                throw new \LogicException('Dropped-item physics must not synchronously load missing terrain.');
+            }
+
+            public function boxesIntersectingLoaded(AxisAlignedBox $area): ?array
+            {
+                return null;
+            }
+
+            public function hasCollision(AxisAlignedBox $area): bool
+            {
+                throw new \LogicException('Dropped-item physics must not synchronously load missing terrain.');
+            }
+        };
+
+        $resolved = (new DroppedItemCollisionResolver($query))->resolve(
+            $entity,
+            $entity->tick(ItemEntityRegistry::GRAVITY, ItemEntityRegistry::DRAG),
+        );
+
+        self::assertEquals($entity->position, $resolved->position);
+        self::assertSame(0.0, $resolved->motion->x);
+        self::assertSame(0.0, $resolved->motion->y);
+        self::assertSame(0.0, $resolved->motion->z);
+        self::assertSame(1, $resolved->ageTicks);
     }
 
     private static function ground(): CollisionBoxQuery

@@ -134,6 +134,7 @@ Both files use one `key=value` entry per line. Blank lines and lines beginning w
 | --- | --- | --- |
 | `runtime.ticks-per-second` | `20` | 1–100 |
 | `workers.core-count` | `auto` | `auto` or 0–32 |
+| `workers.plugin-count` | `auto` | Auto-sized fair plugin async pool, or a manual value from 0–32 |
 | `chunk-sending.spawn-radius` | `4` | 1 through the configured view distance; destination preparation radius for same-dimension world transfers (initial login admits after the center chunk) |
 | `chunk-sending.per-tick` | `8` | 1–64 |
 | `chunk-generation.per-tick` | `4` | 1–64 |

@@ -64,8 +64,7 @@ final class AiScheduler
         $exhausted = false;
 
         for ($offset = 0; $offset < $count && $considered < $budget->maximumEntities; ++$offset) {
-            if ($offset > 0 && ($offset % 16) === 0
-                && $this->clock->nanoseconds() - $start >= $budget->maximumNanoseconds) {
+            if ($offset > 0 && $this->clock->nanoseconds() - $start >= $budget->maximumNanoseconds) {
                 $exhausted = true;
                 break;
             }

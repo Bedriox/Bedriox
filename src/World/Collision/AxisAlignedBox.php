@@ -25,6 +25,8 @@ use InvalidArgumentException;
 /** Immutable axis-aligned collision volume. */
 final readonly class AxisAlignedBox
 {
+    private const float EPSILON = 0.0000001;
+
     public function __construct(
         public float $minX,
         public float $minY,
@@ -94,15 +96,17 @@ final readonly class AxisAlignedBox
 
     public function resolveX(self $moving, float $wanted): float
     {
-        if ($moving->maxY <= $this->minY || $moving->minY >= $this->maxY
-            || $moving->maxZ <= $this->minZ || $moving->minZ >= $this->maxZ) {
+        if ($moving->maxY <= $this->minY + self::EPSILON
+            || $moving->minY >= $this->maxY - self::EPSILON
+            || $moving->maxZ <= $this->minZ + self::EPSILON
+            || $moving->minZ >= $this->maxZ - self::EPSILON) {
             return $wanted;
         }
-        if ($wanted > 0.0 && $moving->maxX <= $this->minX) {
-            return min($wanted, $this->minX - $moving->maxX);
+        if ($wanted > 0.0 && $moving->maxX <= $this->minX + self::EPSILON) {
+            return min($wanted, max(0.0, $this->minX - $moving->maxX));
         }
-        if ($wanted < 0.0 && $moving->minX >= $this->maxX) {
-            return max($wanted, $this->maxX - $moving->minX);
+        if ($wanted < 0.0 && $moving->minX >= $this->maxX - self::EPSILON) {
+            return max($wanted, min(0.0, $this->maxX - $moving->minX));
         }
 
         return $wanted;
@@ -110,15 +114,17 @@ final readonly class AxisAlignedBox
 
     public function resolveY(self $moving, float $wanted): float
     {
-        if ($moving->maxX <= $this->minX || $moving->minX >= $this->maxX
-            || $moving->maxZ <= $this->minZ || $moving->minZ >= $this->maxZ) {
+        if ($moving->maxX <= $this->minX + self::EPSILON
+            || $moving->minX >= $this->maxX - self::EPSILON
+            || $moving->maxZ <= $this->minZ + self::EPSILON
+            || $moving->minZ >= $this->maxZ - self::EPSILON) {
             return $wanted;
         }
-        if ($wanted > 0.0 && $moving->maxY <= $this->minY) {
-            return min($wanted, $this->minY - $moving->maxY);
+        if ($wanted > 0.0 && $moving->maxY <= $this->minY + self::EPSILON) {
+            return min($wanted, max(0.0, $this->minY - $moving->maxY));
         }
-        if ($wanted < 0.0 && $moving->minY >= $this->maxY) {
-            return max($wanted, $this->maxY - $moving->minY);
+        if ($wanted < 0.0 && $moving->minY >= $this->maxY - self::EPSILON) {
+            return max($wanted, min(0.0, $this->maxY - $moving->minY));
         }
 
         return $wanted;
@@ -126,15 +132,17 @@ final readonly class AxisAlignedBox
 
     public function resolveZ(self $moving, float $wanted): float
     {
-        if ($moving->maxX <= $this->minX || $moving->minX >= $this->maxX
-            || $moving->maxY <= $this->minY || $moving->minY >= $this->maxY) {
+        if ($moving->maxX <= $this->minX + self::EPSILON
+            || $moving->minX >= $this->maxX - self::EPSILON
+            || $moving->maxY <= $this->minY + self::EPSILON
+            || $moving->minY >= $this->maxY - self::EPSILON) {
             return $wanted;
         }
-        if ($wanted > 0.0 && $moving->maxZ <= $this->minZ) {
-            return min($wanted, $this->minZ - $moving->maxZ);
+        if ($wanted > 0.0 && $moving->maxZ <= $this->minZ + self::EPSILON) {
+            return min($wanted, max(0.0, $this->minZ - $moving->maxZ));
         }
-        if ($wanted < 0.0 && $moving->minZ >= $this->maxZ) {
-            return max($wanted, $this->maxZ - $moving->minZ);
+        if ($wanted < 0.0 && $moving->minZ >= $this->maxZ - self::EPSILON) {
+            return max($wanted, min(0.0, $this->maxZ - $moving->minZ));
         }
 
         return $wanted;

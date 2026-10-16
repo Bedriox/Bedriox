@@ -80,6 +80,10 @@ use Bedriox\Protocol\Packet\PlayerAbilities;
 use Bedriox\Protocol\Packet\PlayerAuthInputPacket;
 use Bedriox\Protocol\Packet\PlayerPermission;
 use Bedriox\Protocol\Packet\PlayerPositionProjection;
+use Bedriox\Protocol\Packet\PlayerSkin as ProtocolPlayerSkin;
+use Bedriox\Protocol\Packet\PlayerSkinPersonaPiece;
+use Bedriox\Protocol\Packet\PlayerSkinPersonaPieceType;
+use Bedriox\Protocol\Packet\PlayerSkinPersonaTint;
 use Bedriox\Protocol\Packet\RequestChunkRadiusPacket;
 use Bedriox\Protocol\Packet\RequestNetworkSettingsPacket;
 use Bedriox\Protocol\Packet\ResourcePackClientResponsePacket;
@@ -208,6 +212,48 @@ use Throwable;
 
 final class ServerRuntimeTest extends TestCase
 {
+    public function testCurrentSkinEnvelopeSurvivesThePublicEventProjection(): void
+    {
+        $wire = new ProtocolPlayerSkin(
+            64,
+            64,
+            str_repeat("\x01", 64 * 64 * 4),
+            0,
+            0,
+            '',
+            '{"geometry":{"default":"geometry.humanoid.custom"}}',
+            [],
+            'skin-id',
+            'playfab-id',
+            '{"geometry":{"default":"geometry.humanoid.custom"}}',
+            capeId: 'cape-id',
+            fullSkinId: 'full-skin-id',
+            armSize: 'wide',
+            skinColor: '#12345678',
+            premium: true,
+            capeOnClassic: true,
+            primaryUser: true,
+            overridingPlayerAppearance: true,
+            profileHash: 'profile-hash',
+            persona: true,
+            personaPieces: [new PlayerSkinPersonaPiece(
+                'piece-id',
+                PlayerSkinPersonaPieceType::Top,
+                '00112233-4455-6677-8899-aabbccddeeff',
+                true,
+                'product-id',
+            )],
+            personaTints: [new PlayerSkinPersonaTint(PlayerSkinPersonaPieceType::Top, [1, 2, 3, 4])],
+        );
+        $toApi = new \ReflectionMethod(ServerRuntime::class, 'apiSkinFromProtocol');
+        $toWire = new \ReflectionMethod(ServerRuntime::class, 'protocolSkinFromApi');
+
+        $api = $toApi->invoke(null, $wire, true);
+        self::assertInstanceOf(Skin::class, $api);
+        self::assertTrue($api->trusted);
+        self::assertEquals($wire, $toWire->invoke(null, $api));
+    }
+
     public function testExpectedServerSkinEchoIsConsumedExactlyOnce(): void
     {
         $world = new WorldSimulation();

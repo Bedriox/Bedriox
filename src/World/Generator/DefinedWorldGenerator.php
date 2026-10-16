@@ -22,11 +22,13 @@ namespace Bedriox\Server\World\Generator;
 
 use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkPosition;
+use Bedriox\Server\World\Generation\Structure\Overworld\VillagePopulationIntentProvider;
+use Bedriox\Server\World\Generation\Structure\PlacedStructureMarker;
 use Bedriox\Server\World\SpawnPosition;
 use Bedriox\Server\World\VersionedWorldGenerator;
 
 /** Applies registered identity metadata without duplicating generator state. */
-final readonly class DefinedWorldGenerator implements VersionedWorldGenerator
+final readonly class DefinedWorldGenerator implements VersionedWorldGenerator, VillagePopulationIntentProvider
 {
     public function __construct(
         private string $identifier,
@@ -52,5 +54,13 @@ final readonly class DefinedWorldGenerator implements VersionedWorldGenerator
     public function defaultSpawn(): SpawnPosition
     {
         return $this->inner->defaultSpawn();
+    }
+
+    /** @return list<PlacedStructureMarker> */
+    public function villageMarkersInChunk(ChunkPosition $position): array
+    {
+        return $this->inner instanceof VillagePopulationIntentProvider
+            ? $this->inner->villageMarkersInChunk($position)
+            : [];
     }
 }

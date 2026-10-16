@@ -25,7 +25,7 @@ use Bedriox\RakNet\Security\TransportSecurityPolicy;
 use Bedriox\Server\Login\AuthenticationMode;
 use Bedriox\Server\Observability\LogLevel;
 use Bedriox\Server\Security\NetworkSecurityProfile;
-use Bedriox\Server\Worker\WorkerCoreCount;
+use Bedriox\Server\Worker\WorkerAllocation;
 use InvalidArgumentException;
 
 final readonly class ServerConfig
@@ -56,6 +56,7 @@ final readonly class ServerConfig
         'level.spawn-z' => '',
         'runtime.ticks-per-second' => '20',
         'workers.core-count' => 'auto',
+        'workers.plugin-count' => 'auto',
         'chunk-sending.spawn-radius' => '4',
         'chunk-sending.per-tick' => '8',
         'chunk-generation.per-tick' => '4',
@@ -128,6 +129,7 @@ final readonly class ServerConfig
     private const array ADVANCED_SETTING_KEYS = [
         'runtime.ticks-per-second' => true,
         'workers.core-count' => true,
+        'workers.plugin-count' => true,
         'chunk-sending.spawn-radius' => true,
         'chunk-sending.per-tick' => true,
         'chunk-generation.per-tick' => true,
@@ -248,6 +250,7 @@ final readonly class ServerConfig
         public int $movementRewindHistorySize = 40,
         public int $ticksPerSecond = 20,
         public int $workerCoreCount = 1,
+        public int $pluginWorkerCount = 1,
         public bool $consoleEnabled = true,
         public bool $pluginsEnabled = true,
         public bool $whitelistEnabled = false,
@@ -330,6 +333,7 @@ final readonly class ServerConfig
         self::range($this->movementRewindHistorySize, 1, 1_200, 'Movement rewind history size');
         self::range($this->ticksPerSecond, 1, 100, 'Ticks per second');
         self::range($this->workerCoreCount, 0, 32, 'Core worker count');
+        self::range($this->pluginWorkerCount, 0, 32, 'Plugin worker count');
         self::range($this->maximumPlugins, 0, 256, 'Maximum plugins');
         if (!in_array($this->loggingConsoleColors, ['auto', 'true', 'false'], true)) {
             throw new InvalidArgumentException('Console colors must be exactly auto, true, or false.');
@@ -459,6 +463,11 @@ final readonly class ServerConfig
             $values,
         );
 
+        $workerAllocation = WorkerAllocation::resolve(
+            $values['workers.core-count'],
+            $values['workers.plugin-count'],
+        );
+
         return new self(
             bindAddress: $values['server-ip'],
             port: self::integer($values['server-port'], 'server-port', 1, 65_535),
@@ -490,7 +499,8 @@ final readonly class ServerConfig
                 1_200,
             ),
             ticksPerSecond: self::integer($values['runtime.ticks-per-second'], 'runtime.ticks-per-second', 1, 100),
-            workerCoreCount: WorkerCoreCount::parse($values['workers.core-count']),
+            workerCoreCount: $workerAllocation->coreWorkers,
+            pluginWorkerCount: $workerAllocation->pluginWorkers,
             consoleEnabled: self::boolean($values['enable-console'], 'enable-console'),
             pluginsEnabled: self::boolean($values['enable-plugins'], 'enable-plugins'),
             whitelistEnabled: self::boolean($values['white-list'], 'white-list'),

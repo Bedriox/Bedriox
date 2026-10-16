@@ -198,14 +198,14 @@ final class LittleEndianNbtCodec
         return $values;
     }
 
-    /** @param array<string, LittleEndianNbtTag> $tags */
+    /** @param array<array-key, LittleEndianNbtTag> $tags */
     private function writeCompound(array $tags, int $depth): string
     {
         $this->assertEncodeDepth($depth);
         $result = '';
         foreach ($tags as $name => $tag) {
             $this->countEncodeEntries(1);
-            $result .= self::writeByte($tag->type) . $this->writeString($name) . $this->writePayload($tag, $depth + 1);
+            $result .= self::writeByte($tag->type) . $this->writeString((string) $name) . $this->writePayload($tag, $depth + 1);
         }
 
         return $result . chr(LittleEndianNbtTag::END);
@@ -448,15 +448,15 @@ final class LittleEndianNbtCodec
 
     /**
      * @param int|float|string|array<array-key, mixed> $value
-     * @return array<string, LittleEndianNbtTag>
+     * @return array<array-key, LittleEndianNbtTag>
      */
     private function expectCompound(int|float|string|array $value): array
     {
         if (!is_array($value)) {
-            throw new InvalidArgumentException('NBT compound value must be a string-keyed map.');
+            throw new InvalidArgumentException('NBT compound value must be a named map.');
         }
         foreach ($value as $name => $tag) {
-            if (!is_string($name) || !$tag instanceof LittleEndianNbtTag) {
+            if (!$tag instanceof LittleEndianNbtTag) {
                 throw new InvalidArgumentException('NBT compound contains an invalid entry.');
             }
         }

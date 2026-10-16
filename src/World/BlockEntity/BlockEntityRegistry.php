@@ -41,6 +41,8 @@ final readonly class BlockEntityRegistry
     public function __construct()
     {
         $this->persistentIds = [
+            'Bed' => BlockEntityType::Bed,
+            'minecraft:bed' => BlockEntityType::Bed,
             'Chest' => BlockEntityType::Chest,
             'minecraft:chest' => BlockEntityType::Chest,
             'Barrel' => BlockEntityType::Barrel,
@@ -69,8 +71,14 @@ final readonly class BlockEntityRegistry
             'minecraft:hanging_sign' => BlockEntityType::HangingSign,
             'Shelf' => BlockEntityType::Shelf,
             'minecraft:shelf' => BlockEntityType::Shelf,
+            'MobSpawner' => BlockEntityType::MobSpawner,
+            'MonsterSpawner' => BlockEntityType::MobSpawner,
+            'minecraft:mob_spawner' => BlockEntityType::MobSpawner,
+            'TrialSpawner' => BlockEntityType::TrialSpawner,
+            'minecraft:trial_spawner' => BlockEntityType::TrialSpawner,
         ];
         $this->saveIds = [
+            BlockEntityType::Bed->value => 'Bed',
             BlockEntityType::Chest->value => 'Chest',
             BlockEntityType::Barrel->value => 'Barrel',
             BlockEntityType::ShulkerBox->value => 'ShulkerBox',
@@ -85,6 +93,8 @@ final readonly class BlockEntityRegistry
             BlockEntityType::Sign->value => 'Sign',
             BlockEntityType::HangingSign->value => 'HangingSign',
             BlockEntityType::Shelf->value => 'Shelf',
+            BlockEntityType::MobSpawner->value => 'MobSpawner',
+            BlockEntityType::TrialSpawner->value => 'TrialSpawner',
         ];
     }
 
@@ -102,6 +112,7 @@ final readonly class BlockEntityRegistry
     public function create(BlockEntityType $type, BlockPosition $position): BlockEntity
     {
         return match ($type) {
+            BlockEntityType::Bed => new BedBlockEntity($position),
             BlockEntityType::BrewingStand => BrewingStandBlockEntity::empty($position),
             BlockEntityType::Furnace => FurnaceBlockEntity::empty(FurnaceType::Furnace, $position),
             BlockEntityType::BlastFurnace => FurnaceBlockEntity::empty(FurnaceType::BlastFurnace, $position),
@@ -112,6 +123,8 @@ final readonly class BlockEntityRegistry
             BlockEntityType::Sign => SignBlockEntity::empty($position),
             BlockEntityType::HangingSign => SignBlockEntity::empty($position, hanging: true),
             BlockEntityType::Shelf => ShelfBlockEntity::empty($position),
+            BlockEntityType::MobSpawner => MobSpawnerBlockEntity::create($position),
+            BlockEntityType::TrialSpawner => TrialSpawnerBlockEntity::create($position),
             BlockEntityType::Chest, BlockEntityType::Barrel, BlockEntityType::ShulkerBox =>
                 ContainerBlockEntity::empty($type, $position),
             BlockEntityType::EnderChest => new SimpleBlockEntity($type, $position),

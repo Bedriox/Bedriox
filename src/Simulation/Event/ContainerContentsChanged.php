@@ -55,6 +55,7 @@ final readonly class ContainerContentsChanged implements WorldEvent
                 ContainerType::CHEST_BOAT,
                 ContainerType::CHEST_MINECART,
                 ContainerType::HORSE,
+                ContainerType::TRADE,
             ], true))
                 !== ($position === null))
             || ($containerType === ContainerType::VIRTUAL) !== ($layout !== null)

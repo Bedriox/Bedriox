@@ -47,6 +47,8 @@ final class ServerConfigTest extends TestCase
         self::assertSame('survival', $defaults->defaultGamemode);
         self::assertSame(4, $defaults->chunksGeneratePerTick);
         self::assertSame(8, $defaults->chunksSendPerTick);
+        self::assertGreaterThanOrEqual(1, $defaults->pluginWorkerCount);
+        self::assertLessThanOrEqual(4, $defaults->pluginWorkerCount);
         self::assertSame(500_000_000, $defaults->memoryLimitBytes);
         self::assertSame(1_024, $defaults->chunkGenerationQueueSize);
         self::assertSame(1, $defaults->chunkLoadingPrefetchRadius);
@@ -245,7 +247,7 @@ final class ServerConfigTest extends TestCase
         self::assertIsString($settings);
         try {
             file_put_contents($properties, "server-name=Configured name\nmax-players=8\nmemory-limit=1GiB\nview-distance=6\n");
-            file_put_contents($settings, "level.autosave-interval-ticks=8000\nchunk-sending.spawn-radius=5\nchunk-saving.per-tick=6\nchunk-generation.queue-size=2048\nchunk-loading.prefetch-radius=2\nchunk-unloading.grace-ticks=400\nchunk-unloading.per-tick=72\nmemory-management.enabled=false\nmemory-management.soft-threshold=65\nmemory-management.high-threshold=80\nmemory-management.critical-threshold=90\n");
+            file_put_contents($settings, "level.autosave-interval-ticks=8000\nworkers.plugin-count=3\nchunk-sending.spawn-radius=5\nchunk-saving.per-tick=6\nchunk-generation.queue-size=2048\nchunk-loading.prefetch-radius=2\nchunk-unloading.grace-ticks=400\nchunk-unloading.per-tick=72\nmemory-management.enabled=false\nmemory-management.soft-threshold=65\nmemory-management.high-threshold=80\nmemory-management.critical-threshold=90\n");
             $config = ServerConfig::fromConfigurationFiles($properties, $settings, [
                 '--name=CLI name',
                 '--view-distance=7',
@@ -259,6 +261,7 @@ final class ServerConfigTest extends TestCase
             self::assertSame(5, $config->spawnRadius);
             self::assertSame(9_000, $config->levelAutosaveIntervalTicks);
             self::assertSame(7, $config->chunksSavePerTick);
+            self::assertSame(3, $config->pluginWorkerCount);
             self::assertSame(2_000_000_000, $config->memoryLimitBytes);
             self::assertSame(2_048, $config->chunkGenerationQueueSize);
             self::assertSame(2, $config->chunkLoadingPrefetchRadius);

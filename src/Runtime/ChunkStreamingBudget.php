@@ -29,6 +29,7 @@ final class ChunkStreamingBudget
         private int $deliveryRemaining,
         private readonly ?self $parent = null,
         private readonly ?int $deadlineNanoseconds = null,
+        private readonly bool $prefetchAllowed = true,
     ) {
         if ($generationRemaining < 0 || $preparationRemaining < 0 || $deliveryRemaining < 0
             || ($deadlineNanoseconds !== null && $deadlineNanoseconds < 1)) {
@@ -90,7 +91,12 @@ final class ChunkStreamingBudget
     /** Creates a fair local allowance whose successful claims also consume this shared budget. */
     public function slice(int $generation, int $preparation, int $delivery): self
     {
-        return new self($generation, $preparation, $delivery, $this);
+        return new self($generation, $preparation, $delivery, $this, prefetchAllowed: $this->prefetchAllowed);
+    }
+
+    public function allowsPrefetch(): bool
+    {
+        return $this->prefetchAllowed && ($this->parent === null || $this->parent->allowsPrefetch());
     }
 
     private function hasGenerationCapacity(): bool

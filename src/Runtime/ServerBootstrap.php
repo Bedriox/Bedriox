@@ -148,6 +148,10 @@ final class ServerBootstrap
         // Qualify the exact production key factory before opening the world or binding UDP.
         $ephemeralKeys->generate();
         $startupCryptoReadyAt = hrtime(true);
+        // Cycle collection is intentionally owned by ServerRuntime. Allowing PHP to
+        // trigger it in the middle of login, projection, or simulation creates
+        // unbounded latency spikes even when the process is under no memory pressure.
+        gc_disable();
         $garbageCollector = new GarbageCollector(new PhpGarbageCollectorBackend());
         $memoryManager = $config->memoryManagementEnabled
             ? new MemoryManager(
@@ -276,10 +280,11 @@ final class ServerBootstrap
                 $defaultDimensionData->generatorVersion,
                 $defaultDimensionData->seed,
                 $internalStates,
+                maximumPending: min($config->chunkGenerationQueueSize, max(2, $workerCount * 2)),
                 options: GeneratorOptions::fromJson($defaultDimensionData->generatorOptions),
                 dimension: $flatWorld->dimension()->value,
                 workerSource: $defaultGeneratorDefinition->workerSource,
-                allowSynchronousFallback: $defaultGeneratorDefinition->workerSource === null,
+                allowSynchronousFallback: false,
             ));
         }
         $compressionWorkers = $workers !== null && $workersAvailable
@@ -412,10 +417,14 @@ final class ServerBootstrap
                         $dimensionData->generatorVersion,
                         $dimensionData->seed,
                         $internalStates,
+                        maximumPending: min(
+                            $config->chunkGenerationQueueSize,
+                            max(2, $workers->snapshot()->workerCount * 2),
+                        ),
                         options: GeneratorOptions::fromJson($dimensionData->generatorOptions),
                         dimension: $internalWorld->dimension()->value,
                         workerSource: $generatorDefinition->workerSource,
-                        allowSynchronousFallback: $generatorDefinition->workerSource === null,
+                        allowSynchronousFallback: false,
                     ));
                 }
                 $generatorWiringAt = hrtime(true);
@@ -657,6 +666,7 @@ final class ServerBootstrap
                     worldBinding: static function (\Bedriox\Server\Player\PlayerBootstrap $bootstrap) use (
                         $worldRuntimes,
                         $initialization,
+                        $flatWorld,
                         $data,
                         $runtimeLimits,
                         $config,
@@ -667,7 +677,9 @@ final class ServerBootstrap
                         if ($runtime === null) {
                             return null;
                         }
-                        $worldInitialization = $initialization instanceof BedrockPlayInitializationFactory
+                        $worldInitialization = $runtime->opened->world === $flatWorld
+                            ? $initialization
+                            : ($initialization instanceof BedrockPlayInitializationFactory
                             ? BedrockPlayInitializationFactory::forWorld(
                                 $data,
                                 $runtimeLimits,
@@ -679,7 +691,7 @@ final class ServerBootstrap
                                 $runtime->opened->world->time(...),
                                 $runtime->opened->world->dimension(),
                             )
-                            : $initialization;
+                            : $initialization);
 
                         return [
                             'initialization' => $worldInitialization,

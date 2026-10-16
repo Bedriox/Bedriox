@@ -147,7 +147,7 @@ final class ProcessDiscoveryServerTransport implements ConnectedTransport, Secur
             $this->decoder->append($bytes);
         }
         $handled = 0;
-        foreach ($this->decoder->drain(min(8_192, max(256, $maximumDatagrams * 4))) as $frame) {
+        foreach ($this->decoder->drain(min(8_192, max(64, $maximumDatagrams * 2))) as $frame) {
             $this->acceptFrame($frame);
             ++$handled;
         }
@@ -366,23 +366,14 @@ final class ProcessDiscoveryServerTransport implements ConnectedTransport, Secur
             return;
         }
         if ($frame->kind === TransportProcessFrameKind::RECEIVED_PAYLOAD) {
-            $session = $this->sessionsById[$frame->sessionId] ?? null;
-            if (!$session instanceof SessionInfo || !$frame->reliability instanceof Reliability) {
-                return;
+            if ($frame->reliability instanceof Reliability) {
+                $this->acceptReceivedPayload(
+                    $frame->sessionId,
+                    $frame->payload,
+                    $frame->reliability,
+                    $frame->orderingChannel,
+                );
             }
-            $bytes = strlen($frame->payload);
-            if (count($this->receivedPayloads) >= $this->maximumReceivedPayloads
-                || $bytes > $this->maximumReceivedPayloadBytes - $this->receivedPayloadBytes) {
-                throw new OverflowException('Transport process received-payload queue limit reached.');
-            }
-            $this->receivedPayloads[] = new ReceivedPayload(
-                $session->remoteAddress,
-                $session->remotePort,
-                $frame->payload,
-                $frame->reliability,
-                $frame->orderingChannel,
-            );
-            $this->receivedPayloadBytes += $bytes;
             return;
         }
         if ($frame->kind === TransportProcessFrameKind::HANDSHAKE_DIAGNOSTICS) {
@@ -394,6 +385,31 @@ final class ProcessDiscoveryServerTransport implements ConnectedTransport, Secur
             throw new RuntimeException('RakNet transport process reported failure: ' . (is_string($code) ? $code : 'unknown'));
         }
         throw new RuntimeException('RakNet transport process emitted an invalid parent frame.');
+    }
+
+    private function acceptReceivedPayload(
+        int $sessionId,
+        string $payload,
+        Reliability $reliability,
+        ?int $orderingChannel,
+    ): void {
+        $session = $this->sessionsById[$sessionId] ?? null;
+        if (!$session instanceof SessionInfo) {
+            return;
+        }
+        $bytes = strlen($payload);
+        if (count($this->receivedPayloads) >= $this->maximumReceivedPayloads
+            || $bytes > $this->maximumReceivedPayloadBytes - $this->receivedPayloadBytes) {
+            throw new OverflowException('Transport process received-payload queue limit reached.');
+        }
+        $this->receivedPayloads[] = new ReceivedPayload(
+            $session->remoteAddress,
+            $session->remotePort,
+            $payload,
+            $reliability,
+            $orderingChannel,
+        );
+        $this->receivedPayloadBytes += $bytes;
     }
 
     private function decodeOpenedSession(TransportProcessFrame $frame): SessionInfo

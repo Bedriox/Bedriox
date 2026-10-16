@@ -55,6 +55,7 @@ final readonly class ContainerOpened implements WorldEvent
             ContainerType::CHEST_BOAT,
             ContainerType::CHEST_MINECART,
             ContainerType::HORSE,
+            ContainerType::TRADE,
         ], true);
         if ($windowId < 2 || $windowId > 99
             || (($containerType === ContainerType::VIRTUAL || $entityBacked) !== ($position === null))

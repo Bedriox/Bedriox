@@ -21,6 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Runtime;
 
 use Bedriox\Api\World\DimensionType;
+use Bedriox\Protocol\Packet\PlayerSkin;
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\RakNet\SessionInfo;
 use Bedriox\Server\Login\BedrockLoginChannel;
@@ -34,6 +35,7 @@ final class RuntimeSession
     public bool $joined = false;
     public int $craftingCatalogRevision = 0;
     public ?PlayerBootstrap $bootstrap = null;
+    public ?PlayerSkin $playerSkin = null;
     public string $worldId;
     public DimensionType $dimension;
 
@@ -54,6 +56,7 @@ final class RuntimeSession
         if ($this->phase !== SessionPhase::LOGIN || $this->login === null || $this->play !== null) {
             throw new LogicException('Only a live login session can be promoted once.');
         }
+        $this->playerSkin = PlayerSkin::fromVerifiedClientData($play->login()->clientData);
         $this->login = null;
         $this->play = $play;
         $this->phase = SessionPhase::INITIALIZING;
@@ -70,5 +73,6 @@ final class RuntimeSession
         $this->login = null;
         $this->play = null;
         $this->bootstrap = null;
+        $this->playerSkin = null;
     }
 }

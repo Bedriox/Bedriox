@@ -22,20 +22,27 @@ namespace Bedriox\Server\Tests\World\Generation\Structure\Overworld;
 
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\World\Block\BlockStateRegistry;
+use Bedriox\Server\World\BlockEntity\BedBlockEntity;
 use Bedriox\Server\World\BlockEntity\ContainerBlockEntity;
+use Bedriox\Server\World\BlockEntity\MobSpawnerBlockEntity;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\DefaultWorldGenerator;
 use Bedriox\Server\World\Generation\GenerationBlockPalette;
 use Bedriox\Server\World\Generation\MutableChunkBuilder;
 use Bedriox\Server\World\Generation\SeededNoise;
+use Bedriox\Server\World\Generation\Structure\Overworld\Family\PlannedStructurePiece;
+use Bedriox\Server\World\Generation\Structure\Overworld\Family\StructureCanvas;
 use Bedriox\Server\World\Generation\Structure\Overworld\OverworldStructureCatalog;
 use Bedriox\Server\World\Generation\Structure\Overworld\OverworldStructureFamily;
 use Bedriox\Server\World\Generation\Structure\Overworld\OverworldStructureGenerator;
 use Bedriox\Server\World\Generation\Structure\Overworld\OverworldStructureLocator;
 use Bedriox\Server\World\Generation\Structure\Overworld\OverworldStructureStart;
 use Bedriox\Server\World\Generation\Structure\Overworld\Stronghold\StrongholdPlanner;
+use Bedriox\Server\World\Generation\Structure\Overworld\Village\VillagePlan;
 use Bedriox\Server\World\Generation\Structure\Overworld\Village\VillagePlanner;
+use Bedriox\Server\World\Generation\Structure\Overworld\Village\VillageRenderer;
 use Bedriox\Server\World\Generation\Structure\StructureMarkerType;
+use Bedriox\Server\World\Generation\Structure\StructureRotation;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
@@ -208,6 +215,7 @@ final class OverworldStructureCatalogTest extends TestCase
         $generator = new OverworldStructureGenerator($palette, new SeededNoise(0));
         $start = new OverworldStructureStart(OverworldStructureFamily::Village, 'plains', 8, 8, 48);
         $identifiers = [];
+        $beds = [];
         $containers = [];
         for ($chunkZ = -3; $chunkZ <= 3; ++$chunkZ) {
             for ($chunkX = -3; $chunkX <= 3; ++$chunkX) {
@@ -219,6 +227,9 @@ final class OverworldStructureCatalogTest extends TestCase
                     }
                 }
                 foreach ($builder->blockEntities()->all() as $entity) {
+                    if ($entity instanceof BedBlockEntity) {
+                        $beds[] = $entity;
+                    }
                     if ($entity instanceof ContainerBlockEntity) {
                         $containers[] = $entity;
                     }
@@ -230,10 +241,64 @@ final class OverworldStructureCatalogTest extends TestCase
         self::assertArrayHasKey('minecraft:water', $identifiers);
         self::assertArrayHasKey('minecraft:grass_path', $identifiers);
         self::assertArrayHasKey('minecraft:wooden_door', $identifiers);
+        self::assertArrayHasKey('minecraft:bed', $identifiers);
+        self::assertNotEmpty($beds);
+        self::assertSame(0, count($beds) % 2, 'Generated village beds must retain complete foot/head pairs.');
         self::assertNotEmpty($containers);
         foreach ($containers as $container) {
             self::assertNull($container->customName);
         }
+    }
+
+    public function testVillageDoorsEncodeTheFacingOfTheirWallPlane(): void
+    {
+        $states = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = GenerationBlockPalette::fromRegistry($states);
+        $renderer = new VillageRenderer(new StructureCanvas($palette, new SeededNoise(7)));
+        $cases = [
+            StructureRotation::None->value => [StructureRotation::None, 8, 4, 'east'],
+            StructureRotation::Clockwise90->value => [StructureRotation::Clockwise90, 12, 8, 'south'],
+            StructureRotation::Clockwise180->value => [StructureRotation::Clockwise180, 8, 12, 'west'],
+            StructureRotation::Clockwise270->value => [StructureRotation::Clockwise270, 4, 8, 'north'],
+        ];
+        foreach ($cases as $label => [$rotation, $doorX, $doorZ, $rawDirection]) {
+            $builder = new MutableChunkBuilder(new ChunkPosition(0, 0), $palette);
+            $renderer->render(
+                $builder,
+                new VillagePlan('plains', 8, 70, 8, [
+                    new PlannedStructurePiece('house', 8, 70, 8, 9, 9, $rotation),
+                ], []),
+                static fn(int $x, int $z): int => 70,
+            );
+            $state = $states->state($builder->state($doorX, 71, $doorZ));
+            self::assertSame('minecraft:wooden_door', $state->identifier(), (string) $label);
+            self::assertSame(
+                $rawDirection,
+                $state->properties()['minecraft:cardinal_direction'] ?? null,
+                (string) $label,
+            );
+        }
+    }
+
+    public function testVillageStableHasAnEnclosedShellAndWorkingEntrance(): void
+    {
+        $states = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = GenerationBlockPalette::fromRegistry($states);
+        $builder = new MutableChunkBuilder(new ChunkPosition(0, 0), $palette);
+        (new VillageRenderer(new StructureCanvas($palette, new SeededNoise(7))))->render(
+            $builder,
+            new VillagePlan('plains', 8, 70, 8, [
+                new PlannedStructurePiece('stable', 8, 70, 8, 9, 9, StructureRotation::None),
+            ], []),
+            static fn(int $x, int $z): int => 70,
+        );
+
+        self::assertSame('minecraft:wooden_door', $states->state($builder->state(8, 72, 4))->identifier());
+        self::assertSame('minecraft:oak_planks', $states->state($builder->state(4, 72, 8))->identifier());
+        self::assertSame('minecraft:oak_planks', $states->state($builder->state(12, 72, 8))->identifier());
+        self::assertSame('minecraft:oak_planks', $states->state($builder->state(8, 72, 12))->identifier());
+        self::assertSame('minecraft:hay_block', $states->state($builder->state(5, 71, 5))->identifier());
+        self::assertSame('minecraft:grass_path', $states->state($builder->state(8, 70, 3))->identifier());
     }
 
     public function testStrongholdPlannerBuildsAConnectedRoomSetWithPortalAndSpawnerMarkers(): void
@@ -253,6 +318,33 @@ final class OverworldStructureCatalogTest extends TestCase
             $first->markers,
             static fn($marker): bool => $marker->identifier === 'minecraft:end_portal',
         ));
+    }
+
+    public function testDungeonSpawnerReceivesADeterministicPersistentMobConfiguration(): void
+    {
+        $states = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = GenerationBlockPalette::fromRegistry($states);
+        $generator = new OverworldStructureGenerator($palette, new SeededNoise(0));
+        $builder = new MutableChunkBuilder(new ChunkPosition(0, 0), $palette);
+
+        $generator->populateStart(
+            $builder,
+            new OverworldStructureStart(OverworldStructureFamily::Dungeon, 'standard', 8, 8, 16),
+            64,
+            'minecraft:plains',
+        );
+
+        $spawners = array_values(array_filter(
+            $builder->blockEntities()->all(),
+            static fn($entity): bool => $entity instanceof MobSpawnerBlockEntity,
+        ));
+        self::assertCount(1, $spawners);
+        self::assertInstanceOf(MobSpawnerBlockEntity::class, $spawners[0]);
+        self::assertContains($spawners[0]->state->configuration->entityIdentifier, [
+            'minecraft:skeleton',
+            'minecraft:spider',
+            'minecraft:zombie',
+        ]);
     }
 
     public function testFiveVillageVariantsAreNaturallyReachableForSeedZero(): void

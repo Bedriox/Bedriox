@@ -27,6 +27,7 @@ use Bedriox\Server\Entity\Navigation\EntityNavigationMetrics;
 use Bedriox\Server\Observability\Memory\GarbageCollectionReport;
 use Bedriox\Server\Observability\Memory\MemoryManagementDecision;
 use Bedriox\Server\Persistence\PersistenceQueueSnapshot;
+use Bedriox\Server\Plugin\Scheduler\Worker\PluginAsyncQueueSnapshot;
 use Bedriox\Server\Runtime\ChunkStreamingSnapshot;
 use Bedriox\Server\Worker\Chunk\PreparedChunkCacheSnapshot;
 use Bedriox\Server\Worker\WorkerPoolSnapshot;
@@ -252,6 +253,7 @@ final class PerformanceMonitor
         ?EntityRuntimeMetrics $entityRuntime = null,
         ?EntityNavigationMetrics $entityNavigation = null,
         ?TransportSecuritySnapshot $transportSecurity = null,
+        ?PluginAsyncQueueSnapshot $pluginAsyncQueue = null,
     ): PerformanceSnapshot {
         if ($onlinePlayers < 0 || $maximumPlayers < 0 || $onlinePlayers > $maximumPlayers
             || $loadedChunks < 0 || $dirtyChunks < 0 || $generatingChunks < 0
@@ -315,6 +317,7 @@ final class PerformanceMonitor
             $entityRuntime,
             $entityNavigation,
             $transportSecurity,
+            $pluginAsyncQueue,
         );
     }
 

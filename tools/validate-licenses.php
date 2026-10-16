@@ -46,7 +46,7 @@ $approvedProduction = [
     ],
     'bedriox/protocol' => [
         'version' => '0.1.0-alpha.1',
-        'reference' => 'ca6d58a0065b859e74e3eb051f9c92d1f4a1a78b',
+        'reference' => '878603d57252f466f69e25749bd740d8d9ed4606',
         'license' => 'GPL-3.0-only',
     ],
     'bedriox/data' => [
@@ -70,8 +70,8 @@ $approvedProduction = [
         'license' => 'MIT',
     ],
     'symfony/yaml' => [
-        'version' => 'v7.4.12',
-        'reference' => '8b6952b56ca6417f25f7a65758cadd0ce02edc51',
+        'version' => 'v7.4.21',
+        'reference' => '044907929c7999814378be22da34722c7a86bad4',
         'license' => 'MIT',
     ],
 ];

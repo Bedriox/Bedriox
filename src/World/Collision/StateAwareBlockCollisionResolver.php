@@ -68,18 +68,50 @@ final class StateAwareBlockCollisionResolver
             && array_key_exists('redstone_signal', $properties)) {
             return BlockCollisionShape::empty();
         }
+        if ($identifier === 'minecraft:bed') {
+            return self::box(0.0, 0.0, 0.0, 1.0, 9.0 / 16.0, 1.0);
+        }
+        if ($identifier === 'minecraft:bell'
+            && isset($properties['attachment'], $properties['direction'])) {
+            return self::bell($properties);
+        }
 
         return null;
+    }
+
+    /** @param array<string, int|string> $properties */
+    private static function bell(array $properties): BlockCollisionShape
+    {
+        $direction = is_int($properties['direction']) ? $properties['direction'] : 0;
+
+        return match ($properties['attachment']) {
+            'hanging' => self::box(0.25, 0.25, 0.25, 0.75, 1.0, 0.75),
+            'side' => match ($direction) {
+                0 => self::box(0.25, 0.25, 0.0, 0.75, 0.9375, 0.8125),
+                1 => self::box(0.1875, 0.25, 0.25, 1.0, 0.9375, 0.75),
+                2 => self::box(0.25, 0.25, 0.1875, 0.75, 0.9375, 1.0),
+                3 => self::box(0.0, 0.25, 0.25, 0.8125, 0.9375, 0.75),
+                default => BlockCollisionShape::empty(),
+            },
+            'multiple' => ($direction & 1) === 0
+                ? self::box(0.25, 0.25, 0.0, 0.75, 1.0, 1.0)
+                : self::box(0.0, 0.25, 0.25, 1.0, 1.0, 0.75),
+            'standing' => ($direction & 1) === 0
+                ? self::box(0.0, 0.0, 0.25, 1.0, 0.8125, 0.75)
+                : self::box(0.25, 0.0, 0.0, 0.75, 0.8125, 1.0),
+            default => BlockCollisionShape::empty(),
+        };
     }
 
     /** @param array<string, int|string> $properties */
     private static function door(array $properties): BlockCollisionShape
     {
         $facing = match ($properties['minecraft:cardinal_direction']) {
-            'north' => 2,
-            'south' => 3,
-            'west' => 4,
-            'east' => 5,
+            // Bedrock encodes doors one clockwise turn from their logical facing.
+            'east' => 2,
+            'west' => 3,
+            'north' => 4,
+            'south' => 5,
             default => throw new \LogicException('Door direction is outside its supported range.'),
         };
         if (($properties['open_bit'] ?? 0) === 1) {

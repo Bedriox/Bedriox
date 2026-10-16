@@ -64,6 +64,7 @@ final class BedrockPlayChannelFactory implements PlayChannelFactory
 
     public function create(LoginChannelReady $ready, string $sessionId, UnsignedLong $runtimeEntityId, ?PlayerBootstrap $bootstrap = null): BedrockPlayChannel
     {
+        $startedNanoseconds = hrtime(true);
         $initialization = $this->initialization;
         $world = $this->world;
         $preparedChunks = $this->preparedChunks;
@@ -75,6 +76,7 @@ final class BedrockPlayChannelFactory implements PlayChannelFactory
                 $preparedChunks = $binding['preparedChunks'];
             }
         }
+        $bindingCompletedNanoseconds = hrtime(true);
         $spawnX = 0.0;
         $spawnY = 64.0;
         $spawnZ = 0.0;
@@ -91,6 +93,7 @@ final class BedrockPlayChannelFactory implements PlayChannelFactory
         }
 
         $initializationPackets = $initialization->create($ready->login, $runtimeEntityId, $bootstrap);
+        $initializationCompletedNanoseconds = hrtime(true);
         if ($this->commandRegistry !== null && $this->permissionStore !== null) {
             $projector = new BedrockCommandPacketProjector($this->commandRegistry, $this->permissionStore);
             $initializationPackets = array_values(array_filter(array_map(
@@ -109,8 +112,9 @@ final class BedrockPlayChannelFactory implements PlayChannelFactory
                 [],
             );
         }
+        $commandsCompletedNanoseconds = hrtime(true);
 
-        return new BedrockPlayChannel(
+        $channel = new BedrockPlayChannel(
             $ready,
             $sessionId,
             $runtimeEntityId,
@@ -136,6 +140,16 @@ final class BedrockPlayChannelFactory implements PlayChannelFactory
             $preparedChunks,
             $this->preparedPlayBatches,
         );
+        $completedNanoseconds = hrtime(true);
+        $this->diagnostics?->record('runtime.play_channel_factory.protocol_trace', [
+            'binding_us' => intdiv($bindingCompletedNanoseconds - $startedNanoseconds, 1_000),
+            'initialization_us' => intdiv($initializationCompletedNanoseconds - $bindingCompletedNanoseconds, 1_000),
+            'commands_us' => intdiv($commandsCompletedNanoseconds - $initializationCompletedNanoseconds, 1_000),
+            'channel_us' => intdiv($completedNanoseconds - $commandsCompletedNanoseconds, 1_000),
+            'total_us' => intdiv($completedNanoseconds - $startedNanoseconds, 1_000),
+        ]);
+
+        return $channel;
     }
 
     public function setDefaultGameMode(GameMode $gameMode): void

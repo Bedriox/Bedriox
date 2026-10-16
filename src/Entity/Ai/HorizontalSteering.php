@@ -175,6 +175,9 @@ final class HorizontalSteering
         if ($entity instanceof Aquatic || !$world instanceof AquaticAiWorldView) {
             return false;
         }
+        if ($world->isTouchingWater($entity)) {
+            return false;
+        }
         $length = hypot($x, $z);
         if ($length < 0.000_001) {
             return false;

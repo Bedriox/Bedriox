@@ -53,6 +53,7 @@ final class PendingWorldSwitch
         int $radius,
         int $prefetchRadius,
         int $prewarmRadius,
+        private readonly string $demandOwner,
     ) {
         $this->view = new ChunkViewManager($radius, $prefetchRadius);
         $this->view->centerOnBlock($x, $z);
@@ -115,6 +116,9 @@ final class PendingWorldSwitch
     {
         if ($this->adopted) {
             return;
+        }
+        foreach ($this->required as $position) {
+            $this->world->cancelChunkDemand($position, $this->demandOwner);
         }
         foreach ($this->retained as $position) {
             $this->world->releaseChunk($position);

@@ -93,6 +93,14 @@ final class BedrockPlayInitializationFactory implements PlayInitializationFactor
     /** @var list<BlockPropertyData> */
     private array $blockProperties;
 
+    private ReusablePlayPacket $itemRegistryPacket;
+
+    private ReusablePlayPacket $biomeDefinitionsPacket;
+
+    private ReusablePlayPacket $actorIdentifiersPacket;
+
+    private ReusablePlayPacket $trimDataPacket;
+
     public function __construct(
         private BedrockDataSet $data,
         private RuntimeLimits $limits = new RuntimeLimits(),
@@ -156,6 +164,19 @@ final class BedrockPlayInitializationFactory implements PlayInitializationFactor
             $blockProperties[] = BlockPropertyData::fromLittleEndianNbt($identifier, $littleEndianNbt);
         }
         $this->blockProperties = $blockProperties;
+        $this->itemRegistryPacket = new ReusablePlayPacket(
+            'initialization.item_registry',
+            ItemRegistryPacket::fromRequiredItems($this->data->requiredItems()),
+        );
+        $this->biomeDefinitionsPacket = new ReusablePlayPacket(
+            'initialization.biome_definitions',
+            BiomeDefinitionListPacket::fromDefinitions($this->biomeDefinitions),
+        );
+        $this->actorIdentifiersPacket = new ReusablePlayPacket(
+            'initialization.actor_identifiers',
+            new AvailableActorIdentifiersPacket($this->data->entityIdentifiersNetworkNbt()),
+        );
+        $this->trimDataPacket = new ReusablePlayPacket('initialization.trim_data', new TrimDataPacket());
     }
 
     public static function forWorld(
@@ -253,22 +274,13 @@ final class BedrockPlayInitializationFactory implements PlayInitializationFactor
                     DimensionType::END => DimensionId::End,
                 },
             ),
-            new ReusablePlayPacket(
-                'initialization.item_registry',
-                ItemRegistryPacket::fromRequiredItems($this->data->requiredItems()),
-            ),
+            $this->itemRegistryPacket,
             // Everything after this marker is emitted as one radius-negotiated bootstrap.
             new ChunkRadiusUpdatedPacket($radius),
             // The MVP world exposes players only. Advertise exactly the actor types that may spawn;
             // legacy vanilla definitions are added alongside their implementations in later milestones.
-            new ReusablePlayPacket(
-                'initialization.biome_definitions',
-                BiomeDefinitionListPacket::fromDefinitions($this->biomeDefinitions),
-            ),
-            new ReusablePlayPacket(
-                'initialization.actor_identifiers',
-                new AvailableActorIdentifiersPacket($this->data->entityIdentifiersNetworkNbt()),
-            ),
+            $this->biomeDefinitionsPacket,
+            $this->actorIdentifiersPacket,
             new SetSpawnPositionPacket(
                 x: $this->spawn->x,
                 y: $this->spawn->y,
@@ -322,7 +334,7 @@ final class BedrockPlayInitializationFactory implements PlayInitializationFactor
                 0,
                 $heldItem,
             ),
-            new ReusablePlayPacket('initialization.trim_data', new TrimDataPacket()),
+            $this->trimDataPacket,
             new ReusablePlayPacket(
                 'initialization.crafting_data.' . $this->craftingCatalog->revision(),
                 $this->craftingCatalog->protocolPacket(),

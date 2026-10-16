@@ -90,11 +90,41 @@ final class ManagedPluginAsyncTaskExecutorTest extends TestCase
         }
     }
 
-    private function request(int $taskId, \Bedriox\Server\Plugin\PluginArchiveIdentity $identity, mixed $input): AsyncTaskRequest
+    public function testDispatchesWaitingPluginsInRoundRobinOrder(): void
     {
+        $path = $this->directory . DIRECTORY_SEPARATOR . 'fair-worker.phar';
+        $this->buildPhar($path, false, $this->directory . DIRECTORY_SEPARATOR . 'unused.txt');
+        $package = (new PluginPackageLoader())->discover($this->directory)[0];
+        self::assertNotNull($package->archiveIdentity);
+
+        $executor = new ManagedPluginAsyncTaskExecutor(
+            ManagedWorkerPool::start('plugin-worker-fairness', 2),
+            CoreWorkerTaskCatalog::PLUGIN_ASYNC_TASK,
+        );
+        try {
+            $executor->submit($this->request(1, $package->archiveIdentity, 1, 'PluginA'));
+            $executor->submit($this->request(2, $package->archiveIdentity, 2, 'PluginA'));
+            $executor->submit($this->request(3, $package->archiveIdentity, 3, 'PluginB'));
+            self::assertSame(3, $executor->snapshot()->queuedTasks);
+
+            self::assertSame([], $executor->poll(1));
+            $snapshot = $executor->snapshot();
+            self::assertSame(2, $snapshot->runningTasks);
+            self::assertSame(['PluginA' => 1], $snapshot->queuedTasksByPlugin);
+        } finally {
+            $executor->shutdown();
+        }
+    }
+
+    private function request(
+        int $taskId,
+        \Bedriox\Server\Plugin\PluginArchiveIdentity $identity,
+        mixed $input,
+        string $owner = 'AsyncFixture',
+    ): AsyncTaskRequest {
         return new AsyncTaskRequest(
             $taskId,
-            'AsyncFixture',
+            $owner,
             '1.0.0',
             1,
             $identity,

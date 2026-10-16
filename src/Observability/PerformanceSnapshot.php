@@ -27,6 +27,7 @@ use Bedriox\Server\Entity\Navigation\EntityNavigationMetrics;
 use Bedriox\Server\Observability\Memory\GarbageCollectionReport;
 use Bedriox\Server\Observability\Memory\MemoryManagementDecision;
 use Bedriox\Server\Persistence\PersistenceQueueSnapshot;
+use Bedriox\Server\Plugin\Scheduler\Worker\PluginAsyncQueueSnapshot;
 use Bedriox\Server\Runtime\ChunkStreamingSnapshot;
 use Bedriox\Server\Worker\Chunk\PreparedChunkCacheSnapshot;
 use Bedriox\Server\Worker\WorkerPoolSnapshot;
@@ -87,5 +88,6 @@ final readonly class PerformanceSnapshot
         public ?EntityRuntimeMetrics $entityRuntime = null,
         public ?EntityNavigationMetrics $entityNavigation = null,
         public ?TransportSecuritySnapshot $transportSecurity = null,
+        public ?PluginAsyncQueueSnapshot $pluginAsyncQueue = null,
     ) {}
 }

@@ -76,6 +76,7 @@ use Bedriox\Server\Update\UpdateManager;
 use Bedriox\Server\Worker\CoreWorkerTaskCatalog;
 use Bedriox\Server\Worker\ManagedWorkerDispatcher;
 use Bedriox\Server\Worker\ManagedWorkerPool;
+use Bedriox\Server\Worker\WorkerCoreCount;
 use Bedriox\Server\World\WorldGeneratorFactory;
 use Closure;
 use Throwable;
@@ -203,15 +204,29 @@ final class Bedriox
             $diagnostics = new RuntimeDiagnostics(static function (string $line) use ($logger): void {
                 $logger->debug(trim($line), 'Protocol');
             }, $config->protocolTrace);
+            $logicalProcessors = WorkerCoreCount::detectLogicalProcessors();
+            $logger->info(sprintf(
+                'Worker capacity: %d core, %d plugin%s',
+                $config->workerCoreCount,
+                $config->pluginWorkerCount,
+                $logicalProcessors === null ? '' : sprintf(' on %d logical processors', $logicalProcessors),
+            ), 'Workers');
+            if ($logicalProcessors !== null
+                && $config->workerCoreCount + $config->pluginWorkerCount >= $logicalProcessors) {
+                $logger->warning(
+                    'Configured worker pools leave no logical processor reserved for the main tick and operating system.',
+                    'Workers',
+                );
+            }
             $corePool = ManagedWorkerPool::start($this->displayName(), $config->workerCoreCount);
             $coreWorkers = new ManagedWorkerDispatcher($corePool, static function (Throwable $failure) use ($logger): void {
                 $logger->error('A core worker completion failed validation (' . $failure::class . ').', 'Workers');
             });
             $pluginAsync = null;
-            if ($config->workerCoreCount > 0) {
+            if ($config->pluginWorkerCount > 0) {
                 $pluginWorkerPool = ManagedWorkerPool::start(
                     $this->displayName(),
-                    min(2, max(1, intdiv($config->workerCoreCount, 2))),
+                    $config->pluginWorkerCount,
                 );
                 $pluginAsync = new ManagedPluginAsyncTaskExecutor(
                     $pluginWorkerPool,
@@ -435,7 +450,7 @@ final class Bedriox
                 static fn(\Bedriox\Api\Player\Player $player, string $identifier, int $amount): bool =>
                     $composition->server?->runtime->givePlayerItem($player->uuid, $identifier, $amount) ?? false,
                 static fn(string $identifier): bool => $itemCatalog->has($identifier),
-                static function () use ($composition, $performance, $config, $coreWorkers, $pluginWorkerPool, $backgroundLog, $pluginHost, $playerStore): \Bedriox\Server\Observability\PerformanceSnapshot {
+                static function () use ($composition, $performance, $config, $coreWorkers, $pluginWorkerPool, $pluginAsync, $backgroundLog, $pluginHost, $playerStore): \Bedriox\Server\Observability\PerformanceSnapshot {
                     $server = $composition->server;
                     $runtime = $server?->runtime;
                     $world = $server?->world;
@@ -473,6 +488,7 @@ final class Bedriox
                         entityRuntime: $runtime?->entityRuntimeMetrics(),
                         entityNavigation: $runtime?->entityNavigationMetrics(),
                         transportSecurity: $runtime?->transportSecuritySnapshot(),
+                        pluginAsyncQueue: $pluginAsync?->snapshot(),
                     );
                 },
                 static fn(

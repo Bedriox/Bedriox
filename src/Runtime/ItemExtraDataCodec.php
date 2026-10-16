@@ -38,6 +38,9 @@ final class ItemExtraDataCodec
         if ($damage < 0 || $damage > 65_535) {
             throw new InvalidArgumentException('Item damage is outside its supported range.');
         }
+        if ($nbt === null && $damage === 0) {
+            return self::EMPTY;
+        }
         $codec = new LittleEndianNbtCodec();
         $root = $codec->decodeRootCompound(($nbt ?? ItemNbt::empty())->toBinary());
         unset($root['Damage']);

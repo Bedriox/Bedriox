@@ -326,8 +326,11 @@ final class BedrockPlayChannel
         $this->generatedChunks = new SplQueue();
         $this->deferredCompressionBatches = new SplQueue();
         $this->skinChanges = new SplQueue();
-        $this->traceWindowStartedNanoseconds = hrtime(true);
-        $this->trafficGuard = new GameplayTrafficGuard(startedNanoseconds: $this->traceWindowStartedNanoseconds);
+        $startedNanoseconds = hrtime(true);
+        $this->traceWindowStartedNanoseconds = $startedNanoseconds
+            - self::PROTOCOL_TRACE_SUMMARY_INTERVAL_NANOSECONDS
+            + self::protocolTraceInitialDelayNanoseconds($this->sessionId);
+        $this->trafficGuard = new GameplayTrafficGuard(startedNanoseconds: $startedNanoseconds);
         $this->batchLimits = new BatchLimits(maximumPackets: $this->limits->maximumPacketsPerPayload);
         $this->outboundCompression = $compressionWorkers === null ? null : new OrderedOutboundCompressionQueue(
             $compressionWorkers,
@@ -594,6 +597,27 @@ final class BedrockPlayChannel
     }
 
     /**
+     * Queues replaceable state after the channel has already completed its once-per-poll worker drain.
+     *
+     * The runtime uses this for end-of-tick movement fan-out. Re-polling the compression process for
+     * every recipient turns one shared movement batch into O(players) IPC calls; a cheap ordering and
+     * capacity check is sufficient because an unfinished older batch simply defers this transient state.
+     *
+     * @param list<PacketFrame> $frames
+     */
+    public function queuePreparedTransientPacketFrames(array $frames, string $clearEnvelope): bool
+    {
+        $packetCount = count($frames);
+        if ($packetCount < 1 || $packetCount > $this->limits->maximumPacketsPerPayload
+            || $clearEnvelope === '' || ord($clearEnvelope[0]) !== BedrockBatchCodec::GAME_PACKET_MARKER
+            || !$this->canAcceptTransientProjection()) {
+            return false;
+        }
+
+        return $this->queuePreparedClearEnvelope($clearEnvelope, $packetCount, 'shared');
+    }
+
+    /**
      * Queues a shared, pre-encoded authoritative batch while preserving ordered delivery.
      *
      * @param list<PacketFrame> $frames
@@ -675,7 +699,17 @@ final class BedrockPlayChannel
      */
     public function prepareTransientProjection(): bool
     {
-        if ($this->closed || !$this->releaseCompressedBatches() || $this->hasOutboundOrderingBarrier()) {
+        if ($this->closed || !$this->releaseCompressedBatches()) {
+            return false;
+        }
+
+        return $this->canAcceptTransientProjection();
+    }
+
+    /** Checks transient capacity without performing another compression-worker IPC poll. */
+    public function canAcceptTransientProjection(): bool
+    {
+        if ($this->closed || $this->hasOutboundOrderingBarrier()) {
             return false;
         }
 
@@ -1036,6 +1070,7 @@ final class BedrockPlayChannel
         $this->resetGeneratedChunkDeliveryQueue();
         foreach ($this->pendingChunkRequests as $key => $position) {
             if (!$view->containsRetained($position->x, $position->z)) {
+                $this->flatWorld?->cancelChunkDemand($position, $this->chunkDemandOwner());
                 unset($this->pendingChunkRequests[$key]);
             }
         }
@@ -1088,6 +1123,7 @@ final class BedrockPlayChannel
             $radius,
             $prefetchRadius,
             min($this->spawnRadius, $radius),
+            $this->chunkDemandOwner(),
         );
         $this->worldSwitchInputGated = true;
         $this->worldSwitchReadyForCommit = false;
@@ -1120,7 +1156,7 @@ final class BedrockPlayChannel
             if ($attempted++ >= $this->chunksGeneratePerTick) {
                 break;
             }
-            if (!$transition->world->requestRetainChunk($position, false)) {
+            if (!$transition->world->requestRetainChunk($position, false, $this->chunkDemandOwner())) {
                 continue;
             }
             $transition->retain($position);
@@ -1231,9 +1267,11 @@ final class BedrockPlayChannel
             return false;
         }
 
-        if ($this->flatWorld !== null) {
+        $sourceWorld = $this->flatWorld;
+        if ($sourceWorld !== null) {
+            $this->cancelPendingChunkRequests();
             foreach ($this->retainedChunks as $position) {
-                $this->flatWorld->releaseChunk($position, immediateUnload: true);
+                $sourceWorld->releaseChunk($position, immediateUnload: true);
             }
         }
         $this->flatWorld = $transition->world;
@@ -1336,9 +1374,11 @@ final class BedrockPlayChannel
         $this->deferredInitializationPackets = [];
         $this->trackedSubChunkRequests = [];
         $this->servedSubChunkSections = [];
-        if ($this->flatWorld !== null) {
+        $sourceWorld = $this->flatWorld;
+        if ($sourceWorld !== null) {
+            $this->cancelPendingChunkRequests();
             foreach ($this->retainedChunks as $position) {
-                $this->flatWorld->releaseChunk($position, immediateUnload: true);
+                $sourceWorld->releaseChunk($position, immediateUnload: true);
             }
         }
         $this->retainedChunks = [];
@@ -1467,7 +1507,6 @@ final class BedrockPlayChannel
         }
         if ($packet instanceof PlayerSkinPacket) {
             if (!$this->initialized
-                || strcasecmp($packet->uuid, $this->login->identity) !== 0
                 || $this->skinChanges->count() >= 2) {
                 return false;
             }
@@ -1588,6 +1627,18 @@ final class BedrockPlayChannel
                 }
                 $this->commands->enqueue($this->commandFactory->respawn($this->sessionId));
 
+                return true;
+            }
+            if ($packet->action === PlayerActionType::StopSleeping) {
+                if ($this->commands->count() >= $this->limits->maximumCommandsPerPayload) {
+                    return false;
+                }
+                $this->commands->enqueue($this->commandFactory->leaveBed($this->sessionId));
+
+                return true;
+            }
+            if ($packet->action === PlayerActionType::StartSleeping) {
+                // Bed interaction is authoritative; this retail action is an advisory echo.
                 return true;
             }
             if ($packet->action === PlayerActionType::StartItemUseOn
@@ -2582,18 +2633,22 @@ final class BedrockPlayChannel
                         if (!($action instanceof AutoCraftRecipeItemStackRequestAction)
                             && in_array(
                                 $this->storageContainerType,
-                                [ContainerType::Enchantment, ContainerType::Stonecutter],
+                                [ContainerType::Enchantment, ContainerType::Stonecutter, ContainerType::Trade],
                                 true,
                             )) {
                             $workstation = new WorkstationRequest(
-                                $this->storageContainerType === ContainerType::Enchantment
-                                    ? WorkstationRequestType::ENCHANT
-                                    : WorkstationRequestType::OPTIONAL_RECIPE,
+                                match ($this->storageContainerType) {
+                                    ContainerType::Enchantment => WorkstationRequestType::ENCHANT,
+                                    ContainerType::Trade => WorkstationRequestType::TRADE,
+                                    default => WorkstationRequestType::OPTIONAL_RECIPE,
+                                },
                                 $action->recipeNetworkId,
                                 requestedCrafts: $action->requestedCrafts,
-                                responseSlots: $this->storageContainerType === ContainerType::Enchantment
-                                    ? $this->enchantingWorkstationResponseSlots()
-                                    : [],
+                                responseSlots: match ($this->storageContainerType) {
+                                    ContainerType::Enchantment => $this->enchantingWorkstationResponseSlots(),
+                                    ContainerType::Trade => $this->tradeWorkstationResponseSlots(),
+                                    default => [],
+                                },
                             );
                         } else {
                             $crafting = new CraftingRequest(
@@ -2885,6 +2940,8 @@ final class BedrockPlayChannel
             ContainerSlotType::GrindstoneInput,
             ContainerSlotType::StonecutterInput,
             ContainerSlotType::CartographyInput => 0,
+            ContainerSlotType::TradeIngredientOne,
+            ContainerSlotType::TradeTwoIngredientOne => 0,
             ContainerSlotType::AnvilMaterial,
             ContainerSlotType::SmithingTableInput,
             ContainerSlotType::EnchantingMaterial,
@@ -2893,12 +2950,16 @@ final class BedrockPlayChannel
             ContainerSlotType::GrindstoneAdditional,
             ContainerSlotType::StonecutterResult,
             ContainerSlotType::CartographyAdditional => 1,
+            ContainerSlotType::TradeIngredientTwo,
+            ContainerSlotType::TradeTwoIngredientTwo => 1,
             ContainerSlotType::AnvilResult,
             ContainerSlotType::SmithingTableMaterial,
             ContainerSlotType::FurnaceResult,
             ContainerSlotType::LoomMaterial,
             ContainerSlotType::GrindstoneResult,
             ContainerSlotType::CartographyResult => 2,
+            ContainerSlotType::TradeResult,
+            ContainerSlotType::TradeTwoResult => 2,
             ContainerSlotType::SmithingTableResult,
             ContainerSlotType::LoomResult => 3,
             default => null,
@@ -2986,6 +3047,48 @@ final class BedrockPlayChannel
             new InventorySlotReference(
                 InventoryContainer::OpenedContainer,
                 0,
+                0,
+                FullContainerName::CREATED_OUTPUT,
+                responseSlot: 50,
+            ),
+        ];
+    }
+
+    /** @return list<InventorySlotReference> */
+    private function tradeWorkstationResponseSlots(): array
+    {
+        return [
+            new InventorySlotReference(
+                InventoryContainer::OpenedContainer,
+                0,
+                0,
+                ContainerSlotType::TradeIngredientOne->value,
+                responseSlot: 6,
+            ),
+            new InventorySlotReference(
+                InventoryContainer::OpenedContainer,
+                1,
+                0,
+                ContainerSlotType::TradeIngredientTwo->value,
+                responseSlot: 7,
+            ),
+            new InventorySlotReference(
+                InventoryContainer::OpenedContainer,
+                0,
+                0,
+                ContainerSlotType::TradeTwoIngredientOne->value,
+                responseSlot: 4,
+            ),
+            new InventorySlotReference(
+                InventoryContainer::OpenedContainer,
+                1,
+                0,
+                ContainerSlotType::TradeTwoIngredientTwo->value,
+                responseSlot: 5,
+            ),
+            new InventorySlotReference(
+                InventoryContainer::OpenedContainer,
+                2,
                 0,
                 FullContainerName::CREATED_OUTPUT,
                 responseSlot: 50,
@@ -3259,6 +3362,16 @@ final class BedrockPlayChannel
         $this->traceWindowStartedNanoseconds = $now;
     }
 
+    private static function protocolTraceInitialDelayNanoseconds(string $sessionId): int
+    {
+        $hash = unpack('Nvalue', hash('sha256', $sessionId, true));
+        if (!is_array($hash) || !isset($hash['value']) || !is_int($hash['value'])) {
+            throw new \LogicException('Unable to derive the protocol trace phase.');
+        }
+
+        return 500_000_000 + ($hash['value'] % (self::PROTOCOL_TRACE_SUMMARY_INTERVAL_NANOSECONDS - 500_000_000));
+    }
+
     /**
      * @template T of Packet|ReusablePlayPacket
      * @param SplQueue<T> $queue
@@ -3354,7 +3467,7 @@ final class BedrockPlayChannel
             }
             ++$attempted;
             try {
-                if (!$world->requestRetainChunk($position, false)) {
+                if (!$world->requestRetainChunk($position, false, $this->chunkDemandOwner())) {
                     $this->pendingChunkRequests[$key] = $position;
                     continue;
                 }
@@ -3369,6 +3482,9 @@ final class BedrockPlayChannel
         }
 
         if ($view->unpreparedVisibleCount() > 0) {
+            return true;
+        }
+        if (!$streamingBudget->allowsPrefetch()) {
             return true;
         }
         foreach ($view->pendingPrefetch(max(1, $view->prefetchPendingCount())) as $coordinate) {
@@ -3389,7 +3505,7 @@ final class BedrockPlayChannel
             }
             ++$attempted;
             try {
-                if (!$world->requestRetainChunk($position, false)) {
+                if (!$world->requestRetainChunk($position, false, $this->chunkDemandOwner())) {
                     $this->pendingChunkRequests[$key] = $position;
                     continue;
                 }
@@ -3697,6 +3813,21 @@ final class BedrockPlayChannel
             $this->flatWorld->releaseChunk($position);
             unset($this->retainedChunks[$key]);
         }
+    }
+
+    private function cancelPendingChunkRequests(): void
+    {
+        if ($this->flatWorld === null) {
+            return;
+        }
+        foreach ($this->pendingChunkRequests as $position) {
+            $this->flatWorld->cancelChunkDemand($position, $this->chunkDemandOwner());
+        }
+    }
+
+    private function chunkDemandOwner(): string
+    {
+        return 'bedriox:session:' . $this->sessionId;
     }
 
     private static function playerAuthDecodeDetail(Throwable $exception): ?string

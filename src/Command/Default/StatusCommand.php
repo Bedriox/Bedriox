@@ -278,6 +278,20 @@ final readonly class StatusCommand implements BuiltinCommand
                 $status->entityNavigation->pending,
                 $status->entityNavigation->cached,
             ));
+            self::send($sender, TextFormat::GRAY, sprintf(
+                'Navigation preparation: %d building, %d/%d builds complete, %d cells, %.2f ms total, %.2f ms worst tick',
+                $status->entityNavigation->building,
+                $status->entityNavigation->buildsCompleted,
+                $status->entityNavigation->buildsQueued,
+                $status->entityNavigation->cellsScanned,
+                $status->entityNavigation->preparationNanoseconds / 1_000_000,
+                $status->entityNavigation->maximumPreparationNanoseconds / 1_000_000,
+            ));
+            self::send($sender, TextFormat::GRAY, sprintf(
+                'Navigation reuse: %d path/direct hits, %d moving-target replans suppressed',
+                $status->entityNavigation->pathsReused,
+                $status->entityNavigation->repathsSuppressed,
+            ));
         }
         if ($status->preparedChunkCache !== null) {
             self::send($sender, TextFormat::AQUA, sprintf(
@@ -313,6 +327,20 @@ final readonly class StatusCommand implements BuiltinCommand
             $status->pendingAsyncPluginTasks,
             $status->maximumAsyncCompletionsPerTick,
         ));
+        if ($status->pluginAsyncQueue !== null) {
+            self::send($sender, TextFormat::GRAY, sprintf(
+                'Fair queue: %d waiting across %d plugins, %d running, oldest wait %d ms',
+                $status->pluginAsyncQueue->queuedTasks,
+                $status->pluginAsyncQueue->waitingPlugins,
+                $status->pluginAsyncQueue->runningTasks,
+                $status->pluginAsyncQueue->oldestWaitMilliseconds,
+            ));
+            self::send($sender, TextFormat::GRAY, sprintf(
+                'Queue safeguards: %d rejected, %d expired before dispatch',
+                $status->pluginAsyncQueue->rejectedTasks,
+                $status->pluginAsyncQueue->expiredTasks,
+            ));
+        }
 
         self::section($sender, 'Network');
         self::send($sender, TextFormat::AQUA, 'Receive payload rate: ' . self::optionalRate($status->networkReceiveBytesPerSecond));

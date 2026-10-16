@@ -23,6 +23,7 @@ namespace Bedriox\Server\World\BlockEntity;
 /** Canonical server-side identities for the storage block entities currently admitted by Bedriox. */
 enum BlockEntityType: string
 {
+    case Bed = 'minecraft:bed';
     case Chest = 'minecraft:chest';
     case Barrel = 'minecraft:barrel';
     case ShulkerBox = 'minecraft:shulker_box';
@@ -37,12 +38,15 @@ enum BlockEntityType: string
     case Sign = 'minecraft:sign';
     case HangingSign = 'minecraft:hanging_sign';
     case Shelf = 'minecraft:shelf';
+    case MobSpawner = 'minecraft:mob_spawner';
+    case TrialSpawner = 'minecraft:trial_spawner';
 
     public function ownsPersistentInventory(): bool
     {
-        return $this !== self::EnderChest && $this !== self::Cauldron
+        return $this !== self::Bed && $this !== self::EnderChest && $this !== self::Cauldron
             && $this !== self::BrushableBlock && $this !== self::Sign
-            && $this !== self::HangingSign && $this !== self::Shelf;
+            && $this !== self::HangingSign && $this !== self::Shelf
+            && $this !== self::MobSpawner && $this !== self::TrialSpawner;
     }
 
     public function isStorageContainer(): bool

@@ -21,19 +21,28 @@ declare(strict_types=1);
 namespace Bedriox\Server\Tests\World\Storage\LevelDb;
 
 use Bedriox\Api\Inventory\ItemNbt;
+use Bedriox\Api\World\BedColor;
+use Bedriox\Api\World\Spawner\SpawnerConfiguration;
+use Bedriox\Api\World\Spawner\TrialSpawnerConfiguration;
+use Bedriox\Api\World\Spawner\TrialSpawnerPhase;
 use Bedriox\Protocol\Packet\LittleEndianNbtToNetwork;
 use Bedriox\Server\Gameplay\Processing\CampfireBlockEntity;
 use Bedriox\Server\Gameplay\Processing\CampfireType;
 use Bedriox\Server\Gameplay\Processing\CauldronBlockEntity;
 use Bedriox\Server\Gameplay\Processing\FurnaceBlockEntity;
 use Bedriox\Server\Gameplay\Processing\FurnaceType;
+use Bedriox\Server\World\BlockEntity\BedBlockEntity;
 use Bedriox\Server\World\BlockEntity\BlockEntityCollection;
 use Bedriox\Server\World\BlockEntity\BlockEntityType;
 use Bedriox\Server\World\BlockEntity\ContainerBlockEntity;
 use Bedriox\Server\World\BlockEntity\ContainerItemStack;
+use Bedriox\Server\World\BlockEntity\MobSpawnerBlockEntity;
 use Bedriox\Server\World\BlockEntity\SuspiciousSandBlockEntity;
+use Bedriox\Server\World\BlockEntity\TrialSpawnerBlockEntity;
 use Bedriox\Server\World\BlockPosition;
 use Bedriox\Server\World\ChunkPosition;
+use Bedriox\Server\World\Spawner\MobSpawnerState;
+use Bedriox\Server\World\Spawner\TrialSpawnerState;
 use Bedriox\Server\World\Storage\LevelDb\LevelDbStorageException;
 use Bedriox\Server\World\Storage\LevelDb\PersistentBlockEntityCodec;
 use Bedriox\Server\World\Storage\Nbt\LittleEndianNbtCodec;
@@ -43,6 +52,105 @@ use PHPUnit\Framework\TestCase;
 
 final class PersistentBlockEntityCodecTest extends TestCase
 {
+    public function testEveryBedColorRoundTripsAndProjectsToNetworkNbt(): void
+    {
+        $codec = new PersistentBlockEntityCodec();
+        $chunk = new ChunkPosition(0, 0);
+
+        foreach (BedColor::cases() as $index => $color) {
+            $position = new BlockPosition($index, 64, 0);
+            $bed = new BedBlockEntity($position, $color);
+            $encoded = $codec->encode(new BlockEntityCollection($chunk, [$bed]));
+            $root = (new LittleEndianNbtCodec())->decodeRootCompounds($encoded, 1)[0];
+            self::assertSame('Bed', $root['id']->value);
+            self::assertSame($color->value, $root['color']->value);
+
+            $loaded = $codec->decode($encoded, $chunk)->at($position);
+            self::assertInstanceOf(BedBlockEntity::class, $loaded);
+            self::assertSame($color, $loaded->color);
+            self::assertNotSame('', $codec->encodeNetworkEntity($loaded));
+        }
+    }
+
+    public function testOrdinaryAndTrialSpawnerStateRoundTripsWithoutLosingBoundedProgress(): void
+    {
+        $chunk = new ChunkPosition(0, 0);
+        $ordinary = new MobSpawnerBlockEntity(
+            new BlockPosition(1, 64, 1),
+            new MobSpawnerState(
+                new SpawnerConfiguration('minecraft:skeleton', 200, 36_000, 4, 6, 16, 4),
+                35_000,
+                true,
+                9,
+            ),
+        );
+        $trial = new TrialSpawnerBlockEntity(
+            new BlockPosition(2, 64, 1),
+            new TrialSpawnerState(
+                new TrialSpawnerConfiguration('minecraft:breeze', 40, 30, 6, 2, 3, 36_000, 14),
+                TrialSpawnerPhase::ACTIVE,
+                ['player-a', 'player-b'],
+                ['entity-a'],
+                3,
+                8_000,
+                0,
+                true,
+                11,
+            ),
+        );
+        $codec = new PersistentBlockEntityCodec();
+
+        $encoded = $codec->encode(new BlockEntityCollection($chunk, [$ordinary, $trial]));
+        $roots = (new LittleEndianNbtCodec())->decodeRootCompounds($encoded, 2);
+        self::assertSame('MobSpawner', $roots[0]['id']->value);
+        self::assertSame(32_767, $roots[0]['MaxSpawnDelay']->value);
+        self::assertSame(36_000, $roots[0]['BedrioxMaximumDelayTicks']->value);
+        self::assertSame('TrialSpawner', $roots[1]['id']->value);
+        self::assertSame(LittleEndianNbtTag::COMPOUND, $roots[1]['BedrioxTrialSpawner']->type);
+
+        $decoded = $codec->decode($encoded, $chunk);
+        $loadedOrdinary = $decoded->at($ordinary->position);
+        self::assertInstanceOf(MobSpawnerBlockEntity::class, $loadedOrdinary);
+        self::assertEquals($ordinary->state, $loadedOrdinary->state);
+        $loadedTrial = $decoded->at($trial->position);
+        self::assertInstanceOf(TrialSpawnerBlockEntity::class, $loadedTrial);
+        self::assertEquals($trial->state, $loadedTrial->state);
+        self::assertNotSame('', $codec->encodeNetworkEntity($loadedOrdinary));
+        self::assertNotSame('', $codec->encodeNetworkEntity($loadedTrial));
+    }
+
+    public function testSpawnerRegistryAcceptsNativeAliasesAndCreatesBoundedDefaults(): void
+    {
+        $registry = new \Bedriox\Server\World\BlockEntity\BlockEntityRegistry();
+        $position = new BlockPosition(0, 64, 0);
+
+        self::assertSame(BlockEntityType::MobSpawner, $registry->fromPersistentId('MobSpawner'));
+        self::assertSame(BlockEntityType::MobSpawner, $registry->fromPersistentId('MonsterSpawner'));
+        self::assertSame(BlockEntityType::TrialSpawner, $registry->fromPersistentId('TrialSpawner'));
+        self::assertInstanceOf(MobSpawnerBlockEntity::class, $registry->create(BlockEntityType::MobSpawner, $position));
+        self::assertInstanceOf(TrialSpawnerBlockEntity::class, $registry->create(BlockEntityType::TrialSpawner, $position));
+    }
+
+    public function testNativeTrialSpawnerWithoutOwnedCheckpointRemainsOpaqueAndPreserved(): void
+    {
+        $position = new BlockPosition(3, 64, 3);
+        $encoded = (new LittleEndianNbtCodec())->encodeRootCompounds([[
+            'id' => LittleEndianNbtTag::string('TrialSpawner'),
+            'x' => LittleEndianNbtTag::int($position->x),
+            'y' => LittleEndianNbtTag::int($position->y),
+            'z' => LittleEndianNbtTag::int($position->z),
+            'isMovable' => LittleEndianNbtTag::byte(1),
+            'registered_players' => LittleEndianNbtTag::list(LittleEndianNbtTag::LONG, []),
+        ]], 1);
+
+        $codec = new PersistentBlockEntityCodec();
+        $chunk = new ChunkPosition(0, 0);
+        $decoded = $codec->decode($encoded, $chunk);
+
+        self::assertCount(0, $decoded);
+        self::assertSame($encoded, $codec->encodePreserving($decoded, $encoded));
+    }
+
     public function testSuspiciousSandHiddenLootProgressAndProvenanceRoundTrip(): void
     {
         $position = new ChunkPosition(-2, 3);

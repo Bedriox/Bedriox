@@ -30,6 +30,7 @@ use Bedriox\Server\Entity\Ai\Goal\FlyingAvoidFelineGoal;
 use Bedriox\Server\Entity\Ai\Goal\FlyingMeleeAttackGoal;
 use Bedriox\Server\Entity\Ai\Goal\FlyingRangedAttackIntentGoal;
 use Bedriox\Server\Entity\Ai\Goal\FlyingWanderGoal;
+use Bedriox\Server\Entity\Ai\Goal\IronGolemAttackGoal;
 use Bedriox\Server\Entity\Ai\Goal\MeleeAttackIntentGoal;
 use Bedriox\Server\Entity\Ai\Goal\RabbitHopGoal;
 use Bedriox\Server\Entity\Ai\Goal\RangedAttackIntentGoal;
@@ -53,6 +54,8 @@ final class VanillaAiBehaviors
     private static ?AiBehaviorDefinition $sheep = null;
     private static ?AiBehaviorDefinition $skeleton = null;
     private static ?AiBehaviorDefinition $zombie = null;
+    private static ?AiBehaviorDefinition $villager = null;
+    private static ?AiBehaviorDefinition $ironGolem = null;
 
     /** @var array<string, AiBehaviorDefinition> */
     private static array $hostiles = [];
@@ -86,6 +89,34 @@ final class VanillaAiBehaviors
                 new MeleeAttackIntentGoal('bedriox:zombie_melee', 100, 1.8, 20, 3.0),
                 new ChasePlayerGoal('bedriox:zombie_chase', 80, 1.8, 0.11),
                 new WanderGoal('bedriox:zombie_wander', 10, 30, 40, 0.085),
+            ],
+        );
+    }
+
+    public static function villager(): AiBehaviorDefinition
+    {
+        return self::$villager ??= new AiBehaviorDefinition(
+            sensors: [
+                new NearestPlayerSensor('bedriox:villager_nearest_player', 10, 16.0, 60),
+                new HurtSensor('bedriox:villager_hurt', 60),
+            ],
+            goals: [
+                new FleeFromPlayerGoal('bedriox:villager_flee', 100, 0.18),
+                new WanderGoal('bedriox:villager_wander', 10, 40, 40, 0.075),
+            ],
+        );
+    }
+
+    public static function ironGolem(): AiBehaviorDefinition
+    {
+        return self::$ironGolem ??= new AiBehaviorDefinition(
+            sensors: [
+                new AngerTargetSensor('bedriox:iron_golem_anger_target'),
+                new HurtSensor('bedriox:iron_golem_hurt', 60),
+            ],
+            goals: [
+                new IronGolemAttackGoal(),
+                new WanderGoal('bedriox:iron_golem_wander', 10, 40, 40, 0.06),
             ],
         );
     }

@@ -41,7 +41,9 @@ enum VanillaEntityType: string implements VanillaEntityIdentity
     case SKELETON = 'minecraft:skeleton';
     case ZOMBIE = 'minecraft:zombie';
     case HUSK = 'minecraft:husk';
+    case VILLAGER = 'minecraft:villager_v2';
     case ZOMBIE_VILLAGER = 'minecraft:zombie_villager_v2';
+    case IRON_GOLEM = 'minecraft:iron_golem';
     case STRAY = 'minecraft:stray';
     case BOGGED = 'minecraft:bogged';
     case PARCHED = 'minecraft:parched';
@@ -98,6 +100,15 @@ enum VanillaEntityType: string implements VanillaEntityIdentity
     case ARMADILLO = 'minecraft:armadillo';
     case MOOSHROOM = 'minecraft:mooshroom';
     case SNIFFER = 'minecraft:sniffer';
+
+    public static function tryFromIdentifier(string $identifier): ?self
+    {
+        return match ($identifier) {
+            'minecraft:villager' => self::VILLAGER,
+            'minecraft:zombie_villager' => self::ZOMBIE_VILLAGER,
+            default => self::tryFrom($identifier),
+        };
+    }
 
     public function identifier(): string
     {

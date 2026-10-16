@@ -65,7 +65,7 @@ final class PlayerActorVisibilityRegistry
 
     /**
      * @param callable(string, PlayerSnapshot): bool $canViewerSee
-     * @return list<WorldEvent>
+     * @return list<PlayerBecameVisible|PlayerBecameHidden>
      */
     public function reconcileActor(string $actorSessionId, callable $canViewerSee): array
     {
@@ -88,7 +88,7 @@ final class PlayerActorVisibilityRegistry
 
     /**
      * @param callable(PlayerSnapshot): bool $canSeeActor
-     * @return list<WorldEvent>
+     * @return list<PlayerBecameVisible|PlayerBecameHidden>
      */
     public function reconcileViewer(string $viewerSessionId, callable $canSeeActor): array
     {
@@ -235,7 +235,7 @@ final class PlayerActorVisibilityRegistry
         return $events;
     }
 
-    /** @param list<WorldEvent> $events */
+    /** @param list<PlayerBecameVisible|PlayerBecameHidden> $events */
     private function reconcilePair(string $viewer, PlayerSnapshot $actor, bool $shouldBeVisible, array &$events): void
     {
         $isVisible = isset($this->visible[$viewer][$actor->sessionId]);

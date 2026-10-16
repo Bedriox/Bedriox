@@ -61,6 +61,17 @@ final class StateAwareBlockCollisionResolverTest extends TestCase
         self::assertFalse($fence->intersectsAt(new AxisAlignedBox(0.05, 0.2, 0.05, 0.2, 1.4, 0.2), 0, 0, 0));
     }
 
+    public function testBedUsesItsNineSixteenthsHighCollisionBox(): void
+    {
+        $bed = StateAwareBlockCollisionResolver::resolve(CanonicalBlockState::from(
+            'minecraft:bed',
+            ['direction' => 0, 'head_piece_bit' => 1, 'occupied_bit' => 0],
+        ));
+        self::assertNotNull($bed);
+        self::assertTrue($bed->intersectsAt(new AxisAlignedBox(0.1, 0.1, 0.1, 0.9, 0.55, 0.9), 0, 0, 0));
+        self::assertFalse($bed->intersectsAt(new AxisAlignedBox(0.1, 0.57, 0.1, 0.9, 0.95, 0.9), 0, 0, 0));
+    }
+
     public function testStairLeavesTheUpperRearQuarterOpen(): void
     {
         $stair = StateAwareBlockCollisionResolver::resolve(CanonicalBlockState::from(
@@ -84,8 +95,8 @@ final class StateAwareBlockCollisionResolverTest extends TestCase
             ],
         ));
         self::assertNotNull($closed);
-        self::assertTrue($closed->intersectsAt(new AxisAlignedBox(0.4, 0.0, 0.01, 0.6, 1.0, 0.1), 0, 0, 0));
-        self::assertFalse($closed->intersectsAt(new AxisAlignedBox(0.4, 0.0, 0.3, 0.6, 1.0, 0.9), 0, 0, 0));
+        self::assertTrue($closed->intersectsAt(new AxisAlignedBox(0.01, 0.0, 0.4, 0.1, 1.0, 0.6), 0, 0, 0));
+        self::assertFalse($closed->intersectsAt(new AxisAlignedBox(0.3, 0.0, 0.4, 0.9, 1.0, 0.6), 0, 0, 0));
 
         $openLeft = StateAwareBlockCollisionResolver::resolve(CanonicalBlockState::from(
             'minecraft:wooden_door',
@@ -97,8 +108,8 @@ final class StateAwareBlockCollisionResolverTest extends TestCase
             ],
         ));
         self::assertNotNull($openLeft);
-        self::assertTrue($openLeft->intersectsAt(new AxisAlignedBox(0.9, 0.0, 0.4, 0.99, 1.0, 0.6), 0, 0, 0));
-        self::assertFalse($openLeft->intersectsAt(new AxisAlignedBox(0.2, 0.0, 0.4, 0.7, 1.0, 0.6), 0, 0, 0));
+        self::assertTrue($openLeft->intersectsAt(new AxisAlignedBox(0.4, 0.0, 0.01, 0.6, 1.0, 0.1), 0, 0, 0));
+        self::assertFalse($openLeft->intersectsAt(new AxisAlignedBox(0.4, 0.0, 0.3, 0.6, 1.0, 0.9), 0, 0, 0));
 
         $openRight = StateAwareBlockCollisionResolver::resolve(CanonicalBlockState::from(
             'minecraft:iron_door',
@@ -110,7 +121,7 @@ final class StateAwareBlockCollisionResolverTest extends TestCase
             ],
         ));
         self::assertNotNull($openRight);
-        self::assertTrue($openRight->intersectsAt(new AxisAlignedBox(0.01, 0.0, 0.4, 0.1, 1.0, 0.6), 0, 0, 0));
-        self::assertFalse($openRight->intersectsAt(new AxisAlignedBox(0.3, 0.0, 0.4, 0.8, 1.0, 0.6), 0, 0, 0));
+        self::assertTrue($openRight->intersectsAt(new AxisAlignedBox(0.4, 0.0, 0.9, 0.6, 1.0, 0.99), 0, 0, 0));
+        self::assertFalse($openRight->intersectsAt(new AxisAlignedBox(0.4, 0.0, 0.1, 0.6, 1.0, 0.7), 0, 0, 0));
     }
 }

@@ -375,4 +375,29 @@ final class AquaticEntitySystemTest extends TestCase
         self::assertSame(4, $entity->getBreathingAirSupplyTicks());
     }
 
+    public function testLandMobAlreadyInWaterCanSteerTowardDryGround(): void
+    {
+        $registration = EntityDefinitionRegistry::baseline()->require(VanillaEntityType::IRON_GOLEM);
+        $entity = ($registration->factory)(
+            '00000000-0000-4000-8000-000000000557',
+            557,
+            'world',
+            new Position(0.5, 64.0, 0.5),
+            0.0,
+            0.0,
+        );
+        self::assertInstanceOf(AbstractMobEntity::class, $entity);
+        $view = new IndexedAiWorldView(
+            new EntityRegistry(),
+            static fn(): array => [],
+            waterAt: static fn(string $_worldName, Position $position): bool => $position->x < 1.0,
+            touchingWater: static fn(AbstractMobEntity $_entity): bool => true,
+        );
+
+        HorizontalSteering::toward($entity, new Position(5.0, 64.0, 0.5), 0.1, 1, $view);
+
+        self::assertGreaterThan(0.0, $entity->getMotion()->x);
+        self::assertSame(0.0, $entity->getMotion()->z);
+    }
+
 }

@@ -39,7 +39,7 @@ final readonly class LittleEndianNbtTag
     public const int LONG_ARRAY = 12;
 
     /**
-     * @param int|float|string|list<LittleEndianNbtTag>|array<string, LittleEndianNbtTag>|list<int> $value
+     * @param int|float|string|list<LittleEndianNbtTag>|array<array-key, LittleEndianNbtTag>|list<int> $value
      */
     public function __construct(
         public int $type,
@@ -88,7 +88,7 @@ final readonly class LittleEndianNbtTag
         return new self(self::LIST, $value, $elementType);
     }
 
-    /** @param array<string, LittleEndianNbtTag> $value */
+    /** @param array<array-key, LittleEndianNbtTag> $value */
     public static function compound(array $value): self
     {
         return new self(self::COMPOUND, $value);

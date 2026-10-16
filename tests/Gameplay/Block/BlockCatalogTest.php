@@ -111,5 +111,33 @@ final class BlockCatalogTest extends TestCase
         self::assertSame(ToolType::Axe, $craftingTable->preferredTool);
         self::assertSame(BlockDropKind::Self, $craftingTable->dropKind);
         self::assertSame('minecraft:crafting_table', $craftingTable->itemIdentifier());
+        self::assertSame(BlockDropKind::None, $catalog->type('minecraft:short_grass')->dropKind);
+        self::assertSame(BlockDropKind::None, $catalog->type('minecraft:tall_grass')->dropKind);
+    }
+
+    public function testRegistryBackedCatalogDefinesEveryDoorAsBreakable(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $states = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $catalog = BlockCatalog::vanilla($states, $data->blockItemMappingRegistry());
+        $doors = 0;
+
+        foreach ($states->states() as $state) {
+            if (!str_ends_with($state->identifier(), '_door')
+                || str_ends_with($state->identifier(), '_trapdoor')) {
+                continue;
+            }
+            ++$doors;
+            $type = $catalog->findTypeForState($state);
+            self::assertNotNull($type, $state->identifier());
+            self::assertTrue($type->isBreakable(), $state->identifier());
+            self::assertSame($state->identifier(), $type->itemIdentifier(), $state->identifier());
+        }
+
+        self::assertGreaterThan(0, $doors);
+        self::assertSame(3.0, $catalog->type('minecraft:wooden_door')->hardness);
+        self::assertSame(ToolType::Axe, $catalog->type('minecraft:wooden_door')->preferredTool);
+        self::assertSame(5.0, $catalog->type('minecraft:iron_door')->hardness);
+        self::assertSame(ToolType::Pickaxe, $catalog->type('minecraft:iron_door')->preferredTool);
     }
 }

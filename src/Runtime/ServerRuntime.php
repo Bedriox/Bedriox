@@ -33,6 +33,8 @@ use Bedriox\Api\Entity\SpawnCause;
 use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\Entity\Value\SkinAnimationExpression;
 use Bedriox\Api\Entity\Value\SkinAnimationType;
+use Bedriox\Api\Entity\Value\SkinPersonaPiece;
+use Bedriox\Api\Entity\Value\SkinPersonaTint;
 use Bedriox\Api\Entity\VanillaEntityIdentifier;
 use Bedriox\Api\Entity\VanillaEntityType;
 use Bedriox\Api\Event\Player\PlayerKickCause;
@@ -62,6 +64,8 @@ use Bedriox\Protocol\Packet\DisconnectReason;
 use Bedriox\Protocol\Packet\Packet;
 use Bedriox\Protocol\Packet\PacketFrame;
 use Bedriox\Protocol\Packet\PacketHeader;
+use Bedriox\Protocol\Packet\PlayerListAddEntry;
+use Bedriox\Protocol\Packet\PlayerListAddPacket;
 use Bedriox\Protocol\Packet\PlayerListRemovePacket;
 use Bedriox\Protocol\Packet\PlayerSkin as ProtocolPlayerSkin;
 use Bedriox\Protocol\Packet\PlayerSkinPacket;
@@ -70,6 +74,7 @@ use Bedriox\Protocol\Packet\SetSpawnPositionPacket;
 use Bedriox\Protocol\Packet\SetTimePacket;
 use Bedriox\Protocol\Packet\SystemTextPacket;
 use Bedriox\Protocol\Packet\UpdateAdventureSettingsPacket;
+use Bedriox\Protocol\Value\BuildPlatform;
 use Bedriox\Protocol\Value\UnsignedLong;
 use Bedriox\RakNet\Connected\ConnectedPayloadEvent;
 use Bedriox\RakNet\Protocol\Reliability;
@@ -188,9 +193,9 @@ use Closure;
 use InvalidArgumentException;
 use OverflowException;
 use RuntimeException;
-use SplObjectStorage;
 use SplQueue;
 use Throwable;
+use WeakMap;
 
 /** Bounded single-threaded composition root for transport, protocol, and simulation. */
 final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, RuntimeIdleAdvisor
@@ -206,6 +211,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private const int ACTOR_VISIBILITY_PAIRS_PER_TICK = 16;
     private const int ACTOR_VISIBILITY_BUDGET_NANOSECONDS = 5_000_000;
     private const int PLAYER_ADMISSIONS_PER_TICK = 2;
+    private const int PLAYER_PROMOTIONS_PER_TICK = 1;
+    private const int CHAT_BROADCASTS_PER_TICK = 4;
+    private const int MAXIMUM_PENDING_CHAT_BROADCASTS = 4_096;
     private const int PLAY_SESSION_MAINTENANCE_INTERVAL_NANOSECONDS = 50_000_000;
     private const int CHUNK_STREAMING_BUDGET_NANOSECONDS = 8_000_000;
     private const int WORLD_AUTOSAVE_BUDGET_MICROSECONDS = 3_000;
@@ -250,12 +258,16 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private int $totalPreparedBytesTrimmed = 0;
     private int $commandSchemaRevision = 0;
     private int $onlinePlayerCommandRevision = 0;
+    private int $onlinePlayerCommandUpdateNotBeforeTick = 0;
     /** @var array<string, int> */
     private array $deliveredOnlinePlayerCommandRevisions = [];
     private int $chunkStreamingCursor = 0;
     private int $chunkAdmissionStreamingCursor = 0;
+    private readonly ChunkStreamingGovernor $chunkStreamingGovernor;
     /** @var array<string, int> */
     private array $movementCorrectionTraceCounts = [];
+    /** @var array<string, array{attempted: string, authoritative: string}> */
+    private array $movementCorrectionTraceSamples = [];
     private int $movementCorrectionTraceStartedNanoseconds = 0;
     private int $movementProjectionTracePackets = 0;
     private int $movementProjectionTraceBatches = 0;
@@ -276,6 +288,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private array $deferredAuthoritativeMovementFrames = [];
     /** @var SplQueue<array{string, string}> Ordered viewer/actor pairs awaiting reconciliation. */
     private readonly SplQueue $pendingActorVisibilityPairs;
+    /** @var SplQueue<ChatBroadcast> */
+    private readonly SplQueue $pendingChatBroadcasts;
     /** @var array<string, true> */
     private array $pendingActorVisibilityPairKeys = [];
     private int $deferredWorldPacketCursor = 0;
@@ -284,6 +298,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private bool $crashContextDirty = false;
     private int $nextPlaySessionMaintenanceNanoseconds = 0;
     private int $admissionCommandsQueued = 0;
+    private int $playerPromotionsQueued = 0;
+    private int $playerPromotionBudgetTick = -1;
     private ?string $processingWorldId = null;
     /** @var array<string, PendingPlayerWorldTransfer> Runtime session ID => staged transfer. */
     private array $pendingPlayerWorldTransfers = [];
@@ -295,7 +311,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
      *     total_nanoseconds: int,
      *     maximum_nanoseconds: int,
      *     tick: int|null,
-     *     fields: array<string, int|string|bool|null>
+     *     fields: array<string, int|string|bool|null|array<string, int>>
      * }>
      */
     private array $slowRuntimeStages = [];
@@ -326,6 +342,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private array $entityActorViewers = [];
 
     private readonly ActorBackedBossBarDelivery $actorBackedBossBars;
+
+    /** @var WeakMap<Packet, PacketFrame> */
+    private readonly WeakMap $packetFrameCache;
 
     /** @var array<string, array<int, Projectile>> */
     private array $projectileActors = [];
@@ -398,9 +417,12 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         $this->diagnostics = $diagnostics ?? RuntimeDiagnostics::disabled();
         $this->actorVisibility = new PlayerActorVisibilityRegistry($this->limits->maximumSessions);
         $this->actorBackedBossBars = new ActorBackedBossBarDelivery();
+        $this->packetFrameCache = new WeakMap();
         $this->pendingActorVisibilityPairs = new SplQueue();
+        $this->pendingChatBroadcasts = new SplQueue();
         $this->playerConnections = $playerConnections ?? new PlayerConnectionDirectory();
         $this->closeClock = $closeClock ?? new SystemSimulationClock();
+        $this->chunkStreamingGovernor = new ChunkStreamingGovernor();
         $this->commandSchemaRevision = $this->commandRegistry?->schemaRevision() ?? 0;
     }
 
@@ -1218,7 +1240,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
 
     public function summonEntity(string $identifier, ApiPosition $position, ?ApiPlayer $source = null): bool
     {
-        $type = VanillaEntityType::tryFrom($identifier)
+        $type = VanillaEntityType::tryFromIdentifier($identifier)
             ?? (str_starts_with($identifier, 'minecraft:')
                 ? new VanillaEntityIdentifier($identifier)
                 : new CustomEntityType($identifier));
@@ -1353,6 +1375,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private function queueOnlinePlayerCommandUpdate(): void
     {
         ++$this->onlinePlayerCommandRevision;
+        $this->onlinePlayerCommandUpdateNotBeforeTick = $this->serverTick + 20;
     }
 
     private function queueCommandMetadataUpdates(): void
@@ -1397,7 +1420,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     break;
                 }
             }
-            if (($this->deliveredOnlinePlayerCommandRevisions[$key] ?? -1) < $this->onlinePlayerCommandRevision) {
+            if ($this->serverTick >= $this->onlinePlayerCommandUpdateNotBeforeTick
+                && ($this->deliveredOnlinePlayerCommandRevisions[$key] ?? -1) < $this->onlinePlayerCommandRevision) {
                 $onlinePlayersPacket ??= $projector->onlinePlayerUpdate($this->onlinePlayers());
                 if ($this->queueWorldPacket($session, $onlinePlayersPacket)) {
                     $this->deliveredOnlinePlayerCommandRevisions[$key] = $this->onlinePlayerCommandRevision;
@@ -1573,14 +1597,19 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $remainingChunkAutosaveBudget = $this->autosaveChunkBudget;
             $remainingEntityAutosaveBudget = $this->autosaveChunkBudget;
             $remainingPlayerAutosaveBudget = $this->playerAutosaveBudget;
+            $governedGeneration = $this->chunkStreamingGovernor->generationLimit($this->chunksGeneratePerTick);
+            $governedPreparation = $this->chunkStreamingGovernor->preparationLimit($this->chunksSendPerTick);
+            $governedDelivery = $this->chunkStreamingGovernor->deliveryLimit($this->chunksSendPerTick);
+            $chunkStreamingStartedNanoseconds = hrtime(true);
             $globalChunkStreamingBudget = new ChunkStreamingBudget(
-                $this->chunksGeneratePerTick,
-                $this->chunksSendPerTick,
-                $this->chunksSendPerTick,
+                $governedGeneration,
+                $governedPreparation,
+                $governedDelivery,
                 deadlineNanoseconds: self::saturatingAdd(
-                    $worldLoopStartedNanoseconds,
+                    $chunkStreamingStartedNanoseconds,
                     self::CHUNK_STREAMING_BUDGET_NANOSECONDS,
                 ),
+                prefetchAllowed: $this->chunkStreamingGovernor->allowsPrefetch(),
             );
             $this->pruneWorldMaintenanceState();
             $outboundTiming = $this->performance?->startSubsystem(PerformanceSubsystem::NETWORK_OUTBOUND);
@@ -1602,8 +1631,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     $pendingSharedAuthoritativePackets = [];
                     /** @var array<string, bool> $movementRecipientAvailability */
                     $movementRecipientAvailability = [];
-                    /** @var SplObjectStorage<Packet, PacketFrame> $movementFrameCache */
-                    $movementFrameCache = new SplObjectStorage();
+                    $movementFrameCache = $this->packetFrameCache;
                     $chunkStageStartedNanoseconds = hrtime(true);
                     $chunkTiming = $this->performance?->startSubsystem(PerformanceSubsystem::CHUNKS);
                     $activePersistentWorld?->pollAsynchronousCompletions(8, 16);
@@ -1631,30 +1659,33 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                         $this->chunkStreamingCursor,
                     );
                     if ($admissionStreamingKeys === []) {
-                        $steadyGeneration = min($this->chunksGeneratePerTick, 4);
-                        $steadyTransfer = min($this->chunksSendPerTick, 8);
+                        $steadyGeneration = min($governedGeneration, 4);
+                        $steadyTransfer = min($governedDelivery, 8);
                         $this->streamChunks($spawnedStreamingKeys, $globalChunkStreamingBudget->slice(
                             $steadyGeneration,
-                            $steadyTransfer,
+                            min($governedPreparation, $steadyTransfer),
                             $steadyTransfer,
                         ));
                     } else {
-                        $admissionGeneration = max(1, intdiv($this->chunksGeneratePerTick * 3 + 3, 4));
-                        $admissionTransfer = max(1, intdiv($this->chunksSendPerTick * 3 + 3, 4));
+                        $admissionGeneration = $governedGeneration === 0
+                            ? 0
+                            : max(1, intdiv($governedGeneration * 3 + 3, 4));
+                        $admissionPreparation = max(1, intdiv($governedPreparation * 3 + 3, 4));
+                        $admissionTransfer = max(1, intdiv($governedDelivery * 3 + 3, 4));
                         $sharedBudget = $globalChunkStreamingBudget->slice(
-                            $this->chunksGeneratePerTick,
-                            $this->chunksSendPerTick,
-                            $this->chunksSendPerTick,
+                            $governedGeneration,
+                            $governedPreparation,
+                            $governedDelivery,
                         );
                         $this->streamChunks($admissionStreamingKeys, $sharedBudget->slice(
                             $admissionGeneration,
-                            $admissionTransfer,
+                            $admissionPreparation,
                             $admissionTransfer,
                         ));
                         $this->streamChunks($spawnedStreamingKeys, $sharedBudget->slice(
-                            $this->chunksGeneratePerTick - $admissionGeneration,
-                            $this->chunksSendPerTick - $admissionTransfer,
-                            $this->chunksSendPerTick - $admissionTransfer,
+                            $governedGeneration - $admissionGeneration,
+                            $governedPreparation - $admissionPreparation,
+                            $governedDelivery - $admissionTransfer,
                         ));
                     }
                     $chunkTiming?->end();
@@ -1708,631 +1739,727 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     }
                     $this->recordSlowRuntimeStage('visibility', $visibilityStartedNanoseconds, $tick->number);
                     $eventsStartedNanoseconds = hrtime(true);
+                    /** @var array<string, int> $eventTypeCounts */
+                    $eventTypeCounts = [];
+                    /** @var array<string, int> $eventTypeNanoseconds */
+                    $eventTypeNanoseconds = [];
                     foreach ($tick->events as $event) {
-                        if ($this->isMovementFlushBoundary($event)
-                            && !$this->flushMovementPackets(
-                                $pendingMovementPackets,
-                                $movementRecipientAvailability,
-                                $authoritativeMovementPackets,
-                                $pendingSharedAuthoritativePackets,
-                            )) {
-                            return false;
-                        }
-                        if (!$this->reconcileAdmission($event)) {
-                            continue;
-                        }
-                        if ($event instanceof PortalTransferRequested) {
-                            if (isset($this->pendingPlayerWorldTransfers[$event->sessionId])) {
-                                continue;
-                            }
-                            if (!$this->beginPortalTransfer($event)) {
-                                $session = $this->sessionById($event->sessionId);
-                                if ($session !== null) {
-                                    $this->simulationForSession($session)?->rejectPortalTransfer($event->sessionId);
-                                }
-                                $this->diagnostics->record('world.portal_transfer_deferred', [
-                                    'source_dimension' => $event->destination->sourceDimension->value,
-                                    'target_dimension' => $event->destination->targetDimension->value,
-                                ]);
-                            }
-                            continue;
-                        }
-                        if ($event instanceof EndPortalTransferRequested) {
-                            if (!$this->beginEndPortalTransfer($event)) {
-                                $session = $this->sessionById($event->sessionId);
-                                if ($session !== null) {
-                                    $this->simulationForSession($session)?->rejectPortalTransfer($event->sessionId);
-                                }
-                                $this->diagnostics->record('world.end_portal_transfer_deferred', [
-                                    'source_dimension' => $event->sourceDimension->value,
-                                    'target_dimension' => $event->targetDimension->value,
-                                ]);
-                            }
-                            continue;
-                        }
-                        if ($event instanceof EndGatewayTransferRequested) {
-                            if (!$this->beginEndGatewayTransfer($event)) {
-                                $session = $this->sessionById($event->sessionId);
-                                if ($session !== null) {
-                                    $this->simulationForSession($session)?->rejectEndGatewayTransfer($event->sessionId);
-                                }
-                                $this->diagnostics->record('world.end_gateway_transfer_deferred');
-                            }
-                            continue;
-                        }
-                        if ($event instanceof BlockPlacementCorrected) {
-                            $this->diagnostics->record('world.protocol_trace', [
-                                'kind' => 'block_placement_corrected',
-                                'reason' => $event->reason,
-                                'item' => $event->heldStack?->identifier,
-                                'aux_value' => $event->heldStack?->auxValue,
-                            ]);
-                        }
-                        if ($event instanceof MovementCorrected) {
-                            $this->recordMovementCorrectionTrace($event);
-                            $runtimeSession = $this->sessionsById[$event->authoritativePlayer->sessionId] ?? null;
-                            $simulation = $runtimeSession === null ? null : $this->simulationForSession($runtimeSession);
-                            $player = $simulation?->authoritativePlayer($event->authoritativePlayer->identity);
-                            if ($player !== null) {
-                                $this->pluginEvents?->movementCorrected($player, $event->reason);
-                            }
-                        }
-                        if ($event instanceof MovementViolationLimitReached) {
-                            $key = $this->sessionEndpoints[$event->sessionId] ?? null;
-                            $session = $key === null ? null : ($this->sessions[$key] ?? null);
-                            if ($key !== null && $session !== null) {
-                                $this->diagnostics->record('play.movement_violation_limit', [
-                                    'reason' => $event->reason,
-                                    'score' => $event->score,
-                                ]);
-                                $this->kickPlayer(
-                                    $key,
-                                    $session,
-                                    'Movement validation failed repeatedly.',
-                                    null,
-                                    'Disconnected: invalid movement.',
-                                    PlayerKickCause::MOVEMENT_VIOLATION,
-                                );
-                            }
-                            continue;
-                        }
-                        if (($event instanceof PlayerJoined || $event instanceof PlayerMoved || $event instanceof PlayerRespawned)
-                            && !$this->updateAuthoritativeChunkView($event->player)) {
-                            continue;
-                        }
-                        if ($event instanceof MovementCorrected
-                            && ($event->reason === 'plugin_teleport' || $event->peerSessionIds !== [])
-                            && !$this->updateAuthoritativeChunkView($event->authoritativePlayer)) {
-                            continue;
-                        }
-                        if ($event instanceof BlockBreakStarted
-                            || $event instanceof BlockPunch
-                            || $event instanceof BlockBreakStopped
-                            || $event instanceof BlockChanged
-                            || $event instanceof BlockPlaced) {
-                            $event = $this->filterBlockRecipients($event);
-                        }
-                        if ($event instanceof PotionSplashImpacted) {
-                            $event = new PotionSplashImpacted(
-                                $event->position,
-                                $event->potionType,
-                                array_values(array_filter(
-                                    array_values(array_unique($event->recipientSessionIds)),
-                                    fn(string $recipient): bool => $this->transientActorViewerCanSee(
-                                        $recipient,
-                                        $this->processingWorldId ?? 'world',
-                                        $event->position,
-                                    ),
-                                )),
-                            );
-                        }
-                        if ($event instanceof ChatBroadcast
-                            && $this->eventEncoder instanceof ChatBroadcastPacketEncoder) {
-                            if (!$this->collectSharedChatPacket(
-                                $event,
-                                $pendingSharedAuthoritativePackets,
-                                $movementFrameCache,
-                                $directedCount,
-                            )) {
-                                return false;
-                            }
-                            continue;
-                        }
-                        if ($event instanceof ItemEntitySpawned || $event instanceof ItemEntityMoved
-                            || $event instanceof ItemEntityPickedUp || $event instanceof ItemEntityDespawned) {
-                            foreach ($this->reconcileItemEvent($event) as $itemEvent) {
-                                if (!$this->dispatchWorldEvent($itemEvent, $directedCount)) {
-                                    return false;
-                                }
-                            }
-                            continue;
-                        }
-                        if ($event instanceof ProjectileSpawned || $event instanceof ProjectileMoved
-                            || $event instanceof ProjectileRemoved) {
-                            foreach ($this->reconcileProjectileEvent($event) as $projectileEvent) {
-                                if (!$this->dispatchWorldEvent($projectileEvent, $directedCount)) {
-                                    return false;
-                                }
-                            }
-                            continue;
-                        }
-                        if ($event instanceof AreaEffectCloudSpawned || $event instanceof AreaEffectCloudUpdated
-                            || $event instanceof AreaEffectCloudRemoved) {
-                            foreach ($this->reconcileAreaEffectCloudEvent($event) as $cloudEvent) {
-                                if (!$this->dispatchWorldEvent($cloudEvent, $directedCount)) {
-                                    return false;
-                                }
-                            }
-                            continue;
-                        }
-                        if ($event instanceof FallingBlockActorSpawned || $event instanceof FallingBlockActorMoved
-                            || $event instanceof FallingBlockActorSettled || $event instanceof FallingBlockActorRemoved) {
-                            foreach ($this->reconcileFallingBlockEvent($event) as $fallingBlockEvent) {
-                                if (!$this->dispatchWorldEvent($fallingBlockEvent, $directedCount)) {
-                                    return false;
-                                }
-                            }
-                            continue;
-                        }
-                        if ($event instanceof EntityActorSpawned || $event instanceof EntityActorMoved
-                            || $event instanceof EntityActorDamaged || $event instanceof EntityActorDied
-                            || $event instanceof EntityActorRemoved) {
-                            foreach ($this->reconcileEntityActorEvent($event) as $entityEvent) {
-                                if ($entityEvent instanceof EntityActorMoved) {
-                                    if (!$this->shouldBroadcastEntityMovement($entityEvent, $tick->number)) {
-                                        continue;
-                                    }
-                                    if (!$this->collectMovementPackets(
-                                        $entityEvent,
-                                        $pendingMovementPackets,
-                                        $movementFrameCache,
-                                        $movementRecipientAvailability,
-                                        $directedCount,
-                                    )) {
-                                        return false;
-                                    }
-                                    continue;
-                                }
-                                if ($entityEvent instanceof EntityActorDied || $entityEvent instanceof EntityActorRemoved) {
-                                    unset($this->lastEntityMovementBroadcastTicks[$entityEvent->entity->getRuntimeId()]);
-                                }
-                                if (!$this->flushMovementPackets(
+                        $eventType = $event::class;
+                        $eventType = substr($eventType, (int) strrpos($eventType, '\\') + 1);
+                        $eventTypeCounts[$eventType] = ($eventTypeCounts[$eventType] ?? 0) + 1;
+                        $eventStartedNanoseconds = hrtime(true);
+                        try {
+                            if ($this->isMovementFlushBoundary($event)
+                                && !$this->flushMovementPackets(
                                     $pendingMovementPackets,
                                     $movementRecipientAvailability,
                                     $authoritativeMovementPackets,
                                     $pendingSharedAuthoritativePackets,
-                                )
-                                    || !$this->dispatchWorldEvent($entityEvent, $directedCount)) {
-                                    return false;
-                                }
-                            }
-                            continue;
-                        }
-                        if ($event instanceof PlayerJoined) {
-                            $this->actorVisibility->upsert($event->player);
-                            if (!$this->dispatchWorldEvent($event, $directedCount)) {
+                                )) {
                                 return false;
                             }
-                            $this->enqueueActorVisibilityReconciliation($event->player->sessionId, true, true);
-                            $this->queueOnlinePlayerCommandUpdate();
-                            continue;
-                        }
-                        if ($event instanceof PlayerGameModeChanged) {
-                            $this->actorVisibility->upsert($event->player);
-                            $session = $this->sessionById($event->player->sessionId);
-                            if (!$this->dispatchWorldEvent($event, $directedCount)) {
-                                return false;
+                            if (!$this->reconcileAdmission($event)) {
+                                continue;
                             }
-                            if ($session?->play !== null && $this->commandRegistry !== null && $this->permissionStore !== null) {
-                                $projector = new BedrockCommandPacketProjector($this->commandRegistry, $this->permissionStore);
-                                if (!$session->play->queuePacket($projector->abilities(
-                                    $event->player->identity,
-                                    $event->player->runtimeActorId,
-                                    $event->gameMode,
-                                ))) {
-                                    return false;
+                            if ($event instanceof PortalTransferRequested) {
+                                if (isset($this->pendingPlayerWorldTransfers[$event->sessionId])) {
+                                    continue;
+                                }
+                                if (!$this->beginPortalTransfer($event)) {
+                                    $session = $this->sessionById($event->sessionId);
+                                    if ($session !== null) {
+                                        $this->simulationForSession($session)?->rejectPortalTransfer($event->sessionId);
+                                    }
+                                    $this->diagnostics->record('world.portal_transfer_deferred', [
+                                        'source_dimension' => $event->destination->sourceDimension->value,
+                                        'target_dimension' => $event->destination->targetDimension->value,
+                                    ]);
+                                }
+                                continue;
+                            }
+                            if ($event instanceof EndPortalTransferRequested) {
+                                if (!$this->beginEndPortalTransfer($event)) {
+                                    $session = $this->sessionById($event->sessionId);
+                                    if ($session !== null) {
+                                        $this->simulationForSession($session)?->rejectPortalTransfer($event->sessionId);
+                                    }
+                                    $this->diagnostics->record('world.end_portal_transfer_deferred', [
+                                        'source_dimension' => $event->sourceDimension->value,
+                                        'target_dimension' => $event->targetDimension->value,
+                                    ]);
+                                }
+                                continue;
+                            }
+                            if ($event instanceof EndGatewayTransferRequested) {
+                                if (!$this->beginEndGatewayTransfer($event)) {
+                                    $session = $this->sessionById($event->sessionId);
+                                    if ($session !== null) {
+                                        $this->simulationForSession($session)?->rejectEndGatewayTransfer($event->sessionId);
+                                    }
+                                    $this->diagnostics->record('world.end_gateway_transfer_deferred');
+                                }
+                                continue;
+                            }
+                            if ($event instanceof BlockPlacementCorrected) {
+                                $this->diagnostics->record('world.protocol_trace', [
+                                    'kind' => 'block_placement_corrected',
+                                    'reason' => $event->reason,
+                                    'item' => $event->heldStack?->identifier,
+                                    'aux_value' => $event->heldStack?->auxValue,
+                                ]);
+                            }
+                            if ($event instanceof MovementCorrected) {
+                                $this->recordMovementCorrectionTrace($event);
+                                $runtimeSession = $this->sessionsById[$event->authoritativePlayer->sessionId] ?? null;
+                                $simulation = $runtimeSession === null ? null : $this->simulationForSession($runtimeSession);
+                                $player = $simulation?->authoritativePlayer($event->authoritativePlayer->identity);
+                                if ($player !== null) {
+                                    $this->pluginEvents?->movementCorrected($player, $event->reason);
                                 }
                             }
-                            if ($session?->play !== null
-                                && (!$session->play->queuePacket(new UpdateAdventureSettingsPacket())
-                                    || ($this->inventoryProjector !== null
-                                        && !$session->play->queuePacket($this->inventoryProjector->creativeContent()))
-                                    || !$session->play->queuePacket(new SystemTextPacket(
-                                        'Your game mode has been changed to ' . $event->gameMode->value . '.',
-                                    )))) {
-                                return false;
-                            }
-                            foreach ($this->reconcileActorVisibility($event->player->sessionId) as $visibilityEvent) {
-                                if (!$this->dispatchWorldEvent($visibilityEvent, $directedCount)) {
-                                    return false;
+                            if ($event instanceof MovementViolationLimitReached) {
+                                $key = $this->sessionEndpoints[$event->sessionId] ?? null;
+                                $session = $key === null ? null : ($this->sessions[$key] ?? null);
+                                if ($key !== null && $session !== null) {
+                                    $this->diagnostics->record('play.movement_violation_limit', [
+                                        'reason' => $event->reason,
+                                        'score' => $event->score,
+                                    ]);
+                                    $this->kickPlayer(
+                                        $key,
+                                        $session,
+                                        'Movement validation failed repeatedly.',
+                                        null,
+                                        'Disconnected: invalid movement.',
+                                        PlayerKickCause::MOVEMENT_VIOLATION,
+                                    );
                                 }
+                                continue;
                             }
-                            continue;
-                        }
-                        if ($event instanceof PlayerMoved) {
-                            $actorVisibilityChanged = $this->actorVisibility->upsert($event->player);
-                            $session = $this->sessionById($event->player->sessionId);
-                            $changedChunkKeys = $session?->play?->takeChunkVisibilityChanges() ?? [];
-                            if ($changedChunkKeys !== []) {
-                                $changedChunkSet = array_fill_keys($changedChunkKeys, true);
-                                $activeSimulation->synchronizeDeliveredChunkVisibility(
-                                    $event->player->sessionId,
-                                    $this->currentChunkVisibility($session, $changedChunkKeys),
+                            if ($event instanceof PlayerJoined || $event instanceof PlayerMoved || $event instanceof PlayerRespawned) {
+                                $chunkViewStartedNanoseconds = hrtime(true);
+                                $chunkViewUpdated = $this->updateAuthoritativeChunkView($event->player);
+                                $this->recordSlowRuntimeStage(
+                                    'player_chunk_view',
+                                    $chunkViewStartedNanoseconds,
+                                    $tick->number,
+                                    ['source' => $eventType],
                                 );
-                                foreach ($activeSimulation->reconcileDisplayVisibilityForSession(
-                                    $event->player->sessionId,
-                                    $changedChunkSet,
-                                ) as $displayVisibilityEvent) {
-                                    if (!$this->dispatchWorldEvent($displayVisibilityEvent, $directedCount)) {
-                                        return false;
-                                    }
-                                }
-                                $this->enqueueActorVisibilityReconciliation(
-                                    $event->player->sessionId,
-                                    false,
-                                    true,
-                                    $changedChunkSet,
-                                );
-                                foreach ($this->reconcileItemsForViewer(
-                                    $event->player->sessionId,
-                                    $changedChunkSet,
-                                ) as $itemVisibilityEvent) {
-                                    if (!$this->dispatchWorldEvent($itemVisibilityEvent, $directedCount)) {
-                                        return false;
-                                    }
-                                }
-                                foreach ($this->reconcileEntityActorsForViewer(
-                                    $event->player->sessionId,
-                                    $changedChunkSet,
-                                ) as $entityVisibilityEvent) {
-                                    if (!$this->dispatchWorldEvent($entityVisibilityEvent, $directedCount)) {
-                                        return false;
-                                    }
-                                }
-                                foreach ($this->reconcileTransientActorsForViewer(
-                                    $event->player->sessionId,
-                                    $changedChunkSet,
-                                ) as $potionVisibilityEvent) {
-                                    if (!$this->dispatchWorldEvent($potionVisibilityEvent, $directedCount)) {
-                                        return false;
-                                    }
+                                if (!$chunkViewUpdated) {
+                                    continue;
                                 }
                             }
-                            $newlyVisibleRecipients = [];
-                            if ($actorVisibilityChanged) {
-                                foreach ($this->reconcileMovedActorVisibility($event->player->sessionId) as $visibilityEvent) {
-                                    if ($visibilityEvent instanceof PlayerBecameVisible) {
-                                        $newlyVisibleRecipients[$visibilityEvent->recipientSessionId] = true;
+                            if ($event instanceof MovementCorrected
+                                && ($event->reason === 'plugin_teleport' || $event->peerSessionIds !== [])) {
+                                $chunkViewStartedNanoseconds = hrtime(true);
+                                $chunkViewUpdated = $this->updateAuthoritativeChunkView($event->authoritativePlayer);
+                                $this->recordSlowRuntimeStage(
+                                    'movement_correction_chunk_view',
+                                    $chunkViewStartedNanoseconds,
+                                    $tick->number,
+                                    ['reason' => $event->reason],
+                                );
+                                if (!$chunkViewUpdated) {
+                                    continue;
+                                }
+                            }
+                            if ($event instanceof BlockBreakStarted
+                                || $event instanceof BlockPunch
+                                || $event instanceof BlockBreakStopped
+                                || $event instanceof BlockChanged
+                                || $event instanceof BlockPlaced) {
+                                $event = $this->filterBlockRecipients($event);
+                            }
+                            if ($event instanceof PotionSplashImpacted) {
+                                $event = new PotionSplashImpacted(
+                                    $event->position,
+                                    $event->potionType,
+                                    array_values(array_filter(
+                                        array_values(array_unique($event->recipientSessionIds)),
+                                        fn(string $recipient): bool => $this->transientActorViewerCanSee(
+                                            $recipient,
+                                            $this->processingWorldId ?? 'world',
+                                            $event->position,
+                                        ),
+                                    )),
+                                );
+                            }
+                            if ($event instanceof ChatBroadcast
+                                && $this->eventEncoder instanceof ChatBroadcastPacketEncoder) {
+                                if ($this->pendingChatBroadcasts->count() < self::MAXIMUM_PENDING_CHAT_BROADCASTS) {
+                                    $this->pendingChatBroadcasts->enqueue($event);
+                                } else {
+                                    $this->diagnostics->record('runtime.chat_projection_saturated.protocol_trace', [
+                                        'pending' => $this->pendingChatBroadcasts->count(),
+                                    ]);
+                                }
+                                continue;
+                            }
+                            if ($event instanceof ItemEntitySpawned || $event instanceof ItemEntityMoved
+                                || $event instanceof ItemEntityPickedUp || $event instanceof ItemEntityDespawned) {
+                                foreach ($this->reconcileItemEvent($event) as $itemEvent) {
+                                    if (!$this->dispatchWorldEvent($itemEvent, $directedCount)) {
+                                        return false;
                                     }
+                                }
+                                continue;
+                            }
+                            if ($event instanceof ProjectileSpawned || $event instanceof ProjectileMoved
+                                || $event instanceof ProjectileRemoved) {
+                                foreach ($this->reconcileProjectileEvent($event) as $projectileEvent) {
+                                    if (!$this->dispatchWorldEvent($projectileEvent, $directedCount)) {
+                                        return false;
+                                    }
+                                }
+                                continue;
+                            }
+                            if ($event instanceof AreaEffectCloudSpawned || $event instanceof AreaEffectCloudUpdated
+                                || $event instanceof AreaEffectCloudRemoved) {
+                                foreach ($this->reconcileAreaEffectCloudEvent($event) as $cloudEvent) {
+                                    if (!$this->dispatchWorldEvent($cloudEvent, $directedCount)) {
+                                        return false;
+                                    }
+                                }
+                                continue;
+                            }
+                            if ($event instanceof FallingBlockActorSpawned || $event instanceof FallingBlockActorMoved
+                                || $event instanceof FallingBlockActorSettled || $event instanceof FallingBlockActorRemoved) {
+                                foreach ($this->reconcileFallingBlockEvent($event) as $fallingBlockEvent) {
+                                    if (!$this->dispatchWorldEvent($fallingBlockEvent, $directedCount)) {
+                                        return false;
+                                    }
+                                }
+                                continue;
+                            }
+                            if ($event instanceof EntityActorSpawned || $event instanceof EntityActorMoved
+                                || $event instanceof EntityActorDamaged || $event instanceof EntityActorDied
+                                || $event instanceof EntityActorRemoved) {
+                                foreach ($this->reconcileEntityActorEvent($event) as $entityEvent) {
+                                    if ($entityEvent instanceof EntityActorMoved) {
+                                        if (!$this->shouldBroadcastEntityMovement($entityEvent, $tick->number)) {
+                                            continue;
+                                        }
+                                        if (!$this->collectMovementPackets(
+                                            $entityEvent,
+                                            $pendingMovementPackets,
+                                            $movementFrameCache,
+                                            $movementRecipientAvailability,
+                                            $directedCount,
+                                        )) {
+                                            return false;
+                                        }
+                                        continue;
+                                    }
+                                    if ($entityEvent instanceof EntityActorDied || $entityEvent instanceof EntityActorRemoved) {
+                                        unset($this->lastEntityMovementBroadcastTicks[$entityEvent->entity->getRuntimeId()]);
+                                    }
+                                    if (!$this->flushMovementPackets(
+                                        $pendingMovementPackets,
+                                        $movementRecipientAvailability,
+                                        $authoritativeMovementPackets,
+                                        $pendingSharedAuthoritativePackets,
+                                    )
+                                        || !$this->dispatchWorldEvent($entityEvent, $directedCount)) {
+                                        return false;
+                                    }
+                                }
+                                continue;
+                            }
+                            if ($event instanceof PlayerJoined) {
+                                $this->actorVisibility->upsert($event->player);
+                                if (!$this->dispatchWorldEvent($event, $directedCount)) {
+                                    return false;
+                                }
+                                $this->enqueueActorVisibilityReconciliation($event->player->sessionId, true, true);
+                                $this->queueOnlinePlayerCommandUpdate();
+                                continue;
+                            }
+                            if ($event instanceof PlayerGameModeChanged) {
+                                $this->actorVisibility->upsert($event->player);
+                                $session = $this->sessionById($event->player->sessionId);
+                                if (!$this->dispatchWorldEvent($event, $directedCount)) {
+                                    return false;
+                                }
+                                if ($session?->play !== null && $this->commandRegistry !== null && $this->permissionStore !== null) {
+                                    $projector = new BedrockCommandPacketProjector($this->commandRegistry, $this->permissionStore);
+                                    if (!$session->play->queuePacket($projector->abilities(
+                                        $event->player->identity,
+                                        $event->player->runtimeActorId,
+                                        $event->gameMode,
+                                    ))) {
+                                        return false;
+                                    }
+                                }
+                                if ($session?->play !== null
+                                    && (!$session->play->queuePacket(new UpdateAdventureSettingsPacket())
+                                        || ($this->inventoryProjector !== null
+                                            && !$session->play->queuePacket($this->inventoryProjector->creativeContent()))
+                                        || !$session->play->queuePacket(new SystemTextPacket(
+                                            'Your game mode has been changed to ' . $event->gameMode->value . '.',
+                                        )))) {
+                                    return false;
+                                }
+                                foreach ($this->reconcileActorVisibility($event->player->sessionId) as $visibilityEvent) {
                                     if (!$this->dispatchWorldEvent($visibilityEvent, $directedCount)) {
                                         return false;
                                     }
                                 }
+                                continue;
                             }
-                            if ($this->shouldBroadcastPeerMovement($event, $tick->number)) {
+                            if ($event instanceof PlayerMoved) {
+                                $playerMoveProjectionStartedNanoseconds = hrtime(true);
+                                $actorVisibilityChanged = $this->actorVisibility->upsert($event->player);
+                                $session = $this->sessionById($event->player->sessionId);
+                                $changedChunkKeys = $session?->play?->takeChunkVisibilityChanges() ?? [];
+                                if ($changedChunkKeys !== []) {
+                                    $chunkVisibilityStartedNanoseconds = hrtime(true);
+                                    $changedChunkSet = array_fill_keys($changedChunkKeys, true);
+                                    $activeSimulation->synchronizeDeliveredChunkVisibility(
+                                        $event->player->sessionId,
+                                        $this->currentChunkVisibility($session, $changedChunkKeys),
+                                    );
+                                    foreach ($activeSimulation->reconcileDisplayVisibilityForSession(
+                                        $event->player->sessionId,
+                                        $changedChunkSet,
+                                    ) as $displayVisibilityEvent) {
+                                        if (!$this->dispatchWorldEvent($displayVisibilityEvent, $directedCount)) {
+                                            return false;
+                                        }
+                                    }
+                                    $this->enqueueActorVisibilityReconciliation(
+                                        $event->player->sessionId,
+                                        false,
+                                        true,
+                                        $changedChunkSet,
+                                    );
+                                    foreach ($this->reconcileItemsForViewer(
+                                        $event->player->sessionId,
+                                        $changedChunkSet,
+                                    ) as $itemVisibilityEvent) {
+                                        if (!$this->dispatchWorldEvent($itemVisibilityEvent, $directedCount)) {
+                                            return false;
+                                        }
+                                    }
+                                    foreach ($this->reconcileEntityActorsForViewer(
+                                        $event->player->sessionId,
+                                        $changedChunkSet,
+                                    ) as $entityVisibilityEvent) {
+                                        if (!$this->dispatchWorldEvent($entityVisibilityEvent, $directedCount)) {
+                                            return false;
+                                        }
+                                    }
+                                    foreach ($this->reconcileTransientActorsForViewer(
+                                        $event->player->sessionId,
+                                        $changedChunkSet,
+                                    ) as $potionVisibilityEvent) {
+                                        if (!$this->dispatchWorldEvent($potionVisibilityEvent, $directedCount)) {
+                                            return false;
+                                        }
+                                    }
+                                    $this->recordSlowRuntimeStage(
+                                        'player_chunk_visibility',
+                                        $chunkVisibilityStartedNanoseconds,
+                                        $tick->number,
+                                        ['chunks' => count($changedChunkKeys)],
+                                    );
+                                }
+                                $newlyVisibleRecipients = [];
+                                if ($actorVisibilityChanged) {
+                                    $actorVisibilityStartedNanoseconds = hrtime(true);
+                                    $visibilityEvents = $this->reconcileMovedActorVisibility($event->player->sessionId);
+                                    foreach ($visibilityEvents as $visibilityEvent) {
+                                        if ($visibilityEvent instanceof PlayerBecameVisible) {
+                                            $newlyVisibleRecipients[$visibilityEvent->recipientSessionId] = true;
+                                        }
+                                    }
+                                    if (!$this->collectSharedPlayerVisibilityEvents(
+                                        $visibilityEvents,
+                                        $pendingSharedAuthoritativePackets,
+                                        $movementFrameCache,
+                                        $directedCount,
+                                    )) {
+                                        return false;
+                                    }
+                                    $this->recordSlowRuntimeStage(
+                                        'player_actor_visibility',
+                                        $actorVisibilityStartedNanoseconds,
+                                        $tick->number,
+                                    );
+                                }
+                                if ($this->shouldBroadcastPeerMovement($event, $tick->number)) {
+                                    $movementFanoutStartedNanoseconds = hrtime(true);
+                                    $visibleRecipients = $this->actorVisibility->visibleRecipients(
+                                        $event->player->sessionId,
+                                        $event->recipientSessionIds,
+                                    );
+                                    $visibleRecipients = array_values(array_filter(
+                                        $visibleRecipients,
+                                        static fn(string $recipient): bool => !isset($newlyVisibleRecipients[$recipient]),
+                                    ));
+                                    if (!$this->collectMovementPackets(new PlayerMoved(
+                                        $event->player,
+                                        $visibleRecipients,
+                                        $event->postureChanged,
+                                    ), $pendingMovementPackets, $movementFrameCache, $movementRecipientAvailability, $directedCount)) {
+                                        return false;
+                                    }
+                                    $this->recordSlowRuntimeStage(
+                                        'player_movement_fanout',
+                                        $movementFanoutStartedNanoseconds,
+                                        $tick->number,
+                                        ['recipients' => count($visibleRecipients)],
+                                    );
+                                }
+                                $this->recordSlowRuntimeStage(
+                                    'player_movement_projection',
+                                    $playerMoveProjectionStartedNanoseconds,
+                                    $tick->number,
+                                );
+                                continue;
+                            }
+                            if ($event instanceof MovementCorrected
+                                && $event->peerSessionIds !== []
+                                && $this->eventEncoder instanceof PlayerMovementPacketEncoder) {
+                                $actorVisibilityChanged = $this->actorVisibility->upsert($event->authoritativePlayer);
+                                $session = $this->sessionById($event->authoritativePlayer->sessionId);
+                                $changedChunkKeys = $session?->play?->takeChunkVisibilityChanges() ?? [];
+                                $viewerVisibilityChanged = $changedChunkKeys !== [];
+                                if ($viewerVisibilityChanged) {
+                                    $changedChunkSet = array_fill_keys($changedChunkKeys, true);
+                                    $activeSimulation->synchronizeDeliveredChunkVisibility(
+                                        $event->authoritativePlayer->sessionId,
+                                        $this->currentChunkVisibility($session, $changedChunkKeys),
+                                    );
+                                    foreach ($activeSimulation->reconcileDisplayVisibilityForSession(
+                                        $event->authoritativePlayer->sessionId,
+                                        $changedChunkSet,
+                                    ) as $displayVisibilityEvent) {
+                                        if (!$this->dispatchWorldEvent($displayVisibilityEvent, $directedCount)) {
+                                            return false;
+                                        }
+                                    }
+                                    $this->enqueueActorVisibilityReconciliation(
+                                        $event->authoritativePlayer->sessionId,
+                                        false,
+                                        true,
+                                        $changedChunkSet,
+                                    );
+                                    foreach ($this->reconcileItemsForViewer(
+                                        $event->authoritativePlayer->sessionId,
+                                        $changedChunkSet,
+                                    ) as $itemVisibilityEvent) {
+                                        if (!$this->dispatchWorldEvent($itemVisibilityEvent, $directedCount)) {
+                                            return false;
+                                        }
+                                    }
+                                    foreach ($this->reconcileEntityActorsForViewer(
+                                        $event->authoritativePlayer->sessionId,
+                                        $changedChunkSet,
+                                    ) as $entityVisibilityEvent) {
+                                        if (!$this->dispatchWorldEvent($entityVisibilityEvent, $directedCount)) {
+                                            return false;
+                                        }
+                                    }
+                                    foreach ($this->reconcileTransientActorsForViewer(
+                                        $event->authoritativePlayer->sessionId,
+                                        $changedChunkSet,
+                                    ) as $potionVisibilityEvent) {
+                                        if (!$this->dispatchWorldEvent($potionVisibilityEvent, $directedCount)) {
+                                            return false;
+                                        }
+                                    }
+                                }
+                                $newlyVisibleRecipients = [];
+                                if ($actorVisibilityChanged) {
+                                    $visibilityEvents = $this->reconcileMovedActorVisibility(
+                                        $event->authoritativePlayer->sessionId,
+                                    );
+                                    foreach ($visibilityEvents as $visibilityEvent) {
+                                        if ($visibilityEvent instanceof PlayerBecameVisible
+                                            && $visibilityEvent->player->sessionId === $event->authoritativePlayer->sessionId) {
+                                            $newlyVisibleRecipients[$visibilityEvent->recipientSessionId] = true;
+                                        }
+                                    }
+                                    if (!$this->collectSharedPlayerVisibilityEvents(
+                                        $visibilityEvents,
+                                        $pendingSharedAuthoritativePackets,
+                                        $movementFrameCache,
+                                        $directedCount,
+                                    )) {
+                                        return false;
+                                    }
+                                }
                                 $visibleRecipients = $this->actorVisibility->visibleRecipients(
-                                    $event->player->sessionId,
-                                    $event->recipientSessionIds,
+                                    $event->authoritativePlayer->sessionId,
+                                    $event->peerSessionIds,
                                 );
                                 $visibleRecipients = array_values(array_filter(
                                     $visibleRecipients,
                                     static fn(string $recipient): bool => !isset($newlyVisibleRecipients[$recipient]),
                                 ));
-                                if (!$this->collectMovementPackets(new PlayerMoved(
-                                    $event->player,
-                                    $visibleRecipients,
+                                if (!$this->collectAuthoritativeMovementPacket(new MovementCorrected(
+                                    $event->authoritativePlayer,
+                                    $event->reason,
+                                    [],
                                     $event->postureChanged,
-                                ), $pendingMovementPackets, $movementFrameCache, $movementRecipientAvailability, $directedCount)) {
+                                    $event->clientTick,
+                                ), $authoritativeMovementPackets, $movementFrameCache, $directedCount)) {
                                     return false;
                                 }
-                            }
-                            continue;
-                        }
-                        if ($event instanceof MovementCorrected
-                            && $event->peerSessionIds !== []
-                            && $this->eventEncoder instanceof PlayerMovementPacketEncoder) {
-                            $actorVisibilityChanged = $this->actorVisibility->upsert($event->authoritativePlayer);
-                            $session = $this->sessionById($event->authoritativePlayer->sessionId);
-                            $changedChunkKeys = $session?->play?->takeChunkVisibilityChanges() ?? [];
-                            $viewerVisibilityChanged = $changedChunkKeys !== [];
-                            if ($viewerVisibilityChanged) {
-                                $changedChunkSet = array_fill_keys($changedChunkKeys, true);
-                                $activeSimulation->synchronizeDeliveredChunkVisibility(
-                                    $event->authoritativePlayer->sessionId,
-                                    $this->currentChunkVisibility($session, $changedChunkKeys),
+                                $peerMovement = new PlayerMoved(
+                                    $event->authoritativePlayer,
+                                    $visibleRecipients,
+                                    $event->postureChanged,
                                 );
-                                foreach ($activeSimulation->reconcileDisplayVisibilityForSession(
-                                    $event->authoritativePlayer->sessionId,
-                                    $changedChunkSet,
-                                ) as $displayVisibilityEvent) {
-                                    if (!$this->dispatchWorldEvent($displayVisibilityEvent, $directedCount)) {
-                                        return false;
-                                    }
+                                if ($visibleRecipients !== []
+                                    && $this->shouldBroadcastPeerMovement($peerMovement, $tick->number)
+                                    && !$this->collectMovementPackets(
+                                        $peerMovement,
+                                        $pendingMovementPackets,
+                                        $movementFrameCache,
+                                        $movementRecipientAvailability,
+                                        $directedCount,
+                                    )) {
+                                    return false;
                                 }
-                                $this->enqueueActorVisibilityReconciliation(
-                                    $event->authoritativePlayer->sessionId,
-                                    false,
-                                    true,
-                                    $changedChunkSet,
-                                );
-                                foreach ($this->reconcileItemsForViewer(
-                                    $event->authoritativePlayer->sessionId,
-                                    $changedChunkSet,
-                                ) as $itemVisibilityEvent) {
-                                    if (!$this->dispatchWorldEvent($itemVisibilityEvent, $directedCount)) {
-                                        return false;
-                                    }
-                                }
-                                foreach ($this->reconcileEntityActorsForViewer(
-                                    $event->authoritativePlayer->sessionId,
-                                    $changedChunkSet,
-                                ) as $entityVisibilityEvent) {
-                                    if (!$this->dispatchWorldEvent($entityVisibilityEvent, $directedCount)) {
-                                        return false;
-                                    }
-                                }
-                                foreach ($this->reconcileTransientActorsForViewer(
-                                    $event->authoritativePlayer->sessionId,
-                                    $changedChunkSet,
-                                ) as $potionVisibilityEvent) {
-                                    if (!$this->dispatchWorldEvent($potionVisibilityEvent, $directedCount)) {
-                                        return false;
-                                    }
-                                }
+                                continue;
                             }
-                            $newlyVisibleRecipients = [];
-                            if ($actorVisibilityChanged) {
-                                foreach ($this->reconcileMovedActorVisibility(
-                                    $event->authoritativePlayer->sessionId,
-                                ) as $visibilityEvent) {
-                                    if ($visibilityEvent instanceof PlayerBecameVisible
-                                        && $visibilityEvent->player->sessionId === $event->authoritativePlayer->sessionId) {
-                                        $newlyVisibleRecipients[$visibilityEvent->recipientSessionId] = true;
-                                    }
+                            if ($event instanceof MovementCorrected) {
+                                if (!$this->collectAuthoritativeMovementPacket(
+                                    $event,
+                                    $authoritativeMovementPackets,
+                                    $movementFrameCache,
+                                    $directedCount,
+                                )) {
+                                    return false;
+                                }
+                                continue;
+                            }
+                            if ($event instanceof NutritionChanged) {
+                                if (!$this->dispatchWorldEvent($event, $directedCount)) {
+                                    return false;
+                                }
+                                continue;
+                            }
+                            if ($event instanceof PlayerRespawned) {
+                                $previousViewers = $this->actorVisibility->viewersOf($event->player->sessionId);
+                                $this->actorVisibility->upsert($event->player);
+                                foreach ($this->reconcileActorVisibility($event->player->sessionId) as $visibilityEvent) {
                                     if (!$this->dispatchWorldEvent($visibilityEvent, $directedCount)) {
                                         return false;
                                     }
                                 }
+                                foreach ($this->actorVisibility->refreshActor(
+                                    $event->player,
+                                    array_values(array_intersect(
+                                        $previousViewers,
+                                        $this->actorVisibility->viewersOf($event->player->sessionId),
+                                    )),
+                                ) as $visibilityEvent) {
+                                    if (!$this->dispatchWorldEvent($visibilityEvent, $directedCount)) {
+                                        return false;
+                                    }
+                                }
+                                $event = new PlayerRespawned(
+                                    $event->player,
+                                    [
+                                        $event->player->sessionId,
+                                        ...$this->actorVisibility->visibleRecipients(
+                                            $event->player->sessionId,
+                                            $event->recipientSessionIds,
+                                        ),
+                                    ],
+                                    $event->inventory,
+                                    $event->selectedHotbarSlot,
+                                    $event->selectedStack,
+                                );
+                            } elseif ($event instanceof PlayerDamaged) {
+                                $event = new PlayerDamaged(
+                                    $event->player,
+                                    $event->damage,
+                                    $event->cause,
+                                    [
+                                        $event->player->sessionId,
+                                        ...$this->actorVisibility->visibleRecipients(
+                                            $event->player->sessionId,
+                                            $event->recipientSessionIds,
+                                        ),
+                                    ],
+                                );
+                            } elseif ($event instanceof PlayerKnockedBack) {
+                                $event = new PlayerKnockedBack(
+                                    $event->ownerSessionId,
+                                    $event->player,
+                                    $event->motionX,
+                                    $event->motionY,
+                                    $event->motionZ,
+                                    $event->clientTick,
+                                    [
+                                        $event->player->sessionId,
+                                        ...$this->actorVisibility->visibleRecipients(
+                                            $event->player->sessionId,
+                                            $event->recipientSessionIds,
+                                        ),
+                                    ],
+                                );
+                            } elseif ($event instanceof PlayerMotionChanged) {
+                                $event = new PlayerMotionChanged(
+                                    $event->ownerSessionId,
+                                    $event->player,
+                                    $event->motionX,
+                                    $event->motionY,
+                                    $event->motionZ,
+                                    $event->clientTick,
+                                    $event->postureChanged,
+                                    [
+                                        $event->player->sessionId,
+                                        ...$this->actorVisibility->visibleRecipients(
+                                            $event->player->sessionId,
+                                            $event->recipientSessionIds,
+                                        ),
+                                    ],
+                                );
+                            } elseif ($event instanceof PlayerDied) {
+                                $event = new PlayerDied(
+                                    $event->player,
+                                    $event->cause,
+                                    $event->killer,
+                                    $event->deathMessage,
+                                    $event->deathScreenMessage,
+                                    [
+                                        $event->player->sessionId,
+                                        ...$this->actorVisibility->visibleRecipients(
+                                            $event->player->sessionId,
+                                            $event->animationRecipientSessionIds,
+                                        ),
+                                    ],
+                                    $event->messageRecipientSessionIds,
+                                );
+                            } elseif ($event instanceof \Bedriox\Server\Simulation\Event\PlayerPresentationChanged) {
+                                $event = new \Bedriox\Server\Simulation\Event\PlayerPresentationChanged(
+                                    $event->player,
+                                    [
+                                        $event->player->sessionId,
+                                        ...$this->actorVisibility->visibleRecipients(
+                                            $event->player->sessionId,
+                                            $event->recipientSessionIds,
+                                        ),
+                                    ],
+                                );
                             }
-                            $visibleRecipients = $this->actorVisibility->visibleRecipients(
-                                $event->authoritativePlayer->sessionId,
-                                $event->peerSessionIds,
-                            );
-                            $visibleRecipients = array_values(array_filter(
-                                $visibleRecipients,
-                                static fn(string $recipient): bool => !isset($newlyVisibleRecipients[$recipient]),
-                            ));
-                            if (!$this->collectAuthoritativeMovementPacket(new MovementCorrected(
-                                $event->authoritativePlayer,
-                                $event->reason,
-                                [],
-                                $event->postureChanged,
-                                $event->clientTick,
-                            ), $authoritativeMovementPackets, $movementFrameCache, $directedCount)) {
-                                return false;
+                            if ($event instanceof PlayerDisconnected) {
+                                foreach ($this->actorVisibility->remove($event->sessionId) as $visibilityEvent) {
+                                    if (!$this->dispatchWorldEvent($visibilityEvent, $directedCount)) {
+                                        return false;
+                                    }
+                                }
+                            } elseif ($event instanceof EmotePerformed) {
+                                $event = new EmotePerformed(
+                                    $event->senderSessionId,
+                                    $event->emoteId,
+                                    [
+                                        ...$this->actorVisibility->visibleRecipients(
+                                            $event->senderSessionId,
+                                            $event->recipientSessionIds,
+                                        ),
+                                        ...($event->includeOwner ? [$event->senderSessionId] : []),
+                                    ],
+                                    $event->includeOwner,
+                                );
+                            } elseif ($event instanceof ArmSwung) {
+                                $event = new ArmSwung(
+                                    $event->ownerSessionId,
+                                    $event->runtimeActorId,
+                                    $event->source,
+                                    $this->actorVisibility->visibleRecipients(
+                                        $event->ownerSessionId,
+                                        $event->recipientSessionIds,
+                                    ),
+                                );
+                            } elseif ($event instanceof HeldItemChanged) {
+                                $event = new HeldItemChanged(
+                                    $event->ownerSessionId,
+                                    $event->runtimeActorId,
+                                    $event->hotbarSlot,
+                                    $event->stack,
+                                    $this->actorVisibility->visibleRecipients(
+                                        $event->ownerSessionId,
+                                        $event->recipientSessionIds,
+                                    ),
+                                    $event->ownerSlotCorrection,
+                                );
+                            } elseif ($event instanceof InventoryStackRequestProcessed) {
+                                $this->diagnostics->record('world.inventory_request.protocol_trace', [
+                                    'request_id' => $event->requestId,
+                                    'success' => $event->success,
+                                    'reason' => $event->reason,
+                                    'affected_slots' => count($event->affectedSlots),
+                                ]);
+                                $event = new InventoryStackRequestProcessed(
+                                    $event->ownerSessionId,
+                                    $event->requestId,
+                                    $event->success,
+                                    $event->affectedSlots,
+                                    $event->mainInventory,
+                                    $event->cursorStack,
+                                    $event->selectedHotbarSlot,
+                                    $event->selectedStack,
+                                    $event->selectedStackChanged,
+                                    $event->runtimeActorId,
+                                    $this->actorVisibility->visibleRecipients(
+                                        $event->ownerSessionId,
+                                        $event->peerSessionIds,
+                                    ),
+                                    $event->reason,
+                                    $event->responseMode,
+                                    $event->fullSync,
+                                    $event->armorInventory,
+                                    $event->offhandStack,
+                                    $event->craftingInventory,
+                                    $event->openedContainerInventory,
+                                    $event->openedContainerWindowId,
+                                );
                             }
-                            $peerMovement = new PlayerMoved(
-                                $event->authoritativePlayer,
-                                $visibleRecipients,
-                                $event->postureChanged,
-                            );
-                            if ($visibleRecipients !== []
-                                && $this->shouldBroadcastPeerMovement($peerMovement, $tick->number)
-                                && !$this->collectMovementPackets(
-                                    $peerMovement,
-                                    $pendingMovementPackets,
-                                    $movementFrameCache,
-                                    $movementRecipientAvailability,
-                                    $directedCount,
-                                )) {
-                                return false;
-                            }
-                            continue;
-                        }
-                        if ($event instanceof MovementCorrected) {
-                            if (!$this->collectAuthoritativeMovementPacket(
-                                $event,
-                                $authoritativeMovementPackets,
-                                $movementFrameCache,
-                                $directedCount,
-                            )) {
-                                return false;
-                            }
-                            continue;
-                        }
-                        if ($event instanceof NutritionChanged) {
                             if (!$this->dispatchWorldEvent($event, $directedCount)) {
                                 return false;
                             }
-                            continue;
-                        }
-                        if ($event instanceof PlayerRespawned) {
-                            $previousViewers = $this->actorVisibility->viewersOf($event->player->sessionId);
-                            $this->actorVisibility->upsert($event->player);
-                            foreach ($this->reconcileActorVisibility($event->player->sessionId) as $visibilityEvent) {
-                                if (!$this->dispatchWorldEvent($visibilityEvent, $directedCount)) {
-                                    return false;
-                                }
+                            if ($event instanceof PlayerDisconnected) {
+                                $this->queueOnlinePlayerCommandUpdate();
                             }
-                            foreach ($this->actorVisibility->refreshActor(
-                                $event->player,
-                                array_values(array_intersect(
-                                    $previousViewers,
-                                    $this->actorVisibility->viewersOf($event->player->sessionId),
-                                )),
-                            ) as $visibilityEvent) {
-                                if (!$this->dispatchWorldEvent($visibilityEvent, $directedCount)) {
-                                    return false;
-                                }
+                        } finally {
+                            $eventElapsedNanoseconds = hrtime(true) - $eventStartedNanoseconds;
+                            if (!is_int($eventElapsedNanoseconds)) {
+                                throw new RuntimeException('Bedriox requires a 64-bit monotonic clock.');
                             }
-                            $event = new PlayerRespawned(
-                                $event->player,
-                                array_values(array_unique([
-                                    $event->player->sessionId,
-                                    ...array_intersect(
-                                        $event->recipientSessionIds,
-                                        $this->actorVisibility->viewersOf($event->player->sessionId),
-                                    ),
-                                ])),
-                                $event->inventory,
-                                $event->selectedHotbarSlot,
-                                $event->selectedStack,
-                            );
-                        } elseif ($event instanceof PlayerDamaged) {
-                            $event = new PlayerDamaged(
-                                $event->player,
-                                $event->damage,
-                                $event->cause,
-                                array_values(array_unique([
-                                    $event->player->sessionId,
-                                    ...array_intersect(
-                                        $event->recipientSessionIds,
-                                        $this->actorVisibility->viewersOf($event->player->sessionId),
-                                    ),
-                                ])),
-                            );
-                        } elseif ($event instanceof PlayerKnockedBack) {
-                            $event = new PlayerKnockedBack(
-                                $event->ownerSessionId,
-                                $event->player,
-                                $event->motionX,
-                                $event->motionY,
-                                $event->motionZ,
-                                $event->clientTick,
-                                array_values(array_unique([
-                                    $event->player->sessionId,
-                                    ...array_intersect(
-                                        $event->recipientSessionIds,
-                                        $this->actorVisibility->viewersOf($event->player->sessionId),
-                                    ),
-                                ])),
-                            );
-                        } elseif ($event instanceof PlayerMotionChanged) {
-                            $event = new PlayerMotionChanged(
-                                $event->ownerSessionId,
-                                $event->player,
-                                $event->motionX,
-                                $event->motionY,
-                                $event->motionZ,
-                                $event->clientTick,
-                                $event->postureChanged,
-                                array_values(array_unique([
-                                    $event->player->sessionId,
-                                    ...array_intersect(
-                                        $event->recipientSessionIds,
-                                        $this->actorVisibility->viewersOf($event->player->sessionId),
-                                    ),
-                                ])),
-                            );
-                        } elseif ($event instanceof PlayerDied) {
-                            $event = new PlayerDied(
-                                $event->player,
-                                $event->cause,
-                                $event->killer,
-                                $event->deathMessage,
-                                $event->deathScreenMessage,
-                                array_values(array_unique([
-                                    $event->player->sessionId,
-                                    ...array_intersect(
-                                        $event->animationRecipientSessionIds,
-                                        $this->actorVisibility->viewersOf($event->player->sessionId),
-                                    ),
-                                ])),
-                                $event->messageRecipientSessionIds,
-                            );
-                        } elseif ($event instanceof \Bedriox\Server\Simulation\Event\PlayerPresentationChanged) {
-                            $event = new \Bedriox\Server\Simulation\Event\PlayerPresentationChanged(
-                                $event->player,
-                                array_values(array_unique([
-                                    $event->player->sessionId,
-                                    ...array_intersect(
-                                        $event->recipientSessionIds,
-                                        $this->actorVisibility->viewersOf($event->player->sessionId),
-                                    ),
-                                ])),
+                            $eventTypeNanoseconds[$eventType] = self::saturatingAdd(
+                                $eventTypeNanoseconds[$eventType] ?? 0,
+                                max(0, $eventElapsedNanoseconds),
                             );
                         }
-                        if ($event instanceof PlayerDisconnected) {
-                            foreach ($this->actorVisibility->remove($event->sessionId) as $visibilityEvent) {
-                                if (!$this->dispatchWorldEvent($visibilityEvent, $directedCount)) {
-                                    return false;
-                                }
-                            }
-                        } elseif ($event instanceof EmotePerformed) {
-                            $event = new EmotePerformed(
-                                $event->senderSessionId,
-                                $event->emoteId,
-                                array_values(array_unique([
-                                    ...array_intersect(
-                                        $event->recipientSessionIds,
-                                        $this->actorVisibility->viewersOf($event->senderSessionId),
-                                    ),
-                                    ...($event->includeOwner ? [$event->senderSessionId] : []),
-                                ])),
-                                $event->includeOwner,
-                            );
-                        } elseif ($event instanceof ArmSwung) {
-                            $event = new ArmSwung(
-                                $event->ownerSessionId,
-                                $event->runtimeActorId,
-                                $event->source,
-                                array_values(array_intersect(
-                                    $event->recipientSessionIds,
-                                    $this->actorVisibility->viewersOf($event->ownerSessionId),
-                                )),
-                            );
-                        } elseif ($event instanceof HeldItemChanged) {
-                            $event = new HeldItemChanged(
-                                $event->ownerSessionId,
-                                $event->runtimeActorId,
-                                $event->hotbarSlot,
-                                $event->stack,
-                                array_values(array_intersect(
-                                    $event->recipientSessionIds,
-                                    $this->actorVisibility->viewersOf($event->ownerSessionId),
-                                )),
-                                $event->ownerSlotCorrection,
-                            );
-                        } elseif ($event instanceof InventoryStackRequestProcessed) {
-                            $this->diagnostics->record('world.inventory_request.protocol_trace', [
-                                'request_id' => $event->requestId,
-                                'success' => $event->success,
-                                'reason' => $event->reason,
-                                'affected_slots' => count($event->affectedSlots),
-                            ]);
-                            $event = new InventoryStackRequestProcessed(
-                                $event->ownerSessionId,
-                                $event->requestId,
-                                $event->success,
-                                $event->affectedSlots,
-                                $event->mainInventory,
-                                $event->cursorStack,
-                                $event->selectedHotbarSlot,
-                                $event->selectedStack,
-                                $event->selectedStackChanged,
-                                $event->runtimeActorId,
-                                array_values(array_intersect(
-                                    $event->peerSessionIds,
-                                    $this->actorVisibility->viewersOf($event->ownerSessionId),
-                                )),
-                                $event->reason,
-                                $event->responseMode,
-                                $event->fullSync,
-                                $event->armorInventory,
-                                $event->offhandStack,
-                                $event->craftingInventory,
-                            );
-                        }
-                        if (!$this->dispatchWorldEvent($event, $directedCount)) {
+                    }
+                    $chatBroadcasts = 0;
+                    while ($chatBroadcasts < self::CHAT_BROADCASTS_PER_TICK
+                        && !$this->pendingChatBroadcasts->isEmpty()) {
+                        /** @var ChatBroadcast $chatBroadcast */
+                        $chatBroadcast = $this->pendingChatBroadcasts->dequeue();
+                        if (!$this->collectSharedChatPacket(
+                            $chatBroadcast,
+                            $pendingSharedAuthoritativePackets,
+                            $movementFrameCache,
+                            $directedCount,
+                        )) {
                             return false;
                         }
-                        if ($event instanceof PlayerDisconnected) {
-                            $this->queueOnlinePlayerCommandUpdate();
-                        }
+                        ++$chatBroadcasts;
                     }
                     $this->recordSlowRuntimeStage('event_projection', $eventsStartedNanoseconds, $tick->number, [
                         'events' => count($tick->events),
                         'directed_packets' => $directedCount,
+                        'event_types' => $eventTypeCounts,
+                        'event_type_us' => array_map(
+                            static fn(int $nanoseconds): int => intdiv($nanoseconds, 1_000),
+                            $eventTypeNanoseconds,
+                        ),
                     ]);
                     if (!$this->flushMovementPackets(
                         $pendingMovementPackets,
@@ -2486,6 +2613,10 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             ]);
 
             if ($completedTicks > 0) {
+                $this->chunkStreamingGovernor->observeTickPoll(hrtime(true) - $pollStarted);
+            }
+
+            if ($completedTicks > 0) {
                 $completedAt = hrtime(true);
                 $this->performance?->completeTicks($completedTicks, $completedAt);
                 $this->recordPerformanceTrace($completedAt);
@@ -2563,11 +2694,12 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             'loaded_chunks' => $snapshot->loadedChunks,
             'entities' => $snapshot->entityCount,
             'net_tx_bps' => (int) round($snapshot->networkSendBytesPerSecond ?? 0.0),
+            'chunk_pressure' => $this->chunkStreamingGovernor->level(),
         ]);
         $this->performanceTraceStartedNanoseconds = $nowNanoseconds;
     }
 
-    /** @param array<string, int|string|bool|null> $fields */
+    /** @param array<string, int|string|bool|null|array<string, int>> $fields */
     private function recordSlowRuntimeStage(
         string $stage,
         int $startedNanoseconds,
@@ -2609,9 +2741,28 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 'maximum_us' => intdiv($entry['maximum_nanoseconds'], 1_000),
                 'sessions' => count($this->sessions),
                 'last_tick' => $entry['tick'],
-            ] + $entry['fields']);
+            ] + self::normalizeRuntimeStageFields($entry['fields']));
         }
         $this->slowRuntimeStages = [];
+    }
+
+    /**
+     * Keeps structured stage counters in memory while emitting them as bounded JSON values through
+     * the diagnostics scalar-field contract.
+     *
+     * @param array<string, int|string|bool|null|array<string, int>> $fields
+     * @return array<string, int|string|bool|null>
+     */
+    private static function normalizeRuntimeStageFields(array $fields): array
+    {
+        $normalized = [];
+        foreach ($fields as $name => $value) {
+            $normalized[$name] = is_array($value)
+                ? json_encode($value, JSON_THROW_ON_ERROR)
+                : $value;
+        }
+
+        return $normalized;
     }
 
     /** @param array<string, float> $subsystems */
@@ -2792,7 +2943,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
 
     public function entityNavigationMetrics(): EntityNavigationMetrics
     {
-        $totals = [0, 0, 0, 0, 0];
+        $totals = array_fill(0, 13, 0);
         foreach ($this->simulations() as $simulation) {
             $metrics = $simulation->entityNavigationMetrics();
             $totals[0] += $metrics->submitted;
@@ -2800,6 +2951,14 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $totals[2] += $metrics->rejected;
             $totals[3] += $metrics->pending;
             $totals[4] += $metrics->cached;
+            $totals[5] += $metrics->building;
+            $totals[6] += $metrics->buildsQueued;
+            $totals[7] += $metrics->buildsCompleted;
+            $totals[8] += $metrics->cellsScanned;
+            $totals[9] += $metrics->preparationNanoseconds;
+            $totals[10] = max($totals[10], $metrics->maximumPreparationNanoseconds);
+            $totals[11] += $metrics->pathsReused;
+            $totals[12] += $metrics->repathsSuppressed;
         }
 
         return new EntityNavigationMetrics(...$totals);
@@ -2950,9 +3109,27 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             || ($decision->pressure === MemoryPressure::CRITICAL && $tickNumber % 20 === 0)
             || ($decision->pressure === MemoryPressure::HIGH && $tickNumber % 200 === 0)
         );
-        $this->lastGarbageCollection = $forceCollection
-            ? $this->garbageCollector->collectNow($decision->releaseAllocatorCaches)
-            : $this->garbageCollector->maybeCollect();
+        $collection = null;
+        if ($forceCollection) {
+            $collection = $this->garbageCollector->collectNow($decision->releaseAllocatorCaches);
+        } elseif ($this->sessions === []) {
+            // Under normal pressure, collect cyclic structures only while idle.
+            // Reference-counted values are still reclaimed immediately, and the
+            // memory-pressure path above remains authoritative when players are online.
+            $collection = $this->garbageCollector->maybeCollect();
+        }
+        if ($collection !== null) {
+            $this->lastGarbageCollection = $collection;
+        }
+        if ($collection?->collected === true && $collection->durationNanoseconds >= 10_000_000) {
+            $this->diagnostics->record('runtime.garbage_collection_slow.protocol_trace', [
+                'duration_us' => intdiv($collection->durationNanoseconds, 1_000),
+                'cycles' => $collection->cyclesCollected,
+                'roots_before' => $collection->rootsBefore,
+                'roots_after' => $collection->rootsAfter,
+                'forced' => $collection->forced,
+            ]);
+        }
     }
 
     private function recordChunkUnloadResult(ChunkUnloadResult $result): void
@@ -3278,10 +3455,19 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         if ($session->phase !== SessionPhase::LOGIN || $session->login === null) {
             return;
         }
+        if ($this->playerPromotionBudgetTick !== $this->serverTick) {
+            $this->playerPromotionBudgetTick = $this->serverTick;
+            $this->playerPromotionsQueued = 0;
+        }
+        if ($this->playerPromotionsQueued >= self::PLAYER_PROMOTIONS_PER_TICK) {
+            return;
+        }
         $ready = $session->login->takeReady();
         if ($ready === null) {
             return;
         }
+        ++$this->playerPromotionsQueued;
+        $promotionStarted = hrtime(true);
         try {
             $bootstrap = null;
             $addressBan = $this->bans?->addressBan($session->transport->remoteAddress);
@@ -3306,6 +3492,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 $this->rejectReadySession($key, $session, $ready, 'You are not whitelisted on this server.');
                 return;
             }
+            $policyCompleted = hrtime(true);
             if ($this->playerPersistence !== null) {
                 $loaded = $this->playerPersistence->load($ready->login);
                 foreach ($this->sessions as $other) {
@@ -3369,7 +3556,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     return;
                 }
             }
+            $persistenceCompleted = hrtime(true);
             $play = $this->playChannels->create($ready, $session->id, $session->runtimeEntityId, $bootstrap);
+            $playChannelCompleted = hrtime(true);
             $session->craftingCatalogRevision = $this->craftingCatalog?->revision() ?? 0;
             $session->bootstrap = $bootstrap;
             $session->promote($play);
@@ -3504,8 +3693,18 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 ),
                 skin: self::apiSkin($ready->login->clientData),
             );
+            $connectionCompleted = hrtime(true);
             $this->logJoining($session, $ready->login->displayName);
             $this->flush($key, $session);
+            $completed = hrtime(true);
+            $this->diagnostics->record('runtime.player_promotion.protocol_trace', [
+                'policy_us' => intdiv($policyCompleted - $promotionStarted, 1_000),
+                'persistence_us' => intdiv($persistenceCompleted - $policyCompleted, 1_000),
+                'play_channel_us' => intdiv($playChannelCompleted - $persistenceCompleted, 1_000),
+                'connection_us' => intdiv($connectionCompleted - $playChannelCompleted, 1_000),
+                'flush_us' => intdiv($completed - $connectionCompleted, 1_000),
+                'total_us' => intdiv($completed - $promotionStarted, 1_000),
+            ]);
         } catch (Throwable $exception) {
             $this->diagnostics->record('play.channel_creation_failed', [
                 'exception' => $exception::class,
@@ -4056,7 +4255,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         };
     }
 
-    /** @return list<WorldEvent> */
+    /** @return list<PlayerBecameVisible|PlayerBecameHidden> */
     private function reconcileActorVisibility(string $sessionId): array
     {
         return [
@@ -4135,7 +4334,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         return $viewerSessionId . "\0" . $actorSessionId;
     }
 
-    /** @return list<WorldEvent> */
+    /** @return list<PlayerBecameVisible|PlayerBecameHidden> */
     private function reconcileMovedActorVisibility(string $sessionId): array
     {
         return $this->actorVisibility->reconcileActor(
@@ -4147,7 +4346,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         );
     }
 
-    /** @return list<WorldEvent> */
+    /** @return list<PlayerBecameVisible|PlayerBecameHidden> */
     private function reconcileActorVisibilityForViewer(string $sessionId): array
     {
         $viewer = $this->sessionById($sessionId);
@@ -5085,13 +5284,16 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
         foreach ($groups as $group) {
             try {
-                $frames = array_map(
-                    static fn(Packet $packet): PacketFrame => new PacketFrame(
-                        new PacketHeader(BedrockPacketCodec::packetId($packet)),
-                        BedrockPacketCodec::encode($packet),
-                    ),
-                    $group['packets'],
-                );
+                $frames = [];
+                foreach ($group['packets'] as $packet) {
+                    if (!isset($this->packetFrameCache[$packet])) {
+                        $this->packetFrameCache[$packet] = new PacketFrame(
+                            new PacketHeader(BedrockPacketCodec::packetId($packet)),
+                            BedrockPacketCodec::encode($packet),
+                        );
+                    }
+                    $frames[] = $this->packetFrameCache[$packet];
+                }
                 $clearEnvelope = BedrockBatchCodec::encode(
                     new BedrockBatch(
                         $frames,
@@ -5476,6 +5678,22 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
         $this->movementCorrectionTraceCounts[$event->reason]
             = ($this->movementCorrectionTraceCounts[$event->reason] ?? 0) + 1;
+        if ($event->attemptedPosition !== null) {
+            $this->movementCorrectionTraceSamples[$event->reason] = [
+                'attempted' => sprintf(
+                    '%.6f,%.6f,%.6f',
+                    $event->attemptedPosition->x,
+                    $event->attemptedPosition->y,
+                    $event->attemptedPosition->z,
+                ),
+                'authoritative' => sprintf(
+                    '%.6f,%.6f,%.6f',
+                    $event->authoritativePlayer->position->x,
+                    $event->authoritativePlayer->position->y,
+                    $event->authoritativePlayer->position->z,
+                ),
+            ];
+        }
         if ($now - $this->movementCorrectionTraceStartedNanoseconds < 1_000_000_000) {
             return;
         }
@@ -5483,9 +5701,11 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $this->diagnostics->record('world.movement_correction_summary.protocol_trace', [
                 'reason' => $reason,
                 'corrections' => $count,
+                ...($this->movementCorrectionTraceSamples[$reason] ?? []),
             ]);
         }
         $this->movementCorrectionTraceCounts = [];
+        $this->movementCorrectionTraceSamples = [];
         $this->movementCorrectionTraceStartedNanoseconds = $now;
     }
 
@@ -5512,7 +5732,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         $previous = $this->lastPeerMovementBroadcastTicks[$event->player->sessionId] ?? null;
         $sessionCount = count($this->sessions);
         $interval = match (true) {
-            $sessionCount > 80 => 10,
+            $sessionCount > 80 => 20,
             $sessionCount > 64 => 8,
             $sessionCount > 32 => 3,
             default => self::PEER_MOVEMENT_BROADCAST_INTERVAL_TICKS,
@@ -5592,13 +5812,13 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
 
     /**
      * @param array<string, list<PacketFrame>> $packetsBySession
-     * @param SplObjectStorage<Packet, PacketFrame> $frameCache
+     * @param WeakMap<Packet, PacketFrame> $frameCache
      * @param array<string, bool> $recipientAvailability
      */
     private function collectMovementPackets(
         WorldEvent $event,
         array &$packetsBySession,
-        SplObjectStorage $frameCache,
+        WeakMap $frameCache,
         array &$recipientAvailability,
         int &$directedCount,
     ): bool {
@@ -5656,7 +5876,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         try {
             foreach ($directedPackets as $directed) {
                 $packet = $directed->packet;
-                if (!$frameCache->contains($packet)) {
+                if (!isset($frameCache[$packet])) {
                     $frameCache[$packet] = new PacketFrame(
                         new PacketHeader(BedrockPacketCodec::packetId($packet)),
                         BedrockPacketCodec::encode($packet),
@@ -5677,12 +5897,12 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
 
     /**
      * @param array<string, list<array{frame: PacketFrame, packet: Packet}>> $packetsBySession
-     * @param SplObjectStorage<Packet, PacketFrame> $frameCache
+     * @param WeakMap<Packet, PacketFrame> $frameCache
      */
     private function collectSharedChatPacket(
         ChatBroadcast $event,
         array &$packetsBySession,
-        SplObjectStorage $frameCache,
+        WeakMap $frameCache,
         int &$directedCount,
     ): bool {
         try {
@@ -5699,7 +5919,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 ]);
             }
             $packet = $encoder->chatPacket($event);
-            if (!$frameCache->contains($packet)) {
+            if (!isset($frameCache[$packet])) {
                 $frameCache[$packet] = new PacketFrame(
                     new PacketHeader(BedrockPacketCodec::packetId($packet)),
                     BedrockPacketCodec::encode($packet),
@@ -5722,14 +5942,87 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     }
 
     /**
+     * Projects one moving actor's visibility transitions once per transition type and reuses the
+     * resulting immutable packet frames for every viewer. Skin and actor metadata are identical for
+     * all recipients; rebuilding and re-encoding them per viewer is unnecessary and expensive.
+     *
+     * @param list<PlayerBecameVisible|PlayerBecameHidden> $events
+     * @param array<string, list<array{frame: PacketFrame, packet: Packet}>> $packetsBySession
+     * @param WeakMap<Packet, PacketFrame> $frameCache
+     */
+    private function collectSharedPlayerVisibilityEvents(
+        array $events,
+        array &$packetsBySession,
+        WeakMap $frameCache,
+        int &$directedCount,
+    ): bool {
+        if ($events === []) {
+            return true;
+        }
+        /** @var array<string, list<PlayerBecameVisible|PlayerBecameHidden>> $groups */
+        $groups = [];
+        foreach ($events as $event) {
+            $groups[$event::class][] = $event;
+        }
+        foreach ($groups as $group) {
+            $prototype = $group[0];
+            try {
+                $directedPackets = $this->eventEncoder->encode($prototype, $this->sessionEndpointsById());
+            } catch (Throwable $exception) {
+                return $this->containEventFailure(
+                    $prototype,
+                    'runtime.event_encoding_failed',
+                    ['exception' => $exception::class],
+                );
+            }
+            $projectionCount = count($directedPackets) * count($group);
+            $remainingBudget = $this->limits->maximumDirectedPacketsPerPoll - $directedCount;
+            if ($projectionCount > $remainingBudget) {
+                return $this->containEventFailure($prototype, 'runtime.directed_packet_limit_exceeded', [
+                    'packet_count' => $projectionCount,
+                    'remaining_budget' => $remainingBudget,
+                ]);
+            }
+            try {
+                $entries = [];
+                foreach ($directedPackets as $directed) {
+                    $packet = $directed->packet;
+                    if (!isset($frameCache[$packet])) {
+                        $frameCache[$packet] = new PacketFrame(
+                            new PacketHeader(BedrockPacketCodec::packetId($packet)),
+                            BedrockPacketCodec::encode($packet),
+                        );
+                    }
+                    $entries[] = ['frame' => $frameCache[$packet], 'packet' => $packet];
+                }
+                foreach ($group as $event) {
+                    $recipient = $event->recipientSessionId;
+                    foreach ($entries as $entry) {
+                        $packetsBySession[$recipient][] = $entry;
+                    }
+                }
+                $directedCount += $projectionCount;
+            } catch (Throwable $exception) {
+                return $this->containEventFailure(
+                    $prototype,
+                    'runtime.event_projection_failed',
+                    ['exception' => $exception::class],
+                );
+            }
+        }
+
+        return true;
+    }
+
+    /**
      * @param array<string, list<PacketFrame>> $packetsBySession
-     * @param SplObjectStorage<Packet, PacketFrame> $frameCache
+     * @param WeakMap<Packet, PacketFrame> $frameCache
      * @param array<string, bool> $recipientAvailability
      */
     private function collectSharedEntityMovementPackets(
         EntityActorMoved $event,
         array &$packetsBySession,
-        SplObjectStorage $frameCache,
+        WeakMap $frameCache,
         array &$recipientAvailability,
         int &$directedCount,
     ): bool {
@@ -5760,7 +6053,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
 
             $frames = [];
             foreach ($packets as $packet) {
-                if (!$frameCache->contains($packet)) {
+                if (!isset($frameCache[$packet])) {
                     $frameCache[$packet] = new PacketFrame(
                         new PacketHeader(BedrockPacketCodec::packetId($packet)),
                         BedrockPacketCodec::encode($packet),
@@ -5790,12 +6083,12 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
      * positions become obsolete as soon as a newer server position is available.
      *
      * @param array<string, list<PacketFrame>> $packetsBySession
-     * @param SplObjectStorage<Packet, PacketFrame> $frameCache
+     * @param WeakMap<Packet, PacketFrame> $frameCache
      */
     private function collectAuthoritativeMovementPacket(
         MovementCorrected $event,
         array &$packetsBySession,
-        SplObjectStorage $frameCache,
+        WeakMap $frameCache,
         int &$directedCount,
     ): bool {
         try {
@@ -5817,7 +6110,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         try {
             foreach ($directedPackets as $directed) {
                 $packet = $directed->packet;
-                if (!$frameCache->contains($packet)) {
+                if (!isset($frameCache[$packet])) {
                     $frameCache[$packet] = new PacketFrame(
                         new PacketHeader(BedrockPacketCodec::packetId($packet)),
                         BedrockPacketCodec::encode($packet),
@@ -5838,13 +6131,13 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
 
     /**
      * @param array<string, list<PacketFrame>> $packetsBySession
-     * @param SplObjectStorage<Packet, PacketFrame> $frameCache
+     * @param WeakMap<Packet, PacketFrame> $frameCache
      * @param array<string, bool> $recipientAvailability
      */
     private function collectSharedPlayerMovementPackets(
         PlayerMoved $event,
         array &$packetsBySession,
-        SplObjectStorage $frameCache,
+        WeakMap $frameCache,
         array &$recipientAvailability,
         int &$directedCount,
     ): bool {
@@ -5875,7 +6168,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
 
             $frames = [];
             foreach ($packets as $packet) {
-                if (!$frameCache->contains($packet)) {
+                if (!isset($frameCache[$packet])) {
                     $frameCache[$packet] = new PacketFrame(
                         new PacketHeader(BedrockPacketCodec::packetId($packet)),
                         BedrockPacketCodec::encode($packet),
@@ -5924,7 +6217,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $session = $this->sessionById($recipient);
             $available = $session !== null
                 && !$this->hasDeferredWorldPackets($session->id)
-                && ($session->play?->prepareTransientProjection() ?? false);
+                && ($session->play?->canAcceptTransientProjection() ?? false);
             $recipientAvailability[$recipient] = $available;
             if ($available) {
                 $eligible[] = $recipient;
@@ -6066,7 +6359,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 } elseif ($authoritativePackets !== []) {
                     $queued = $session->play->queuePreparedAuthoritativePacketFrames($batch, $clearEnvelope);
                 } else {
-                    $queued = $session->play->queuePreparedPacketFrames($batch, $clearEnvelope);
+                    $queued = $session->play->queuePreparedTransientPacketFrames($batch, $clearEnvelope);
                 }
                 if (!$queued) {
                     $movementCount = count($batch) - count($authoritativePackets);
@@ -6282,7 +6575,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         if ($player === null || $previous === null) {
             return false;
         }
-        $requested = self::apiSkinFromProtocol($packet->skin);
+        $requested = self::apiSkinFromProtocol($packet->skin, $packet->trustedSkin);
         if ($this->consumeExpectedSkinEcho($session->id, $requested)) {
             return true;
         }
@@ -6295,7 +6588,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 self::protocolSkinFromApi($previous),
                 $previous->id,
                 $requested->id,
-                false,
+                $previous->trusted,
             );
             if (!$session->play->queuePacket($correction)) {
                 return false;
@@ -6307,28 +6600,58 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         if (!$this->playerConnections->updateSkin($identity, $accepted)) {
             return false;
         }
+        $session->playerSkin = self::protocolSkinFromApi($accepted);
         $outgoing = new PlayerSkinPacket(
             $identity,
             self::protocolSkinFromApi($accepted),
             $accepted->id,
             $previous->id,
-            false,
+            $accepted->trusted,
         );
-        $recipients = array_values(array_unique([
-            $session->id,
-            ...$this->actorVisibility->viewersOf($session->id),
-        ]));
-        foreach ($recipients as $recipient) {
-            $candidate = $this->sessionById($recipient);
-            if ($candidate?->play === null || $candidate->phase !== SessionPhase::SPAWNED
-                || $this->simulationForSession($candidate) !== $simulation
-                || !$candidate->play->queuePacket($outgoing)) {
+        $listUpdate = new PlayerListAddPacket([new PlayerListAddEntry(
+            $identity,
+            $session->runtimeEntityId->toSignedBits(),
+            $player->identity->displayName,
+            $session->play->login()->xuid,
+            '',
+            BuildPlatform::Unknown,
+            $session->playerSkin,
+            colorArgb: 0xffffffff,
+            trustedSkin: $accepted->trusted,
+        )]);
+        $ownerNeedsCorrection = self::skinFingerprint($accepted) !== self::skinFingerprint($requested);
+        $updatedPeers = 0;
+        foreach ($this->sessionsById as $candidate) {
+            if ($candidate->play === null || $candidate->phase !== SessionPhase::SPAWNED
+                || $this->simulationForSession($candidate) !== $simulation) {
                 continue;
             }
             if ($candidate->id === $session->id) {
+                // The owning client has already applied its selected appearance. Echoing an unchanged
+                // PlayerSkin packet can make current retail clients restore their previous local skin.
+                if (!$ownerNeedsCorrection) {
+                    continue;
+                }
+                if (!$candidate->play->queuePacket($outgoing)) {
+                    continue;
+                }
                 $this->expectSkinEcho($session->id, $accepted);
+
+                continue;
+            }
+            if (!$candidate->play->queuePacket($listUpdate)) {
+                continue;
+            }
+            if ($candidate->play->queuePacket($outgoing)) {
+                ++$updatedPeers;
             }
         }
+        $this->diagnostics->record('play.skin_change_applied.protocol_trace', [
+            'persona' => $accepted->persona,
+            'trusted' => $accepted->trusted,
+            'owner_correction' => $ownerNeedsCorrection,
+            'updated_peers' => $updatedPeers,
+        ]);
         $this->pluginEvents?->skinChanged($player, $previous, $accepted);
 
         return true;
@@ -6366,7 +6689,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         return hash('sha256', serialize($skin));
     }
 
-    private static function apiSkinFromProtocol(ProtocolPlayerSkin $skin): Skin
+    private static function apiSkinFromProtocol(ProtocolPlayerSkin $skin, bool $trusted = false): Skin
     {
         return new Skin(
             $skin->skinId,
@@ -6396,6 +6719,29 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $skin->skinColor,
             $skin->premium,
             $skin->capeOnClassic,
+            $skin->persona,
+            array_map(
+                static fn(\Bedriox\Protocol\Packet\PlayerSkinPersonaPiece $piece): SkinPersonaPiece =>
+                    new SkinPersonaPiece(
+                        $piece->id,
+                        $piece->type->wireName(),
+                        $piece->packId,
+                        $piece->default,
+                        $piece->productId,
+                    ),
+                $skin->personaPieces,
+            ),
+            array_map(
+                static fn(\Bedriox\Protocol\Packet\PlayerSkinPersonaTint $tint): SkinPersonaTint =>
+                    new SkinPersonaTint($tint->type->wireName(), $tint->colors),
+                $skin->personaTints,
+            ),
+            $skin->playFabId,
+            $skin->fullSkinId,
+            $skin->primaryUser,
+            $skin->overridingPlayerAppearance,
+            $skin->profileHash,
+            $trusted,
         );
     }
 
@@ -6422,16 +6768,39 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 $skin->animations,
             ),
             $skin->id,
-            '',
+            $skin->playFabId,
             $skin->resourcePatchJson,
             $skin->geometryEngineVersion,
             $skin->animationDataJson,
             $skin->capeId,
-            $skin->id,
+            $skin->fullSkinId !== '' ? $skin->fullSkinId : $skin->id,
             $skin->armSize,
             $skin->skinColor,
             $skin->premium,
             $skin->capeOnClassic,
+            primaryUser: $skin->primaryUser,
+            overridingPlayerAppearance: $skin->overridingPlayerAppearance,
+            profileHash: $skin->profileHash,
+            persona: $skin->persona,
+            personaPieces: array_map(
+                static fn(SkinPersonaPiece $piece): \Bedriox\Protocol\Packet\PlayerSkinPersonaPiece =>
+                    new \Bedriox\Protocol\Packet\PlayerSkinPersonaPiece(
+                        $piece->id,
+                        \Bedriox\Protocol\Packet\PlayerSkinPersonaPieceType::fromWireName($piece->type),
+                        $piece->packId,
+                        $piece->default,
+                        $piece->productId,
+                    ),
+                $skin->personaPieces,
+            ),
+            personaTints: array_map(
+                static fn(SkinPersonaTint $tint): \Bedriox\Protocol\Packet\PlayerSkinPersonaTint =>
+                    new \Bedriox\Protocol\Packet\PlayerSkinPersonaTint(
+                        \Bedriox\Protocol\Packet\PlayerSkinPersonaPieceType::fromWireName($tint->type),
+                        $tint->colors,
+                    ),
+                $skin->personaTints,
+            ),
         );
     }
 
@@ -6465,6 +6834,11 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $data->skinColor,
             $data->premium,
             $data->capeOnClassic,
+            playFabId: $data->playFabId,
+            fullSkinId: $data->fullSkinId,
+            primaryUser: $data->primaryUser,
+            overridingPlayerAppearance: $data->overridingPlayerAppearance,
+            profileHash: $data->profileHash,
         );
     }
 }

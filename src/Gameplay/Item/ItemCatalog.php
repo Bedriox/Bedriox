@@ -114,6 +114,13 @@ final class ItemCatalog
         if (isset($creativeBlockStates['minecraft:stonecutter_block'])) {
             $creativeBlockStates['minecraft:stonecutter'] = $creativeBlockStates['minecraft:stonecutter_block'];
         }
+        if (isset($networkRegistry->definitions()['minecraft:bed'])) {
+            $creativeBlockStates['minecraft:bed'] = CanonicalBlockState::from('minecraft:bed', [
+                'direction' => 0,
+                'head_piece_bit' => 0,
+                'occupied_bit' => 0,
+            ]);
+        }
         foreach ($networkRegistry->definitions() as $identifier => $_definition) {
             if ($identifier === 'minecraft:air') {
                 continue;
@@ -121,6 +128,7 @@ final class ItemCatalog
             $existing = $types[$identifier] ?? null;
             $mappedBlockState = $creativeBlockStates[$identifier] ?? null;
             $mappedBlockState ??= self::signBlockState($identifier);
+            $mappedBlockState ??= self::doorBlockState($identifier);
             $armor = VanillaArmorDefinitions::definition($identifier) ?? $existing?->armor;
             $maximumDurability = VanillaItemDurability::maximum($identifier) ?? $existing?->maximumDurability;
             $types[$identifier] = new ItemType(
@@ -174,6 +182,20 @@ final class ItemCatalog
         };
 
         return CanonicalBlockState::from($standingIdentifier, ['ground_sign_direction' => 0]);
+    }
+
+    private static function doorBlockState(string $identifier): ?CanonicalBlockState
+    {
+        if (!str_ends_with($identifier, '_door') || str_ends_with($identifier, '_trapdoor')) {
+            return null;
+        }
+
+        return CanonicalBlockState::from($identifier, [
+            'door_hinge_bit' => 0,
+            'minecraft:cardinal_direction' => 'south',
+            'open_bit' => 0,
+            'upper_block_bit' => 0,
+        ]);
     }
 
     public function type(string $identifier): ItemType

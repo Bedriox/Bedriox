@@ -22,6 +22,7 @@ namespace Bedriox\Server\Tests\World\Generation\Structure\Nether;
 
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\World\Block\BlockStateRegistry;
+use Bedriox\Server\World\BlockEntity\MobSpawnerBlockEntity;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\Generation\GenerationBlockPalette;
 use Bedriox\Server\World\Generation\MutableChunkBuilder;
@@ -79,6 +80,25 @@ final class NetherStructurePlannerTest extends TestCase
     {
         $this->expectException(\InvalidArgumentException::class);
         (new NetherStructurePlanner(42))->nearest(NetherStructureKind::Fortress, 0, 0, 65);
+    }
+
+    public function testFortressSpawnerOwnsPersistentBlazeConfiguration(): void
+    {
+        $states = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $palette = GenerationBlockPalette::fromRegistry($states);
+        $renderer = new NetherStructureRenderer($palette);
+        $plan = new NetherStructurePlan('fortress-fixture', NetherStructureKind::Fortress, 0, 64, 0, 0, 42);
+        $builder = new MutableChunkBuilder(new ChunkPosition(1, 0), $palette);
+
+        $renderer->render($builder, $plan);
+
+        $spawners = array_values(array_filter(
+            $builder->blockEntities()->all(),
+            static fn($entity): bool => $entity instanceof MobSpawnerBlockEntity,
+        ));
+        self::assertCount(1, $spawners);
+        self::assertInstanceOf(MobSpawnerBlockEntity::class, $spawners[0]);
+        self::assertSame('minecraft:blaze', $spawners[0]->state->configuration->entityIdentifier);
     }
 
     public function testQualifiedLocationsPointToGeneratedStandingSpace(): void

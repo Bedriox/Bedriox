@@ -20,6 +20,10 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World\Generation\Structure\Overworld\Village;
 
+use Bedriox\Api\Entity\Value\VillagerProfession;
+use Bedriox\Api\Entity\Value\VillagerWorkstation;
+use Bedriox\Api\World\BedColor;
+use Bedriox\Server\Gameplay\Block\BedDirection;
 use Bedriox\Server\World\Generation\MutableChunkBuilder;
 use Bedriox\Server\World\Generation\Structure\Overworld\Family\PlannedStructurePiece;
 use Bedriox\Server\World\Generation\Structure\Overworld\Family\StructureCanvas;
@@ -47,7 +51,7 @@ final readonly class VillageRenderer
             match ($piece->kind) {
                 'meeting_square' => $this->square($builder, $piece, $beam, $surfaceAt),
                 'farm' => $this->farm($builder, $piece, $beam, $surfaceAt),
-                'stable' => $this->stable($builder, $piece, $wall, $beam, $surfaceAt),
+                'stable' => $this->stable($builder, $piece, $wall, $beam, $door, $surfaceAt),
                 default => $this->building($builder, $piece, $wall, $beam, $roof, $door, $surfaceAt),
             };
         }
@@ -88,6 +92,7 @@ final readonly class VillageRenderer
             $this->canvas->column($builder, $piece->x + $dx, $piece->y + 1, $piece->y + 3, $piece->z + $dz, $beam);
             $this->canvas->block($builder, $piece->x + $dx, $piece->y + 4, $piece->z + $dz, 'minecraft:lantern');
         }
+        $this->canvas->block($builder, $piece->x + 3, $piece->y + 1, $piece->z, 'minecraft:bell');
     }
 
     /** @param callable(int, int): int $surfaceAt */
@@ -110,10 +115,10 @@ final readonly class VillageRenderer
             default => [$piece->x, $piece->z - $rz],
         };
         [$direction, $pathX, $pathZ] = match ($piece->rotation) {
-            StructureRotation::Clockwise90 => ['east', 1, 0],
-            StructureRotation::Clockwise180 => ['south', 0, 1],
-            StructureRotation::Clockwise270 => ['west', -1, 0],
-            default => ['north', 0, -1],
+            StructureRotation::Clockwise90 => ['south', 1, 0],
+            StructureRotation::Clockwise180 => ['west', 0, 1],
+            StructureRotation::Clockwise270 => ['north', -1, 0],
+            default => ['east', 0, -1],
         };
         foreach ([0, 1] as $upper) {
             $this->canvas->canonicalBlock($builder, $doorX, $piece->y + 1 + $upper, $doorZ, $door, [
@@ -123,16 +128,23 @@ final readonly class VillageRenderer
                 'upper_block_bit' => $upper,
             ]);
         }
+        $pathY = $piece->y;
         for ($step = 1; $step <= 12; ++$step) {
             $x = $doorX + $pathX * $step;
             $z = $doorZ + $pathZ * $step;
-            $y = $surfaceAt($x, $z);
-            if ($y <= 62) {
+            $surfaceY = $surfaceAt($x, $z);
+            if ($surfaceY <= 62) {
                 break;
             }
-            $this->canvas->block($builder, $x, $y, $z, 'minecraft:grass_path');
-            $this->canvas->block($builder, $x, $y + 1, $z, 'minecraft:air');
-            $this->canvas->block($builder, $x, $y + 2, $z, 'minecraft:air');
+            if ($step > 1) {
+                $pathY += $surfaceY <=> $pathY;
+            }
+            if ($pathY > $surfaceY) {
+                $this->canvas->column($builder, $x, $surfaceY, $pathY - 1, $z, 'minecraft:dirt');
+            }
+            $this->canvas->block($builder, $x, $pathY, $z, 'minecraft:grass_path');
+            $this->canvas->block($builder, $x, $pathY + 1, $z, 'minecraft:air');
+            $this->canvas->block($builder, $x, $pathY + 2, $z, 'minecraft:air');
         }
         foreach ([[-$rx, 0], [$rx, 0], [0, -$rz], [0, $rz]] as [$windowX, $windowZ]) {
             if ($piece->x + $windowX === $doorX && $piece->z + $windowZ === $doorZ) {
@@ -143,9 +155,19 @@ final readonly class VillageRenderer
         if ($piece->kind === 'library') {
             $this->canvas->box($builder, $piece->x - $rx + 1, $piece->y + 1, $piece->z + $rz - 1, $piece->x + $rx - 1, $piece->y + 3, $piece->z + $rz - 1, 'minecraft:bookshelf');
         }
-        if ($piece->kind === 'workshop') {
-            $this->canvas->block($builder, $piece->x - 2, $piece->y + 1, $piece->z + 1, 'minecraft:furnace');
+        $profession = self::professionForKind($piece->kind);
+        $workstation = VillagerWorkstation::forProfession($profession);
+        if ($workstation !== null) {
+            $this->canvas->block($builder, $piece->x - 2, $piece->y + 1, $piece->z + 1, $workstation->value);
         }
+        $this->canvas->bed(
+            $builder,
+            $piece->x + $rx - 1,
+            $piece->y + 1,
+            $piece->z + $rz - 2,
+            BedDirection::SOUTH,
+            BedColor::RED,
+        );
     }
 
     /** @param callable(int, int): int $surfaceAt */
@@ -170,21 +192,82 @@ final readonly class VillageRenderer
             $this->canvas->block($builder, $piece->x - $rx, $piece->y, $z, $beam);
             $this->canvas->block($builder, $piece->x + $rx, $piece->y, $z, $beam);
         }
+        $this->canvas->block($builder, $piece->x - $rx + 1, $piece->y + 1, $piece->z, VillagerWorkstation::COMPOSTER->value);
     }
 
     /** @param callable(int, int): int $surfaceAt */
-    private function stable(MutableChunkBuilder $builder, PlannedStructurePiece $piece, string $wall, string $beam, callable $surfaceAt): void
+    private function stable(MutableChunkBuilder $builder, PlannedStructurePiece $piece, string $wall, string $beam, string $door, callable $surfaceAt): void
     {
         $rx = intdiv($piece->width, 2);
         $rz = intdiv($piece->depth, 2);
         $this->foundation($builder, $piece, 'minecraft:cobblestone', $surfaceAt);
+        $this->canvas->hollow(
+            $builder,
+            $piece->x - $rx,
+            $piece->y,
+            $piece->z - $rz,
+            $piece->x + $rx,
+            $piece->y + 5,
+            $piece->z + $rz,
+            $wall,
+        );
         $this->canvas->floor($builder, $piece->x - $rx, $piece->x + $rx, $piece->y, $piece->z - $rz, $piece->z + $rz, 'minecraft:coarse_dirt');
         foreach ([[-$rx, -$rz], [-$rx, $rz], [$rx, -$rz], [$rx, $rz]] as [$dx, $dz]) {
             $this->canvas->column($builder, $piece->x + $dx, $piece->y, $piece->y + 5, $piece->z + $dz, $beam);
         }
         $this->canvas->floor($builder, $piece->x - $rx - 1, $piece->x + $rx + 1, $piece->y + 6, $piece->z - $rz - 1, $piece->z + $rz + 1, $wall);
+        [$doorX, $doorZ, $direction, $pathX, $pathZ] = match ($piece->rotation) {
+            StructureRotation::Clockwise90 => [$piece->x + $rx, $piece->z, 'south', 1, 0],
+            StructureRotation::Clockwise180 => [$piece->x, $piece->z + $rz, 'west', 0, 1],
+            StructureRotation::Clockwise270 => [$piece->x - $rx, $piece->z, 'north', -1, 0],
+            default => [$piece->x, $piece->z - $rz, 'east', 0, -1],
+        };
+        foreach ([0, 1] as $upper) {
+            $this->canvas->canonicalBlock($builder, $doorX, $piece->y + 1 + $upper, $doorZ, $door, [
+                'door_hinge_bit' => 0,
+                'minecraft:cardinal_direction' => $direction,
+                'open_bit' => 0,
+                'upper_block_bit' => $upper,
+            ]);
+        }
+        $this->canvas->block($builder, $doorX + $pathX, $piece->y, $doorZ + $pathZ, 'minecraft:grass_path');
+        $this->canvas->block($builder, $doorX + $pathX, $piece->y + 1, $doorZ + $pathZ, 'minecraft:air');
+        $this->canvas->block($builder, $doorX + $pathX, $piece->y + 2, $doorZ + $pathZ, 'minecraft:air');
+        foreach ([[-$rx, 0], [$rx, 0], [0, -$rz], [0, $rz]] as [$windowX, $windowZ]) {
+            if ($piece->x + $windowX === $doorX && $piece->z + $windowZ === $doorZ) {
+                continue;
+            }
+            $this->canvas->block($builder, $piece->x + $windowX, $piece->y + 3, $piece->z + $windowZ, 'minecraft:glass_pane');
+        }
         $this->canvas->block($builder, $piece->x - $rx + 1, $piece->y + 1, $piece->z - $rz + 1, 'minecraft:hay_block');
         $this->canvas->block($builder, $piece->x - $rx + 1, $piece->y + 2, $piece->z - $rz + 1, 'minecraft:hay_block');
+        $this->canvas->block($builder, $piece->x + $rx - 1, $piece->y + 1, $piece->z - $rz + 1, VillagerWorkstation::CAULDRON->value);
+        $this->canvas->bed(
+            $builder,
+            $piece->x + $rx - 1,
+            $piece->y + 1,
+            $piece->z + $rz - 2,
+            BedDirection::SOUTH,
+            BedColor::RED,
+        );
+    }
+
+    private static function professionForKind(string $kind): VillagerProfession
+    {
+        return match ($kind) {
+            'fisherman' => VillagerProfession::FISHERMAN,
+            'shepherd' => VillagerProfession::SHEPHERD,
+            'fletcher' => VillagerProfession::FLETCHER,
+            'library' => VillagerProfession::LIBRARIAN,
+            'cartographer' => VillagerProfession::CARTOGRAPHER,
+            'cleric' => VillagerProfession::CLERIC,
+            'armorer' => VillagerProfession::ARMORER,
+            'weaponsmith' => VillagerProfession::WEAPONSMITH,
+            'toolsmith' => VillagerProfession::TOOLSMITH,
+            'butcher' => VillagerProfession::BUTCHER,
+            'mason' => VillagerProfession::MASON,
+            default => VillagerProfession::UNEMPLOYED,
+        };
     }
 
     /** @param callable(int, int): int $surfaceAt */

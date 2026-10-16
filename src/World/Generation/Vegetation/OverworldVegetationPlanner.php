@@ -102,8 +102,7 @@ final class OverworldVegetationPlanner
         Closure $biomeAt,
         Closure $surfaceHeightAt,
         Closure $shapeHeightAt,
-    ): ?VegetationTreePlan
-    {
+    ): ?VegetationTreePlan {
         $key = $cellX . ':' . $cellZ;
         $cached = $this->candidateCache[$key] ?? null;
         if ($cached instanceof VegetationTreePlan) {

@@ -38,6 +38,7 @@ use Bedriox\Server\Worker\WorkerResultStatus;
 use Bedriox\Server\Worker\WorkerSubmission;
 use Bedriox\Server\World\Collision\AxisAlignedBox;
 use Bedriox\Server\World\Collision\LoadedCollisionBoxQuery;
+use Bedriox\Server\World\Collision\LoadedNavigationCellQuery;
 use Closure;
 use PHPUnit\Framework\TestCase;
 
@@ -60,10 +61,12 @@ final class AsyncNavigationCoordinatorTest extends TestCase
         $target = new Position(5.5, 64.0, 0.5);
 
         self::assertEquals($mob->internalPosition(), $navigation->waypoint($mob, $target, 1));
+        self::assertSame(0, $workers->submissions);
+        $navigation->advance(2, 10_000, PHP_INT_MAX);
         self::assertSame(1, $workers->submissions);
         $workers->complete();
 
-        $waypoint = $navigation->waypoint($mob, $target, 2);
+        $waypoint = $navigation->waypoint($mob, $target, 3);
         self::assertNotEquals($mob->internalPosition(), $waypoint);
         self::assertSame(1, $workers->submissions);
         self::assertSame(1, $navigation->metrics()->completed);
@@ -89,7 +92,94 @@ final class AsyncNavigationCoordinatorTest extends TestCase
             $mob->internalPosition(),
             $navigation->waypoint($mob, new Position(100.5, 64.0, 100.5), 1),
         );
+        $navigation->advance(2, 10_000, PHP_INT_MAX);
         self::assertSame(1, $workers->submissions);
+    }
+
+    public function testSnapshotPreparationIsIncrementalAndSuppressesMovingTargetRebuilds(): void
+    {
+        $entities = new EntityRegistry();
+        $mob = (new EntitySpawnService($entities, EntityDefinitionRegistry::baseline()))->spawn(
+            new EntitySpawnRequest(
+                VanillaEntityType::IRON_GOLEM,
+                SpawnCause::COMMAND,
+                'world',
+                new Position(0.5, 64.0, 0.5),
+            ),
+        )->entity;
+        self::assertInstanceOf(AbstractMobEntity::class, $mob);
+        $workers = new NavigationTestDispatcher();
+        $navigation = new AsyncNavigationCoordinator($entities, new NavigationTestCollisionQuery(), $workers);
+
+        $navigation->waypoint($mob, new Position(5.5, 64.0, 0.5), 1);
+        $navigation->advance(2, 3, PHP_INT_MAX);
+        $navigation->waypoint($mob, new Position(6.5, 64.0, 0.5), 2);
+
+        self::assertSame(0, $workers->submissions);
+        self::assertSame(1, $navigation->metrics()->building);
+        self::assertSame(3, $navigation->metrics()->cellsScanned);
+        self::assertSame(1, $navigation->metrics()->repathsSuppressed);
+    }
+
+    public function testMixedHostileNavigationSharesOneGlobalPreparationBudget(): void
+    {
+        $entities = new EntityRegistry();
+        $spawn = new EntitySpawnService($entities, EntityDefinitionRegistry::baseline());
+        $mobs = [];
+        for ($index = 0; $index < 30; ++$index) {
+            $mobs[] = $spawn->spawn(new EntitySpawnRequest(
+                $index < 20 ? VanillaEntityType::ZOMBIE : VanillaEntityType::IRON_GOLEM,
+                SpawnCause::COMMAND,
+                'world',
+                new Position(($index % 10) + 0.5, 64.0, intdiv($index, 10) + 0.5),
+            ))->entity;
+        }
+        $query = new BudgetedNavigationTestCollisionQuery();
+        $workers = new NavigationTestDispatcher();
+        $navigation = new AsyncNavigationCoordinator($entities, $query, $workers);
+        foreach ($mobs as $mob) {
+            self::assertInstanceOf(AbstractMobEntity::class, $mob);
+            $navigation->waypoint($mob, new Position(15.5, 64.0, 15.5), 1);
+        }
+
+        $navigation->advance(2, 50, PHP_INT_MAX);
+
+        self::assertSame(30, $navigation->metrics()->building);
+        self::assertSame(50, $navigation->metrics()->cellsScanned);
+        self::assertSame(50, $query->navigationCells);
+        self::assertSame(0, $workers->submissions);
+    }
+}
+
+final class BudgetedNavigationTestCollisionQuery implements LoadedNavigationCellQuery
+{
+    public int $navigationCells = 0;
+
+    public function boxesIntersecting(AxisAlignedBox $area): array
+    {
+        return [new AxisAlignedBox(2.0, 64.0, 2.0, 3.0, 67.0, 3.0)];
+    }
+
+    public function hasCollision(AxisAlignedBox $area): bool
+    {
+        return true;
+    }
+
+    public function boxesIntersectingLoaded(AxisAlignedBox $area): array
+    {
+        return $this->boxesIntersecting($area);
+    }
+
+    public function isNavigationCellWalkableLoaded(
+        int $x,
+        int $y,
+        int $z,
+        float $width,
+        float $height,
+    ): bool {
+        ++$this->navigationCells;
+
+        return $y === 64;
     }
 }
 

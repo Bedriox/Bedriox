@@ -20,6 +20,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\World\Generation\Structure\Overworld\Underground;
 
+use Bedriox\Server\World\BlockEntity\MobSpawnerBlockEntity;
+use Bedriox\Server\World\BlockPosition;
 use Bedriox\Server\World\Generation\MutableChunkBuilder;
 use Bedriox\Server\World\Generation\SeededNoise;
 use Bedriox\Server\World\Generation\Structure\Overworld\Family\StructureCanvas;
@@ -84,6 +86,15 @@ final readonly class UndergroundStructureRenderer
             }
         }
         $this->canvas->block($builder, $start->x, $baseY + 1, $start->z, 'minecraft:mob_spawner');
+        $entityIdentifier = match ($this->noise->chance($start->x, $baseY, $start->z, 61_097, 4)) {
+            0 => 'minecraft:skeleton',
+            1 => 'minecraft:spider',
+            default => 'minecraft:zombie',
+        };
+        $builder->addBlockEntity(MobSpawnerBlockEntity::create(
+            new BlockPosition($start->x, $baseY + 1, $start->z),
+            $entityIdentifier,
+        ));
         $this->canvas->loot($builder, $start->x - $radiusX + 1, $baseY + 1, $start->z + 1, null, 61_101, [
             ['minecraft:bread', 3], ['minecraft:iron_ingot', 4], ['minecraft:wheat', 6], ['minecraft:bone', 5],
         ]);
