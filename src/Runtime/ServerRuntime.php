@@ -117,12 +117,14 @@ use Bedriox\Server\Plugin\Command\ServerPlayerCommandSender;
 use Bedriox\Server\Plugin\Display\DisplayChange;
 use Bedriox\Server\Plugin\Display\DisplayRegistry;
 use Bedriox\Server\Plugin\PluginActionBuffer;
+use Bedriox\Server\Plugin\Scoreboard\ScoreboardRegistry;
 use Bedriox\Server\Runtime\BossBar\ActorBackedBossBarDelivery;
 use Bedriox\Server\Runtime\Input\InboundDisposition;
 use Bedriox\Server\Runtime\Input\InboundMetrics;
 use Bedriox\Server\Runtime\Input\InboundMetricsSnapshot;
 use Bedriox\Server\Runtime\Input\InboundOrigin;
 use Bedriox\Server\Runtime\Input\InboundResult;
+use Bedriox\Server\Runtime\Scoreboard\ScoreboardRuntimeProjector;
 use Bedriox\Server\Security\ProtocolViolationTracker;
 use Bedriox\Server\Simulation\Event\AreaEffectCloudRemoved;
 use Bedriox\Server\Simulation\Event\AreaEffectCloudSpawned;
@@ -207,6 +209,15 @@ use WeakMap;
 final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, RuntimeIdleAdvisor
 {
     private ?DisplayRegistry $displayRegistry = null;
+    private ?ScoreboardRegistry $scoreboardRegistry = null;
+    private ?ScoreboardRuntimeProjector $scoreboardProjector = null;
+    private int $scoreboardProjectionFlushes = 0;
+    private int $scoreboardProjectionBatches = 0;
+    private int $scoreboardProjectionPackets = 0;
+    private int $scoreboardProjectionRecipients = 0;
+    private int $scoreboardProjectionNanoseconds = 0;
+    /** @var array<string, int> Canonical player UUID => current actor unique ID. */
+    private array $scoreboardActorIds = [];
 
     /** @var array<int, true> */
     private array $displayBoundSimulations = [];
@@ -364,6 +375,12 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     /** @var array<string, array<int, array<string, true>>> */
     private array $entityActorViewers = [];
 
+    /** @var array<string, array<int, string>> */
+    private array $entityActorVisibilityChunks = [];
+
+    /** @var array<string, array<string, array<int, true>>> */
+    private array $entityActorsByVisibilityChunk = [];
+
     private readonly ActorBackedBossBarDelivery $actorBackedBossBars;
 
     /** @var WeakMap<Packet, PacketFrame> */
@@ -469,6 +486,26 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
 
         return array_map($this->playerConnections->attach(...), $players);
+    }
+
+    /** Installs the plugin-owned scoreboard state after runtime and plugin-host composition. */
+    public function setScoreboardRegistry(ScoreboardRegistry $registry): void
+    {
+        if ($this->scoreboardRegistry !== null && $this->scoreboardRegistry !== $registry) {
+            throw new \LogicException('The server runtime scoreboard registry is already installed.');
+        }
+        $this->scoreboardRegistry = $registry;
+        $this->scoreboardProjector ??= new ScoreboardRuntimeProjector(
+            fn(string $uuid): ?int => $this->scoreboardActorIds[$uuid] ?? null,
+        );
+        foreach ($this->sessions as $session) {
+            $identity = $session->play?->login()->identity;
+            if ($session->joined && $identity !== null) {
+                $identity = strtolower($identity);
+                $this->scoreboardActorIds[$identity] = $session->runtimeEntityId->toSignedBits();
+                $this->scoreboardProjector->requestReplay($identity);
+            }
+        }
     }
 
     public function transportSecuritySnapshot(): ?\Bedriox\RakNet\Security\TransportSecuritySnapshot
@@ -1101,6 +1138,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 }
             }
             $this->enqueueActorVisibilityReconciliation($session->id, true, true);
+            $this->scoreboardProjector?->requestReplay($arrival->player->identity->uuid);
             $target->simulation->publishTransferredTeleport($arrival->player, $transfer->from);
             $portalTravel = $this->pendingPortalTravelNotifications[$session->id] ?? null;
             unset($this->pendingPortalTravelNotifications[$session->id]);
@@ -2424,6 +2462,17 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                                     ),
                                     $event->ownerSlotCorrection,
                                 );
+                                if ($this->eventEncoder instanceof HeldItemPacketEncoder) {
+                                    if (!$this->collectSharedHeldItemPackets(
+                                        $event,
+                                        $pendingSharedAuthoritativePackets,
+                                        $movementFrameCache,
+                                        $directedCount,
+                                    )) {
+                                        return false;
+                                    }
+                                    continue;
+                                }
                             } elseif ($event instanceof InventoryStackRequestProcessed) {
                                 $this->diagnostics->record('world.inventory_request.protocol_trace', [
                                     'request_id' => $event->requestId,
@@ -2633,6 +2682,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 }
             }
             $this->processingWorldId = null;
+            if ($completedTicks > 0 && !$this->flushScoreboards()) {
+                return false;
+            }
             $metadataStartedNanoseconds = hrtime(true);
             $this->queueCommandMetadataUpdates();
             $this->queueCraftingCatalogUpdates();
@@ -2731,7 +2783,22 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             'entities' => $snapshot->entityCount,
             'net_tx_bps' => (int) round($snapshot->networkSendBytesPerSecond ?? 0.0),
             'chunk_pressure' => $this->chunkStreamingGovernor->level(),
+            'scoreboard_flushes' => $this->scoreboardProjectionFlushes,
+            'scoreboard_batches' => $this->scoreboardProjectionBatches,
+            'scoreboard_packets' => $this->scoreboardProjectionPackets,
+            'scoreboard_recipients' => $this->scoreboardProjectionRecipients,
+            'scoreboard_us' => $this->scoreboardProjectionFlushes > 0
+                ? intdiv(
+                    intdiv($this->scoreboardProjectionNanoseconds, $this->scoreboardProjectionFlushes),
+                    1_000,
+                )
+                : 0,
         ]);
+        $this->scoreboardProjectionFlushes = 0;
+        $this->scoreboardProjectionBatches = 0;
+        $this->scoreboardProjectionPackets = 0;
+        $this->scoreboardProjectionRecipients = 0;
+        $this->scoreboardProjectionNanoseconds = 0;
         $this->performanceTraceStartedNanoseconds = $nowNanoseconds;
     }
 
@@ -3911,6 +3978,93 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
     }
 
+    /** Projects coalesced scoreboard state once, then shares each prepared batch across matching viewers. */
+    private function flushScoreboards(): bool
+    {
+        if ($this->scoreboardRegistry === null || $this->scoreboardProjector === null) {
+            return true;
+        }
+        $startedNanoseconds = hrtime(true);
+        try {
+            $batches = $this->scoreboardProjector->flush($this->scoreboardRegistry);
+            $this->scoreboardProjectionFlushes = self::saturatingAdd($this->scoreboardProjectionFlushes, 1);
+            if ($batches === []) {
+                return true;
+            }
+            $this->scoreboardProjectionBatches = self::saturatingAdd(
+                $this->scoreboardProjectionBatches,
+                count($batches),
+            );
+            $joinedSessions = [];
+            foreach ($this->sessions as $candidate) {
+                $identity = $candidate->play?->login()->identity;
+                if ($candidate->joined && $identity !== null) {
+                    $joinedSessions[strtolower($identity)] = $candidate;
+                }
+            }
+            foreach ($batches as $batch) {
+                $this->scoreboardProjectionPackets = self::saturatingAdd(
+                    $this->scoreboardProjectionPackets,
+                    count($batch->packets),
+                );
+                $this->scoreboardProjectionRecipients = self::saturatingAdd(
+                    $this->scoreboardProjectionRecipients,
+                    count($batch->viewerUuids),
+                );
+                foreach (array_chunk($batch->packets, max(1, $this->limits->maximumPacketsPerPayload)) as $packets) {
+                    $frames = [];
+                    foreach ($packets as $packet) {
+                        $frames[] = new PacketFrame(
+                            new PacketHeader(BedrockPacketCodec::packetId($packet)),
+                            BedrockPacketCodec::encode($packet),
+                        );
+                    }
+                    $clearEnvelope = BedrockBatchCodec::encode(
+                        new BedrockBatch(
+                            $frames,
+                            CompressionMode::NegotiatedZlib,
+                            NetworkCompressionPolicy::THRESHOLD_BYTES,
+                        ),
+                        new BatchLimits(maximumPackets: $this->limits->maximumPacketsPerPayload),
+                    );
+                    foreach ($batch->viewerUuids as $uuid) {
+                        $session = $joinedSessions[strtolower($uuid)] ?? null;
+                        if ($session?->play === null) {
+                            continue;
+                        }
+                        if (!$this->queuePreparedWorldPackets($session, $packets, $frames, $clearEnvelope)) {
+                            $this->disconnectForPlayFailure(
+                                self::endpointKey($session->transport),
+                                $session,
+                                'scoreboard_projection_backlog_exhausted',
+                            );
+                        }
+                    }
+                }
+            }
+        } catch (Throwable $exception) {
+            $this->diagnostics->record('runtime.scoreboard_projection_failed', [
+                'exception' => $exception::class,
+            ]);
+
+            return $this->failRuntime('scoreboard_projection_failed', $exception);
+        } finally {
+            $elapsedNanoseconds = hrtime(true) - $startedNanoseconds;
+            if (!is_int($elapsedNanoseconds)) {
+                throw new RuntimeException('Bedriox requires a 64-bit monotonic clock.');
+            }
+            $this->scoreboardProjectionNanoseconds = self::saturatingAdd(
+                $this->scoreboardProjectionNanoseconds,
+                $elapsedNanoseconds,
+            );
+            $this->recordSlowRuntimeStage('scoreboard_projection', $startedNanoseconds, $this->serverTick, [
+                'batches' => count($batches ?? []),
+            ]);
+        }
+
+        return true;
+    }
+
     private function flushConnectedSessions(): void
     {
         foreach ($this->sessions as $key => $session) {
@@ -4186,6 +4340,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         $identity = $session->bootstrap?->identity->uuid ?? $session->play?->login()->identity;
         if ($identity !== null) {
             $this->playerConnections->disconnect($identity, $session->id);
+            $this->scoreboardRegistry?->removePlayer($identity);
+            $this->scoreboardProjector?->forgetPlayer($identity);
+            unset($this->scoreboardActorIds[strtolower($identity)]);
         }
         if ($session->joined && $session->play !== null) {
             $this->playerLifecycleLogger?->left(
@@ -4344,6 +4501,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             if ($session?->phase === SessionPhase::ADMISSION_PENDING) {
                 $session->joined = true;
                 $session->phase = SessionPhase::SPAWNED;
+                $this->scoreboardActorIds[strtolower($event->player->identity)] = $session->runtimeEntityId->toSignedBits();
+                $this->scoreboardProjector?->requestReplay($event->player->identity);
                 $this->crashContextDirty = true;
             }
             if ($session !== null && !isset($this->joinedLogs[$session->id])) {
@@ -5059,6 +5218,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     false,
                 );
             }
+            $this->removeEntityActorFromVisibilityIndex($worldId, $runtimeId);
             unset(
                 $this->entityActors[$worldId][$runtimeId],
                 $this->entityActorNoAi[$worldId][$runtimeId],
@@ -5075,10 +5235,25 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         if ($event instanceof EntityActorSpawned) {
             $this->entityActorNoAi[$worldId][$runtimeId] = $event->noAi;
         }
+        $visibilityChunk = $this->entityActorVisibilityChunkKey($entity);
+        $previousVisibilityChunk = $this->entityActorVisibilityChunks[$worldId][$runtimeId] ?? null;
+        $this->indexEntityActorVisibilityChunk($worldId, $runtimeId, $visibilityChunk);
+        if ($event instanceof EntityActorMoved
+            && $previousVisibilityChunk === $visibilityChunk) {
+            $viewers = array_keys($this->entityActorViewers[$worldId][$runtimeId] ?? []);
+
+            return $viewers === [] ? [] : [new EntityActorMoved(
+                $entity,
+                $event->tick,
+                $viewers,
+                $event->motionChanged,
+            )];
+        }
         [$appeared, $disappeared, $continuing] = $this->reconcileEntityActorAudience(
             $entity,
             $event->recipientSessionIds,
         );
+        $this->entityActorVisibilityChunks[$worldId][$runtimeId] = $visibilityChunk;
         $events = [];
         if ($disappeared !== []) {
             $events[] = new EntityActorRemoved($entity, $disappeared);
@@ -5117,17 +5292,14 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         $worldId = $this->processingWorldId ?? 'world';
         $runtimeId = $entity->getRuntimeId();
         $old = $this->entityActorViewers[$worldId][$runtimeId] ?? [];
-        $eligible = $old;
-        foreach (array_keys($eligible) as $sessionId) {
-            if (!$this->entityActorViewerCanSee($sessionId, $entity)) {
-                unset($eligible[$sessionId]);
-            }
+        $candidates = $old;
+        foreach ($candidateSessionIds as $sessionId) {
+            $candidates[$sessionId] = true;
         }
-        foreach (array_values(array_unique($candidateSessionIds)) as $sessionId) {
+        $eligible = [];
+        foreach (array_keys($candidates) as $sessionId) {
             if ($this->entityActorViewerCanSee($sessionId, $entity)) {
                 $eligible[$sessionId] = true;
-            } else {
-                unset($eligible[$sessionId]);
             }
         }
         $this->entityActorViewers[$worldId][$runtimeId] = $eligible;
@@ -5155,10 +5327,19 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     {
         $events = [];
         $worldId = $this->processingWorldId ?? 'world';
-        foreach ($this->entityActors[$worldId] ?? [] as $entity) {
-            if ($chunkKeys !== null && !isset($chunkKeys[$this->entityActorVisibilityChunkKey($entity)])) {
-                continue;
+        $entities = $this->entityActors[$worldId] ?? [];
+        if ($chunkKeys !== null) {
+            $entities = [];
+            foreach (array_keys($chunkKeys) as $chunkKey) {
+                foreach (array_keys($this->entityActorsByVisibilityChunk[$worldId][$chunkKey] ?? []) as $runtimeId) {
+                    $entity = $this->entityActors[$worldId][$runtimeId] ?? null;
+                    if ($entity !== null) {
+                        $entities[$runtimeId] = $entity;
+                    }
+                }
             }
+        }
+        foreach ($entities as $entity) {
             foreach ($this->reconcileEntityActorEvent(new EntityActorSpawned(
                 $entity,
                 [$sessionId],
@@ -5171,6 +5352,37 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
 
         return $events;
+    }
+
+    private function indexEntityActorVisibilityChunk(string $worldId, int $runtimeId, string $chunkKey): void
+    {
+        $previous = $this->entityActorVisibilityChunks[$worldId][$runtimeId] ?? null;
+        if ($previous === $chunkKey) {
+            return;
+        }
+        if ($previous !== null) {
+            unset($this->entityActorsByVisibilityChunk[$worldId][$previous][$runtimeId]);
+            if (($this->entityActorsByVisibilityChunk[$worldId][$previous] ?? []) === []) {
+                unset($this->entityActorsByVisibilityChunk[$worldId][$previous]);
+            }
+        }
+        $this->entityActorsByVisibilityChunk[$worldId][$chunkKey][$runtimeId] = true;
+        $this->entityActorVisibilityChunks[$worldId][$runtimeId] = $chunkKey;
+    }
+
+    private function removeEntityActorFromVisibilityIndex(string $worldId, int $runtimeId): void
+    {
+        $chunkKey = $this->entityActorVisibilityChunks[$worldId][$runtimeId] ?? null;
+        if ($chunkKey === null) {
+            return;
+        }
+        unset(
+            $this->entityActorsByVisibilityChunk[$worldId][$chunkKey][$runtimeId],
+            $this->entityActorVisibilityChunks[$worldId][$runtimeId],
+        );
+        if (($this->entityActorsByVisibilityChunk[$worldId][$chunkKey] ?? []) === []) {
+            unset($this->entityActorsByVisibilityChunk[$worldId][$chunkKey]);
+        }
     }
 
     private function entityActorViewerCanSee(string $sessionId, AbstractLivingEntity $entity): bool
@@ -6380,6 +6592,65 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 $packetsBySession[$recipient][] = ['frame' => $frame, 'packet' => $packet];
             }
             $directedCount += $recipientCount;
+        } catch (Throwable $exception) {
+            return $this->containEventFailure(
+                $event,
+                'runtime.event_projection_failed',
+                ['exception' => $exception::class],
+            );
+        }
+
+        return true;
+    }
+
+    /**
+     * @param array<string, list<array{frame: PacketFrame, packet: Packet}>> $packetsBySession
+     * @param WeakMap<Packet, PacketFrame> $frameCache
+     */
+    private function collectSharedHeldItemPackets(
+        HeldItemChanged $event,
+        array &$packetsBySession,
+        WeakMap $frameCache,
+        int &$directedCount,
+    ): bool {
+        try {
+            $encoder = $this->eventEncoder;
+            if (!$encoder instanceof HeldItemPacketEncoder) {
+                return false;
+            }
+            $ownerPackets = $encoder->heldItemOwnerPackets($event);
+            $equipment = $encoder->heldItemEquipmentPacket($event);
+            $projectionCount = count($ownerPackets) + count($event->recipientSessionIds);
+            $remainingBudget = $this->limits->maximumDirectedPacketsPerPoll - $directedCount;
+            if ($projectionCount > $remainingBudget) {
+                return $this->containEventFailure($event, 'runtime.directed_packet_limit_exceeded', [
+                    'packet_count' => $projectionCount,
+                    'remaining_budget' => $remainingBudget,
+                ]);
+            }
+            foreach ($ownerPackets as $packet) {
+                if (!isset($frameCache[$packet])) {
+                    $frameCache[$packet] = new PacketFrame(
+                        new PacketHeader(BedrockPacketCodec::packetId($packet)),
+                        BedrockPacketCodec::encode($packet),
+                    );
+                }
+                $packetsBySession[$event->ownerSessionId][] = [
+                    'frame' => $frameCache[$packet],
+                    'packet' => $packet,
+                ];
+            }
+            if (!isset($frameCache[$equipment])) {
+                $frameCache[$equipment] = new PacketFrame(
+                    new PacketHeader(BedrockPacketCodec::packetId($equipment)),
+                    BedrockPacketCodec::encode($equipment),
+                );
+            }
+            $entry = ['frame' => $frameCache[$equipment], 'packet' => $equipment];
+            foreach ($event->recipientSessionIds as $recipient) {
+                $packetsBySession[$recipient][] = $entry;
+            }
+            $directedCount += $projectionCount;
         } catch (Throwable $exception) {
             return $this->containEventFailure(
                 $event,

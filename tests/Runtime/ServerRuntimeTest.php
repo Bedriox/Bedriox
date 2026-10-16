@@ -149,6 +149,7 @@ use Bedriox\Server\Plugin\PluginExecutionFrame;
 use Bedriox\Server\Plugin\PluginOwnershipRegistry;
 use Bedriox\Server\Plugin\PluginRuntimeControl;
 use Bedriox\Server\Plugin\Scheduler\MainThreadPluginScheduler;
+use Bedriox\Server\Plugin\Scoreboard\ScoreboardRegistry;
 use Bedriox\Server\Runtime\BedrockChunkPacketSerializer;
 use Bedriox\Server\Runtime\BedrockInventoryPacketProjector;
 use Bedriox\Server\Runtime\BedrockPlayChannel;
@@ -279,6 +280,103 @@ final class ServerRuntimeTest extends TestCase
             $expect->invoke($runtime, 'session', $skin);
             self::assertTrue($consume->invoke($runtime, 'session', $skin));
             self::assertFalse($consume->invoke($runtime, 'session', $skin));
+        } finally {
+            $runtime->close();
+        }
+    }
+
+    public function testUnchangedScoreboardProjectionDoesNotInspectSessions(): void
+    {
+        $world = new WorldSimulation();
+        $runtime = new ServerRuntime(
+            new FakeConnectedTransport(),
+            new RuntimeLoginFactory(),
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $world,
+            new FixedRateWorldLoop($world, new RuntimeTestClock()),
+            new RecordingEventEncoder(),
+        );
+        $runtime->setScoreboardRegistry(new ScoreboardRegistry(
+            new PluginOwnershipRegistry(),
+            static fn(): array => [],
+        ));
+        $flush = new \ReflectionMethod(ServerRuntime::class, 'flushScoreboards');
+
+        try {
+            $this->setRuntimeProperty($runtime, 'sessions', [new \stdClass()]);
+            self::assertTrue($flush->invoke($runtime));
+            self::assertSame(1, (new \ReflectionProperty(
+                ServerRuntime::class,
+                'scoreboardProjectionFlushes',
+            ))->getValue($runtime));
+            self::assertSame(0, (new \ReflectionProperty(
+                ServerRuntime::class,
+                'scoreboardProjectionBatches',
+            ))->getValue($runtime));
+        } finally {
+            $this->setRuntimeProperty($runtime, 'sessions', []);
+            $runtime->close();
+        }
+    }
+
+    public function testScoreboardsFlushOnceAfterAllManagedWorldsAdvance(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $network = $data->blockStateRegistry();
+        $internal = new BlockStateRegistry($network->states());
+        $palette = FixedFlatBlockPalette::fromRegistry($internal);
+        $clock = new RuntimeTestClock();
+        $sourceWorld = new World(
+            new WorldMetadata('world', 1),
+            new FlatWorldGenerator($palette),
+            new ChunkRepository(32),
+        );
+        $sourceSimulation = new WorldSimulation(blockWorld: $sourceWorld, blockPalette: $palette);
+        $sourceRuntime = new ManagedWorldRuntime(
+            new PublicWorld('world', 1),
+            new OpenedWorld($sourceWorld, new WorldData($sourceWorld->metadata, 'flat', new SpawnPosition(0, 64, 0))),
+            $sourceSimulation,
+            new FixedRateWorldLoop($sourceSimulation, $clock, maximumTicksPerPoll: 1),
+        );
+        $worlds = new WorldRuntimeManager('world', new WorldStorageRuntime([$sourceRuntime]));
+        $worlds->load('arena', static function (PublicWorld $handle) use ($palette, $clock): WorldStorageRuntime {
+            $world = new World(
+                new WorldMetadata('arena', 2),
+                new FlatWorldGenerator($palette),
+                new ChunkRepository(32),
+            );
+            $simulation = new WorldSimulation(blockWorld: $world, blockPalette: $palette);
+
+            return new WorldStorageRuntime([new ManagedWorldRuntime(
+                $handle,
+                new OpenedWorld($world, new WorldData($world->metadata, 'flat', new SpawnPosition(0, 64, 0))),
+                $simulation,
+                new FixedRateWorldLoop($simulation, $clock, maximumTicksPerPoll: 1),
+            )]);
+        });
+        $runtime = new ServerRuntime(
+            new FakeConnectedTransport(),
+            new RuntimeLoginFactory(),
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $sourceSimulation,
+            $sourceRuntime->loop,
+            new RecordingEventEncoder(),
+            persistentWorld: $sourceWorld,
+            worldRuntimes: $worlds,
+        );
+        $runtime->setScoreboardRegistry(new ScoreboardRegistry(
+            new PluginOwnershipRegistry(),
+            static fn(): array => [],
+        ));
+
+        try {
+            $clock->advance(50_000_000);
+            self::assertTrue($runtime->poll());
+            self::assertSame(1, (new \ReflectionProperty(
+                ServerRuntime::class,
+                'scoreboardProjectionFlushes',
+            ))->getValue($runtime));
+            self::assertSame(2, $worlds->count());
         } finally {
             $runtime->close();
         }
@@ -1113,6 +1211,68 @@ final class ServerRuntimeTest extends TestCase
                 BedrockPacketCodec::encode($encoder->packets[1]),
                 $packetsBySession[$firstId][1]->payload,
             );
+        } finally {
+            $runtime->close();
+        }
+    }
+
+    public function testEntityMovementReusesAudienceUntilActorCrossesAChunkBoundary(): void
+    {
+        $transport = new FakeConnectedTransport();
+        $world = new WorldSimulation();
+        $runtime = new ServerRuntime(
+            $transport,
+            new RuntimeLoginFactory(uniqueIdentities: true, uniqueDisplayNames: true),
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $world,
+            new FixedRateWorldLoop($world, new RuntimeTestClock()),
+            new RecordingEventEncoder(),
+        );
+        $entity = new ZombieEntity(
+            '00000000-0000-4000-8000-000000000304',
+            304,
+            'world',
+            new Position(1.0, 64.0, 1.0),
+        );
+
+        try {
+            $this->setRuntimeProperty($runtime, 'processingWorldId', 'world');
+            $this->setRuntimeProperty($runtime, 'entityActors', ['world' => [304 => $entity]]);
+            $this->setRuntimeProperty($runtime, 'entityActorViewers', [
+                'world' => [304 => ['viewer-a' => true, 'viewer-b' => true]],
+            ]);
+            $this->setRuntimeProperty($runtime, 'entityActorVisibilityChunks', ['world' => [304 => '0:0']]);
+
+            $sameChunk = $this->invokeRuntimeReconciler(
+                $runtime,
+                'reconcileEntityActorEvent',
+                new EntityActorMoved($entity, 20, ['unresolved-candidate'], true),
+            );
+            self::assertCount(1, $sameChunk);
+            self::assertInstanceOf(EntityActorMoved::class, $sameChunk[0]);
+            self::assertSame(['viewer-a', 'viewer-b'], $sameChunk[0]->recipients());
+
+            $entity->moveTo('world', new Position(17.0, 64.0, 1.0), 0.0, 0.0);
+            $crossedBoundary = $this->invokeRuntimeReconciler(
+                $runtime,
+                'reconcileEntityActorEvent',
+                new EntityActorMoved($entity, 21, [], true),
+            );
+            self::assertCount(1, $crossedBoundary);
+            self::assertInstanceOf(EntityActorRemoved::class, $crossedBoundary[0]);
+            self::assertSame(['viewer-a', 'viewer-b'], $crossedBoundary[0]->recipients());
+            self::assertSame('1:0', $this->runtimeArrayProperty($runtime, 'entityActorVisibilityChunks')['world'][304]);
+            self::assertSame(
+                [304 => true],
+                $this->runtimeArrayProperty($runtime, 'entityActorsByVisibilityChunk')['world']['1:0'],
+            );
+
+            $this->invokeRuntimeReconciler(
+                $runtime,
+                'reconcileEntityActorEvent',
+                new EntityActorRemoved($entity, []),
+            );
+            self::assertSame([], $this->runtimeArrayProperty($runtime, 'entityActorsByVisibilityChunk')['world'] ?? []);
         } finally {
             $runtime->close();
         }

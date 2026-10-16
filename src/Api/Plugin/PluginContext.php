@@ -35,6 +35,7 @@ use Bedriox\Api\Inventory\UnavailableItemRegistrar;
 use Bedriox\Api\Plugin\Data\PluginData;
 use Bedriox\Api\Scheduler\PluginScheduler;
 use Bedriox\Api\Scheduler\UnavailablePluginScheduler;
+use Bedriox\Api\Scoreboard\ScoreboardManager;
 use Bedriox\Api\Server;
 use Bedriox\Api\Update\UnavailableUpdateService;
 use Bedriox\Api\Update\UpdateService;
@@ -60,6 +61,7 @@ final class PluginContext
         private readonly ?BossBarManager $bossBars = null,
         private readonly ?DisplayManager $displays = null,
         private readonly ?EncounterManager $encounters = null,
+        private readonly ?ScoreboardManager $scoreboards = null,
         private readonly UpdateService $updates = new UnavailableUpdateService(),
     ) {}
 
@@ -147,6 +149,12 @@ final class PluginContext
             ?? throw new \LogicException('The encounter capability is unavailable.');
     }
 
+    public function scoreboards(): ScoreboardManager
+    {
+        return $this->scoreboards
+            ?? throw new \LogicException('The scoreboard capability is unavailable.');
+    }
+
     public function updates(): UpdateService
     {
         return $this->updates;
@@ -172,6 +180,7 @@ final class PluginContext
             $this->bossBars,
             $this->displays,
             $this->encounters,
+            $this->scoreboards,
             $this->updates,
         );
     }
@@ -196,6 +205,7 @@ final class PluginContext
             $this->bossBars,
             $this->displays,
             $this->encounters,
+            $this->scoreboards,
             $this->updates,
         );
     }

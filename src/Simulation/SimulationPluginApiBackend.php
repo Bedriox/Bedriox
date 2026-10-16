@@ -22,6 +22,7 @@ namespace Bedriox\Server\Simulation;
 
 use Bedriox\Api\Encounter\EncounterManager;
 use Bedriox\Api\Server;
+use Bedriox\Api\ServerPerformance;
 use Bedriox\Api\Whitelist\Whitelist;
 use Bedriox\Api\World\WorldManager as ApiWorldManager;
 use Bedriox\Server\Gameplay\Item\ItemBehaviorRegistry;
@@ -32,6 +33,7 @@ use Bedriox\Server\Plugin\PluginRuntimeControl;
 use Bedriox\Server\Runtime\WorldRuntimeManager;
 use Bedriox\Server\Simulation\Encounter\SimulationEncounterManager;
 use Bedriox\Server\World\Block\BlockStateRegistry;
+use Closure;
 
 /** @internal Owns the only public-API projection into the authoritative simulation. */
 final readonly class SimulationPluginApiBackend
@@ -44,6 +46,8 @@ final readonly class SimulationPluginApiBackend
         private ?ApiWorldManager $worldManager = null,
         private ?Whitelist $whitelist = null,
         private int $startedNanoseconds = 0,
+        /** @var null|Closure(): ServerPerformance */
+        private ?Closure $performance = null,
     ) {}
 
     /** @internal Plugin item definitions enter the simulation through this bounded registry. */
@@ -71,6 +75,7 @@ final readonly class SimulationPluginApiBackend
             $this->pluginPlayers(...),
             $this->pluginPlayer(...),
             $this->uptimeSeconds(...),
+            $this->performance,
             worldManager: $this->worldManager,
             whitelist: $this->whitelist,
         );

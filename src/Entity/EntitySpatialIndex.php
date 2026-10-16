@@ -52,9 +52,6 @@ final class EntitySpatialIndex
     /** @var array<string, array<string, array<int, AbstractEntity>>> */
     private array $buckets = [];
 
-    /** @var array<string, array<string, array{chunkX: int, sectionY: int, chunkZ: int}>> */
-    private array $bucketCoordinates = [];
-
     public function __construct(private readonly int $capacity = self::DEFAULT_CAPACITY)
     {
         if ($capacity < 1 || $capacity > self::MAX_CAPACITY) {
@@ -153,28 +150,30 @@ final class EntitySpatialIndex
 
         /** @var list<array{distance: float, runtimeId: int, entity: AbstractEntity}> $matches */
         $matches = [];
-        foreach ($worldBuckets as $bucket => $entities) {
-            $coordinates = $this->bucketCoordinates[$worldName][$bucket];
-            if ($coordinates['chunkX'] < $minimumChunkX || $coordinates['chunkX'] > $maximumChunkX
-                || $coordinates['sectionY'] < $minimumSectionY || $coordinates['sectionY'] > $maximumSectionY
-                || $coordinates['chunkZ'] < $minimumChunkZ || $coordinates['chunkZ'] > $maximumChunkZ) {
-                continue;
-            }
-            foreach ($entities as $runtimeId => $entity) {
-                if ($filter !== null && !$filter($entity)) {
-                    continue;
-                }
-                $position = $entity->internalPosition();
-                $dx = $position->x - $center->x;
-                $dy = $position->y - $center->y;
-                $dz = $position->z - $center->z;
-                $distanceSquared = ($dx * $dx) + ($dy * $dy) + ($dz * $dz);
-                if ($distanceSquared <= $radiusSquared) {
-                    $matches[] = [
-                        'distance' => $distanceSquared,
-                        'runtimeId' => $runtimeId,
-                        'entity' => $entity,
-                    ];
+        for ($chunkX = $minimumChunkX; $chunkX <= $maximumChunkX; ++$chunkX) {
+            for ($sectionY = $minimumSectionY; $sectionY <= $maximumSectionY; ++$sectionY) {
+                for ($chunkZ = $minimumChunkZ; $chunkZ <= $maximumChunkZ; ++$chunkZ) {
+                    $entities = $worldBuckets[self::bucketKey($chunkX, $sectionY, $chunkZ)] ?? null;
+                    if ($entities === null) {
+                        continue;
+                    }
+                    foreach ($entities as $runtimeId => $entity) {
+                        if ($filter !== null && !$filter($entity)) {
+                            continue;
+                        }
+                        $position = $entity->internalPosition();
+                        $dx = $position->x - $center->x;
+                        $dy = $position->y - $center->y;
+                        $dz = $position->z - $center->z;
+                        $distanceSquared = ($dx * $dx) + ($dy * $dy) + ($dz * $dz);
+                        if ($distanceSquared <= $radiusSquared) {
+                            $matches[] = [
+                                'distance' => $distanceSquared,
+                                'runtimeId' => $runtimeId,
+                                'entity' => $entity,
+                            ];
+                        }
+                    }
                 }
             }
         }
@@ -193,10 +192,8 @@ final class EntitySpatialIndex
     {
         $runtimeId = $entity->getRuntimeId();
         $location = self::location($entity);
-        $coordinates = self::coordinates($entity->internalPosition());
         $this->locations[$runtimeId] = $location;
         $this->buckets[$location['world']][$location['bucket']][$runtimeId] = $entity;
-        $this->bucketCoordinates[$location['world']][$location['bucket']] = $coordinates;
     }
 
     private function detach(int $runtimeId): void
@@ -208,13 +205,10 @@ final class EntitySpatialIndex
 
         unset($this->buckets[$location['world']][$location['bucket']][$runtimeId]);
         if ($this->buckets[$location['world']][$location['bucket']] === []) {
-            unset(
-                $this->buckets[$location['world']][$location['bucket']],
-                $this->bucketCoordinates[$location['world']][$location['bucket']],
-            );
+            unset($this->buckets[$location['world']][$location['bucket']]);
         }
         if ($this->buckets[$location['world']] === []) {
-            unset($this->buckets[$location['world']], $this->bucketCoordinates[$location['world']]);
+            unset($this->buckets[$location['world']]);
         }
         unset($this->locations[$runtimeId]);
     }

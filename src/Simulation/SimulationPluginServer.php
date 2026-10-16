@@ -22,6 +22,7 @@ namespace Bedriox\Server\Simulation;
 
 use Bedriox\Api\Player\Player;
 use Bedriox\Api\Server;
+use Bedriox\Api\ServerPerformance;
 use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\Whitelist\Whitelist;
 use Bedriox\Api\World\WorldManager;
@@ -37,7 +38,8 @@ final readonly class SimulationPluginServer implements Server
     /**
      * @param Closure(): list<Player>  $players
      * @param Closure(string): ?Player $player
-     * @param null|Closure(): int      $uptimeSeconds
+     * @param null|Closure(): int               $uptimeSeconds
+     * @param null|Closure(): ServerPerformance $performance
      */
     public function __construct(
         private string $plugin,
@@ -46,6 +48,7 @@ final readonly class SimulationPluginServer implements Server
         private Closure $players,
         private Closure $player,
         private ?Closure $uptimeSeconds = null,
+        private ?Closure $performance = null,
         private ?WorldManager $worldManager = null,
         private ?Whitelist $whitelist = null,
     ) {}
@@ -55,6 +58,15 @@ final readonly class SimulationPluginServer implements Server
         $this->assertEnabled();
 
         return $this->uptimeSeconds === null ? 0 : max(0, ($this->uptimeSeconds)());
+    }
+
+    public function getPerformance(): ServerPerformance
+    {
+        $this->assertEnabled();
+
+        return $this->performance === null
+            ? new ServerPerformance(0.0, 0.0, memory_get_usage(true), memory_get_peak_usage(true), 0, count(($this->players)()), 0)
+            : ($this->performance)();
     }
 
     public function broadcastMessage(string|TranslatableMessage $message): int

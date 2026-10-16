@@ -29,6 +29,9 @@ interface Server
     /** Returns the number of whole seconds since this server process began starting. */
     public function getUptimeSeconds(): int;
 
+    /** Returns a point-in-time health snapshot without exposing internal monitoring objects. */
+    public function getPerformance(): ServerPerformance;
+
     public function broadcastMessage(string|TranslatableMessage $message): int;
 
     public function getWorldManager(): WorldManager;

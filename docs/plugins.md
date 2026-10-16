@@ -121,6 +121,22 @@ Natural regeneration enters `PlayerRegainHealthEvent` before health changes. A l
 
 `PluginContext::server()` is the global discovery surface: `broadcastMessage()`, `getWorldManager()`, `getWhitelist()`, `getOnlinePlayers()`, `getPlayerByUuid()`, and exact case-insensitive `getPlayerByName()`. `broadcastMessage()` accepts raw or translated text and returns the number of connected recipients. Authoritative behavior belongs to the object it affects. `Player` sends messages, teleports, takes damage, changes game mode, exposes its authoritative inventory views, and owns a generation-bound effect manager. `World` reads and changes canonical blocks, exposes immutable weather through `getWeather()`, requests typed weather changes through `setWeather()`, and emits bounded typed particles to eligible chunk viewers. These operations enter the same authoritative paths as built-in causes. Mutations requested by an event listener are staged until that listener returns successfully, then enter the authoritative simulation queue for validation and synchronization. Stale player sessions and unloaded-world generations fail closed. See [particles](particles.md) for particle types, audiences, variables, and delivery limits, and [effects, potions, and brewing](effects-and-potions.md) for effect managers and lifecycle events.
 
+`Server::getPerformance()` returns a read-only point-in-time `ServerPerformance`
+snapshot suitable for status displays and diagnostics. It includes current and
+average TPS, current and peak memory in bytes, loaded entity count, online
+player count, and the configured player limit:
+
+```php
+$performance = $this->context()->server()->getPerformance();
+$this->logger()->info(sprintf(
+    'TPS %.2f | Memory %.1f MiB | Players %d/%d',
+    $performance->currentTicksPerSecond,
+    $performance->memoryBytes / 1_048_576,
+    $performance->onlinePlayers,
+    $performance->maximumPlayers,
+));
+```
+
 ### Worlds and dimensions
 
 A public `World` always represents one exact loaded dimension. Use
@@ -198,6 +214,80 @@ $bar = $this->context()->bossBars()->create(
 $bar->addViewer($player);
 $bar->setProgress(0.5);
 ```
+
+### Scoreboards
+
+`PluginContext::scoreboards()` supplies an owner-scoped `ScoreboardManager`.
+A sidebar contains shared content and any number of lightweight player views.
+Each line has a stable lowercase key so a plugin can update changing content
+without rebuilding the entire display. A new line is appended when its
+one-based position is omitted; updating an existing key preserves its current
+position.
+
+```php
+use Bedriox\Api\TextFormat;
+
+$sidebar = $this->context()->scoreboards()->createSidebar(
+    TextFormat::MATERIAL_AMETHYST . TextFormat::BOLD . 'Bedriox',
+    'server-status',
+);
+$sidebar->setLine('players', 'Players: 0/100');
+$sidebar->setLine('tps', 'TPS: 20.00');
+$sidebar->setLine('website', 'Bedriox.com', position: 3);
+
+$sidebar->setLine('players', 'Players: 12/100');
+$sidebar->showTo($player);
+```
+
+`getViewFor()` always returns the same logical view for a sidebar and player.
+Use it when one line or the title differs for that player; shared lines continue
+to update every view. Resetting an override restores the shared value.
+
+```php
+$view = $sidebar->getViewFor($player);
+$held = $player->getInventory()->getHeldItem();
+$view->setLine('held-item', 'Held: ' . ($held?->getIdentifier() ?? 'empty'));
+$view->show();
+
+$view->resetLine('held-item');
+$view->hide();
+```
+
+`showTo()`, `hideFrom()`, and `isShowingTo()` manage one connected player;
+`showToAll()` and `hideFromAll()` operate on the currently connected audience.
+`getViewers()` returns connected viewers only. A disconnect removes the player
+from every sidebar and numeric objective view and releases that player's
+overrides. A later connection is a fresh view, so a plugin that wants persistent
+presentation should show it again from its join handling. Removing a scoreboard
+or disabling its owning plugin hides it from all viewers and releases its state.
+
+For scores that belong to players, entities, or named holders, create a numeric
+objective. Objectives may be displayed in the sidebar, player list, or below a
+player's name and may sort scores in ascending or descending order.
+
+```php
+use Bedriox\Api\Scoreboard\ScoreboardDisplaySlot;
+use Bedriox\Api\Scoreboard\ScoreboardSortOrder;
+
+$coins = $this->context()->scoreboards()->createObjective('coins', 'Coins');
+$coins->setScore($player, 25);
+$coins->addScore($player, 5);
+$coins->setScore('Server record', 250);
+$coins->showTo(
+    $player,
+    ScoreboardDisplaySlot::SIDEBAR,
+    ScoreboardSortOrder::DESCENDING,
+);
+```
+
+`PlayerScoreboardDisplayEvent` is cancellable before an online player's display
+slot changes. `ScoreboardScoreChangeEvent` is cancellable and may replace the
+proposed numeric score or reset it with `null`. Lifecycle cleanup bypasses these
+events so a disconnected player or disabled plugin cannot leave stale displays.
+
+Operators with `bedriox.command.scoreboard` may use `/scoreboard objectives
+list|add|remove|setdisplay` and `/scoreboard players get|set|add|remove|reset`.
+The command and plugin API use the same objective registry and validation.
 
 `PluginContext::displays()` supplies an owner-scoped `DisplayManager` for
 floating text. `createText()` accepts a world-explicit position, bounded text,

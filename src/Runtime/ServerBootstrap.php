@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
+use Bedriox\Api\ServerPerformance;
 use Bedriox\Api\World\World as ApiWorld;
 use Bedriox\Api\World\WorldCreationOptions;
 use Bedriox\Data\BedrockDataSet;
@@ -772,6 +773,38 @@ final class ServerBootstrap
                 $publicWorldManager,
                 $whitelist,
                 $startupStartedAt,
+                static function () use ($performance, $runtime, $config): ServerPerformance {
+                    if ($performance === null) {
+                        return new ServerPerformance(
+                            0.0,
+                            0.0,
+                            memory_get_usage(true),
+                            memory_get_peak_usage(true),
+                            $runtime->entityCount(),
+                            $runtime->sessionCount(),
+                            $config->maximumPlayers,
+                        );
+                    }
+                    $snapshot = $performance->snapshot(
+                        onlinePlayers: $runtime->sessionCount(),
+                        maximumPlayers: $config->maximumPlayers,
+                        loadedChunks: $runtime->loadedChunkCount(),
+                        dirtyChunks: $runtime->dirtyChunkCount(),
+                        generatingChunks: $runtime->generatingChunkCount(),
+                        worldCount: $runtime->worldCount(),
+                        entityCount: $runtime->entityCount(),
+                    );
+
+                    return new ServerPerformance(
+                        $snapshot->currentTps,
+                        $snapshot->averageTps,
+                        $snapshot->memoryBytes,
+                        $snapshot->peakMemoryBytes,
+                        $snapshot->entityCount,
+                        $snapshot->onlinePlayers,
+                        $snapshot->maximumPlayers,
+                    );
+                },
             ),
             $flatWorld,
             $craftingCatalog,

@@ -110,6 +110,42 @@ final class EntitySpatialIndexTest extends TestCase
         self::assertSame(0, $index->count());
     }
 
+    public function testSparseWorldQueryPreservesExactOrderingAndCandidateFiltering(): void
+    {
+        $index = new EntitySpatialIndex();
+        $runtimeId = 1;
+        for ($chunkX = 128; $chunkX < 2_128; ++$chunkX) {
+            $index->add(self::cow($runtimeId++, ($chunkX * 16.0) + 0.5, 64.0, 0.5));
+        }
+
+        $farSameBucket = self::cow($runtimeId++, 15.5, 79.5, 15.5);
+        $firstSameDistance = self::cow($runtimeId++, 1.0, 64.0, 0.0);
+        $secondSameDistance = self::cow($runtimeId++, -1.0, 64.0, 0.0);
+        $nearest = self::cow($runtimeId, 0.25, 64.0, 0.0);
+        foreach ([$farSameBucket, $firstSameDistance, $secondSameDistance, $nearest] as $entity) {
+            $index->add($entity);
+        }
+
+        $filteredCandidates = 0;
+        $matches = $index->nearby(
+            'world',
+            new Position(0.0, 64.0, 0.0),
+            2.0,
+            2,
+            static function (AbstractEntity $entity) use (&$filteredCandidates): bool {
+                ++$filteredCandidates;
+
+                return true;
+            },
+        );
+
+        self::assertSame(4, $filteredCandidates);
+        self::assertSame(
+            [$nearest->getRuntimeId(), $firstSameDistance->getRuntimeId()],
+            array_map(static fn(AbstractEntity $entity): int => $entity->getRuntimeId(), $matches),
+        );
+    }
+
     private static function cow(
         int $runtimeId,
         float $x,

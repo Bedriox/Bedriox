@@ -356,6 +356,7 @@ final class Bedriox
                             $manifest->name,
                             $composition->host->manager(),
                         ),
+                        scoreboards: $composition->host->scoreboards($manifest->name),
                         displays: $composition->host->displays()->forOwner($manifest->name),
                         updates: $composition->updates
                             ?? throw new \LogicException('The update capability is unavailable.'),
@@ -848,6 +849,7 @@ final class Bedriox
                 },
                 latestUpdate: static fn(): ?\Bedriox\Api\Update\UpdateInfo =>
                     $composition->updates?->latestAvailable(),
+                scoreboards: $pluginHost->scoreboards('Bedriox'),
             ))->register();
             $startupCompositionStartedAt = hrtime(true);
             $server = (new ServerBootstrap(
@@ -885,6 +887,7 @@ final class Bedriox
             ]);
             $composition->server = $server;
             $server->runtime->setDisplayRegistry($pluginHost->displays());
+            $server->runtime->setScoreboardRegistry($pluginHost->scoreboardRegistry());
             $updates = new UpdateManager(
                 self::VERSION,
                 $config->updatesEnabled,

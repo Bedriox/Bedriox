@@ -1,5 +1,12 @@
 # Changelog
 
+- Add plugin-owned sidebars with stable keyed lines, lightweight per-player
+  overrides, connected-viewer lifecycle cleanup, and shared update projection.
+- Add numeric scoreboard objectives for player, entity, and named scores across
+  sidebar, player-list, and below-name slots, with cancellable display and score
+  events plus the operator `/scoreboard` command.
+- Expose bounded read-only TPS, memory, entity, and player statistics through
+  `Server::getPerformance()` for plugin status displays and diagnostics.
 - Keep optional unsupported login and play input from disconnecting healthy players, require decaying repeated evidence before actor-identity mismatches close a session, repair rejected predictions from authoritative state, separate decode failures from gameplay rejection, and retry outbound projection failures for only the affected recipients.
 - Allow spectators to fly below a dimension's terrain floor without being
   disconnected, keep creative and spectator players immune to the void, and

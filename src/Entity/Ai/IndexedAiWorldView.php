@@ -30,22 +30,69 @@ use Bedriox\Server\Simulation\Position;
 use Closure;
 use InvalidArgumentException;
 
-/** Spatial-index-backed AI view with a compact player-position supplier. */
-final readonly class IndexedAiWorldView implements AquaticAiWorldView, EndermanAwareAiWorldView, NavigatingAiWorldView
+/** Spatial-index-backed AI view with a compact, explicitly refreshed player snapshot. */
+final class IndexedAiWorldView implements AquaticAiWorldView, EndermanAwareAiWorldView, NavigatingAiWorldView
 {
+    private const int MAXIMUM_PLAYERS = 1_024;
+
+    private const int PLAYER_CELL_SIZE = 64;
+
+    /** @var array<string, array<int, array<int, list<AiPlayerSnapshot>>>> */
+    private array $playersByWorldCell = [];
+
+    /** @var array<string, AiPlayerSnapshot> */
+    private array $playersByIdentity = [];
+
+    /** @var array<array-key, Position> */
+    private array $legacyPositions = [];
+
+    private bool $playerSnapshotLoaded = false;
+
     /** @param Closure(): array<array-key, mixed> $playerPositions */
     public function __construct(
-        private EntityRegistry $entities,
-        private Closure $playerPositions,
+        private readonly EntityRegistry $entities,
+        private readonly Closure $playerPositions,
         /** @var null|Closure(AbstractMobEntity, AiPlayerSnapshot): bool */
-        private ?Closure $hostileLineOfSight = null,
+        private readonly ?Closure $hostileLineOfSight = null,
         /** @var null|Closure(string, Position): bool */
-        private ?Closure $waterAt = null,
+        private readonly ?Closure $waterAt = null,
         /** @var null|Closure(AbstractMobEntity): bool */
-        private ?Closure $touchingWater = null,
+        private readonly ?Closure $touchingWater = null,
         /** @var null|Closure(AbstractMobEntity, Position, int): Position */
-        private ?Closure $navigationWaypoint = null,
+        private readonly ?Closure $navigationWaypoint = null,
     ) {}
+
+    /** Rebuilds the bounded immutable player view once after authoritative player state changes for a tick. */
+    public function refreshPlayerSnapshot(): void
+    {
+        $values = ($this->playerPositions)();
+        if (count($values) > self::MAXIMUM_PLAYERS) {
+            throw new InvalidArgumentException('AI player-position snapshot exceeds its supported bound.');
+        }
+
+        $playersByWorldCell = [];
+        $playersByIdentity = [];
+        $legacyPositions = [];
+        foreach ($values as $identifier => $value) {
+            if ($value instanceof Position) {
+                $legacyPositions[$identifier] = $value;
+                continue;
+            }
+            if (!$value instanceof AiPlayerSnapshot) {
+                throw new InvalidArgumentException('AI player-position snapshot contains an invalid value.');
+            }
+
+            $cellX = self::cellCoordinate($value->position->x);
+            $cellZ = self::cellCoordinate($value->position->z);
+            $playersByWorldCell[$value->worldName][$cellX][$cellZ][] = $value;
+            $playersByIdentity[$value->playerId] ??= $value;
+        }
+
+        $this->playersByWorldCell = $playersByWorldCell;
+        $this->playersByIdentity = $playersByIdentity;
+        $this->legacyPositions = $legacyPositions;
+        $this->playerSnapshotLoaded = true;
+    }
 
     public function navigationWaypoint(AbstractMobEntity $entity, Position $target, int $tick): Position
     {
@@ -81,9 +128,8 @@ final readonly class IndexedAiWorldView implements AquaticAiWorldView, EndermanA
     {
         $origin = $entity->internalPosition();
         $nearestDistance = null;
-        foreach ($this->players($entity) as $player) {
-            if ($player->worldName !== $entity->getWorldName()
-                || ($entity->getCategory() === EntityCategory::MONSTER && !$player->damageable)) {
+        foreach ($this->playersNear($entity, 256.0) as $player) {
+            if ($entity->getCategory() === EntityCategory::MONSTER && !$player->damageable) {
                 continue;
             }
             $distance = $player->distanceSquaredTo($origin);
@@ -105,13 +151,12 @@ final readonly class IndexedAiWorldView implements AquaticAiWorldView, EndermanA
         if ($playerId === '' || strlen($playerId) > 128 || preg_match('//u', $playerId) !== 1) {
             throw new InvalidArgumentException('AI player identity must be valid UTF-8 and bounded.');
         }
-        foreach ($this->playersWithoutEntityContext() as $player) {
-            if ($player->playerId === $playerId) {
-                return $player;
-            }
+        $this->loadPlayerSnapshotIfNeeded();
+        if ($this->legacyPositions !== [] && !isset($this->playersByIdentity[$playerId])) {
+            throw new InvalidArgumentException('Identity lookup requires complete AI player snapshots.');
         }
 
-        return null;
+        return $this->playersByIdentity[$playerId] ?? null;
     }
 
     public function nearestPlayerProvokingEnderman(
@@ -157,12 +202,12 @@ final readonly class IndexedAiWorldView implements AquaticAiWorldView, EndermanA
         }
         $origin = $entity->internalPosition();
         $radiusSquared = $radius * $radius;
+        $requiresLineOfSight = $entity->getCategory() === EntityCategory::MONSTER
+            && $this->hostileLineOfSight !== null;
         $nearest = null;
         $nearestDistance = null;
-        foreach ($this->players($entity) as $player) {
-            if ($player->worldName !== $entity->getWorldName()) {
-                continue;
-            }
+        $candidates = [];
+        foreach ($this->playersNear($entity, $radius) as $player) {
             if ($filter !== null && !$filter($player)) {
                 continue;
             }
@@ -170,66 +215,68 @@ final readonly class IndexedAiWorldView implements AquaticAiWorldView, EndermanA
                 continue;
             }
             $distance = $player->distanceSquaredTo($origin);
-            if ($distance > $radiusSquared
-                || ($nearestDistance !== null && ($distance > $nearestDistance
+            if ($distance > $radiusSquared) {
+                continue;
+            }
+            if (!$requiresLineOfSight) {
+                if ($nearestDistance === null || $distance < $nearestDistance
                     || ($distance === $nearestDistance && $nearest !== null
-                        && strcmp($player->playerId, $nearest->playerId) >= 0)))) {
+                        && strcmp($player->playerId, $nearest->playerId) < 0)) {
+                    $nearest = $player;
+                    $nearestDistance = $distance;
+                }
                 continue;
             }
-            if ($entity->getCategory() === EntityCategory::MONSTER
-                && $this->hostileLineOfSight !== null
-                && !($this->hostileLineOfSight)($entity, $player)) {
-                continue;
+            $candidates[] = [$distance, $player];
+        }
+        if (!$requiresLineOfSight) {
+            return $nearest;
+        }
+        usort($candidates, static fn(array $left, array $right): int =>
+            $left[0] <=> $right[0] ?: strcmp($left[1]->playerId, $right[1]->playerId));
+
+        foreach ($candidates as [, $player]) {
+            if (($this->hostileLineOfSight)($entity, $player)) {
+                return $player;
             }
-            $nearest = $player;
-            $nearestDistance = $distance;
         }
 
-        return $nearest;
+        return null;
     }
 
-    /** @return list<AiPlayerSnapshot> */
-    private function players(AbstractMobEntity $entity): array
+    /** @return iterable<AiPlayerSnapshot> */
+    private function playersNear(AbstractMobEntity $entity, float $radius): iterable
     {
-        $values = ($this->playerPositions)();
-        if (count($values) > 1_024) {
-            throw new InvalidArgumentException('AI player-position snapshot exceeds its supported bound.');
+        $this->loadPlayerSnapshotIfNeeded();
+        $origin = $entity->internalPosition();
+        $worldCells = $this->playersByWorldCell[$entity->getWorldName()] ?? [];
+        $minimumCellX = self::cellCoordinate($origin->x - $radius);
+        $maximumCellX = self::cellCoordinate($origin->x + $radius);
+        $minimumCellZ = self::cellCoordinate($origin->z - $radius);
+        $maximumCellZ = self::cellCoordinate($origin->z + $radius);
+        for ($cellX = $minimumCellX; $cellX <= $maximumCellX; ++$cellX) {
+            $column = $worldCells[$cellX] ?? [];
+            for ($cellZ = $minimumCellZ; $cellZ <= $maximumCellZ; ++$cellZ) {
+                foreach ($column[$cellZ] ?? [] as $player) {
+                    yield $player;
+                }
+            }
         }
-        $players = [];
-        foreach ($values as $identifier => $value) {
-            $players[] = match (true) {
-                $value instanceof AiPlayerSnapshot => $value,
-                $value instanceof Position => new AiPlayerSnapshot((string) $identifier, $entity->getWorldName(), $value),
-                default => throw new InvalidArgumentException(
-                    'AI player-position snapshot contains an invalid value.',
-                ),
-            };
+        foreach ($this->legacyPositions as $identifier => $position) {
+            yield new AiPlayerSnapshot((string) $identifier, $entity->getWorldName(), $position);
         }
-
-        return $players;
     }
 
-    /** @return list<AiPlayerSnapshot> */
-    private function playersWithoutEntityContext(): array
+    private function loadPlayerSnapshotIfNeeded(): void
     {
-        $values = ($this->playerPositions)();
-        if (count($values) > 1_024) {
-            throw new InvalidArgumentException('AI player-position snapshot exceeds its supported bound.');
+        if (!$this->playerSnapshotLoaded) {
+            $this->refreshPlayerSnapshot();
         }
-        $players = [];
-        foreach ($values as $identifier => $value) {
-            $players[] = match (true) {
-                $value instanceof AiPlayerSnapshot => $value,
-                $value instanceof Position => throw new InvalidArgumentException(
-                    'Identity lookup requires complete AI player snapshots.',
-                ),
-                default => throw new InvalidArgumentException(
-                    'AI player-position snapshot contains an invalid value.',
-                ),
-            };
-        }
+    }
 
-        return $players;
+    private static function cellCoordinate(float $coordinate): int
+    {
+        return (int) floor($coordinate / self::PLAYER_CELL_SIZE);
     }
 
     private static function playerIsLookingAtEnderman(

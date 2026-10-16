@@ -22,6 +22,7 @@ namespace Bedriox\Server\Command;
 
 use Bedriox\Api\Command\CommandSoftEnum;
 use Bedriox\Api\Player\Player;
+use Bedriox\Api\Scoreboard\ScoreboardManager;
 use Bedriox\Api\Whitelist\Whitelist;
 use Bedriox\Api\World\Position;
 use Bedriox\Server\Access\BanManager;
@@ -56,6 +57,7 @@ use Bedriox\Server\Command\Default\PluginsCommand;
 use Bedriox\Server\Command\Default\SaveCommand;
 use Bedriox\Server\Command\Default\SaveToggleCommand;
 use Bedriox\Server\Command\Default\SayCommand;
+use Bedriox\Server\Command\Default\ScoreboardCommand;
 use Bedriox\Server\Command\Default\SeedCommand;
 use Bedriox\Server\Command\Default\SetBlockCommand;
 use Bedriox\Server\Command\Default\SetWorldSpawnCommand;
@@ -147,6 +149,7 @@ final readonly class BuiltinCommandRegistrar
         private ?Closure $latestUpdate = null,
         private ?Closure $locateStructure = null,
         private ?Closure $locateBiome = null,
+        private ?ScoreboardManager $scoreboards = null,
     ) {}
 
     public function register(): CommandSoftEnum
@@ -269,6 +272,9 @@ final readonly class BuiltinCommandRegistrar
                 $this->collectGarbage,
                 $this->unloadChunks,
             );
+        }
+        if ($this->scoreboards !== null) {
+            $commands[] = new ScoreboardCommand($this->scoreboards, $players);
         }
 
         return $commands;

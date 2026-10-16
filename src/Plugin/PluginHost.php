@@ -38,6 +38,7 @@ use Bedriox\Server\Plugin\Event\EventDispatcher;
 use Bedriox\Server\Plugin\Event\OwnedEventRegistrar;
 use Bedriox\Server\Plugin\Scheduler\MainThreadPluginScheduler;
 use Bedriox\Server\Plugin\Scheduler\PluginAsyncTaskExecutor;
+use Bedriox\Server\Plugin\Scoreboard\ScoreboardRegistry;
 use Closure;
 use Throwable;
 
@@ -53,6 +54,7 @@ final class PluginHost
     private readonly PluginEntityRegistrar $entities;
     private readonly BossBarRegistry $bossBars;
     private readonly DisplayRegistry $displays;
+    private readonly ScoreboardRegistry $scoreboards;
     private readonly HumanOwnershipRegistry $humans;
     /** @var list<PluginPackage> */
     private array $packages = [];
@@ -93,6 +95,11 @@ final class PluginHost
             ), 'Plugins');
         });
         $this->events = new EventDispatcher($this->manager, $this->execution, $this->actions, $this->ownership);
+        $this->scoreboards = new ScoreboardRegistry(
+            $this->ownership,
+            $onlinePlayers,
+            fn(Event $event): Event => $this->events->dispatch($event),
+        );
         $this->commands = new CommandRegistry(
             $this->manager,
             $this->execution,
@@ -301,6 +308,18 @@ final class PluginHost
     public function bossBars(string $plugin): \Bedriox\Api\BossBar\BossBarManager
     {
         return $this->bossBars->forOwner($plugin);
+    }
+
+    /** @internal Used to construct owner-scoped public scoreboard managers. */
+    public function scoreboards(string $plugin): \Bedriox\Api\Scoreboard\ScoreboardManager
+    {
+        return $this->scoreboards->forOwner($plugin);
+    }
+
+    /** @internal Used by the runtime scoreboard projector. */
+    public function scoreboardRegistry(): ScoreboardRegistry
+    {
+        return $this->scoreboards;
     }
 
     /** @internal Used by the simulation-backed public API composition. */

@@ -31,6 +31,90 @@ use PHPUnit\Framework\TestCase;
 
 final class IndexedAiWorldViewTest extends TestCase
 {
+    public function testPlayerSnapshotIsBuiltOnceUntilExplicitlyRefreshed(): void
+    {
+        $zombie = new ZombieEntity(
+            EntityUuid::random(),
+            1,
+            'world',
+            new Position(0.0, 64.0, 0.0),
+        );
+        $supplierCalls = 0;
+        $players = [new AiPlayerSnapshot('first', 'world', new Position(2.0, 64.0, 0.0))];
+        $view = new IndexedAiWorldView(
+            new EntityRegistry(),
+            static function () use (&$supplierCalls, &$players): array {
+                ++$supplierCalls;
+
+                return $players;
+            },
+        );
+
+        $nearest = $view->nearestPlayer($zombie, 32.0);
+        self::assertNotNull($nearest);
+        self::assertSame('first', $nearest->playerId);
+        self::assertSame(4.0, $view->nearestPlayerDistanceSquared($zombie));
+        self::assertSame('first', $view->playerByIdentity('first')?->playerId);
+        self::assertSame(1, $supplierCalls);
+
+        $players = [new AiPlayerSnapshot('second', 'world', new Position(3.0, 64.0, 0.0))];
+        self::assertSame('first', $view->nearestPlayer($zombie, 32.0)?->playerId);
+        $view->refreshPlayerSnapshot();
+        self::assertSame('second', $view->nearestPlayer($zombie, 32.0)?->playerId);
+        self::assertNull($view->playerByIdentity('first'));
+        self::assertSame(2, $supplierCalls);
+    }
+
+    public function testIndexedSearchPreservesWorldDamageAndDeterministicTieRules(): void
+    {
+        $zombie = new ZombieEntity(
+            EntityUuid::random(),
+            1,
+            'world',
+            new Position(64.0, 64.0, 64.0),
+        );
+        $view = new IndexedAiWorldView(
+            new EntityRegistry(),
+            static fn(): array => [
+                new AiPlayerSnapshot('other-world', 'other', new Position(64.0, 64.0, 64.0)),
+                new AiPlayerSnapshot('spectator', 'world', new Position(64.5, 64.0, 64.0), false),
+                new AiPlayerSnapshot('zulu', 'world', new Position(65.0, 64.0, 64.0)),
+                new AiPlayerSnapshot('alpha', 'world', new Position(63.0, 64.0, 64.0)),
+                new AiPlayerSnapshot('different-cell', 'world', new Position(127.0, 64.0, 64.0)),
+            ],
+        );
+
+        self::assertSame('alpha', $view->nearestPlayer($zombie, 64.0)?->playerId);
+        self::assertSame(1.0, $view->nearestPlayerDistanceSquared($zombie));
+    }
+
+    public function testLineOfSightFallsThroughToNextNearestVisiblePlayer(): void
+    {
+        $zombie = new ZombieEntity(
+            EntityUuid::random(),
+            1,
+            'world',
+            new Position(0.0, 64.0, 0.0),
+        );
+        $queries = [];
+        $view = new IndexedAiWorldView(
+            new EntityRegistry(),
+            static fn(): array => [
+                new AiPlayerSnapshot('far', 'world', new Position(3.0, 64.0, 0.0)),
+                new AiPlayerSnapshot('hidden', 'world', new Position(1.0, 64.0, 0.0)),
+                new AiPlayerSnapshot('visible', 'world', new Position(2.0, 64.0, 0.0)),
+            ],
+            static function (AbstractMobEntity $_entity, AiPlayerSnapshot $player) use (&$queries): bool {
+                $queries[] = $player->playerId;
+
+                return $player->playerId !== 'hidden';
+            },
+        );
+
+        self::assertSame('visible', $view->nearestPlayer($zombie, 32.0)?->playerId);
+        self::assertSame(['hidden', 'visible'], $queries);
+    }
+
     public function testActivationDistanceDoesNotPerformTheHostileLineOfSightQuery(): void
     {
         $entities = new EntityRegistry();

@@ -3938,6 +3938,7 @@ final class WorldSimulation
                 static fn(Player $player): bool => $player->vitals->isAlive(),
             )),
         );
+        $this->entityAiWorld->refreshPlayerSnapshot();
         foreach ($this->entityRuntime->registry()->all() as $entity) {
             if (!$entity->controllerDespawnRequested()) {
                 continue;

@@ -259,7 +259,7 @@ use Bedriox\Server\World\Storage\LevelDb\PersistentBlockEntityCodec;
 use WeakMap;
 
 /** Stateless current-Bedrock projection of authoritative simulation events. */
-final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder, EntityMovementPacketEncoder, PlayerMovementPacketEncoder, WorldEventPacketEncoder
+final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder, EntityMovementPacketEncoder, HeldItemPacketEncoder, PlayerMovementPacketEncoder, WorldEventPacketEncoder
 {
     private const int PLAYER_SLEEP_FLAG = 1 << 1;
 
@@ -2419,21 +2419,11 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
     /** @return list<DirectedPacket> */
     private function heldItemChanged(HeldItemChanged $event): array
     {
-        $packets = $event->ownerSlotCorrection
-            ? $this->inventorySlotCorrection(
-                $event->ownerSessionId,
-                InventoryContainerId::INVENTORY,
-                $event->hotbarSlot,
-                $event->stack,
-            )
-            : [];
-        $equipment = new MobEquipmentPacket(
-            UnsignedLong::fromInt($event->runtimeActorId),
-            $event->hotbarSlot,
-            $event->hotbarSlot,
-            0,
-            $this->visualStack($event->stack),
+        $packets = array_map(
+            static fn(Packet $packet): DirectedPacket => new DirectedPacket($event->ownerSessionId, $packet),
+            $this->heldItemOwnerPackets($event),
         );
+        $equipment = $this->heldItemEquipmentPacket($event);
 
         array_push($packets, ...array_map(
             static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $equipment),
@@ -2441,6 +2431,34 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
         ));
 
         return $packets;
+    }
+
+    public function heldItemOwnerPackets(HeldItemChanged $event): array
+    {
+        if (!$event->ownerSlotCorrection) {
+            return [];
+        }
+
+        return array_map(
+            static fn(DirectedPacket $directed): Packet => $directed->packet,
+            $this->inventorySlotCorrection(
+                $event->ownerSessionId,
+                InventoryContainerId::INVENTORY,
+                $event->hotbarSlot,
+                $event->stack,
+            ),
+        );
+    }
+
+    public function heldItemEquipmentPacket(HeldItemChanged $event): Packet
+    {
+        return new MobEquipmentPacket(
+            UnsignedLong::fromInt($event->runtimeActorId),
+            $event->hotbarSlot,
+            $event->hotbarSlot,
+            0,
+            $this->visualStack($event->stack),
+        );
     }
 
     /** @return list<DirectedPacket> */

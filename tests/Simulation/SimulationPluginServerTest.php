@@ -23,6 +23,7 @@ namespace Bedriox\Server\Tests\Simulation;
 use Bedriox\Api\Inventory\Inventory;
 use Bedriox\Api\Player\Player;
 use Bedriox\Api\Server;
+use Bedriox\Api\ServerPerformance;
 use Bedriox\Api\World\Position;
 use Bedriox\Server\Plugin\PluginActionBuffer;
 use Bedriox\Server\Plugin\PluginException;
@@ -45,6 +46,7 @@ final class SimulationPluginServerTest extends TestCase
         self::assertSame([
             'broadcastMessage',
             'getOnlinePlayers',
+            'getPerformance',
             'getPlayerByName',
             'getPlayerByUuid',
             'getUptimeSeconds',
@@ -77,6 +79,22 @@ final class SimulationPluginServerTest extends TestCase
         self::assertSame([$player], $server->getOnlinePlayers());
         self::assertSame($player, $server->getPlayerByUuid('identity-one'));
         self::assertNull($server->getPlayerByUuid('missing'));
+    }
+
+    public function testPerformanceUsesTheReadOnlyServerProjection(): void
+    {
+        $player = self::player();
+        $expected = new ServerPerformance(19.95, 19.80, 128, 256, 42, 1, 100);
+        $server = new SimulationPluginServer(
+            'Example',
+            new FacadeRuntimeControl(true),
+            new PluginActionBuffer(),
+            static fn(): array => [$player],
+            static fn(string $uuid): ?Player => $uuid === $player->uuid ? $player : null,
+            performance: static fn(): ServerPerformance => $expected,
+        );
+
+        self::assertSame($expected, $server->getPerformance());
     }
 
     public function testDisabledPluginCannotReadOrMutateThroughAnExistingFacade(): void
