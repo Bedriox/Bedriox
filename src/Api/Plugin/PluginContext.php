@@ -29,6 +29,7 @@ use Bedriox\Api\Encounter\EncounterManager;
 use Bedriox\Api\Entity\EntityRegistrar;
 use Bedriox\Api\Entity\UnavailableEntityRegistrar;
 use Bedriox\Api\Event\EventRegistrar;
+use Bedriox\Api\Gateway\GatewayConnection;
 use Bedriox\Api\Inventory\ContainerManager;
 use Bedriox\Api\Inventory\ItemRegistrar;
 use Bedriox\Api\Inventory\UnavailableItemRegistrar;
@@ -63,6 +64,7 @@ final class PluginContext
         private readonly ?EncounterManager $encounters = null,
         private readonly ?ScoreboardManager $scoreboards = null,
         private readonly UpdateService $updates = new UnavailableUpdateService(),
+        private readonly ?GatewayConnection $gateway = null,
     ) {}
 
     public function name(): string
@@ -160,6 +162,11 @@ final class PluginContext
         return $this->updates;
     }
 
+    public function gateway(): GatewayConnection
+    {
+        return $this->gateway ?? GatewayConnection::unavailable();
+    }
+
     /** @internal Used by the server composition root to attach an owner-scoped scheduler. */
     public function withScheduler(PluginScheduler $scheduler): self
     {
@@ -182,6 +189,7 @@ final class PluginContext
             $this->encounters,
             $this->scoreboards,
             $this->updates,
+            $this->gateway,
         );
     }
 
@@ -207,6 +215,7 @@ final class PluginContext
             $this->encounters,
             $this->scoreboards,
             $this->updates,
+            $this->gateway,
         );
     }
 }

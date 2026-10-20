@@ -369,6 +369,7 @@ final class Bedriox
                         displays: $composition->host->displays()->forOwner($manifest->name),
                         updates: $composition->updates
                             ?? throw new \LogicException('The update capability is unavailable.'),
+                        gateway: $composition->host->gateway($manifest->name),
                     );
                 },
                 maximumPlugins: $config->maximumPlugins,
@@ -418,6 +419,20 @@ final class Bedriox
                 ) use ($composition): void {
                     $composition->server?->runtime->displayChanged($display, $change, $player);
                 },
+                gatewayEnabled: static fn(): bool => $composition->server?->runtime->gatewayEnabled() ?? false,
+                gatewayConnected: static fn(): bool => $composition->server?->runtime->gatewayConnected() ?? false,
+                gatewayRegister: static function (
+                    string $channel,
+                    \Closure $message,
+                    \Closure $rejection,
+                ) use ($composition): void {
+                    $composition->server?->runtime->registerGatewayPluginChannel($channel, $message, $rejection);
+                },
+                gatewayUnregister: static function (string $channel) use ($composition): void {
+                    $composition->server?->runtime->unregisterGatewayPluginChannel($channel);
+                },
+                gatewaySend: static fn(string $channel, string $payload): int =>
+                    $composition->server?->runtime->sendGatewayPluginMessage($channel, $payload) ?? 0,
             );
             $composition->host = $pluginHost;
             $definitionBridge = new PluginEntityDefinitionBridge($entityDefinitions, $pluginHost->entities());

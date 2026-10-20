@@ -35,6 +35,8 @@ use Throwable;
 final class GatewayControlSession
 {
     private const int MAXIMUM_JSON_BYTES = 32_768;
+    private const int MAXIMUM_PLUGIN_PAYLOAD_BYTES = 24_000;
+    private const int MAXIMUM_PENDING_PLUGIN_MESSAGES = 256;
     private const int CLOCK_SKEW_SECONDS = 5;
     private ?string $gatewayNonce = null;
     private ?string $serverNonce = null;
@@ -45,11 +47,14 @@ final class GatewayControlSession
     private int $outboundSequence = 0;
     private bool $ready = false;
     private bool $closed = false;
+    /** @var array<string, string> request ID => canonical channel */
+    private array $pendingPluginMessages = [];
 
     public function __construct(
         private readonly GatewayControlConfig $config,
         private readonly GatewayControlNonceGuard $nonces,
         private readonly ?Closure $pluginMessageHandler = null,
+        private readonly ?Closure $pluginMessageRejectionHandler = null,
     ) {}
 
     public function ready(): bool
@@ -107,14 +112,20 @@ final class GatewayControlSession
 
     public function pluginMessage(string $channel, string $payload): ?string
     {
-        if (!$this->ready() || !self::validChannel($channel) || strlen($payload) > self::MAXIMUM_JSON_BYTES) {
+        if (!$this->ready() || !self::validChannel($channel) || strlen($payload) > self::MAXIMUM_PLUGIN_PAYLOAD_BYTES) {
             return null;
         }
-
-        return $this->encrypted(ControlMessageType::PluginMessage, self::json([
+        if (count($this->pendingPluginMessages) >= self::MAXIMUM_PENDING_PLUGIN_MESSAGES) {
+            array_shift($this->pendingPluginMessages);
+        }
+        $requestId = ControlFrame::requestId();
+        $frame = $this->encrypted(ControlMessageType::PluginMessage, self::json([
             'channel' => $channel,
             'payload' => base64_encode($payload),
-        ]));
+        ]), $requestId);
+        $this->pendingPluginMessages[$requestId] = $channel;
+
+        return $frame;
     }
 
     private function acceptHello(ControlFrame $frame, int $now): string
@@ -189,15 +200,34 @@ final class GatewayControlSession
             $encoded = $value['payload'] ?? null;
             $payload = is_string($encoded) ? base64_decode($encoded, true) : false;
             if (!is_string($channel) || !self::validChannel($channel)
-                || !is_string($payload) || strlen($payload) > self::MAXIMUM_JSON_BYTES) {
-                return [$this->encrypted(ControlMessageType::PluginMessageRejected, self::json([
-                    'reason' => 'invalid_plugin_message',
-                ]), $frame->requestId)];
+                || !is_string($payload) || strlen($payload) > self::MAXIMUM_PLUGIN_PAYLOAD_BYTES) {
+                $rejection = ['reason' => 'invalid_plugin_message'];
+                if (is_string($channel) && self::validChannel($channel)) {
+                    $rejection['channel'] = $channel;
+                }
+                return [$this->encrypted(ControlMessageType::PluginMessageRejected, self::json($rejection), $frame->requestId)];
             }
             if ($this->pluginMessageHandler === null || ($this->pluginMessageHandler)($channel, $payload) !== true) {
                 return [$this->encrypted(ControlMessageType::PluginMessageRejected, self::json([
                     'reason' => 'unhandled_plugin_channel',
+                    'channel' => $channel,
                 ]), $frame->requestId)];
+            }
+            return [];
+        }
+        if ($frame->type === ControlMessageType::PluginMessageRejected) {
+            $channel = $this->pendingPluginMessages[$frame->requestId] ?? null;
+            unset($this->pendingPluginMessages[$frame->requestId]);
+            $value = self::object($frame->payload);
+            $reason = $value['reason'] ?? null;
+            if (!is_string($reason) || preg_match('/\A[a-z0-9_.-]{1,128}\z/D', $reason) !== 1) {
+                throw new RuntimeException('Gateway plugin rejection is invalid.');
+            }
+            if (!is_string($channel)) {
+                return [];
+            }
+            if ($this->pluginMessageRejectionHandler !== null) {
+                ($this->pluginMessageRejectionHandler)($channel, $reason);
             }
             return [];
         }
@@ -265,6 +295,6 @@ final class GatewayControlSession
     private static function validChannel(string $channel): bool
     {
         return strlen($channel) <= 128
-            && preg_match('/\A[a-z0-9_.-]+:[a-z0-9_.-]+\z/D', $channel) === 1;
+            && preg_match('/\A[a-z0-9][a-z0-9_.-]*:[a-z0-9][a-z0-9_.-]*\z/D', $channel) === 1;
     }
 }

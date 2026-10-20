@@ -65,6 +65,24 @@ $config->save();
 
 `saveResource()` never overwrites an existing administrator-edited file unless `replace: true` is explicit. `saveResources()` copies all admitted defaults. `config()` supports `.yml`, `.yaml`, and `.json`, dot-separated keys, typed getters, mutation, saving, and reloading. `path()` is available for plugins that need to manage another bounded format themselves. Resource paths and configuration structures are validated and kept inside the plugin's own data directory.
 
+## Gateway messaging
+
+`PluginContext::gateway()` exposes the authenticated control link only; it never exposes a socket, key, session, or transport queue. `isEnabled()` reports whether the server uses `GATEWAY` authentication and `isConnected()` reports whether at least one authenticated Gateway control link is ready. Both return `false` in `FULL` and `SELF_SIGNED` modes.
+
+Register a canonical lowercase, namespaced channel during plugin enablement:
+
+```php
+$channel = $this->context()->gateway()->registerChannel('my-plugin:status');
+
+if ($channel->send('ready')) {
+    $this->context()->logger()->info('Status admitted to Gateway.');
+}
+```
+
+Channel names are at most 128 bytes and must begin with the canonical lowercase plugin name, such as `my-plugin:*`. The `bedriox:*` and `gateway:*` namespaces are reserved, one plugin owns each name, and payloads are capped at 24,000 bytes. `send()` returns `true` only when the payload was admitted to at least one authenticated link; it does not promise that a remote plugin processed the message. Unavailable links, excessive payloads, transport failures, and explicit remote rejection return `false` or emit an owner-targeted `GatewayPluginMessageRejectedEvent` without exposing message contents in logs.
+
+`GatewayPluginMessageEvent` is delivered only to listeners owned by the plugin that registered its channel. `GatewayConnectedEvent` and `GatewayDisconnectedEvent` are ordinary server-wide lifecycle events. Channel registrations and their handlers are released automatically when their owning plugin disables or fails. Core authentication, health, drain, and shutdown operations use dedicated control messages and are not plugin channels.
+
 ## Lifecycle
 
 An entry point extends `Bedriox\Api\Plugin\Plugin` and may implement `onLoad()`, `onEnable()`, and `onDisable()`. Required dependencies load first. A missing, incompatible, cyclic, or failed dependency prevents only affected plugins from enabling.

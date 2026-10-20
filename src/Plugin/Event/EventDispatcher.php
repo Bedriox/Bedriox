@@ -114,12 +114,24 @@ final class EventDispatcher
 
     public function dispatch(Event $event): Event
     {
+        return $this->dispatchMatching($event, null);
+    }
+
+    /** @internal Dispatches a private event only to one plugin owner. */
+    public function dispatchTo(string $plugin, Event $event): Event
+    {
+        return $this->dispatchMatching($event, strtolower($plugin));
+    }
+
+    private function dispatchMatching(Event $event, ?string $owner): Event
+    {
         if ($this->depth >= $this->maxDepth) {
             throw new PluginException('Maximum event recursion depth exceeded.');
         }
         $matching = array_values(array_filter(
             $this->listeners,
-            static fn(RegisteredListener $listener): bool => $event instanceof $listener->eventClass,
+            static fn(RegisteredListener $listener): bool => $event instanceof $listener->eventClass
+                && ($owner === null || strtolower($listener->plugin) === $owner),
         ));
         usort($matching, static fn(RegisteredListener $a, RegisteredListener $b): int =>
             [$a->priority->value, $a->sequence] <=> [$b->priority->value, $b->sequence]);

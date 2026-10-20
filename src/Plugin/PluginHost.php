@@ -36,6 +36,7 @@ use Bedriox\Server\Plugin\Display\DisplayRegistry;
 use Bedriox\Server\Plugin\Entity\HumanOwnershipRegistry;
 use Bedriox\Server\Plugin\Event\EventDispatcher;
 use Bedriox\Server\Plugin\Event\OwnedEventRegistrar;
+use Bedriox\Server\Plugin\Gateway\GatewayPluginConnectionRegistry;
 use Bedriox\Server\Plugin\Scheduler\MainThreadPluginScheduler;
 use Bedriox\Server\Plugin\Scheduler\PluginAsyncTaskExecutor;
 use Bedriox\Server\Plugin\Scoreboard\ScoreboardRegistry;
@@ -56,6 +57,7 @@ final class PluginHost
     private readonly DisplayRegistry $displays;
     private readonly ScoreboardRegistry $scoreboards;
     private readonly HumanOwnershipRegistry $humans;
+    private readonly GatewayPluginConnectionRegistry $gateways;
     /** @var list<PluginPackage> */
     private array $packages = [];
     /** @var array<string, array{provider: string, definitions: list<SourcePluginDefinition>}> */
@@ -79,6 +81,11 @@ final class PluginHost
         ?Closure $commandSelectorOrigin = null,
         ?Closure $administrativeCommandFeedback = null,
         ?Closure $displayChanged = null,
+        ?Closure $gatewayEnabled = null,
+        ?Closure $gatewayConnected = null,
+        ?Closure $gatewayRegister = null,
+        ?Closure $gatewayUnregister = null,
+        ?Closure $gatewaySend = null,
     ) {
         $this->ownership = new PluginOwnershipRegistry();
         $this->humans = new HumanOwnershipRegistry($this->ownership);
@@ -95,6 +102,15 @@ final class PluginHost
             ), 'Plugins');
         });
         $this->events = new EventDispatcher($this->manager, $this->execution, $this->actions, $this->ownership);
+        $this->gateways = new GatewayPluginConnectionRegistry(
+            $this->ownership,
+            $this->events,
+            $gatewayEnabled ?? static fn(): bool => false,
+            $gatewayConnected ?? static fn(): bool => false,
+            $gatewayRegister ?? static function (string $channel, Closure $message, Closure $rejection): void {},
+            $gatewayUnregister ?? static function (string $channel): void {},
+            $gatewaySend ?? static fn(string $channel, string $payload): int => 0,
+        );
         $this->scoreboards = new ScoreboardRegistry(
             $this->ownership,
             $onlinePlayers,
@@ -314,6 +330,12 @@ final class PluginHost
     public function scoreboards(string $plugin): \Bedriox\Api\Scoreboard\ScoreboardManager
     {
         return $this->scoreboards->forOwner($plugin);
+    }
+
+    /** @internal Used to construct owner-scoped public Gateway connections. */
+    public function gateway(string $plugin): \Bedriox\Api\Gateway\GatewayConnection
+    {
+        return $this->gateways->forOwner($plugin);
     }
 
     /** @internal Used by the runtime scoreboard projector. */

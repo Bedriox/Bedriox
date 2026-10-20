@@ -528,12 +528,30 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     }
 
     /** Registers a bounded namespaced Gateway-to-backend plugin message handler. */
-    public function registerGatewayPluginChannel(string $channel, Closure $handler): void
+    public function gatewayEnabled(): bool
     {
+        return $this->gatewayControl !== null;
+    }
+
+    public function gatewayConnected(): bool
+    {
+        return ($this->gatewayControl?->readySessionCount() ?? 0) > 0;
+    }
+
+    public function registerGatewayPluginChannel(
+        string $channel,
+        Closure $handler,
+        ?Closure $rejectionHandler = null,
+    ): void {
         if ($this->gatewayControl === null) {
             throw new \LogicException('Gateway control is available only in GATEWAY authentication mode.');
         }
-        $this->gatewayControl->registerPluginChannel($channel, $handler);
+        $this->gatewayControl->registerPluginChannel($channel, $handler, $rejectionHandler);
+    }
+
+    public function unregisterGatewayPluginChannel(string $channel): void
+    {
+        $this->gatewayControl?->unregisterPluginChannel($channel);
     }
 
     /** Sends a backend-to-Gateway plugin message to every authenticated control connection. */
@@ -3536,6 +3554,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 return;
             }
             try {
+                $connectedBefore = $this->gatewayConnected();
                 $frames = $this->gatewayControl?->accept(
                     $key,
                     $payload->payload,
@@ -3544,6 +3563,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     $this->maximumPlayers,
                 ) ?? [];
                 $this->sendControlFrames($controlInfo, $frames);
+                if (!$connectedBefore && $this->gatewayConnected()) {
+                    $this->pluginEvents?->dispatch(new \Bedriox\Api\Event\Gateway\GatewayConnectedEvent());
+                }
             } catch (Throwable) {
                 $this->rejectControlOrPlayer($controlInfo, 'invalid_or_replayed_message');
             }
@@ -4407,8 +4429,12 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             return;
         }
         if (($this->controlEndpoints[$key] ?? null) === $info) {
+            $connectedBefore = $this->gatewayConnected();
             unset($this->controlEndpoints[$key]);
             $this->gatewayControl?->close($key);
+            if ($connectedBefore && !$this->gatewayConnected()) {
+                $this->pluginEvents?->dispatch(new \Bedriox\Api\Event\Gateway\GatewayDisconnectedEvent($reason));
+            }
             return;
         }
         if (($this->sessions[$key]->transport ?? null) !== $info) {
@@ -4536,8 +4562,12 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private function rejectControlOrPlayer(SessionInfo $info, string $reason): void
     {
         $key = self::endpointKey($info);
+        $connectedBefore = $this->gatewayConnected();
         unset($this->unclassifiedSessions[$key], $this->controlEndpoints[$key]);
         $this->gatewayControl?->close($key);
+        if ($connectedBefore && !$this->gatewayConnected()) {
+            $this->pluginEvents?->dispatch(new \Bedriox\Api\Event\Gateway\GatewayDisconnectedEvent($reason));
+        }
         $now = time();
         if (!isset($this->controlRejectionReports[$info->remoteAddress])
             && count($this->controlRejectionReports) >= 1_024) {

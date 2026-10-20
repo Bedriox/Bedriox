@@ -30,7 +30,7 @@ final class GatewayControlServer
 {
     /** @var array<string, GatewayControlSession> */
     private array $sessions = [];
-    /** @var array<string, Closure(string): void> */
+    /** @var array<string, array{message: Closure(string): void, rejection: ?Closure(string): void}> */
     private array $pluginHandlers = [];
     private readonly GatewayControlNonceGuard $nonces;
     private bool $draining = false;
@@ -60,15 +60,21 @@ final class GatewayControlServer
             $this->config,
             $this->nonces,
             function (string $channel, string $message): bool {
-                $handler = $this->pluginHandlers[$channel] ?? null;
-                if ($handler === null) {
+                $handlers = $this->pluginHandlers[$channel] ?? null;
+                if ($handlers === null) {
                     return false;
                 }
                 try {
-                    $handler($message);
+                    ($handlers['message'])($message);
                     return true;
                 } catch (Throwable) {
                     return false;
+                }
+            },
+            function (string $channel, string $reason): void {
+                $handler = $this->pluginHandlers[$channel]['rejection'] ?? null;
+                if ($handler !== null) {
+                    $handler($reason);
                 }
             },
         );
@@ -106,10 +112,22 @@ final class GatewayControlServer
         unset($this->sessions[$endpoint]);
     }
 
-    /** Public plugin API seam. One owner per namespaced channel. */
-    public function registerPluginChannel(string $channel, Closure $handler): void
+    public function readySessionCount(): int
     {
-        if (strlen($channel) > 128 || preg_match('/\A[a-z0-9_.-]+:[a-z0-9_.-]+\z/D', $channel) !== 1) {
+        $count = 0;
+        foreach ($this->sessions as $session) {
+            if ($session->ready()) {
+                ++$count;
+            }
+        }
+        return $count;
+    }
+
+    /** Public plugin API seam. One owner per namespaced channel. */
+    public function registerPluginChannel(string $channel, Closure $handler, ?Closure $rejectionHandler = null): void
+    {
+        if (strlen($channel) > 128
+            || preg_match('/\A[a-z0-9][a-z0-9_.-]*:[a-z0-9][a-z0-9_.-]*\z/D', $channel) !== 1) {
             throw new InvalidArgumentException('Gateway control plugin channel is invalid.');
         }
         if (isset($this->pluginHandlers[$channel])) {
@@ -118,13 +136,18 @@ final class GatewayControlServer
         if (count($this->pluginHandlers) >= 256) {
             throw new InvalidArgumentException('Gateway control plugin channel limit is exhausted.');
         }
-        $this->pluginHandlers[$channel] = $handler;
+        $this->pluginHandlers[$channel] = ['message' => $handler, 'rejection' => $rejectionHandler];
+    }
+
+    public function unregisterPluginChannel(string $channel): void
+    {
+        unset($this->pluginHandlers[$channel]);
     }
 
     /** @return array<string, string> endpoint => encoded frame */
     public function broadcastPluginMessage(string $channel, string $payload): array
     {
-        if (strlen($channel) > 128 || preg_match('/\A[a-z0-9_.-]+:[a-z0-9_.-]+\z/D', $channel) !== 1
+        if (strlen($channel) > 128 || preg_match('/\A[a-z0-9][a-z0-9_.-]*:[a-z0-9][a-z0-9_.-]*\z/D', $channel) !== 1
             || strlen($payload) > 24_000) {
             throw new InvalidArgumentException('Gateway control plugin message is invalid or oversized.');
         }
