@@ -97,6 +97,8 @@ use Bedriox\Server\Gameplay\Crafting\CraftingCatalog;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Gameplay\Potion\AreaEffectCloud;
 use Bedriox\Server\Gameplay\Projectile\Projectile;
+use Bedriox\Server\GatewayControl\GatewayControlServer;
+use Bedriox\Server\Login\LoginFailureCode;
 use Bedriox\Server\Observability\CrashContextPublisher;
 use Bedriox\Server\Observability\CrashPlayer;
 use Bedriox\Server\Observability\Memory\GarbageCollectionReport;
@@ -246,6 +248,12 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     /** @var array<string, RuntimeSession> endpoint key => session */
     private array $sessions = [];
 
+    /** @var array<string, SessionInfo> connections awaiting their first application payload */
+    private array $unclassifiedSessions = [];
+
+    /** @var array<string, SessionInfo> authenticated Gateway control connections */
+    private array $controlEndpoints = [];
+
     /** @var array<string, string> runtime session ID => endpoint key */
     private array $sessionEndpoints = [];
 
@@ -265,6 +273,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private readonly PlayerConnectionDirectory $playerConnections;
     private ?Throwable $failure = null;
     private ?string $involvedSessionId = null;
+    /** @var array<string, array{int, int}> address => last report epoch and suppressed count */
+    private array $controlRejectionReports = [];
     /** @var array<string, true> */
     private array $autosaveActive = [];
     private bool $autosaveEnabled = true;
@@ -446,6 +456,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         private readonly ?PlayerLifecycleLogger $playerLifecycleLogger = null,
         private readonly int $protocolSoftStrikeLimit = 10,
         private readonly int $protocolStrikeDecaySeconds = 15,
+        private readonly ?GatewayControlServer $gatewayControl = null,
+        private readonly int $maximumPlayers = 1_024,
     ) {
         $this->defaultGameMode = $this->playerPersistence?->defaultGameMode() ?? GameMode::SURVIVAL;
         if ($this->autosaveIntervalTicks < 1 || $this->autosaveChunkBudget < 1
@@ -513,6 +525,59 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         return $this->transport instanceof SecurityObservableTransport
             ? $this->transport->securitySnapshot()
             : null;
+    }
+
+    /** Registers a bounded namespaced Gateway-to-backend plugin message handler. */
+    public function registerGatewayPluginChannel(string $channel, Closure $handler): void
+    {
+        if ($this->gatewayControl === null) {
+            throw new \LogicException('Gateway control is available only in GATEWAY authentication mode.');
+        }
+        $this->gatewayControl->registerPluginChannel($channel, $handler);
+    }
+
+    /** Sends a backend-to-Gateway plugin message to every authenticated control connection. */
+    public function sendGatewayPluginMessage(string $channel, string $payload): int
+    {
+        if ($this->gatewayControl === null) {
+            return 0;
+        }
+        $sent = 0;
+        foreach ($this->gatewayControl->broadcastPluginMessage($channel, $payload) as $key => $frame) {
+            $info = $this->controlEndpoints[$key] ?? null;
+            if ($info === null) {
+                continue;
+            }
+            try {
+                $this->sendControlFrames($info, [$frame]);
+                ++$sent;
+            } catch (Throwable) {
+                $this->rejectControlOrPlayer($info, 'send_failure');
+            }
+        }
+        return $sent;
+    }
+
+    /** Publishes a bounded backend health transition to authenticated Gateway links. */
+    public function sendGatewayStatus(string $status, string $reason): int
+    {
+        if ($this->gatewayControl === null) {
+            return 0;
+        }
+        $sent = 0;
+        foreach ($this->gatewayControl->statusFrames($status, $reason) as $key => $frame) {
+            $info = $this->controlEndpoints[$key] ?? null;
+            if ($info === null) {
+                continue;
+            }
+            try {
+                $this->sendControlFrames($info, [$frame]);
+                ++$sent;
+            } catch (Throwable) {
+                $this->rejectControlOrPlayer($info, 'send_failure');
+            }
+        }
+        return $sent;
     }
 
     public function inboundMetricsSnapshot(): InboundMetricsSnapshot
@@ -1622,6 +1687,15 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                             'protocol' => $session->login?->observedProtocolVersion(),
                             'detail' => $session->login?->failureDetail(),
                         ]);
+                        if ($failure === LoginFailureCode::AUTHENTICATION_MODE
+                            || $failure === LoginFailureCode::AUTHENTICATION_FAILED) {
+                            $this->diagnostics->securityRejection(
+                                'player_login',
+                                $failure->value,
+                                $session->transport->remoteAddress,
+                                $session->transport->remotePort,
+                            );
+                        }
                         $this->disconnect($key, 'login_tick_failed');
                         continue;
                     }
@@ -3295,6 +3369,22 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         foreach (array_keys($this->sessions) as $key) {
             $this->removeRuntimeSession($key, PlayerQuitCause::SERVER_SHUTDOWN, 'Server shutting down');
         }
+        if ($this->gatewayControl !== null) {
+            foreach ($this->gatewayControl->stoppingFrames() as $key => $frame) {
+                $info = $this->controlEndpoints[$key] ?? null;
+                if ($info !== null) {
+                    try {
+                        $this->sendControlFrames($info, [$frame]);
+                    } catch (Throwable $exception) {
+                        $this->diagnostics->record('gateway_control.stopping_send_failed', [
+                            'exception' => $exception::class,
+                        ]);
+                    }
+                }
+            }
+        }
+        $this->unclassifiedSessions = [];
+        $this->controlEndpoints = [];
         $this->pendingTransportCloses = [];
         $this->drainShutdownLifecycle();
         if ($this->worldRuntimes === null) {
@@ -3352,11 +3442,23 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     {
         $key = self::endpointKey($info);
         unset($this->pendingTransportCloses[$key]);
-        if (isset($this->sessions[$key]) || count($this->sessions) >= $this->limits->maximumSessions) {
+        if (isset($this->sessions[$key]) || isset($this->unclassifiedSessions[$key]) || isset($this->controlEndpoints[$key])
+            || count($this->sessions) + count($this->unclassifiedSessions) + count($this->controlEndpoints) >= $this->limits->maximumSessions) {
             $this->removeTransportSession($info);
 
             return;
         }
+        if ($this->gatewayControl !== null) {
+            $this->unclassifiedSessions[$key] = $info;
+
+            return;
+        }
+        $this->openPlayer($info);
+    }
+
+    private function openPlayer(SessionInfo $info): void
+    {
+        $key = self::endpointKey($info);
         if ($this->nextRuntimeEntityId === PHP_INT_MAX) {
             $this->removeTransportSession($info);
 
@@ -3391,6 +3493,62 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private function accept(ReceivedPayload $payload): void
     {
         $key = self::rawEndpointKey($payload->remoteAddress, $payload->remotePort);
+        $unclassified = $this->unclassifiedSessions[$key] ?? null;
+        if ($unclassified !== null) {
+            unset($this->unclassifiedSessions[$key]);
+            if ($payload->reliability !== Reliability::ReliableOrdered || $payload->orderingChannel !== 0) {
+                $this->rejectControlOrPlayer($unclassified, 'invalid_transport_metadata');
+                return;
+            }
+            if ($this->gatewayControl !== null && GatewayControlServer::identifies($payload->payload)) {
+                try {
+                    $frames = $this->gatewayControl->openAndAccept(
+                        $key,
+                        $payload->payload,
+                        time(),
+                        $this->sessionCount(),
+                        $this->maximumPlayers,
+                    );
+                    $this->controlEndpoints[$key] = $unclassified;
+                    $this->sendControlFrames($unclassified, $frames);
+                    $this->diagnostics->record('gateway_control.session_opened');
+                } catch (Throwable) {
+                    $this->rejectControlOrPlayer($unclassified, 'authentication_failed');
+                }
+                return;
+            }
+            if ($this->gatewayControl?->draining() === true) {
+                $this->rejectControlOrPlayer($unclassified, 'server_draining');
+                return;
+            }
+            if ($this->sessionCount() >= $this->maximumPlayers) {
+                $this->rejectControlOrPlayer($unclassified, 'player_capacity');
+                return;
+            }
+            $this->openPlayer($unclassified);
+            if (!isset($this->sessions[$key])) {
+                return;
+            }
+        }
+        if (($controlInfo = $this->controlEndpoints[$key] ?? null) !== null) {
+            if ($payload->reliability !== Reliability::ReliableOrdered || $payload->orderingChannel !== 0) {
+                $this->rejectControlOrPlayer($controlInfo, 'invalid_transport_metadata');
+                return;
+            }
+            try {
+                $frames = $this->gatewayControl?->accept(
+                    $key,
+                    $payload->payload,
+                    time(),
+                    $this->sessionCount(),
+                    $this->maximumPlayers,
+                ) ?? [];
+                $this->sendControlFrames($controlInfo, $frames);
+            } catch (Throwable) {
+                $this->rejectControlOrPlayer($controlInfo, 'invalid_or_replayed_message');
+            }
+            return;
+        }
         $session = $this->sessions[$key] ?? null;
         if (!$session instanceof RuntimeSession
             || $payload->reliability !== Reliability::ReliableOrdered
@@ -3429,6 +3587,15 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     'protocol' => $session->login->observedProtocolVersion(),
                     'detail' => $session->login->failureDetail(),
                 ]);
+                if ($failure === LoginFailureCode::AUTHENTICATION_MODE
+                    || $failure === LoginFailureCode::AUTHENTICATION_FAILED) {
+                    $this->diagnostics->securityRejection(
+                        'player_login',
+                        $failure->value,
+                        $session->transport->remoteAddress,
+                        $session->transport->remotePort,
+                    );
+                }
                 $this->disconnect($key, 'login_input_failed');
 
                 return;
@@ -3633,6 +3800,23 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         $promotionStarted = hrtime(true);
         try {
             $bootstrap = null;
+            if ($ready->login->preferredRuntimeEntityId !== null) {
+                foreach ($this->sessions as $other) {
+                    if ($other !== $session && $other->runtimeEntityId->equals(UnsignedLong::fromInt($ready->login->preferredRuntimeEntityId))) {
+                        $this->rejectReadySession($key, $session, $ready, 'The proxy supplied an actor ID that is already in use.');
+
+                        return;
+                    }
+                }
+                $session->runtimeEntityId = UnsignedLong::fromInt($ready->login->preferredRuntimeEntityId);
+            }
+            if ($ready->login->proxyOperator && $this->permissionStore !== null) {
+                $this->permissionStore->setOperator(
+                    $ready->login->identity,
+                    $ready->login->displayName,
+                    true,
+                );
+            }
             $addressBan = $this->bans?->addressBan($session->transport->remoteAddress);
             $playerBan = $this->bans?->playerBan($ready->login->displayName, $ready->login->identity);
             $ban = $addressBan ?? $playerBan;
@@ -4218,6 +4402,15 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         if (($this->pendingTransportCloses[$key][0] ?? null) === $info) {
             unset($this->pendingTransportCloses[$key]);
         }
+        if (($this->unclassifiedSessions[$key] ?? null) === $info) {
+            unset($this->unclassifiedSessions[$key]);
+            return;
+        }
+        if (($this->controlEndpoints[$key] ?? null) === $info) {
+            unset($this->controlEndpoints[$key]);
+            $this->gatewayControl?->close($key);
+            return;
+        }
         if (($this->sessions[$key]->transport ?? null) !== $info) {
             return;
         }
@@ -4324,6 +4517,43 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $this->diagnostics->record('runtime.transport_remove_failed', ['exception' => $exception::class]);
             // The local owner still closes; a transport failure must not affect peers.
         }
+    }
+
+    /** @param list<string> $frames */
+    private function sendControlFrames(SessionInfo $info, array $frames): void
+    {
+        foreach ($frames as $frame) {
+            $this->transport->sendPayload(
+                $info->remoteAddress,
+                $info->remotePort,
+                $frame,
+                Reliability::ReliableOrdered,
+                0,
+            );
+        }
+    }
+
+    private function rejectControlOrPlayer(SessionInfo $info, string $reason): void
+    {
+        $key = self::endpointKey($info);
+        unset($this->unclassifiedSessions[$key], $this->controlEndpoints[$key]);
+        $this->gatewayControl?->close($key);
+        $now = time();
+        if (!isset($this->controlRejectionReports[$info->remoteAddress])
+            && count($this->controlRejectionReports) >= 1_024) {
+            array_shift($this->controlRejectionReports);
+        }
+        [$lastReport, $suppressed] = $this->controlRejectionReports[$info->remoteAddress] ?? [0, 0];
+        if ($now - $lastReport >= 5) {
+            if ($suppressed > 0) {
+                $this->diagnostics->securityRejection('gateway_control', 'rate_limited', count: $suppressed);
+            }
+            $this->diagnostics->securityRejection('gateway_control', $reason, $info->remoteAddress, $info->remotePort);
+            $this->controlRejectionReports[$info->remoteAddress] = [$now, 0];
+        } else {
+            $this->controlRejectionReports[$info->remoteAddress] = [$lastReport, min(PHP_INT_MAX, $suppressed + 1)];
+        }
+        $this->removeTransportSession($info);
     }
 
     private function removeRuntimeSession(

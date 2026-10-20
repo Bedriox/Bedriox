@@ -25,6 +25,7 @@ use Bedriox\RakNet\Security\TransportSecurityPolicy;
 use Bedriox\Server\Login\AuthenticationMode;
 use Bedriox\Server\Observability\LogLevel;
 use Bedriox\Server\Security\NetworkSecurityProfile;
+use Bedriox\Server\Security\TrustedProxyEndpointPolicy;
 use Bedriox\Server\Worker\WorkerAllocation;
 use InvalidArgumentException;
 
@@ -51,6 +52,13 @@ final readonly class ServerConfig
         'spawn-monsters' => 'true',
         'view-distance' => '4',
         'network.authentication' => 'FULL',
+        'network.proxy.issuer' => 'bedriox-gateway',
+        'network.proxy.audience' => 'backend',
+        'network.proxy.secret-file' => 'gateway.secret',
+        'network.proxy.trusted-cidrs' => '127.0.0.1/32',
+        'network.proxy.token-max-age-seconds' => '15',
+        'network.proxy.control-key-id' => 'primary',
+        'network.proxy.allow-public-bind' => 'false',
         'level.spawn-x' => '',
         'level.spawn-y' => '',
         'level.spawn-z' => '',
@@ -131,6 +139,14 @@ final readonly class ServerConfig
     ];
 
     private const array ADVANCED_SETTING_KEYS = [
+        'network.authentication' => true,
+        'network.proxy.issuer' => true,
+        'network.proxy.audience' => true,
+        'network.proxy.secret-file' => true,
+        'network.proxy.trusted-cidrs' => true,
+        'network.proxy.token-max-age-seconds' => true,
+        'network.proxy.control-key-id' => true,
+        'network.proxy.allow-public-bind' => true,
         'runtime.ticks-per-second' => true,
         'workers.core-count' => true,
         'workers.plugin-count' => true,
@@ -193,6 +209,10 @@ final readonly class ServerConfig
         'max-players' => 'max-players',
         'memory-limit' => 'memory-limit',
         'auth' => 'network.authentication',
+        'proxy-issuer' => 'network.proxy.issuer',
+        'proxy-audience' => 'network.proxy.audience',
+        'proxy-secret-file' => 'network.proxy.secret-file',
+        'proxy-trusted-cidrs' => 'network.proxy.trusted-cidrs',
         'level-name' => 'level-name',
         'generator' => 'level-type',
         'seed' => 'level-seed',
@@ -295,6 +315,14 @@ final readonly class ServerConfig
         public int $protocolStrikeDecaySeconds = 15,
         public bool $traceUnsupportedPackets = true,
         public int $unsupportedPacketLogLimit = 5,
+        public string $proxyIssuer = 'bedriox-gateway',
+        public string $proxyAudience = 'backend',
+        public string $proxySecretFile = 'gateway.secret',
+        /** @var list<string> */
+        public array $proxyTrustedCidrs = ['127.0.0.1/32'],
+        public int $proxyTokenMaximumAgeSeconds = 15,
+        public string $proxyControlKeyId = 'primary',
+        public bool $proxyAllowPublicBind = false,
     ) {
         if (filter_var($this->bindAddress, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
             throw new InvalidArgumentException('Bind address must be a literal IPv4 address.');
@@ -346,6 +374,25 @@ final readonly class ServerConfig
         self::range($this->protocolSoftStrikeLimit, 1, 100, 'Protocol soft strike limit');
         self::range($this->protocolStrikeDecaySeconds, 1, 3_600, 'Protocol strike decay interval');
         self::range($this->unsupportedPacketLogLimit, 0, 1_000, 'Unsupported packet log limit');
+        self::validateText($this->proxyIssuer, 'Proxy issuer', 128);
+        self::validateText($this->proxyAudience, 'Proxy audience', 128);
+        if ($this->proxySecretFile === '' || strlen($this->proxySecretFile) > 1_024 || str_contains($this->proxySecretFile, "\0")) {
+            throw new InvalidArgumentException('Proxy secret file path is invalid.');
+        }
+        if ($this->proxyTrustedCidrs === []) {
+            throw new InvalidArgumentException('At least one trusted proxy CIDR is required.');
+        }
+        new TrustedProxyEndpointPolicy($this->proxyTrustedCidrs);
+        self::range($this->proxyTokenMaximumAgeSeconds, 1, 60, 'Proxy token maximum age');
+        if ($this->proxyControlKeyId === '' || strlen($this->proxyControlKeyId) > 128
+            || preg_match('/\A[\x21-\x7e]+\z/D', $this->proxyControlKeyId) !== 1) {
+            throw new InvalidArgumentException('Proxy control key ID must be 1 to 128 printable ASCII bytes without spaces.');
+        }
+        if ($this->authenticationMode === AuthenticationMode::GATEWAY
+            && $this->bindAddress === '0.0.0.0'
+            && !$this->proxyAllowPublicBind) {
+            throw new InvalidArgumentException('GATEWAY authentication may bind 0.0.0.0 only when network.proxy.allow-public-bind=true.');
+        }
         self::range($this->ticksPerSecond, 1, 100, 'Ticks per second');
         self::range($this->workerCoreCount, 0, 32, 'Core worker count');
         self::range($this->pluginWorkerCount, 0, 32, 'Plugin worker count');
@@ -417,11 +464,12 @@ final readonly class ServerConfig
             $seen[$name] = true;
             $values[self::CLI_KEYS[$name]] = $value;
         }
-        $mode = isset($seen['auth'])
+        $mode = isset($seen['auth']) || array_key_exists('network.authentication', $advancedSettings)
             ? match ($values['network.authentication']) {
                 'FULL' => AuthenticationMode::FULL,
                 'SELF_SIGNED' => AuthenticationMode::SELF_SIGNED,
-                default => throw new InvalidArgumentException('Authentication must be exactly FULL or SELF_SIGNED.'),
+                'GATEWAY' => AuthenticationMode::GATEWAY,
+                default => throw new InvalidArgumentException('Authentication must be exactly FULL, SELF_SIGNED, or GATEWAY.'),
             }
         : (self::boolean($values['xbox-auth'], 'xbox-auth')
             ? AuthenticationMode::FULL
@@ -609,6 +657,18 @@ final readonly class ServerConfig
                 0,
                 1_000,
             ),
+            proxyIssuer: $values['network.proxy.issuer'],
+            proxyAudience: $values['network.proxy.audience'],
+            proxySecretFile: $values['network.proxy.secret-file'],
+            proxyTrustedCidrs: array_values(array_filter(array_map(trim(...), explode(',', $values['network.proxy.trusted-cidrs'])), static fn(string $cidr): bool => $cidr !== '')),
+            proxyTokenMaximumAgeSeconds: self::integer(
+                $values['network.proxy.token-max-age-seconds'],
+                'network.proxy.token-max-age-seconds',
+                1,
+                60,
+            ),
+            proxyControlKeyId: $values['network.proxy.control-key-id'],
+            proxyAllowPublicBind: self::boolean($values['network.proxy.allow-public-bind'], 'network.proxy.allow-public-bind'),
         );
     }
 

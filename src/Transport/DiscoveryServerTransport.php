@@ -28,18 +28,20 @@ use Bedriox\Server\Runtime\RuntimeDiagnostics;
 final readonly class DiscoveryServerTransport implements ConnectedTransport, SecurityObservableTransport
 {
     private RakNetHandshakeDiagnosticReporter $diagnosticReporter;
+    private EndpointAdmissionRejectionReporter $admissionRejectionReporter;
 
     public function __construct(private DiscoveryServer $server, ?RuntimeDiagnostics $diagnostics = null)
     {
-        $this->diagnosticReporter = new RakNetHandshakeDiagnosticReporter(
-            $diagnostics ?? RuntimeDiagnostics::disabled(),
-        );
+        $diagnostics ??= RuntimeDiagnostics::disabled();
+        $this->diagnosticReporter = new RakNetHandshakeDiagnosticReporter($diagnostics);
+        $this->admissionRejectionReporter = new EndpointAdmissionRejectionReporter($diagnostics);
     }
 
     public function poll(int $maximumDatagrams): int
     {
         $handled = $this->server->poll($maximumDatagrams);
         $this->diagnosticReporter->report($this->server->drainHandshakeDiagnostics());
+        $this->admissionRejectionReporter->report($this->server->drainEndpointAdmissionRejections());
 
         return $handled;
     }

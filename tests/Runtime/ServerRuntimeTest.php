@@ -42,6 +42,12 @@ use Bedriox\Protocol\Codec\SignedVarInt;
 use Bedriox\Protocol\Codec\UnsignedVarInt;
 use Bedriox\Protocol\Encryption\BedrockDecryptor;
 use Bedriox\Protocol\Encryption\BedrockEncryptor;
+use Bedriox\Protocol\GatewayControl\ControlFrame;
+use Bedriox\Protocol\GatewayControl\ControlFrameCodec;
+use Bedriox\Protocol\GatewayControl\ControlHandshakeClaims;
+use Bedriox\Protocol\GatewayControl\ControlHandshakeStage;
+use Bedriox\Protocol\GatewayControl\ControlHandshakeToken;
+use Bedriox\Protocol\GatewayControl\ControlMessageType;
 use Bedriox\Protocol\Identity\VerifiedClientData;
 use Bedriox\Protocol\Packet\AuthenticationType;
 use Bedriox\Protocol\Packet\AvailableCommandsPacket;
@@ -123,6 +129,8 @@ use Bedriox\Server\Gameplay\Crafting\RecipeIngredient;
 use Bedriox\Server\Gameplay\Crafting\RecipeOutput;
 use Bedriox\Server\Gameplay\Crafting\ShapelessRecipe;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
+use Bedriox\Server\GatewayControl\GatewayControlConfig;
+use Bedriox\Server\GatewayControl\GatewayControlServer;
 use Bedriox\Server\Login\AuthenticatedLogin;
 use Bedriox\Server\Login\BedrockLoginChannel;
 use Bedriox\Server\Login\HandshakeMaterial;
@@ -213,6 +221,61 @@ use Throwable;
 
 final class ServerRuntimeTest extends TestCase
 {
+    public function testGatewayControlHelloIsRoutedBeforeBedrockLoginAllocation(): void
+    {
+        $transport = new FakeConnectedTransport();
+        $world = new WorldSimulation();
+        $secret = '0123456789abcdef0123456789abcdef';
+        $runtime = new ServerRuntime(
+            $transport,
+            new RuntimeLoginFactory(),
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $world,
+            new FixedRateWorldLoop($world, new RuntimeTestClock()),
+            new RecordingEventEncoder(),
+            gatewayControl: new GatewayControlServer(new GatewayControlConfig(
+                $secret,
+                'bedriox-gateway',
+                'lobby',
+            )),
+            maximumPlayers: 20,
+        );
+        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $now = time();
+        $hello = new ControlHandshakeClaims(
+            ControlHandshakeStage::Hello,
+            'bedriox-gateway',
+            'lobby',
+            'primary',
+            ControlHandshakeClaims::nonce(),
+            null,
+            $now,
+            $now + 30,
+        );
+        $transport->events[] = new SessionOpenedEvent($info);
+        $transport->payloads[] = new ReceivedPayload(
+            $info->remoteAddress,
+            $info->remotePort,
+            ControlFrameCodec::encode(new ControlFrame(
+                ControlMessageType::Hello,
+                ControlFrame::requestId(),
+                0,
+                ControlHandshakeToken::issue($hello, $secret),
+            )),
+            Reliability::ReliableOrdered,
+            0,
+        );
+
+        try {
+            self::assertTrue($runtime->poll());
+            self::assertSame(0, $runtime->sessionCount());
+            self::assertCount(1, $transport->sent);
+            self::assertSame(ControlMessageType::Challenge, ControlFrameCodec::decode($transport->sent[0][2])->type);
+        } finally {
+            $runtime->close();
+        }
+    }
+
     public function testCurrentSkinEnvelopeSurvivesThePublicEventProjection(): void
     {
         $wire = new ProtocolPlayerSkin(
@@ -1261,10 +1324,14 @@ final class ServerRuntimeTest extends TestCase
             self::assertCount(1, $crossedBoundary);
             self::assertInstanceOf(EntityActorRemoved::class, $crossedBoundary[0]);
             self::assertSame(['viewer-a', 'viewer-b'], $crossedBoundary[0]->recipients());
-            self::assertSame('1:0', $this->runtimeArrayProperty($runtime, 'entityActorVisibilityChunks')['world'][304]);
+            $visibilityChunks = $this->runtimeArrayProperty($runtime, 'entityActorVisibilityChunks');
+            self::assertIsArray($visibilityChunks['world']);
+            self::assertSame('1:0', $visibilityChunks['world'][304]);
+            $actorsByVisibilityChunk = $this->runtimeArrayProperty($runtime, 'entityActorsByVisibilityChunk');
+            self::assertIsArray($actorsByVisibilityChunk['world']);
             self::assertSame(
                 [304 => true],
-                $this->runtimeArrayProperty($runtime, 'entityActorsByVisibilityChunk')['world']['1:0'],
+                $actorsByVisibilityChunk['world']['1:0'],
             );
 
             $this->invokeRuntimeReconciler(

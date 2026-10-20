@@ -115,7 +115,8 @@ final class PluginPackageLoaderTest extends TestCase
     private function manifest(string $name = 'FixturePlugin'): string
     {
         return json_encode([
-            'schema' => 1,
+            'schema' => 2,
+            'platform' => 'bedriox',
             'name' => $name,
             'version' => '1.0.0',
             'api' => '^0.4',

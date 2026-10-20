@@ -1,5 +1,7 @@
 # Changelog
 
+- Treat a missing plugin manifest platform as `bedriox` for compatibility while rejecting explicit platform mismatches before execution.
+- Add explicit fail-closed `GATEWAY` login authentication for Bedriox Gateway, using short-lived HMAC assertions, trusted source CIDRs, audience/issuer binding, client-data signatures, and bounded replay rejection without offline fallback.
 - Add plugin-owned sidebars with stable keyed lines, lightweight per-player
   overrides, connected-viewer lifecycle cleanup, and shared update projection.
 - Add numeric scoreboard objectives for player, entity, and named scores across

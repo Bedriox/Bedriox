@@ -43,9 +43,13 @@ final readonly class ConfiguredLoginChannelFactory implements LoginChannelFactor
 
     public function create(SessionInfo $session): BedrockLoginChannel
     {
+        $authenticator = $this->authenticator instanceof \Bedriox\Server\Login\PeerAwareLoginAuthenticator
+            ? $this->authenticator->forPeer($session)
+            : $this->authenticator;
+
         return new BedrockLoginChannel(new LoginSession(
             $this->clock,
-            $this->authenticator,
+            $authenticator,
             $this->handshakes,
             $this->mode,
             $this->loginLimits,

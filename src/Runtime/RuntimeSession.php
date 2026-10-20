@@ -44,7 +44,7 @@ final class RuntimeSession
     public function __construct(
         public readonly SessionInfo $transport,
         public readonly string $id,
-        public readonly UnsignedLong $runtimeEntityId,
+        public UnsignedLong $runtimeEntityId,
         public ?BedrockLoginChannel $login,
         string $worldId = 'world',
         DimensionType $dimension = DimensionType::OVERWORLD,

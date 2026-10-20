@@ -45,12 +45,16 @@ use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Gameplay\Potion\BrewingRecipeCatalog;
 use Bedriox\Server\Gameplay\Processing\FurnaceRecipeCatalog;
 use Bedriox\Server\Gameplay\Processing\TransientWorkstationProcessor;
+use Bedriox\Server\GatewayControl\GatewayControlConfig;
+use Bedriox\Server\GatewayControl\GatewayControlServer;
 use Bedriox\Server\Login\AuthenticationMode;
 use Bedriox\Server\Login\DevelopmentLoginAuthenticator;
 use Bedriox\Server\Login\ExplicitSelfSignedLoginAuthenticator;
 use Bedriox\Server\Login\FullLoginAuthenticatorAdapter;
 use Bedriox\Server\Login\LazyFullLoginAuthenticator;
 use Bedriox\Server\Login\LoginAuthenticator;
+use Bedriox\Server\Login\ProxyLoginAuthenticator;
+use Bedriox\Server\Login\ProxyTokenReplayGuard;
 use Bedriox\Server\Login\SecureHandshakeMaterialFactory;
 use Bedriox\Server\Login\SystemMonotonicClock;
 use Bedriox\Server\Observability\CrashContextPublisher;
@@ -138,7 +142,10 @@ final class ServerBootstrap
         $startupStartedAt = hrtime(true);
         $diagnostics ??= RuntimeDiagnostics::disabled();
         $authenticationClock = new SystemAuthenticationClock();
-        $authenticator = $this->authenticator($config->authenticationMode, $authenticationClock);
+        $proxySecret = $config->authenticationMode === AuthenticationMode::GATEWAY
+            ? $this->gatewaySecret($config->proxySecretFile)
+            : null;
+        $authenticator = $this->authenticator($config, $authenticationClock, $proxySecret);
         $configuredOpenSsl = getenv('OPENSSL_CONF');
         $openSslConfiguration = OpenSslConfiguration::discover(
             PHP_BINARY,
@@ -166,8 +173,9 @@ final class ServerBootstrap
                 criticalUnloadBudget: min(1_024, $config->chunkUnloadPerTick * 4),
             )
             : null;
+        $controlSessionReserve = $config->authenticationMode === AuthenticationMode::GATEWAY ? 16 : 0;
         $runtimeLimits = new RuntimeLimits(
-            maximumSessions: $config->maximumPlayers,
+            maximumSessions: $config->maximumPlayers + $controlSessionReserve,
             maximumChunkRadius: $config->viewDistance,
             preloadedChunkRadius: $config->spawnRadius,
             maximumStreamingPacketsPerPoll: $config->chunksSendPerTick,
@@ -617,8 +625,8 @@ final class ServerBootstrap
             $transportConfig = new TransportConfig(
                 bindAddress: $config->bindAddress,
                 port: $config->port,
-                maximumSessions: $config->maximumPlayers,
-                maximumPendingHandshakes: $config->maximumPlayers,
+                maximumSessions: $config->maximumPlayers + $controlSessionReserve,
+                maximumPendingHandshakes: $config->maximumPlayers + $controlSessionReserve,
                 handshakeTimeoutMilliseconds: 15_000,
                 connectedSessionMaintenanceIntervalMilliseconds: 50,
                 maximumReceivedPayloads: 65_535,
@@ -635,6 +643,9 @@ final class ServerBootstrap
                 $serverGuid,
                 $status,
                 $diagnostics,
+                trustedEndpointCidrs: $config->authenticationMode === AuthenticationMode::GATEWAY
+                    ? $config->proxyTrustedCidrs
+                    : [],
             );
             $startupTransportReadyAt = hrtime(true);
             $runtime = new ServerRuntime(
@@ -739,6 +750,13 @@ final class ServerBootstrap
                 playerLifecycleLogger: $playerLifecycleLogger,
                 protocolSoftStrikeLimit: $config->protocolSoftStrikeLimit,
                 protocolStrikeDecaySeconds: $config->protocolStrikeDecaySeconds,
+                gatewayControl: $proxySecret === null ? null : new GatewayControlServer(new GatewayControlConfig(
+                    $proxySecret,
+                    $config->proxyIssuer,
+                    $config->proxyAudience,
+                    $config->proxyControlKeyId,
+                )),
+                maximumPlayers: $config->maximumPlayers,
             );
         } catch (Throwable $exception) {
             $discovery?->close();
@@ -845,17 +863,50 @@ final class ServerBootstrap
         ));
     }
 
-    private function authenticator(AuthenticationMode $mode, SystemAuthenticationClock $clock): LoginAuthenticator
-    {
+    private function authenticator(
+        ServerConfig $config,
+        SystemAuthenticationClock $clock,
+        #[\SensitiveParameter]
+        ?string $proxySecret = null,
+    ): LoginAuthenticator {
         $clientData = new ClientDataJwtVerifier();
-        if ($mode === AuthenticationMode::SELF_SIGNED) {
+        if ($config->authenticationMode === AuthenticationMode::SELF_SIGNED) {
             return new DevelopmentLoginAuthenticator(
                 new LazyFullLoginAuthenticator(fn(): LoginAuthenticator => $this->fullAuthenticator($clock, $clientData)),
                 new ExplicitSelfSignedLoginAuthenticator($clock, $clientData),
             );
         }
+        if ($config->authenticationMode === AuthenticationMode::GATEWAY) {
+            $secret = $proxySecret ?? $this->gatewaySecret($config->proxySecretFile);
+
+            return new ProxyLoginAuthenticator(
+                $secret,
+                $config->proxyAudience,
+                $config->proxyIssuer,
+                $config->proxyTrustedCidrs,
+                $clock,
+                $clientData,
+                new ProxyTokenReplayGuard(),
+                $config->proxyTokenMaximumAgeSeconds,
+            );
+        }
 
         return $this->fullAuthenticator($clock, $clientData);
+    }
+
+    private function gatewaySecret(string $path): string
+    {
+        $contents = @file_get_contents($path);
+        if (!is_string($contents)) {
+            throw new \RuntimeException('Unable to read the configured Gateway secret file.');
+        }
+        $encoded = trim($contents);
+        $secret = base64_decode($encoded, true);
+        if ($secret === false || base64_encode($secret) !== $encoded || strlen($secret) < 32 || strlen($secret) > 1_024) {
+            throw new \RuntimeException('Gateway secret file must contain canonical base64 for 32 to 1024 random bytes.');
+        }
+
+        return $secret;
     }
 
     private function fullAuthenticator(

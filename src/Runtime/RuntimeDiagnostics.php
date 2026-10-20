@@ -29,12 +29,16 @@ final readonly class RuntimeDiagnostics
     private const int MAXIMUM_EVENT_BYTES = 64;
     private const int MAXIMUM_FIELD_BYTES = 128;
     private const int MAXIMUM_FIELDS = 24;
+    private Closure $securityWriter;
 
     /** @param Closure(string): void $writer */
     public function __construct(
         private Closure $writer,
         private bool $protocolTrace = true,
-    ) {}
+        ?Closure $securityWriter = null,
+    ) {
+        $this->securityWriter = $securityWriter ?? static function (string $line): void {};
+    }
 
     public static function disabled(): self
     {
@@ -66,6 +70,36 @@ final readonly class RuntimeDiagnostics
             ($this->writer)('[bedriox] ' . $encoded . PHP_EOL);
         } catch (Throwable) {
             // Diagnostics must never change runtime behavior.
+        }
+    }
+
+    public function securityRejection(
+        string $category,
+        string $reason,
+        ?string $remoteAddress = null,
+        ?int $remotePort = null,
+        int $count = 1,
+    ): void {
+        if (preg_match('/\A[a-z][a-z0-9_]{0,31}\z/D', $category) !== 1
+            || preg_match('/\A[a-z][a-z0-9_]{0,31}\z/D', $reason) !== 1
+            || $count < 1) {
+            return;
+        }
+        $this->record('security.connection_rejected', [
+            'category' => $category,
+            'reason' => $reason,
+            'remote_address' => $remoteAddress,
+            'remote_port' => $remotePort,
+            'count' => $count,
+        ]);
+        $endpoint = $remoteAddress === null ? '' : sprintf(' from %s%s', $remoteAddress, $remotePort === null ? '' : ':' . $remotePort);
+        $message = $reason === 'rate_limited'
+            ? sprintf('Suppressed %d additional rejected %s connections.', $count, str_replace('_', ' ', $category))
+            : sprintf('Rejected %s connection%s: %s.', str_replace('_', ' ', $category), $endpoint, str_replace('_', ' ', $reason));
+        try {
+            ($this->securityWriter)($message);
+        } catch (Throwable) {
+            // Security diagnostics must never change admission behavior.
         }
     }
 }

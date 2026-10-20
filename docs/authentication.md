@@ -1,5 +1,15 @@
 # Protocol 2193 login authentication
 
+## GATEWAY authentication
+
+`GATEWAY` mode is exclusively for a backend behind Bedriox Gateway. The Gateway performs retail `FULL` Xbox Live authentication, then opens an independent encrypted Bedrock session to the backend with a short-lived HMAC-SHA-256 identity assertion. The backend binds assertions to the configured issuer and audience, accepts them only from configured IPv4 CIDRs, verifies the re-signed client-data JWT, and rejects token replay. Secrets must contain at least 32 random bytes and are read from a canonical-base64 file.
+
+Configure `network.authentication=GATEWAY` plus `network.proxy.issuer`, `network.proxy.audience`, `network.proxy.secret-file`, and `network.proxy.trusted-cidrs` in `bedriox.settings`. A failed forwarding proof is terminal for that login; Bedriox never falls back to `SELF_SIGNED` or offline authentication. Direct player joins are rejected, so players must enter through Gateway. The network may use one rotated Gateway secret while each backend retains a unique audience. Restrict the trusted CIDR to the Gateway host whenever possible.
+
+GATEWAY mode rejects the wildcard `0.0.0.0` bind unless `network.proxy.allow-public-bind=true` is explicitly configured. Prefer `127.0.0.1` on one host or a private/VPN address across hosts, and enforce the same source boundary with the host firewall. The unsafe override does not weaken token or CIDR validation.
+
+Gateway control connections share the Bedrock RakNet port and are selected only when their first reliable-ordered application payload is a `BXGC` Hello. They use the same global secret but a separately checked `network.proxy.control-key-id` (matching Gateway `control.key-id`), mutually authenticate with fresh nonces, and encrypt every post-handshake frame. A malformed, expired, mismatched, replayed, or out-of-sequence control frame closes that connection and is never retried as a player login. Health, drain, stopping, and bounded namespaced plugin messages use this link; a drain request stops new player admission without disconnecting existing players.
+
 ## FULL Token authentication
 
 `Bedriox\Server\Authentication\FullTokenAuthenticator` implements the bounded, offline verification boundary for protocol 2193 `FULL` Token login authentication. It accepts a decoded login authentication value and the separate client-data JWT. It does not perform HTTP requests.

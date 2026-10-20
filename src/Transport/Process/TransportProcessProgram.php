@@ -23,12 +23,14 @@ namespace Bedriox\Server\Transport\Process;
 use Bedriox\RakNet\ConnectedHandshakeDiagnosticBatch;
 use Bedriox\RakNet\DiscoveryServer;
 use Bedriox\RakNet\DiscoveryStatus;
+use Bedriox\RakNet\EndpointAdmissionRejectionBatch;
 use Bedriox\RakNet\Protocol\Reliability;
 use Bedriox\RakNet\Security\TransportSecurityPolicy;
 use Bedriox\RakNet\SessionClosedEvent;
 use Bedriox\RakNet\SessionInfo;
 use Bedriox\RakNet\SessionOpenedEvent;
 use Bedriox\RakNet\TransportConfig;
+use Bedriox\Server\Security\TrustedProxyEndpointPolicy;
 use Bedriox\Server\Worker\Internal\IpcSocketTuning;
 use JsonException;
 use RuntimeException;
@@ -61,6 +63,8 @@ final class TransportProcessProgram
         private readonly TransportConfig $config,
         private readonly int $serverGuid,
         private readonly DiscoveryStatus $status,
+        /** @var list<string> */
+        private readonly array $trustedEndpointCidrs,
     ) {
         $this->codec = new TransportProcessFrameCodec();
         $this->decoder = new TransportProcessFrameDecoder($this->codec);
@@ -73,17 +77,19 @@ final class TransportProcessProgram
             return 64;
         }
         try {
-            [$config, $serverGuid, $status] = self::decodeConfiguration($configuration);
-            return (new self($parentEndpoint, $token, $config, $serverGuid, $status))->execute();
+            [$config, $serverGuid, $status, $trustedEndpointCidrs] = self::decodeConfiguration($configuration);
+            return (new self($parentEndpoint, $token, $config, $serverGuid, $status, $trustedEndpointCidrs))->execute();
         } catch (Throwable) {
             return 65;
         }
     }
 
+    /** @param list<string> $trustedEndpointCidrs */
     public static function encodeConfiguration(
         TransportConfig $config,
         int $serverGuid,
         DiscoveryStatus $status,
+        array $trustedEndpointCidrs = [],
     ): string {
         try {
             $json = json_encode([
@@ -94,6 +100,7 @@ final class TransportProcessProgram
                 'server_guid' => (string) $serverGuid,
                 'status' => base64_encode($status->payload),
                 'accepting' => $status->acceptingConnections,
+                'trusted_endpoint_cidrs' => $trustedEndpointCidrs,
             ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
         } catch (JsonException $exception) {
             throw new RuntimeException('Transport process configuration cannot be encoded.', 0, $exception);
@@ -116,7 +123,14 @@ final class TransportProcessProgram
             return 67;
         }
         try {
-            $server = DiscoveryServer::bind($this->config, $this->serverGuid, $this->status);
+            $server = DiscoveryServer::bind(
+                $this->config,
+                $this->serverGuid,
+                $this->status,
+                endpointAdmissionPolicy: $this->trustedEndpointCidrs === []
+                    ? null
+                    : new TrustedProxyEndpointPolicy($this->trustedEndpointCidrs),
+            );
         } catch (Throwable $exception) {
             $this->queue(new TransportProcessFrame(
                 TransportProcessFrameKind::FAILURE,
@@ -182,6 +196,7 @@ final class TransportProcessProgram
                     $this->nextSecuritySnapshotNanoseconds = $now + 1_000_000_000;
                     $work = true;
                 }
+                $this->queueAdmissionRejections($server->drainEndpointAdmissionRejections());
                 $work = $this->flushOutgoing() || $work;
                 if (!is_resource($this->stream) || feof($this->stream)) {
                     break;
@@ -318,6 +333,27 @@ final class TransportProcessProgram
         ]));
     }
 
+    private function queueAdmissionRejections(EndpointAdmissionRejectionBatch $batch): void
+    {
+        if ($batch->events === [] && $batch->droppedEventCount === 0) {
+            return;
+        }
+        $events = [];
+        foreach ($batch->events as $event) {
+            $events[] = [
+                'address' => $event->remoteAddress,
+                'port' => $event->remotePort,
+            ];
+        }
+        $this->queue(new TransportProcessFrame(
+            TransportProcessFrameKind::ENDPOINT_ADMISSION_REJECTIONS,
+            metadata: [
+                'events' => $events,
+                'dropped' => $batch->droppedEventCount,
+            ],
+        ));
+    }
+
     private function queue(TransportProcessFrame $frame): void
     {
         $encoded = $this->codec->encode($frame);
@@ -425,7 +461,7 @@ final class TransportProcessProgram
         return $address . ':' . $port;
     }
 
-    /** @return array{TransportConfig, int, DiscoveryStatus} */
+    /** @return array{TransportConfig, int, DiscoveryStatus, list<string>} */
     private static function decodeConfiguration(string $encoded): array
     {
         $encoded = strtr($encoded, '-_', '+/');
@@ -441,7 +477,8 @@ final class TransportProcessProgram
         }
         if (!is_array($data) || !is_array($data['transport'] ?? null)
             || !is_string($data['server_guid'] ?? null) || !is_string($data['status'] ?? null)
-            || !is_bool($data['accepting'] ?? null)) {
+            || !is_bool($data['accepting'] ?? null)
+            || !is_array($data['trusted_endpoint_cidrs'] ?? null)) {
             throw new RuntimeException('Transport process configuration shape is invalid.');
         }
         $transport = $data['transport'];
@@ -487,7 +524,17 @@ final class TransportProcessProgram
             throw new RuntimeException('Transport process server GUID is invalid.');
         }
 
-        return [$config, $serverGuid, new DiscoveryStatus($statusPayload, $data['accepting'])];
+        $trustedEndpointCidrs = $data['trusted_endpoint_cidrs'];
+        if (!array_is_list($trustedEndpointCidrs)) {
+            throw new RuntimeException('Transport trusted endpoint CIDRs must be a list.');
+        }
+        foreach ($trustedEndpointCidrs as $cidr) {
+            if (!is_string($cidr)) {
+                throw new RuntimeException('Transport trusted endpoint CIDR is invalid.');
+            }
+        }
+
+        return [$config, $serverGuid, new DiscoveryStatus($statusPayload, $data['accepting']), $trustedEndpointCidrs];
     }
 
     private static function decodeSecurityPolicy(mixed $value): TransportSecurityPolicy

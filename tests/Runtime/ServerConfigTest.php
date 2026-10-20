@@ -369,4 +369,54 @@ final class ServerConfigTest extends TestCase
             @unlink($settings);
         }
     }
+
+    public function testGatewayAuthenticationUsesExplicitGatewayMode(): void
+    {
+        $config = ServerConfig::fromArguments([
+            '--bind=127.0.0.1',
+            '--auth=GATEWAY',
+            '--proxy-audience=lobby',
+        ]);
+
+        self::assertSame(AuthenticationMode::GATEWAY, $config->authenticationMode);
+        self::assertSame('lobby', $config->proxyAudience);
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('FULL, SELF_SIGNED, or GATEWAY');
+        ServerConfig::fromArguments(['--bind=127.0.0.1', '--auth=PROXY']);
+    }
+
+    public function testGatewayModeRejectsWildcardBindWithoutExplicitOverride(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('allow-public-bind');
+
+        new ServerConfig(authenticationMode: AuthenticationMode::GATEWAY);
+    }
+
+    public function testGatewayModeAcceptsExplicitWildcardBindOverride(): void
+    {
+        $config = new ServerConfig(
+            authenticationMode: AuthenticationMode::GATEWAY,
+            proxyAllowPublicBind: true,
+        );
+
+        self::assertTrue($config->proxyAllowPublicBind);
+    }
+
+    public function testInvalidTrustedProxyCidrFailsBeforeBinding(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('CIDR');
+
+        new ServerConfig(proxyTrustedCidrs: ['not-a-network']);
+    }
+
+    public function testInvalidProxyControlKeyIdFailsBeforeBinding(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('control key ID');
+
+        new ServerConfig(proxyControlKeyId: 'contains spaces');
+    }
 }

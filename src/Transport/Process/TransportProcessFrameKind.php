@@ -32,4 +32,5 @@ enum TransportProcessFrameKind: int
     case HANDSHAKE_DIAGNOSTICS = 8;
     case FAILURE = 9;
     case SECURITY_SNAPSHOT = 10;
+    case ENDPOINT_ADMISSION_REJECTIONS = 11;
 }

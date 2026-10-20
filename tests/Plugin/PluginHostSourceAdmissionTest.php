@@ -75,7 +75,7 @@ use Bedriox\Api\Plugin\SourcePluginDefinition;
 final class Main extends Plugin{
     public function onLoad(): void{
         $this->context()->sourcePlugins()->register([new SourcePluginDefinition(
-            1, 'SourceFixture', '1.0.0', '^0.4',
+            2, 'bedriox', 'SourceFixture', '1.0.0', '^0.4',
             'Fixture\\DevelopmentProvider\\Source\\Main',
             'Fixture\\DevelopmentProvider\\Source', [], [], [], 'WORLD_READY', ['config.yml' => "enabled: true\n"],
             static fn(PluginContext $context): Plugin => new \Fixture\DevelopmentProvider\Source\Main($context),
@@ -148,7 +148,8 @@ PHP;
     private function buildProviderPhar(string $providerSource, string $sourceMain): void
     {
         $manifest = json_encode([
-            'schema' => 1,
+            'schema' => 2,
+            'platform' => 'bedriox',
             'name' => 'DevelopmentProvider',
             'version' => '1.0.0',
             'api' => '^0.4',

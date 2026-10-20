@@ -117,6 +117,23 @@ players.save-per-tick=8
 movement.rewind-history-size=40
 
 # Network protection. Changes take effect after restart.
+# Login authentication: FULL verifies Xbox Live, SELF_SIGNED is local development only,
+# and GATEWAY enables a backend for signed connections from Bedriox Gateway.
+network.authentication=FULL
+# These settings are used only with network.authentication=GATEWAY. Direct
+# player joins are rejected in that mode; players must connect through Gateway.
+network.proxy.issuer=bedriox-gateway
+network.proxy.audience=backend
+network.proxy.secret-file=gateway.secret
+network.proxy.trusted-cidrs=127.0.0.1/32
+network.proxy.token-max-age-seconds=15
+# Internal control-protocol key label. Gateway currently selects "primary"
+# internally; the same global secret authenticates player forwarding and control.
+network.proxy.control-key-id=primary
+# Keep false. Enabling this permits GATEWAY mode to bind every interface; use a
+# host firewall or private network in addition to the application checks.
+network.proxy.allow-public-bind=false
+
 # enabled: true or false. Keep true for every public server.
 security.network.enabled=true
 # automatic-blocking: true temporarily blocks a validated abusive IP-and-port endpoint.

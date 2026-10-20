@@ -25,6 +25,8 @@ use Bedriox\RakNet\ConnectedHandshakeDiagnosticEvent;
 use Bedriox\RakNet\ConnectedHandshakeRejectionReason;
 use Bedriox\RakNet\ConnectedHandshakeStage;
 use Bedriox\RakNet\DiscoveryStatus;
+use Bedriox\RakNet\EndpointAdmissionRejectedEvent;
+use Bedriox\RakNet\EndpointAdmissionRejectionBatch;
 use Bedriox\RakNet\Protocol\Reliability;
 use Bedriox\RakNet\ReceivedPayload;
 use Bedriox\RakNet\Security\TransportSecuritySnapshot;
@@ -60,6 +62,7 @@ final class ProcessDiscoveryServerTransport implements ConnectedTransport, Secur
     private readonly TransportProcessFrameCodec $codec;
     private readonly TransportProcessFrameDecoder $decoder;
     private readonly RakNetHandshakeDiagnosticReporter $diagnosticReporter;
+    private readonly EndpointAdmissionRejectionReporter $admissionRejectionReporter;
     private string $outgoing = '';
     private int $outgoingOffset = 0;
     /** @var array<string, int> */
@@ -86,14 +89,17 @@ final class ProcessDiscoveryServerTransport implements ConnectedTransport, Secur
         $this->codec = new TransportProcessFrameCodec();
         $this->decoder = new TransportProcessFrameDecoder($this->codec);
         $this->diagnosticReporter = new RakNetHandshakeDiagnosticReporter($diagnostics);
+        $this->admissionRejectionReporter = new EndpointAdmissionRejectionReporter($diagnostics);
     }
 
+    /** @param list<string> $trustedEndpointCidrs */
     public static function start(
         TransportConfig $config,
         int $serverGuid,
         DiscoveryStatus $status,
         ?RuntimeDiagnostics $diagnostics = null,
         ?string $entryPoint = null,
+        array $trustedEndpointCidrs = [],
     ): self {
         $entryPoint ??= dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'bootstrap'
             . DIRECTORY_SEPARATOR . 'bedriox-transport.php';
@@ -104,7 +110,7 @@ final class ProcessDiscoveryServerTransport implements ConnectedTransport, Secur
             $diagnostics ?? RuntimeDiagnostics::disabled(),
             $entryPoint,
         );
-        $transport->launch($config, $serverGuid, $status);
+        $transport->launch($config, $serverGuid, $status, $trustedEndpointCidrs);
 
         return $transport;
     }
@@ -244,8 +250,13 @@ final class ProcessDiscoveryServerTransport implements ConnectedTransport, Secur
         $this->close();
     }
 
-    private function launch(TransportConfig $config, int $serverGuid, DiscoveryStatus $status): void
-    {
+    /** @param list<string> $trustedEndpointCidrs */
+    private function launch(
+        TransportConfig $config,
+        int $serverGuid,
+        DiscoveryStatus $status,
+        array $trustedEndpointCidrs,
+    ): void {
         if (!is_file($this->entryPoint)) {
             throw new RuntimeException('RakNet transport process entry point is unavailable.');
         }
@@ -267,7 +278,7 @@ final class ProcessDiscoveryServerTransport implements ConnectedTransport, Secur
                 $this->entryPoint,
                 'tcp://' . $address,
                 bin2hex($token),
-                TransportProcessProgram::encodeConfiguration($config, $serverGuid, $status),
+                TransportProcessProgram::encodeConfiguration($config, $serverGuid, $status, $trustedEndpointCidrs),
             ),
             [0 => ['file', $null, 'r'], 1 => ['file', $null, 'a'], 2 => ['file', $null, 'a']],
             $pipes,
@@ -380,6 +391,10 @@ final class ProcessDiscoveryServerTransport implements ConnectedTransport, Secur
             $this->acceptDiagnostics($frame);
             return;
         }
+        if ($frame->kind === TransportProcessFrameKind::ENDPOINT_ADMISSION_REJECTIONS) {
+            $this->acceptAdmissionRejections($frame);
+            return;
+        }
         if ($frame->kind === TransportProcessFrameKind::FAILURE) {
             $code = $frame->metadata['code'] ?? 'unknown';
             throw new RuntimeException('RakNet transport process reported failure: ' . (is_string($code) ? $code : 'unknown'));
@@ -465,6 +480,23 @@ final class ProcessDiscoveryServerTransport implements ConnectedTransport, Secur
             );
         }
         $this->diagnosticReporter->report(new ConnectedHandshakeDiagnosticBatch($events, $dropped));
+    }
+
+    private function acceptAdmissionRejections(TransportProcessFrame $frame): void
+    {
+        $rawEvents = $frame->metadata['events'] ?? null;
+        $dropped = $frame->metadata['dropped'] ?? null;
+        if (!is_array($rawEvents) || !is_int($dropped) || $dropped < 0) {
+            throw new RuntimeException('RakNet endpoint admission rejection metadata is invalid.');
+        }
+        $events = [];
+        foreach ($rawEvents as $raw) {
+            if (!is_array($raw) || !is_string($raw['address'] ?? null) || !is_int($raw['port'] ?? null)) {
+                throw new RuntimeException('RakNet endpoint admission rejection event is invalid.');
+            }
+            $events[] = new EndpointAdmissionRejectedEvent($raw['address'], $raw['port']);
+        }
+        $this->admissionRejectionReporter->report(new EndpointAdmissionRejectionBatch($events, $dropped));
     }
 
     private function queue(TransportProcessFrame $frame): void

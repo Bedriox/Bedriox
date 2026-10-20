@@ -224,9 +224,11 @@ final class LoginSession
             return;
         }
         $authenticationType = $packet->authentication->type;
-        $typeAllowed = $this->authenticationMode === AuthenticationMode::FULL
-            ? $authenticationType === AuthenticationType::Full
-            : $authenticationType === AuthenticationType::Full || $authenticationType === AuthenticationType::SelfSigned;
+        $typeAllowed = match ($this->authenticationMode) {
+            AuthenticationMode::FULL, AuthenticationMode::GATEWAY => $authenticationType === AuthenticationType::Full,
+            AuthenticationMode::SELF_SIGNED => $authenticationType === AuthenticationType::Full
+                || $authenticationType === AuthenticationType::SelfSigned,
+        };
         if (!$typeAllowed) {
             $this->close(LoginFailureCode::AUTHENTICATION_MODE);
             return;

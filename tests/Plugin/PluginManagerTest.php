@@ -115,7 +115,8 @@ final class PluginManagerTest extends TestCase
     private function manifest(string $name, string $main, array $dependencies = []): PluginManifest
     {
         return new PluginManifest(
-            1,
+            2,
+            'bedriox',
             $name,
             '1.0.0',
             '^0.4',

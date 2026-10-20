@@ -34,9 +34,18 @@ final class PluginManifestParserTest extends TestCase
         $manifest = (new PluginManifestParser())->parse($this->json());
 
         self::assertSame('ExamplePlugin', $manifest->name);
+        self::assertSame('bedriox', $manifest->platform);
         self::assertSame('1.2.3', $manifest->version);
         self::assertSame(['CorePlugin'], $manifest->dependencies);
         self::assertSame('WORLD_READY', $manifest->loadPhase);
+    }
+
+    public function testMissingPlatformDefaultsToBedrioxForCompatibility(): void
+    {
+        $manifest = (new PluginManifestParser())->parse(str_replace('"platform":"bedriox",', '', self::validJson()));
+
+        self::assertSame('bedriox', $manifest->platform);
+        self::assertSame('ExamplePlugin', $manifest->name);
     }
 
     #[DataProvider('invalidManifestProvider')]
@@ -52,6 +61,8 @@ final class PluginManifestParserTest extends TestCase
         yield 'invalid json' => ['{'];
         yield 'duplicate key' => [str_replace('"name":"ExamplePlugin"', '"name":"ExamplePlugin","name":"Other"', self::validJson())];
         yield 'unknown field' => [str_replace('"load":"WORLD_READY"', '"load":"WORLD_READY","extra":true', self::validJson())];
+        yield 'wrong platform' => [str_replace('"platform":"bedriox"', '"platform":"gateway"', self::validJson())];
+        yield 'legacy schema' => [str_replace('"schema":2', '"schema":1', self::validJson())];
         yield 'self dependency' => [str_replace('["CorePlugin"]', '["ExamplePlugin"]', self::validJson())];
         yield 'namespace escape' => [str_replace('Bedriox\\\\ExamplePlugin\\\\Main', 'Foreign\\\\Main', self::validJson())];
         yield 'oversized' => [str_repeat(' ', 32769)];
@@ -96,7 +107,7 @@ final class PluginManifestParserTest extends TestCase
 
     private static function validJson(): string
     {
-        return '{"schema":1,"name":"ExamplePlugin","version":"1.2.3","api":"^0.4","main":"Bedriox\\\\ExamplePlugin\\\\Main","namespace":"Bedriox\\\\ExamplePlugin","authors":["Bedriox Team"],"dependencies":["CorePlugin"],"softDependencies":[],"load":"WORLD_READY"}';
+        return '{"schema":2,"platform":"bedriox","name":"ExamplePlugin","version":"1.2.3","api":"^0.4","main":"Bedriox\\\\ExamplePlugin\\\\Main","namespace":"Bedriox\\\\ExamplePlugin","authors":["Bedriox Team"],"dependencies":["CorePlugin"],"softDependencies":[],"load":"WORLD_READY"}';
     }
 
     /**
@@ -105,6 +116,6 @@ final class PluginManifestParserTest extends TestCase
      */
     private function manifest(string $name, array $dependencies = [], array $softDependencies = []): PluginManifest
     {
-        return new PluginManifest(1, $name, '1.0.0', '^0.4', "Tests\\{$name}", 'Tests', [], $dependencies, $softDependencies, 'WORLD_READY');
+        return new PluginManifest(2, 'bedriox', $name, '1.0.0', '^0.4', "Tests\\{$name}", 'Tests', [], $dependencies, $softDependencies, 'WORLD_READY');
     }
 }

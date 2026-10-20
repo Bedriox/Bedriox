@@ -24,4 +24,5 @@ enum AuthenticationMode
 {
     case FULL;
     case SELF_SIGNED;
+    case GATEWAY;
 }

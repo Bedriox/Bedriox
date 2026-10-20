@@ -151,7 +151,8 @@ final class ManagedPluginAsyncTaskExecutorTest extends TestCase
     private function buildPhar(string $path, bool $replacement, string $marker): void
     {
         $manifest = json_encode([
-            'schema' => 1,
+            'schema' => 2,
+            'platform' => 'bedriox',
             'name' => 'AsyncFixture',
             'version' => '1.0.0',
             'api' => '^0.4',

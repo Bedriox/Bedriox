@@ -27,6 +27,10 @@ final class PluginManifestParser
     private const int MAX_BYTES = 32768;
     private const int MAX_LIST_ENTRIES = 64;
     private const array FIELDS = [
+        'schema', 'platform', 'name', 'version', 'api', 'main', 'namespace', 'authors',
+        'dependencies', 'softDependencies', 'load',
+    ];
+    private const array REQUIRED_FIELDS = [
         'schema', 'name', 'version', 'api', 'main', 'namespace', 'authors',
         'dependencies', 'softDependencies', 'load',
     ];
@@ -66,13 +70,17 @@ final class PluginManifestParser
         if ($unknown !== []) {
             throw new PluginException('Unknown plugin manifest field: ' . (string) reset($unknown));
         }
-        foreach (self::FIELDS as $field) {
+        foreach (self::REQUIRED_FIELDS as $field) {
             if (!array_key_exists($field, $data)) {
                 throw new PluginException("Missing plugin manifest field: {$field}");
             }
         }
-        if ($data['schema'] !== 1) {
+        if ($data['schema'] !== 2) {
             throw new PluginException('Unsupported plugin manifest schema.');
+        }
+        $platform = $data['platform'] ?? 'bedriox';
+        if ($platform !== 'bedriox') {
+            throw new PluginException('Plugin manifest platform must be exactly bedriox.');
         }
         $name = $this->boundedString($data['name'], 'name', 1, 64, '/^[A-Z][A-Za-z0-9_]*$/D');
         $version = $this->boundedString($data['version'], 'version', 1, 64, '/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/D');
@@ -93,7 +101,7 @@ final class PluginManifestParser
         }
         $load = $this->boundedString($data['load'], 'load', 1, 32, '/^(?:STARTUP|WORLD_READY)$/D');
 
-        return new PluginManifest(1, $name, $version, $api, $main, $namespace, $authors, $dependencies, $softDependencies, $load);
+        return new PluginManifest(2, $platform, $name, $version, $api, $main, $namespace, $authors, $dependencies, $softDependencies, $load);
     }
 
     private function boundedString(mixed $value, string $field, int $min, int $max, string $pattern): string

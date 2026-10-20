@@ -158,9 +158,9 @@ final class PluginHost
             $this->pluginsDirectory,
             function (string $directory, Throwable $failure): void {
                 $this->logger->error(sprintf(
-                    'Plugin directory %s was rejected (%s)',
+                    'Plugin archive %s was rejected: %s',
                     $directory,
-                    $failure::class,
+                    self::rejectionReason($failure),
                 ), 'Plugins');
             },
         );
@@ -421,10 +421,10 @@ final class PluginHost
                     $sources[$sourceKey] = ['definition' => $definition, 'provider' => $batch['provider']];
                 } catch (Throwable $failure) {
                     $this->logger->error(sprintf(
-                        'Source plugin %s from %s was rejected (%s)',
+                        'Source plugin %s from %s was rejected: %s',
                         $definition->name,
                         $batch['provider'],
-                        $failure::class,
+                        self::rejectionReason($failure),
                     ), 'Plugins');
                     $this->releaseSourceDefinition($definition);
                 }
@@ -509,6 +509,7 @@ final class PluginHost
         ));
         $json = json_encode([
             'schema' => $definition->schema,
+            'platform' => $definition->platform,
             'name' => $definition->name,
             'version' => $definition->version,
             'api' => $definition->api,
@@ -536,6 +537,14 @@ final class PluginHost
         } catch (Throwable) {
             // Rejected source cleanup cannot change admission of unrelated plugins.
         }
+    }
+
+    private static function rejectionReason(Throwable $failure): string
+    {
+        $message = $failure instanceof PluginException ? $failure->getMessage() : $failure::class;
+        $message = preg_replace('/[\x00-\x1f\x7f]+/', ' ', $message) ?? 'invalid plugin';
+
+        return substr($message, 0, 256);
     }
 
     /** @param list<string> $names */

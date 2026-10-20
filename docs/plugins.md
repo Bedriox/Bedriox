@@ -28,11 +28,13 @@ Restart after changing PHP source because loaded classes cannot be replaced safe
 
 For PHARs, Bedriox bounds archive size, entry count, individual and expanded entry sizes, rejects links and serialized metadata, checks the embedded strong signature, validates all manifests and dependencies, and only then executes accepted entry points.
 
-Every PHAR contains `plugin.json` at its root and namespaced code under `src/`. Schema 1 uses this shape:
+Every PHAR contains `plugin.json` at its root and namespaced code under `src/`.
+Schema 2 accepts the following explicit Bedriox host platform:
 
 ```json
 {
-  "schema": 1,
+  "schema": 2,
+  "platform": "bedriox",
   "name": "ExamplePlugin",
   "version": "1.0.0",
   "api": "^0.4",
@@ -44,6 +46,11 @@ Every PHAR contains `plugin.json` at its root and namespaced code under `src/`. 
   "load": "WORLD_READY"
 }
 ```
+
+For compatibility with existing Bedriox plugins, omitting `platform` means
+`bedriox`. An explicit unknown or non-`bedriox` platform is rejected before the
+entry point executes. Gateway plugins must use `platform: gateway` and cannot
+load in the server.
 
 Plugin data belongs under the canonical `plugin_data/<PluginName>/` folder exposed by `PluginContext::data()`. A plugin must not write into its PHAR. Packaged plugins and PluginTools source projects may ship defaults under `resources/`; both use the same API:
 

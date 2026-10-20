@@ -32,7 +32,12 @@ final readonly class AuthenticatedLogin
         public string $xuid,
         public OpenSSLAsymmetricKey $identityPublicKey,
         public VerifiedClientData $clientData,
+        public ?int $preferredRuntimeEntityId = null,
+        public bool $proxyOperator = false,
     ) {
         P384::assertPublicKey($identityPublicKey);
+        if ($preferredRuntimeEntityId !== null && ($preferredRuntimeEntityId < 1 || $preferredRuntimeEntityId > 0x7fffffff)) {
+            throw new \InvalidArgumentException('Preferred runtime entity ID is invalid.');
+        }
     }
 }

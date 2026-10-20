@@ -27,6 +27,7 @@ use Bedriox\Server\Access\WhitelistManager;
 use Bedriox\Server\Command\BuiltinCommandRegistrar;
 use Bedriox\Server\Command\Default\GarbageCollectionStatus;
 use Bedriox\Server\Entity\EntityDefinitionRegistry;
+use Bedriox\Server\Login\AuthenticationMode;
 use Bedriox\Server\Observability\BackgroundLogWriter;
 use Bedriox\Server\Observability\CrashContextProvider;
 use Bedriox\Server\Observability\CrashContextPublisher;
@@ -203,7 +204,9 @@ final class Bedriox
             $crashHandler->install();
             $diagnostics = new RuntimeDiagnostics(static function (string $line) use ($logger): void {
                 $logger->debug(trim($line), 'Protocol');
-            }, $config->protocolTrace);
+            }, $config->protocolTrace, static function (string $message) use ($logger): void {
+                $logger->warning($message, 'Security');
+            });
             $logicalProcessors = WorkerCoreCount::detectLogicalProcessors();
             $logger->info(sprintf(
                 'Worker capacity: %d core, %d plugin%s',
@@ -235,6 +238,12 @@ final class Bedriox
             }
             $startupStartedAt = hrtime(true);
             $logger->info('Starting ' . $this->displayName());
+            if ($config->authenticationMode === AuthenticationMode::GATEWAY) {
+                $logger->info(sprintf(
+                    'Gateway support is enabled. Audience: "%s". Direct player joins to this server are not allowed.',
+                    $config->proxyAudience,
+                ), 'Gateway');
+            }
             $logger->info(sprintf('Loading world "%s" using %s generator', $config->levelName, $config->levelGenerator));
             $logger->info('Loading server data and world metadata');
             $composition = new PluginComposition();
@@ -1008,6 +1017,7 @@ final class Bedriox
             $message = 'Bedriox startup failed closed. Check configuration, required data, authentication discovery, and port availability.';
             if ($logger instanceof ServerLogger) {
                 $logger->error($message);
+                $logger->debug($exception::class . ': ' . $exception->getMessage(), 'Startup');
             } else {
                 $error($message . PHP_EOL);
             }
