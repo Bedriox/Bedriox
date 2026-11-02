@@ -27,7 +27,7 @@ use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\World;
 
 /** Resolves state-owned collision geometry against the current authoritative world. */
-final readonly class BlockCollisionQuery implements LoadedNavigationCellQuery
+final readonly class BlockCollisionQuery implements LoadedNavigationCellQuery, CollisionRevisionSource
 {
     /** @var array<int, true> */
     private array $nonSolid;
@@ -55,6 +55,11 @@ final readonly class BlockCollisionQuery implements LoadedNavigationCellQuery
     public function boxesIntersectingLoaded(AxisAlignedBox $area): ?array
     {
         return $this->collectBoxes($area, true);
+    }
+
+    public function collisionRevision(): int
+    {
+        return $this->world->blockRevision();
     }
 
     public function isNavigationCellWalkableLoaded(

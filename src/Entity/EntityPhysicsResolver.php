@@ -32,25 +32,32 @@ use Bedriox\Server\Entity\Vehicle\Minecart\AbstractMinecartEntity;
 use Bedriox\Server\Entity\Vehicle\Minecart\MinecartRailPhysics;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\World\Collision\AxisAlignedBox;
+use Bedriox\Server\World\Collision\CollisionRevisionSource;
 use Bedriox\Server\World\Collision\LoadedCollisionBoxQuery;
 use Bedriox\Server\World\Environment\Fluid\FluidCurrent;
 use Closure;
+use WeakMap;
 
 /** Resolves authoritative gravity and motion without invoking AI. */
-final readonly class EntityPhysicsResolver
+final class EntityPhysicsResolver
 {
     private const float MOB_JUMP_VELOCITY = 0.42;
     private const float MOB_CLIMB_HEIGHT = 1.0;
     private const float DEFAULT_GROUND_FRICTION = 0.60;
     private const float WATER_CURRENT_ACCELERATION = 0.014;
 
+    /** @var WeakMap<AbstractEntity, array{revision: int, x: float, y: float, z: float}> */
+    private WeakMap $stableDryGround;
+
     public function __construct(
-        private LoadedCollisionBoxQuery $collisions,
-        private ?WorldEntityEnvironment $environment = null,
+        private readonly LoadedCollisionBoxQuery $collisions,
+        private readonly ?WorldEntityEnvironment $environment = null,
         /** @var null|Closure(AbstractEntity): array{float, float} */
-        private ?Closure $mountedCollisionSize = null,
-        private ?MinecartRailPhysics $minecartRails = null,
-    ) {}
+        private readonly ?Closure $mountedCollisionSize = null,
+        private readonly ?MinecartRailPhysics $minecartRails = null,
+    ) {
+        $this->stableDryGround = new WeakMap();
+    }
 
     public function tick(AbstractEntity $entity, int $tick): EntityPhysicsResult
     {
@@ -71,9 +78,21 @@ final readonly class EntityPhysicsResolver
 
             return new EntityPhysicsResult(false, $beforeMotion != new EntityMotion(), false);
         }
-        $definition = $entity->definition();
         $beforePosition = $entity->internalPosition();
         $beforeMotion = $entity->getMotion();
+        if ($entity->isOnGround()
+            && $beforeMotion->x === 0.0 && $beforeMotion->y === 0.0 && $beforeMotion->z === 0.0
+            && $this->collisions instanceof CollisionRevisionSource
+            && ($stable = $this->stableDryGround[$entity] ?? null) !== null
+            && $stable['revision'] === $this->collisions->collisionRevision()
+            && $stable['x'] === $beforePosition->x
+            && $stable['y'] === $beforePosition->y
+            && $stable['z'] === $beforePosition->z) {
+            $entity->advanceAge();
+
+            return new EntityPhysicsResult(false, false, false);
+        }
+        $definition = $entity->definition();
         [$collisionWidth, $collisionHeight] = $this->mountedCollisionSize === null
             ? [$entity->collisionWidth(), $entity->collisionHeight()]
             : ($this->mountedCollisionSize)($entity);
@@ -86,9 +105,10 @@ final readonly class EntityPhysicsResolver
             $beforePosition->y + $collisionHeight,
             $beforePosition->z + $halfWidth,
         );
-        $inWater = $entity instanceof AbstractLivingEntity
-            && ($entity instanceof Aquatic || $entity instanceof WaterBuoyant)
+        $touchingWater = $entity instanceof AbstractLivingEntity
             && $this->environment?->isTouchingWater($entity) === true;
+        $inWater = $touchingWater
+            && ($entity instanceof Aquatic || $entity instanceof WaterBuoyant);
         $boatWaterSurface = $entity instanceof BoatEntity
             ? $this->environment?->waterSurfaceY($entity)
             : null;
@@ -120,7 +140,7 @@ final readonly class EntityPhysicsResolver
             $vertical = 0.10;
         }
         $restriction = $this->environment?->movementRestrictionMultiplier($entity) ?? 1.0;
-        $waterCurrent = $this->environment === null
+        $waterCurrent = $this->environment === null || (!$touchingWater && !$boatOnWater)
             ? FluidCurrent::still()
             : $this->environment->waterCurrent($entity);
         $requested = new EntityMotion(
@@ -193,6 +213,19 @@ final readonly class EntityPhysicsResolver
         $entity->applyMotion($motion);
         $entity->setOnGround($landed || ($entity->isOnGround() && $requested->y === 0.0));
         $entity->advanceAge();
+
+        if ($entity->isOnGround() && !$touchingWater && !$boatOnWater && !$striderOnLava
+            && $motion->x === 0.0 && $motion->y === 0.0 && $motion->z === 0.0
+            && $this->collisions instanceof CollisionRevisionSource) {
+            $this->stableDryGround[$entity] = [
+                'revision' => $this->collisions->collisionRevision(),
+                'x' => $position->x,
+                'y' => $position->y,
+                'z' => $position->z,
+            ];
+        } else {
+            unset($this->stableDryGround[$entity]);
+        }
 
         return new EntityPhysicsResult(
             $position != $beforePosition,

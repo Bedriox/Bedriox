@@ -35,23 +35,48 @@ use Bedriox\Server\World\Environment\Fluid\FluidType;
 use Bedriox\Server\World\Environment\Fluid\LoadedWorldFluidView;
 use Bedriox\Server\World\World;
 use Bedriox\Server\World\WorldTimeRules;
+use WeakMap;
 
 /** Bounded read-only environment queries used by general-entity lifecycle rules. */
-final readonly class WorldEntityEnvironment
+final class WorldEntityEnvironment
 {
     public const int DAYLIGHT_CHECK_INTERVAL_TICKS = 20;
     private const int MAXIMUM_WATER_COLUMN_SCAN = 8;
-    private FluidCurrentResolver $fluidCurrents;
+    private readonly FluidCurrentResolver $fluidCurrents;
+
+    /** @var WeakMap<AbstractLivingEntity, array{revision: int, x: float, y: float, z: float, value: bool}> */
+    private WeakMap $touchingWater;
+
+    /** @var WeakMap<AbstractLivingEntity, array{revision: int, x: float, y: float, z: float, value: bool}> */
+    private WeakMap $touchingFire;
+
+    /** @var WeakMap<AbstractLivingEntity, array{revision: int, x: float, y: float, z: float, value: bool}> */
+    private WeakMap $touchingPowderSnow;
+
+    /** @var WeakMap<AbstractLivingEntity, array{revision: int, x: float, y: float, z: float, value: bool}> */
+    private WeakMap $submerged;
+
+    private bool $tickCacheActive = false;
 
     public function __construct(
-        private World $world,
-        private BlockStateRegistry $states,
-        private BlockCollisionRegistry $shapes,
-        private InternalBlockStateId $air,
-        private ?InternalBlockStateId $water = null,
-        private ?BlockPropertyRegistry $blockProperties = null,
+        private readonly World $world,
+        private readonly BlockStateRegistry $states,
+        private readonly BlockCollisionRegistry $shapes,
+        private readonly InternalBlockStateId $air,
+        private readonly ?InternalBlockStateId $water = null,
+        private readonly ?BlockPropertyRegistry $blockProperties = null,
     ) {
         $this->fluidCurrents = new FluidCurrentResolver(new LoadedWorldFluidView($world, $states, $shapes));
+        $this->touchingWater = new WeakMap();
+        $this->touchingFire = new WeakMap();
+        $this->touchingPowderSnow = new WeakMap();
+        $this->submerged = new WeakMap();
+    }
+
+    /** Environment samples are shared by lifecycle and physics within one authoritative tick. */
+    public function beginTick(): void
+    {
+        $this->tickCacheActive = true;
     }
 
     public function waterCurrent(AbstractEntity $entity): FluidCurrent
@@ -158,6 +183,15 @@ final readonly class WorldEntityEnvironment
             return false;
         }
         $position = $entity->internalPosition();
+        $revision = $this->world->blockRevision();
+        $cached = $this->tickCacheActive ? ($this->touchingWater[$entity] ?? null) : null;
+        if ($cached !== null
+            && $cached['revision'] === $revision
+            && $cached['x'] === $position->x
+            && $cached['y'] === $position->y
+            && $cached['z'] === $position->z) {
+            return $cached['value'];
+        }
         $chunk = $this->loadedChunkAt($position->x, $position->z);
         if ($chunk === null) {
             return false;
@@ -170,8 +204,19 @@ final readonly class WorldEntityEnvironment
             min(Chunk::MAX_Y, (int) floor($position->y + $entity->collisionHeight() - 0.000_001)),
         );
 
-        return $this->isWater($chunk->blockStateAt($x, $feetY, $z))
+        $value = $this->isWater($chunk->blockStateAt($x, $feetY, $z))
             || ($headY !== $feetY && $this->isWater($chunk->blockStateAt($x, $headY, $z)));
+        if ($this->tickCacheActive) {
+            $this->touchingWater[$entity] = [
+                'revision' => $revision,
+                'x' => $position->x,
+                'y' => $position->y,
+                'z' => $position->z,
+                'value' => $value,
+            ];
+        }
+
+        return $value;
     }
 
     public function isTouchingFire(AbstractLivingEntity $entity): bool
@@ -180,6 +225,15 @@ final readonly class WorldEntityEnvironment
             return false;
         }
         $position = $entity->internalPosition();
+        $revision = $this->world->blockRevision();
+        $cached = $this->tickCacheActive ? ($this->touchingFire[$entity] ?? null) : null;
+        if ($cached !== null
+            && $cached['revision'] === $revision
+            && $cached['x'] === $position->x
+            && $cached['y'] === $position->y
+            && $cached['z'] === $position->z) {
+            return $cached['value'];
+        }
         $feetY = (int) floor($position->y + 0.001);
         $headY = (int) floor($position->y + $entity->collisionHeight() - 0.000_001);
         foreach (array_unique([$feetY, $headY]) as $y) {
@@ -196,8 +250,15 @@ final readonly class WorldEntityEnvironment
             }
             $identifier = $this->states->state($state)->identifier();
             if ($identifier === 'minecraft:fire' || $identifier === 'minecraft:soul_fire') {
+                if ($this->tickCacheActive) {
+                    $this->touchingFire[$entity] = self::environmentSample($revision, $position, true);
+                }
                 return true;
             }
+        }
+
+        if ($this->tickCacheActive) {
+            $this->touchingFire[$entity] = self::environmentSample($revision, $position, false);
         }
 
         return false;
@@ -209,6 +270,15 @@ final readonly class WorldEntityEnvironment
             return false;
         }
         $position = $entity->internalPosition();
+        $revision = $this->world->blockRevision();
+        $cached = $this->tickCacheActive ? ($this->touchingPowderSnow[$entity] ?? null) : null;
+        if ($cached !== null
+            && $cached['revision'] === $revision
+            && $cached['x'] === $position->x
+            && $cached['y'] === $position->y
+            && $cached['z'] === $position->z) {
+            return $cached['value'];
+        }
         $feetY = (int) floor($position->y + 0.001);
         $headY = (int) floor($position->y + $entity->collisionHeight() - 0.000_001);
         foreach (array_unique([$feetY, $headY]) as $y) {
@@ -221,8 +291,15 @@ final readonly class WorldEntityEnvironment
                 (int) floor($position->z),
             );
             if ($state !== null && $this->states->state($state)->identifier() === 'minecraft:powder_snow') {
+                if ($this->tickCacheActive) {
+                    $this->touchingPowderSnow[$entity] = self::environmentSample($revision, $position, true);
+                }
                 return true;
             }
+        }
+
+        if ($this->tickCacheActive) {
+            $this->touchingPowderSnow[$entity] = self::environmentSample($revision, $position, false);
         }
 
         return false;
@@ -356,6 +433,15 @@ final readonly class WorldEntityEnvironment
             return false;
         }
         $position = $entity->internalPosition();
+        $revision = $this->world->blockRevision();
+        $cached = $this->tickCacheActive ? ($this->submerged[$entity] ?? null) : null;
+        if ($cached !== null
+            && $cached['revision'] === $revision
+            && $cached['x'] === $position->x
+            && $cached['y'] === $position->y
+            && $cached['z'] === $position->z) {
+            return $cached['value'];
+        }
         $headY = (int) floor($position->y + ($entity->collisionHeight() * 0.85));
         if ($headY < Chunk::MIN_Y || $headY > Chunk::MAX_Y) {
             return false;
@@ -365,11 +451,16 @@ final readonly class WorldEntityEnvironment
             return false;
         }
 
-        return $this->isWater($chunk->blockStateAt(
+        $value = $this->isWater($chunk->blockStateAt(
             self::localCoordinate((int) floor($position->x)),
             $headY,
             self::localCoordinate((int) floor($position->z)),
         ));
+        if ($this->tickCacheActive) {
+            $this->submerged[$entity] = self::environmentSample($revision, $position, $value);
+        }
+
+        return $value;
     }
 
     private function isDaylight(): bool
@@ -409,5 +500,17 @@ final readonly class WorldEntityEnvironment
     private static function localCoordinate(int $coordinate): int
     {
         return (($coordinate % 16) + 16) % 16;
+    }
+
+    /** @return array{revision: int, x: float, y: float, z: float, value: bool} */
+    private static function environmentSample(int $revision, Position $position, bool $value): array
+    {
+        return [
+            'revision' => $revision,
+            'x' => $position->x,
+            'y' => $position->y,
+            'z' => $position->z,
+            'value' => $value,
+        ];
     }
 }

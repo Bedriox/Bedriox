@@ -161,7 +161,7 @@ final class FoxQualificationTest extends TestCase
 
         self::invoke($simulation, 'alertTrustedFoxes', $player, $wolf->getUniqueId());
         self::assertSame($wolf->getUniqueId(), $fox->getTrustedDefenseTargetUniqueId());
-        self::setTick($simulation, 5);
+        self::setTickForDefenseAndAvoidance($simulation, $fox);
         self::invoke($simulation, 'advanceFoxDefenseAndAvoidance');
 
         self::assertLessThan(8.0, $wolf->getHealth());
@@ -180,7 +180,7 @@ final class FoxQualificationTest extends TestCase
         ))->entity;
         self::assertInstanceOf(WolfEntity::class, $wolf);
 
-        self::setTick($simulation, 5);
+        self::setTickForDefenseAndAvoidance($simulation, $fox);
         $fox->setSleeping(true);
         self::invoke($simulation, 'advanceFoxDefenseAndAvoidance');
 
@@ -609,6 +609,13 @@ final class FoxQualificationTest extends TestCase
     private static function setTickForCollection(WorldSimulation $simulation, FoxEntity $fox): void
     {
         self::setTick($simulation, (10 - ($fox->getRuntimeId() % 10)) % 10);
+    }
+
+    private static function setTickForDefenseAndAvoidance(WorldSimulation $simulation, FoxEntity $fox): void
+    {
+        $cadence = 5;
+        $phase = 2;
+        self::setTick($simulation, ($phase - ($fox->getRuntimeId() % $cadence) + $cadence) % $cadence);
     }
 
     private static function invoke(WorldSimulation $simulation, string $method, mixed ...$arguments): mixed

@@ -1362,6 +1362,9 @@ final readonly class PluginGameplayEventBridge
 
     public function movementCorrected(Player $player, string $reason): void
     {
+        if (!$this->events->hasListenersFor(PlayerMovementCorrectedEvent::class)) {
+            return;
+        }
         $this->events->dispatch(new PlayerMovementCorrectedEvent($this->playerView($player), $reason));
     }
 

@@ -109,6 +109,7 @@ use Bedriox\Api\Processing\CartographyOperation;
 use Bedriox\Api\Processing\SmithingRecipeType;
 use Bedriox\Api\TextFormat;
 use Bedriox\Api\TranslatableMessage;
+use Bedriox\Api\Visibility\VisibilityMode;
 use Bedriox\Api\World\BedColor;
 use Bedriox\Api\World\Block as ApiBlock;
 use Bedriox\Api\World\BlockFace as ApiBlockFace;
@@ -615,7 +616,21 @@ final class WorldSimulation
 
     private int $lastEntityRuntimeNanoseconds = 0;
 
+    private int $lastEntityPreRuntimeNanoseconds = 0;
+
+    private int $lastEntityLifecycleNanoseconds = 0;
+
+    private int $lastEntitySpeciesNanoseconds = 0;
+
+    private int $lastEntityBehaviorNanoseconds = 0;
+
+    private int $lastEntityPostRuntimeNanoseconds = 0;
+
     private int $lastEntityPersistenceNanoseconds = 0;
+
+    private int $lastEntityContainerNanoseconds = 0;
+
+    private int $lastDisplayVisibilityNanoseconds = 0;
     private const int DAYLIGHT_FIRE_DURATION_TICKS = 160;
     private const int BLOCK_FIRE_DURATION_TICKS = 160;
     private const float FIRE_TICK_DAMAGE = 1.0;
@@ -2176,16 +2191,28 @@ final class WorldSimulation
         $this->navigation?->advance($this->tick);
         $stages['navigation_preparation'] = hrtime(true) - $navigationStartedNanoseconds;
         array_push($events, ...$this->advanceGeneralEntities());
+        $entityContainersStartedNanoseconds = hrtime(true);
         array_push($events, ...$this->closeInvalidEntityContainers());
+        $this->lastEntityContainerNanoseconds = hrtime(true) - $entityContainersStartedNanoseconds;
+        $displayVisibilityStartedNanoseconds = hrtime(true);
         array_push($events, ...$this->reconcileDisplayVisibility());
+        $this->lastDisplayVisibilityNanoseconds = hrtime(true) - $displayVisibilityStartedNanoseconds;
         array_push($events, ...$this->drainDeferredEvents());
         $stages['general_entities'] = hrtime(true) - $stageCompletedNanoseconds;
+        $stages['entity_pre_runtime'] = $this->lastEntityPreRuntimeNanoseconds;
+        $stages['entity_lifecycle'] = $this->lastEntityLifecycleNanoseconds;
+        $stages['entity_species'] = $this->lastEntitySpeciesNanoseconds;
+        $stages['entity_behavior'] = $this->lastEntityBehaviorNanoseconds;
         $stages['entity_runtime'] = $this->lastEntityRuntimeNanoseconds;
+        $stages['entity_post_runtime'] = $this->lastEntityPostRuntimeNanoseconds;
         $stages['entity_persistence'] = $this->lastEntityPersistenceNanoseconds;
+        $stages['entity_containers'] = $this->lastEntityContainerNanoseconds;
+        $stages['display_visibility'] = $this->lastDisplayVisibilityNanoseconds;
         $aiMetrics = $this->entityRuntime->lastAiMetrics();
         $runtimeMetrics = $this->entityRuntime->lastRuntimeMetrics();
         $stages['entity_ai'] = $aiMetrics->elapsedNanoseconds ?? 0;
         $stages['entity_physics'] = $runtimeMetrics->elapsedNanoseconds ?? 0;
+        $stages['entity_contacts'] = $runtimeMetrics->contactElapsedNanoseconds ?? 0;
         $stages['entity_ai_ticked'] = $aiMetrics->ticked ?? 0;
         $stages['entity_physics_ticked'] = $runtimeMetrics->physicsTicked ?? 0;
         $stages['entity_physics_continuous_beyond_budget'] = $runtimeMetrics->continuousBeyondBudget ?? 0;
@@ -3918,8 +3945,15 @@ final class WorldSimulation
     /** @return list<WorldEvent> */
     private function advanceGeneralEntities(): array
     {
+        $entityStageStartedNanoseconds = hrtime(true);
+        $this->lastEntityPreRuntimeNanoseconds = 0;
+        $this->lastEntityLifecycleNanoseconds = 0;
+        $this->lastEntitySpeciesNanoseconds = 0;
+        $this->lastEntityBehaviorNanoseconds = 0;
         $this->lastEntityRuntimeNanoseconds = 0;
+        $this->lastEntityPostRuntimeNanoseconds = 0;
         $this->lastEntityPersistenceNanoseconds = 0;
+        $this->entityEnvironment?->beginTick();
         $events = [];
         $this->entityAiPlayers = array_map(
             fn(Player $player): AiPlayerSnapshot => new AiPlayerSnapshot(
@@ -3978,6 +4012,8 @@ final class WorldSimulation
         array_push($events, ...$this->advanceLivingEntityFreezing());
         array_push($events, ...$this->advanceCreepers());
         $this->reconcileLeashKnots();
+        $entityLifecycleCompletedNanoseconds = hrtime(true);
+        $this->lastEntityLifecycleNanoseconds = $entityLifecycleCompletedNanoseconds - $entityStageStartedNanoseconds;
         foreach ($this->entityRuntime->registry()->all() as $entity) {
             if ($entity instanceof BreedableAnimalEntity && $entity->isAlive()
                 && ($this->tick + $entity->getRuntimeId()) % 20 === 0) {
@@ -4132,6 +4168,8 @@ final class WorldSimulation
         if ($this->tick % 20 === 0) {
             $this->advanceLlamaCaravans();
         }
+        $entitySpeciesCompletedNanoseconds = hrtime(true);
+        $this->lastEntitySpeciesNanoseconds = $entitySpeciesCompletedNanoseconds - $entityLifecycleCompletedNanoseconds;
         array_push($events, ...$this->advanceLandAnimalPredation());
         array_push($events, ...$this->advanceZombieVillagerPredation());
         $this->advanceFoxDefenseAndAvoidance();
@@ -4139,6 +4177,8 @@ final class WorldSimulation
         $this->applyHoglinRepellentAvoidance();
         $this->advancePluginNavigation();
         $entityRuntimeStartedNanoseconds = hrtime(true);
+        $this->lastEntityBehaviorNanoseconds = $entityRuntimeStartedNanoseconds - $entitySpeciesCompletedNanoseconds;
+        $this->lastEntityPreRuntimeNanoseconds = $entityRuntimeStartedNanoseconds - $entityStageStartedNanoseconds;
         $this->resolvePlayerEntityContacts();
         $tick = $this->entityRuntime->tick(
             $this->tick,
@@ -4148,6 +4188,7 @@ final class WorldSimulation
         array_push($events, ...$this->advancePrimedTnt());
         array_push($events, ...$this->advanceFallingBlocks());
         $this->lastEntityRuntimeNanoseconds = hrtime(true) - $entityRuntimeStartedNanoseconds;
+        $entityPostRuntimeStartedNanoseconds = hrtime(true);
         $this->reconcileFoxHuntingTransitions();
         /** @var array<int, AbstractEntity> $forcedMovedEntities */
         $forcedMovedEntities = [];
@@ -4438,6 +4479,7 @@ final class WorldSimulation
         }
 
         $entityPersistenceStartedNanoseconds = hrtime(true);
+        $this->lastEntityPostRuntimeNanoseconds = $entityPersistenceStartedNanoseconds - $entityPostRuntimeStartedNanoseconds;
         $this->entityPersistence?->synchronize(256);
         $this->lastEntityPersistenceNanoseconds = hrtime(true) - $entityPersistenceStartedNanoseconds;
 
@@ -4653,11 +4695,9 @@ final class WorldSimulation
 
     private function advanceFoxDefenseAndAvoidance(): void
     {
-        if ($this->tick % 5 !== 0) {
-            return;
-        }
         foreach ($this->entityRuntime->registry()->all() as $fox) {
-            if (!$fox instanceof FoxEntity || !$fox->isAlive() || $fox->isFaceplanted()) {
+            if (!$fox instanceof FoxEntity || !$fox->isAlive() || $fox->isFaceplanted()
+                || ($this->tick + $fox->getRuntimeId()) % 5 !== 2) {
                 continue;
             }
             $targetId = $fox->getTrustedDefenseTargetUniqueId();
@@ -5015,13 +5055,11 @@ final class WorldSimulation
     /** @return list<WorldEvent> */
     private function advanceLandAnimalPredation(): array
     {
-        if ($this->tick % 5 !== 0) {
-            return [];
-        }
         $events = [];
         foreach ($this->entityRuntime->registry()->all() as $predator) {
             if (!($predator instanceof FoxEntity || $predator instanceof OcelotEntity
-                || $predator instanceof PolarBearEntity) || !$predator->isAlive()) {
+                || $predator instanceof PolarBearEntity) || !$predator->isAlive()
+                || ($this->tick + $predator->getRuntimeId()) % 5 !== 0) {
                 continue;
             }
             if ($predator instanceof PolarBearEntity
@@ -5114,12 +5152,10 @@ final class WorldSimulation
     /** @return list<WorldEvent> */
     private function advanceZombieVillagerPredation(): array
     {
-        if ($this->tick % 5 !== 0) {
-            return [];
-        }
         $events = [];
         foreach ($this->entityRuntime->registry()->all() as $zombie) {
-            if (!$zombie instanceof AbstractMobEntity || !$zombie instanceof ApiZombie || !$zombie->isAlive()) {
+            if (!$zombie instanceof AbstractMobEntity || !$zombie instanceof ApiZombie || !$zombie->isAlive()
+                || ($this->tick + $zombie->getRuntimeId()) % 5 !== 1) {
                 continue;
             }
             $villager = null;
@@ -5291,12 +5327,10 @@ final class WorldSimulation
     /** @return list<WorldEvent> */
     private function advanceGoatRams(): array
     {
-        if ($this->tick % 5 !== 0) {
-            return [];
-        }
         $events = [];
         foreach ($this->entityRuntime->registry()->all() as $goat) {
-            if (!$goat instanceof GoatEntity || !$goat->isAlive() || !$goat->isRamming()) {
+            if (!$goat instanceof GoatEntity || !$goat->isAlive() || !$goat->isRamming()
+                || ($this->tick + $goat->getRuntimeId()) % 5 !== 3) {
                 continue;
             }
             $targetId = $goat->getRamTargetUniqueId();
@@ -7334,24 +7368,30 @@ final class WorldSimulation
     private function displayViewers(TextDisplay $display, ?ApiPlayer $only = null): array
     {
         $position = $display->getPosition();
+        $chunkKey = self::positionChunkKey($position->x, $position->z);
+        $maximumDistanceSquared = $display->getViewDistance() ** 2;
+        $onlyUuid = $only === null ? null : strtolower($only->uuid);
+        $visibility = $display->getVisibility();
+        $visibilityMode = $visibility->getMode();
+        $selectedUuids = $visibilityMode === VisibilityMode::SELECTED
+            ? array_fill_keys($visibility->getSelectedPlayerUuids(), true)
+            : [];
+        $excludedUuids = $visibilityMode === VisibilityMode::EXCLUDED
+            ? array_fill_keys($visibility->getExcludedPlayerUuids(), true)
+            : [];
         $viewers = [];
         foreach ($this->players->players() as $player) {
-            $view = $this->pluginEvents?->playerView($player)
-                ?? PluginGameplayEventBridge::detachedPlayerView(
-                    $player,
-                    position: $this->apiPosition(
-                        $player->movement->position,
-                        $player->movement->yaw,
-                        $player->movement->pitch,
-                    ),
-                );
-            if ($only !== null && strcasecmp($only->uuid, $view->uuid) !== 0) {
+            $playerUuid = strtolower($player->identity->uuid);
+            if (($onlyUuid !== null && $onlyUuid !== $playerUuid)
+                || !isset($this->deliveredChunkKeysBySession[$player->sessionId][$chunkKey])
+                || !self::visibilityAllowsUuid($visibilityMode, $selectedUuids, $excludedUuids, $playerUuid)) {
                 continue;
             }
-            $distance = $player->movement->position->distanceTo(new Position($position->x, $position->y, $position->z));
-            $chunkKey = self::positionChunkKey($position->x, $position->z);
-            if (isset($this->deliveredChunkKeysBySession[$player->sessionId][$chunkKey])
-                && $distance <= $display->getViewDistance() && $display->getVisibility()->isVisibleTo($view)) {
+            $playerPosition = $player->movement->position;
+            $dx = $playerPosition->x - $position->x;
+            $dy = $playerPosition->y - $position->y;
+            $dz = $playerPosition->z - $position->z;
+            if (($dx * $dx) + ($dy * $dy) + ($dz * $dz) <= $maximumDistanceSquared) {
                 $viewers[$player->sessionId] = true;
             }
         }
@@ -7379,28 +7419,29 @@ final class WorldSimulation
     private function displayArrivalEvents(Player $player): array
     {
         $events = [];
-        $view = $this->pluginEvents?->playerView($player)
-            ?? PluginGameplayEventBridge::detachedPlayerView(
-                $player,
-                position: $this->apiPosition(
-                    $player->movement->position,
-                    $player->movement->yaw,
-                    $player->movement->pitch,
-                ),
-            );
+        $playerUuid = strtolower($player->identity->uuid);
+        $playerPosition = $player->movement->position;
         foreach ($this->displayProjections as $projection) {
             $display = $projection->display;
             $position = $display->getPosition();
-            if ($display->isRemoved() || !$display->getVisibility()->isVisibleTo($view)
+            $visibility = $display->getVisibility();
+            $visibilityMode = $visibility->getMode();
+            $selectedUuids = $visibilityMode === VisibilityMode::SELECTED
+                ? array_fill_keys($visibility->getSelectedPlayerUuids(), true)
+                : [];
+            $excludedUuids = $visibilityMode === VisibilityMode::EXCLUDED
+                ? array_fill_keys($visibility->getExcludedPlayerUuids(), true)
+                : [];
+            $dx = $playerPosition->x - $position->x;
+            $dy = $playerPosition->y - $position->y;
+            $dz = $playerPosition->z - $position->z;
+            if ($display->isRemoved()
+                || !self::visibilityAllowsUuid($visibilityMode, $selectedUuids, $excludedUuids, $playerUuid)
                 || !isset($this->deliveredChunkKeysBySession[$player->sessionId][self::positionChunkKey(
                     $position->x,
                     $position->z,
                 )])
-                || $player->movement->position->distanceTo(new Position(
-                    $position->x,
-                    $position->y,
-                    $position->z,
-                )) > $display->getViewDistance()) {
+                || ($dx * $dx) + ($dy * $dy) + ($dz * $dz) > $display->getViewDistance() ** 2) {
                 continue;
             }
             $projection->viewers[$player->sessionId] = true;
@@ -7408,6 +7449,24 @@ final class WorldSimulation
         }
 
         return $events;
+    }
+
+    /**
+     * @param array<string, true> $selectedUuids
+     * @param array<string, true> $excludedUuids
+     */
+    private static function visibilityAllowsUuid(
+        VisibilityMode $mode,
+        array $selectedUuids,
+        array $excludedUuids,
+        string $uuid,
+    ): bool {
+        return match ($mode) {
+            VisibilityMode::AUTOMATIC => true,
+            VisibilityMode::SELECTED => isset($selectedUuids[$uuid]),
+            VisibilityMode::EXCLUDED => !isset($excludedUuids[$uuid]),
+            VisibilityMode::HIDDEN => false,
+        };
     }
 
     /** @return list<WorldEvent> */
@@ -9319,8 +9378,7 @@ final class WorldSimulation
         $pluginStartedNanoseconds = hrtime(true);
         $this->pluginEvents?->moved($player);
         $this->movementPluginNanoseconds += hrtime(true) - $pluginStartedNanoseconds;
-        $touchingFallResettingFluid = $this->playerTouchesFluid($position, FluidType::WATER)
-            || $this->playerTouchesFluid($position, FluidType::LAVA);
+        $touchingFallResettingFluid = $this->playerTouchesFallResettingFluid($position);
         $landingFallDistance = $touchingFallResettingFluid ? 0.0 : $movement->fallDistance;
         if ($flying || !$player->gameMode()->takesDamage() || $touchingFallResettingFluid) {
             $movement->fallDistance = 0.0;
@@ -19672,7 +19730,7 @@ final class WorldSimulation
         );
     }
 
-    private function playerTouchesFluid(Position $position, FluidType $type): bool
+    private function playerTouchesFallResettingFluid(Position $position): bool
     {
         if ($this->blockWorld === null || $this->blockStateRegistry === null) {
             return false;
@@ -19692,7 +19750,7 @@ final class WorldSimulation
                         continue;
                     }
                     $fluid = FluidState::fromCanonical($this->blockStateRegistry->state($state));
-                    if ($fluid?->type === $type
+                    if (($fluid?->type === FluidType::WATER || $fluid?->type === FluidType::LAVA)
                         && $box->minY < $y + $fluid->height()
                         && $box->maxY > $y) {
                         return true;

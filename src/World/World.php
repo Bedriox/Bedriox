@@ -66,6 +66,8 @@ final class World
 
     private bool $closed = false;
 
+    private int $blockRevision = 0;
+
     private ?AsyncChunkGenerator $asyncChunks;
 
     /** @var array<string, ChunkLoadCompletion> */
@@ -525,9 +527,16 @@ final class World
                 $this->overrides->set($position, $localX, $y, $localZ, $state);
             }
             $this->chunks->replace($chunk->withBlockState($localX, $y, $localZ, $state));
+            ++$this->blockRevision;
         }
 
         return $previous;
+    }
+
+    /** Monotonic process-local revision for authoritative collision-affecting block mutations. */
+    public function blockRevision(): int
+    {
+        return $this->blockRevision;
     }
 
     public function spawn(): SpawnPosition

@@ -108,8 +108,9 @@ final class EntityWorldRuntime
         if ($tick < 0) {
             throw new InvalidArgumentException('Entity runtime tick cannot be negative.');
         }
+        $entities = $this->entities->all();
         $mobs = [];
-        foreach ($this->entities->all() as $entity) {
+        foreach ($entities as $entity) {
             if ($entity instanceof AbstractMobEntity && $entity->isAlive() && $entity->isAiEnabled()) {
                 $mobs[] = $entity;
             }
@@ -129,7 +130,6 @@ final class EntityWorldRuntime
         $moved = [];
         $movedMotionChanged = [];
         $died = [];
-        $entities = $this->entities->all();
         foreach ($entities as $entity) {
             if ($entity instanceof AbstractLivingEntity && !$entity->isAlive()) {
                 if (!isset($this->reportedDeaths[$entity->getRuntimeId()])) {
@@ -141,7 +141,7 @@ final class EntityWorldRuntime
 
         // Contact impulses are resolved before integration so they are consumed by friction and projected in the
         // same tick. Deferring them until after physics produces one-tick-late, accumulating visual slides.
-        $contactMetrics = $this->contacts->resolve($entityBudget);
+        $contactMetrics = $this->contacts->resolve($entityBudget, $entities);
         $start = $this->clock->nanoseconds();
         $entityCount = count($entities);
         $physicsEligible = $physicsTicked = $cadenceSkipped = $budgetDeferred = 0;

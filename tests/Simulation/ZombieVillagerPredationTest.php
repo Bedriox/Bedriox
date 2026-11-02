@@ -29,6 +29,7 @@ use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\Simulation\WorldSimulation;
 use PHPUnit\Framework\TestCase;
 use ReflectionMethod;
+use ReflectionProperty;
 
 final class ZombieVillagerPredationTest extends TestCase
 {
@@ -57,6 +58,12 @@ final class ZombieVillagerPredationTest extends TestCase
             VanillaAiMemories::nearestPlayer(),
             new AiPlayerSnapshot(EntityUuid::random(), 'world', new Position(20.0, 64.0, 0.0)),
             100,
+        );
+        $cadence = 5;
+        $phase = 1;
+        (new ReflectionProperty(WorldSimulation::class, 'tick'))->setValue(
+            $simulation,
+            ($phase - ($zombie->getRuntimeId() % $cadence) + $cadence) % $cadence,
         );
 
         (new ReflectionMethod(WorldSimulation::class, 'advanceZombieVillagerPredation'))->invoke($simulation);

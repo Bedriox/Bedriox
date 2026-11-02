@@ -47,14 +47,14 @@ final readonly class EntityContactResolver
         private ?Closure $vehicleCollided = null,
     ) {}
 
-    public function resolve(EntityWorkBudget $budget): EntityContactMetrics
+    /** @param list<AbstractEntity>|null $entities */
+    public function resolve(EntityWorkBudget $budget, ?array $entities = null): EntityContactMetrics
     {
         $start = $this->clock->nanoseconds();
         $candidates = $pairs = $contacts = 0;
-        $seen = [];
         $exhausted = false;
 
-        foreach ($this->entities->all() as $entity) {
+        foreach ($entities ?? $this->entities->all() as $entity) {
             if ($entity->isRemoved() || $entity instanceof FallingBlockEntity || $entity instanceof SkipsEntityContact) {
                 continue;
             }
@@ -70,13 +70,11 @@ final readonly class EntityContactResolver
                     || $other instanceof SkipsEntityContact) {
                     continue;
                 }
-                $low = min($entity->getRuntimeId(), $other->getRuntimeId());
-                $high = max($entity->getRuntimeId(), $other->getRuntimeId());
-                $key = $low . ':' . $high;
-                if (isset($seen[$key])) {
+                $low = $entity->getRuntimeId();
+                $high = $other->getRuntimeId();
+                if ($high <= $low) {
                     continue;
                 }
-                $seen[$key] = true;
                 if ($pairs >= $budget->maximumContactPairs
                     || ($pairs % 16 === 0
                         && $this->clock->nanoseconds() - $start >= $budget->maximumContactNanoseconds)) {

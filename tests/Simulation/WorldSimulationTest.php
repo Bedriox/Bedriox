@@ -3031,6 +3031,7 @@ final class WorldSimulationTest extends TestCase
         $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
         $palette = FixedFlatBlockPalette::fromRegistry($registry);
         $blocks = new World(new WorldMetadata('item-ground-test', 0), new FlatWorldGenerator($palette), new ChunkRepository(4));
+        $blocks->chunk(new ChunkPosition(0, 0));
         $items = new ItemEntityRegistry();
         $entity = $items->spawn(
             new InventoryStack('minecraft:cobblestone', 1, 1),
