@@ -1,5 +1,8 @@
 # Changelog
 
+- Move the supported Bedrock client family to Minecraft 1.26.60 and 1.26.61 on protocol 2225, including current packet admission and world metadata.
+- Replace the RakNet transport with NetherNet, move WebRTC session ownership into the supervised transport process, and retain bounded admission, diagnostics, and per-session failure isolation.
+
 - Treat a missing plugin manifest platform as `bedriox` for compatibility while rejecting explicit platform mismatches before execution.
 - Add explicit fail-closed `GATEWAY` login authentication for Bedriox Gateway, using short-lived HMAC assertions, trusted source CIDRs, audience/issuer binding, client-data signatures, and bounded replay rejection without offline fallback.
 - Expose an owner-scoped Gateway plugin connection with bounded bidirectional channels, private message and rejection events, connection lifecycle events, and automatic cleanup when a plugin stops.

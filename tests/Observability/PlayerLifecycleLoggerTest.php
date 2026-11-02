@@ -21,7 +21,6 @@ declare(strict_types=1);
 namespace Bedriox\Server\Tests\Observability;
 
 use Bedriox\Api\Event\Player\PlayerQuitCause;
-use Bedriox\RakNet\SessionInfo;
 use Bedriox\Server\Observability\LogLevel;
 use Bedriox\Server\Observability\PlayerLifecycleLogger;
 use Bedriox\Server\Observability\ServerLogger;
@@ -29,6 +28,7 @@ use Bedriox\Server\Simulation\MovementMode;
 use Bedriox\Server\Simulation\PlayerSnapshot;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\Simulation\VerticalState;
+use Bedriox\Server\Transport\SessionInfo;
 use PHPUnit\Framework\TestCase;
 
 final class PlayerLifecycleLoggerTest extends TestCase
@@ -37,7 +37,7 @@ final class PlayerLifecycleLoggerTest extends TestCase
     {
         $logger = new ServerLogger(static function (string $line): void {}, LogLevel::DEBUG, false, false, null);
         $lifecycle = new PlayerLifecycleLogger($logger);
-        $session = new SessionInfo('127.0.0.1', 19_132, 1, 1_400, 11);
+        $session = new SessionInfo(19_132, (string) 1, '127.0.0.1', 19_132);
         $player = new PlayerSnapshot(
             'session',
             'identity',

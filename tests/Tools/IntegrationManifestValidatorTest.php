@@ -28,7 +28,7 @@ require_once dirname(__DIR__, 2) . '/tools/IntegrationManifestValidator.php';
 final class IntegrationManifestValidatorTest extends TestCase
 {
     private const string PROTOCOL_COMMIT = 'ac967a5de0948ef0b6b8ac430069f4459c9bc022';
-    private const string RAKNET_COMMIT = '258c8773b4ff1e7095576ae091f10945bbeb31ee';
+    private const string NETHERNET_COMMIT = '258c8773b4ff1e7095576ae091f10945bbeb31ee';
     private const string DATA_COMMIT = '2b75cc671a6f6a3c143c525e86ef83f115e4b715';
     private const string RUNTIME_COMMIT = '4d5fefdd1eb1080581b54bd30c91bc5e619c8496';
 
@@ -39,7 +39,7 @@ final class IntegrationManifestValidatorTest extends TestCase
             self::composer(),
             self::lock(),
             '0.1.0-alpha.1',
-            ['protocol' => self::PROTOCOL_COMMIT, 'raknet' => self::RAKNET_COMMIT, 'data' => self::DATA_COMMIT, 'runtime' => self::RUNTIME_COMMIT],
+            ['protocol' => self::PROTOCOL_COMMIT, 'nethernet' => self::NETHERNET_COMMIT, 'data' => self::DATA_COMMIT, 'runtime' => self::RUNTIME_COMMIT],
         ));
     }
 
@@ -92,11 +92,11 @@ final class IntegrationManifestValidatorTest extends TestCase
     public function testComponentIdentityAndUnqualifiedSupportClaimsAreRejected(): void
     {
         $manifest = self::manifest();
-        $manifest['components']['protocol']['package'] = 'bedriox/raknet';
+        $manifest['components']['protocol']['package'] = 'bedriox/nethernet';
         self::assertInvalid(self::composer(), self::lock(), 'must map to bedriox/protocol', $manifest);
 
         $manifest = self::manifest();
-        $manifest['bedrock']['clientVersions'] = ['1.26.52'];
+        $manifest['bedrock']['clientVersions'] = ['1.26.62'];
         self::assertInvalid(self::composer(), self::lock(), 'must match the qualified client and protocol set', $manifest);
 
         $manifest = self::manifest();
@@ -143,7 +143,7 @@ final class IntegrationManifestValidatorTest extends TestCase
             $composer,
             $lock,
             '0.1.0-alpha.1',
-            ['protocol' => self::PROTOCOL_COMMIT, 'raknet' => self::RAKNET_COMMIT, 'data' => self::DATA_COMMIT, 'runtime' => self::RUNTIME_COMMIT],
+            ['protocol' => self::PROTOCOL_COMMIT, 'nethernet' => self::NETHERNET_COMMIT, 'data' => self::DATA_COMMIT, 'runtime' => self::RUNTIME_COMMIT],
         );
         self::assertNotSame([], $errors);
         self::assertStringContainsString($message, implode("\n", $errors));
@@ -173,10 +173,10 @@ final class IntegrationManifestValidatorTest extends TestCase
             'status' => 'alpha',
             'server' => '0.1.0-alpha.1',
             'php' => '^8.4',
-            'bedrock' => ['clientVersions' => ['1.26.50', '1.26.51'], 'networkProtocols' => [2193]],
+            'bedrock' => ['clientVersions' => ['1.26.60', '1.26.61'], 'networkProtocols' => [2225]],
             'components' => [
                 'protocol' => ['package' => 'bedriox/protocol', 'version' => '0.1.0-alpha.1', 'commit' => self::PROTOCOL_COMMIT],
-                'raknet' => ['package' => 'bedriox/raknet', 'version' => '0.1.0-alpha.1', 'commit' => self::RAKNET_COMMIT],
+                'nethernet' => ['package' => 'bedriox/nethernet', 'version' => '0.1.0-alpha.1', 'commit' => self::NETHERNET_COMMIT],
                 'data' => ['package' => 'bedriox/data', 'version' => '0.1.0-alpha.1', 'commit' => self::DATA_COMMIT],
             ],
             'runtime' => [
@@ -187,7 +187,7 @@ final class IntegrationManifestValidatorTest extends TestCase
                     'all' => [
                         'Core', 'ctype', 'curl', 'date', 'dom', 'fileinfo', 'filter', 'gmp', 'hash', 'iconv', 'json',
                         'leveldb', 'libxml', 'mbstring', 'openssl', 'pcre', 'PDO', 'pdo_sqlite', 'Phar', 'random', 'Reflection',
-                        'session', 'SimpleXML', 'sockets', 'sodium', 'SPL', 'sqlite3', 'standard', 'tokenizer', 'xml',
+                        'session', 'SimpleXML', 'sockets', 'sodium', 'SPL', 'sqlite3', 'standard', 'tokenizer', 'webrtc', 'xml',
                         'xmlreader', 'xmlwriter', 'Zend OPcache', 'zip', 'zlib',
                     ],
                     'unix' => ['pcntl', 'posix'],
@@ -226,13 +226,13 @@ final class IntegrationManifestValidatorTest extends TestCase
         return [
             'repositories' => [
                 ['type' => 'path', 'url' => '../Protocol', 'options' => ['symlink' => false, 'versions' => ['bedriox/protocol' => '0.1.0-alpha.1']]],
-                ['type' => 'path', 'url' => '../RakNet', 'options' => ['symlink' => false, 'versions' => ['bedriox/raknet' => '0.1.0-alpha.1']]],
+                ['type' => 'path', 'url' => '../NetherNet', 'options' => ['symlink' => false, 'versions' => ['bedriox/nethernet' => '0.1.0-alpha.1']]],
                 ['type' => 'path', 'url' => '../Data', 'options' => ['symlink' => false, 'versions' => ['bedriox/data' => '0.1.0-alpha.1']]],
             ],
             'require' => [
                 'php' => '^8.4',
                 'bedriox/protocol' => '0.1.0-alpha.1',
-                'bedriox/raknet' => '0.1.0-alpha.1',
+                'bedriox/nethernet' => '0.1.0-alpha.1',
                 'bedriox/data' => '0.1.0-alpha.1',
             ],
         ];
@@ -252,7 +252,7 @@ final class IntegrationManifestValidatorTest extends TestCase
     {
         return ['packages' => [
             ['name' => 'bedriox/protocol', 'version' => '0.1.0-alpha.1', 'dist' => ['type' => 'path', 'url' => '../Protocol', 'reference' => self::PROTOCOL_COMMIT]],
-            ['name' => 'bedriox/raknet', 'version' => '0.1.0-alpha.1', 'dist' => ['type' => 'path', 'url' => '../RakNet', 'reference' => self::RAKNET_COMMIT]],
+            ['name' => 'bedriox/nethernet', 'version' => '0.1.0-alpha.1', 'dist' => ['type' => 'path', 'url' => '../NetherNet', 'reference' => self::NETHERNET_COMMIT]],
             ['name' => 'bedriox/data', 'version' => '0.1.0-alpha.1', 'dist' => ['type' => 'path', 'url' => '../Data', 'reference' => self::DATA_COMMIT]],
         ]];
     }

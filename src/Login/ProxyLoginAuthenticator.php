@@ -24,10 +24,10 @@ use Bedriox\Protocol\Identity\ClientDataJwtVerifier;
 use Bedriox\Protocol\Identity\GatewayForwardingToken;
 use Bedriox\Protocol\Packet\AuthenticationType;
 use Bedriox\Protocol\Packet\LoginPacket;
-use Bedriox\RakNet\SessionInfo;
 use Bedriox\Server\Authentication\AuthenticationClock;
 use Bedriox\Server\Authentication\AuthenticationException;
 use Bedriox\Server\Security\TrustedProxyEndpointPolicy;
+use Bedriox\Server\Transport\SessionInfo;
 
 final readonly class ProxyLoginAuthenticator implements PeerAwareLoginAuthenticator
 {

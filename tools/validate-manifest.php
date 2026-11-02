@@ -58,7 +58,7 @@ try {
 }
 
 $siblingHeads = [];
-foreach (['protocol' => 'Protocol', 'raknet' => 'RakNet', 'data' => 'Data'] as $component => $directory) {
+foreach (['protocol' => 'Protocol', 'nethernet' => 'NetherNet', 'data' => 'Data'] as $component => $directory) {
     $sibling = dirname($root) . DIRECTORY_SEPARATOR . $directory;
     $gitMetadata = $sibling . DIRECTORY_SEPARATOR . '.git';
     if (!is_dir($sibling) || (!is_dir($gitMetadata) && !is_file($gitMetadata))) {

@@ -22,8 +22,8 @@ namespace Bedriox\Server\Tests\Runtime;
 
 use Bedriox\Api\World\DimensionType;
 use Bedriox\Protocol\Value\UnsignedLong;
-use Bedriox\RakNet\SessionInfo;
 use Bedriox\Server\Runtime\RuntimeSession;
+use Bedriox\Server\Transport\SessionInfo;
 use PHPUnit\Framework\TestCase;
 
 final class RuntimeSessionTest extends TestCase
@@ -31,7 +31,7 @@ final class RuntimeSessionTest extends TestCase
     public function testSessionCanonicalizesWorldAndRetainsDimensionIdentity(): void
     {
         $session = new RuntimeSession(
-            new SessionInfo('127.0.0.1', 19_132, 1, 1_400, 11),
+            new SessionInfo(19_132, (string) 1, '127.0.0.1', 19_132),
             'session',
             UnsignedLong::fromInt(1),
             null,
@@ -46,7 +46,7 @@ final class RuntimeSessionTest extends TestCase
     public function testSessionDefaultsToOverworld(): void
     {
         $session = new RuntimeSession(
-            new SessionInfo('127.0.0.1', 19_132, 1, 1_400, 11),
+            new SessionInfo(19_132, (string) 1, '127.0.0.1', 19_132),
             'session',
             UnsignedLong::fromInt(1),
             null,

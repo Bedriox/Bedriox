@@ -20,12 +20,10 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Transport;
 
-use Bedriox\RakNet\Protocol\Reliability;
-use Bedriox\RakNet\ReceivedPayload;
-use Bedriox\RakNet\SessionClosedEvent;
-use Bedriox\RakNet\SessionOpenedEvent;
+use Bedriox\NetherNet\Protocol\Reliability;
+use Bedriox\NetherNet\Server\ServerSecuritySnapshot;
 
-/** Testable boundary around the concrete, non-blocking RakNet server. */
+/** Testable boundary around the dedicated, non-blocking NetherNet process. */
 interface ConnectedTransport
 {
     public function poll(int $maximumDatagrams): int;
@@ -37,14 +35,18 @@ interface ConnectedTransport
     public function drainReceivedPayloads(): array;
 
     public function sendPayload(
-        string $remoteAddress,
-        int $remotePort,
+        int $sessionId,
         string $payload,
         Reliability $reliability,
-        int $orderingChannel = 0,
     ): void;
 
-    public function removeSession(string $remoteAddress, int $remotePort): bool;
+    public function removeSession(int $sessionId): bool;
+
+    public function updatePlayerCount(int $onlinePlayers): void;
+
+    public function updateAdvertisement(string $serverName, int $onlinePlayers, int $maximumPlayers): void;
+
+    public function securitySnapshot(): ?ServerSecuritySnapshot;
 
     public function close(): void;
 }

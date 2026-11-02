@@ -22,7 +22,6 @@ namespace Bedriox\Server\Login;
 
 use Bedriox\Protocol\Packet\AuthenticationType;
 use Bedriox\Protocol\Packet\ClientCacheStatusPacket;
-use Bedriox\Protocol\Packet\ClientToServerHandshakePacket;
 use Bedriox\Protocol\Packet\CompressionAlgorithm;
 use Bedriox\Protocol\Packet\LoginPacket;
 use Bedriox\Protocol\Packet\NetworkSettingsPacket;
@@ -34,10 +33,7 @@ use Bedriox\Protocol\Packet\ResourcePackClientResponsePacket;
 use Bedriox\Protocol\Packet\ResourcePackResponseStatus;
 use Bedriox\Protocol\Packet\ResourcePacksInfoPacket;
 use Bedriox\Protocol\Packet\ResourcePackStackPacket;
-use Bedriox\Protocol\Packet\ServerToClientHandshakePacket;
 use Bedriox\Protocol\ProtocolVersion;
-use Bedriox\Protocol\Security\HandshakeJwt;
-use Bedriox\Protocol\Security\P384;
 use Bedriox\Server\Transport\NetworkCompressionPolicy;
 use SplQueue;
 use Throwable;
@@ -67,7 +63,6 @@ final class LoginSession
     public function __construct(
         private readonly MonotonicClock $clock,
         private readonly LoginAuthenticator $authenticator,
-        private readonly HandshakeMaterialFactory $handshakes,
         private readonly AuthenticationMode $authenticationMode = AuthenticationMode::FULL,
         private readonly LoginLimits $limits = new LoginLimits(),
     ) {
@@ -145,11 +140,7 @@ final class LoginSession
             }
             $input = $this->input->dequeue();
             $this->queuedInputBytes -= $input->wireBytes;
-            $expectsEncryption = match ($this->state) {
-                LoginState::WAIT_NETWORK_REQUEST, LoginState::WAIT_LOGIN => false,
-                default => true,
-            };
-            if ($input->encrypted !== $expectsEncryption) {
+            if ($input->encrypted) {
                 $this->close(LoginFailureCode::ENCRYPTION_STATE);
                 break;
             }
@@ -182,7 +173,6 @@ final class LoginSession
         match ($this->state) {
             LoginState::WAIT_NETWORK_REQUEST => $this->handleNetworkRequest($packet),
             LoginState::WAIT_LOGIN => $this->handleLogin($packet),
-            LoginState::WAIT_CLIENT_HANDSHAKE => $this->handleClientHandshake($packet),
             LoginState::WAIT_PACK_INFO_RESPONSE => $this->handlePackInfoResponse($packet),
             LoginState::WAIT_PACK_STACK_RESPONSE => $this->handlePackStackResponse($packet),
             LoginState::LOGIN_READY, LoginState::CLOSED => null,
@@ -243,58 +233,12 @@ final class LoginSession
         if (!$this->preflight()) {
             return;
         }
-        try {
-            $material = $this->handshakes->create();
-        } catch (Throwable $exception) {
-            $this->failureDetail = 'handshake_material:' . $exception::class;
-            $this->close(LoginFailureCode::CRYPTOGRAPHIC_FAILURE);
-            return;
-        }
-        try {
-            $shared = P384::deriveSharedSecret($material->keyPair->privateKey, $login->identityPublicKey);
-        } catch (Throwable $exception) {
-            $this->failureDetail = 'shared_secret:' . $exception::class;
-            $this->close(LoginFailureCode::CRYPTOGRAPHIC_FAILURE);
-            return;
-        }
-        try {
-            $sessionKey = P384::deriveSessionKey($material->salt, $shared);
-        } catch (Throwable $exception) {
-            $this->failureDetail = 'session_key:' . $exception::class;
-            $this->close(LoginFailureCode::CRYPTOGRAPHIC_FAILURE);
-            return;
-        }
-        try {
-            $jwt = HandshakeJwt::create($material->keyPair, $material->salt);
-        } catch (Throwable $exception) {
-            $this->failureDetail = 'handshake_jwt:' . $exception::class;
-            $this->close(LoginFailureCode::CRYPTOGRAPHIC_FAILURE);
-            return;
-        }
-        if (!$this->preflight()) {
-            return;
-        }
         $this->authenticated = $login;
-        if (!$this->emit(new SendPacketEffect(new ServerToClientHandshakePacket($jwt), false))) {
-            return;
-        }
-        if (!$this->emit(new EnableEncryptionEffect($sessionKey))) {
-            return;
-        }
-        $this->transition(LoginState::WAIT_CLIENT_HANDSHAKE, 15);
-    }
-
-    private function handleClientHandshake(Packet $packet): void
-    {
-        if (!$packet instanceof ClientToServerHandshakePacket) {
-            $this->close(LoginFailureCode::UNEXPECTED_PACKET);
-            return;
-        }
         if (!$this->canEmit(2)) {
             return;
         }
-        $this->effects->enqueue(new SendPacketEffect(new PlayStatusPacket(PlayStatus::LoginSuccess), true));
-        $this->effects->enqueue(new SendPacketEffect(new ResourcePacksInfoPacket(false, false, false, false, '00000000-0000-0000-0000-000000000000', '', []), true));
+        $this->effects->enqueue(new SendPacketEffect(new PlayStatusPacket(PlayStatus::LoginSuccess), false));
+        $this->effects->enqueue(new SendPacketEffect(new ResourcePacksInfoPacket(false, false, false, false, '00000000-0000-0000-0000-000000000000', '', []), false));
         $this->transition(LoginState::WAIT_PACK_INFO_RESPONSE, 15);
     }
 
@@ -321,7 +265,7 @@ final class LoginSession
             $this->close(LoginFailureCode::UNSUPPORTED_PROTOCOL);
             return;
         }
-        if (!$this->emit(new SendPacketEffect(new ResourcePackStackPacket(false, [], ProtocolVersion::gameVersion($protocolVersion), [], false, false), true))) {
+        if (!$this->emit(new SendPacketEffect(new ResourcePackStackPacket(false, [], ProtocolVersion::gameVersion($protocolVersion), [], false, false), false))) {
             return;
         }
         $this->transition(LoginState::WAIT_PACK_STACK_RESPONSE, 15);

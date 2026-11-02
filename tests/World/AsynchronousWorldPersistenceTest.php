@@ -355,7 +355,7 @@ final class AsynchronousWorldPersistenceTest extends TestCase
     {
         [, , $generator] = self::worldDependencies();
         $provider = new FakeAsynchronousWorldProvider(self::worldData());
-        $provider->enqueueDelayMicroseconds = 1_000;
+        $provider->enqueueDelayMicroseconds = 10_000;
         $world = new World(
             new WorldMetadata('world', 7),
             $generator,

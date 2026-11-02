@@ -30,12 +30,12 @@ use Bedriox\Protocol\Packet\LoginAuthentication;
 use Bedriox\Protocol\Packet\LoginPacket;
 use Bedriox\Protocol\Security\OpenSslEphemeralKeyFactory;
 use Bedriox\Protocol\Security\P384;
-use Bedriox\RakNet\SessionInfo;
 use Bedriox\Server\Authentication\AuthenticationClock;
 use Bedriox\Server\Authentication\AuthenticationException;
 use Bedriox\Server\Login\AuthenticationMode;
 use Bedriox\Server\Login\ProxyLoginAuthenticator;
 use Bedriox\Server\Login\ProxyTokenReplayGuard;
+use Bedriox\Server\Transport\SessionInfo;
 use PHPUnit\Framework\TestCase;
 
 final class ProxyLoginAuthenticatorTest extends TestCase
@@ -82,7 +82,7 @@ final class ProxyLoginAuthenticatorTest extends TestCase
             new ClientDataJwtVerifier(),
             new ProxyTokenReplayGuard(),
         );
-        $peer = new SessionInfo('127.0.0.1', 40_000, 1, 1_400, 11);
+        $peer = new SessionInfo(40_000, (string) 1, '127.0.0.1', 40_000);
         $bound = $authenticator->forPeer($peer);
 
         $login = $bound->authenticate($packet, AuthenticationMode::GATEWAY);
@@ -115,7 +115,7 @@ final class ProxyLoginAuthenticatorTest extends TestCase
         $packet = new LoginPacket(2_193, new LoginAuthentication(AuthenticationType::Full, 'invalid'), 'invalid');
 
         $this->expectException(AuthenticationException::class);
-        $authenticator->forPeer(new SessionInfo('192.0.2.1', 40_000, 1, 1_400, 11))
+        $authenticator->forPeer(new SessionInfo(40_000, (string) 1, '192.0.2.1', 40_000))
             ->authenticate($packet, AuthenticationMode::GATEWAY);
     }
 }

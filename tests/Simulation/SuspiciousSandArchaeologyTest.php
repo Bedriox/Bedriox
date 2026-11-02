@@ -81,7 +81,13 @@ final class SuspiciousSandArchaeologyTest extends TestCase
 
         self::assertTrue($simulation->enqueue($commands->brushBlock('player', 3, BrushAction::START, $position, 1)));
         $events = $simulation->tick()->events;
-        self::assertCount(1, array_filter($events, static fn(object $event): bool => $event instanceof BlockChanged));
+        $blockChanges = array_values(array_filter(
+            $events,
+            static fn(object $event): bool => $event instanceof BlockChanged
+                && $event->ownerSessionId === 'player'
+                && $event->position->equals($position),
+        ));
+        self::assertCount(1, $blockChanges);
         for ($tick = 0; $tick < 45; ++$tick) {
             foreach ($simulation->tick()->events as $event) {
                 self::assertFalse(
@@ -230,6 +236,12 @@ final class SuspiciousSandArchaeologyTest extends TestCase
             new ChunkRepository(4),
         );
         $position = new BlockPosition(1, 64, 0);
+        $blocks->setBlockState(
+            $position->x,
+            $position->y - 1,
+            $position->z,
+            $states->internalId(CanonicalBlockState::from('minecraft:stone')),
+        );
         $blocks->setBlockState(
             $position->x,
             $position->y,

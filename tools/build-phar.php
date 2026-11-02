@@ -114,6 +114,7 @@ function installProductionDependencies(string $stage): void
         '--no-progress',
         '--no-scripts',
         '--ignore-platform-req=ext-leveldb',
+        '--ignore-platform-req=ext-webrtc',
     ];
     $process = proc_open($command, [STDIN, STDOUT, STDERR], $pipes, dirname($stage));
     if (!is_resource($process) || proc_close($process) !== 0) {
@@ -126,7 +127,7 @@ function pruneDevelopmentPackageFiles(string $stage): void
     $packages = [
         'data' => ['src', 'artifacts', 'manifests', 'composer.json', 'LICENSE', 'LICENSE-CODE', 'NOTICE', 'ATTRIBUTION.md'],
         'protocol' => ['src', 'composer.json', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md'],
-        'raknet' => ['src', 'composer.json', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md'],
+        'nethernet' => ['src', 'composer.json', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md'],
     ];
     foreach ($packages as $package => $allowed) {
         $source = $stage . DIRECTORY_SEPARATOR . 'vendor' . DIRECTORY_SEPARATOR . 'bedriox' . DIRECTORY_SEPARATOR . $package;

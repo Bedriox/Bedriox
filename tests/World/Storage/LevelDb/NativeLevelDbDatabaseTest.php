@@ -64,7 +64,7 @@ final class NativeLevelDbDatabaseTest extends TestCase
         }
     }
 
-    public function testNativeProviderCreatesAndReopensAProtocol2193World(): void
+    public function testNativeProviderCreatesAndReopensAProtocol2225World(): void
     {
         if (!extension_loaded('leveldb')) {
             self::markTestSkipped('Native test requires the packaged Bedriox Runtime.');
@@ -88,7 +88,7 @@ final class NativeLevelDbDatabaseTest extends TestCase
             $provider->close();
 
             $metadata = (new LevelDatStore())->load($worldPath . DIRECTORY_SEPARATOR . 'level.dat');
-            self::assertSame(2193, $metadata->networkVersion());
+            self::assertSame(2225, $metadata->networkVersion());
             self::assertSame(2, $metadata->root['Generator']->value);
             self::assertSame(2, $metadata->difficulty());
             self::assertSame(1_234_567_890, $metadata->root['LastPlayed']->value);

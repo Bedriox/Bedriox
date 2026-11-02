@@ -5,7 +5,7 @@ The client journey is Bedriox's cumulative user-visible regression baseline. A m
 ## Permanent journey
 
 1. Discovery returns the exact qualified Bedrock advertisement, including protocol, version, capacity, game-mode fields, and ports.
-2. The client proceeds from discovery through RakNet offline and connected negotiation.
+2. The client proceeds through HTTP or LAN signaling, ICE negotiation, and NetherNet data-channel establishment.
 3. Authentication, encryption, resource-pack negotiation, and login complete without downgrade.
 4. The client receives initialization and enters the world exactly once.
 5. The center admission chunk contains the expected grass, dirt, bedrock, air, biome, and height semantics before the player enters play.
@@ -24,7 +24,7 @@ Valid, bounded client notifications may cross nominal initialization boundaries 
 
 ## Automated evidence
 
-Discovery uses independently parsed literal fields. RakNet and Protocol use independent golden vectors and malformed-input coverage. Runtime integration drives public component contracts. Terrain tests reconstruct cells, palettes, biome markers, and height maps. Simulation tests replay deterministic commands and resource limits. Regression tests pin every previously escaped failure.
+Discovery uses independently parsed literal fields. NetherNet and Protocol use independent golden vectors and malformed-input coverage. Runtime integration drives public component contracts. Terrain tests reconstruct cells, palettes, biome markers, and height maps. Simulation tests replay deterministic commands and resource limits. Regression tests pin every previously escaped failure.
 
 Production encoder/decoder round trips alone are insufficient because both sides can share the same defect.
 

@@ -52,6 +52,9 @@ use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\WeatherState;
 use Bedriox\Api\World\WeatherType;
 use Bedriox\Api\World\World as ApiWorld;
+use Bedriox\NetherNet\Protocol\DisconnectReason as NetherNetDisconnectReason;
+use Bedriox\NetherNet\Protocol\Reliability;
+use Bedriox\NetherNet\Server\ServerSecuritySnapshot;
 use Bedriox\Protocol\Batch\BatchLimits;
 use Bedriox\Protocol\Batch\BedrockBatch;
 use Bedriox\Protocol\Batch\BedrockBatchCodec;
@@ -76,12 +79,6 @@ use Bedriox\Protocol\Packet\SystemTextPacket;
 use Bedriox\Protocol\Packet\UpdateAdventureSettingsPacket;
 use Bedriox\Protocol\Value\BuildPlatform;
 use Bedriox\Protocol\Value\UnsignedLong;
-use Bedriox\RakNet\Connected\ConnectedPayloadEvent;
-use Bedriox\RakNet\Protocol\Reliability;
-use Bedriox\RakNet\ReceivedPayload;
-use Bedriox\RakNet\SessionCloseReason;
-use Bedriox\RakNet\SessionInfo;
-use Bedriox\RakNet\SessionOpenedEvent;
 use Bedriox\Server\Access\BanManager;
 use Bedriox\Server\Access\WhitelistManager;
 use Bedriox\Server\Command\CommandFeedback;
@@ -190,8 +187,11 @@ use Bedriox\Server\Simulation\SystemSimulationClock;
 use Bedriox\Server\Simulation\VerticalState;
 use Bedriox\Server\Simulation\WorldSimulation;
 use Bedriox\Server\Transport\ConnectedTransport;
+use Bedriox\Server\Transport\InboundPayload;
 use Bedriox\Server\Transport\NetworkCompressionPolicy;
-use Bedriox\Server\Transport\SecurityObservableTransport;
+use Bedriox\Server\Transport\ReceivedPayload;
+use Bedriox\Server\Transport\SessionInfo;
+use Bedriox\Server\Transport\SessionOpenedEvent;
 use Bedriox\Server\Worker\Chunk\PreparedChunkCache;
 use Bedriox\Server\Worker\Chunk\PreparedChunkCacheSnapshot;
 use Bedriox\Server\World\Block\BlockStateRegistry;
@@ -291,6 +291,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private int $commandSchemaRevision = 0;
     private int $onlinePlayerCommandRevision = 0;
     private int $onlinePlayerCommandUpdateNotBeforeTick = 0;
+    private int $lastAdvertisedPlayerCount = -1;
     /** @var array<string, int> */
     private array $deliveredOnlinePlayerCommandRevisions = [];
     private int $chunkStreamingCursor = 0;
@@ -308,6 +309,10 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private int $movementProjectionTraceDroppedBatches = 0;
     private int $movementProjectionTraceSuppressedRecipients = 0;
     private int $movementProjectionTraceStartedNanoseconds = 0;
+    private int $itemVisibilityTraceActors = 0;
+    private int $itemVisibilityTraceShown = 0;
+    private int $itemVisibilityTraceHidden = 0;
+    private int $itemVisibilityTraceStartedNanoseconds = 0;
     /** @var array<string, int> Last tick whose authoritative position was projected to peers. */
     private array $lastPeerMovementBroadcastTicks = [];
     /** @var array<string, int> Stable per-session phase seed used to spread peer fan-out across ticks. */
@@ -518,13 +523,6 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 $this->scoreboardProjector->requestReplay($identity);
             }
         }
-    }
-
-    public function transportSecuritySnapshot(): ?\Bedriox\RakNet\Security\TransportSecuritySnapshot
-    {
-        return $this->transport instanceof SecurityObservableTransport
-            ? $this->transport->securitySnapshot()
-            : null;
     }
 
     /** Registers a bounded namespaced Gateway-to-backend plugin message handler. */
@@ -1642,9 +1640,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             }
             $transportStartedNanoseconds = hrtime(true);
             $transportTiming = $this->performance?->startSubsystem(PerformanceSubsystem::TRANSPORT);
-            $rakNetPollStartedNanoseconds = hrtime(true);
+            $transportPollStartedNanoseconds = hrtime(true);
             $this->transport->poll($this->limits->maximumDatagramsPerPoll);
-            $this->recordSlowRuntimeStage('raknet_poll', $rakNetPollStartedNanoseconds);
+            $this->recordSlowRuntimeStage('transport_poll', $transportPollStartedNanoseconds);
             $events = $this->transport->drainSessionEvents();
             $payloads = $this->transport->drainReceivedPayloads();
             if (count($events) > $this->limits->maximumSessionEventsPerPoll
@@ -1657,18 +1655,22 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 } else {
                     $this->diagnostics->record('runtime.transport_session_closed', [
                         'reason' => $event->reason->value,
-                        'transport_failure' => $event->transportFailure?->value,
-                        'transport_failure_detail' => $event->transportFailureDetail,
+                        'detail' => $event->detail,
                     ]);
                     [$quitCause, $quitReason] = self::transportQuitReason($event->reason);
                     $this->closeEndpoint($event->session, $quitCause, $quitReason);
                 }
             }
+            $advertisedPlayerCount = $this->sessionCount();
+            if ($advertisedPlayerCount !== $this->lastAdvertisedPlayerCount) {
+                $this->transport->updatePlayerCount($advertisedPlayerCount);
+                $this->lastAdvertisedPlayerCount = $advertisedPlayerCount;
+            }
             $this->expirePendingTransportCloses();
             $payloadAcceptStartedNanoseconds = hrtime(true);
             foreach ($payloads as $payload) {
                 $this->performance?->recordNetworkReceived(strlen($payload->payload));
-                $this->involvedSessionId = $this->sessions[self::rawEndpointKey($payload->remoteAddress, $payload->remotePort)]->id ?? null;
+                $this->involvedSessionId = $this->sessions[self::sessionKey($payload->sessionId)]->id ?? null;
                 $this->accept($payload);
                 $this->involvedSessionId = null;
             }
@@ -2822,6 +2824,11 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         return count($this->sessions);
     }
 
+    public function transportSecuritySnapshot(): ?ServerSecuritySnapshot
+    {
+        return $this->transport->securitySnapshot();
+    }
+
     public function shouldIdleAfterPoll(): bool
     {
         return ($this->worldRuntimes?->nanosecondsUntilNextTick()
@@ -2886,6 +2893,36 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 )
                 : 0,
         ]);
+        $worldStages = $this->world->lastTickStageMicroseconds();
+        $this->diagnostics->record('runtime.world_stage_summary.protocol_trace', array_intersect_key(
+            $worldStages,
+            array_fill_keys([
+                'commands_us',
+                'movement_us',
+                'movement_collision_us',
+                'movement_snapshot_us',
+                'movement_recipients_us',
+                'movement_plugins_us',
+                'environment_us',
+                'players_us',
+                'items_us',
+                'natural_entities_us',
+                'navigation_preparation_us',
+                'general_entities_us',
+                'entity_pre_runtime_us',
+                'entity_lifecycle_us',
+                'entity_species_us',
+                'entity_behavior_us',
+                'entity_runtime_us',
+                'entity_post_runtime_us',
+                'display_visibility_us',
+                'entity_ai_us',
+                'entity_physics_us',
+                'entity_contacts_us',
+                'entity_ai_ticked_count',
+                'entity_physics_ticked_count',
+            ], true),
+        ));
         $this->scoreboardProjectionFlushes = 0;
         $this->scoreboardProjectionBatches = 0;
         $this->scoreboardProjectionPackets = 0;
@@ -3482,7 +3519,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
 
             return;
         }
-        $id = sprintf('%d@%s:%d', $info->clientGuid, $info->remoteAddress, $info->remotePort);
+        $id = sprintf('nethernet:%d', $info->id);
         try {
             $login = $this->loginChannels->create($info);
         } catch (Throwable $exception) {
@@ -3510,11 +3547,11 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
 
     private function accept(ReceivedPayload $payload): void
     {
-        $key = self::rawEndpointKey($payload->remoteAddress, $payload->remotePort);
+        $key = self::sessionKey($payload->sessionId);
         $unclassified = $this->unclassifiedSessions[$key] ?? null;
         if ($unclassified !== null) {
             unset($this->unclassifiedSessions[$key]);
-            if ($payload->reliability !== Reliability::ReliableOrdered || $payload->orderingChannel !== 0) {
+            if ($payload->reliability !== Reliability::RELIABLE) {
                 $this->rejectControlOrPlayer($unclassified, 'invalid_transport_metadata');
                 return;
             }
@@ -3549,7 +3586,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             }
         }
         if (($controlInfo = $this->controlEndpoints[$key] ?? null) !== null) {
-            if ($payload->reliability !== Reliability::ReliableOrdered || $payload->orderingChannel !== 0) {
+            if ($payload->reliability !== Reliability::RELIABLE) {
                 $this->rejectControlOrPlayer($controlInfo, 'invalid_transport_metadata');
                 return;
             }
@@ -3572,9 +3609,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             return;
         }
         $session = $this->sessions[$key] ?? null;
-        if (!$session instanceof RuntimeSession
-            || $payload->reliability !== Reliability::ReliableOrdered
-            || $payload->orderingChannel !== 0) {
+        if (!$session instanceof RuntimeSession || $payload->reliability !== Reliability::RELIABLE) {
             if ($session instanceof RuntimeSession) {
                 if ($session->play !== null) {
                     $this->disconnectPlayWithReference(
@@ -3592,7 +3627,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
 
             return;
         }
-        $event = new ConnectedPayloadEvent($payload->payload, $payload->reliability, $payload->orderingChannel);
+        $event = new InboundPayload($payload->payload, $payload->reliability);
         if ($session->phase === SessionPhase::LOGIN && $session->login !== null) {
             $stateBefore = $session->login->state();
             try {
@@ -3918,8 +3953,6 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 );
                 if ($bootstrap === null) {
                     $this->diagnostics->record('play.login_cancelled');
-                    $ready->encryptor->close();
-                    $ready->decryptor->close();
                     $this->disconnect($key, 'duplicate_identity_rejection_failed');
 
                     return;
@@ -4082,8 +4115,6 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             if ($session->play !== null) {
                 $this->disconnectForPlayFailure($key, $session, 'admission_projection_failed', $exception);
             } else {
-                $ready->encryptor->close();
-                $ready->decryptor->close();
                 $this->disconnect($key, 'admission_projection_failed');
             }
         }
@@ -4157,11 +4188,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         foreach ($outgoing as $payload) {
             try {
                 $this->transport->sendPayload(
-                    $session->transport->remoteAddress,
-                    $session->transport->remotePort,
+                    $session->transport->id,
                     $payload->payload,
                     $payload->reliability,
-                    $payload->orderingChannel,
                 );
                 $this->performance?->recordNetworkSent(strlen($payload->payload));
             } catch (Throwable $exception) {
@@ -4169,12 +4198,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     'exception' => $exception::class,
                     'reason' => self::transportSendFailureReason($exception),
                     'payload_bytes' => strlen($payload->payload),
-                    'reliability' => strtolower((string) preg_replace(
-                        '/(?<!^)[A-Z]/',
-                        '_$0',
-                        $payload->reliability->name,
-                    )),
-                    'ordering_channel' => $payload->orderingChannel,
+                    'reliability' => strtolower($payload->reliability->name),
                     'phase' => strtolower($session->phase->name),
                 ]);
                 $this->disconnect($key, 'transport_send_failed');
@@ -4225,7 +4249,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                             BedrockPacketCodec::encode($packet),
                         );
                     }
-                    $clearEnvelope = BedrockBatchCodec::encode(
+                    $compressedBatch = BedrockBatchCodec::encode(
                         new BedrockBatch(
                             $frames,
                             CompressionMode::NegotiatedZlib,
@@ -4238,7 +4262,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                         if ($session?->play === null) {
                             continue;
                         }
-                        if (!$this->queuePreparedWorldPackets($session, $packets, $frames, $clearEnvelope)) {
+                        if (!$this->queuePreparedWorldPackets($session, $packets, $frames, $compressedBatch)) {
                             $this->disconnectForPlayFailure(
                                 self::endpointKey($session->transport),
                                 $session,
@@ -4292,14 +4316,20 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     }
 
     /** @return array{PlayerQuitCause, string} */
-    private static function transportQuitReason(SessionCloseReason $reason): array
+    private static function transportQuitReason(NetherNetDisconnectReason $reason): array
     {
         return match ($reason) {
-            SessionCloseReason::RemoteDisconnect => [PlayerQuitCause::DISCONNECTED, 'Disconnected'],
-            SessionCloseReason::HandshakeTimeout, SessionCloseReason::IdleTimeout => [PlayerQuitCause::TIMED_OUT, 'Connection timed out'],
-            SessionCloseReason::ServerClosed => [PlayerQuitCause::SERVER_SHUTDOWN, 'Server shutting down'],
-            SessionCloseReason::TransportFailure => [PlayerQuitCause::CONNECTION_LOST, 'Transport failure'],
-            SessionCloseReason::LocalRemoval => [PlayerQuitCause::DISCONNECTED, 'Disconnected by the server'],
+            NetherNetDisconnectReason::PEER_DISCONNECT => [PlayerQuitCause::DISCONNECTED, 'Disconnected'],
+            NetherNetDisconnectReason::SERVER_SHUTDOWN => [PlayerQuitCause::SERVER_SHUTDOWN, 'Server shutting down'],
+            NetherNetDisconnectReason::SERVER_DISCONNECT,
+            NetherNetDisconnectReason::REJECTED_BY_HOST => [PlayerQuitCause::DISCONNECTED, 'Disconnected by the server'],
+            NetherNetDisconnectReason::CONNECTION_FAILED,
+            NetherNetDisconnectReason::BAD_DATA,
+            NetherNetDisconnectReason::SEND_FAILED,
+            NetherNetDisconnectReason::RECEIVE_QUEUE_TOO_MANY_BYTES,
+            NetherNetDisconnectReason::RECEIVE_QUEUE_TOO_MANY_MESSAGES,
+            NetherNetDisconnectReason::SEND_QUEUE_TOO_MANY_BYTES => [PlayerQuitCause::CONNECTION_LOST, $reason->getMessage()],
+            NetherNetDisconnectReason::ADDRESS_BLOCKED => [PlayerQuitCause::KICKED, 'Network address blocked'],
         };
     }
 
@@ -4496,19 +4526,14 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 new PacketFrame(new PacketHeader(BedrockPacketCodec::packetId($packet)), BedrockPacketCodec::encode($packet, $ready->protocolVersion)),
             ], CompressionMode::NegotiatedZlib, NetworkCompressionPolicy::THRESHOLD_BYTES);
             $this->transport->sendPayload(
-                $session->transport->remoteAddress,
-                $session->transport->remotePort,
-                $ready->encryptor->encryptEnvelope(BedrockBatchCodec::encode($batch, new BatchLimits())),
-                Reliability::ReliableOrdered,
-                0,
+                $session->transport->id,
+                BedrockBatchCodec::encode($batch, new BatchLimits()),
+                Reliability::RELIABLE,
             );
             $this->deferTransportClose($key, $session);
         } catch (Throwable $exception) {
             $this->diagnostics->record('play.duplicate_rejection_send_failed', ['exception' => $exception::class]);
             $this->disconnect($key, 'duplicate_rejection_send_failed');
-        } finally {
-            $ready->encryptor->close();
-            $ready->decryptor->close();
         }
     }
 
@@ -4538,7 +4563,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private function removeTransportSession(SessionInfo $info): void
     {
         try {
-            $this->transport->removeSession($info->remoteAddress, $info->remotePort);
+            $this->transport->removeSession($info->id);
         } catch (Throwable $exception) {
             $this->diagnostics->record('runtime.transport_remove_failed', ['exception' => $exception::class]);
             // The local owner still closes; a transport failure must not affect peers.
@@ -4550,11 +4575,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     {
         foreach ($frames as $frame) {
             $this->transport->sendPayload(
-                $info->remoteAddress,
-                $info->remotePort,
+                $info->id,
                 $frame,
-                Reliability::ReliableOrdered,
-                0,
+                Reliability::RELIABLE,
             );
         }
     }
@@ -5112,12 +5135,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         $appeared = array_keys(array_diff_key($eligible, $previous));
         $disappeared = array_keys(array_diff_key($previous, $eligible));
         if ($appeared !== [] || $disappeared !== []) {
-            $this->diagnostics->record('world.item_actor.protocol_trace', [
-                'action' => 'visibility_changed',
-                'actor_id' => $runtimeId,
-                'shown_to' => count($appeared),
-                'hidden_from' => count($disappeared),
-            ]);
+            $this->recordItemVisibilityTrace(count($appeared), count($disappeared));
         }
         $events = [];
         if ($disappeared !== []) {
@@ -5134,6 +5152,30 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
 
         return $events;
+    }
+
+    /** Keeps protocol tracing useful without writing one synchronous log line per item and viewer. */
+    private function recordItemVisibilityTrace(int $shown, int $hidden): void
+    {
+        $now = hrtime(true);
+        if ($this->itemVisibilityTraceStartedNanoseconds === 0) {
+            $this->itemVisibilityTraceStartedNanoseconds = $now;
+        }
+        ++$this->itemVisibilityTraceActors;
+        $this->itemVisibilityTraceShown += $shown;
+        $this->itemVisibilityTraceHidden += $hidden;
+        if ($now - $this->itemVisibilityTraceStartedNanoseconds < 1_000_000_000) {
+            return;
+        }
+        $this->diagnostics->record('world.item_visibility_summary.protocol_trace', [
+            'actors' => $this->itemVisibilityTraceActors,
+            'shown' => $this->itemVisibilityTraceShown,
+            'hidden' => $this->itemVisibilityTraceHidden,
+        ]);
+        $this->itemVisibilityTraceActors = 0;
+        $this->itemVisibilityTraceShown = 0;
+        $this->itemVisibilityTraceHidden = 0;
+        $this->itemVisibilityTraceStartedNanoseconds = $now;
     }
 
     /**
@@ -6015,7 +6057,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     }
                     $frames[] = $this->packetFrameCache[$packet];
                 }
-                $clearEnvelope = BedrockBatchCodec::encode(
+                $compressedBatch = BedrockBatchCodec::encode(
                     new BedrockBatch(
                         $frames,
                         CompressionMode::NegotiatedZlib,
@@ -6033,7 +6075,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             foreach ($group['recipients'] as $recipient) {
                 $session = $this->sessionById($recipient);
                 $queued = $session?->play !== null
-                    && $this->queuePreparedWorldPackets($session, $group['packets'], $frames, $clearEnvelope);
+                    && $this->queuePreparedWorldPackets($session, $group['packets'], $frames, $compressedBatch);
                 if (!$queued && $session !== null) {
                     $this->diagnostics->record('runtime.world_packet_backlog_exhausted.protocol_trace', [
                         'event_class' => $event::class,
@@ -6249,7 +6291,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         RuntimeSession $session,
         array $packets,
         array $frames,
-        string $clearEnvelope,
+        string $compressedBatch,
     ): bool {
         if ($packets === [] || $frames === []) {
             return true;
@@ -6261,7 +6303,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         if ($this->hasDeferredWorldPackets($session->id)) {
             return $this->deferWorldPackets($session->id, $packets);
         }
-        if ($play->queuePreparedAuthoritativePacketFrames($frames, $clearEnvelope, $packets)) {
+        if ($play->queuePreparedAuthoritativePacketFrames($frames, $compressedBatch, $packets)) {
             return true;
         }
         if ($play->isClosed()) {
@@ -6272,7 +6314,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         if (($this->sessions[$key] ?? null) !== $session || $session->play === null) {
             return false;
         }
-        if ($session->play->queuePreparedAuthoritativePacketFrames($frames, $clearEnvelope, $packets)) {
+        if ($session->play->queuePreparedAuthoritativePacketFrames($frames, $compressedBatch, $packets)) {
             return true;
         }
         if ($session->play->isClosed()) {
@@ -6511,7 +6553,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                         }
                         $frames[] = $this->packetFrameCache[$packet];
                     }
-                    $clearEnvelope = BedrockBatchCodec::encode(
+                    $compressedBatch = BedrockBatchCodec::encode(
                         new BedrockBatch(
                             $frames,
                             CompressionMode::NegotiatedZlib,
@@ -6542,7 +6584,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                         ]);
                     continue;
                 }
-                if (!$this->queuePreparedWorldPackets($session, $packets, $frames, $clearEnvelope)) {
+                if (!$this->queuePreparedWorldPackets($session, $packets, $frames, $compressedBatch)) {
                     $attempts = $retry['delivery_attempts'] + 1;
                     $retained = $attempts < self::MAXIMUM_PROJECTION_DELIVERY_ATTEMPTS
                         && $this->enqueueProjectionRetry(
@@ -7311,10 +7353,10 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $batch = $group['frames'];
             $sessionIds = $group['sessions'];
             $authoritativePackets = $group['authoritative'];
-            $clearEnvelope = null;
+            $compressedBatch = null;
             if (count($sessionIds) > 1) {
                 try {
-                    $clearEnvelope = BedrockBatchCodec::encode(
+                    $compressedBatch = BedrockBatchCodec::encode(
                         new BedrockBatch(
                             $batch,
                             CompressionMode::NegotiatedZlib,
@@ -7335,12 +7377,12 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 if ($session?->play === null) {
                     continue;
                 }
-                if ($clearEnvelope === null) {
+                if ($compressedBatch === null) {
                     $queued = $session->play->queuePacketFrames($batch);
                 } elseif ($authoritativePackets !== []) {
-                    $queued = $session->play->queuePreparedAuthoritativePacketFrames($batch, $clearEnvelope);
+                    $queued = $session->play->queuePreparedAuthoritativePacketFrames($batch, $compressedBatch);
                 } else {
-                    $queued = $session->play->queuePreparedTransientPacketFrames($batch, $clearEnvelope);
+                    $queued = $session->play->queuePreparedTransientPacketFrames($batch, $compressedBatch);
                 }
                 if (!$queued) {
                     $movementCount = count($batch) - count($authoritativePackets);
@@ -7544,12 +7586,12 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
 
     private static function endpointKey(SessionInfo $info): string
     {
-        return self::rawEndpointKey($info->remoteAddress, $info->remotePort);
+        return self::sessionKey($info->id);
     }
 
-    private static function rawEndpointKey(string $address, int $port): string
+    private static function sessionKey(int $sessionId): string
     {
-        return $address . ':' . $port;
+        return 'session:' . $sessionId;
     }
 
     private function changePlayerSkin(RuntimeSession $session, PlayerSkinPacket $packet): bool

@@ -20,10 +20,9 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Security;
 
-use Bedriox\RakNet\EndpointAdmissionPolicy;
 use InvalidArgumentException;
 
-final readonly class TrustedProxyEndpointPolicy implements EndpointAdmissionPolicy
+final readonly class TrustedProxyEndpointPolicy
 {
     /** @var list<array{network: int, mask: int}> */
     private array $networks;

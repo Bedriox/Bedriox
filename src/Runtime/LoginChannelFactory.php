@@ -20,8 +20,8 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
-use Bedriox\RakNet\SessionInfo;
 use Bedriox\Server\Login\BedrockLoginChannel;
+use Bedriox\Server\Transport\SessionInfo;
 
 interface LoginChannelFactory
 {

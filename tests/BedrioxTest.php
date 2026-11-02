@@ -33,7 +33,7 @@ final class BedrioxTest extends TestCase
 
         self::assertStringContainsString('Bedriox', $displayName);
         self::assertStringContainsString(Bedriox::VERSION, $displayName);
-        self::assertSame('Bedriox 1.0.0-beta.3-dev', $displayName);
+        self::assertSame('Bedriox 2.0.0-beta.1', $displayName);
     }
 
     public function testInvalidServeConfigurationFailsClosedWithoutEchoingInput(): void

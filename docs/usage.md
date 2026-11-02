@@ -86,7 +86,7 @@ For source development only, inspect the current build with:
 php bin/bedriox --version
 ```
 
-Start the bounded protocol-2193 development server (Minecraft 1.26.50 wire authority; 1.26.51 qualified client) with FULL authentication:
+Start the bounded protocol-2225 development server (Minecraft 1.26.60 wire authority; 1.26.61 qualified client) with FULL authentication:
 
 ```shell
 php bin/bedriox

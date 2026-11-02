@@ -21,7 +21,6 @@ declare(strict_types=1);
 namespace Bedriox\Server\Worker\Chunk;
 
 use Bedriox\Api\World\DimensionType;
-use Bedriox\Protocol\Batch\BedrockBatchCodec;
 use Bedriox\Server\Worker\WorkerDispatcher;
 use Bedriox\Server\Worker\WorkerReceipt;
 use Bedriox\Server\Worker\WorkerResult;
@@ -35,7 +34,7 @@ use WeakMap;
 final class PreparedChunkCache
 {
     private const int MAXIMUM_FAILURES_BEFORE_FALLBACK = 3;
-    private const int MAXIMUM_RESULT_BYTES = 1_048_577;
+    private const int MAXIMUM_RESULT_BYTES = 1_048_576;
 
     /** @var array<string, array{chunk: PreparedChunk, lastAccess: int}> */
     private array $entries = [];
@@ -149,7 +148,7 @@ final class PreparedChunkCache
                     return;
                 }
                 if ($result->status !== WorkerResultStatus::SUCCESS
-                    || !$this->isValidEnvelope($result->payload)) {
+                    || !$this->isValidBatch($result->payload)) {
                     $this->recordFailure($cacheKey);
 
                     return;
@@ -194,9 +193,9 @@ final class PreparedChunkCache
     }
 
     /** Retains a main-process fallback projection so every later viewer reuses it. */
-    public function retainSynchronous(Chunk $chunk, int $protocolVersion, string $clearEnvelope): PreparedChunk
+    public function retainSynchronous(Chunk $chunk, int $protocolVersion, string $compressedBatch): PreparedChunk
     {
-        if ($this->closed || !$this->isValidEnvelope($clearEnvelope)) {
+        if ($this->closed || !$this->isValidBatch($compressedBatch)) {
             throw new InvalidArgumentException('Synchronous chunk projection is invalid.');
         }
         $positionKey = $chunk->position->key();
@@ -220,7 +219,7 @@ final class PreparedChunkCache
             $chunk->position,
             $chunk->revision,
             $protocolVersion,
-            $clearEnvelope,
+            $compressedBatch,
         );
         if ($prepared->bytes() > $this->maximumBytes) {
             throw new InvalidArgumentException('Synchronous chunk projection exceeds the cache byte limit.');
@@ -353,10 +352,9 @@ final class PreparedChunkCache
         ++$this->failures;
     }
 
-    private function isValidEnvelope(string $payload): bool
+    private function isValidBatch(string $payload): bool
     {
-        return $payload !== '' && strlen($payload) <= self::MAXIMUM_RESULT_BYTES
-            && ord($payload[0]) === BedrockBatchCodec::GAME_PACKET_MARKER;
+        return $payload !== '' && strlen($payload) <= self::MAXIMUM_RESULT_BYTES;
     }
 
     private function evictFor(int $incomingBytes): void

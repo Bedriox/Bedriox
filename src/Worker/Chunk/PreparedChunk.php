@@ -20,7 +20,6 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Worker\Chunk;
 
-use Bedriox\Protocol\Batch\BedrockBatchCodec;
 use Bedriox\Server\World\ChunkPosition;
 use InvalidArgumentException;
 
@@ -32,16 +31,16 @@ final readonly class PreparedChunk
         public ChunkPosition $position,
         public int $revision,
         public int $protocolVersion,
-        public string $clearEnvelope,
+        public string $compressedBatch,
     ) {
         if ($cacheKey === '' || $revision < 0 || $protocolVersion < 1
-            || $clearEnvelope === '' || ord($clearEnvelope[0]) !== BedrockBatchCodec::GAME_PACKET_MARKER) {
+            || $compressedBatch === '') {
             throw new InvalidArgumentException('Prepared chunk is invalid.');
         }
     }
 
     public function bytes(): int
     {
-        return strlen($this->clearEnvelope);
+        return strlen($this->compressedBatch);
     }
 }

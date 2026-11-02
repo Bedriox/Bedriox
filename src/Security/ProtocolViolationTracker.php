@@ -26,7 +26,7 @@ use InvalidArgumentException;
  * Tracks repeated semantic protocol violations for one authenticated session.
  *
  * Transport framing, encryption, decompression, and flood protection remain
- * owned by RakNet and the protocol boundary. Harmless unsupported, stale, or
+ * owned by NetherNet and the protocol boundary. Harmless unsupported, stale, or
  * correctable gameplay input must never be recorded here.
  */
 final class ProtocolViolationTracker

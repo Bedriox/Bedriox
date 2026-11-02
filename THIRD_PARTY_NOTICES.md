@@ -18,13 +18,13 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 
 ## Bedriox components
 
-`bedriox/protocol`, `bedriox/raknet`, and `bedriox/data` are Bedriox projects distributed under GPL-3.0-only. Their exact versions and commit pins are recorded in `bedriox.lock.json`; installed packages retain their own `LICENSE`, `NOTICE`, and third-party notice files. Data separately identifies the licenses of admitted registry artifacts.
+`bedriox/protocol`, `bedriox/nethernet`, and `bedriox/data` are Bedriox projects distributed under GPL-3.0-only. Their exact versions and commit pins are recorded in `bedriox.lock.json`; installed packages retain their own `LICENSE`, `NOTICE`, and third-party notice files. Data separately identifies the licenses of admitted registry artifacts.
 
 Development dependencies are locked by Composer and checked against the repository's approved-license allowlist. Release packaging must retain this notice file and generate a complete notice bundle and SBOM.
 
 ## Symfony components
 
-Bedriox includes `symfony/yaml` v7.4.12, `symfony/deprecation-contracts` v3.7.1, and `symfony/polyfill-ctype` v1.37.0 under the MIT License.
+Bedriox includes `symfony/yaml` v7.4.21, `symfony/deprecation-contracts` v3.7.1, and `symfony/polyfill-ctype` v1.37.0 under the MIT License.
 
 Copyright (c) 2004-present Fabien Potencier (`symfony/yaml`)
 

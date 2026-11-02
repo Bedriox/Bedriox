@@ -21,8 +21,8 @@ declare(strict_types=1);
 namespace Bedriox\Server\Observability;
 
 use Bedriox\Api\Event\Player\PlayerQuitCause;
-use Bedriox\RakNet\SessionInfo;
 use Bedriox\Server\Simulation\PlayerSnapshot;
+use Bedriox\Server\Transport\SessionInfo;
 
 final readonly class PlayerLifecycleLogger
 {

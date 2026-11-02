@@ -74,7 +74,7 @@ final class PrepareChunkTask implements WorkerTaskHandler
         $limits = new BatchLimits();
         $uncompressed = PacketBatchCodec::encode([$frame], $limits);
 
-        return chr(BedrockBatchCodec::GAME_PACKET_MARKER) . BatchCompressionCodec::encode(
+        return BatchCompressionCodec::encode(
             $uncompressed,
             CompressionMode::NegotiatedZlib,
             $limits,

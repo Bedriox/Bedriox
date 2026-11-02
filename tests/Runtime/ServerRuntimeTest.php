@@ -33,6 +33,8 @@ use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\World as PublicWorld;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Data\CanonicalBlockState;
+use Bedriox\NetherNet\Protocol\DisconnectReason as NetherNetDisconnectReason;
+use Bedriox\NetherNet\Protocol\Reliability;
 use Bedriox\Protocol\Batch\BatchLimits;
 use Bedriox\Protocol\Batch\BedrockBatch;
 use Bedriox\Protocol\Batch\BedrockBatchCodec;
@@ -40,8 +42,6 @@ use Bedriox\Protocol\Batch\CompressionMode;
 use Bedriox\Protocol\Codec\ByteBufferReader;
 use Bedriox\Protocol\Codec\SignedVarInt;
 use Bedriox\Protocol\Codec\UnsignedVarInt;
-use Bedriox\Protocol\Encryption\BedrockDecryptor;
-use Bedriox\Protocol\Encryption\BedrockEncryptor;
 use Bedriox\Protocol\GatewayControl\ControlFrame;
 use Bedriox\Protocol\GatewayControl\ControlFrameCodec;
 use Bedriox\Protocol\GatewayControl\ControlHandshakeClaims;
@@ -55,7 +55,6 @@ use Bedriox\Protocol\Packet\BedrockPacketCodec;
 use Bedriox\Protocol\Packet\ChangeDimensionPacket;
 use Bedriox\Protocol\Packet\ChatPacket;
 use Bedriox\Protocol\Packet\ChunkRadiusUpdatedPacket;
-use Bedriox\Protocol\Packet\ClientToServerHandshakePacket;
 use Bedriox\Protocol\Packet\CommandOrigin;
 use Bedriox\Protocol\Packet\CommandOriginType;
 use Bedriox\Protocol\Packet\CommandOutputPacket;
@@ -94,7 +93,6 @@ use Bedriox\Protocol\Packet\RequestChunkRadiusPacket;
 use Bedriox\Protocol\Packet\RequestNetworkSettingsPacket;
 use Bedriox\Protocol\Packet\ResourcePackClientResponsePacket;
 use Bedriox\Protocol\Packet\ResourcePackResponseStatus;
-use Bedriox\Protocol\Packet\ServerToClientHandshakePacket;
 use Bedriox\Protocol\Packet\SetActorMotionPacket;
 use Bedriox\Protocol\Packet\SetDifficultyPacket;
 use Bedriox\Protocol\Packet\SetLocalPlayerAsInitializedPacket;
@@ -109,17 +107,9 @@ use Bedriox\Protocol\Packet\UpdateAbilitiesPacket;
 use Bedriox\Protocol\Packet\UpdateSoftEnumPacket;
 use Bedriox\Protocol\Packet\VoxelShapesPacket;
 use Bedriox\Protocol\ProtocolVersion;
-use Bedriox\Protocol\Security\HandshakeJwt;
 use Bedriox\Protocol\Security\OpenSslEphemeralKeyFactory;
-use Bedriox\Protocol\Security\P384;
 use Bedriox\Protocol\Security\P384KeyPair;
 use Bedriox\Protocol\Value\UnsignedLong;
-use Bedriox\RakNet\Protocol\Reliability;
-use Bedriox\RakNet\ReceivedPayload;
-use Bedriox\RakNet\SessionClosedEvent;
-use Bedriox\RakNet\SessionCloseReason;
-use Bedriox\RakNet\SessionInfo;
-use Bedriox\RakNet\SessionOpenedEvent;
 use Bedriox\Server\Entity\Block\FallingBlockEntity;
 use Bedriox\Server\Entity\EntityMotion;
 use Bedriox\Server\Entity\Vanilla\ZombieEntity;
@@ -133,8 +123,6 @@ use Bedriox\Server\GatewayControl\GatewayControlConfig;
 use Bedriox\Server\GatewayControl\GatewayControlServer;
 use Bedriox\Server\Login\AuthenticatedLogin;
 use Bedriox\Server\Login\BedrockLoginChannel;
-use Bedriox\Server\Login\HandshakeMaterial;
-use Bedriox\Server\Login\HandshakeMaterialFactory;
 use Bedriox\Server\Login\LoginAuthenticator;
 use Bedriox\Server\Login\LoginSession;
 use Bedriox\Server\Login\MonotonicClock;
@@ -205,6 +193,10 @@ use Bedriox\Server\Simulation\WorldSimulation;
 use Bedriox\Server\Tests\World\InMemoryWorldProvider;
 use Bedriox\Server\Transport\ConnectedTransport;
 use Bedriox\Server\Transport\NetworkCompressionPolicy;
+use Bedriox\Server\Transport\ReceivedPayload;
+use Bedriox\Server\Transport\SessionClosedEvent;
+use Bedriox\Server\Transport\SessionInfo;
+use Bedriox\Server\Transport\SessionOpenedEvent;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
@@ -240,7 +232,7 @@ final class ServerRuntimeTest extends TestCase
             )),
             maximumPlayers: 20,
         );
-        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $info = new SessionInfo(20_001, (string) 42, '127.0.0.1', 20_001);
         $now = time();
         $hello = new ControlHandshakeClaims(
             ControlHandshakeStage::Hello,
@@ -254,16 +246,14 @@ final class ServerRuntimeTest extends TestCase
         );
         $transport->events[] = new SessionOpenedEvent($info);
         $transport->payloads[] = new ReceivedPayload(
-            $info->remoteAddress,
-            $info->remotePort,
+            $info->id,
             ControlFrameCodec::encode(new ControlFrame(
                 ControlMessageType::Hello,
                 ControlFrame::requestId(),
                 0,
                 ControlHandshakeToken::issue($hello, $secret),
             )),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         );
 
         try {
@@ -569,14 +559,14 @@ final class ServerRuntimeTest extends TestCase
             new FixedRateWorldLoop($world, $clock),
             new RecordingEventEncoder(),
         );
-        $firstInfo = new SessionInfo('127.0.0.1', 20_001, 41, 1_400, 11);
-        $secondInfo = new SessionInfo('127.0.0.1', 20_002, 42, 1_400, 11);
+        $firstInfo = new SessionInfo(20_001, (string) 41, '127.0.0.1', 20_001);
+        $secondInfo = new SessionInfo(20_002, (string) 42, '127.0.0.1', 20_002);
 
         try {
             $this->advanceToInitializing($runtime, $transport, $firstInfo, $loginFactory);
             $this->advanceToInitializing($runtime, $transport, $secondInfo, $loginFactory);
-            $firstId = '41@127.0.0.1:20001';
-            $secondId = '42@127.0.0.1:20002';
+            $firstId = 'nethernet:20001';
+            $secondId = 'nethernet:20002';
             $first = $this->runtimeSession($runtime, $firstId);
             $second = $this->runtimeSession($runtime, $secondId);
             $firstUuid = '00000000-0000-4000-8000-000000020001';
@@ -769,7 +759,7 @@ final class ServerRuntimeTest extends TestCase
             chunksSendPerTick: 4,
             worldRuntimes: $worlds,
         );
-        $session = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $session = new SessionInfo(20_001, (string) 42, '127.0.0.1', 20_001);
 
         try {
             $client = $this->advanceToInitializing($runtime, $transport, $session, $loginFactory);
@@ -938,7 +928,7 @@ final class ServerRuntimeTest extends TestCase
             persistentWorld: $sourceWorld,
             worldRuntimes: $worlds,
         );
-        $session = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $session = new SessionInfo(20_001, (string) 42, '127.0.0.1', 20_001);
         $identity = '00000000-0000-0000-0000-000000000001';
 
         try {
@@ -1042,7 +1032,7 @@ final class ServerRuntimeTest extends TestCase
             chunksSendPerTick: 4,
             worldRuntimes: $worlds,
         );
-        $session = new SessionInfo('127.0.0.1', 20_002, 43, 1_400, 12);
+        $session = new SessionInfo(20_002, (string) 43, '127.0.0.1', 20_002);
 
         try {
             $client = $this->advanceToInitializing($runtime, $transport, $session, $loginFactory);
@@ -1227,8 +1217,8 @@ final class ServerRuntimeTest extends TestCase
             new FixedRateWorldLoop($world, $clock),
             $encoder,
         );
-        $first = new SessionInfo('127.0.0.1', 20_001, 41, 1_400, 11);
-        $second = new SessionInfo('127.0.0.1', 20_002, 42, 1_400, 11);
+        $first = new SessionInfo(20_001, (string) 41, '127.0.0.1', 20_001);
+        $second = new SessionInfo(20_002, (string) 42, '127.0.0.1', 20_002);
 
         try {
             $this->advanceToInitializing($runtime, $transport, $first, $loginFactory);
@@ -1241,8 +1231,8 @@ final class ServerRuntimeTest extends TestCase
             );
             $entity->bindPublicWorld(new PublicWorld('world', 1));
             $entity->applyMotion(new EntityMotion(0.1, 0.0, -0.2));
-            $firstId = '41@127.0.0.1:20001';
-            $secondId = '42@127.0.0.1:20002';
+            $firstId = 'nethernet:20001';
+            $secondId = 'nethernet:20002';
             $event = new EntityActorMoved($entity, 17, [$firstId, $secondId], true);
             $packetsBySession = self::emptyPacketFrameMap();
             $frameCache = new \WeakMap();
@@ -1361,7 +1351,7 @@ final class ServerRuntimeTest extends TestCase
             new RecordingEventEncoder(),
             craftingCatalog: $catalog,
         );
-        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $info = new SessionInfo(20_001, (string) 42, '127.0.0.1', 20_001);
         $client = $this->advanceToInitializing($runtime, $transport, $info, $loginFactory);
         $decryptor = $loginFactory->clientDecryptor();
         $this->decodeEncryptedPackets($transport->sent, $decryptor);
@@ -1421,11 +1411,9 @@ final class ServerRuntimeTest extends TestCase
     {
         $transport = new FakeConnectedTransport();
         $transport->payloads[] = new ReceivedPayload(
-            '127.0.0.1',
             20_001,
             'abc',
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         );
         $clock = new RuntimeTestClock();
         $world = new WorldSimulation();
@@ -1481,8 +1469,8 @@ final class ServerRuntimeTest extends TestCase
             playerPersistence: new PlayerPersistenceManager($store, 'world', new Position(0.0, 64.0, 0.0)),
             closeClock: $clock,
         );
-        $first = new SessionInfo('127.0.0.1', 20_001, 41, 1_400, 11);
-        $second = new SessionInfo('127.0.0.1', 20_002, 42, 1_400, 11);
+        $first = new SessionInfo(20_001, (string) 41, '127.0.0.1', 20_001);
+        $second = new SessionInfo(20_002, (string) 42, '127.0.0.1', 20_002);
         $this->advanceToInitializing($runtime, $transport, $first, $factory);
         self::assertSame(1, $runtime->sessionCount());
         $transport->sent = [];
@@ -1514,15 +1502,15 @@ final class ServerRuntimeTest extends TestCase
             new FixedRateWorldLoop($world, $clock),
             new RecordingEventEncoder(),
         );
-        $first = new SessionInfo('127.0.0.1', 20_001, 41, 1_400, 11);
-        $second = new SessionInfo('127.0.0.1', 20_002, 42, 1_400, 11);
+        $first = new SessionInfo(20_001, (string) 41, '127.0.0.1', 20_001);
+        $second = new SessionInfo(20_002, (string) 42, '127.0.0.1', 20_002);
 
         $this->advanceToInitializing($runtime, $transport, $first, $factory);
         $this->advanceToInitializing($runtime, $transport, $second, $factory);
 
         self::assertSame(1, $clock->nowNanoseconds(), 'The world clock must remain below its first due tick.');
-        self::assertNotNull($this->runtimeSession($runtime, '41@127.0.0.1:20001')->play);
-        self::assertNotNull($this->runtimeSession($runtime, '42@127.0.0.1:20002')->play);
+        self::assertNotNull($this->runtimeSession($runtime, 'nethernet:20001')->play);
+        self::assertNotNull($this->runtimeSession($runtime, 'nethernet:20002')->play);
     }
 
     public function testPlayerKickSendsEncryptedDisconnectBeforeTransportRemoval(): void
@@ -1542,7 +1530,7 @@ final class ServerRuntimeTest extends TestCase
             playerConnections: $connections,
             closeClock: $clock,
         );
-        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $info = new SessionInfo(20_001, (string) 42, '127.0.0.1', 20_001);
         $this->advanceToInitializing($runtime, $transport, $info, $factory);
         $decoder = $factory->clientDecryptor();
         $this->decodeEncryptedPackets($transport->sent, $decoder);
@@ -1575,7 +1563,7 @@ final class ServerRuntimeTest extends TestCase
             new RecordingEventEncoder(),
             closeClock: $clock,
         );
-        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $info = new SessionInfo(20_001, (string) 42, '127.0.0.1', 20_001);
         $client = $this->advanceToInitializing($runtime, $transport, $info, $factory);
         $decoder = $factory->clientDecryptor();
         $this->decodeEncryptedPackets($transport->sent, $decoder);
@@ -1585,7 +1573,7 @@ final class ServerRuntimeTest extends TestCase
             CompressionMode::NegotiatedZlib,
             NetworkCompressionPolicy::THRESHOLD_BYTES,
         ), new BatchLimits());
-        $this->receive($transport, $info, $client->encryptEnvelope($malformed));
+        $this->receive($transport, $info, $client->encryptBatch($malformed));
 
         self::assertTrue($runtime->poll());
         // Application state is released immediately after the final notice is
@@ -1626,16 +1614,16 @@ final class ServerRuntimeTest extends TestCase
             new RecordingEventEncoder(),
             closeClock: $clock,
         );
-        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $info = new SessionInfo(20_001, (string) 42, '127.0.0.1', 20_001);
         $this->advanceToInitializing($runtime, $transport, $info, $factory);
         $decoder = $factory->clientDecryptor();
         $this->decodeEncryptedPackets($transport->sent, $decoder);
         $transport->sent = [];
-        $session = $this->runtimeSession($runtime, '42@127.0.0.1:20001');
+        $session = $this->runtimeSession($runtime, 'nethernet:20001');
 
         (new \ReflectionMethod(ServerRuntime::class, 'disconnectForPlayFailure'))->invoke(
             $runtime,
-            '127.0.0.1:20001',
+            'session:20001',
             $session,
             'world_projection_secret',
             new \RuntimeException('sensitive implementation detail'),
@@ -1673,17 +1661,15 @@ final class ServerRuntimeTest extends TestCase
             new RecordingEventEncoder(),
             closeClock: $clock,
         );
-        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $info = new SessionInfo(20_001, (string) 42, '127.0.0.1', 20_001);
         $this->advanceToInitializing($runtime, $transport, $info, $factory);
         $decoder = $factory->clientDecryptor();
         $this->decodeEncryptedPackets($transport->sent, $decoder);
         $transport->sent = [];
         $transport->payloads[] = new ReceivedPayload(
-            $info->remoteAddress,
-            $info->remotePort,
+            $info->id,
             'not-decoded',
-            Reliability::Unreliable,
-            null,
+            Reliability::UNRELIABLE,
         );
 
         self::assertTrue($runtime->poll());
@@ -1715,7 +1701,7 @@ final class ServerRuntimeTest extends TestCase
             closeClock: $clock,
             protocolSoftStrikeLimit: 2,
         );
-        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $info = new SessionInfo(20_001, (string) 42, '127.0.0.1', 20_001);
         $client = $this->advanceToInitializing($runtime, $transport, $info, $factory);
         $decoder = $factory->clientDecryptor();
         $this->decodeEncryptedPackets($transport->sent, $decoder);
@@ -1764,14 +1750,14 @@ final class ServerRuntimeTest extends TestCase
             playerConnections: $connections,
             closeClock: $clock,
         );
-        $old = new SessionInfo('127.0.0.1', 20_001, 41, 1_400, 11);
+        $old = new SessionInfo(20_001, (string) 41, '127.0.0.1', 20_001);
         $this->advanceToInitializing($runtime, $transport, $old, $factory);
         self::assertTrue($connections->connection('00000000-0000-0000-0000-000000000001')->kick('Removed'));
-        $replacement = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $replacement = new SessionInfo(20_001, (string) 42, '127.0.0.1', 20_001);
         $transport->events[] = new SessionOpenedEvent($replacement);
         self::assertTrue($runtime->poll());
         self::assertSame(1, $runtime->sessionCount());
-        $transport->events[] = new SessionClosedEvent($old, SessionCloseReason::RemoteDisconnect);
+        $transport->events[] = new SessionClosedEvent($old, NetherNetDisconnectReason::PEER_DISCONNECT);
         self::assertTrue($runtime->poll());
         self::assertSame(1, $runtime->sessionCount());
         self::assertSame([], $transport->removed);
@@ -1823,7 +1809,7 @@ final class ServerRuntimeTest extends TestCase
             new RecordingEventEncoder(),
             playerConnections: $connections,
         );
-        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $info = new SessionInfo(20_001, (string) 42, '127.0.0.1', 20_001);
         $this->advanceToInitializing($runtime, $transport, $info, $loginFactory);
         $decryptor = $loginFactory->clientDecryptor();
         $this->decodeEncryptedPackets($transport->sent, $decryptor);
@@ -1846,7 +1832,7 @@ final class ServerRuntimeTest extends TestCase
         self::assertInstanceOf(TextPacket::class, $immediate[0]);
         self::assertSame('immediate', $immediate[0]->message);
 
-        $transport->events[] = new SessionClosedEvent($info, SessionCloseReason::IdleTimeout);
+        $transport->events[] = new SessionClosedEvent($info, NetherNetDisconnectReason::CONNECTION_FAILED);
         self::assertTrue($runtime->poll());
         self::assertFalse($connection->isConnected());
         self::assertFalse($connection->sendPacket(TextPacket::tip('offline')));
@@ -1873,7 +1859,7 @@ final class ServerRuntimeTest extends TestCase
             diagnostics: $diagnostics,
             playerConnections: $connections,
         );
-        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $info = new SessionInfo(20_001, (string) 42, '127.0.0.1', 20_001);
         $this->advanceToInitializing($runtime, $transport, $info, $loginFactory);
         $connection = $connections->connection('00000000-0000-0000-0000-000000000001');
         $transport->sendFailure = new \OverflowException('Reliable frame tracking limit reached.');
@@ -1885,7 +1871,7 @@ final class ServerRuntimeTest extends TestCase
         $output = implode('', $lines);
         self::assertStringContainsString('"event":"runtime.transport_send_failed"', $output);
         self::assertStringContainsString('"reason":"reliable_frame_tracking"', $output);
-        self::assertStringContainsString('"reliability":"reliable_ordered"', $output);
+        self::assertStringContainsString('"reliability":"reliable"', $output);
         self::assertStringContainsString('"phase":"initializing"', $output);
         self::assertStringNotContainsString('Reliable frame tracking limit reached.', $output);
     }
@@ -1909,7 +1895,7 @@ final class ServerRuntimeTest extends TestCase
             crashContext: $crashContext,
             playerLifecycleLogger: new PlayerLifecycleLogger($logger),
         );
-        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $info = new SessionInfo(20_001, (string) 42, '127.0.0.1', 20_001);
         $clientEncryptor = $this->advanceToInitializing($runtime, $transport, $info, $loginFactory);
         self::assertSame([], $world->snapshot()->players);
         self::assertStringContainsString('Player[/127.0.0.1:20001] is joining', implode("\n", $logger->recentLines()));
@@ -1971,7 +1957,7 @@ final class ServerRuntimeTest extends TestCase
         self::assertInstanceOf(Position::class, $movedPosition);
         self::assertEqualsWithDelta(64.0, $movedPosition->y, 0.000_01);
 
-        $transport->events[] = new SessionClosedEvent($info, SessionCloseReason::RemoteDisconnect);
+        $transport->events[] = new SessionClosedEvent($info, NetherNetDisconnectReason::PEER_DISCONNECT);
         self::assertTrue($runtime->poll());
         self::assertCount(1, $world->snapshot()->players);
         $clock->advance(50_000_000);
@@ -2002,8 +1988,8 @@ final class ServerRuntimeTest extends TestCase
             commandRegistry: $commands,
             permissionStore: $permissions,
         );
-        $first = new SessionInfo('127.0.0.1', 20_001, 41, 1_400, 11);
-        $second = new SessionInfo('127.0.0.1', 20_002, 42, 1_400, 11);
+        $first = new SessionInfo(20_001, (string) 41, '127.0.0.1', 20_001);
+        $second = new SessionInfo(20_002, (string) 42, '127.0.0.1', 20_002);
 
         try {
             $firstClient = $this->advanceToInitializing($runtime, $transport, $first, $loginFactory);
@@ -2036,7 +2022,7 @@ final class ServerRuntimeTest extends TestCase
             self::assertSame(['Player20001', 'Player20002'], $joinedUpdate->values);
 
             $transport->sent = [];
-            $transport->events[] = new SessionClosedEvent($second, SessionCloseReason::RemoteDisconnect);
+            $transport->events[] = new SessionClosedEvent($second, NetherNetDisconnectReason::PEER_DISCONNECT);
             self::assertTrue($runtime->poll());
             for ($tick = 0; $tick < 21; ++$tick) {
                 $clock->advance(50_000_000);
@@ -2090,7 +2076,7 @@ final class ServerRuntimeTest extends TestCase
             commandRegistry: $commands,
             permissionStore: $permissions,
         );
-        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $info = new SessionInfo(20_001, (string) 42, '127.0.0.1', 20_001);
 
         try {
             $client = $this->advanceToInitializing($runtime, $transport, $info, $loginFactory);
@@ -2145,7 +2131,7 @@ final class ServerRuntimeTest extends TestCase
             new FixedRateWorldLoop($world, $clock),
             $events,
         );
-        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $info = new SessionInfo(20_001, (string) 42, '127.0.0.1', 20_001);
         $client = $this->advanceToInitializing($runtime, $transport, $info, $loginFactory);
 
         $this->receiveEncrypted($transport, $info, $client, new MobEquipmentPacket(
@@ -2195,7 +2181,7 @@ final class ServerRuntimeTest extends TestCase
             $events,
             $limits,
         );
-        $info = new SessionInfo('127.0.0.1', 20_011, 52, 1_400, 21);
+        $info = new SessionInfo(20_011, (string) 52, '127.0.0.1', 20_011);
         $client = $this->advanceToInitializing($runtime, $transport, $info, $loginFactory);
         $this->receiveEncrypted($transport, $info, $client, new RequestChunkRadiusPacket(1, 1));
         $this->receiveEncrypted($transport, $info, $client, new SubChunkRequestPacket(
@@ -2214,7 +2200,7 @@ final class ServerRuntimeTest extends TestCase
         $this->receive(
             $transport,
             $info,
-            $client->encryptEnvelope($this->encode([
+            $client->encryptBatch($this->encode([
                 $this->stationaryMovementPacket(UnsignedLong::fromInt(1)),
                 new SubChunkRequestPacket(0, 0, 3, 0, [['x' => -1, 'y' => 0, 'z' => 0]]),
             ], CompressionMode::NegotiatedZlib)),
@@ -2262,7 +2248,7 @@ final class ServerRuntimeTest extends TestCase
             new FixedRateWorldLoop($world, $clock),
             $encoder,
         );
-        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $info = new SessionInfo(20_001, (string) 42, '127.0.0.1', 20_001);
         $client = $this->advanceToInitializing($runtime, $transport, $info, $loginFactory);
         $decryptor = $loginFactory->clientDecryptor();
         $this->decodeEncryptedPackets($transport->sent, $decryptor);
@@ -2313,7 +2299,7 @@ final class ServerRuntimeTest extends TestCase
             new RecordingEventEncoder(),
             closeClock: $clock,
         );
-        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $info = new SessionInfo(20_001, (string) 42, '127.0.0.1', 20_001);
         $clientEncryptor = $this->advanceToInitializing($runtime, $transport, $info, $loginFactory);
         $this->receiveEncrypted($transport, $info, $clientEncryptor, new SetLocalPlayerAsInitializedPacket(UnsignedLong::fromInt(1)));
 
@@ -2337,8 +2323,8 @@ final class ServerRuntimeTest extends TestCase
             new FixedRateWorldLoop($world, $clock),
             new RecordingEventEncoder(),
         );
-        $first = new SessionInfo('127.0.0.1', 20_001, 41, 1_400, 11);
-        $second = new SessionInfo('127.0.0.1', 20_002, 42, 1_400, 11);
+        $first = new SessionInfo(20_001, (string) 41, '127.0.0.1', 20_001);
+        $second = new SessionInfo(20_002, (string) 42, '127.0.0.1', 20_002);
         $firstEncryptor = $this->advanceToInitializing($runtime, $transport, $first, $loginFactory);
         $secondEncryptor = $this->advanceToInitializing($runtime, $transport, $second, $loginFactory);
 
@@ -2369,8 +2355,8 @@ final class ServerRuntimeTest extends TestCase
             new FixedRateWorldLoop($world, $clock),
             new RecordingEventEncoder(),
         );
-        $first = new SessionInfo('127.0.0.1', 20_001, 41, 1_400, 11);
-        $second = new SessionInfo('127.0.0.1', 20_002, 42, 1_400, 11);
+        $first = new SessionInfo(20_001, (string) 41, '127.0.0.1', 20_001);
+        $second = new SessionInfo(20_002, (string) 42, '127.0.0.1', 20_002);
         $firstClient = $this->advanceToInitializing($runtime, $transport, $first, $loginFactory);
         $secondClient = $this->advanceToInitializing($runtime, $transport, $second, $loginFactory);
 
@@ -2423,8 +2409,8 @@ final class ServerRuntimeTest extends TestCase
             new FixedRateWorldLoop($world, $clock),
             $events,
         );
-        $first = new SessionInfo('127.0.0.1', 20_001, 41, 1_400, 11);
-        $second = new SessionInfo('127.0.0.1', 20_002, 42, 1_400, 11);
+        $first = new SessionInfo(20_001, (string) 41, '127.0.0.1', 20_001);
+        $second = new SessionInfo(20_002, (string) 42, '127.0.0.1', 20_002);
         $firstClient = $this->advanceToInitializing($runtime, $transport, $first, $loginFactory);
         $secondClient = $this->advanceToInitializing($runtime, $transport, $second, $loginFactory);
         $this->receiveEncrypted($transport, $first, $firstClient, new SetLocalPlayerAsInitializedPacket(UnsignedLong::fromInt(1)));
@@ -2489,7 +2475,7 @@ final class ServerRuntimeTest extends TestCase
             new FixedRateWorldLoop($world, $clock),
             $events,
         );
-        $session = new SessionInfo('127.0.0.1', 20_001, 41, 1_400, 11);
+        $session = new SessionInfo(20_001, (string) 41, '127.0.0.1', 20_001);
         $client = $this->advanceToInitializing($runtime, $transport, $session, $loginFactory);
         $this->receiveEncrypted(
             $transport,
@@ -2619,14 +2605,14 @@ final class ServerRuntimeTest extends TestCase
             new FixedRateWorldLoop($world, $clock),
             new RecordingEventEncoder(),
         );
-        $bad = new SessionInfo('127.0.0.1', 20_001, 1, 1_400, 11);
-        $good = new SessionInfo('127.0.0.1', 20_002, 2, 1_400, 11);
+        $bad = new SessionInfo(20_001, (string) 1, '127.0.0.1', 20_001);
+        $good = new SessionInfo(20_002, (string) 2, '127.0.0.1', 20_002);
         $transport->events = [new SessionOpenedEvent($bad), new SessionOpenedEvent($good)];
         self::assertTrue($runtime->poll());
         self::assertSame(1, $runtime->sessionCount());
         self::assertContains(['127.0.0.1', 20_001], $transport->removed);
 
-        $transport->payloads[] = new ReceivedPayload('127.0.0.1', 20_002, 'bad', Reliability::Reliable, null);
+        $transport->payloads[] = new ReceivedPayload(20_002, 'bad', Reliability::RELIABLE);
         self::assertTrue($runtime->poll());
         self::assertSame(0, $runtime->sessionCount());
         self::assertFalse($runtime->isClosed());
@@ -2648,7 +2634,7 @@ final class ServerRuntimeTest extends TestCase
             new RecordingEventEncoder(),
             diagnostics: $diagnostics,
         );
-        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $info = new SessionInfo(20_001, (string) 42, '127.0.0.1', 20_001);
         $transport->events[] = new SessionOpenedEvent($info);
         self::assertTrue($runtime->poll());
 
@@ -2675,12 +2661,12 @@ final class ServerRuntimeTest extends TestCase
             new RecordingEventEncoder(),
             closeClock: $clock,
         );
-        $bad = new SessionInfo('127.0.0.1', 20_001, 41, 1_400, 11);
-        $good = new SessionInfo('127.0.0.1', 20_002, 42, 1_400, 11);
+        $bad = new SessionInfo(20_001, (string) 41, '127.0.0.1', 20_001);
+        $good = new SessionInfo(20_002, (string) 42, '127.0.0.1', 20_002);
         $badEncryptor = $this->advanceToInitializing($runtime, $transport, $bad, $loginFactory);
         $this->advanceToInitializing($runtime, $transport, $good, $loginFactory);
 
-        $this->receive($transport, $bad, $badEncryptor->encryptEnvelope("\xfe" . 'malformed-batch'));
+        $this->receive($transport, $bad, $badEncryptor->encryptBatch('malformed-batch'));
 
         self::assertTrue($runtime->poll());
         self::assertFalse($runtime->isClosed());
@@ -2713,12 +2699,12 @@ final class ServerRuntimeTest extends TestCase
             new FixedRateWorldLoop($world, $clock),
             $events,
         );
-        $causal = new SessionInfo('127.0.0.1', 20_001, 41, 1_400, 11);
-        $recipient = new SessionInfo('127.0.0.1', 20_002, 42, 1_400, 11);
+        $causal = new SessionInfo(20_001, (string) 41, '127.0.0.1', 20_001);
+        $recipient = new SessionInfo(20_002, (string) 42, '127.0.0.1', 20_002);
         $this->advanceToInitializing($runtime, $transport, $causal, $loginFactory);
         $this->advanceToInitializing($runtime, $transport, $recipient, $loginFactory);
-        $causalSession = $this->runtimeSession($runtime, '41@127.0.0.1:20001');
-        $recipientSession = $this->runtimeSession($runtime, '42@127.0.0.1:20002');
+        $causalSession = $this->runtimeSession($runtime, 'nethernet:20001');
+        $recipientSession = $this->runtimeSession($runtime, 'nethernet:20002');
         $event = new ChatBroadcast(
             $causalSession->id,
             'identity-causal',
@@ -2766,12 +2752,12 @@ final class ServerRuntimeTest extends TestCase
             $events,
             $limits,
         );
-        $causal = new SessionInfo('127.0.0.1', 20_001, 41, 1_400, 11);
-        $recipient = new SessionInfo('127.0.0.1', 20_002, 42, 1_400, 11);
+        $causal = new SessionInfo(20_001, (string) 41, '127.0.0.1', 20_001);
+        $recipient = new SessionInfo(20_002, (string) 42, '127.0.0.1', 20_002);
         $this->advanceToInitializing($runtime, $transport, $causal, $loginFactory);
         $this->advanceToInitializing($runtime, $transport, $recipient, $loginFactory);
-        $causalSession = $this->runtimeSession($runtime, '41@127.0.0.1:20001');
-        $recipientSession = $this->runtimeSession($runtime, '42@127.0.0.1:20002');
+        $causalSession = $this->runtimeSession($runtime, 'nethernet:20001');
+        $recipientSession = $this->runtimeSession($runtime, 'nethernet:20002');
         $event = new ChatBroadcast(
             $causalSession->id,
             'identity-causal',
@@ -2891,7 +2877,7 @@ final class ServerRuntimeTest extends TestCase
             new FixedRateWorldLoop($simulation, $clock),
             new RecordingEventEncoder(),
         );
-        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $info = new SessionInfo(20_001, (string) 42, '127.0.0.1', 20_001);
         $client = $this->advanceToInitializing($runtime, $transport, $info, $loginFactory);
         $this->receiveEncrypted(
             $transport,
@@ -3096,7 +3082,7 @@ final class ServerRuntimeTest extends TestCase
             $this->advanceToInitializing(
                 $runtime,
                 $transport,
-                new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11),
+                new SessionInfo(20_001, (string) 42, '127.0.0.1', 20_001),
                 $loginFactory,
             );
             $packets = $this->decodeEncryptedPackets($transport->sent, $loginFactory->clientDecryptor());
@@ -3155,7 +3141,7 @@ final class ServerRuntimeTest extends TestCase
             $this->advanceToInitializing(
                 $runtime,
                 $transport,
-                new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11),
+                new SessionInfo(20_001, (string) 42, '127.0.0.1', 20_001),
                 $loginFactory,
             );
             $decryptor = $loginFactory->clientDecryptor();
@@ -3214,7 +3200,7 @@ final class ServerRuntimeTest extends TestCase
             commandRegistry: $commands,
             permissionStore: $permissions,
         );
-        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $info = new SessionInfo(20_001, (string) 42, '127.0.0.1', 20_001);
 
         try {
             $client = $this->advanceToInitializing($runtime, $transport, $info, $loginFactory);
@@ -3302,7 +3288,7 @@ final class ServerRuntimeTest extends TestCase
             commandRegistry: $commands,
             permissionStore: $permissions,
         );
-        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $info = new SessionInfo(20_001, (string) 42, '127.0.0.1', 20_001);
 
         try {
             $client = $this->advanceToInitializing($runtime, $transport, $info, $loginFactory);
@@ -3378,7 +3364,7 @@ final class ServerRuntimeTest extends TestCase
             commandRegistry: $commands,
             permissionStore: $permissions,
         );
-        $info = new SessionInfo('127.0.0.1', 20_001, 42, 1_400, 11);
+        $info = new SessionInfo(20_001, (string) 42, '127.0.0.1', 20_001);
 
         try {
             $client = $this->advanceToInitializing($runtime, $transport, $info, $loginFactory);
@@ -3543,12 +3529,12 @@ final class ServerRuntimeTest extends TestCase
      * @param list<array{string, int, string, Reliability, int}> $sent
      * @return list<Packet>
      */
-    private function decodeEncryptedPackets(array $sent, BedrockDecryptor $decryptor): array
+    private function decodeEncryptedPackets(array $sent, RuntimePlaintextBoundary $decryptor): array
     {
         $packets = [];
         foreach ($sent as $payload) {
             $batch = BedrockBatchCodec::decode(
-                $decryptor->decryptEnvelope($payload[2]),
+                $decryptor->decryptBatch($payload[2]),
                 CompressionMode::NegotiatedZlib,
                 new BatchLimits(),
                 NetworkCompressionPolicy::THRESHOLD_BYTES,
@@ -3606,11 +3592,9 @@ final class ServerRuntimeTest extends TestCase
     private function receive(FakeConnectedTransport $transport, SessionInfo $info, string $payload): void
     {
         $transport->payloads[] = new ReceivedPayload(
-            $info->remoteAddress,
-            $info->remotePort,
+            $info->id,
             $payload,
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         );
     }
 
@@ -3619,7 +3603,7 @@ final class ServerRuntimeTest extends TestCase
         FakeConnectedTransport $transport,
         SessionInfo $info,
         RuntimeLoginFactory $loginFactory,
-    ): BedrockEncryptor {
+    ): RuntimePlaintextBoundary {
         $transport->events[] = new SessionOpenedEvent($info);
         self::assertTrue($runtime->poll());
         $this->receive($transport, $info, $this->encode([new RequestNetworkSettingsPacket()], CompressionMode::Uncompressed));
@@ -3627,12 +3611,8 @@ final class ServerRuntimeTest extends TestCase
         $transport->sent = [];
         $this->receive($transport, $info, $this->encode([$loginFactory->loginPacket()], CompressionMode::NegotiatedZlib));
         self::assertTrue($runtime->poll());
-        $handshake = $this->decode($transport->sent[0][2], CompressionMode::NegotiatedZlib);
-        self::assertInstanceOf(ServerToClientHandshakePacket::class, $handshake);
-        $clientEncryptor = $loginFactory->clientEncryptor($handshake);
+        $clientEncryptor = $loginFactory->clientEncryptor();
         $transport->sent = [];
-        $this->receiveEncrypted($transport, $info, $clientEncryptor, new ClientToServerHandshakePacket());
-        self::assertTrue($runtime->poll());
         $this->receiveEncrypted($transport, $info, $clientEncryptor, new ResourcePackClientResponsePacket(ResourcePackResponseStatus::HaveAllPacks, []));
         self::assertTrue($runtime->poll());
         $this->receiveEncrypted($transport, $info, $clientEncryptor, new ResourcePackClientResponsePacket(ResourcePackResponseStatus::Completed, []));
@@ -3719,9 +3699,9 @@ final class ServerRuntimeTest extends TestCase
         ), $provider];
     }
 
-    private function receiveEncrypted(FakeConnectedTransport $transport, SessionInfo $info, BedrockEncryptor $encryptor, Packet $packet): void
+    private function receiveEncrypted(FakeConnectedTransport $transport, SessionInfo $info, RuntimePlaintextBoundary $encryptor, Packet $packet): void
     {
-        $this->receive($transport, $info, $encryptor->encryptEnvelope($this->encode([$packet], CompressionMode::NegotiatedZlib)));
+        $this->receive($transport, $info, $encryptor->encryptBatch($this->encode([$packet], CompressionMode::NegotiatedZlib)));
     }
 
     private function stationaryMovementPacket(UnsignedLong $tick): PlayerAuthInputPacket
@@ -3773,17 +3753,6 @@ final class ServerRuntimeTest extends TestCase
         ), new BatchLimits());
     }
 
-    private function decode(string $payload, CompressionMode $mode): Packet
-    {
-        $batch = BedrockBatchCodec::decode(
-            $payload,
-            $mode,
-            new BatchLimits(),
-            NetworkCompressionPolicy::THRESHOLD_BYTES,
-        );
-
-        return BedrockPacketCodec::decode($batch->packets[0]->header->packetId, $batch->packets[0]->payload);
-    }
 }
 
 final class RuntimeAuthorityCommand extends AbstractCommand
@@ -3856,6 +3825,9 @@ final class FakeConnectedTransport implements ConnectedTransport
     public bool $throwOnPoll = false;
     public ?Throwable $sendFailure = null;
     public int $closeCalls = 0;
+    public int $advertisedPlayerCount = 0;
+    /** @var array{string, int, int}|null */
+    public ?array $advertisement = null;
 
     public function poll(int $maximumDatagrams): int
     {
@@ -3876,17 +3848,30 @@ final class FakeConnectedTransport implements ConnectedTransport
         $this->payloads = [];
         return $payloads;
     }
-    public function sendPayload(string $remoteAddress, int $remotePort, string $payload, Reliability $reliability, int $orderingChannel = 0): void
+    public function sendPayload(int $sessionId, string $payload, Reliability $reliability): void
     {
         if ($this->sendFailure !== null) {
             throw $this->sendFailure;
         }
-        $this->sent[] = [$remoteAddress, $remotePort, $payload, $reliability, $orderingChannel];
+        $this->sent[] = ['127.0.0.1', $sessionId, $payload, $reliability, 0];
     }
-    public function removeSession(string $remoteAddress, int $remotePort): bool
+    public function removeSession(int $sessionId): bool
     {
-        $this->removed[] = [$remoteAddress, $remotePort];
+        $this->removed[] = ['127.0.0.1', $sessionId];
         return true;
+    }
+    public function updatePlayerCount(int $onlinePlayers): void
+    {
+        $this->advertisedPlayerCount = $onlinePlayers;
+    }
+    public function updateAdvertisement(string $serverName, int $onlinePlayers, int $maximumPlayers): void
+    {
+        $this->advertisement = [$serverName, $onlinePlayers, $maximumPlayers];
+    }
+
+    public function securitySnapshot(): ?\Bedriox\NetherNet\Server\ServerSecuritySnapshot
+    {
+        return null;
     }
     public function close(): void
     {
@@ -3914,7 +3899,6 @@ final class RuntimeLoginFactory implements LoginChannelFactory
 {
     private readonly OpenSslEphemeralKeyFactory $keys;
     private readonly P384KeyPair $client;
-    private ?string $lastSessionKey = null;
     public function __construct(
         private readonly ?int $failPort = null,
         private readonly string $displayName = 'Player',
@@ -3952,38 +3936,33 @@ final class RuntimeLoginFactory implements LoginChannelFactory
         return new BedrockLoginChannel(new LoginSession(
             new RuntimeLoginClock(),
             new RuntimeAuthenticator($login),
-            new RuntimeHandshakeFactory($this->keys),
         ));
     }
     public function loginPacket(): LoginPacket
     {
         return new LoginPacket(ProtocolVersion::CURRENT, new LoginAuthentication(AuthenticationType::Full, 'token'), 'client');
     }
-    public function clientEncryptor(ServerToClientHandshakePacket $packet): BedrockEncryptor
+    public function clientEncryptor(): RuntimePlaintextBoundary
     {
-        $jws = HandshakeJwt::parse($packet->jwt);
-        $encodedSalt = $jws->payload['salt'] ?? null;
-        $encodedKey = $jws->header['x5u'] ?? null;
-        if (!is_string($encodedSalt) || !is_string($encodedKey)) {
-            throw new \RuntimeException('handshake');
-        }
-        $salt = base64_decode($encodedSalt, true);
-        if (!is_string($salt)) {
-            throw new \RuntimeException('salt');
-        }
-        $server = P384::importPublicDerBase64($encodedKey);
-        $this->lastSessionKey = P384::deriveSessionKey($salt, P384::deriveSharedSecret($this->client->privateKey, $server));
-
-        return new BedrockEncryptor($this->lastSessionKey);
+        return new RuntimePlaintextBoundary();
     }
 
-    public function clientDecryptor(): BedrockDecryptor
+    public function clientDecryptor(): RuntimePlaintextBoundary
     {
-        if ($this->lastSessionKey === null) {
-            throw new \RuntimeException('Client session key has not been established.');
-        }
+        return new RuntimePlaintextBoundary();
+    }
+}
 
-        return new BedrockDecryptor($this->lastSessionKey);
+final readonly class RuntimePlaintextBoundary
+{
+    public function encryptBatch(string $payload): string
+    {
+        return $payload;
+    }
+
+    public function decryptBatch(string $payload): string
+    {
+        return $payload;
     }
 }
 
@@ -4001,15 +3980,6 @@ final readonly class RuntimeAuthenticator implements LoginAuthenticator
     public function authenticate(LoginPacket $packet, \Bedriox\Server\Login\AuthenticationMode $mode): AuthenticatedLogin
     {
         return $this->login;
-    }
-}
-
-final readonly class RuntimeHandshakeFactory implements HandshakeMaterialFactory
-{
-    public function __construct(private OpenSslEphemeralKeyFactory $keys) {}
-    public function create(): HandshakeMaterial
-    {
-        return new HandshakeMaterial($this->keys->generate(), str_repeat('A', 16));
     }
 }
 

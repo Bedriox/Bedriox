@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Transport\Process;
 
-use Bedriox\RakNet\Protocol\Reliability;
+use Bedriox\NetherNet\Protocol\Reliability;
 
 final readonly class TransportProcessFrame
 {
@@ -30,7 +30,6 @@ final readonly class TransportProcessFrame
         public int $sessionId = 0,
         public string $payload = '',
         public ?Reliability $reliability = null,
-        public ?int $orderingChannel = null,
         public array $metadata = [],
     ) {}
 }

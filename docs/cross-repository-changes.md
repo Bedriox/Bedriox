@@ -3,12 +3,12 @@
 Bedriox consumes independently versioned components through one-way dependencies:
 
 ```text
-Bedriox -> RakNet
+Bedriox -> NetherNet
        -> Protocol
        -> Data
 ```
 
-Change behavior in the repository that owns it. RakNet owns UDP and RakNet transport; Protocol owns Bedrock wire codecs; Data owns immutable versioned artifacts; Bedriox owns policy, sessions, simulation, worlds, and composition.
+Change behavior in the repository that owns it. NetherNet owns signaling, ICE, SCTP, data-channel framing, and transport limits; Protocol owns Bedrock wire codecs; Data owns immutable versioned artifacts; Bedriox owns policy, sessions, simulation, worlds, and composition.
 
 ## Coordinated workflow
 

@@ -22,7 +22,6 @@ namespace Bedriox\Server\Worker\Network;
 
 use Bedriox\Protocol\Batch\BatchCompressionCodec;
 use Bedriox\Protocol\Batch\BatchLimits;
-use Bedriox\Protocol\Batch\BedrockBatchCodec;
 use Bedriox\Protocol\Batch\CompressionMode;
 use Bedriox\Server\Worker\WorkerResult;
 use Bedriox\Server\Worker\WorkerResultStatus;
@@ -47,7 +46,7 @@ final class OrderedOutboundCompressionQueue
         private readonly BatchLimits $limits,
         private readonly int $maximumOutstandingTasks = 32,
         private readonly int $maximumOutstandingBytes = 8_388_608,
-        private readonly int $maximumResultBytes = 1_048_577,
+        private readonly int $maximumResultBytes = 1_048_576,
         private readonly int $minimumOffloadBytes = 1,
         private readonly int $maximumWorkerAttempts = 3,
     ) {
@@ -55,7 +54,7 @@ final class OrderedOutboundCompressionQueue
             || $threshold < 0 || $threshold > 65_535
             || $maximumOutstandingTasks < 1 || $maximumOutstandingTasks > 4_096
             || $maximumOutstandingBytes < 1 || $maximumOutstandingBytes > 67_108_864
-            || $maximumResultBytes < $limits->maximumInputBytes + 1 || $maximumResultBytes > 33_554_432
+            || $maximumResultBytes < $limits->maximumInputBytes || $maximumResultBytes > 33_554_432
             || $minimumOffloadBytes < 1 || $minimumOffloadBytes > $limits->maximumDecompressedBytes
             || $maximumWorkerAttempts < 1 || $maximumWorkerAttempts > 16) {
             throw new \InvalidArgumentException('Outbound compression queue limits or identity are invalid.');
@@ -96,7 +95,7 @@ final class OrderedOutboundCompressionQueue
     /** Completes negotiated batches which are required to remain uncompressed without a worker round trip. */
     private function enqueueSubThreshold(string $uncompressedBatch): OutboundCompressionSubmission
     {
-        $payload = chr(BedrockBatchCodec::GAME_PACKET_MARKER) . BatchCompressionCodec::encode(
+        $payload = BatchCompressionCodec::encode(
             $uncompressedBatch,
             $this->mode,
             $this->limits,
@@ -291,8 +290,15 @@ final class OrderedOutboundCompressionQueue
 
     private function isValidWorkerPayload(string $payload): bool
     {
-        return $payload !== '' && strlen($payload) <= $this->maximumResultBytes
-            && ord($payload[0]) === BedrockBatchCodec::GAME_PACKET_MARKER;
+        if ($payload === '' || strlen($payload) > $this->maximumResultBytes) {
+            return false;
+        }
+
+        return match ($this->mode) {
+            CompressionMode::PrefixedNone => ord($payload[0]) === 0xff,
+            CompressionMode::NegotiatedZlib => ord($payload[0]) === 0x00 || ord($payload[0]) === 0xff,
+            CompressionMode::Zlib, CompressionMode::Uncompressed => true,
+        };
     }
 
     private function storeResult(PendingOutboundCompression $entry, string $payload): bool

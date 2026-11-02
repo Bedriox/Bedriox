@@ -20,9 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Transport;
 
-use Bedriox\RakNet\Security\TransportSecuritySnapshot;
-
-interface SecurityObservableTransport
+final readonly class SessionOpenedEvent
 {
-    public function securitySnapshot(): ?TransportSecuritySnapshot;
+    public function __construct(public SessionInfo $session) {}
 }

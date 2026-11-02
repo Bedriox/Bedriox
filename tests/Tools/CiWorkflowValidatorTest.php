@@ -38,13 +38,13 @@ final class CiWorkflowValidatorTest extends TestCase
     {
         $workflow = self::workflow();
         $workflow = str_replace(
-            'ref: ${{ steps.component-pins.outputs.raknet_commit }}',
+            'ref: ${{ steps.component-pins.outputs.nethernet_commit }}',
             'ref: 0123456789abcdef0123456789abcdef01234567',
             $workflow,
         );
 
         $errors = CiWorkflowValidator::validate($workflow);
-        self::assertStringContainsString('raknet', implode("\n", $errors));
+        self::assertStringContainsString('nethernet', implode("\n", $errors));
         self::assertStringContainsString('literal commit hashes', implode("\n", $errors));
     }
 
@@ -90,8 +90,8 @@ steps:
           ref: ${{ steps.component-pins.outputs.protocol_commit }}
       - uses: actions/checkout@example
         with:
-          repository: Bedriox/RakNet
-          ref: ${{ steps.component-pins.outputs.raknet_commit }}
+          repository: Bedriox/NetherNet
+          ref: ${{ steps.component-pins.outputs.nethernet_commit }}
       - uses: actions/checkout@example
         with:
           repository: Bedriox/Data

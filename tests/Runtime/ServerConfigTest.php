@@ -65,8 +65,10 @@ final class ServerConfigTest extends TestCase
         self::assertTrue($defaults->updatesEnabled);
         self::assertTrue($defaults->updateOperatorNotifications);
         self::assertSame(NetworkSecurityProfile::BALANCED, $defaults->networkSecurityProfile);
-        self::assertNotNull($defaults->transportSecurityPolicy);
-        self::assertSame(2_000, $defaults->transportSecurityPolicy->unauthenticatedDatagramsPerSecond);
+        self::assertSame(256, $defaults->netherNetMaximumSignalingConnections);
+        self::assertSame(256, $defaults->netherNetMaximumNegotiations);
+        self::assertSame(8, $defaults->netherNetMaximumNegotiationsPerAddress);
+        self::assertSame(64, $defaults->netherNetMaximumRemoteCandidates);
         self::assertTrue($defaults->movementSecurityEnabled);
         self::assertTrue($defaults->correctInvalidMovement);
         self::assertTrue($defaults->kickRepeatedMovementViolations);
@@ -152,22 +154,17 @@ final class ServerConfigTest extends TestCase
             file_put_contents($settings, "security.network.profile=strict\n");
             $strict = ServerConfig::fromConfigurationFiles($properties, $settings, []);
             self::assertSame(NetworkSecurityProfile::STRICT, $strict->networkSecurityProfile);
-            $strictPolicy = $strict->transportSecurityPolicy ?? throw new \LogicException('Strict policy is missing.');
-            self::assertSame(1_000, $strictPolicy->unauthenticatedDatagramsPerSecond);
-            self::assertSame(2, $strictPolicy->malformedThreshold);
+            self::assertSame(128, $strict->netherNetMaximumSignalingConnections);
+            self::assertSame(128, $strict->netherNetMaximumNegotiations);
+            self::assertSame(4, $strict->netherNetMaximumNegotiationsPerAddress);
+            self::assertSame(32, $strict->netherNetMaximumRemoteCandidates);
 
             file_put_contents($settings, implode("\n", [
                 'security.network.profile=custom',
-                'security.network.custom.unauthenticated-datagrams-per-second=3000',
-                'security.network.custom.unauthenticated-datagram-burst=500',
-                'security.network.custom.connected-datagrams-per-second=14000',
-                'security.network.custom.connected-datagram-burst=300',
-                'security.network.custom.handshakes-per-second=300',
-                'security.network.custom.handshake-burst=160',
-                'security.network.custom.malformed-threshold=4',
-                'security.network.block-base-seconds=20',
-                'security.network.block-maximum-seconds=600',
-                'security.network.block-escalation-window-seconds=120',
+                'network.nethernet.maximum-signaling-connections=3000',
+                'network.nethernet.maximum-negotiations=1400',
+                'network.nethernet.maximum-negotiations-per-address=12',
+                'network.nethernet.maximum-remote-candidates=96',
                 'security.movement.enabled=false',
                 'security.movement.correct-invalid-movement=false',
                 'security.movement.kick-repeated-violations=false',
@@ -178,11 +175,10 @@ final class ServerConfigTest extends TestCase
             ]) . "\n");
             $custom = ServerConfig::fromConfigurationFiles($properties, $settings, []);
             self::assertSame(NetworkSecurityProfile::CUSTOM, $custom->networkSecurityProfile);
-            $customPolicy = $custom->transportSecurityPolicy ?? throw new \LogicException('Custom policy is missing.');
-            self::assertSame(3_000, $customPolicy->unauthenticatedDatagramsPerSecond);
-            self::assertSame(14_000, $customPolicy->connectedDatagramsPerSecond);
-            self::assertSame(4, $customPolicy->malformedThreshold);
-            self::assertSame(20, $customPolicy->baseBlockSeconds);
+            self::assertSame(3_000, $custom->netherNetMaximumSignalingConnections);
+            self::assertSame(1_400, $custom->netherNetMaximumNegotiations);
+            self::assertSame(12, $custom->netherNetMaximumNegotiationsPerAddress);
+            self::assertSame(96, $custom->netherNetMaximumRemoteCandidates);
             self::assertFalse($custom->movementSecurityEnabled);
             self::assertFalse($custom->correctInvalidMovement);
             self::assertFalse($custom->kickRepeatedMovementViolations);
@@ -190,6 +186,26 @@ final class ServerConfigTest extends TestCase
             self::assertSame(30, $custom->protocolStrikeDecaySeconds);
             self::assertFalse($custom->traceUnsupportedPackets);
             self::assertSame(2, $custom->unsupportedPacketLogLimit);
+        } finally {
+            @unlink($properties);
+            @unlink($settings);
+        }
+    }
+
+    public function testNetherNetLanDiscoveryCanBeDisabledForGatewayBackends(): void
+    {
+        $properties = tempnam(sys_get_temp_dir(), 'bedriox-properties-');
+        $settings = tempnam(sys_get_temp_dir(), 'bedriox-settings-');
+        self::assertIsString($properties);
+        self::assertIsString($settings);
+        try {
+            file_put_contents($properties, '');
+            file_put_contents($settings, "network.nethernet.lan-port=0\n");
+
+            self::assertSame(
+                0,
+                ServerConfig::fromConfigurationFiles($properties, $settings, [])->netherNetLanPort,
+            );
         } finally {
             @unlink($properties);
             @unlink($settings);

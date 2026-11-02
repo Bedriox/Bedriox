@@ -212,9 +212,9 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
         self::assertInstanceOf(JigsawStructureDataPacket::class, $packets[0]);
         self::assertInstanceOf(VoxelShapesPacket::class, $packets[1]);
         self::assertInstanceOf(StartGamePacket::class, $packets[2]);
-        self::assertSame(76_835, strlen($packets[2]->encode()));
+        self::assertSame(76_836, strlen($packets[2]->encode()));
         self::assertTrue($packets[2]->blockNetworkIdsAreHashes);
-        self::assertSame('69d991a3ffd1537e61ad502b8e0529a52fea2c38b82356b13f8077c91cf69e36', hash('sha256', $packets[2]->encode()));
+        self::assertSame('383de65a1692308c87328f497d05dc76cf8628e90bb88f8a8388daf3f8be068c', hash('sha256', $packets[2]->encode()));
         self::assertInstanceOf(ItemRegistryPacket::class, $packets[3]);
         self::assertSame(166_607, strlen($packets[3]->encode()));
         self::assertSame('0cbe4e9e93a3003e8f8cf4f322ed36a18a373b2000fbaac8c164c5320ba2e7af', hash('sha256', $packets[3]->encode()));

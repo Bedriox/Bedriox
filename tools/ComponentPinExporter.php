@@ -27,7 +27,7 @@ final class ComponentPinExporter
     /** @var array<string, string> */
     private const array COMPONENT_PACKAGES = [
         'protocol' => 'bedriox/protocol',
-        'raknet' => 'bedriox/raknet',
+        'nethernet' => 'bedriox/nethernet',
         'data' => 'bedriox/data',
     ];
 

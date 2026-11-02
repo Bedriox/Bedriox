@@ -1,17 +1,17 @@
 # Architecture
 
-Bedriox is the composition root for independently versioned RakNet, Bedrock protocol, and Bedrock data packages. External packets never mutate game state directly. Validated input becomes an immutable command consumed by the authoritative 20 TPS simulation; resulting events are encoded and sent by the network boundary.
+Bedriox is the composition root for independently versioned NetherNet, Bedrock protocol, and Bedrock data packages. External packets never mutate game state directly. Validated input becomes an immutable command consumed by the authoritative 20 TPS simulation; resulting events are encoded and sent by the network boundary.
 
 The intended flow is:
 
 ```text
-UDP → RakNet → Bedrock decode → session validation → command queue
-    → simulation → event queue → Bedrock encode → RakNet → UDP
+HTTP/LAN signaling → WebRTC/NetherNet → Bedrock decode → session validation → command queue
+    → simulation → event queue → Bedrock encode → NetherNet/WebRTC
 ```
 
 Mutable world and player state has one authoritative owner. Queues and decoded sizes are bounded. Managed worker processes receive immutable, versioned task payloads for admitted CPU-heavy work; completions return to the authoritative server loop before they can affect gameplay. Ordered storage and log services own their file handles exclusively. Workers never receive live players, worlds, sessions, sockets, packets, or mutable registries.
 
-Chunk streaming has a deliberately later worker boundary than world authority. The server installs or loads one immutable canonical chunk revision, snapshots its canonical palettes and validated packed X-Z-Y words into a bounded projection transfer, and asks a core worker to translate each palette once, write those words, frame, and compress the packet. A shared revision- and wire-identity cache deduplicates the result across players. The main process revalidates the current revision, applies the session cipher, and hands the payload to RakNet. Unfinished chunk preparation is never inserted into a session's ordered output, so chat and control traffic can continue while workers are busy.
+Chunk streaming has a deliberately later worker boundary than world authority. The server installs or loads one immutable canonical chunk revision, snapshots its canonical palettes and validated packed X-Z-Y words into a bounded projection transfer, and asks a core worker to translate each palette once, write those words, frame, and compress the packet. A shared revision- and wire-identity cache deduplicates the result across players. The main process revalidates the current revision, applies the session cipher, and hands the payload to NetherNet. Unfinished chunk preparation is never inserted into a session's reliable output, so chat and control traffic can continue while workers are busy.
 
 Block and item data follow the same ownership rule. `Data` supplies canonical immutable states such as `minecraft:grass_block`, verified explicit block network hashes, item definitions, block-item mappings, and the ordered creative groups and entries for the active release. Data releases use source-neutral directories such as `artifacts/bedrock-<version>-protocol-<protocol>/`; upstream attribution belongs only in the owning package's legal and provenance records. Bedriox admits every network item into its gameplay catalog and projects every creative entry with its stable ID, auxiliary variant, NBT, and block state, but this admission does not imply that every item's unique gameplay mechanic is implemented.
 
@@ -28,7 +28,7 @@ their runtime state isolated.
 
 See the accepted architecture RFCs in `RFCs` for rationale and alternatives.
 
-The bounded protocol-2193 pre-spawn state machine is documented in [`login-session.md`](login-session.md).
+The bounded protocol-2225 pre-spawn state machine is documented in [`login-session.md`](login-session.md).
 The independently composed FULL Token verifier is documented in [`authentication.md`](authentication.md).
 The deterministic fixed-rate world and player domain is documented in [`simulation.md`](simulation.md).
 The bounded transport-to-simulation composition loop is documented in [`runtime.md`](runtime.md).

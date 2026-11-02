@@ -152,8 +152,8 @@ final class CoreWorkerConsumersTest extends TestCase
             self::assertSame(WorkerResultStatus::SUCCESS, $results[$compression->receipt->taskId]->status);
             self::assertSame(WorkerResultStatus::SUCCESS, $results[$generation->receipt->taskId]->status);
             self::assertSame(WorkerResultStatus::SUCCESS, $results[$preparation->receipt->taskId]->status);
-            self::assertSame(0xfe, ord($results[$compression->receipt->taskId]->payload[0]));
-            self::assertSame(0xfe, ord($results[$preparation->receipt->taskId]->payload[0]));
+            self::assertContains(ord($results[$compression->receipt->taskId]->payload[0]), [0x00, 0xff]);
+            self::assertContains(ord($results[$preparation->receipt->taskId]->payload[0]), [0x00, 0xff]);
 
             $chunk = (new ChunkTransferCodec())->decode($results[$generation->receipt->taskId]->payload, $states);
             self::assertSame('2:-3', $chunk->position->key());

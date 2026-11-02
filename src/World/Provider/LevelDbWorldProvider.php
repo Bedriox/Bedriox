@@ -67,7 +67,7 @@ use Throwable;
 final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersistenceStore, TransientEntityPersistenceStore
 {
     private const int CURRENT_CHUNK_VERSION = 42;
-    private const int CURRENT_NETWORK_VERSION = 2193;
+    private const int CURRENT_NETWORK_VERSION = 2225;
     private const int NATIVE_AUTOMATIC_SPAWN_Y = 32_767;
     private const string TRANSIENT_ENTITY_KEY_PREFIX = "bedriox:transient_entities:";
 

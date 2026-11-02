@@ -35,7 +35,7 @@ final class ComponentPinExporterTest extends TestCase
     {
         self::assertSame([
             'protocol_commit' => self::COMMIT,
-            'raknet_commit' => self::COMMIT,
+            'nethernet_commit' => self::COMMIT,
             'data_commit' => self::COMMIT,
         ], ComponentPinExporter::export(self::manifest()));
     }
@@ -64,11 +64,11 @@ final class ComponentPinExporterTest extends TestCase
         yield 'extra component' => [$manifest];
 
         $manifest = self::manifest();
-        $manifest['components']['protocol']['package'] = 'bedriox/raknet';
+        $manifest['components']['protocol']['package'] = 'bedriox/nethernet';
         yield 'wrong package' => [$manifest];
 
         $manifest = self::manifest();
-        $manifest['components']['raknet']['commit'] = 'main';
+        $manifest['components']['nethernet']['commit'] = 'main';
         yield 'mutable ref' => [$manifest];
 
         $manifest = self::manifest();
@@ -81,7 +81,7 @@ final class ComponentPinExporterTest extends TestCase
      *   schema: int,
      *   components: array{
      *     protocol: array{package: string, commit: string},
-     *     raknet: array{package: string, commit: string},
+     *     nethernet: array{package: string, commit: string},
      *     data: array{package: string, commit: string}
      *   }
      * }
@@ -92,7 +92,7 @@ final class ComponentPinExporterTest extends TestCase
             'schema' => 2,
             'components' => [
                 'protocol' => ['package' => 'bedriox/protocol', 'commit' => self::COMMIT],
-                'raknet' => ['package' => 'bedriox/raknet', 'commit' => self::COMMIT],
+                'nethernet' => ['package' => 'bedriox/nethernet', 'commit' => self::COMMIT],
                 'data' => ['package' => 'bedriox/data', 'commit' => self::COMMIT],
             ],
         ];

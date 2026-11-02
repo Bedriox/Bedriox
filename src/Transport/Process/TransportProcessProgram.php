@@ -20,23 +20,33 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Transport\Process;
 
-use Bedriox\RakNet\ConnectedHandshakeDiagnosticBatch;
-use Bedriox\RakNet\DiscoveryServer;
-use Bedriox\RakNet\DiscoveryStatus;
-use Bedriox\RakNet\EndpointAdmissionRejectionBatch;
-use Bedriox\RakNet\Protocol\Reliability;
-use Bedriox\RakNet\Security\TransportSecurityPolicy;
-use Bedriox\RakNet\SessionClosedEvent;
-use Bedriox\RakNet\SessionInfo;
-use Bedriox\RakNet\SessionOpenedEvent;
-use Bedriox\RakNet\TransportConfig;
-use Bedriox\Server\Security\TrustedProxyEndpointPolicy;
+use Bedriox\NetherNet\Identity\PeerIdentity;
+use Bedriox\NetherNet\Identity\SelfSignedIdentityProvider;
+use Bedriox\NetherNet\Identity\ServerIdentity;
+use Bedriox\NetherNet\Info\GameType;
+use Bedriox\NetherNet\Info\MutableServerInfoProvider;
+use Bedriox\NetherNet\Info\ServerInfo;
+use Bedriox\NetherNet\Logging\NullLogger;
+use Bedriox\NetherNet\Protocol\DisconnectReason;
+use Bedriox\NetherNet\Protocol\Reliability;
+use Bedriox\NetherNet\Server\NetherNetServer;
+use Bedriox\NetherNet\Server\ServerConfiguration;
+use Bedriox\NetherNet\Server\ServerEventListener;
+use Bedriox\NetherNet\Server\ServerInterface;
+use Bedriox\NetherNet\Signaling\Http\HttpSignaling;
+use Bedriox\NetherNet\Signaling\Http\ReverseProxy;
+use Bedriox\NetherNet\Signaling\Lan\LanSignaling;
+use Bedriox\NetherNet\Transport\ConnectionBudgetConfiguration;
+use Bedriox\NetherNet\Transport\WebRtc\SctpConfiguration;
+use Bedriox\NetherNet\Transport\WebRtc\WebRtcTransportFactory;
+use Bedriox\NetherNet\Utils\InternetAddress;
+use Bedriox\Server\Transport\NetherNetTransportConfig;
 use Bedriox\Server\Worker\Internal\IpcSocketTuning;
 use JsonException;
 use RuntimeException;
 use Throwable;
 
-/** Owns UDP and RakNet state outside the simulation process. */
+/** Owns signaling, ICE, SCTP and NetherNet sessions outside the simulation process. */
 final class TransportProcessProgram
 {
     private const int READ_BYTES_PER_CYCLE = 4_194_304;
@@ -49,22 +59,15 @@ final class TransportProcessProgram
     private readonly TransportProcessFrameDecoder $decoder;
     private string $outgoing = '';
     private int $outgoingOffset = 0;
-    /** @var array<string, int> */
-    private array $sessionIdsByEndpoint = [];
-    /** @var array<int, SessionInfo> */
-    private array $sessionsById = [];
-    private int $nextSessionId = 1;
     private bool $stopping = false;
-    private int $nextSecuritySnapshotNanoseconds = 0;
+    private ?NetherNetServer $activeServer = null;
+    private ?MutableServerInfoProvider $serverInfo = null;
+    private float $nextSecuritySnapshotAt = 0.0;
 
     private function __construct(
         private readonly string $parentEndpoint,
         private readonly string $parentToken,
-        private readonly TransportConfig $config,
-        private readonly int $serverGuid,
-        private readonly DiscoveryStatus $status,
-        /** @var list<string> */
-        private readonly array $trustedEndpointCidrs,
+        private readonly NetherNetTransportConfig $config,
     ) {
         $this->codec = new TransportProcessFrameCodec();
         $this->decoder = new TransportProcessFrameDecoder($this->codec);
@@ -77,31 +80,16 @@ final class TransportProcessProgram
             return 64;
         }
         try {
-            [$config, $serverGuid, $status, $trustedEndpointCidrs] = self::decodeConfiguration($configuration);
-            return (new self($parentEndpoint, $token, $config, $serverGuid, $status, $trustedEndpointCidrs))->execute();
+            return (new self($parentEndpoint, $token, self::decodeConfiguration($configuration)))->execute();
         } catch (Throwable) {
             return 65;
         }
     }
 
-    /** @param list<string> $trustedEndpointCidrs */
-    public static function encodeConfiguration(
-        TransportConfig $config,
-        int $serverGuid,
-        DiscoveryStatus $status,
-        array $trustedEndpointCidrs = [],
-    ): string {
+    public static function encodeConfiguration(NetherNetTransportConfig $config): string
+    {
         try {
-            $json = json_encode([
-                'transport' => [
-                    ...get_object_vars($config),
-                    'security' => get_object_vars($config->security),
-                ],
-                'server_guid' => (string) $serverGuid,
-                'status' => base64_encode($status->payload),
-                'accepting' => $status->acceptingConnections,
-                'trusted_endpoint_cidrs' => $trustedEndpointCidrs,
-            ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+            $json = json_encode(get_object_vars($config), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
         } catch (JsonException $exception) {
             throw new RuntimeException('Transport process configuration cannot be encoded.', 0, $exception);
         }
@@ -122,19 +110,20 @@ final class TransportProcessProgram
             fclose($stream);
             return 67;
         }
+
         try {
-            $server = DiscoveryServer::bind(
-                $this->config,
-                $this->serverGuid,
-                $this->status,
-                endpointAdmissionPolicy: $this->trustedEndpointCidrs === []
-                    ? null
-                    : new TrustedProxyEndpointPolicy($this->trustedEndpointCidrs),
-            );
+            if (!extension_loaded('webrtc')) {
+                throw new RuntimeException('The NetherNet transport requires ext-webrtc.');
+            }
+            $server = $this->createServer();
+            $server->start();
         } catch (Throwable $exception) {
             $this->queue(new TransportProcessFrame(
                 TransportProcessFrameKind::FAILURE,
-                metadata: ['code' => 'bind_failed', 'exception' => $exception::class],
+                metadata: [
+                    'code' => extension_loaded('webrtc') ? 'bind_failed' : 'webrtc_extension_unavailable',
+                    'exception' => $exception::class,
+                ],
             ));
             $this->flushBlocking();
             fclose($stream);
@@ -142,8 +131,9 @@ final class TransportProcessProgram
         }
         $this->activeServer = $server;
         $this->queue(new TransportProcessFrame(TransportProcessFrameKind::READY, metadata: [
-            'address' => $server->localAddress(),
-            'port' => $server->localPort(),
+            'address' => $this->config->bindAddress,
+            'port' => $this->config->port,
+            'lan_port' => $this->config->lanPort,
             'pid' => getmypid(),
         ]));
         $this->flushBlocking();
@@ -152,51 +142,8 @@ final class TransportProcessProgram
         try {
             while (!$this->stopping) {
                 $work = $this->readCommands();
-                $handled = $server->poll(4_096);
-                $work = $work || $handled > 0;
-                foreach ($server->drainSessionEvents() as $event) {
-                    $this->queueSessionEvent($event);
-                    $work = true;
-                }
-                foreach ($server->drainReceivedPayloads() as $payload) {
-                    $sessionId = $this->sessionIdsByEndpoint[self::endpointKey(
-                        $payload->remoteAddress,
-                        $payload->remotePort,
-                    )] ?? null;
-                    if ($sessionId === null) {
-                        continue;
-                    }
-                    $this->queue(new TransportProcessFrame(
-                        TransportProcessFrameKind::RECEIVED_PAYLOAD,
-                        $sessionId,
-                        $payload->payload,
-                        $payload->reliability,
-                        $payload->orderingChannel,
-                    ));
-                    $work = true;
-                }
-                $this->queueDiagnostics($server->drainHandshakeDiagnostics());
-                $now = hrtime(true);
-                if ($now >= $this->nextSecuritySnapshotNanoseconds) {
-                    $snapshot = $server->securitySnapshot();
-                    $this->queue(new TransportProcessFrame(
-                        TransportProcessFrameKind::SECURITY_SNAPSHOT,
-                        metadata: [
-                            'receivedDatagrams' => $snapshot->receivedDatagrams,
-                            'receivedBytes' => $snapshot->receivedBytes,
-                            'droppedDatagrams' => $snapshot->droppedDatagrams,
-                            'rateLimitedEndpoints' => $snapshot->rateLimitedEndpoints,
-                            'malformedDatagrams' => $snapshot->malformedDatagrams,
-                            'temporaryBlocks' => $snapshot->temporaryBlocks,
-                            'activeBlocks' => $snapshot->activeBlocks,
-                            'trackedAddresses' => $snapshot->trackedAddresses,
-                            'trackedEndpoints' => $snapshot->trackedEndpoints,
-                        ],
-                    ));
-                    $this->nextSecuritySnapshotNanoseconds = $now + 1_000_000_000;
-                    $work = true;
-                }
-                $this->queueAdmissionRejections($server->drainEndpointAdmissionRejections());
+                $server->tick();
+                $this->publishSecuritySnapshot($server);
                 $work = $this->flushOutgoing() || $work;
                 if (!is_resource($this->stream) || feof($this->stream)) {
                     break;
@@ -214,16 +161,187 @@ final class TransportProcessProgram
                 $this->flushBlocking();
             } catch (Throwable) {
             }
-            $server->close();
+            $server->shutdown();
             $this->activeServer = null;
             $this->closeStream();
             return 69;
         }
-        $server->close();
+
+        $server->shutdown();
         $this->activeServer = null;
         $this->closeStream();
 
         return 0;
+    }
+
+    private function publishSecuritySnapshot(NetherNetServer $server): void
+    {
+        $now = microtime(true);
+        if ($now < $this->nextSecuritySnapshotAt) {
+            return;
+        }
+        $this->nextSecuritySnapshotAt = $now + 1.0;
+        $snapshot = $server->getSecuritySnapshot();
+        $this->queue(new TransportProcessFrame(TransportProcessFrameKind::SECURITY_SNAPSHOT, metadata: [
+            'active_sessions' => $snapshot->activeSessions,
+            'maximum_sessions' => $snapshot->maximumSessions,
+            'active_negotiations' => $snapshot->activeNegotiations,
+            'active_address_blocks' => $snapshot->activeAddressBlocks,
+            'negotiation_flood_blocks' => $snapshot->negotiationFloodBlocks,
+            'session_limit_rejections' => $snapshot->sessionLimitRejections,
+            'blocked_peer_rejections' => $snapshot->blockedPeerRejections,
+        ]));
+    }
+
+    private function createServer(): NetherNetServer
+    {
+        $identity = self::loadOrCreateIdentity($this->config->identityPath);
+        (new SctpConfiguration(heartbeatInterval: 2_000, maxRetransmitAttempts: 5))->applyGlobally();
+
+        $listener = new class ($this) implements ServerEventListener {
+            public ?ServerInterface $server = null;
+
+            public function __construct(private readonly TransportProcessProgram $program) {}
+
+            public function onSessionOpen(
+                int $sessionId,
+                string $networkId,
+                InternetAddress $address,
+                ?string $clientAddress,
+                ?PeerIdentity $identity,
+            ): void {
+                $this->program->sessionOpened($sessionId, $networkId, $address, $clientAddress);
+            }
+
+            public function onSessionClose(int $sessionId, DisconnectReason $reason): void
+            {
+                $this->program->sessionClosed($sessionId, $reason);
+            }
+
+            public function canAcceptPackets(): bool
+            {
+                return $this->program->canAcceptPackets();
+            }
+
+            public function onPacketReceive(int $sessionId, string $payload, Reliability $reliability): void
+            {
+                $this->program->packetReceived($sessionId, $payload, $reliability);
+            }
+
+            public function onPacketAck(int $sessionId, int $receiptId): void {}
+
+            public function onBandwidthStatsUpdate(int $bytesSentDiff, int $bytesReceivedDiff): void
+            {
+                $this->program->bandwidthUpdated($bytesSentDiff, $bytesReceivedDiff);
+            }
+
+            public function onPingMeasure(int $sessionId, int $pingMs): void
+            {
+                $this->program->pingMeasured($sessionId, $pingMs);
+            }
+        };
+
+        $budget = new ConnectionBudgetConfiguration(
+            maxReceiveQueueSize: min($this->config->maximumReceivedPayloadBytes, ConnectionBudgetConfiguration::DEFAULT_MAX_RECEIVE_QUEUE_SIZE),
+            maxReceiveQueueMessages: min($this->config->maximumReceivedPayloads, ConnectionBudgetConfiguration::DEFAULT_MAX_RECEIVE_QUEUE_MESSAGES),
+        );
+        $server = NetherNetServer::create(new ServerConfiguration(
+            identityProvider: new SelfSignedIdentityProvider($identity),
+            logger: new NullLogger(),
+            transportFactory: new WebRtcTransportFactory(
+                bindAddress: $this->config->bindAddress,
+                portRangeBegin: $this->config->port,
+                portRangeEnd: $this->config->port,
+                iceUdpMuxEnabled: true,
+            ),
+            budget: $budget,
+            gatheringTimeout: $this->config->gatheringTimeoutSeconds,
+            channelTimeout: $this->config->channelTimeoutSeconds,
+            maxRemoteCandidates: $this->config->maximumRemoteCandidates,
+            maxNegotiations: $this->config->maximumNegotiations,
+            maxNegotiationsPerAddress: $this->config->maximumNegotiationsPerAddress,
+            maxSessions: $this->config->maximumSessions,
+            advertisedAddresses: $this->config->advertisedAddresses === [] ? null : $this->config->advertisedAddresses,
+        ), $listener);
+        $listener->server = $server;
+
+        $info = new MutableServerInfoProvider(new ServerInfo(
+            serverName: $this->config->serverName,
+            protocol: $this->config->protocol,
+            gameVersion: $this->config->gameVersion,
+            levelName: $this->config->levelName,
+            gameType: GameType::SURVIVAL,
+            maxPlayerCount: $this->config->maximumPlayers,
+            acceptsOnlineAuth: $this->config->acceptsOnlineAuthentication,
+            acceptsSelfSignedAuth: $this->config->acceptsSelfSignedAuthentication,
+        ));
+        $this->serverInfo = $info;
+        $proxy = $this->config->trustedProxyCidrs === []
+            ? null
+            : new ReverseProxy(ReverseProxy::HEADER_FORWARDED_FOR, $this->config->trustedProxyCidrs);
+        $server->addSignaling(new HttpSignaling(
+            new InternetAddress($this->config->bindAddress, $this->config->port, 4),
+            infoProvider: $info,
+            reverseProxy: $proxy,
+            maxConnections: $this->config->maximumSignalingConnections,
+        ));
+        if ($this->config->lanPort !== 0) {
+            $server->addSignaling(new LanSignaling(
+                $info,
+                $this->config->networkId,
+                new InternetAddress($this->config->bindAddress, $this->config->lanPort, 4),
+                maxConnections: $this->config->maximumSignalingConnections,
+            ), optional: true);
+        }
+
+        return $server;
+    }
+
+    public function sessionOpened(int $sessionId, string $networkId, InternetAddress $address, ?string $clientAddress): void
+    {
+        $this->queue(new TransportProcessFrame(TransportProcessFrameKind::SESSION_OPENED, $sessionId, metadata: [
+            'network_id' => $networkId,
+            'address' => $address->ip,
+            'port' => $address->port,
+            'client_address' => $clientAddress,
+        ]));
+    }
+
+    public function sessionClosed(int $sessionId, DisconnectReason $reason): void
+    {
+        $this->queue(new TransportProcessFrame(TransportProcessFrameKind::SESSION_CLOSED, $sessionId, metadata: [
+            'reason' => $reason->value,
+        ]));
+    }
+
+    public function canAcceptPackets(): bool
+    {
+        return $this->outgoingBytes() < self::MAXIMUM_OUTGOING_BYTES / 2;
+    }
+
+    public function packetReceived(int $sessionId, string $payload, Reliability $reliability): void
+    {
+        $this->queue(new TransportProcessFrame(
+            TransportProcessFrameKind::RECEIVED_PAYLOAD,
+            $sessionId,
+            $payload,
+            $reliability,
+        ));
+    }
+
+    public function bandwidthUpdated(int $bytesSent, int $bytesReceived): void
+    {
+        $this->queue(new TransportProcessFrame(TransportProcessFrameKind::BANDWIDTH_STATS, metadata: [
+            'sent' => max(0, $bytesSent),
+            'received' => max(0, $bytesReceived),
+        ]));
+    }
+
+    public function pingMeasured(int $sessionId, int $pingMilliseconds): void
+    {
+        $this->queue(new TransportProcessFrame(TransportProcessFrameKind::PING_MEASURED, $sessionId, metadata: [
+            'milliseconds' => max(0, $pingMilliseconds),
+        ]));
     }
 
     private function readCommands(): bool
@@ -231,7 +349,7 @@ final class TransportProcessProgram
         if (!is_resource($this->stream)) {
             return false;
         }
-        $bytes = @fread($this->stream, min(self::READ_BYTES_PER_CYCLE, 4_194_304));
+        $bytes = @fread($this->stream, self::READ_BYTES_PER_CYCLE);
         if ($bytes === false) {
             throw new RuntimeException('Transport process IPC read failed.');
         }
@@ -244,114 +362,65 @@ final class TransportProcessProgram
                 $this->stopping = true;
                 continue;
             }
-            $session = $this->sessionsById[$frame->sessionId] ?? null;
-            if (!$session instanceof SessionInfo) {
-                continue;
-            }
             if ($frame->kind === TransportProcessFrameKind::REMOVE_SESSION) {
-                $this->serverRemove($session);
+                $this->activeServer?->closeSession($frame->sessionId);
                 continue;
             }
-            if ($frame->kind === TransportProcessFrameKind::SEND_PAYLOAD
-                && $frame->reliability instanceof Reliability) {
-                $this->serverSend($session, $frame);
+            if ($frame->kind === TransportProcessFrameKind::SEND_PAYLOAD && $frame->reliability !== null) {
+                $this->activeServer?->sendPacket($frame->sessionId, $frame->payload, $frame->reliability);
+                continue;
+            }
+            if ($frame->kind === TransportProcessFrameKind::UPDATE_PLAYER_COUNT) {
+                $onlinePlayers = $frame->metadata['online_players'] ?? null;
+                $current = $this->serverInfo?->getServerInfo();
+                if (!is_int($onlinePlayers) || $onlinePlayers < 0 || $current === null) {
+                    throw new RuntimeException('Transport player-count update is invalid.');
+                }
+                $this->serverInfo->setServerInfo(new ServerInfo(
+                    $current->serverName,
+                    $current->protocol,
+                    $current->gameVersion,
+                    $current->levelName,
+                    $current->gameType,
+                    min($onlinePlayers, $current->maxPlayerCount),
+                    $current->maxPlayerCount,
+                    $current->editorWorld,
+                    $current->hardcore,
+                    $current->acceptsOnlineAuth,
+                    $current->acceptsSelfSignedAuth,
+                    $current->nonce,
+                ));
+                continue;
+            }
+            if ($frame->kind === TransportProcessFrameKind::UPDATE_ADVERTISEMENT) {
+                $serverName = $frame->metadata['server_name'] ?? null;
+                $onlinePlayers = $frame->metadata['online_players'] ?? null;
+                $maximumPlayers = $frame->metadata['maximum_players'] ?? null;
+                $current = $this->serverInfo?->getServerInfo();
+                if (!is_string($serverName) || $serverName === '' || strlen($serverName) > 128
+                    || preg_match('//u', $serverName) !== 1 || !is_int($onlinePlayers)
+                    || !is_int($maximumPlayers) || $onlinePlayers < 0 || $maximumPlayers < 1
+                    || $onlinePlayers > $maximumPlayers || $current === null) {
+                    throw new RuntimeException('Transport advertisement update is invalid.');
+                }
+                $this->serverInfo->setServerInfo(new ServerInfo(
+                    $serverName,
+                    $current->protocol,
+                    $current->gameVersion,
+                    $current->levelName,
+                    $current->gameType,
+                    $onlinePlayers,
+                    $maximumPlayers,
+                    $current->editorWorld,
+                    $current->hardcore,
+                    $current->acceptsOnlineAuth,
+                    $current->acceptsSelfSignedAuth,
+                    $current->nonce,
+                ));
             }
         }
 
         return $bytes !== '' || $frames !== [];
-    }
-
-    private ?DiscoveryServer $activeServer = null;
-
-    private function serverRemove(SessionInfo $session): void
-    {
-        $this->activeServer?->removeSession($session->remoteAddress, $session->remotePort);
-    }
-
-    private function serverSend(SessionInfo $session, TransportProcessFrame $frame): void
-    {
-        $this->activeServer?->sendPayload(
-            $session->remoteAddress,
-            $session->remotePort,
-            $frame->payload,
-            $frame->reliability ?? throw new RuntimeException('Transport reliability is missing.'),
-            $frame->orderingChannel ?? 0,
-        );
-    }
-
-    private function queueSessionEvent(SessionOpenedEvent|SessionClosedEvent $event): void
-    {
-        $session = $event->session;
-        $key = self::endpointKey($session->remoteAddress, $session->remotePort);
-        if ($event instanceof SessionOpenedEvent) {
-            $sessionId = $this->sessionIdsByEndpoint[$key] ?? $this->allocateSessionId();
-            $this->sessionIdsByEndpoint[$key] = $sessionId;
-            $this->sessionsById[$sessionId] = $session;
-            $this->queue(new TransportProcessFrame(TransportProcessFrameKind::SESSION_OPENED, $sessionId, metadata: [
-                'address' => $session->remoteAddress,
-                'port' => $session->remotePort,
-                'guid' => (string) $session->clientGuid,
-                'mtu' => $session->mtu,
-                'protocol' => $session->rakNetProtocolVersion,
-            ]));
-            return;
-        }
-        $sessionId = $this->sessionIdsByEndpoint[$key] ?? null;
-        if ($sessionId === null) {
-            return;
-        }
-        $this->queue(new TransportProcessFrame(TransportProcessFrameKind::SESSION_CLOSED, $sessionId, metadata: [
-            'reason' => $event->reason->value,
-            'transport_failure' => $event->transportFailure?->value,
-            'transport_failure_detail' => $event->transportFailureDetail,
-        ]));
-        unset($this->sessionIdsByEndpoint[$key], $this->sessionsById[$sessionId]);
-    }
-
-    private function queueDiagnostics(ConnectedHandshakeDiagnosticBatch $batch): void
-    {
-        if ($batch->events === [] && $batch->droppedEventCount === 0) {
-            return;
-        }
-        $events = [];
-        foreach ($batch->events as $event) {
-            $events[] = [
-                'address' => $event->remoteAddress,
-                'port' => $event->remotePort,
-                'stage' => $event->stage->value,
-                'reason' => $event->reason->value,
-                'datagram_id' => $event->datagramId,
-                'control_packet_id' => $event->controlPacketId,
-                'payload_length' => $event->payloadLength,
-                'reliability' => $event->reliability?->value,
-                'ordering_channel' => $event->orderingChannel,
-            ];
-        }
-        $this->queue(new TransportProcessFrame(TransportProcessFrameKind::HANDSHAKE_DIAGNOSTICS, metadata: [
-            'events' => $events,
-            'dropped' => $batch->droppedEventCount,
-        ]));
-    }
-
-    private function queueAdmissionRejections(EndpointAdmissionRejectionBatch $batch): void
-    {
-        if ($batch->events === [] && $batch->droppedEventCount === 0) {
-            return;
-        }
-        $events = [];
-        foreach ($batch->events as $event) {
-            $events[] = [
-                'address' => $event->remoteAddress,
-                'port' => $event->remotePort,
-            ];
-        }
-        $this->queue(new TransportProcessFrame(
-            TransportProcessFrameKind::ENDPOINT_ADMISSION_REJECTIONS,
-            metadata: [
-                'events' => $events,
-                'dropped' => $batch->droppedEventCount,
-            ],
-        ));
     }
 
     private function queue(TransportProcessFrame $frame): void
@@ -434,20 +503,6 @@ final class TransportProcessProgram
         return strlen($this->outgoing) - $this->outgoingOffset;
     }
 
-    private function allocateSessionId(): int
-    {
-        for ($attempt = 0; $attempt < 0xffff_ffff; ++$attempt) {
-            $candidate = $this->nextSessionId++;
-            if ($this->nextSessionId > 0xffff_ffff) {
-                $this->nextSessionId = 1;
-            }
-            if (!isset($this->sessionsById[$candidate])) {
-                return $candidate;
-            }
-        }
-        throw new RuntimeException('Transport process session identifier space is exhausted.');
-    }
-
     private function closeStream(): void
     {
         if (is_resource($this->stream)) {
@@ -456,13 +511,36 @@ final class TransportProcessProgram
         $this->stream = null;
     }
 
-    private static function endpointKey(string $address, int $port): string
+    private static function loadOrCreateIdentity(string $path): ServerIdentity
     {
-        return $address . ':' . $port;
+        $pem = @file_get_contents($path);
+        if (is_string($pem) && $pem !== '') {
+            return ServerIdentity::fromPrivateKeyPem($pem);
+        }
+        $identity = ServerIdentity::generate();
+        $pem = $identity->exportPrivateKeyPem();
+        $handle = @fopen($path, 'x+b');
+        if (!is_resource($handle)) {
+            $existing = @file_get_contents($path);
+            if (!is_string($existing) || $existing === '') {
+                throw new RuntimeException('NetherNet server identity could not be created.');
+            }
+
+            return ServerIdentity::fromPrivateKeyPem($existing);
+        }
+        try {
+            if (fwrite($handle, $pem) !== strlen($pem) || !fflush($handle)) {
+                throw new RuntimeException('NetherNet server identity could not be written.');
+            }
+        } finally {
+            fclose($handle);
+        }
+        @chmod($path, 0600);
+
+        return $identity;
     }
 
-    /** @return array{TransportConfig, int, DiscoveryStatus, list<string>} */
-    private static function decodeConfiguration(string $encoded): array
+    private static function decodeConfiguration(string $encoded): NetherNetTransportConfig
     {
         $encoded = strtr($encoded, '-_', '+/');
         $encoded .= str_repeat('=', (4 - strlen($encoded) % 4) % 4);
@@ -475,113 +553,100 @@ final class TransportProcessProgram
         } catch (JsonException $exception) {
             throw new RuntimeException('Transport process configuration is not valid JSON.', 0, $exception);
         }
-        if (!is_array($data) || !is_array($data['transport'] ?? null)
-            || !is_string($data['server_guid'] ?? null) || !is_string($data['status'] ?? null)
-            || !is_bool($data['accepting'] ?? null)
-            || !is_array($data['trusted_endpoint_cidrs'] ?? null)) {
+        if (!is_array($data)) {
             throw new RuntimeException('Transport process configuration shape is invalid.');
         }
-        $transport = $data['transport'];
-        $bindAddress = $transport['bindAddress'] ?? null;
-        if (!is_string($bindAddress)) {
-            throw new RuntimeException('Transport process bind address is invalid.');
-        }
-        $integer = static function (string $key) use ($transport): int {
-            $value = $transport[$key] ?? null;
-            if (!is_int($value)) {
-                throw new RuntimeException('Transport process integer setting is invalid.');
-            }
 
-            return $value;
-        };
-        $config = new TransportConfig(
-            bindAddress: $bindAddress,
-            port: $integer('port'),
-            maximumTransmissionUnit: $integer('maximumTransmissionUnit'),
-            maximumSessions: $integer('maximumSessions'),
-            maximumPendingHandshakes: $integer('maximumPendingHandshakes'),
-            handshakeTimeoutMilliseconds: $integer('handshakeTimeoutMilliseconds'),
-            sessionIdleTimeoutMilliseconds: $integer('sessionIdleTimeoutMilliseconds'),
-            sessionPingIntervalMilliseconds: $integer('sessionPingIntervalMilliseconds'),
-            connectedSessionMaintenanceIntervalMilliseconds: $integer('connectedSessionMaintenanceIntervalMilliseconds'),
-            maximumReceivedPayloads: $integer('maximumReceivedPayloads'),
-            maximumReceivedPayloadBytes: $integer('maximumReceivedPayloadBytes'),
-            maximumPendingOutboundDatagrams: $integer('maximumPendingOutboundDatagrams'),
-            maximumPendingOutboundBytes: $integer('maximumPendingOutboundBytes'),
-            maximumSessionEvents: $integer('maximumSessionEvents'),
-            maximumHandshakeDiagnosticEvents: $integer('maximumHandshakeDiagnosticEvents'),
-            socketReceiveBufferBytes: $integer('socketReceiveBufferBytes'),
-            socketSendBufferBytes: $integer('socketSendBufferBytes'),
-            security: self::decodeSecurityPolicy($transport['security'] ?? null),
+        return new NetherNetTransportConfig(
+            bindAddress: self::stringSetting($data, 'bindAddress'),
+            port: self::integerSetting($data, 'port'),
+            lanPort: self::integerSetting($data, 'lanPort'),
+            networkId: self::integerSetting($data, 'networkId'),
+            identityPath: self::stringSetting($data, 'identityPath'),
+            serverName: self::stringSetting($data, 'serverName'),
+            protocol: self::integerSetting($data, 'protocol'),
+            gameVersion: self::stringSetting($data, 'gameVersion'),
+            levelName: self::stringSetting($data, 'levelName'),
+            maximumPlayers: self::integerSetting($data, 'maximumPlayers'),
+            acceptsOnlineAuthentication: self::booleanSetting($data, 'acceptsOnlineAuthentication'),
+            acceptsSelfSignedAuthentication: self::booleanSetting($data, 'acceptsSelfSignedAuthentication'),
+            maximumSessions: self::integerSetting($data, 'maximumSessions'),
+            maximumSessionEvents: self::integerSetting($data, 'maximumSessionEvents'),
+            maximumReceivedPayloads: self::integerSetting($data, 'maximumReceivedPayloads'),
+            maximumReceivedPayloadBytes: self::integerSetting($data, 'maximumReceivedPayloadBytes'),
+            maximumSignalingConnections: self::integerSetting($data, 'maximumSignalingConnections'),
+            maximumNegotiations: self::integerSetting($data, 'maximumNegotiations'),
+            maximumNegotiationsPerAddress: self::integerSetting($data, 'maximumNegotiationsPerAddress'),
+            maximumRemoteCandidates: self::integerSetting($data, 'maximumRemoteCandidates'),
+            gatheringTimeoutSeconds: self::floatSetting($data, 'gatheringTimeoutSeconds'),
+            channelTimeoutSeconds: self::floatSetting($data, 'channelTimeoutSeconds'),
+            advertisedAddresses: self::stringListSetting($data, 'advertisedAddresses'),
+            trustedProxyCidrs: self::stringListSetting($data, 'trustedProxyCidrs'),
         );
-        $statusPayload = base64_decode($data['status'], true);
-        if (!is_string($statusPayload)) {
-            throw new RuntimeException('Transport status payload is invalid.');
-        }
-
-        $serverGuid = filter_var($data['server_guid'], FILTER_VALIDATE_INT);
-        if (!is_int($serverGuid)) {
-            throw new RuntimeException('Transport process server GUID is invalid.');
-        }
-
-        $trustedEndpointCidrs = $data['trusted_endpoint_cidrs'];
-        if (!array_is_list($trustedEndpointCidrs)) {
-            throw new RuntimeException('Transport trusted endpoint CIDRs must be a list.');
-        }
-        foreach ($trustedEndpointCidrs as $cidr) {
-            if (!is_string($cidr)) {
-                throw new RuntimeException('Transport trusted endpoint CIDR is invalid.');
-            }
-        }
-
-        return [$config, $serverGuid, new DiscoveryStatus($statusPayload, $data['accepting']), $trustedEndpointCidrs];
     }
 
-    private static function decodeSecurityPolicy(mixed $value): TransportSecurityPolicy
+    /** @param array<array-key, mixed> $data */
+    private static function stringSetting(array $data, string $name): string
     {
-        if (!is_array($value)) {
-            throw new RuntimeException('Transport process security policy is invalid.');
+        $value = $data[$name] ?? null;
+        if (!is_string($value)) {
+            throw new RuntimeException('Transport process string setting is invalid.');
         }
-        $boolean = static function (string $key) use ($value): bool {
-            $setting = $value[$key] ?? null;
-            if (!is_bool($setting)) {
-                throw new RuntimeException('Transport process security boolean is invalid.');
+
+        return $value;
+    }
+
+    /** @param array<array-key, mixed> $data */
+    private static function integerSetting(array $data, string $name): int
+    {
+        $value = $data[$name] ?? null;
+        if (!is_int($value)) {
+            throw new RuntimeException('Transport process integer setting is invalid.');
+        }
+
+        return $value;
+    }
+
+    /** @param array<array-key, mixed> $data */
+    private static function booleanSetting(array $data, string $name): bool
+    {
+        $value = $data[$name] ?? null;
+        if (!is_bool($value)) {
+            throw new RuntimeException('Transport process boolean setting is invalid.');
+        }
+
+        return $value;
+    }
+
+    /** @param array<array-key, mixed> $data */
+    private static function floatSetting(array $data, string $name): float
+    {
+        $value = $data[$name] ?? null;
+        if (!is_float($value) && !is_int($value)) {
+            throw new RuntimeException('Transport process floating-point setting is invalid.');
+        }
+
+        return (float) $value;
+    }
+
+    /**
+     * @param  array<array-key, mixed> $data
+     * @return list<string>
+     */
+    private static function stringListSetting(array $data, string $name): array
+    {
+        $value = $data[$name] ?? null;
+        if (!is_array($value) || !array_is_list($value)) {
+            throw new RuntimeException('Transport process list setting is invalid.');
+        }
+        $result = [];
+        foreach ($value as $entry) {
+            if (!is_string($entry)) {
+                throw new RuntimeException('Transport process list entry is invalid.');
             }
+            $result[] = $entry;
+        }
 
-            return $setting;
-        };
-        $integer = static function (string $key) use ($value): int {
-            $setting = $value[$key] ?? null;
-            if (!is_int($setting)) {
-                throw new RuntimeException('Transport process security integer is invalid.');
-            }
-
-            return $setting;
-        };
-
-        return new TransportSecurityPolicy(
-            enabled: $boolean('enabled'),
-            automaticBlocking: $boolean('automaticBlocking'),
-            globalDatagramsPerSecond: $integer('globalDatagramsPerSecond'),
-            globalDatagramBurst: $integer('globalDatagramBurst'),
-            globalBytesPerSecond: $integer('globalBytesPerSecond'),
-            globalByteBurst: $integer('globalByteBurst'),
-            unauthenticatedDatagramsPerSecond: $integer('unauthenticatedDatagramsPerSecond'),
-            unauthenticatedDatagramBurst: $integer('unauthenticatedDatagramBurst'),
-            unauthenticatedBytesPerSecond: $integer('unauthenticatedBytesPerSecond'),
-            unauthenticatedByteBurst: $integer('unauthenticatedByteBurst'),
-            connectedDatagramsPerSecond: $integer('connectedDatagramsPerSecond'),
-            connectedDatagramBurst: $integer('connectedDatagramBurst'),
-            connectedBytesPerSecond: $integer('connectedBytesPerSecond'),
-            connectedByteBurst: $integer('connectedByteBurst'),
-            handshakesPerSecond: $integer('handshakesPerSecond'),
-            handshakeBurst: $integer('handshakeBurst'),
-            malformedThreshold: $integer('malformedThreshold'),
-            baseBlockSeconds: $integer('baseBlockSeconds'),
-            maximumBlockSeconds: $integer('maximumBlockSeconds'),
-            escalationWindowSeconds: $integer('escalationWindowSeconds'),
-            maximumTrackedAddresses: $integer('maximumTrackedAddresses'),
-            maximumTrackedEndpoints: $integer('maximumTrackedEndpoints'),
-        );
+        return $result;
     }
 }

@@ -5,8 +5,8 @@ Packets cross several ownership boundaries. Each boundary validates and narrows 
 ## Inbound path
 
 ```text
-UDP datagram
-  -> RakNet framing, reliability, ordering and session state
+WebRTC DataChannel message
+  -> NetherNet framing, reliability and session state
   -> ConnectedTransport application payload
   -> login or play channel batch decryption/decompression
   -> Protocol typed packet decode
@@ -15,7 +15,7 @@ UDP datagram
   -> authoritative world tick
 ```
 
-RakNet owns datagrams and delivery semantics but does not interpret Bedrock game packets. Protocol owns bounded wire decoding but does not decide whether a player may act. Bedriox owns phase, identity and gameplay policy.
+NetherNet owns signaling, ICE, SCTP, data-channel framing and delivery semantics but does not interpret Bedrock game packets. Protocol owns bounded wire decoding but does not decide whether a player may act. Bedriox owns phase, identity and gameplay policy.
 
 During login, `BedrockLoginChannel` and `LoginSession` produce explicit effects. Cipher ownership transfers exactly once when login becomes ready. The signed client-data `DeviceOS` claim is parsed into a bounded private value, but it is never treated as verified hardware identity or disclosed in peer actor packets. During play, `BedrockPlayChannel` admits only registered, typed packets appropriate to the current phase. Movement, chat, initialized own-actor emote UUIDs, missed-swing input, validated fixed-flat block intents, selected-slot changes, stack requests, grass placement, and respawn readiness become simulation commands; initialization, radius negotiation, terrain requests, and inventory-window state remain bounded session-local orchestration. Respawn coordinates and runtime IDs supplied by the client are ignored because the authenticated session and authoritative spawn state select the player and destination. Both the player-action and client-ready respawn forms are bounded, idempotent inputs. Emote duration, external identity, platform, and flag claims are dropped at this boundary. The simulation owns break timing, arm-swing publication, health, inventory, and canonical mutation. It emits health/death/respawn, arm-swing, crack, block-change, placement/correction, inventory reconciliation, and held-item events, while the runtime filters world and actor recipients against delivered chunk and actor views before encoding network runtime IDs. A standalone inbound animation packet is accepted only as an advisory no-op; it cannot create or duplicate an authoritative swing. Retail `StopDestroyBlock` is targetless; the adapter normalizes its sentinel into a targetless command with a neutral face so the simulation clears the stored target without inventing coordinates. An initialized inventory-open request opens at most one main-inventory window; a matching close is acknowledged before the window may reopen. The serialized target actor and client item descriptor are never trusted. A placement transaction applies its bounded selected-slot intent before placement; the selected server inventory stack and canonical world state alone authorize the mutation. Client item, count, stack-network, runtime-ID, reported-player-position, and prediction fields remain reconciliation hints and cannot create inventory or veto an otherwise valid server-authorized action. The clicked block and face remain bounded intent that the simulation validates against authoritative world state. Unrelated typed transactions remain explicit notification-only no-ops.
 
@@ -48,8 +48,8 @@ authoritative event or session bootstrap work
   -> shared clear-envelope compression when compatible
   -> per-session encryption and delivery ordering
   -> ConnectedTransport payload
-  -> RakNet reliable delivery
-  -> UDP datagram
+  -> NetherNet reliable or unreliable DataChannel delivery
+  -> WebRTC transport
 ```
 
 World block IDs translate to network IDs only at serialization. Simulation positions translate to Bedrock eye-position coordinates only in the protocol adapter. Peer events are projected per recipient and cannot expose private login data. Identical chat, combat, posture, and non-player movement fan-out reuses one immutable packet or frame projection across eligible recipients. Clear compressed envelopes may be cached only across sessions with the same protocol and compression contract; encryption state, ordering counters, and transport state are always applied per session.
@@ -77,6 +77,6 @@ the normal per-session failure policy.
 
 ## Diagnosing failures
 
-Identify the last completed boundary before changing code. A discovery-only trace does not justify a connected-session change; a decoded packet failure does not justify a RakNet change; correct world cells with incorrect serialized palettes point at translation or serialization rather than generation.
+Identify the last completed boundary before changing code. A signaling-only trace does not justify a connected-session change; a decoded packet failure does not justify a NetherNet change; correct world cells with incorrect serialized palettes point at translation or serialization rather than generation.
 
 Diagnostics may record an allowlisted event, phase, packet ID, reason code, and exception class. They must not record JWTs, keys, raw encrypted payloads, client GUIDs, account identifiers, or unbounded packet bodies. Every reproduced failure receives a focused regression at that boundary.

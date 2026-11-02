@@ -100,7 +100,7 @@ final class OrderedOutboundCompressionQueueTest extends TestCase
         $queue->enqueue('malformed');
         $queue->enqueue('oversized');
         $workers->complete(1, WorkerResultStatus::SUCCESS, 'wrong marker');
-        $workers->complete(2, WorkerResultStatus::SUCCESS, "\xfe" . str_repeat('x', 1_025));
+        $workers->complete(2, WorkerResultStatus::SUCCESS, str_repeat('x', 1_025));
         self::assertSame([], $queue->takeReady());
         $workers->completeSuccessfully(3);
         $workers->completeSuccessfully(4);
@@ -227,7 +227,7 @@ final class OrderedOutboundCompressionQueueTest extends TestCase
         self::assertTrue($submission->synchronousFallback);
         self::assertSame(0, $workers->submissionCount);
         self::assertCount(1, $ready);
-        self::assertSame("\xfe\xffsmall", $ready[0]->payload);
+        self::assertSame("\xffsmall", $ready[0]->payload);
         self::assertSame(0, $queue->outstandingCount());
         self::assertSame(0, $queue->outstandingBytes());
     }

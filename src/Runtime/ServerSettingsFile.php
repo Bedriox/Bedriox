@@ -134,35 +134,23 @@ network.proxy.control-key-id=primary
 # host firewall or private network in addition to the application checks.
 network.proxy.allow-public-bind=false
 
-# enabled: true or false. Keep true for every public server.
-security.network.enabled=true
-# automatic-blocking: true temporarily blocks a validated abusive IP-and-port endpoint.
-# Unauthenticated over-limit traffic is always dropped without automatically blocking a shared IP address.
-security.network.automatic-blocking=true
-# profile: lenient, balanced, strict, or custom.
-# balanced is recommended. Lenient permits larger bursts; strict is for smaller controlled deployments.
-# custom reads the security.network.custom.* values below.
+# Selects bounded NetherNet signaling and ICE negotiation limits.
+# lenient permits more concurrent negotiations, balanced is recommended, strict
+# lowers admission limits, and custom reads the network.nethernet.maximum-* values.
 security.network.profile=balanced
-# Initial validated-endpoint block duration in seconds. Accepted range: 1 through 300.
-security.network.block-base-seconds=10
-# Maximum block duration in seconds. Accepted range: the base duration through 86400.
-security.network.block-maximum-seconds=1800
-# Repeated offenses inside this window increase the block duration. Accepted range: 30 through 3600 seconds.
-security.network.block-escalation-window-seconds=300
-# Custom-profile limits. These are ignored by lenient, balanced, and strict profiles.
-# Unauthenticated datagram rate: 100 through 100000; burst: 20 through 20000.
-security.network.custom.unauthenticated-datagrams-per-second=2000
-security.network.custom.unauthenticated-datagram-burst=400
-# Connected endpoint datagram rate: 500 through 100000; burst: 40 through 20000.
-security.network.custom.connected-datagrams-per-second=12000
-security.network.custom.connected-datagram-burst=240
-# Handshake rate: 10 through 10000; burst: 5 through 2000.
-security.network.custom.handshakes-per-second=250
-security.network.custom.handshake-burst=128
-# Malformed connected datagrams from one validated endpoint before a temporary endpoint block.
-# Unauthenticated malformed traffic is counted and dropped without an automatic address block.
-# Accepted range: 1 through 20.
-security.network.custom.malformed-threshold=3
+# UDP 7551 is the standard LAN discovery port. Set 0 for a backend that is only
+# reached through Gateway. HTTP signaling and ICE remain on server-port.
+network.nethernet.lan-port=7551
+# Custom-profile admission limits. These are ignored by the named profiles.
+network.nethernet.maximum-signaling-connections=256
+network.nethernet.maximum-negotiations=256
+network.nethernet.maximum-negotiations-per-address=8
+network.nethernet.maximum-remote-candidates=64
+# ICE gathering and data-channel opening deadlines in milliseconds.
+network.nethernet.gathering-timeout-milliseconds=15000
+network.nethernet.channel-timeout-milliseconds=5000
+# Optional comma-separated public IP addresses advertised as ICE candidates.
+network.nethernet.advertised-addresses=
 
 # Authenticated Bedrock packet handling. These limits do not apply to unknown supported-version
 # notifications, stale input, or gameplay mistakes that Bedriox can safely ignore or correct.

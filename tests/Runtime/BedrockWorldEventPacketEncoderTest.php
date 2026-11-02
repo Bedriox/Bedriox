@@ -46,8 +46,6 @@ use Bedriox\Api\World\Particle\StandardParticleType;
 use Bedriox\Api\World\WeatherState;
 use Bedriox\Api\World\WeatherType;
 use Bedriox\Data\BedrockDataSet;
-use Bedriox\Protocol\Encryption\BedrockDecryptor;
-use Bedriox\Protocol\Encryption\BedrockEncryptor;
 use Bedriox\Protocol\Identity\VerifiedClientData;
 use Bedriox\Protocol\Packet\ActorAttribute;
 use Bedriox\Protocol\Packet\ActorEventPacket;
@@ -100,7 +98,6 @@ use Bedriox\Protocol\Packet\UpdateBlockPacket;
 use Bedriox\Protocol\Security\OpenSslEphemeralKeyFactory;
 use Bedriox\Protocol\Value\BuildPlatform;
 use Bedriox\Protocol\Value\UnsignedLong;
-use Bedriox\RakNet\SessionInfo;
 use Bedriox\Server\Login\AuthenticatedLogin;
 use Bedriox\Server\Login\LoginChannelReady;
 use Bedriox\Server\Player\InventoryContainer;
@@ -151,6 +148,7 @@ use Bedriox\Server\Simulation\NutritionChangeReason;
 use Bedriox\Server\Simulation\PlayerSnapshot;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\Simulation\VerticalState;
+use Bedriox\Server\Transport\SessionInfo;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
@@ -1531,7 +1529,7 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
     public function testEmoteRelayReconstructsAuthoritativeActorAndStripsSpoofableFields(): void
     {
         $sender = new RuntimeSession(
-            new SessionInfo('127.0.0.1', 20_001, 1, 1_400, 11),
+            new SessionInfo(20_001, (string) 1, '127.0.0.1', 20_001),
             'sender',
             UnsignedLong::fromInt(7),
             null,
@@ -1667,7 +1665,7 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
     public function testCorrectionTargetsOnlySenderWithExactClientInputTick(): void
     {
         $session = new RuntimeSession(
-            new SessionInfo('127.0.0.1', 20_001, 1, 1_400, 11),
+            new SessionInfo(20_001, (string) 1, '127.0.0.1', 20_001),
             'session',
             UnsignedLong::fromInt(7),
             null,
@@ -2049,7 +2047,6 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         int $skinWidth = 64,
         int $skinHeight = 32,
     ): RuntimeSession {
-        $key = str_repeat("\x42", 32);
         $keys = (new OpenSslEphemeralKeyFactory(dirname(__DIR__) . '/Fixtures/openssl.cnf'))->generate();
         $clientData = new VerifiedClientData(
             $skinWidth,
@@ -2065,13 +2062,11 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         );
         $ready = new LoginChannelReady(
             new AuthenticatedLogin($displayName, $identity, $xuid, $keys->publicKey, $clientData),
-            new BedrockEncryptor($key),
-            new BedrockDecryptor($key),
-            2193,
+            2225,
         );
         $actorId = UnsignedLong::fromInt($runtimeActorId);
         $session = new RuntimeSession(
-            new SessionInfo('127.0.0.1', 20_000 + $runtimeActorId, 1, 1_400, 11),
+            new SessionInfo(20_000 + $runtimeActorId, (string) 1, '127.0.0.1', 20_000 + $runtimeActorId),
             $sessionId,
             $actorId,
             null,

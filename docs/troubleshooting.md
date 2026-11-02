@@ -41,7 +41,7 @@ automated launches return a failure immediately and never wait for input.
 
 ## The server appears online but the client never connects
 
-Query the UDP discovery response and confirm that the advertised protocol, version, player counts, game-mode fields, and ports match the qualified baseline. A valid RakNet pong is not enough: a retail client can reject semantically invalid Bedrock advertisement fields before sending the first connection request. Do not change RakNet negotiation until the last received packet proves negotiation was reached.
+Query the NetherNet HTTP or LAN discovery response and confirm that the advertised protocol, version, player counts, game-mode fields, and ports match the qualified baseline. A valid signaling response is not enough: a retail client can reject semantically invalid Bedrock advertisement fields before creating its peer connection. Do not change negotiation until the last received event proves which signaling, ICE, SCTP, or Bedrock boundary was reached.
 
 ## The client disconnects after joining
 
@@ -51,7 +51,7 @@ The packet ownership path is documented in [`packet-lifecycle.md`](packet-lifecy
 
 ## Terrain stops, is empty, or shows the wrong blocks
 
-Check the stages independently: authoritative chunk generation, internal canonical states, network translation, serialized section and biome framing, per-session view scheduling, and transport delivery. Never repair a visual symptom by changing registry IDs or RakNet framing without proving that boundary is wrong. See [`world-chunk-pipeline.md`](world-chunk-pipeline.md).
+Check the stages independently: authoritative chunk generation, internal canonical states, network translation, serialized section and biome framing, per-session view scheduling, and transport delivery. Never repair a visual symptom by changing registry IDs or NetherNet framing without proving that boundary is wrong. See [`world-chunk-pipeline.md`](world-chunk-pipeline.md).
 
 ## A component works locally but CI fails
 

@@ -85,7 +85,7 @@ use Throwable;
 final class Bedriox
 {
     public const NAME = 'Bedriox';
-    public const VERSION = '1.0.0-beta.3-dev';
+    public const VERSION = '2.0.0-beta.1';
 
     public function __construct(
         private readonly CrashContextProvider $crashContextProvider = new MutableCrashContextProvider(),
@@ -512,9 +512,9 @@ final class Bedriox
                         entityAi: $runtime?->entityAiMetrics(),
                         entityRuntime: $runtime?->entityRuntimeMetrics(),
                         entityNavigation: $runtime?->entityNavigationMetrics(),
-                        transportSecurity: $runtime?->transportSecuritySnapshot(),
                         pluginAsyncQueue: $pluginAsync?->snapshot(),
                         inbound: $runtime?->inboundMetricsSnapshot(),
+                        transportSecurity: $runtime?->transportSecuritySnapshot(),
                     );
                 },
                 static fn(

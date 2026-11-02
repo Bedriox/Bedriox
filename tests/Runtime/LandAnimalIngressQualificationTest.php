@@ -20,12 +20,11 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Runtime;
 
+use Bedriox\NetherNet\Protocol\Reliability;
 use Bedriox\Protocol\Batch\BatchLimits;
 use Bedriox\Protocol\Batch\BedrockBatch;
 use Bedriox\Protocol\Batch\BedrockBatchCodec;
 use Bedriox\Protocol\Batch\CompressionMode;
-use Bedriox\Protocol\Encryption\BedrockDecryptor;
-use Bedriox\Protocol\Encryption\BedrockEncryptor;
 use Bedriox\Protocol\Identity\VerifiedClientData;
 use Bedriox\Protocol\Packet\BedrockPacketCodec;
 use Bedriox\Protocol\Packet\ContainerClosePacket;
@@ -45,12 +44,11 @@ use Bedriox\Protocol\Packet\SetLocalPlayerAsInitializedPacket;
 use Bedriox\Protocol\Packet\UpdateEquipPacket;
 use Bedriox\Protocol\Security\OpenSslEphemeralKeyFactory;
 use Bedriox\Protocol\Value\UnsignedLong;
-use Bedriox\RakNet\Connected\ConnectedPayloadEvent;
-use Bedriox\RakNet\Protocol\Reliability;
 use Bedriox\Server\Login\AuthenticatedLogin;
 use Bedriox\Server\Login\LoginChannelReady;
 use Bedriox\Server\Runtime\BedrockPlayChannel;
 use Bedriox\Server\Simulation\Command\CloseContainer;
+use Bedriox\Server\Transport\InboundPayload;
 use Bedriox\Server\Transport\NetworkCompressionPolicy;
 use PHPUnit\Framework\TestCase;
 
@@ -89,9 +87,7 @@ final class LandAnimalIngressQualificationTest extends TestCase
     {
         [$channel, $client, $server, $self] = $this->channel();
         self::assertTrue($this->accept($channel, $client, [new SetLocalPlayerAsInitializedPacket($self)]));
-        foreach ($channel->drainOutgoing() as $payload) {
-            $server->decryptEnvelope($payload->payload);
-        }
+        $channel->drainOutgoing();
         self::assertTrue($channel->queuePacket(new UpdateEquipPacket(
             7,
             ContainerType::Horse,
@@ -101,7 +97,6 @@ final class LandAnimalIngressQualificationTest extends TestCase
         )));
         $opened = $channel->drainOutgoing();
         self::assertCount(1, $opened);
-        $server->decryptEnvelope($opened[0]->payload);
         self::assertTrue($channel->queuePacket(new ContainerClosePacket(
             7,
             ContainerType::Horse,
@@ -109,7 +104,6 @@ final class LandAnimalIngressQualificationTest extends TestCase
         )));
         $closed = $channel->drainOutgoing();
         self::assertCount(1, $closed);
-        $server->decryptEnvelope($closed[0]->payload);
 
         self::assertTrue($this->accept($channel, $client, [new ContainerClosePacket(
             0xff,
@@ -123,7 +117,7 @@ final class LandAnimalIngressQualificationTest extends TestCase
 
         $outgoing = $channel->drainOutgoing();
         self::assertCount(1, $outgoing);
-        $ack = $this->decode($server->decryptEnvelope($outgoing[0]->payload));
+        $ack = $this->decode($server->decryptBatch($outgoing[0]->payload));
         self::assertInstanceOf(ContainerClosePacket::class, $ack);
         self::assertSame(7, $ack->containerId);
         self::assertSame(ContainerType::Horse, $ack->containerType);
@@ -135,9 +129,7 @@ final class LandAnimalIngressQualificationTest extends TestCase
     {
         [$channel, $client, $server, $self] = $this->channel();
         self::assertTrue($this->accept($channel, $client, [new SetLocalPlayerAsInitializedPacket($self)]));
-        foreach ($channel->drainOutgoing() as $payload) {
-            $server->decryptEnvelope($payload->payload);
-        }
+        $channel->drainOutgoing();
         self::assertTrue($channel->queuePacket(new ContainerOpenPacket(
             8,
             ContainerType::ChestBoat,
@@ -146,7 +138,6 @@ final class LandAnimalIngressQualificationTest extends TestCase
         )));
         $opened = $channel->drainOutgoing();
         self::assertCount(1, $opened);
-        $server->decryptEnvelope($opened[0]->payload);
         self::assertTrue($channel->queuePacket(new ContainerClosePacket(
             8,
             ContainerType::ChestBoat,
@@ -154,7 +145,6 @@ final class LandAnimalIngressQualificationTest extends TestCase
         )));
         $closed = $channel->drainOutgoing();
         self::assertCount(1, $closed);
-        $server->decryptEnvelope($closed[0]->payload);
 
         self::assertTrue($this->accept($channel, $client, [new ContainerClosePacket(
             0xff,
@@ -167,7 +157,7 @@ final class LandAnimalIngressQualificationTest extends TestCase
         self::assertSame(8, $commands[0]->windowId);
         $outgoing = $channel->drainOutgoing();
         self::assertCount(1, $outgoing);
-        $ack = $this->decode($server->decryptEnvelope($outgoing[0]->payload));
+        $ack = $this->decode($server->decryptBatch($outgoing[0]->payload));
         self::assertInstanceOf(ContainerClosePacket::class, $ack);
         self::assertSame(8, $ack->containerId);
         self::assertSame(ContainerType::ChestBoat, $ack->containerType);
@@ -175,10 +165,9 @@ final class LandAnimalIngressQualificationTest extends TestCase
         self::assertFalse($channel->isClosed());
     }
 
-    /** @return array{BedrockPlayChannel, BedrockEncryptor, BedrockDecryptor, UnsignedLong} */
+    /** @return array{BedrockPlayChannel, LandAnimalPlaintextBoundary, LandAnimalPlaintextBoundary, UnsignedLong} */
     private function channel(): array
     {
-        $key = str_repeat("\x42", 32);
         $keys = (new OpenSslEphemeralKeyFactory(dirname(__DIR__) . '/Fixtures/openssl.cnf'))->generate();
         $ready = new LoginChannelReady(
             new AuthenticatedLogin(
@@ -188,9 +177,7 @@ final class LandAnimalIngressQualificationTest extends TestCase
                 $keys->publicKey,
                 new VerifiedClientData(1, 1, "\0\0\0\0", 0, 0, '', '{}', []),
             ),
-            new BedrockEncryptor($key),
-            new BedrockDecryptor($key),
-            2193,
+            2225,
         );
         $runtimeId = UnsignedLong::fromInt(7);
 
@@ -202,14 +189,14 @@ final class LandAnimalIngressQualificationTest extends TestCase
                 [],
                 fixedFlatRuntimeIds: ['air' => 1, 'bedrock' => 2, 'dirt' => 3, 'grass_block' => 4],
             ),
-            new BedrockEncryptor($key),
-            new BedrockDecryptor($key),
+            new LandAnimalPlaintextBoundary(),
+            new LandAnimalPlaintextBoundary(),
             $runtimeId,
         ];
     }
 
     /** @param list<Packet> $packets */
-    private function accept(BedrockPlayChannel $channel, BedrockEncryptor $client, array $packets): bool
+    private function accept(BedrockPlayChannel $channel, LandAnimalPlaintextBoundary $client, array $packets): bool
     {
         $frames = array_map(
             static fn(Packet $packet): PacketFrame => new PacketFrame(
@@ -224,10 +211,9 @@ final class LandAnimalIngressQualificationTest extends TestCase
             NetworkCompressionPolicy::THRESHOLD_BYTES,
         ), new BatchLimits());
 
-        return $channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($payload),
-            Reliability::ReliableOrdered,
-            0,
+        return $channel->accept(new InboundPayload(
+            $client->encryptBatch($payload),
+            Reliability::RELIABLE,
         ));
     }
 
@@ -243,5 +229,18 @@ final class LandAnimalIngressQualificationTest extends TestCase
         $frame = $batch->packets[0];
 
         return BedrockPacketCodec::decode($frame->header->packetId, $frame->payload);
+    }
+}
+
+final readonly class LandAnimalPlaintextBoundary
+{
+    public function encryptBatch(string $payload): string
+    {
+        return $payload;
+    }
+
+    public function decryptBatch(string $payload): string
+    {
+        return $payload;
     }
 }

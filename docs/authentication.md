@@ -1,4 +1,4 @@
-# Protocol 2193 login authentication
+# Protocol 2225 login authentication
 
 ## GATEWAY authentication
 
@@ -8,11 +8,11 @@ Configure `network.authentication=GATEWAY` plus `network.proxy.issuer`, `network
 
 GATEWAY mode rejects the wildcard `0.0.0.0` bind unless `network.proxy.allow-public-bind=true` is explicitly configured. Prefer `127.0.0.1` on one host or a private/VPN address across hosts, and enforce the same source boundary with the host firewall. The unsafe override does not weaken token or CIDR validation.
 
-Gateway control connections share the Bedrock RakNet port and are selected only when their first reliable-ordered application payload is a `BXGC` Hello. They use the same global secret but a separately checked `network.proxy.control-key-id` (matching Gateway `control.key-id`), mutually authenticate with fresh nonces, and encrypt every post-handshake frame. A malformed, expired, mismatched, replayed, or out-of-sequence control frame closes that connection and is never retried as a player login. Health, drain, stopping, and bounded namespaced plugin messages use this link; a drain request stops new player admission without disconnecting existing players.
+Gateway control connections share the Bedrock NetherNet endpoint and are selected only when their first reliable application payload is a `BXGC` Hello. They use the same global secret but a separately checked `network.proxy.control-key-id` (matching Gateway `control.key-id`), mutually authenticate with fresh nonces, and encrypt every post-handshake frame. A malformed, expired, mismatched, replayed, or out-of-sequence control frame closes that connection and is never retried as a player login. Health, drain, stopping, and bounded namespaced plugin messages use this link; a drain request stops new player admission without disconnecting existing players.
 
 ## FULL Token authentication
 
-`Bedriox\Server\Authentication\FullTokenAuthenticator` implements the bounded, offline verification boundary for protocol 2193 `FULL` Token login authentication. It accepts a decoded login authentication value and the separate client-data JWT. It does not perform HTTP requests.
+`Bedriox\Server\Authentication\FullTokenAuthenticator` implements the bounded, offline verification boundary for protocol 2225 `FULL` Token login authentication. It accepts a decoded login authentication value and the separate client-data JWT. It does not perform HTTP requests.
 
 The application injects an `AuthenticationClock` and a `JwkProvider` whose snapshot was obtained by an operator-controlled discovery/cache component. The verifier selects only by the token's bounded `kid`, rejects duplicate identifiers, accepts only public RSA signing JWKs of at least 2048 bits, and assigns trusted `RS256` when the optional JWK `alg` is absent. Token-supplied key locations and keys are never resolved.
 

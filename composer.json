@@ -17,11 +17,11 @@
         },
         {
             "type": "path",
-            "url": "../RakNet",
+            "url": "../NetherNet",
             "options": {
                 "symlink": false,
                 "versions": {
-                    "bedriox/raknet": "0.1.0-alpha.3"
+                    "bedriox/nethernet": "0.1.0-alpha.1"
                 }
             }
         },
@@ -42,7 +42,7 @@
         "ext-leveldb": "*",
         "bedriox/data": "0.1.0-alpha.1",
         "bedriox/protocol": "0.1.0-alpha.1",
-        "bedriox/raknet": "0.1.0-alpha.3",
+        "bedriox/nethernet": "0.1.0-alpha.1",
         "firebase/php-jwt": "^7.1",
         "symfony/yaml": "^7.4.12"
     },

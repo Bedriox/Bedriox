@@ -20,6 +20,7 @@ composer.phar
 /permissions.json
 /whitelist.json
 /bans.json
+/nethernet.key
 /worlds/
 /bin/*
 !/bin/bedriox

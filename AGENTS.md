@@ -11,12 +11,12 @@ This repository is the Bedriox executable server and composition root. It owns s
 Keep dependency direction one-way:
 
 ```text
-Bedriox -> RakNet
+Bedriox -> NetherNet
        -> Protocol
        -> Data
 ```
 
-Do not implement RakNet wire behavior, Bedrock packet codecs, or versioned Bedrock registries here. Network input must be validated and converted into commands before it can affect mutable game state. World and player state must have one authoritative owner; queues and decoded data must remain bounded.
+Do not implement NetherNet signaling, ICE, SCTP, or data-channel wire behavior, Bedrock packet codecs, or versioned Bedrock registries here. Network input must be validated and converted into commands before it can affect mutable game state. World and player state must have one authoritative owner; queues and decoded data must remain bounded.
 
 ## Repository layout
 
@@ -44,7 +44,7 @@ Do not commit `vendor/`, credentials, access tokens, Minecraft client assets, pe
 - Preserve backward compatibility deliberately. Update the compatibility manifest and documentation when component or protocol support changes.
 - Name current Bedrock packet, channel, codec, and data APIs without protocol-number suffixes or versioned namespaces. Keep the bounded compatible release family in the owning component's version authority, and route proven wire/data differences by the negotiated protocol.
 - Define packet IDs through `PacketIds` and finite wire actions, states, origins, permissions, transaction types, and similar protocol values through backed enums in Protocol. Do not repeat their numeric encodings in server or plugin code. Translate gameplay input at the network boundary into version-independent commands, values, and public API enums. Direct packet plugins may deliberately depend on current typed Protocol packets through `PlayerConnection`; they must not use numeric packet IDs or raw wire bytes. Keep stable vanilla mechanics as named internal rules, and expose only genuine operator choices as settings.
-- The executable admits protocol 2193 only. Minecraft Bedrock 1.26.50 is the pinned wire authority and 1.26.51 is the qualified same-protocol retail client; older protocol routes must fail closed at the first version-bearing login packet.
+- The executable admits protocol 2225 only. Minecraft Bedrock 1.26.60 is the pinned wire authority and 1.26.61 is the qualified same-protocol retail client; older protocol routes must fail closed at the first version-bearing login packet.
 - World state uses Bedriox-owned process-local block-state IDs resolved from canonical `minecraft:*` states. Never persist, expose, or send those IDs; translate through `BlockNetworkTranslator` only at the Bedrock packet boundary.
 - Follow the proven PocketMine-MP authority model for gameplay interactions: decoded client item descriptors, counts, stack-network IDs, block runtime IDs, and prediction fields are bounded intent or reconciliation hints only. The server-selected inventory slot, server-owned stack, and authoritative world state alone authorize and determine a placement. Apply a transaction's valid hotbar selection before evaluating its placement, and correct rejected predictions instead of accepting client-owned state.
 - Treat predicted block-break completion like PocketMine-MP: revalidate reach, the current server-owned block, and breakability when completion arrives, and derive any tool effects from the current server-held item. Break timing drives progress feedback but is not a strict packet-arrival authorization gate; client/server tick phase must not restore an otherwise valid break. A continue action starts the next authoritative target, and late stop/abort input remains benign.
@@ -114,7 +114,7 @@ Implement the verified PMMP behavior within Bedriox's existing ownership and dep
 
 Classify decoded client input deliberately as applied, bounded deferred input, safe no-op, authoritative correction, or session disconnect. Do not disconnect solely because a valid retail notification arrives earlier, later, or more than once than the nominal sequence; characterize observed ordering and keep harmless timing variation bounded. Reserve disconnects for malformed framing or codecs, authentication or cryptographic failure, actor or identity spoofing, exhausted limits, repeated abuse, and states that cannot be corrected safely.
 
-The production RakNet adapter must drain bounded pre-ready diagnostics on every poll. Keep them protocol-trace gated and allowlisted; never add packet bodies, GUIDs, authentication material, embedded addresses, or exception messages. Transport diagnostics must not change admission, lifecycle capacity, or peer isolation.
+The production NetherNet adapter must keep signaling, negotiation, ICE, SCTP, and data-channel work in its authenticated child process. Drain only bounded allowlisted lifecycle, payload, bandwidth, ping, and security summaries on every poll; never add packet bodies, authentication material, private identity keys, SDP, ICE candidates, embedded addresses, or exception messages. Transport diagnostics must not change admission, lifecycle capacity, or peer isolation.
 
 Never patch `vendor/` or depend on a dirty sibling checkout. Change the owning repository first, run its complete gate, commit it, then update Bedriox's lock manifest and consumer tests in a separate coordinated change. A component update must not silently alter unrelated application behavior.
 

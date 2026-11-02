@@ -20,30 +20,26 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Login;
 
+use Bedriox\NetherNet\Protocol\Reliability;
 use Bedriox\Protocol\Batch\BedrockBatch;
 use Bedriox\Protocol\Batch\BedrockBatchCodec;
 use Bedriox\Protocol\Batch\CompressionMode;
-use Bedriox\Protocol\Encryption\BedrockDecryptor;
-use Bedriox\Protocol\Encryption\BedrockEncryptor;
 use Bedriox\Protocol\Packet\BedrockPacketCodec;
 use Bedriox\Protocol\Packet\NetworkSettingsPacket;
 use Bedriox\Protocol\Packet\PacketFrame;
 use Bedriox\Protocol\Packet\PacketHeader;
-use Bedriox\RakNet\Connected\ConnectedPayloadEvent;
-use Bedriox\RakNet\Protocol\Reliability;
+use Bedriox\Server\Transport\InboundPayload;
 use Bedriox\Server\Transport\NetworkCompressionPolicy;
 use SplQueue;
 use Throwable;
 
-/** Owns the RakNet application-payload to current Bedrock login composition boundary. */
+/** Owns the transport application-payload to current Bedrock login composition boundary. */
 final class BedrockLoginChannel
 {
     /** @var SplQueue<OutgoingLoginPayload> */
     private SplQueue $outgoing;
     private int $outgoingBytes = 0;
     private bool $compressionNegotiated = false;
-    private ?BedrockEncryptor $encryptor = null;
-    private ?BedrockDecryptor $decryptor = null;
     private ?LoginChannelReady $ready = null;
     private ?string $failureDetail = null;
 
@@ -57,19 +53,17 @@ final class BedrockLoginChannel
         $this->close();
     }
 
-    public function accept(ConnectedPayloadEvent $event): bool
+    public function accept(InboundPayload $event): bool
     {
         if (!$this->session->preflight()) {
             return $this->fail($this->session->failure() ?? LoginFailureCode::CLOSED_BY_SERVER);
         }
-        if ($event->reliability !== Reliability::ReliableOrdered || $event->orderingChannel !== 0) {
+        if ($event->reliability !== Reliability::RELIABLE) {
             return $this->fail(LoginFailureCode::INPUT_LIMIT);
         }
-        $encrypted = $this->decryptor !== null;
         try {
-            $envelope = $encrypted ? $this->decryptor->decryptEnvelope($event->payload) : $event->payload;
             $batch = BedrockBatchCodec::decode(
-                $envelope,
+                $event->payload,
                 $this->compressionNegotiated ? CompressionMode::NegotiatedZlib : CompressionMode::Uncompressed,
                 $this->limits->batch,
                 NetworkCompressionPolicy::THRESHOLD_BYTES,
@@ -88,7 +82,7 @@ final class BedrockLoginChannel
                     continue;
                 }
                 $packet = BedrockPacketCodec::decode($frame->header->packetId, $frame->payload);
-                if (!$this->session->enqueue(new LoginInput($packet, strlen($frame->payload) + 1, $encrypted))) {
+                if (!$this->session->enqueue(new LoginInput($packet, strlen($frame->payload) + 1, false))) {
                     return $this->fail($this->session->failure() ?? LoginFailureCode::INPUT_LIMIT);
                 }
             }
@@ -164,25 +158,12 @@ final class BedrockLoginChannel
                     if (!$this->encode($effect)) {
                         return false;
                     }
-                } elseif ($effect instanceof EnableEncryptionEffect) {
-                    if ($this->encryptor !== null || $this->decryptor !== null) {
-                        return $this->fail(LoginFailureCode::CRYPTOGRAPHIC_FAILURE);
-                    }
-                    $this->encryptor = new BedrockEncryptor($effect->sessionKey);
-                    $this->decryptor = new BedrockDecryptor($effect->sessionKey);
                 } elseif ($effect instanceof LoginReadyEffect) {
-                    $encryptor = $this->encryptor;
-                    $decryptor = $this->decryptor;
-                    if ($encryptor === null || $decryptor === null) {
-                        return $this->fail(LoginFailureCode::ENCRYPTION_STATE);
-                    }
                     $protocolVersion = $this->session->observedProtocolVersion();
                     if ($protocolVersion === null) {
                         return $this->fail(LoginFailureCode::UNSUPPORTED_PROTOCOL);
                     }
-                    $this->ready = new LoginChannelReady($effect->login, $encryptor, $decryptor, $protocolVersion);
-                    $this->encryptor = null;
-                    $this->decryptor = null;
+                    $this->ready = new LoginChannelReady($effect->login, $protocolVersion);
                 }
             } catch (Throwable $exception) {
                 $this->failureDetail = 'effect:' . $exception::class;
@@ -197,20 +178,13 @@ final class BedrockLoginChannel
 
     private function encode(SendPacketEffect $effect): bool
     {
-        if ($effect->encrypted !== ($this->encryptor !== null)) {
+        if ($effect->encrypted) {
             return $this->fail(LoginFailureCode::ENCRYPTION_STATE);
         }
         $packet = $effect->packet;
         $envelope = BedrockBatchCodec::encode(new BedrockBatch([
             new PacketFrame(new PacketHeader(BedrockPacketCodec::packetId($packet)), BedrockPacketCodec::encode($packet)),
         ], $this->compressionNegotiated ? CompressionMode::NegotiatedZlib : CompressionMode::Uncompressed, NetworkCompressionPolicy::THRESHOLD_BYTES), $this->limits->batch);
-        if ($effect->encrypted) {
-            $encryptor = $this->encryptor;
-            if ($encryptor === null) {
-                return $this->fail(LoginFailureCode::ENCRYPTION_STATE);
-            }
-            $envelope = $encryptor->encryptEnvelope($envelope);
-        }
         if ($this->outgoing->count() >= $this->limits->maximumQueuedPayloads
             || strlen($envelope) > $this->limits->maximumQueuedPayloadBytes - $this->outgoingBytes) {
             return $this->fail(LoginFailureCode::EFFECT_LIMIT);
@@ -229,15 +203,6 @@ final class BedrockLoginChannel
         $this->outgoing = new SplQueue();
         $this->outgoingBytes = 0;
         $this->ready = null;
-        $this->closeCrypto();
         return false;
-    }
-
-    private function closeCrypto(): void
-    {
-        $this->encryptor?->close();
-        $this->decryptor?->close();
-        $this->encryptor = null;
-        $this->decryptor = null;
     }
 }

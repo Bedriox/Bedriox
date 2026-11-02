@@ -93,7 +93,7 @@ final class LevelDatStoreTest extends TestCase
     {
         return new LevelDatMetadata(10, [
             'StorageVersion' => LittleEndianNbtTag::int(10),
-            'NetworkVersion' => LittleEndianNbtTag::int(2193),
+            'NetworkVersion' => LittleEndianNbtTag::int(2225),
             'LevelName' => LittleEndianNbtTag::string('World'),
             'RandomSeed' => LittleEndianNbtTag::long(1),
             'generatorName' => LittleEndianNbtTag::string('flat'),

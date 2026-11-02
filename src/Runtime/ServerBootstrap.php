@@ -24,13 +24,10 @@ use Bedriox\Api\ServerPerformance;
 use Bedriox\Api\World\World as ApiWorld;
 use Bedriox\Api\World\WorldCreationOptions;
 use Bedriox\Data\BedrockDataSet;
-use Bedriox\Protocol\Discovery\AdvertisedGameMode;
-use Bedriox\Protocol\Discovery\BedrockServerAdvertisement;
 use Bedriox\Protocol\Identity\ClientDataJwtVerifier;
+use Bedriox\Protocol\ProtocolVersion;
 use Bedriox\Protocol\Security\EphemeralKeyFactory;
 use Bedriox\Protocol\Security\OpenSslEphemeralKeyFactory;
-use Bedriox\RakNet\DiscoveryStatus;
-use Bedriox\RakNet\TransportConfig;
 use Bedriox\Server\Access\BanManager;
 use Bedriox\Server\Access\WhitelistManager;
 use Bedriox\Server\Authentication\Discovery\CurlHttpsJsonTransport;
@@ -55,7 +52,6 @@ use Bedriox\Server\Login\LazyFullLoginAuthenticator;
 use Bedriox\Server\Login\LoginAuthenticator;
 use Bedriox\Server\Login\ProxyLoginAuthenticator;
 use Bedriox\Server\Login\ProxyTokenReplayGuard;
-use Bedriox\Server\Login\SecureHandshakeMaterialFactory;
 use Bedriox\Server\Login\SystemMonotonicClock;
 use Bedriox\Server\Observability\CrashContextPublisher;
 use Bedriox\Server\Observability\Memory\EmergencyMemoryReserve;
@@ -79,7 +75,8 @@ use Bedriox\Server\Simulation\SimulationLimits;
 use Bedriox\Server\Simulation\SimulationPluginApiBackend;
 use Bedriox\Server\Simulation\SystemSimulationClock;
 use Bedriox\Server\Simulation\WorldSimulation;
-use Bedriox\Server\Transport\ProcessDiscoveryServerTransport;
+use Bedriox\Server\Transport\NetherNetTransportConfig;
+use Bedriox\Server\Transport\ProcessNetherNetServerTransport;
 use Bedriox\Server\Worker\Chunk\AsyncChunkGenerator;
 use Bedriox\Server\Worker\Chunk\ChunkProjectionIdentity;
 use Bedriox\Server\Worker\Chunk\PreparedChunkCache;
@@ -607,45 +604,46 @@ final class ServerBootstrap
             $chunkSerializer = new BedrockChunkPacketSerializer(
                 $blockTranslator,
             );
-            $serverGuid = random_int(1, PHP_INT_MAX);
-            $advertisement = new BedrockServerAdvertisement(
-                motd: $config->serverName,
-                onlinePlayers: 0,
-                maximumPlayers: $config->maximumPlayers,
-                serverId: $serverGuid,
-                subMotd: $config->motd,
-                gameMode: AdvertisedGameMode::Survival,
-                nintendoLimited: false,
-                ipv4Port: $config->port,
-            );
-            $status = new DiscoveryStatus(
-                $advertisement->encode(),
-                acceptingConnections: true,
-            );
-            $transportConfig = new TransportConfig(
+            $workingDirectory = getcwd();
+            if (!is_string($workingDirectory)) {
+                throw new \RuntimeException('The server working directory is unavailable.');
+            }
+            $transportConfig = new NetherNetTransportConfig(
                 bindAddress: $config->bindAddress,
                 port: $config->port,
+                lanPort: $config->netherNetLanPort,
+                networkId: random_int(1, PHP_INT_MAX),
+                identityPath: $workingDirectory . DIRECTORY_SEPARATOR . 'nethernet.key',
+                serverName: $config->serverName,
+                protocol: ProtocolVersion::CURRENT,
+                gameVersion: ProtocolVersion::GAME_VERSION,
+                levelName: $config->levelName,
+                maximumPlayers: $config->maximumPlayers,
+                acceptsOnlineAuthentication: $config->authenticationMode === AuthenticationMode::FULL,
+                acceptsSelfSignedAuthentication: $config->authenticationMode !== AuthenticationMode::FULL,
                 maximumSessions: $config->maximumPlayers + $controlSessionReserve,
-                maximumPendingHandshakes: $config->maximumPlayers + $controlSessionReserve,
-                handshakeTimeoutMilliseconds: 15_000,
-                connectedSessionMaintenanceIntervalMilliseconds: 50,
                 maximumReceivedPayloads: 65_535,
                 maximumReceivedPayloadBytes: 67_108_864,
-                maximumPendingOutboundDatagrams: 65_535,
-                maximumPendingOutboundBytes: 67_108_864,
                 maximumSessionEvents: max($config->maximumPlayers, 1_024),
-                socketReceiveBufferBytes: 67_108_864,
-                socketSendBufferBytes: 67_108_864,
-                security: $config->transportSecurityPolicy,
-            );
-            $discovery = ProcessDiscoveryServerTransport::start(
-                $transportConfig,
-                $serverGuid,
-                $status,
-                $diagnostics,
-                trustedEndpointCidrs: $config->authenticationMode === AuthenticationMode::GATEWAY
+                maximumSignalingConnections: max(
+                    $config->maximumPlayers + $controlSessionReserve,
+                    $config->netherNetMaximumSignalingConnections,
+                ),
+                maximumNegotiations: max(
+                    $config->maximumPlayers + $controlSessionReserve,
+                    $config->netherNetMaximumNegotiations,
+                ),
+                maximumNegotiationsPerAddress: $config->netherNetMaximumNegotiationsPerAddress,
+                maximumRemoteCandidates: $config->netherNetMaximumRemoteCandidates,
+                gatheringTimeoutSeconds: $config->netherNetGatheringTimeoutMilliseconds / 1_000,
+                channelTimeoutSeconds: $config->netherNetChannelTimeoutMilliseconds / 1_000,
+                advertisedAddresses: $config->netherNetAdvertisedAddresses,
+                trustedProxyCidrs: $config->authenticationMode === AuthenticationMode::GATEWAY
                     ? $config->proxyTrustedCidrs
                     : [],
+            );
+            $discovery = ProcessNetherNetServerTransport::start(
+                $transportConfig,
             );
             $startupTransportReadyAt = hrtime(true);
             $runtime = new ServerRuntime(
@@ -653,7 +651,6 @@ final class ServerBootstrap
                 new ConfiguredLoginChannelFactory(
                     new SystemMonotonicClock(),
                     $authenticator,
-                    new SecureHandshakeMaterialFactory($ephemeralKeys),
                     $config->authenticationMode,
                 ),
                 new BedrockPlayChannelFactory(

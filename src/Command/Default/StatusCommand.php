@@ -375,22 +375,21 @@ final readonly class StatusCommand implements BuiltinCommand
         }
         if ($status->transportSecurity !== null) {
             self::send($sender, TextFormat::AQUA, sprintf(
-                'Admission: %d datagrams (%s), %d dropped, %d malformed',
-                $status->transportSecurity->receivedDatagrams,
-                self::bytes($status->transportSecurity->receivedBytes),
-                $status->transportSecurity->droppedDatagrams,
-                $status->transportSecurity->malformedDatagrams,
+                'NetherNet: %d/%d sessions, %d negotiations, %d blocked addresses',
+                $status->transportSecurity->activeSessions,
+                $status->transportSecurity->maximumSessions,
+                $status->transportSecurity->activeNegotiations,
+                $status->transportSecurity->activeAddressBlocks,
             ));
             self::send($sender, TextFormat::GRAY, sprintf(
-                'Protection: %d active blocks, %d blocks issued, %d rate-limit hits',
-                $status->transportSecurity->activeBlocks,
-                $status->transportSecurity->temporaryBlocks,
-                $status->transportSecurity->rateLimitedEndpoints,
+                'Transport safeguards: %d flood blocks, %d session-limit refusals, %d blocked-peer refusals',
+                $status->transportSecurity->negotiationFloodBlocks,
+                $status->transportSecurity->sessionLimitRejections,
+                $status->transportSecurity->blockedPeerRejections,
             ));
         } else {
-            self::send($sender, TextFormat::GRAY, 'Admission protection metrics: awaiting transport snapshot');
+            self::send($sender, TextFormat::GRAY, 'NetherNet security metrics: awaiting transport snapshot');
         }
-
         self::section($sender, 'Average Tick Cost');
         foreach (
             [

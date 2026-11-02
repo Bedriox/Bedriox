@@ -20,37 +20,31 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests\Login;
 
+use Bedriox\NetherNet\Protocol\Reliability;
 use Bedriox\Protocol\Batch\BatchLimits;
 use Bedriox\Protocol\Batch\BedrockBatch;
 use Bedriox\Protocol\Batch\BedrockBatchCodec;
 use Bedriox\Protocol\Batch\CompressionMode;
-use Bedriox\Protocol\Encryption\BedrockEncryptor;
 use Bedriox\Protocol\Identity\VerifiedClientData;
 use Bedriox\Protocol\Packet\AuthenticationType;
 use Bedriox\Protocol\Packet\BedrockPacketCodec;
 use Bedriox\Protocol\Packet\ClientCacheStatusPacket;
-use Bedriox\Protocol\Packet\ClientToServerHandshakePacket;
 use Bedriox\Protocol\Packet\LoginAuthentication;
 use Bedriox\Protocol\Packet\LoginPacket;
 use Bedriox\Protocol\Packet\Packet;
 use Bedriox\Protocol\Packet\PacketFrame;
 use Bedriox\Protocol\Packet\PacketHeader;
+use Bedriox\Protocol\Packet\PlayStatusPacket;
 use Bedriox\Protocol\Packet\RequestNetworkSettingsPacket;
 use Bedriox\Protocol\Packet\ResourcePackClientResponsePacket;
 use Bedriox\Protocol\Packet\ResourcePackResponseStatus;
-use Bedriox\Protocol\Packet\ServerToClientHandshakePacket;
+use Bedriox\Protocol\Packet\ResourcePacksInfoPacket;
 use Bedriox\Protocol\ProtocolVersion;
-use Bedriox\Protocol\Security\HandshakeJwt;
 use Bedriox\Protocol\Security\OpenSslEphemeralKeyFactory;
-use Bedriox\Protocol\Security\P384;
 use Bedriox\Protocol\Security\P384KeyPair;
-use Bedriox\RakNet\Connected\ConnectedPayloadEvent;
-use Bedriox\RakNet\Protocol\Reliability;
 use Bedriox\Server\Login\AuthenticatedLogin;
 use Bedriox\Server\Login\AuthenticationMode;
 use Bedriox\Server\Login\BedrockLoginChannel;
-use Bedriox\Server\Login\HandshakeMaterial;
-use Bedriox\Server\Login\HandshakeMaterialFactory;
 use Bedriox\Server\Login\LoginAuthenticator;
 use Bedriox\Server\Login\LoginChannelLimits;
 use Bedriox\Server\Login\LoginFailureCode;
@@ -58,37 +52,29 @@ use Bedriox\Server\Login\LoginLimits;
 use Bedriox\Server\Login\LoginSession;
 use Bedriox\Server\Login\LoginState;
 use Bedriox\Server\Login\MonotonicClock;
+use Bedriox\Server\Transport\InboundPayload;
 use Bedriox\Server\Transport\NetworkCompressionPolicy;
 use PHPUnit\Framework\TestCase;
 
 final class BedrockLoginChannelTest extends TestCase
 {
-    public function testRawRakNetPayloadCompletesEncryptedLogin(): void
+    public function testRawNetherNetPayloadCompletesPlaintextLogin(): void
     {
-        [$channel, $clientKeys] = $this->channel();
-        self::assertTrue($channel->accept($this->event($this->encode(new RequestNetworkSettingsPacket(), CompressionMode::Uncompressed))));
+        [$channel] = $this->channel();
+        $networkRequest = $this->encode(new RequestNetworkSettingsPacket(), CompressionMode::Uncompressed);
+        self::assertNotSame("\xfe", $networkRequest[0]);
+        self::assertTrue($channel->accept($this->event($networkRequest)));
         self::assertCount(1, $channel->drainOutgoing());
 
         self::assertTrue($channel->accept($this->event($this->encode($this->login(), CompressionMode::NegotiatedZlib))));
-        $serverHandshakeEnvelope = $channel->drainOutgoing()[0]->payload;
-        $serverHandshake = $this->decode($serverHandshakeEnvelope, CompressionMode::NegotiatedZlib);
-        self::assertInstanceOf(ServerToClientHandshakePacket::class, $serverHandshake);
-        $jws = HandshakeJwt::parse($serverHandshake->jwt);
-        $x5u = $jws->header['x5u'] ?? null;
-        $encodedSalt = $jws->payload['salt'] ?? null;
-        self::assertIsString($x5u);
-        self::assertIsString($encodedSalt);
-        $serverKey = P384::importPublicDerBase64($x5u);
-        $salt = base64_decode($encodedSalt, true);
-        self::assertIsString($salt);
-        $key = P384::deriveSessionKey($salt, P384::deriveSharedSecret($clientKeys->privateKey, $serverKey));
-        $clientEncryptor = new BedrockEncryptor($key);
+        $loginOutput = $channel->drainOutgoing();
+        self::assertCount(2, $loginOutput);
+        self::assertInstanceOf(PlayStatusPacket::class, $this->decode($loginOutput[0]->payload, CompressionMode::NegotiatedZlib));
+        self::assertInstanceOf(ResourcePacksInfoPacket::class, $this->decode($loginOutput[1]->payload, CompressionMode::NegotiatedZlib));
 
-        self::assertTrue($channel->accept($this->event($clientEncryptor->encryptEnvelope($this->encode(new ClientToServerHandshakePacket(), CompressionMode::NegotiatedZlib)))));
-        self::assertCount(2, $channel->drainOutgoing());
-        self::assertTrue($channel->accept($this->event($clientEncryptor->encryptEnvelope($this->encode(new ResourcePackClientResponsePacket(ResourcePackResponseStatus::HaveAllPacks, []), CompressionMode::NegotiatedZlib)))));
+        self::assertTrue($channel->accept($this->event($this->encode(new ResourcePackClientResponsePacket(ResourcePackResponseStatus::HaveAllPacks, []), CompressionMode::NegotiatedZlib))));
         self::assertCount(1, $channel->drainOutgoing());
-        self::assertTrue($channel->accept($this->event($clientEncryptor->encryptEnvelope($this->encode(new ResourcePackClientResponsePacket(ResourcePackResponseStatus::Completed, []), CompressionMode::NegotiatedZlib)))));
+        self::assertTrue($channel->accept($this->event($this->encode(new ResourcePackClientResponsePacket(ResourcePackResponseStatus::Completed, []), CompressionMode::NegotiatedZlib))));
         self::assertSame(LoginState::LOGIN_READY, $channel->state());
         $ready = $channel->takeReady();
         self::assertNotNull($ready);
@@ -100,55 +86,57 @@ final class BedrockLoginChannelTest extends TestCase
     public function testWrongReliabilityFailsClosed(): void
     {
         [$wrong] = $this->channel();
-        $event = new ConnectedPayloadEvent($this->encode(new RequestNetworkSettingsPacket(), CompressionMode::Uncompressed), Reliability::Reliable, null);
+        $event = new InboundPayload($this->encode(new RequestNetworkSettingsPacket(), CompressionMode::Uncompressed), Reliability::UNRELIABLE);
         self::assertFalse($wrong->accept($event));
         self::assertSame(LoginFailureCode::INPUT_LIMIT, $wrong->failure());
     }
 
     public function testValidCombinedLoginPacketsAreProcessedInOrder(): void
     {
-        [$channel, $client] = $this->channel();
-        [, $encryptor] = $this->advanceToCryptoWithPair($channel, $client);
-        self::assertTrue($channel->accept($this->event($encryptor->encryptEnvelope($this->encode(new ClientToServerHandshakePacket(), CompressionMode::NegotiatedZlib)))));
-        $channel->drainOutgoing();
+        [$channel] = $this->channel();
+        $this->advanceThroughLogin($channel);
 
         $combined = BedrockBatchCodec::encode(new BedrockBatch([
             $this->frame(new ClientCacheStatusPacket(false)),
             $this->frame(new ResourcePackClientResponsePacket(ResourcePackResponseStatus::HaveAllPacks, [])),
         ], CompressionMode::NegotiatedZlib, NetworkCompressionPolicy::THRESHOLD_BYTES), new BatchLimits());
 
-        self::assertTrue($channel->accept($this->event($encryptor->encryptEnvelope($combined))));
+        self::assertTrue($channel->accept($this->event($combined)));
         self::assertSame(LoginState::WAIT_PACK_STACK_RESPONSE, $channel->state());
         self::assertCount(1, $channel->drainOutgoing());
     }
 
     public function testUnsupportedLoginFrameDoesNotDiscardFollowingKnownFrame(): void
     {
-        [$channel, $client] = $this->channel();
-        [, $encryptor] = $this->advanceToCryptoWithPair($channel, $client);
-        self::assertTrue($channel->accept($this->event($encryptor->encryptEnvelope($this->encode(new ClientToServerHandshakePacket(), CompressionMode::NegotiatedZlib)))));
-        $channel->drainOutgoing();
+        [$channel] = $this->channel();
+        $this->advanceThroughLogin($channel);
 
         $combined = BedrockBatchCodec::encode(new BedrockBatch([
             new PacketFrame(new PacketHeader(0x3ff), "\xde\xad"),
             $this->frame(new ResourcePackClientResponsePacket(ResourcePackResponseStatus::HaveAllPacks, [])),
         ], CompressionMode::NegotiatedZlib, NetworkCompressionPolicy::THRESHOLD_BYTES), new BatchLimits());
 
-        self::assertTrue($channel->accept($this->event($encryptor->encryptEnvelope($combined))));
+        self::assertTrue($channel->accept($this->event($combined)));
         self::assertSame(LoginState::WAIT_PACK_STACK_RESPONSE, $channel->state());
         self::assertCount(1, $channel->drainOutgoing());
     }
 
-    public function testPlaintextAfterCryptoAndCorruptionFailClosed(): void
+    public function testClearPostLoginPayloadIsAcceptedAndMalformedBatchFailsClosed(): void
     {
-        [$plain, $plainClient] = $this->channel();
-        $this->advanceToCryptoWithPair($plain, $plainClient);
-        self::assertFalse($plain->accept($this->event($this->encode(new ClientToServerHandshakePacket(), CompressionMode::NegotiatedZlib))));
-        self::assertSame(LoginFailureCode::INPUT_LIMIT, $plain->failure());
+        [$clear] = $this->channel();
+        $this->advanceThroughLogin($clear);
+        self::assertTrue($clear->accept($this->event($this->encode(
+            new ResourcePackClientResponsePacket(ResourcePackResponseStatus::HaveAllPacks, []),
+            CompressionMode::NegotiatedZlib,
+        ))));
+        self::assertSame(LoginState::WAIT_PACK_STACK_RESPONSE, $clear->state());
 
-        [$corrupt, $corruptClient] = $this->channel();
-        [, $encryptor] = $this->advanceToCryptoWithPair($corrupt, $corruptClient);
-        $bytes = $encryptor->encryptEnvelope($this->encode(new ClientToServerHandshakePacket(), CompressionMode::NegotiatedZlib));
+        [$corrupt] = $this->channel();
+        $this->advanceThroughLogin($corrupt);
+        $bytes = $this->encode(
+            new ResourcePackClientResponsePacket(ResourcePackResponseStatus::HaveAllPacks, []),
+            CompressionMode::NegotiatedZlib,
+        );
         $bytes[strlen($bytes) - 1] = $bytes[strlen($bytes) - 1] ^ "\x01";
         self::assertFalse($corrupt->accept($this->event($bytes)));
         self::assertSame(LoginFailureCode::INPUT_LIMIT, $corrupt->failure());
@@ -190,7 +178,7 @@ final class BedrockLoginChannelTest extends TestCase
         self::assertSame([], $channel->drainOutgoing());
     }
 
-    public function testExplicitCloseIsIdempotentBeforeAndAfterCrypto(): void
+    public function testExplicitCloseIsIdempotentBeforeAndAfterLogin(): void
     {
         [$before] = $this->channel();
         self::assertFalse($before->securityPosture()->requiresOperatorWarning());
@@ -200,9 +188,8 @@ final class BedrockLoginChannelTest extends TestCase
         self::assertSame(LoginFailureCode::CLOSED_BY_SERVER, $before->failure());
         self::assertSame([], $before->drainOutgoing());
 
-        [$after, $client] = $this->channel();
-        [, $encryptor] = $this->advanceToCryptoWithPair($after, $client);
-        self::assertTrue($after->accept($this->event($encryptor->encryptEnvelope($this->encode(new ClientToServerHandshakePacket(), CompressionMode::NegotiatedZlib)))));
+        [$after] = $this->channel();
+        $this->advanceThroughLogin($after);
         self::assertSame(LoginState::WAIT_PACK_INFO_RESPONSE, $after->state());
         $after->close();
         $after->close(LoginFailureCode::INPUT_LIMIT);
@@ -213,14 +200,11 @@ final class BedrockLoginChannelTest extends TestCase
 
     public function testCloseAfterReadyDiscardsUnclaimedTransferAndDestructorIsSafe(): void
     {
-        [$channel, $client] = $this->channel();
-        [, $encryptor] = $this->advanceToCryptoWithPair($channel, $client);
+        [$channel] = $this->channel();
+        $this->advanceThroughLogin($channel);
+        self::assertTrue($channel->accept($this->event($this->encode(new ResourcePackClientResponsePacket(ResourcePackResponseStatus::HaveAllPacks, []), CompressionMode::NegotiatedZlib))));
         $channel->drainOutgoing();
-        self::assertTrue($channel->accept($this->event($encryptor->encryptEnvelope($this->encode(new ClientToServerHandshakePacket(), CompressionMode::NegotiatedZlib)))));
-        $channel->drainOutgoing();
-        self::assertTrue($channel->accept($this->event($encryptor->encryptEnvelope($this->encode(new ResourcePackClientResponsePacket(ResourcePackResponseStatus::HaveAllPacks, []), CompressionMode::NegotiatedZlib)))));
-        $channel->drainOutgoing();
-        self::assertTrue($channel->accept($this->event($encryptor->encryptEnvelope($this->encode(new ResourcePackClientResponsePacket(ResourcePackResponseStatus::Completed, []), CompressionMode::NegotiatedZlib)))));
+        self::assertTrue($channel->accept($this->event($this->encode(new ResourcePackClientResponsePacket(ResourcePackResponseStatus::Completed, []), CompressionMode::NegotiatedZlib))));
         self::assertSame(LoginState::LOGIN_READY, $channel->state());
         $channel->close();
         self::assertSame(LoginState::CLOSED, $channel->state());
@@ -243,34 +227,22 @@ final class BedrockLoginChannelTest extends TestCase
             $client->publicKey,
             new VerifiedClientData(1, 1, "\0\0\0\0", 0, 0, '', '{}', []),
         ));
-        $handshake = new PipelineHandshakeFactory(new HandshakeMaterial($factory->generate(), str_repeat("\x41", 16)));
         $clock = new PipelineClock();
-        $session = new LoginSession($clock, $authenticator, $handshake, limits: $sessionLimits ?? new LoginLimits());
+        $session = new LoginSession($clock, $authenticator, limits: $sessionLimits ?? new LoginLimits());
         return [new BedrockLoginChannel($session, $limits ?? new LoginChannelLimits()), $client, $clock, $session];
     }
 
-    /** @return array{P384KeyPair, BedrockEncryptor} */
-    private function advanceToCryptoWithPair(BedrockLoginChannel $channel, P384KeyPair $client): array
+    private function advanceThroughLogin(BedrockLoginChannel $channel): void
     {
-        $channel->accept($this->event($this->encode(new RequestNetworkSettingsPacket(), CompressionMode::Uncompressed)));
+        self::assertTrue($channel->accept($this->event($this->encode(new RequestNetworkSettingsPacket(), CompressionMode::Uncompressed))));
         $channel->drainOutgoing();
-        $channel->accept($this->event($this->encode($this->login(), CompressionMode::NegotiatedZlib)));
-        $handshake = $this->decode($channel->drainOutgoing()[0]->payload, CompressionMode::NegotiatedZlib);
-        self::assertInstanceOf(ServerToClientHandshakePacket::class, $handshake);
-        $jws = HandshakeJwt::parse($handshake->jwt);
-        $encodedSalt = $jws->payload['salt'] ?? null;
-        $x5u = $jws->header['x5u'] ?? null;
-        self::assertIsString($encodedSalt);
-        self::assertIsString($x5u);
-        $salt = base64_decode($encodedSalt, true);
-        self::assertIsString($salt);
-        $key = P384::deriveSessionKey($salt, P384::deriveSharedSecret($client->privateKey, P384::importPublicDerBase64($x5u)));
-        return [$client, new BedrockEncryptor($key)];
+        self::assertTrue($channel->accept($this->event($this->encode($this->login(), CompressionMode::NegotiatedZlib))));
+        self::assertCount(2, $channel->drainOutgoing());
     }
 
-    private function event(string $payload): ConnectedPayloadEvent
+    private function event(string $payload): InboundPayload
     {
-        return new ConnectedPayloadEvent($payload, Reliability::ReliableOrdered, 0);
+        return new InboundPayload($payload, Reliability::RELIABLE);
     }
 
     private function encode(Packet $packet, CompressionMode $mode): string
@@ -326,15 +298,5 @@ final readonly class PipelineAuthenticator implements LoginAuthenticator
     public function authenticate(LoginPacket $packet, AuthenticationMode $mode): AuthenticatedLogin
     {
         return $this->login;
-    }
-}
-
-final readonly class PipelineHandshakeFactory implements HandshakeMaterialFactory
-{
-    public function __construct(private HandshakeMaterial $material) {}
-
-    public function create(): HandshakeMaterial
-    {
-        return $this->material;
     }
 }

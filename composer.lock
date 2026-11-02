@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "019bb8140fa0f4ddd037ca2530e39a33",
+    "content-hash": "5315b6e024ae5cf6afc1581dc879e589",
     "packages": [
         {
             "name": "bedriox/data",
@@ -12,7 +12,7 @@
             "dist": {
                 "type": "path",
                 "url": "../Data",
-                "reference": "31d7e58c81fb2640d10456f7cac369bf5b565062"
+                "reference": "3a563d9c266f254b8f6ada2bafb9e5702e78b227"
             },
             "require": {
                 "php": "^8.4"
@@ -55,12 +55,85 @@
             }
         },
         {
+            "name": "bedriox/nethernet",
+            "version": "0.1.0-alpha.1",
+            "dist": {
+                "type": "path",
+                "url": "../NetherNet",
+                "reference": "140e6952242f8717c169e9f232cdd18a73a0a835"
+            },
+            "require": {
+                "ext-hash": "*",
+                "ext-json": "*",
+                "ext-openssl": "*",
+                "ext-sockets": "*",
+                "ext-webrtc": "*",
+                "php": "^8.4",
+                "php-64bit": "*"
+            },
+            "require-dev": {
+                "friendsofphp/php-cs-fixer": "^3.75",
+                "phpstan/phpstan": "^2.1",
+                "phpstan/phpstan-phpunit": "^2.0",
+                "phpstan/phpstan-strict-rules": "^2.0",
+                "phpunit/phpunit": "^11.5"
+            },
+            "type": "library",
+            "autoload": {
+                "psr-4": {
+                    "Bedriox\\NetherNet\\": "src/"
+                }
+            },
+            "autoload-dev": {
+                "psr-4": {
+                    "Bedriox\\NetherNet\\": "tests/"
+                }
+            },
+            "scripts": {
+                "check": [
+                    "composer validate --strict",
+                    "composer audit --locked",
+                    "@test",
+                    "@analyse",
+                    "@style"
+                ],
+                "test": [
+                    "phpunit"
+                ],
+                "analyse": [
+                    "phpstan analyse --no-progress --memory-limit=1G"
+                ],
+                "style": [
+                    "php-cs-fixer check --diff --verbose"
+                ]
+            },
+            "license": [
+                "GPL-3.0-only"
+            ],
+            "authors": [
+                {
+                    "name": "Veno Ninja LLC",
+                    "homepage": "https://bedriox.com"
+                }
+            ],
+            "description": "A standalone NetherNet transport library for Bedriox and other PHP applications.",
+            "homepage": "https://bedriox.com",
+            "support": {
+                "issues": "https://github.com/Bedriox/NetherNet/issues",
+                "source": "https://github.com/Bedriox/NetherNet"
+            },
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            }
+        },
+        {
             "name": "bedriox/protocol",
             "version": "0.1.0-alpha.1",
             "dist": {
                 "type": "path",
                 "url": "../Protocol",
-                "reference": "2d56c8997f0c2ab74978d9eb915912f9ceb0bea8"
+                "reference": "4a5f9e69ed24693012441fbfe91328bc1c32b1f4"
             },
             "require": {
                 "ext-openssl": "*",
@@ -105,70 +178,6 @@
             ],
             "description": "Single-version Minecraft: Bedrock Edition protocol primitives for Bedriox.",
             "homepage": "https://bedriox.com",
-            "transport-options": {
-                "symlink": false,
-                "relative": true
-            }
-        },
-        {
-            "name": "bedriox/raknet",
-            "version": "0.1.0-alpha.3",
-            "dist": {
-                "type": "path",
-                "url": "../RakNet",
-                "reference": "489aeb7853973b8da4fb134beb01dd653746f34e"
-            },
-            "require": {
-                "ext-sockets": "*",
-                "php": "^8.4"
-            },
-            "require-dev": {
-                "friendsofphp/php-cs-fixer": "^3.75",
-                "phpstan/phpstan": "^2.1",
-                "phpunit/phpunit": "^11.5"
-            },
-            "type": "library",
-            "autoload": {
-                "psr-4": {
-                    "Bedriox\\RakNet\\": "src/"
-                }
-            },
-            "autoload-dev": {
-                "psr-4": {
-                    "Bedriox\\RakNet\\Tests\\": "tests/"
-                }
-            },
-            "scripts": {
-                "check": [
-                    "@test",
-                    "@analyse",
-                    "@style"
-                ],
-                "test": [
-                    "phpunit"
-                ],
-                "analyse": [
-                    "phpstan analyse --no-progress --memory-limit=1G"
-                ],
-                "style": [
-                    "php-cs-fixer check --diff --verbose"
-                ]
-            },
-            "license": [
-                "GPL-3.0-only"
-            ],
-            "authors": [
-                {
-                    "name": "Veno Ninja LLC",
-                    "homepage": "https://bedriox.com"
-                }
-            ],
-            "description": "A standalone RakNet transport library for Bedriox and other PHP applications.",
-            "homepage": "https://bedriox.com",
-            "support": {
-                "issues": "https://github.com/Bedriox/RakNet/issues",
-                "source": "https://github.com/Bedriox/RakNet"
-            },
             "transport-options": {
                 "symlink": false,
                 "relative": true
@@ -4908,8 +4917,8 @@
     "minimum-stability": "stable",
     "stability-flags": {
         "bedriox/data": 15,
-        "bedriox/protocol": 15,
-        "bedriox/raknet": 15
+        "bedriox/nethernet": 15,
+        "bedriox/protocol": 15
     },
     "prefer-stable": true,
     "prefer-lowest": false,

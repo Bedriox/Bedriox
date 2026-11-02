@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Transport\Process;
 
-use Bedriox\RakNet\Protocol\Reliability;
+use Bedriox\NetherNet\Protocol\Reliability;
 use JsonException;
 use RuntimeException;
 
@@ -38,15 +38,10 @@ final class TransportProcessFrameCodec
         $body = chr($frame->kind->value) . pack('N', $frame->sessionId);
         if ($frame->kind === TransportProcessFrameKind::SEND_PAYLOAD
             || $frame->kind === TransportProcessFrameKind::RECEIVED_PAYLOAD) {
-            if ($frame->payload === '' || $frame->reliability === null
-                || ($frame->reliability === Reliability::ReliableOrdered) !== ($frame->orderingChannel !== null)
-                || ($frame->orderingChannel !== null
-                    && ($frame->orderingChannel < 0 || $frame->orderingChannel > 31))) {
+            if ($frame->payload === '' || $frame->reliability === null) {
                 throw new RuntimeException('Transport payload frame metadata is invalid.');
             }
-            $body .= chr($frame->reliability->value)
-                . chr($frame->orderingChannel ?? 0xff)
-                . $frame->payload;
+            $body .= chr(self::encodeReliability($frame->reliability)) . $frame->payload;
         } elseif ($frame->metadata !== [] || $frame->payload !== '') {
             try {
                 $metadata = json_encode(
@@ -83,20 +78,16 @@ final class TransportProcessFrameCodec
         $sessionId = $decoded['session'];
         if ($kind === TransportProcessFrameKind::SEND_PAYLOAD
             || $kind === TransportProcessFrameKind::RECEIVED_PAYLOAD) {
-            if ($length < 8) {
+            if ($length < 7) {
                 throw new RuntimeException('Transport payload frame is truncated.');
             }
-            $reliability = Reliability::tryFrom(ord($body[5]));
-            $channelByte = ord($body[6]);
-            $orderingChannel = $channelByte === 0xff ? null : $channelByte;
-            $payload = substr($body, 7);
-            if ($reliability === null || $payload === ''
-                || ($reliability === Reliability::ReliableOrdered) !== ($orderingChannel !== null)
-                || ($orderingChannel !== null && $orderingChannel > 31)) {
+            $reliability = self::decodeReliability(ord($body[5]));
+            $payload = substr($body, 6);
+            if ($reliability === null || $payload === '') {
                 throw new RuntimeException('Transport payload frame is invalid.');
             }
 
-            return new TransportProcessFrame($kind, $sessionId, $payload, $reliability, $orderingChannel);
+            return new TransportProcessFrame($kind, $sessionId, $payload, $reliability);
         }
         if ($length === 5) {
             return new TransportProcessFrame($kind, $sessionId);
@@ -128,5 +119,22 @@ final class TransportProcessFrameCodec
         }
 
         return new TransportProcessFrame($kind, $sessionId, metadata: $validatedMetadata);
+    }
+
+    private static function encodeReliability(Reliability $reliability): int
+    {
+        return match ($reliability) {
+            Reliability::RELIABLE => 0,
+            Reliability::UNRELIABLE => 1,
+        };
+    }
+
+    private static function decodeReliability(int $value): ?Reliability
+    {
+        return match ($value) {
+            0 => Reliability::RELIABLE,
+            1 => Reliability::UNRELIABLE,
+            default => null,
+        };
     }
 }

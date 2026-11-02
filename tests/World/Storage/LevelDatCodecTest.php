@@ -291,7 +291,7 @@ final class LevelDatCodecTest extends TestCase
     {
         return new LevelDatMetadata(10, [
             'StorageVersion' => LittleEndianNbtTag::int(10),
-            'NetworkVersion' => LittleEndianNbtTag::int(2193),
+            'NetworkVersion' => LittleEndianNbtTag::int(2225),
             'LevelName' => LittleEndianNbtTag::string('World'),
             'RandomSeed' => LittleEndianNbtTag::long(42),
             'generatorName' => LittleEndianNbtTag::string('flat'),

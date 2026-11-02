@@ -7,7 +7,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $failures = [System.Collections.Generic.List[string]]::new()
-$codeRepositories = @('Bedriox', 'RakNet', 'Protocol', 'Data', 'ExamplePlugin', 'PluginTools')
+$codeRepositories = @('Bedriox', 'NetherNet', 'Protocol', 'Data', 'ExamplePlugin', 'PluginTools')
 $runtimeRepositories = @('Runtime')
 $documentationRepositories = @('Docs', 'RFCs')
 $repositoryNames = $codeRepositories + $runtimeRepositories + $documentationRepositories

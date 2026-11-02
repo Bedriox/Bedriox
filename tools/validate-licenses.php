@@ -46,17 +46,17 @@ $approvedProduction = [
     ],
     'bedriox/protocol' => [
         'version' => '0.1.0-alpha.1',
-        'reference' => '2d56c8997f0c2ab74978d9eb915912f9ceb0bea8',
+        'reference' => '4a5f9e69ed24693012441fbfe91328bc1c32b1f4',
         'license' => 'GPL-3.0-only',
     ],
     'bedriox/data' => [
         'version' => '0.1.0-alpha.1',
-        'reference' => '31d7e58c81fb2640d10456f7cac369bf5b565062',
+        'reference' => '3a563d9c266f254b8f6ada2bafb9e5702e78b227',
         'license' => 'GPL-3.0-only',
     ],
-    'bedriox/raknet' => [
-        'version' => '0.1.0-alpha.3',
-        'reference' => '489aeb7853973b8da4fb134beb01dd653746f34e',
+    'bedriox/nethernet' => [
+        'version' => '0.1.0-alpha.1',
+        'reference' => '140e6952242f8717c169e9f232cdd18a73a0a835',
         'license' => 'GPL-3.0-only',
     ],
     'symfony/deprecation-contracts' => [

@@ -29,8 +29,8 @@ use Bedriox\Api\Player\Player;
 use Bedriox\Api\Player\PlayerConnection;
 use Bedriox\Api\World\Position;
 use Bedriox\Api\World\WorldDifficulty;
+use Bedriox\NetherNet\Server\ServerSecuritySnapshot;
 use Bedriox\Protocol\Packet\Packet;
-use Bedriox\RakNet\Security\TransportSecuritySnapshot;
 use Bedriox\Server\Access\BanManager;
 use Bedriox\Server\Command\BuiltinCommandRegistrar;
 use Bedriox\Server\Command\Default\GarbageCollectionStatus;
@@ -121,7 +121,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
         $sender = new BuiltinCommandSender();
         self::assertTrue(($registry->dispatch($sender, 'ver'))->isSuccess());
         self::assertSame(
-            'This server is running Bedriox version 1.0.0-beta.3-dev (protocol 2193).',
+            'This server is running Bedriox version 2.0.0-beta.1 (protocol 2225).',
             $sender->messages[0],
         );
         self::assertSame('Visit https://bedriox.com', $sender->messages[1]);
@@ -355,7 +355,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
         $versionSender = new BuiltinCommandSender(CommandSenderType::PLAYER);
         self::assertTrue(($registry->dispatch($versionSender, 'version'))->isSuccess());
         self::assertSame(
-            "\u{00a7}aThis server is running Bedriox version 1.0.0-beta.3-dev (protocol 2193).\u{00a7}r",
+            "\u{00a7}aThis server is running Bedriox version 2.0.0-beta.1 (protocol 2225).\u{00a7}r",
             $versionSender->messages[0],
         );
         self::assertSame("\u{00a7}bVisit https://bedriox.com\u{00a7}r", $versionSender->messages[1]);
@@ -439,8 +439,8 @@ final class BuiltinCommandRegistrarTest extends TestCase
                 playerPersistence: new PersistenceQueueSnapshot(1, 0, 2, 2_048, 3, 4, 5),
                 preparedChunkCache: new PreparedChunkCacheSnapshot(12, 24_576, 3, 6_144, 80, 20, 2, 4, 1),
                 entityRuntime: new EntityRuntimeMetrics(40, 12, 10, 28, 2, 1, 8, 3, 1_250_000, true),
-                transportSecurity: new TransportSecuritySnapshot(500, 32_768, 81, 1, 3, 1, 0, 1, 0),
                 inbound: new InboundMetricsSnapshot(100, 4, 3, 2, 1, 1, 1, 1, 2, 3, 103, 2),
+                transportSecurity: new ServerSecuritySnapshot(7, 20, 2, 3, 4, 5, 6),
             ),
         ))->register();
 
@@ -448,7 +448,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
         self::assertTrue(($registry->dispatch($sender, 'status'))->isSuccess());
         self::assertSame([
             '--------- Bedriox Status ---------',
-            'Version: Bedriox 1.0.0-beta.3-dev',
+            'Version: Bedriox 2.0.0-beta.1',
             'Uptime: 1d 01h 01m 01s',
             'Players: 2/20 online',
             'TPS: 20.00 current, 19.95 average',
@@ -476,8 +476,8 @@ final class BuiltinCommandRegistrarTest extends TestCase
         self::assertContains('Play input: 100 handled, 4 ignored, 3 corrected, 2 rejected', $advanced->messages);
         self::assertContains('Play input violations: 1 semantic, 1 fatal protocol, 1 internal failures', $advanced->messages);
         self::assertContains('Play input origins: 1 transport, 2 envelope, 3 decode, 103 handler, 2 admission', $advanced->messages);
-        self::assertContains('Admission: 500 datagrams (32.0 KiB), 81 dropped, 3 malformed', $advanced->messages);
-        self::assertContains('Protection: 0 active blocks, 1 blocks issued, 1 rate-limit hits', $advanced->messages);
+        self::assertContains('NetherNet: 7/20 sessions, 2 negotiations, 3 blocked addresses', $advanced->messages);
+        self::assertContains('Transport safeguards: 4 flood blocks, 5 session-limit refusals, 6 blocked-peer refusals', $advanced->messages);
         self::assertContains('World persistence: 2 queued, 1 in flight, 3 completions (4.0 KiB)', $advanced->messages);
         self::assertContains('Player persistence totals: 3 coalesced, 4 saturated, 5 failed', $advanced->messages);
         self::assertContains('Core workers: unavailable', $advanced->messages);

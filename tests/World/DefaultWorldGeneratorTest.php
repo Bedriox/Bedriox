@@ -145,15 +145,16 @@ final class DefaultWorldGeneratorTest extends TestCase
         self::assertGreaterThan(0, $checked, 'The selected adjacent chunks must exercise an ocean seam.');
     }
 
-    public function testCavifiedDensityProducesAHorizontalSurfaceEntrance(): void
+    public function testCavifiedDensityProducesAContinuousHorizontalTunnel(): void
     {
         [$generator, $states] = self::generator(4_242);
-        $chunk = $generator->generate(new ChunkPosition(10, 7));
+        $chunk = $generator->generate(new ChunkPosition(10, 6));
 
-        self::assertSame('minecraft:air', self::identifierAt($chunk, $states, 7, 63, 8));
-        self::assertNotSame('minecraft:air', self::identifierAt($chunk, $states, 7, 64, 8));
-        self::assertSame('minecraft:air', self::identifierAt($chunk, $states, 8, 63, 8));
-        self::assertSame('minecraft:air', self::identifierAt($chunk, $states, 8, 64, 8));
+        self::assertSame('minecraft:air', self::identifierAt($chunk, $states, 13, 51, 2));
+        self::assertSame('minecraft:air', self::identifierAt($chunk, $states, 14, 51, 2));
+        self::assertSame('minecraft:stone', self::identifierAt($chunk, $states, 12, 51, 2));
+        self::assertSame('minecraft:stone', self::identifierAt($chunk, $states, 15, 51, 2));
+        self::assertSame('minecraft:stone', self::identifierAt($chunk, $states, 13, 52, 2));
     }
 
     public function testUndergroundDepositsUseTheHostStoneFamily(): void

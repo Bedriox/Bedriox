@@ -23,10 +23,10 @@ namespace Bedriox\Tools;
 final class IntegrationManifestValidator
 {
     /** @var list<string> */
-    private const array QUALIFIED_CLIENT_VERSIONS = ['1.26.50', '1.26.51'];
+    private const array QUALIFIED_CLIENT_VERSIONS = ['1.26.60', '1.26.61'];
 
     /** @var list<int> */
-    private const array QUALIFIED_NETWORK_PROTOCOLS = [2193];
+    private const array QUALIFIED_NETWORK_PROTOCOLS = [2225];
 
     private const string QUALIFIED_RUNTIME_PHP = '8.4.25';
 
@@ -34,7 +34,7 @@ final class IntegrationManifestValidator
     private const array REQUIRED_RUNTIME_EXTENSIONS = [
         'Core', 'ctype', 'curl', 'date', 'dom', 'fileinfo', 'filter', 'gmp', 'hash', 'iconv', 'json', 'leveldb',
         'libxml', 'mbstring', 'openssl', 'pcre', 'PDO', 'pdo_sqlite', 'Phar', 'random', 'Reflection', 'session', 'SimpleXML',
-        'sockets', 'sodium', 'SPL', 'sqlite3', 'standard', 'tokenizer', 'xml', 'xmlreader', 'xmlwriter',
+        'sockets', 'sodium', 'SPL', 'sqlite3', 'standard', 'tokenizer', 'webrtc', 'xml', 'xmlreader', 'xmlwriter',
         'Zend OPcache', 'zip', 'zlib',
     ];
 
@@ -53,7 +53,7 @@ final class IntegrationManifestValidator
     /** @var array<string, array{directory: string, package: string, url: string}> */
     private const array COMPONENTS = [
         'protocol' => ['directory' => 'Protocol', 'package' => 'bedriox/protocol', 'url' => '../Protocol'],
-        'raknet' => ['directory' => 'RakNet', 'package' => 'bedriox/raknet', 'url' => '../RakNet'],
+        'nethernet' => ['directory' => 'NetherNet', 'package' => 'bedriox/nethernet', 'url' => '../NetherNet'],
         'data' => ['directory' => 'Data', 'package' => 'bedriox/data', 'url' => '../Data'],
     ];
 

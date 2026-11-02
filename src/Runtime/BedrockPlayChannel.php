@@ -21,13 +21,12 @@ declare(strict_types=1);
 namespace Bedriox\Server\Runtime;
 
 use Bedriox\Api\Entity\EntityInteractionType;
+use Bedriox\NetherNet\Protocol\Reliability;
 use Bedriox\Protocol\Batch\BatchLimits;
 use Bedriox\Protocol\Batch\BedrockBatch;
 use Bedriox\Protocol\Batch\BedrockBatchCodec;
 use Bedriox\Protocol\Batch\CompressionMode;
 use Bedriox\Protocol\Batch\PacketBatchCodec;
-use Bedriox\Protocol\Encryption\BedrockDecryptor;
-use Bedriox\Protocol\Encryption\BedrockEncryptor;
 use Bedriox\Protocol\Exception\ItemStackRequestDecodeException;
 use Bedriox\Protocol\Packet\Ability;
 use Bedriox\Protocol\Packet\AbilityLayer;
@@ -113,7 +112,10 @@ use Bedriox\Protocol\Packet\RequestAbilityPacket;
 use Bedriox\Protocol\Packet\RequestChunkRadiusPacket;
 use Bedriox\Protocol\Packet\RespawnPacket;
 use Bedriox\Protocol\Packet\RespawnState;
+use Bedriox\Protocol\Packet\ServerboundCursorItemDragPacket;
 use Bedriox\Protocol\Packet\ServerboundLoadingScreenPacket;
+use Bedriox\Protocol\Packet\ServerboundMatchmakingCancelPacket;
+use Bedriox\Protocol\Packet\ServerboundStonecutterSetRecipePacket;
 use Bedriox\Protocol\Packet\ServerSettingsRequestPacket;
 use Bedriox\Protocol\Packet\SetDifficultyPacket;
 use Bedriox\Protocol\Packet\SetLocalPlayerAsInitializedPacket;
@@ -129,8 +131,6 @@ use Bedriox\Protocol\Packet\UpdateAbilitiesPacket;
 use Bedriox\Protocol\Packet\UpdateEquipPacket;
 use Bedriox\Protocol\ProtocolVersion;
 use Bedriox\Protocol\Value\UnsignedLong;
-use Bedriox\RakNet\Connected\ConnectedPayloadEvent;
-use Bedriox\RakNet\Protocol\Reliability;
 use Bedriox\Server\Login\AuthenticatedLogin;
 use Bedriox\Server\Login\LoginChannelReady;
 use Bedriox\Server\Player\InventoryContainer;
@@ -155,6 +155,7 @@ use Bedriox\Server\Simulation\Command\WorldCommand;
 use Bedriox\Server\Simulation\CommandValidationException;
 use Bedriox\Server\Simulation\MovementMode;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
+use Bedriox\Server\Transport\InboundPayload;
 use Bedriox\Server\Transport\NetworkCompressionPolicy;
 use Bedriox\Server\Worker\Chunk\PreparedChunk;
 use Bedriox\Server\Worker\Chunk\PreparedChunkAvailability;
@@ -255,8 +256,6 @@ final class BedrockPlayChannel
     /** @var array<string, true> */
     private array $sentSpawnChunks = [];
     private readonly AuthenticatedLogin $login;
-    private readonly BedrockEncryptor $encryptor;
-    private readonly BedrockDecryptor $decryptor;
     private readonly BatchLimits $batchLimits;
     private readonly RuntimeDiagnostics $diagnostics;
     private readonly int $protocolVersion;
@@ -324,8 +323,6 @@ final class BedrockPlayChannel
         private readonly int $unsupportedPacketLogLimit = 5,
     ) {
         $this->login = $ready->login;
-        $this->encryptor = $ready->encryptor;
-        $this->decryptor = $ready->decryptor;
         $this->protocolVersion = $ready->protocolVersion;
         $this->outgoing = new SplQueue();
         $this->commands = new SplQueue();
@@ -350,7 +347,7 @@ final class BedrockPlayChannel
             $this->batchLimits,
             maximumOutstandingTasks: $this->limits->maximumOutgoingPayloadsPerSession,
             maximumOutstandingBytes: $this->limits->maximumOutgoingBytesPerSession,
-            maximumResultBytes: $this->batchLimits->maximumInputBytes + 1,
+            maximumResultBytes: $this->batchLimits->maximumInputBytes,
             minimumOffloadBytes: NetworkCompressionPolicy::MINIMUM_WORKER_OFFLOAD_BYTES,
         );
         $this->diagnostics = $diagnostics ?? RuntimeDiagnostics::disabled();
@@ -405,13 +402,13 @@ final class BedrockPlayChannel
     }
 
     /** Accepts one transport payload and reports whether the session remains usable. */
-    public function accept(ConnectedPayloadEvent $event): bool
+    public function accept(InboundPayload $event): bool
     {
         return $this->acceptInput($event)->keepsSessionOpen();
     }
 
     /** Accepts one transport payload with the classified result used by runtime policy. */
-    public function acceptInput(ConnectedPayloadEvent $event): InboundResult
+    public function acceptInput(InboundPayload $event): InboundResult
     {
         if ($this->closed || $this->terminalInputFailure) {
             return new InboundResult(
@@ -420,7 +417,7 @@ final class BedrockPlayChannel
                 'session_closed',
             );
         }
-        if ($event->reliability !== Reliability::ReliableOrdered || $event->orderingChannel !== 0) {
+        if ($event->reliability !== Reliability::RELIABLE) {
             return $this->fatalInput(
                 InboundDisposition::PROTOCOL_VIOLATION,
                 InboundOrigin::TRANSPORT,
@@ -443,19 +440,7 @@ final class BedrockPlayChannel
         }
         ++$this->traceInboundEnvelopes;
         $stageStartedNanoseconds = hrtime(true);
-        try {
-            $envelope = $this->decryptor->decryptEnvelope($event->payload);
-        } catch (Throwable $error) {
-            $this->traceInboundDecryptNanoseconds += hrtime(true) - $stageStartedNanoseconds;
-            $this->diagnose('failed decrypting play envelope: ' . $error::class);
-
-            return $this->fatalInput(
-                InboundDisposition::PROTOCOL_VIOLATION,
-                InboundOrigin::ENVELOPE,
-                'decrypt_failed',
-                exception: $error,
-            );
-        }
+        $envelope = $event->payload;
         $stageCompletedNanoseconds = hrtime(true);
         $this->traceInboundDecryptNanoseconds += $stageCompletedNanoseconds - $stageStartedNanoseconds;
         $packetId = null;
@@ -692,7 +677,7 @@ final class BedrockPlayChannel
                 return $this->queueClearBatch($clearBatch, $sourcePackets, $packetCount);
             }
             $batch = new BedrockBatch($frames, CompressionMode::NegotiatedZlib, NetworkCompressionPolicy::THRESHOLD_BYTES);
-            $envelope = $this->encryptor->encryptEnvelope(BedrockBatchCodec::encode($batch, $this->batchLimits));
+            $envelope = BedrockBatchCodec::encode($batch, $this->batchLimits);
             $this->recordOutboundTrace('direct', $packetCount, strlen($envelope));
         } catch (Throwable $error) {
             $this->diagnose('failed encoding ordered packet frame batch: ' . $error::class);
@@ -715,18 +700,18 @@ final class BedrockPlayChannel
      *
      * @param list<PacketFrame> $frames Used as a bounded fallback if the ordered queue is saturated.
      */
-    public function queuePreparedPacketFrames(array $frames, string $clearEnvelope): bool
+    public function queuePreparedPacketFrames(array $frames, string $compressedBatch): bool
     {
         $packetCount = count($frames);
         if ($packetCount < 1 || $packetCount > $this->limits->maximumPacketsPerPayload
-            || $clearEnvelope === '' || ord($clearEnvelope[0]) !== BedrockBatchCodec::GAME_PACKET_MARKER) {
+            || $compressedBatch === '') {
             return false;
         }
         if (!$this->prepareTransientProjection()) {
             return false;
         }
 
-        return $this->queuePreparedClearEnvelope($clearEnvelope, $packetCount, 'shared');
+        return $this->queuePreparedClearEnvelope($compressedBatch, $packetCount, 'shared');
     }
 
     /**
@@ -738,16 +723,16 @@ final class BedrockPlayChannel
      *
      * @param list<PacketFrame> $frames
      */
-    public function queuePreparedTransientPacketFrames(array $frames, string $clearEnvelope): bool
+    public function queuePreparedTransientPacketFrames(array $frames, string $compressedBatch): bool
     {
         $packetCount = count($frames);
         if ($packetCount < 1 || $packetCount > $this->limits->maximumPacketsPerPayload
-            || $clearEnvelope === '' || ord($clearEnvelope[0]) !== BedrockBatchCodec::GAME_PACKET_MARKER
+            || $compressedBatch === ''
             || !$this->canAcceptTransientProjection()) {
             return false;
         }
 
-        return $this->queuePreparedClearEnvelope($clearEnvelope, $packetCount, 'shared');
+        return $this->queuePreparedClearEnvelope($compressedBatch, $packetCount, 'shared');
     }
 
     /**
@@ -758,13 +743,13 @@ final class BedrockPlayChannel
      */
     public function queuePreparedAuthoritativePacketFrames(
         array $frames,
-        string $clearEnvelope,
+        string $compressedBatch,
         array $sourcePackets = [],
     ): bool {
         $packetCount = count($frames);
         if ($packetCount < 1 || $packetCount > $this->limits->maximumPacketsPerPayload
             || ($sourcePackets !== [] && count($sourcePackets) !== $packetCount)
-            || $clearEnvelope === '' || ord($clearEnvelope[0]) !== BedrockBatchCodec::GAME_PACKET_MARKER) {
+            || $compressedBatch === '') {
             return false;
         }
         if ($this->closed || $this->totalQueuedPackets() >= $this->limits->maximumOutgoingPayloadsPerSession) {
@@ -772,14 +757,14 @@ final class BedrockPlayChannel
         }
         if ($this->outboundCompression !== null
             && (!$this->releaseCompressedBatches() || $this->hasOutboundOrderingBarrier())) {
-            $submission = $this->outboundCompression->enqueuePrepared($clearEnvelope);
+            $submission = $this->outboundCompression->enqueuePrepared($compressedBatch);
             if (!$submission->isAccepted()) {
                 return $this->queuePacketFrames($frames, $sourcePackets);
             }
             if (!$this->releaseCompressedBatches()) {
                 return false;
             }
-            $this->recordOutboundTrace('shared-authoritative', $packetCount, strlen($clearEnvelope));
+            $this->recordOutboundTrace('shared-authoritative', $packetCount, strlen($compressedBatch));
             foreach ($sourcePackets as $packet) {
                 $this->recordQueuedPacket($packet);
             }
@@ -788,7 +773,7 @@ final class BedrockPlayChannel
         }
 
         return $this->queuePreparedClearEnvelope(
-            $clearEnvelope,
+            $compressedBatch,
             $packetCount,
             'shared-authoritative',
             $sourcePackets,
@@ -801,16 +786,12 @@ final class BedrockPlayChannel
      * @param list<Packet> $sourcePackets
      */
     private function queuePreparedClearEnvelope(
-        string $clearEnvelope,
+        string $compressedBatch,
         int $packetCount,
         string $traceMode,
         array $sourcePackets = [],
     ): bool {
-        try {
-            $envelope = $this->encryptor->encryptEnvelope($clearEnvelope);
-        } catch (Throwable $error) {
-            return $this->fail('encode_failed', exception: $error);
-        }
+        $envelope = $compressedBatch;
         if (strlen($envelope) > $this->limits->maximumOutgoingBytesPerSession - $this->outgoingBytes) {
             return $this->fail('output_limit');
         }
@@ -1540,8 +1521,6 @@ final class BedrockPlayChannel
         $this->spawnAcknowledged = false;
         $this->admissionReleased = false;
         $this->preferStreamingResponse = true;
-        $this->encryptor->close();
-        $this->decryptor->close();
         $fields = ['reason' => $reason];
         if ($packetId !== null) {
             $fields['packet_id'] = $packetId;
@@ -2262,6 +2241,19 @@ final class BedrockPlayChannel
         }
         if ($packet instanceof SetPlayerFurnaceOptionsPacket) {
             // Recipe-book presentation preferences are client-owned and do not mutate furnace state.
+            return $this->initialized;
+        }
+        if ($packet instanceof ServerboundStonecutterSetRecipePacket) {
+            // Selection only changes client presentation. The subsequent ItemStackRequest still resolves
+            // its recipe and output against the authoritative crafting catalog.
+            return $this->initialized
+                && $this->storageContainerType === ContainerType::Stonecutter
+                && $this->storageContainerId === $packet->containerId
+                && $packet->recipeIndex >= -1;
+        }
+        if ($packet instanceof ServerboundCursorItemDragPacket
+            || $packet instanceof ServerboundMatchmakingCancelPacket) {
+            // Current retail advisory state carries no authoritative gameplay mutation.
             return $this->initialized;
         }
         if ($packet instanceof MapInfoRequestPacket) {
@@ -3614,11 +3606,7 @@ final class BedrockPlayChannel
             if ($batch->payload === null || $batch->failureCode !== null) {
                 return $this->fail('compression_failed');
             }
-            try {
-                $envelope = $this->encryptor->encryptEnvelope($batch->payload);
-            } catch (Throwable $error) {
-                return $this->fail('encode_failed', exception: $error);
-            }
+            $envelope = $batch->payload;
             if (strlen($envelope) > $this->limits->maximumOutgoingBytesPerSession - $this->outgoingBytes) {
                 return $this->fail('output_limit');
             }
@@ -3786,7 +3774,7 @@ final class BedrockPlayChannel
                             new PacketHeader(BedrockPacketCodec::packetId($packet)),
                             BedrockPacketCodec::encode($packet, $this->protocolVersion),
                         );
-                        $clearEnvelope = BedrockBatchCodec::encode(new BedrockBatch(
+                        $compressedBatch = BedrockBatchCodec::encode(new BedrockBatch(
                             [$frame],
                             CompressionMode::NegotiatedZlib,
                             NetworkCompressionPolicy::THRESHOLD_BYTES,
@@ -3794,7 +3782,7 @@ final class BedrockPlayChannel
                         $prepared = $this->preparedChunks->retainSynchronous(
                             $chunk,
                             $this->protocolVersion,
-                            $clearEnvelope,
+                            $compressedBatch,
                         );
                     } catch (Throwable $exception) {
                         return $this->fail('chunk_preparation_failed', exception: $exception);
@@ -3979,11 +3967,7 @@ final class BedrockPlayChannel
         if ($this->closed || $this->totalQueuedPackets() >= $this->limits->maximumOutgoingPayloadsPerSession) {
             return false;
         }
-        try {
-            $envelope = $this->encryptor->encryptEnvelope($prepared->clearEnvelope);
-        } catch (Throwable $error) {
-            return $this->fail('encode_failed', exception: $error);
-        }
+        $envelope = $prepared->compressedBatch;
         if (strlen($envelope) > $this->limits->maximumOutgoingBytesPerSession - $this->outgoingBytes) {
             return $this->fail('output_limit');
         }

@@ -27,7 +27,7 @@ use InvalidArgumentException;
 final readonly class LevelDatCodec
 {
     public const int CURRENT_STORAGE_VERSION = 10;
-    public const int CURRENT_NETWORK_VERSION = 2193;
+    public const int CURRENT_NETWORK_VERSION = 2225;
     public const int MAX_NBT_BYTES = 4_194_304;
     public const int HEADER_BYTES = 8;
 

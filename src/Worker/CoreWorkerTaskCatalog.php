@@ -82,7 +82,7 @@ final class CoreWorkerTaskCatalog
             WorkerLane::NETWORK,
             BatchCompressionTask::class,
             4_194_400,
-            1_048_577,
+            1_048_576,
             30_000,
         ));
         $registry->register(new WorkerTaskDefinition(
@@ -102,7 +102,7 @@ final class CoreWorkerTaskCatalog
             WorkerLane::NETWORK,
             PrepareChunkTask::class,
             ChunkPreparationRequestCodec::MAXIMUM_ENCODED_BYTES,
-            1_048_577,
+            1_048_576,
             30_000,
             cancellable: true,
             retryWhenNotStarted: true,

@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Observability;
 
-use Bedriox\RakNet\Security\TransportSecuritySnapshot;
+use Bedriox\NetherNet\Server\ServerSecuritySnapshot;
 use Bedriox\Server\Entity\Ai\AiSchedulerMetrics;
 use Bedriox\Server\Entity\EntityRuntimeMetrics;
 use Bedriox\Server\Entity\Navigation\EntityNavigationMetrics;
@@ -253,9 +253,9 @@ final class PerformanceMonitor
         ?AiSchedulerMetrics $entityAi = null,
         ?EntityRuntimeMetrics $entityRuntime = null,
         ?EntityNavigationMetrics $entityNavigation = null,
-        ?TransportSecuritySnapshot $transportSecurity = null,
         ?PluginAsyncQueueSnapshot $pluginAsyncQueue = null,
         ?InboundMetricsSnapshot $inbound = null,
+        ?ServerSecuritySnapshot $transportSecurity = null,
     ): PerformanceSnapshot {
         if ($onlinePlayers < 0 || $maximumPlayers < 0 || $onlinePlayers > $maximumPlayers
             || $loadedChunks < 0 || $dirtyChunks < 0 || $generatingChunks < 0
@@ -318,9 +318,9 @@ final class PerformanceMonitor
             $entityAi,
             $entityRuntime,
             $entityNavigation,
-            $transportSecurity,
             $pluginAsyncQueue,
             $inbound,
+            $transportSecurity,
         );
     }
 

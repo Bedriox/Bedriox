@@ -1,6 +1,6 @@
 # Operations
 
-Bedriox keeps authoritative gameplay in one bounded PHP process. That process owns configuration, startup validation, UDP binding, the non-blocking runtime loop, diagnostics, signal handling, and graceful cleanup. Supervised local PHP processes handle admitted CPU work, plugin asynchronous tasks, routine file logging, and ordered storage without receiving live gameplay or network-session ownership.
+Bedriox keeps authoritative gameplay in one bounded PHP process. That process owns configuration, startup validation, NetherNet startup, the non-blocking runtime loop, diagnostics, signal handling, and graceful cleanup. A dedicated supervised process owns HTTP signaling, ICE, WebRTC DataChannels, and transport sessions. Other supervised local PHP processes handle admitted CPU work, plugin asynchronous tasks, routine file logging, and ordered storage without receiving live gameplay or network-session ownership.
 
 ## Starting the server
 
@@ -31,7 +31,7 @@ without changing immutable files in `bin` or cluttering the server directory.
 
 The first successful configuration load creates user-facing `server.properties` and advanced `bedriox.settings` in the current working directory. Built-in defaults load first, followed by `server.properties`, `bedriox.settings`, and explicit command-line overrides. The files are never migrated automatically. Invalid, duplicate, unknown, partial, or out-of-range settings fail before the configured main-process memory limit is applied and before socket bind.
 
-The default game port is UDP `19132`. Bedriox does not currently provide a separate query service or query port; Bedrock server-list discovery uses the game port. FULL authentication is the default and must complete trusted-key discovery before bind. `SELF_SIGNED` is an explicit isolated-development mode and is never a fallback.
+The default game endpoint is `19132`; NetherNet uses it for HTTP signaling and ICE UDP traffic. LAN discovery uses UDP `7551`. Set `network.nethernet.lan-port=0` only for a backend reached exclusively through Gateway; doing so does not disable direct signaling or ICE on the game endpoint. Bedriox does not provide a separate legacy query service. FULL authentication is the default and must complete trusted-key discovery before bind. `SELF_SIGNED` is an explicit isolated-development mode and is never a fallback.
 
 ## Startup sequence
 
@@ -57,7 +57,7 @@ After bind, the runtime polls bounded amounts of socket, session, packet, comman
 Normal server activity is rendered in a consistent operator format and is mirrored without terminal color codes to `logs/server.log`:
 
 ```text
-[17-Sep-2026 21:42:10] Bedriox INFO > Starting Bedriox 1.0.0-beta.2
+[02-Nov-2026 21:42:10] Bedriox INFO > Starting Bedriox 2.0.0-beta.1
 ```
 
 `logging.level` accepts `DEBUG`, `INFO`, `NOTICE`, `WARNING`, `ERROR`, or `CRITICAL`. Console and file output may be enabled independently. `logging.console-colors` accepts `auto`, `true`, or `false`; `auto` colors only an interactive terminal. The file rotates into `logs/archive/` at `logging.file-max-size` and retains at most `logging.file-history` archives. Logging failures are contained and never alter simulation state.
@@ -66,7 +66,7 @@ Routine file output is sent to one bounded background writer. Console output rem
 
 ## Workers and performance status
 
-`workers.core-count=auto` selects a bounded number of local PHP worker processes while reserving processor capacity for the authoritative tick, transport, storage, and operating system. An integer from `0` through `32` overrides it; `0` is the rollback mode and keeps the characterized synchronous path. Worker-backed runtime generation never falls back onto the main thread merely because its queue is full. Workers use the same PHP executable, configuration, extensions, and Bedriox installation as the parent. They start as one concurrent group, report bounded readiness progress to the parent, and are all stopped if the group cannot become ready. They communicate only over authenticated `127.0.0.1` streams created before the public RakNet listener binds. No additional PHP extension is required.
+`workers.core-count=auto` selects a bounded number of local PHP worker processes while reserving processor capacity for the authoritative tick, transport, storage, and operating system. An integer from `0` through `32` overrides it; `0` is the rollback mode and keeps the characterized synchronous path. Worker-backed runtime generation never falls back onto the main thread merely because its queue is full. Workers use the same PHP executable, configuration, extensions, and Bedriox installation as the parent. They start as one concurrent group, report bounded readiness progress to the parent, and are all stopped if the group cannot become ready. They communicate only over authenticated `127.0.0.1` streams created before the public NetherNet signaling listener binds. No additional extension beyond the supported Runtime is required.
 
 `workers.plugin-count=auto` controls a separate pool shared fairly by asynchronous plugin tasks. Auto sizing reserves CPU for the authoritative tick, networking, persistence, the operating system and Bedriox-owned workers. Tasks from one plugin cannot monopolize dispatch while another plugin is waiting. Use `0` to disable plugin async execution or an integer from 1 through 32 for a measured manual override. Plugin completion callbacks are still applied within a bounded budget on the authoritative main thread.
 
@@ -80,7 +80,7 @@ Core workers handle missing-chunk generation, complete revision-specific chunk p
 
 Same-dimension world transfers first narrow the client's published terrain area, deliver the destination center chunk, and only then publish the teleport. The published radius expands as complete destination rings arrive, so cached terrain from another world is never treated as the active view and no player movement is required to finish streaming. Source-world players, mobs, items, projectiles, experience orbs, and effect clouds are removed only from the transferring client; their authoritative source-world ownership and visibility to players who remain there are preserved.
 
-Fan-out reuses immutable packet and frame objects for identical chat, combat, posture, and non-player movement projections. Compatible sessions can therefore share one bounded clear compressed envelope instead of repeating packet encoding and zlib work for every recipient. Session encryption counters, delivery ordering, congestion state, and RakNet ownership remain private to each connection and never cross the reuse boundary.
+Fan-out reuses immutable packet and frame objects for identical chat, combat, posture, and non-player movement projections. Compatible sessions can therefore share one bounded clear compressed envelope instead of repeating packet encoding and zlib work for every recipient. Session encryption counters, data-channel state, congestion state, and NetherNet ownership remain private to each connection and never cross the reuse boundary.
 
 The main loop collects no more than eight core completions or five milliseconds of completion work per poll. Chunk preparation admits no more than the configured send count, 4 MiB of immutable snapshots, or five milliseconds per world tick. Ready delivery likewise obeys the configured count plus a 512 KiB compressed-byte and five-millisecond boundary. A single item may cross a time or byte boundary to guarantee progress; a burst cannot drain an unbounded completion or delivery queue in one tick.
 
@@ -98,13 +98,9 @@ The memory manager classifies allocated main-process memory using the configured
 
 If worker startup fails, Bedriox fails before advertising a joinable server. If a task is rejected or fails after startup, its owning subsystem applies its documented bounded fallback or isolates the affected work. For diagnosis, enable `logging.protocol-trace=true`, capture `status advanced`, and review `logs/server.log` and the local crash report.
 
-## Verified capacity baseline
+## Capacity qualification
 
-The current development build completed a controlled five-minute local Windows qualification with 100 independently encrypted `SELF_SIGNED` sessions in four 25-client load drivers. Each client maintained a view distance of eight chunks, sent movement at 20 Hz with randomized sprinting, jumping, and turning, and sent chat every ten seconds. The 251 full-population samples after a ten-second stabilization window averaged 19.854 TPS, reached a minimum of 18.389 TPS, and contained no sample below 18 TPS. Average MSPT was 30.803, p95 MSPT was 35.333, and maximum MSPT was 44.350.
-
-The workload completed 511,491 movement actions and 2,774 chat actions with zero connection failures or unexpected disconnects. Peak main-process allocated memory was 380 MiB. The observed complete 19-process group used approximately 940 MiB of working memory and 672 MiB of private memory during full load, within the 2 GiB configured server limit. After every client left, retained chunks fell from 569 to 3 and live entities from 27 to 2 without a fatal error or persistence conflict.
-
-This result qualifies the stated workload on the measured machine and build; it is not a universal hardware-capacity promise. Repeat the same sustained test after changes to session admission, movement, world streaming, entity projection, compression, persistence, worker scheduling, or runtime configuration. The initial admission ramp is measured separately from the stabilized full-population window and must not be presented as steady-state capacity.
+Capacity results are transport-specific. A Runtime containing the pinned `ext-webrtc` build is required before NetherNet retail-client, load, soak, and malicious-input qualification can produce a publishable baseline. Results from the retired transport do not qualify a NetherNet release.
 
 `logging.protocol-trace` is disabled by default. Enable it only for a bounded reproduction and disable it afterward. Diagnostics may contain event names, phase, packet ID, rejection category, and exception class. They must not contain credentials, JWTs, keys, raw encrypted payloads, account identifiers, client GUIDs, or unbounded packet bodies.
 
@@ -116,7 +112,7 @@ Unexpected runtime failures and supported PHP fatal errors produce an atomically
 
 The crash context is a bounded provider owned by the composition root so later plugin and player lifecycle boundaries can publish exact involvement without granting the reporter access to mutable runtime internals. Native-process crashes, forced termination, power loss, and a permanently blocked extension may prevent PHP from writing a report.
 
-Distinguish a client session disconnect from a server process crash. Confirm the process and UDP listener separately, then inspect the last accepted boundary as described in [packet lifecycle](packet-lifecycle.md).
+Distinguish a client session disconnect from a server process crash. Confirm the main process, transport process, HTTP signaling endpoint, and ICE listener separately, then inspect the last accepted boundary as described in [packet lifecycle](packet-lifecycle.md).
 
 ## Shutdown and restart
 

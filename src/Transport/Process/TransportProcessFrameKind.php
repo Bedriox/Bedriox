@@ -29,8 +29,10 @@ enum TransportProcessFrameKind: int
     case SESSION_OPENED = 5;
     case SESSION_CLOSED = 6;
     case RECEIVED_PAYLOAD = 7;
-    case HANDSHAKE_DIAGNOSTICS = 8;
-    case FAILURE = 9;
-    case SECURITY_SNAPSHOT = 10;
-    case ENDPOINT_ADMISSION_REJECTIONS = 11;
+    case FAILURE = 8;
+    case BANDWIDTH_STATS = 9;
+    case PING_MEASURED = 10;
+    case SECURITY_SNAPSHOT = 11;
+    case UPDATE_PLAYER_COUNT = 12;
+    case UPDATE_ADVERTISEMENT = 13;
 }

@@ -23,7 +23,6 @@ namespace Bedriox\Server\Tests\Login;
 use Bedriox\Protocol\Identity\VerifiedClientData;
 use Bedriox\Protocol\Packet\AuthenticationType;
 use Bedriox\Protocol\Packet\ClientCacheStatusPacket;
-use Bedriox\Protocol\Packet\ClientToServerHandshakePacket;
 use Bedriox\Protocol\Packet\LoginAuthentication;
 use Bedriox\Protocol\Packet\LoginPacket;
 use Bedriox\Protocol\Packet\NetworkSettingsPacket;
@@ -33,14 +32,10 @@ use Bedriox\Protocol\Packet\ResourcePackClientResponsePacket;
 use Bedriox\Protocol\Packet\ResourcePackResponseStatus;
 use Bedriox\Protocol\Packet\ResourcePacksInfoPacket;
 use Bedriox\Protocol\Packet\ResourcePackStackPacket;
-use Bedriox\Protocol\Packet\ServerToClientHandshakePacket;
 use Bedriox\Protocol\ProtocolVersion;
 use Bedriox\Protocol\Security\OpenSslEphemeralKeyFactory;
 use Bedriox\Server\Login\AuthenticatedLogin;
 use Bedriox\Server\Login\AuthenticationMode;
-use Bedriox\Server\Login\EnableEncryptionEffect;
-use Bedriox\Server\Login\HandshakeMaterial;
-use Bedriox\Server\Login\HandshakeMaterialFactory;
 use Bedriox\Server\Login\LoginAuthenticator;
 use Bedriox\Server\Login\LoginFailureCode;
 use Bedriox\Server\Login\LoginInput;
@@ -55,7 +50,7 @@ use PHPUnit\Framework\TestCase;
 
 final class LoginSessionTest extends TestCase
 {
-    public function testCompleteEmptyPackLoginAndEncryptionBoundary(): void
+    public function testCompleteEmptyPackLoginUsesTransportSecurityBoundary(): void
     {
         [$session, $clock] = $this->session();
         self::assertSame(LoginState::WAIT_NETWORK_REQUEST, $session->state());
@@ -74,21 +69,18 @@ final class LoginSessionTest extends TestCase
         $this->send($session, $this->login(AuthenticationType::Full));
         $effects = $session->drainEffects();
         self::assertCount(2, $effects);
-        self::assertInstanceOf(ServerToClientHandshakePacket::class, self::packetEffect($effects[0])->packet);
-        self::assertFalse(self::packetEffect($effects[0])->encrypted);
-        self::assertInstanceOf(EnableEncryptionEffect::class, $effects[1]);
-
-        $this->send($session, new ClientToServerHandshakePacket());
-        $effects = $session->drainEffects();
         self::assertInstanceOf(PlayStatusPacket::class, self::packetEffect($effects[0])->packet);
-        self::assertTrue(self::packetEffect($effects[0])->encrypted);
+        self::assertFalse(self::packetEffect($effects[0])->encrypted);
         self::assertInstanceOf(ResourcePacksInfoPacket::class, self::packetEffect($effects[1])->packet);
+        self::assertFalse(self::packetEffect($effects[1])->encrypted);
+        self::assertSame(LoginState::WAIT_PACK_INFO_RESPONSE, $session->state());
 
         $this->send($session, new ClientCacheStatusPacket(true));
         self::assertSame(LoginState::WAIT_PACK_INFO_RESPONSE, $session->state());
         $this->send($session, new ResourcePackClientResponsePacket(ResourcePackResponseStatus::HaveAllPacks, []));
         $effects = $session->drainEffects();
         self::assertInstanceOf(ResourcePackStackPacket::class, self::packetEffect($effects[0])->packet);
+        self::assertFalse(self::packetEffect($effects[0])->encrypted);
         $stack = self::packetEffect($effects[0])->packet;
         self::assertInstanceOf(ResourcePackStackPacket::class, $stack);
         self::assertSame([], $stack->resourcePacks);
@@ -123,7 +115,7 @@ final class LoginSessionTest extends TestCase
 
     public function testDuplicateClientCacheStatusFailsClosed(): void
     {
-        [$session] = $this->throughHandshake();
+        [$session] = $this->throughLogin();
         $this->send($session, new ClientCacheStatusPacket(true));
         self::assertSame(LoginState::WAIT_PACK_INFO_RESPONSE, $session->state());
         $this->send($session, new ClientCacheStatusPacket(false));
@@ -136,7 +128,7 @@ final class LoginSessionTest extends TestCase
         $this->send($session, $this->login(AuthenticationType::Full));
         self::assertSame(LoginFailureCode::UNEXPECTED_PACKET, $session->failure());
 
-        [$session] = $this->throughHandshake();
+        [$session] = $this->throughLogin();
         $this->send($session, new ResourcePackClientResponsePacket(ResourcePackResponseStatus::Completed, []));
         self::assertSame(LoginFailureCode::INVALID_PACK_RESPONSE, $session->failure());
     }
@@ -155,7 +147,7 @@ final class LoginSessionTest extends TestCase
         $selfSigned->drainEffects();
         $this->send($selfSigned, $this->login(AuthenticationType::SelfSigned));
         self::assertSame(1, $auth->calls);
-        self::assertSame(LoginState::WAIT_CLIENT_HANDSHAKE, $selfSigned->state());
+        self::assertSame(LoginState::WAIT_PACK_INFO_RESPONSE, $selfSigned->state());
         self::assertFalse($full->securityPosture()->requiresOperatorWarning());
         self::assertNull($full->securityPosture()->operatorNotice());
         self::assertTrue($selfSigned->securityPosture()->requiresOperatorWarning());
@@ -174,7 +166,7 @@ final class LoginSessionTest extends TestCase
         $this->send($session, $this->login(AuthenticationType::Full));
 
         self::assertSame(1, $auth->calls);
-        self::assertSame(LoginState::WAIT_CLIENT_HANDSHAKE, $session->state());
+        self::assertSame(LoginState::WAIT_PACK_INFO_RESPONSE, $session->state());
     }
 
     public function testStateDeadlineAndClockRegressionFailClosed(): void
@@ -198,19 +190,12 @@ final class LoginSessionTest extends TestCase
         $waitLogin->tick();
         self::assertSame(LoginFailureCode::TIMEOUT, $waitLogin->failure());
 
-        [$waitHandshake, $clock] = $this->session();
-        $this->send($waitHandshake, new RequestNetworkSettingsPacket());
-        $this->send($waitHandshake, $this->login(AuthenticationType::Full));
-        $clock->advanceSeconds(15);
-        $waitHandshake->tick();
-        self::assertSame(LoginFailureCode::TIMEOUT, $waitHandshake->failure());
-
-        [$waitInfo, $clock] = $this->throughHandshake();
+        [$waitInfo, $clock] = $this->throughLogin();
         $clock->advanceSeconds(15);
         $waitInfo->tick();
         self::assertSame(LoginFailureCode::TIMEOUT, $waitInfo->failure());
 
-        [$waitStack, $clock] = $this->throughHandshake();
+        [$waitStack, $clock] = $this->throughLogin();
         $this->send($waitStack, new ResourcePackClientResponsePacket(ResourcePackResponseStatus::HaveAllPacks, []));
         $clock->advanceSeconds(15);
         $waitStack->tick();
@@ -222,7 +207,7 @@ final class LoginSessionTest extends TestCase
         $clock->advanceSeconds(19);
         $this->send($absolute, $this->login(AuthenticationType::Full));
         $clock->advanceSeconds(14);
-        $this->send($absolute, new ClientToServerHandshakePacket());
+        $this->send($absolute, new ResourcePackClientResponsePacket(ResourcePackResponseStatus::HaveAllPacks, []));
         $clock->advanceSeconds(13);
         $absolute->tick();
         self::assertSame(LoginFailureCode::TIMEOUT, $absolute->failure());
@@ -235,15 +220,13 @@ final class LoginSessionTest extends TestCase
         $client = $keyFactory->generate();
         $login = new AuthenticatedLogin('Player', 'identity', '1', $client->publicKey, self::clientData());
         $authenticator = new AdvancingAuthenticator($login, $clock, 20);
-        $handshakes = new FixedHandshakeFactory(new HandshakeMaterial($keyFactory->generate(), str_repeat("\x5a", 16)));
-        $session = new LoginSession($clock, $authenticator, $handshakes);
+        $session = new LoginSession($clock, $authenticator);
         $this->send($session, new RequestNetworkSettingsPacket());
         $session->drainEffects();
         $this->send($session, $this->login(AuthenticationType::Full));
         self::assertSame(LoginState::CLOSED, $session->state());
         self::assertSame(LoginFailureCode::TIMEOUT, $session->failure());
         self::assertSame([], $session->drainEffects());
-        self::assertSame(0, $handshakes->calls);
     }
 
     public function testQueuedInputRechecksDeadlineBeforeEachPacket(): void
@@ -254,7 +237,6 @@ final class LoginSessionTest extends TestCase
         $session = new LoginSession(
             $clock,
             new FakeAuthenticator(new AuthenticatedLogin('Player', 'identity', '1', $keys->publicKey, self::clientData())),
-            new FixedHandshakeFactory(new HandshakeMaterial($keyFactory->generate(), str_repeat("\x5a", 16))),
         );
         self::assertTrue($session->enqueue(new LoginInput(new RequestNetworkSettingsPacket(), 1, false)));
 
@@ -264,7 +246,7 @@ final class LoginSessionTest extends TestCase
         self::assertSame([], $session->drainEffects());
     }
 
-    public function testEncryptionProvenanceIsRequiredAtEveryBoundary(): void
+    public function testTransportDecryptedInputIsRequiredAtEveryBoundary(): void
     {
         [$initial] = $this->session();
         $this->sendWithProtection($initial, new RequestNetworkSettingsPacket(), true);
@@ -275,19 +257,13 @@ final class LoginSessionTest extends TestCase
         $this->sendWithProtection($login, $this->login(AuthenticationType::Full), true);
         self::assertSame(LoginFailureCode::ENCRYPTION_STATE, $login->failure());
 
-        [$handshake] = $this->session();
-        $this->send($handshake, new RequestNetworkSettingsPacket());
-        $this->send($handshake, $this->login(AuthenticationType::Full));
-        $this->sendWithProtection($handshake, new ClientToServerHandshakePacket(), false);
-        self::assertSame(LoginFailureCode::ENCRYPTION_STATE, $handshake->failure());
-
-        [$packs] = $this->throughHandshake();
-        $this->sendWithProtection($packs, new ResourcePackClientResponsePacket(ResourcePackResponseStatus::HaveAllPacks, []), false);
+        [$packs] = $this->throughLogin();
+        $this->sendWithProtection($packs, new ResourcePackClientResponsePacket(ResourcePackResponseStatus::HaveAllPacks, []), true);
         self::assertSame(LoginFailureCode::ENCRYPTION_STATE, $packs->failure());
 
-        [$stack] = $this->throughHandshake();
+        [$stack] = $this->throughLogin();
         $this->send($stack, new ResourcePackClientResponsePacket(ResourcePackResponseStatus::HaveAllPacks, []));
-        $this->sendWithProtection($stack, new ResourcePackClientResponsePacket(ResourcePackResponseStatus::Completed, []), false);
+        $this->sendWithProtection($stack, new ResourcePackClientResponsePacket(ResourcePackResponseStatus::Completed, []), true);
         self::assertSame(LoginFailureCode::ENCRYPTION_STATE, $stack->failure());
     }
 
@@ -331,10 +307,9 @@ final class LoginSessionTest extends TestCase
         foreach ([
             new LoginInput(new RequestNetworkSettingsPacket(), 1, false),
             new LoginInput($this->login(AuthenticationType::Full), 1, false),
-            new LoginInput(new ClientToServerHandshakePacket(), 1, true),
-            new LoginInput(new ResourcePackClientResponsePacket(ResourcePackResponseStatus::HaveAllPacks, []), 1, true),
-            new LoginInput(new ResourcePackClientResponsePacket(ResourcePackResponseStatus::Completed, []), 1, true),
-            new LoginInput($trailing, 1, true),
+            new LoginInput(new ResourcePackClientResponsePacket(ResourcePackResponseStatus::HaveAllPacks, []), 1, false),
+            new LoginInput(new ResourcePackClientResponsePacket(ResourcePackResponseStatus::Completed, []), 1, false),
+            new LoginInput($trailing, 1, false),
         ] as $input) {
             self::assertTrue($session->enqueue($input));
         }
@@ -355,19 +330,16 @@ final class LoginSessionTest extends TestCase
         $keyFactory = new OpenSslEphemeralKeyFactory(dirname(__DIR__) . '/Fixtures/openssl.cnf');
         $keys = $keyFactory->generate();
         $auth = new FakeAuthenticator(new AuthenticatedLogin('Player', '00000000-0000-0000-0000-000000000001', '1', $keys->publicKey, self::clientData()));
-        $factory = new FixedHandshakeFactory(new HandshakeMaterial($keyFactory->generate(), str_repeat("\x5a", 16)));
-        return [new LoginSession($clock, $auth, $factory, $mode, $limits ?? new LoginLimits()), $clock, $auth];
+        return [new LoginSession($clock, $auth, $mode, $limits ?? new LoginLimits()), $clock, $auth];
     }
 
     /** @return array{LoginSession, FakeClock, FakeAuthenticator} */
-    private function throughHandshake(): array
+    private function throughLogin(): array
     {
         $tuple = $this->session();
         $this->send($tuple[0], new RequestNetworkSettingsPacket());
         $tuple[0]->drainEffects();
         $this->send($tuple[0], $this->login(AuthenticationType::Full));
-        $tuple[0]->drainEffects();
-        $this->send($tuple[0], new ClientToServerHandshakePacket());
         $tuple[0]->drainEffects();
         return $tuple;
     }
@@ -379,8 +351,7 @@ final class LoginSessionTest extends TestCase
 
     private function send(LoginSession $session, \Bedriox\Protocol\Packet\Packet $packet): void
     {
-        $encrypted = !($packet instanceof RequestNetworkSettingsPacket || $packet instanceof LoginPacket);
-        $this->sendWithProtection($session, $packet, $encrypted);
+        $this->sendWithProtection($session, $packet, false);
     }
 
     private function sendWithProtection(LoginSession $session, \Bedriox\Protocol\Packet\Packet $packet, bool $encrypted): void
@@ -452,18 +423,5 @@ final readonly class AdvancingAuthenticator implements LoginAuthenticator
     {
         $this->clock->advanceSeconds($this->seconds);
         return $this->result;
-    }
-}
-
-final class FixedHandshakeFactory implements HandshakeMaterialFactory
-{
-    public int $calls = 0;
-
-    public function __construct(private readonly HandshakeMaterial $material) {}
-
-    public function create(): HandshakeMaterial
-    {
-        ++$this->calls;
-        return $this->material;
     }
 }

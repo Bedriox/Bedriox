@@ -20,7 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Login;
 
-use Bedriox\RakNet\SessionInfo;
+use Bedriox\Server\Transport\SessionInfo;
 
 interface PeerAwareLoginAuthenticator extends LoginAuthenticator
 {

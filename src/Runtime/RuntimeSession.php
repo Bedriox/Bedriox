@@ -23,10 +23,10 @@ namespace Bedriox\Server\Runtime;
 use Bedriox\Api\World\DimensionType;
 use Bedriox\Protocol\Packet\PlayerSkin;
 use Bedriox\Protocol\Value\UnsignedLong;
-use Bedriox\RakNet\SessionInfo;
 use Bedriox\Server\Login\BedrockLoginChannel;
 use Bedriox\Server\Player\PlayerBootstrap;
 use Bedriox\Server\Security\ProtocolViolationTracker;
+use Bedriox\Server\Transport\SessionInfo;
 use LogicException;
 
 final class RuntimeSession

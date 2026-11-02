@@ -21,7 +21,6 @@ declare(strict_types=1);
 namespace Bedriox\Server\Runtime;
 
 use Bedriox\Api\Player\GameMode;
-use Bedriox\RakNet\Security\TransportSecurityPolicy;
 use Bedriox\Server\Login\AuthenticationMode;
 use Bedriox\Server\Observability\LogLevel;
 use Bedriox\Server\Security\NetworkSecurityProfile;
@@ -82,19 +81,15 @@ final readonly class ServerConfig
         'players.autosave-interval-ticks' => '6000',
         'players.save-per-tick' => '8',
         'movement.rewind-history-size' => '40',
-        'security.network.enabled' => 'true',
-        'security.network.automatic-blocking' => 'true',
         'security.network.profile' => 'balanced',
-        'security.network.block-base-seconds' => '10',
-        'security.network.block-maximum-seconds' => '1800',
-        'security.network.block-escalation-window-seconds' => '300',
-        'security.network.custom.unauthenticated-datagrams-per-second' => '2000',
-        'security.network.custom.unauthenticated-datagram-burst' => '400',
-        'security.network.custom.connected-datagrams-per-second' => '12000',
-        'security.network.custom.connected-datagram-burst' => '240',
-        'security.network.custom.handshakes-per-second' => '250',
-        'security.network.custom.handshake-burst' => '128',
-        'security.network.custom.malformed-threshold' => '3',
+        'network.nethernet.lan-port' => '7551',
+        'network.nethernet.maximum-signaling-connections' => '256',
+        'network.nethernet.maximum-negotiations' => '256',
+        'network.nethernet.maximum-negotiations-per-address' => '8',
+        'network.nethernet.maximum-remote-candidates' => '64',
+        'network.nethernet.gathering-timeout-milliseconds' => '15000',
+        'network.nethernet.channel-timeout-milliseconds' => '5000',
+        'network.nethernet.advertised-addresses' => '',
         'network.protocol-soft-strike-limit' => '10',
         'network.protocol-strike-decay-seconds' => '15',
         'network.trace-unsupported-packets' => 'true',
@@ -167,19 +162,15 @@ final readonly class ServerConfig
         'players.autosave-interval-ticks' => true,
         'players.save-per-tick' => true,
         'movement.rewind-history-size' => true,
-        'security.network.enabled' => true,
-        'security.network.automatic-blocking' => true,
         'security.network.profile' => true,
-        'security.network.block-base-seconds' => true,
-        'security.network.block-maximum-seconds' => true,
-        'security.network.block-escalation-window-seconds' => true,
-        'security.network.custom.unauthenticated-datagrams-per-second' => true,
-        'security.network.custom.unauthenticated-datagram-burst' => true,
-        'security.network.custom.connected-datagrams-per-second' => true,
-        'security.network.custom.connected-datagram-burst' => true,
-        'security.network.custom.handshakes-per-second' => true,
-        'security.network.custom.handshake-burst' => true,
-        'security.network.custom.malformed-threshold' => true,
+        'network.nethernet.lan-port' => true,
+        'network.nethernet.maximum-signaling-connections' => true,
+        'network.nethernet.maximum-negotiations' => true,
+        'network.nethernet.maximum-negotiations-per-address' => true,
+        'network.nethernet.maximum-remote-candidates' => true,
+        'network.nethernet.gathering-timeout-milliseconds' => true,
+        'network.nethernet.channel-timeout-milliseconds' => true,
+        'network.nethernet.advertised-addresses' => true,
         'network.protocol-soft-strike-limit' => true,
         'network.protocol-strike-decay-seconds' => true,
         'network.trace-unsupported-packets' => true,
@@ -307,7 +298,15 @@ final readonly class ServerConfig
         public bool $updatesEnabled = true,
         public bool $updateOperatorNotifications = true,
         public NetworkSecurityProfile $networkSecurityProfile = NetworkSecurityProfile::BALANCED,
-        public ?TransportSecurityPolicy $transportSecurityPolicy = null,
+        public int $netherNetLanPort = 7_551,
+        public int $netherNetMaximumSignalingConnections = 256,
+        public int $netherNetMaximumNegotiations = 256,
+        public int $netherNetMaximumNegotiationsPerAddress = 8,
+        public int $netherNetMaximumRemoteCandidates = 64,
+        public int $netherNetGatheringTimeoutMilliseconds = 15_000,
+        public int $netherNetChannelTimeoutMilliseconds = 5_000,
+        /** @var list<string> */
+        public array $netherNetAdvertisedAddresses = [],
         public bool $movementSecurityEnabled = true,
         public bool $correctInvalidMovement = true,
         public bool $kickRepeatedMovementViolations = true,
@@ -374,6 +373,18 @@ final readonly class ServerConfig
         self::range($this->protocolSoftStrikeLimit, 1, 100, 'Protocol soft strike limit');
         self::range($this->protocolStrikeDecaySeconds, 1, 3_600, 'Protocol strike decay interval');
         self::range($this->unsupportedPacketLogLimit, 0, 1_000, 'Unsupported packet log limit');
+        self::range($this->netherNetLanPort, 0, 65_535, 'NetherNet LAN port');
+        self::range($this->netherNetMaximumSignalingConnections, 1, 65_536, 'NetherNet signaling connection limit');
+        self::range($this->netherNetMaximumNegotiations, 1, 65_536, 'NetherNet negotiation limit');
+        self::range($this->netherNetMaximumNegotiationsPerAddress, 1, $this->netherNetMaximumNegotiations, 'NetherNet per-address negotiation limit');
+        self::range($this->netherNetMaximumRemoteCandidates, 1, 1_024, 'NetherNet remote candidate limit');
+        self::range($this->netherNetGatheringTimeoutMilliseconds, 1_000, 120_000, 'NetherNet ICE gathering timeout');
+        self::range($this->netherNetChannelTimeoutMilliseconds, 1_000, 120_000, 'NetherNet data-channel timeout');
+        foreach ($this->netherNetAdvertisedAddresses as $address) {
+            if (filter_var($address, FILTER_VALIDATE_IP) === false) {
+                throw new InvalidArgumentException('NetherNet advertised addresses must be literal IP addresses.');
+            }
+        }
         self::validateText($this->proxyIssuer, 'Proxy issuer', 128);
         self::validateText($this->proxyAudience, 'Proxy audience', 128);
         if ($this->proxySecretFile === '' || strlen($this->proxySecretFile) > 1_024 || str_contains($this->proxySecretFile, "\0")) {
@@ -498,33 +509,8 @@ final readonly class ServerConfig
             : self::integer($values['chunk-cache.limit'], 'chunk-cache.limit', 16, 65_536);
         $networkProfile = NetworkSecurityProfile::tryFrom($values['security.network.profile'])
             ?? throw new InvalidArgumentException('Network security profile must be lenient, balanced, strict, or custom.');
-        $baseBlockSeconds = self::integer(
-            $values['security.network.block-base-seconds'],
-            'security.network.block-base-seconds',
-            1,
-            300,
-        );
-        $maximumBlockSeconds = self::integer(
-            $values['security.network.block-maximum-seconds'],
-            'security.network.block-maximum-seconds',
-            $baseBlockSeconds,
-            86_400,
-        );
-        $escalationWindowSeconds = self::integer(
-            $values['security.network.block-escalation-window-seconds'],
-            'security.network.block-escalation-window-seconds',
-            30,
-            3_600,
-        );
-        $transportSecurity = self::networkSecurityPolicy(
-            $networkProfile,
-            self::boolean($values['security.network.enabled'], 'security.network.enabled'),
-            self::boolean($values['security.network.automatic-blocking'], 'security.network.automatic-blocking'),
-            $baseBlockSeconds,
-            $maximumBlockSeconds,
-            $escalationWindowSeconds,
-            $values,
-        );
+        [$maximumSignalingConnections, $maximumNegotiations, $maximumNegotiationsPerAddress, $maximumRemoteCandidates]
+            = self::netherNetLimits($networkProfile, $values);
 
         $workerAllocation = WorkerAllocation::resolve(
             $values['workers.core-count'],
@@ -625,7 +611,27 @@ final readonly class ServerConfig
                 'updates.notify-operators',
             ),
             networkSecurityProfile: $networkProfile,
-            transportSecurityPolicy: $transportSecurity,
+            netherNetLanPort: self::integer($values['network.nethernet.lan-port'], 'network.nethernet.lan-port', 0, 65_535),
+            netherNetMaximumSignalingConnections: $maximumSignalingConnections,
+            netherNetMaximumNegotiations: $maximumNegotiations,
+            netherNetMaximumNegotiationsPerAddress: $maximumNegotiationsPerAddress,
+            netherNetMaximumRemoteCandidates: $maximumRemoteCandidates,
+            netherNetGatheringTimeoutMilliseconds: self::integer(
+                $values['network.nethernet.gathering-timeout-milliseconds'],
+                'network.nethernet.gathering-timeout-milliseconds',
+                1_000,
+                120_000,
+            ),
+            netherNetChannelTimeoutMilliseconds: self::integer(
+                $values['network.nethernet.channel-timeout-milliseconds'],
+                'network.nethernet.channel-timeout-milliseconds',
+                1_000,
+                120_000,
+            ),
+            netherNetAdvertisedAddresses: array_values(array_filter(
+                array_map(trim(...), explode(',', $values['network.nethernet.advertised-addresses'])),
+                static fn(string $address): bool => $address !== '',
+            )),
             movementSecurityEnabled: self::boolean($values['security.movement.enabled'], 'security.movement.enabled'),
             correctInvalidMovement: self::boolean(
                 $values['security.movement.correct-invalid-movement'],
@@ -672,45 +678,23 @@ final readonly class ServerConfig
         );
     }
 
-    /** @param array<string, string> $values */
-    private static function networkSecurityPolicy(
-        NetworkSecurityProfile $profile,
-        bool $enabled,
-        bool $automaticBlocking,
-        int $baseBlockSeconds,
-        int $maximumBlockSeconds,
-        int $escalationWindowSeconds,
-        array $values,
-    ): TransportSecurityPolicy {
-        $limits = match ($profile) {
-            NetworkSecurityProfile::LENIENT => [4_000, 800, 16_000, 400, 500, 256, 5],
-            NetworkSecurityProfile::BALANCED => [2_000, 400, 12_000, 240, 250, 128, 3],
-            NetworkSecurityProfile::STRICT => [1_000, 200, 8_000, 160, 100, 64, 2],
+    /**
+     * @param  array<string, string> $values
+     * @return array{int, int, int, int}
+     */
+    private static function netherNetLimits(NetworkSecurityProfile $profile, array $values): array
+    {
+        return match ($profile) {
+            NetworkSecurityProfile::LENIENT => [512, 512, 16, 96],
+            NetworkSecurityProfile::BALANCED => [256, 256, 8, 64],
+            NetworkSecurityProfile::STRICT => [128, 128, 4, 32],
             NetworkSecurityProfile::CUSTOM => [
-                self::integer($values['security.network.custom.unauthenticated-datagrams-per-second'], 'security.network.custom.unauthenticated-datagrams-per-second', 100, 100_000),
-                self::integer($values['security.network.custom.unauthenticated-datagram-burst'], 'security.network.custom.unauthenticated-datagram-burst', 20, 20_000),
-                self::integer($values['security.network.custom.connected-datagrams-per-second'], 'security.network.custom.connected-datagrams-per-second', 500, 100_000),
-                self::integer($values['security.network.custom.connected-datagram-burst'], 'security.network.custom.connected-datagram-burst', 40, 20_000),
-                self::integer($values['security.network.custom.handshakes-per-second'], 'security.network.custom.handshakes-per-second', 10, 10_000),
-                self::integer($values['security.network.custom.handshake-burst'], 'security.network.custom.handshake-burst', 5, 2_000),
-                self::integer($values['security.network.custom.malformed-threshold'], 'security.network.custom.malformed-threshold', 1, 20),
+                self::integer($values['network.nethernet.maximum-signaling-connections'], 'network.nethernet.maximum-signaling-connections', 1, 65_536),
+                self::integer($values['network.nethernet.maximum-negotiations'], 'network.nethernet.maximum-negotiations', 1, 65_536),
+                self::integer($values['network.nethernet.maximum-negotiations-per-address'], 'network.nethernet.maximum-negotiations-per-address', 1, 65_536),
+                self::integer($values['network.nethernet.maximum-remote-candidates'], 'network.nethernet.maximum-remote-candidates', 1, 1_024),
             ],
         };
-
-        return new TransportSecurityPolicy(
-            enabled: $enabled,
-            automaticBlocking: $automaticBlocking,
-            unauthenticatedDatagramsPerSecond: $limits[0],
-            unauthenticatedDatagramBurst: $limits[1],
-            connectedDatagramsPerSecond: $limits[2],
-            connectedDatagramBurst: $limits[3],
-            handshakesPerSecond: $limits[4],
-            handshakeBurst: $limits[5],
-            malformedThreshold: $limits[6],
-            baseBlockSeconds: $baseBlockSeconds,
-            maximumBlockSeconds: $maximumBlockSeconds,
-            escalationWindowSeconds: $escalationWindowSeconds,
-        );
     }
 
     /**

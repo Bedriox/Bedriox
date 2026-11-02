@@ -53,6 +53,7 @@ final class ServerBootstrapTest extends TestCase
 
     public function testExplicitSelfSignedBootstrapBindsAndExposesWarning(): void
     {
+        $this->requireWebRtc();
         $port = $this->availableUdpPort();
         $server = (new ServerBootstrap())->create(
             new ServerConfig('127.0.0.1', $port, 'Bootstrap Test', 2, AuthenticationMode::SELF_SIGNED),
@@ -73,6 +74,7 @@ final class ServerBootstrapTest extends TestCase
 
     public function testDiscoveryAdvertisesJoinableSurvivalStatus(): void
     {
+        $this->requireWebRtc();
         $port = $this->availableUdpPort();
         $server = (new ServerBootstrap())->create(
             new ServerConfig('127.0.0.1', $port, 'Bootstrap Test', 2, AuthenticationMode::SELF_SIGNED),
@@ -90,8 +92,8 @@ final class ServerBootstrapTest extends TestCase
             $fields = $this->independentPongFields($socket, 123_456);
             self::assertSame('MCPE', $fields[0] ?? null);
             self::assertSame('Bootstrap Test', $fields[1] ?? null);
-            self::assertSame('2193', $fields[2] ?? null);
-            self::assertSame('1.26.50', $fields[3] ?? null);
+            self::assertSame('2225', $fields[2] ?? null);
+            self::assertSame('1.26.60', $fields[3] ?? null);
             self::assertSame('0', $fields[4] ?? null);
             self::assertSame('2', $fields[5] ?? null);
             self::assertMatchesRegularExpression('/^[1-9][0-9]*$/', $fields[6] ?? '');
@@ -115,6 +117,7 @@ final class ServerBootstrapTest extends TestCase
 
     public function testConfiguredWorldIsSharedAndClosedWithRuntime(): void
     {
+        $this->requireWebRtc();
         $port = $this->availableUdpPort();
         $worlds = new BootstrapRecordingWorldFactory();
         $server = (new ServerBootstrap($worlds))->create(
@@ -130,6 +133,7 @@ final class ServerBootstrapTest extends TestCase
 
     public function testWorldOpenedBeforeBindFailureIsClosed(): void
     {
+        $this->requireWebRtc();
         $socket = socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
         self::assertInstanceOf(\Socket::class, $socket);
         self::assertTrue(socket_bind($socket, '127.0.0.1', 0));
@@ -150,6 +154,13 @@ final class ServerBootstrapTest extends TestCase
             self::assertTrue($worlds->provider->closed);
         } finally {
             socket_close($socket);
+        }
+    }
+
+    private function requireWebRtc(): void
+    {
+        if (!extension_loaded('webrtc')) {
+            self::markTestSkipped('The native WebRTC extension is required for transport integration tests.');
         }
     }
 

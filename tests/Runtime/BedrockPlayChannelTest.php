@@ -23,12 +23,11 @@ namespace Bedriox\Server\Tests\Runtime;
 use Bedriox\Api\Entity\EntityInteractionType;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Data\BedrockDataSet;
+use Bedriox\NetherNet\Protocol\Reliability;
 use Bedriox\Protocol\Batch\BatchLimits;
 use Bedriox\Protocol\Batch\BedrockBatch;
 use Bedriox\Protocol\Batch\BedrockBatchCodec;
 use Bedriox\Protocol\Batch\CompressionMode;
-use Bedriox\Protocol\Encryption\BedrockDecryptor;
-use Bedriox\Protocol\Encryption\BedrockEncryptor;
 use Bedriox\Protocol\Identity\VerifiedClientData;
 use Bedriox\Protocol\Packet\AbilityValueType;
 use Bedriox\Protocol\Packet\ActorEventPacket;
@@ -56,6 +55,7 @@ use Bedriox\Protocol\Packet\CraftCreativeItemStackRequestAction;
 use Bedriox\Protocol\Packet\CraftRecipeItemStackRequestAction;
 use Bedriox\Protocol\Packet\CraftRecipeOptionalItemStackRequestAction;
 use Bedriox\Protocol\Packet\CreateItemStackRequestAction;
+use Bedriox\Protocol\Packet\CursorItemDragState;
 use Bedriox\Protocol\Packet\DeathInfoPacket;
 use Bedriox\Protocol\Packet\DestroyItemStackRequestAction;
 use Bedriox\Protocol\Packet\DimensionId;
@@ -118,7 +118,10 @@ use Bedriox\Protocol\Packet\RequestAbilityPacket;
 use Bedriox\Protocol\Packet\RequestChunkRadiusPacket;
 use Bedriox\Protocol\Packet\RespawnPacket;
 use Bedriox\Protocol\Packet\RespawnState;
+use Bedriox\Protocol\Packet\ServerboundCursorItemDragPacket;
 use Bedriox\Protocol\Packet\ServerboundLoadingScreenPacket;
+use Bedriox\Protocol\Packet\ServerboundMatchmakingCancelPacket;
+use Bedriox\Protocol\Packet\ServerboundStonecutterSetRecipePacket;
 use Bedriox\Protocol\Packet\ServerSettingsRequestPacket;
 use Bedriox\Protocol\Packet\SetActorMotionPacket;
 use Bedriox\Protocol\Packet\SetLocalPlayerAsInitializedPacket;
@@ -133,8 +136,6 @@ use Bedriox\Protocol\Packet\UpdateAbilitiesPacket;
 use Bedriox\Protocol\Packet\VoxelShapesPacket;
 use Bedriox\Protocol\Security\OpenSslEphemeralKeyFactory;
 use Bedriox\Protocol\Value\UnsignedLong;
-use Bedriox\RakNet\Connected\ConnectedPayloadEvent;
-use Bedriox\RakNet\Protocol\Reliability;
 use Bedriox\Server\Login\AuthenticatedLogin;
 use Bedriox\Server\Login\LoginChannelReady;
 use Bedriox\Server\Player\InventoryContainer;
@@ -183,6 +184,7 @@ use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\MovementMode;
 use Bedriox\Server\Simulation\SimulationCommandFactory;
 use Bedriox\Server\Simulation\WorldSimulation;
+use Bedriox\Server\Transport\InboundPayload;
 use Bedriox\Server\Transport\NetworkCompressionPolicy;
 use Bedriox\Server\Worker\Chunk\PreparedChunkCache;
 use Bedriox\Server\Worker\Network\CompressionWorkerDispatcher;
@@ -237,10 +239,9 @@ final class BedrockPlayChannelTest extends TestCase
     {
         [$channel, $client, , $entityId] = $this->channel();
         $channel->drainOutgoing();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $literal = hex2bin(
             '082f76657273696f6e' .
@@ -255,10 +256,9 @@ final class BedrockPlayChannelTest extends TestCase
         $payload = BedrockBatchCodec::encode(new BedrockBatch([
             new PacketFrame(new PacketHeader(PacketIds::COMMAND_REQUEST), $literal),
         ], CompressionMode::NegotiatedZlib, NetworkCompressionPolicy::THRESHOLD_BYTES), new BatchLimits());
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($payload),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($payload),
+            Reliability::RELIABLE,
         )));
         $commands = $channel->drainPlayerCommands();
         self::assertCount(1, $commands);
@@ -276,21 +276,19 @@ final class BedrockPlayChannelTest extends TestCase
         ]);
         $outgoing = $channel->drainOutgoing();
         self::assertCount(1, $outgoing);
-        self::assertSame(337, $this->packetId($clientDecryptor->decryptEnvelope($outgoing[0]->payload)));
+        self::assertSame(337, $this->packetId($clientDecryptor->decryptBatch($outgoing[0]->payload)));
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new RequestChunkRadiusPacket(4, 255)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new RequestChunkRadiusPacket(4, 255)])),
+            Reliability::RELIABLE,
         )));
         self::assertCount(1, $channel->drainOutgoing());
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new SubChunkRequestPacket(0, 0, 3, 0, [
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new SubChunkRequestPacket(0, 0, 3, 0, [
                 ['x' => 0, 'y' => 0, 'z' => 0],
             ])])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
         self::assertTrue($channel->tick());
         self::assertCount(1, $channel->drainOutgoing());
@@ -330,10 +328,9 @@ final class BedrockPlayChannelTest extends TestCase
             ),
             new ChatPacket('SpoofedName', 'hello', 'spoofed-xuid'),
         ]);
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($payload),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($payload),
+            Reliability::RELIABLE,
         )));
         self::assertTrue($channel->takeSpawnAcknowledged());
         self::assertFalse($channel->takeSpawnAcknowledged());
@@ -359,23 +356,21 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertSame('session', $commands[1]->session);
     }
 
-    public function testLiteralProtocol2193ChatUsesTheAuthenticatedSessionIdentity(): void
+    public function testLiteralProtocol2225ChatUsesTheAuthenticatedSessionIdentity(): void
     {
         [$channel, $client, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $payload = hex2bin(self::LITERAL_CHAT);
         self::assertIsString($payload);
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encodeFrames([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encodeFrames([
                 new PacketFrame(new PacketHeader(9), $payload),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -389,19 +384,17 @@ final class BedrockPlayChannelTest extends TestCase
     public function testWrongReliabilityFailsClosedWhileWrongEntityAddsOneSemanticStrike(): void
     {
         [$wrongReliability, $client] = $this->channel();
-        self::assertFalse($wrongReliability->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new ChatPacket('ignored', 'hello')])),
-            Reliability::Reliable,
-            null,
+        self::assertFalse($wrongReliability->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new ChatPacket('ignored', 'hello')])),
+            Reliability::UNRELIABLE,
         )));
         self::assertTrue($wrongReliability->isClosed());
         self::assertSame([], $wrongReliability->drainCommands());
 
         [$wrongEntity, $client] = $this->channel();
-        $result = $wrongEntity->acceptInput(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket(UnsignedLong::fromInt(99))])),
-            Reliability::ReliableOrdered,
-            0,
+        $result = $wrongEntity->acceptInput(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket(UnsignedLong::fromInt(99))])),
+            Reliability::RELIABLE,
         ));
         self::assertSame(InboundDisposition::SEMANTIC_VIOLATION, $result->disposition);
         self::assertFalse($wrongEntity->isClosed());
@@ -410,14 +403,13 @@ final class BedrockPlayChannelTest extends TestCase
     public function testUnsignedClientTicksAreOrderedBeforeCreatingLocalSequences(): void
     {
         [$channel, $client, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([
                 new SetLocalPlayerAsInitializedPacket($entityId),
                 $this->movementPacket(new UnsignedLong(0x80000000, 1)),
                 $this->movementPacket(new UnsignedLong(0x7fffffff, 0xffffffff)),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -431,8 +423,8 @@ final class BedrockPlayChannelTest extends TestCase
     public function testMountedRetailInputPreservesVehicleRotationAndIdentity(): void
     {
         [$channel, $client, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([
                 new SetLocalPlayerAsInitializedPacket($entityId),
                 $this->movementPacket(
                     UnsignedLong::fromInt(9),
@@ -445,8 +437,7 @@ final class BedrockPlayChannelTest extends TestCase
                     predictedVehicleActorId: 1234,
                 ),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -463,13 +454,12 @@ final class BedrockPlayChannelTest extends TestCase
     public function testEncryptedMovementCorrectionReturnsTheExactRetailInputTick(): void
     {
         [$channel, $client, $server, $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([
                 new SetLocalPlayerAsInitializedPacket($entityId),
                 $this->movementPacket(new UnsignedLong(0x80000000, 17), x: 1000.0, z: 1000.0),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -488,7 +478,7 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertTrue($channel->queuePacket($directed[0]->packet));
         $outgoing = $channel->drainOutgoing();
         self::assertCount(1, $outgoing);
-        $packet = $this->decode($server->decryptEnvelope($outgoing[0]->payload));
+        $packet = $this->decode($server->decryptBatch($outgoing[0]->payload));
         self::assertInstanceOf(CorrectPlayerMovePredictionPacket::class, $packet);
         self::assertSame(0x80000000, $packet->tick->high);
         self::assertSame(17, $packet->tick->low);
@@ -503,18 +493,16 @@ final class BedrockPlayChannelTest extends TestCase
             $lines[] = $line;
         });
         [$channel, $client, , $entityId] = $this->channel(diagnostics: $diagnostics);
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([
                 $this->movementPacket(UnsignedLong::fromInt(1), y: -65.0),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         self::assertFalse($channel->isClosed());
@@ -535,19 +523,17 @@ final class BedrockPlayChannelTest extends TestCase
             $lines[] = $line;
         });
         [$channel, $client, , $entityId] = $this->channel(diagnostics: $diagnostics);
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
 
-        $result = $channel->acceptInput(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([
+        $result = $channel->acceptInput(new InboundPayload(
+            $client->encryptBatch($this->encode([
                 $this->movementPacket(UnsignedLong::fromInt(1), pitch: 100.0),
                 new ChatPacket('ignored', 'still handled'),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         ));
 
         self::assertSame(InboundDisposition::REJECTED, $result->disposition);
@@ -566,10 +552,9 @@ final class BedrockPlayChannelTest extends TestCase
     public function testGameplayBeforeInitializationIsRejectedWithoutClosing(): void
     {
         [$channel, $client] = $this->channel();
-        $result = $channel->acceptInput(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new ChatPacket('ignored', 'too early')])),
-            Reliability::ReliableOrdered,
-            0,
+        $result = $channel->acceptInput(new InboundPayload(
+            $client->encryptBatch($this->encode([new ChatPacket('ignored', 'too early')])),
+            Reliability::RELIABLE,
         ));
         self::assertSame(InboundDisposition::REJECTED, $result->disposition);
         self::assertFalse($channel->isClosed());
@@ -583,10 +568,9 @@ final class BedrockPlayChannelTest extends TestCase
             $lines[] = $line;
         });
         [$channel, $client, , $entityId] = $this->channel(diagnostics: $diagnostics);
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
 
         $guardProperty = new \ReflectionProperty($channel, 'trafficGuard');
@@ -594,10 +578,9 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertInstanceOf(GameplayTrafficGuard::class, $guard);
         (new \ReflectionProperty($guard, 'packetTokens'))->setValue($guard, -1_000.0);
 
-        self::assertFalse($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new ChatPacket('RealName', 'bounded diagnostic')])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertFalse($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new ChatPacket('RealName', 'bounded diagnostic')])),
+            Reliability::RELIABLE,
         )));
 
         $diagnostic = implode('', $lines);
@@ -615,10 +598,9 @@ final class BedrockPlayChannelTest extends TestCase
     public function testDelayedMovementCatchUpIsAdmittedThroughThePlayChannel(): void
     {
         [$channel, $client, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
 
         $guardProperty = new \ReflectionProperty($channel, 'trafficGuard');
@@ -633,10 +615,9 @@ final class BedrockPlayChannelTest extends TestCase
             for ($packetIndex = 0; $packetIndex < 64; ++$packetIndex) {
                 $packets[] = $this->movementPacket(UnsignedLong::fromInt($tick++));
             }
-            self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-                $client->encryptEnvelope($this->encode($packets)),
-                Reliability::ReliableOrdered,
-                0,
+            self::assertTrue($channel->accept(new InboundPayload(
+                $client->encryptBatch($this->encode($packets)),
+                Reliability::RELIABLE,
             )));
         }
 
@@ -650,30 +631,27 @@ final class BedrockPlayChannelTest extends TestCase
             $lines[] = $line;
         });
         [$channel, $client, , $entityId] = $this->channel([], $diagnostics);
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $channel->drainOutgoing();
         $channel->drainCommands();
 
         $sync = $this->movementPredictionSync($entityId, true);
         self::assertSame(58, strlen(BedrockPacketCodec::encode($sync)));
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([$sync])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([$sync])),
+            Reliability::RELIABLE,
         )));
 
         self::assertFalse($channel->isClosed());
         self::assertSame([], $channel->drainOutgoing());
         self::assertSame([], $channel->drainCommands());
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([$sync])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([$sync])),
+            Reliability::RELIABLE,
         )));
         self::assertFalse($channel->isClosed());
         self::assertSame([], $channel->drainOutgoing());
@@ -685,14 +663,13 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertStringContainsString('"reported_flying":true', $diagnostic);
         self::assertStringContainsString('"actor_flag_count":8', $diagnostic);
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([$this->blockActionPacket(new PlayerBlockAction(
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([$this->blockActionPacket(new PlayerBlockAction(
                 PlayerActionType::StartDestroyBlock,
                 new BlockPosition(0, 63, 0),
                 1,
             ), 91)])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
         self::assertFalse($channel->isClosed());
         self::assertNotEmpty($channel->drainCommands());
@@ -705,20 +682,18 @@ final class BedrockPlayChannelTest extends TestCase
             $lines[] = $line;
         });
         [$channel, $client, , $entityId] = $this->channel([], $diagnostics);
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $channel->drainOutgoing();
         $channel->drainCommands();
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([
                 new ActorEventPacket($entityId, ActorEventType::EatingItem, 1),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         self::assertFalse($channel->isClosed());
@@ -733,18 +708,16 @@ final class BedrockPlayChannelTest extends TestCase
     public function testEncryptedMovementPredictionSyncDoesNotTreatReportedActorAsAuthority(): void
     {
         [$channel, $client, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([
                 $this->movementPredictionSync(UnsignedLong::fromInt(99), false),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         self::assertFalse($channel->isClosed());
@@ -756,10 +729,9 @@ final class BedrockPlayChannelTest extends TestCase
     {
         [$channel, $client, , $entityId] = $this->channel();
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([$this->movementPredictionSync($entityId, false)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([$this->movementPredictionSync($entityId, false)])),
+            Reliability::RELIABLE,
         )));
 
         self::assertFalse($channel->isClosed());
@@ -771,10 +743,9 @@ final class BedrockPlayChannelTest extends TestCase
     {
         [$channel, $client, , $entityId] = $this->channel();
         foreach ([1, 2] as $attempt) {
-            self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-                $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-                Reliability::ReliableOrdered,
-                0,
+            self::assertTrue($channel->accept(new InboundPayload(
+                $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+                Reliability::RELIABLE,
             )), "Initialization acknowledgement {$attempt} should be accepted.");
         }
 
@@ -787,13 +758,12 @@ final class BedrockPlayChannelTest extends TestCase
     {
         [$channel, $client, , $entityId] = $this->channel();
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([
                 new SetLocalPlayerAsInitializedPacket($entityId),
                 $this->movementPacket(UnsignedLong::fromInt(1)),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
         self::assertSame([], $channel->drainOutgoing(), 'Initialization must not override StartGame orientation.');
         self::assertCount(1, $channel->drainCommands(), 'Movement after initialization enters normal gameplay processing.');
@@ -802,17 +772,15 @@ final class BedrockPlayChannelTest extends TestCase
     public function testClientRotationUsesPmmpNormalizationBeforeEnteringSimulation(): void
     {
         [$channel, $client, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([
                 $this->movementPacket(UnsignedLong::fromInt(1), -84.75, -45.25),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -831,19 +799,17 @@ final class BedrockPlayChannelTest extends TestCase
         $payload = hex2bin(self::RETAIL_EMPTY_MOB_EQUIPMENT);
         self::assertIsString($payload);
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encodeFrames([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encodeFrames([
                 new PacketFrame(new PacketHeader(PacketIds::MOB_EQUIPMENT), $payload),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
         self::assertFalse($channel->isClosed());
         self::assertSame([], $channel->drainCommands());
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $commands = $channel->drainCommands();
         self::assertCount(1, $commands);
@@ -856,19 +822,17 @@ final class BedrockPlayChannelTest extends TestCase
     {
         [$channel, $client, , $entityId] = $this->channel();
         foreach ([8, 4, 4] as $slot) {
-            self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-                $client->encryptEnvelope($this->encode([new MobEquipmentPacket($entityId, $slot, $slot, 0)])),
-                Reliability::ReliableOrdered,
-                0,
+            self::assertTrue($channel->accept(new InboundPayload(
+                $client->encryptBatch($this->encode([new MobEquipmentPacket($entityId, $slot, $slot, 0)])),
+                Reliability::RELIABLE,
             )));
             self::assertFalse($channel->isClosed());
             self::assertSame([], $channel->drainCommands());
         }
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $commands = $channel->drainCommands();
         self::assertCount(1, $commands);
@@ -880,10 +844,9 @@ final class BedrockPlayChannelTest extends TestCase
     public function testSpoofedEquipmentNotificationBeforeInitializationAddsOneSemanticStrike(): void
     {
         [$channel, $client] = $this->channel();
-        $result = $channel->acceptInput(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new MobEquipmentPacket(UnsignedLong::fromInt(8))])),
-            Reliability::ReliableOrdered,
-            0,
+        $result = $channel->acceptInput(new InboundPayload(
+            $client->encryptBatch($this->encode([new MobEquipmentPacket(UnsignedLong::fromInt(8))])),
+            Reliability::RELIABLE,
         ));
         self::assertSame(InboundDisposition::SEMANTIC_VIOLATION, $result->disposition);
         self::assertFalse($channel->isClosed());
@@ -893,20 +856,18 @@ final class BedrockPlayChannelTest extends TestCase
     public function testAuthoritativeEquipmentEchoesRemainBoundedSafeNoOps(): void
     {
         [$channel, $client, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         self::assertSame([], $channel->drainCommands());
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([
                 new MobEquipmentPacket($entityId, 0xff, 0xfe, InventoryContainerId::OFFHAND),
                 new MobArmorEquipmentPacket($entityId),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         self::assertFalse($channel->isClosed());
@@ -918,16 +879,15 @@ final class BedrockPlayChannelTest extends TestCase
         [$channel, $client, , $entityId] = $this->channel();
         $emotes = new EmoteListPacket($entityId, ['00112233-4455-6677-8899-aabbccddeeff']);
         self::assertSame(18, strlen($emotes->encode()));
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([
                 new InteractPacket(2, UnsignedLong::fromInt(0)),
                 new InteractPacket(InteractPacket::OPEN_INVENTORY, UnsignedLong::fromInt(0)),
                 new ClientCacheStatusPacket(false),
                 new AnimatePacket(AnimatePacket::SWING, $entityId, 0.0, 'interact'),
                 $emotes,
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
         self::assertFalse($channel->isClosed());
         self::assertSame([], $channel->drainCommands());
@@ -936,19 +896,17 @@ final class BedrockPlayChannelTest extends TestCase
     public function testMissedSwingInputBecomesAPlayerOwnedSimulationCommand(): void
     {
         [$channel, $client, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([$this->movementPacket(
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([$this->movementPacket(
                 UnsignedLong::fromInt(1),
                 inputFlags: [PlayerAuthInputFlag::MissedSwing->value],
             )])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -963,12 +921,11 @@ final class BedrockPlayChannelTest extends TestCase
     public function testWrongEntityEmoteListAddsOneSemanticStrike(): void
     {
         [$channel, $client] = $this->channel();
-        $result = $channel->acceptInput(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([
+        $result = $channel->acceptInput(new InboundPayload(
+            $client->encryptBatch($this->encode([
                 new EmoteListPacket(UnsignedLong::fromInt(8), ['00112233-4455-6677-8899-aabbccddeeff']),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         ));
         self::assertSame(InboundDisposition::SEMANTIC_VIOLATION, $result->disposition);
         self::assertFalse($channel->isClosed());
@@ -978,30 +935,27 @@ final class BedrockPlayChannelTest extends TestCase
     {
         $emoteId = '00112233-4455-6677-8899-aabbccddeeff';
         [$premature, $client, , $entityId] = $this->channel();
-        $result = $premature->acceptInput(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new EmotePacket($entityId, $emoteId, 0, '', '')])),
-            Reliability::ReliableOrdered,
-            0,
+        $result = $premature->acceptInput(new InboundPayload(
+            $client->encryptBatch($this->encode([new EmotePacket($entityId, $emoteId, 0, '', '')])),
+            Reliability::RELIABLE,
         ));
         self::assertSame(InboundDisposition::REJECTED, $result->disposition);
         self::assertFalse($premature->isClosed());
 
         [$wrongActor, $client, , $entityId] = $this->channel();
-        self::assertTrue($wrongActor->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($wrongActor->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
-        $result = $wrongActor->acceptInput(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new EmotePacket(
+        $result = $wrongActor->acceptInput(new InboundPayload(
+            $client->encryptBatch($this->encode([new EmotePacket(
                 UnsignedLong::fromInt(8),
                 $emoteId,
                 0,
                 '',
                 '',
             )])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         ));
         self::assertSame(InboundDisposition::SEMANTIC_VIOLATION, $result->disposition);
         self::assertFalse($wrongActor->isClosed());
@@ -1010,14 +964,13 @@ final class BedrockPlayChannelTest extends TestCase
     public function testEmoteInputQueuesOnlyValidatedIdentityFreeIntent(): void
     {
         [$channel, $client, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $emoteId = '00112233-4455-6677-8899-aabbccddeeff';
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new EmotePacket(
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new EmotePacket(
                 $entityId,
                 $emoteId,
                 12345,
@@ -1025,8 +978,7 @@ final class BedrockPlayChannelTest extends TestCase
                 'spoofed-platform',
                 [EmoteFlag::ServerSide],
             )])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -1040,10 +992,9 @@ final class BedrockPlayChannelTest extends TestCase
     public function testAuthenticatedPlayerSkinUpdateDoesNotCloseSpawnedSession(): void
     {
         [$channel, $client, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $appearance = new VerifiedClientData(
             64,
@@ -1059,15 +1010,14 @@ final class BedrockPlayChannelTest extends TestCase
             profileHash: 'profile',
         );
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new PlayerSkinPacket(
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new PlayerSkinPacket(
                 '00000000-0000-0000-0000-000000000001',
                 PlayerSkin::fromVerifiedClientData($appearance),
                 'new',
                 'old',
             )])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
         self::assertFalse($channel->isClosed());
         self::assertSame([], $channel->drainCommands());
@@ -1080,10 +1030,9 @@ final class BedrockPlayChannelTest extends TestCase
     public function testPersonaSkinPacketUuidDoesNotOverrideAuthenticatedSessionIdentity(): void
     {
         [$channel, $client, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $appearance = new PlayerSkin(
             64,
@@ -1108,15 +1057,14 @@ final class BedrockPlayChannelTest extends TestCase
             personaTints: [new PlayerSkinPersonaTint(PlayerSkinPersonaPieceType::Top, [1, 2, 3, 4])],
         );
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new PlayerSkinPacket(
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new PlayerSkinPacket(
                 '00000000-0000-0000-0000-000000000002',
                 $appearance,
                 'new',
                 'old',
             )])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
         self::assertFalse($channel->isClosed());
         $skinChanges = $channel->drainSkinChanges();
@@ -1129,8 +1077,8 @@ final class BedrockPlayChannelTest extends TestCase
     public function testRecognizedRoutineNotificationsArePostSpawnSafeNoOps(): void
     {
         [$channel, $client, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([
                 new SetLocalPlayerAsInitializedPacket($entityId),
                 new InteractPacket(InteractPacket::OPEN_INVENTORY, UnsignedLong::fromInt(0)),
                 new AnimatePacket(1, $entityId, 0.0, 'interact'),
@@ -1146,8 +1094,7 @@ final class BedrockPlayChannelTest extends TestCase
                 new ContainerClosePacket(0, ContainerType::Container, false),
                 new RequestAbilityPacket(0, AbilityValueType::Bool, true, 0.0),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         self::assertFalse($channel->isClosed());
@@ -1162,23 +1109,21 @@ final class BedrockPlayChannelTest extends TestCase
     public function testLiteralInventoryRequestOpensOneBoundedMainWindowUntilMatchingClose(): void
     {
         [$channel, $client, $server, $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $openPayload = hex2bin('060100');
         self::assertIsString($openPayload);
         $openFrame = new PacketFrame(new PacketHeader(PacketIds::INTERACT), $openPayload);
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encodeFrames([$openFrame, $openFrame])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encodeFrames([$openFrame, $openFrame])),
+            Reliability::RELIABLE,
         )));
         $opened = $channel->drainOutgoing();
         self::assertCount(1, $opened);
-        $frame = $this->decodeFrame($server->decryptEnvelope($opened[0]->payload));
+        $frame = $this->decodeFrame($server->decryptBatch($opened[0]->payload));
         self::assertSame(PacketIds::CONTAINER_OPEN, $frame->header->packetId);
         $open = BedrockPacketCodec::decode($frame->header->packetId, $frame->payload);
         self::assertInstanceOf(ContainerOpenPacket::class, $open);
@@ -1190,18 +1135,17 @@ final class BedrockPlayChannelTest extends TestCase
 
         $retailClose = hex2bin('ff0000');
         self::assertIsString($retailClose);
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encodeFrames([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encodeFrames([
                 new PacketFrame(new PacketHeader(PacketIds::CONTAINER_CLOSE), $retailClose),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
         $closed = $channel->drainOutgoing();
         self::assertCount(1, $closed);
         $closedPayload = array_shift($closed);
         self::assertNotNull($closedPayload);
-        $closeFrame = $this->decodeFrame($server->decryptEnvelope($closedPayload->payload));
+        $closeFrame = $this->decodeFrame($server->decryptBatch($closedPayload->payload));
         self::assertSame(PacketIds::CONTAINER_CLOSE, $closeFrame->header->packetId);
         $close = BedrockPacketCodec::decode($closeFrame->header->packetId, $closeFrame->payload);
         self::assertInstanceOf(ContainerClosePacket::class, $close);
@@ -1212,10 +1156,9 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertCount(1, $closeCommands);
         self::assertInstanceOf(CloseCraftingGrid::class, $closeCommands[0]);
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encodeFrames([$openFrame])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encodeFrames([$openFrame])),
+            Reliability::RELIABLE,
         )));
         self::assertCount(1, $channel->drainOutgoing());
         self::assertFalse($channel->isClosed());
@@ -1224,19 +1167,17 @@ final class BedrockPlayChannelTest extends TestCase
     public function testWorkbenchCloseIsAcknowledgedAndEvacuatesTheCraftingGrid(): void
     {
         [$channel, $client, $server, $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new ContainerClosePacket(
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new ContainerClosePacket(
                 1,
                 ContainerType::Workbench,
                 false,
             )])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -1244,7 +1185,7 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertInstanceOf(CloseCraftingGrid::class, $commands[0]);
         $outgoing = $channel->drainOutgoing();
         self::assertCount(1, $outgoing);
-        $close = $this->decode($server->decryptEnvelope($outgoing[0]->payload));
+        $close = $this->decode($server->decryptBatch($outgoing[0]->payload));
         self::assertInstanceOf(ContainerClosePacket::class, $close);
         self::assertSame(1, $close->containerId);
         self::assertSame(ContainerType::Workbench, $close->containerType);
@@ -1255,19 +1196,17 @@ final class BedrockPlayChannelTest extends TestCase
     public function testStorageContainerCloseIsAcknowledgedAndBecomesAuthoritativeIntent(): void
     {
         [$channel, $client, $server, $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new ContainerClosePacket(
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new ContainerClosePacket(
                 7,
                 ContainerType::Container,
                 false,
             )])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -1277,7 +1216,7 @@ final class BedrockPlayChannelTest extends TestCase
 
         $outgoing = $channel->drainOutgoing();
         self::assertCount(1, $outgoing);
-        $close = $this->decode($server->decryptEnvelope($outgoing[0]->payload));
+        $close = $this->decode($server->decryptBatch($outgoing[0]->payload));
         self::assertInstanceOf(ContainerClosePacket::class, $close);
         self::assertSame(7, $close->containerId);
         self::assertSame(ContainerType::Container, $close->containerType);
@@ -1287,10 +1226,9 @@ final class BedrockPlayChannelTest extends TestCase
     public function testStorageWindowRejectionAliasClosesTheActualOpenWindow(): void
     {
         [$channel, $client, $server, $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         self::assertTrue($channel->queuePacket(ContainerOpenPacket::blockInventory(
             7,
@@ -1301,17 +1239,16 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertCount(1, $opened);
         self::assertInstanceOf(
             ContainerOpenPacket::class,
-            $this->decode($server->decryptEnvelope($opened[0]->payload)),
+            $this->decode($server->decryptBatch($opened[0]->payload)),
         );
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new ContainerClosePacket(
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new ContainerClosePacket(
                 0xff,
                 ContainerType::None,
                 false,
             )])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -1321,7 +1258,7 @@ final class BedrockPlayChannelTest extends TestCase
 
         $outgoing = $channel->drainOutgoing();
         self::assertCount(1, $outgoing);
-        $close = $this->decode($server->decryptEnvelope($outgoing[0]->payload));
+        $close = $this->decode($server->decryptBatch($outgoing[0]->payload));
         self::assertInstanceOf(ContainerClosePacket::class, $close);
         self::assertSame(7, $close->containerId);
         self::assertSame(ContainerType::Container, $close->containerType);
@@ -1331,18 +1268,17 @@ final class BedrockPlayChannelTest extends TestCase
     public function testFlightToggleIsRejectedWithoutDroppingTheSameFrameJump(): void
     {
         [$channel, $client, $server, $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([
                 new SetLocalPlayerAsInitializedPacket($entityId),
                 $this->flightInput(UnsignedLong::fromInt(41)),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         $outgoing = $channel->drainOutgoing();
         self::assertCount(1, $outgoing);
-        $abilities = $this->decodeFrame($server->decryptEnvelope($outgoing[0]->payload));
+        $abilities = $this->decodeFrame($server->decryptBatch($outgoing[0]->payload));
         self::assertSame(PacketIds::UPDATE_ABILITIES, $abilities->header->packetId);
         self::assertSame(UpdateAbilitiesPacket::survival(7)->encode(), $abilities->payload);
         $initialCommands = $channel->drainCommands();
@@ -1351,13 +1287,12 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertTrue($initialCommands[0]->jumpRequested);
         self::assertEqualsWithDelta(64.42, $initialCommands[0]->position->y, 0.000_01);
         self::assertEqualsWithDelta(0.34, $initialCommands[0]->deltaY, 0.000_01);
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([
                 $this->flightInput(UnsignedLong::fromInt(41)),
                 $this->movementPacket(UnsignedLong::fromInt(42)),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
         $repeatedCorrection = $channel->drainOutgoing();
         self::assertCount(1, $repeatedCorrection, 'A denied flight request remains an authoritative correction.');
@@ -1372,33 +1307,25 @@ final class BedrockPlayChannelTest extends TestCase
     {
         $creative = (new GameModePacketProjector())->abilities(GameMode::CREATIVE, 7, false);
         [$channel, $client, $server, $entityId] = $this->channel([$creative]);
-        foreach ($channel->drainOutgoing() as $payload) {
-            $server->decryptEnvelope($payload->payload);
-        }
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([
+        $channel->drainOutgoing();
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([
                 new SetLocalPlayerAsInitializedPacket($entityId),
                 $this->flightInput(UnsignedLong::fromInt(71)),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
         $flying = $channel->drainCommands();
         self::assertCount(1, $flying);
         self::assertInstanceOf(MovePlayer::class, $flying[0]);
         self::assertTrue($flying[0]->flying);
-        foreach ($channel->drainOutgoing() as $payload) {
-            $server->decryptEnvelope($payload->payload);
-        }
+        $channel->drainOutgoing();
 
         self::assertTrue($channel->queuePacket(UpdateAbilitiesPacket::survival(7)));
-        foreach ($channel->drainOutgoing() as $payload) {
-            $server->decryptEnvelope($payload->payload);
-        }
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([$this->movementPacket(UnsignedLong::fromInt(72), y: 75.0)])),
-            Reliability::ReliableOrdered,
-            0,
+        $channel->drainOutgoing();
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([$this->movementPacket(UnsignedLong::fromInt(72), y: 75.0)])),
+            Reliability::RELIABLE,
         )));
         $survival = $channel->drainCommands();
         self::assertCount(1, $survival);
@@ -1410,13 +1337,12 @@ final class BedrockPlayChannelTest extends TestCase
     public function testHeldJumpStateRemainsAnAuthoritativeJumpRequest(): void
     {
         [$channel, $client, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([
                 new SetLocalPlayerAsInitializedPacket($entityId),
                 $this->heldJumpInput(UnsignedLong::fromInt(51)),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -1430,14 +1356,13 @@ final class BedrockPlayChannelTest extends TestCase
     public function testAdjacentMovementInputsCoalesceToLatestStateWithoutLosingJumpIntent(): void
     {
         [$channel, $client, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([
                 new SetLocalPlayerAsInitializedPacket($entityId),
                 $this->heldJumpInput(UnsignedLong::fromInt(61)),
                 $this->movementPacket(UnsignedLong::fromInt(62), x: 3.5, y: 65.0, z: -2.0),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -1453,19 +1378,18 @@ final class BedrockPlayChannelTest extends TestCase
     public function testAbilityAndSettingsRequestsCannotEnableFlightOrDisconnectTheSession(): void
     {
         [$channel, $client, $server, $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([
                 new SetLocalPlayerAsInitializedPacket($entityId),
                 new RequestAbilityPacket(19, AbilityValueType::Float, false, 2.0),
                 new ServerSettingsRequestPacket(),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         $outgoing = $channel->drainOutgoing();
         self::assertCount(1, $outgoing);
-        $abilities = $this->decodeFrame($server->decryptEnvelope($outgoing[0]->payload));
+        $abilities = $this->decodeFrame($server->decryptBatch($outgoing[0]->payload));
         self::assertSame(PacketIds::UPDATE_ABILITIES, $abilities->header->packetId);
         self::assertSame(UpdateAbilitiesPacket::survival(7)->encode(), $abilities->payload);
         self::assertSame([], $channel->drainCommands());
@@ -1475,16 +1399,14 @@ final class BedrockPlayChannelTest extends TestCase
     public function testLiteralInventoryTransactionIsAnInitializedNoOp(): void
     {
         [$channel, $client, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encodeFrames([$this->inventoryTransactionFrame()])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encodeFrames([$this->inventoryTransactionFrame()])),
+            Reliability::RELIABLE,
         )));
 
         self::assertFalse($channel->isClosed());
@@ -1495,10 +1417,9 @@ final class BedrockPlayChannelTest extends TestCase
     public function testEncryptedEntityAttackBecomesBoundedGameplayIntent(): void
     {
         [$channel, $client, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $packet = new InventoryTransactionPacket(0, [], [], new ItemUseOnEntityInventoryTransaction(
             UnsignedLong::fromInt(22),
@@ -1509,10 +1430,9 @@ final class BedrockPlayChannelTest extends TestCase
             new InventoryVector3(9_999.0, 9_999.0, 9_999.0),
         ));
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([$packet])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([$packet])),
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -1528,10 +1448,9 @@ final class BedrockPlayChannelTest extends TestCase
     public function testEncryptedEntityInteractionBecomesTypedGameplayIntent(): void
     {
         [$channel, $client, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         foreach ([
             ItemUseOnEntityActionType::Interact,
@@ -1545,10 +1464,9 @@ final class BedrockPlayChannelTest extends TestCase
                 new InventoryVector3(0.0, 64.0, 0.0),
                 new InventoryVector3(0.0, 64.0, 0.0),
             ));
-            self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-                $client->encryptEnvelope($this->encode([$packet])),
-                Reliability::ReliableOrdered,
-                0,
+            self::assertTrue($channel->accept(new InboundPayload(
+                $client->encryptBatch($this->encode([$packet])),
+                Reliability::RELIABLE,
             )));
         }
 
@@ -1568,10 +1486,9 @@ final class BedrockPlayChannelTest extends TestCase
     public function testEncryptedCombatProjectionCarriesMotionTickAndLocalizedDeathText(): void
     {
         [$channel, $client, $server, $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $channel->drainOutgoing();
 
@@ -1589,7 +1506,7 @@ final class BedrockPlayChannelTest extends TestCase
         $outgoing = $channel->drainOutgoing();
         self::assertCount(2, $outgoing);
         $decoded = array_map(
-            fn($payload): Packet => $this->decode($server->decryptEnvelope($payload->payload)),
+            fn($payload): Packet => $this->decode($server->decryptBatch($payload->payload)),
             $outgoing,
         );
         self::assertInstanceOf(SetActorMotionPacket::class, $decoded[0]);
@@ -1605,10 +1522,9 @@ final class BedrockPlayChannelTest extends TestCase
     public function testRelatedPacketsShareOneOrderedEncryptedBatch(): void
     {
         [$channel, $client, $server, $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $channel->drainOutgoing();
 
@@ -1620,7 +1536,7 @@ final class BedrockPlayChannelTest extends TestCase
         $outgoing = $channel->drainOutgoing();
         self::assertCount(1, $outgoing);
         $batch = BedrockBatchCodec::decode(
-            $server->decryptEnvelope($outgoing[0]->payload),
+            $server->decryptBatch($outgoing[0]->payload),
             CompressionMode::NegotiatedZlib,
             new BatchLimits(),
             NetworkCompressionPolicy::THRESHOLD_BYTES,
@@ -1639,10 +1555,9 @@ final class BedrockPlayChannelTest extends TestCase
     public function testEncryptedDroppedItemMovementCarriesAbsolutePositionAndBoundedMotion(): void
     {
         [$channel, $client, $server, $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $channel->drainOutgoing();
 
@@ -1665,7 +1580,7 @@ final class BedrockPlayChannelTest extends TestCase
         $outgoing = $channel->drainOutgoing();
         self::assertCount(2, $outgoing);
         $decoded = array_map(
-            fn($payload): Packet => $this->decode($server->decryptEnvelope($payload->payload)),
+            fn($payload): Packet => $this->decode($server->decryptBatch($payload->payload)),
             $outgoing,
         );
         self::assertInstanceOf(\Bedriox\Protocol\Packet\MoveActorAbsolutePacket::class, $decoded[0]);
@@ -1680,20 +1595,18 @@ final class BedrockPlayChannelTest extends TestCase
     public function testRetailEmptyMobEquipmentDescriptorKeepsInitializedSessionOpen(): void
     {
         [$channel, $client, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $payload = hex2bin(self::RETAIL_EMPTY_MOB_EQUIPMENT);
         self::assertIsString($payload);
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encodeFrames([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encodeFrames([
                 new PacketFrame(new PacketHeader(PacketIds::MOB_EQUIPMENT), $payload),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         self::assertFalse($channel->isClosed());
@@ -1712,10 +1625,9 @@ final class BedrockPlayChannelTest extends TestCase
         });
         [$channel, $client] = $this->channel([], $diagnostics);
 
-        $result = $channel->acceptInput(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encodeFrames([$this->inventoryTransactionFrame()])),
-            Reliability::ReliableOrdered,
-            0,
+        $result = $channel->acceptInput(new InboundPayload(
+            $client->encryptBatch($this->encodeFrames([$this->inventoryTransactionFrame()])),
+            Reliability::RELIABLE,
         ));
 
         self::assertSame(InboundDisposition::REJECTED, $result->disposition);
@@ -1735,20 +1647,18 @@ final class BedrockPlayChannelTest extends TestCase
             $lines[] = $line;
         });
         [$channel, $client, , $entityId] = $this->channel([], $diagnostics);
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
 
         $validPayload = hex2bin(self::INVENTORY_TRANSACTION_ITEM_USE);
         self::assertIsString($validPayload);
-        self::assertFalse($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encodeFrames([
+        self::assertFalse($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encodeFrames([
                 $this->inventoryTransactionFrame($validPayload . "\0"),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         self::assertTrue($channel->isClosed());
@@ -1762,20 +1672,18 @@ final class BedrockPlayChannelTest extends TestCase
     public function testLiteralInventoryTransactionDoesNotBlockMovementOrChat(): void
     {
         [$channel, $client, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $movement = $this->movementPacket(UnsignedLong::fromInt(1));
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encodeFrames([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encodeFrames([
                 $this->inventoryTransactionFrame(),
                 new PacketFrame(new PacketHeader(BedrockPacketCodec::packetId($movement)), BedrockPacketCodec::encode($movement)),
                 new PacketFrame(new PacketHeader(PacketIds::TEXT), (new ChatPacket('ignored', 'still active'))->encode()),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -1788,17 +1696,15 @@ final class BedrockPlayChannelTest extends TestCase
     public function testBoundedLiteralInventoryTransactionRepetitionCannotGrowOutput(): void
     {
         [$channel, $client, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
 
         $frames = array_fill(0, 64, $this->inventoryTransactionFrame());
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encodeFrames($frames)),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encodeFrames($frames)),
+            Reliability::RELIABLE,
         )));
 
         self::assertFalse($channel->isClosed());
@@ -1809,14 +1715,13 @@ final class BedrockPlayChannelTest extends TestCase
     public function testUnsolicitedLatencyNotificationsArePostSpawnSafeNoOps(): void
     {
         [$channel, $client, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([
                 new SetLocalPlayerAsInitializedPacket($entityId),
                 new NetworkStackLatencyPacket(UnsignedLong::fromInt(1234), false),
                 new NetworkStackLatencyPacket(UnsignedLong::fromInt(1235), true),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         self::assertSame([], $channel->drainOutgoing());
@@ -1838,15 +1743,13 @@ final class BedrockPlayChannelTest extends TestCase
             ),
         ] as $packet) {
             [$channel, $client, , $entityId] = $this->channel();
-            self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-                $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-                Reliability::ReliableOrdered,
-                0,
+            self::assertTrue($channel->accept(new InboundPayload(
+                $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+                Reliability::RELIABLE,
             )));
-            $result = $channel->acceptInput(new ConnectedPayloadEvent(
-                $client->encryptEnvelope($this->encode([$packet])),
-                Reliability::ReliableOrdered,
-                0,
+            $result = $channel->acceptInput(new InboundPayload(
+                $client->encryptBatch($this->encode([$packet])),
+                Reliability::RELIABLE,
             ));
             self::assertSame(InboundDisposition::SEMANTIC_VIOLATION, $result->disposition);
             self::assertSame('actor_identity_mismatch', $result->reason);
@@ -1854,7 +1757,7 @@ final class BedrockPlayChannelTest extends TestCase
         }
     }
 
-    public function testDecodeFailureDiagnosticExcludesUntrustedPayloadAndMessage(): void
+    public function testBatchDecodeFailureDiagnosticExcludesUntrustedPayloadAndMessage(): void
     {
         $lines = [];
         $diagnostics = new RuntimeDiagnostics(static function (string $line) use (&$lines): void {
@@ -1862,15 +1765,14 @@ final class BedrockPlayChannelTest extends TestCase
         });
         [$channel] = $this->channel([], $diagnostics);
 
-        self::assertFalse($channel->accept(new ConnectedPayloadEvent(
+        self::assertFalse($channel->accept(new InboundPayload(
             'untrusted-secret-payload',
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         self::assertCount(2, $lines);
         self::assertStringContainsString('"event":"play.input_disposition"', $lines[1]);
-        self::assertStringContainsString('"reason":"decrypt_failed"', $lines[1]);
+        self::assertStringContainsString('"reason":"batch_decode_failed"', $lines[1]);
         self::assertStringContainsString('"exception":', $lines[1]);
         self::assertStringNotContainsString('untrusted-secret-payload', implode('', $lines));
     }
@@ -1878,43 +1780,39 @@ final class BedrockPlayChannelTest extends TestCase
     public function testMalformedTypedPacketsFailButUnknownPacketsAreIgnored(): void
     {
         [$malformed, $malformedClient] = $this->channel();
-        self::assertFalse($malformed->accept(new ConnectedPayloadEvent(
-            $malformedClient->encryptEnvelope($this->encodeFrames([
+        self::assertFalse($malformed->accept(new InboundPayload(
+            $malformedClient->encryptBatch($this->encodeFrames([
                 new PacketFrame(new PacketHeader(PacketIds::ANIMATE), "\x01"),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
         self::assertTrue($malformed->isClosed());
 
         [$unknown, $unknownClient] = $this->channel();
-        $result = $unknown->acceptInput(new ConnectedPayloadEvent(
-            $unknownClient->encryptEnvelope($this->encodeFrames([
+        $result = $unknown->acceptInput(new InboundPayload(
+            $unknownClient->encryptBatch($this->encodeFrames([
                 new PacketFrame(new PacketHeader(1023), ''),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         ));
         self::assertSame(InboundDisposition::IGNORED, $result->disposition);
         self::assertFalse($unknown->isClosed());
 
         [$mixed, $mixedClient, , $entityId] = $this->channel();
-        $result = $mixed->acceptInput(new ConnectedPayloadEvent(
-            $mixedClient->encryptEnvelope($this->encodeFrames([
+        $result = $mixed->acceptInput(new InboundPayload(
+            $mixedClient->encryptBatch($this->encodeFrames([
                 new PacketFrame(new PacketHeader(1023), 'ignored'),
                 new PacketFrame(
                     new PacketHeader(PacketIds::SET_LOCAL_PLAYER_AS_INITIALIZED),
                     BedrockPacketCodec::encode(new SetLocalPlayerAsInitializedPacket($entityId)),
                 ),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         ));
         self::assertSame(InboundDisposition::IGNORED, $result->disposition);
-        self::assertTrue($mixed->accept(new ConnectedPayloadEvent(
-            $mixedClient->encryptEnvelope($this->encode([new ChatPacket('ignored', 'after unknown')])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($mixed->accept(new InboundPayload(
+            $mixedClient->encryptBatch($this->encode([new ChatPacket('ignored', 'after unknown')])),
+            Reliability::RELIABLE,
         )));
         self::assertCount(1, $mixed->drainCommands());
     }
@@ -1930,12 +1828,11 @@ final class BedrockPlayChannelTest extends TestCase
             unsupportedPacketLogLimit: 2,
         );
         for ($attempt = 0; $attempt < 5; ++$attempt) {
-            self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-                $client->encryptEnvelope($this->encodeFrames([
+            self::assertTrue($channel->accept(new InboundPayload(
+                $client->encryptBatch($this->encodeFrames([
                     new PacketFrame(new PacketHeader(1023), 'ignored'),
                 ])),
-                Reliability::ReliableOrdered,
-                0,
+                Reliability::RELIABLE,
             )));
         }
 
@@ -1953,23 +1850,21 @@ final class BedrockPlayChannelTest extends TestCase
             BossEventAction::QUERY,
         ] as $action) {
             [$advisory, $advisoryClient] = $this->channel();
-            self::assertTrue($advisory->accept(new ConnectedPayloadEvent(
-                $advisoryClient->encryptEnvelope($this->encode([
+            self::assertTrue($advisory->accept(new InboundPayload(
+                $advisoryClient->encryptBatch($this->encode([
                     new BossEventPacket(-1, $action),
                 ])),
-                Reliability::ReliableOrdered,
-                0,
+                Reliability::RELIABLE,
             )));
             self::assertFalse($advisory->isClosed());
         }
 
         [$mutation, $mutationClient] = $this->channel();
-        $result = $mutation->acceptInput(new ConnectedPayloadEvent(
-            $mutationClient->encryptEnvelope($this->encode([
+        $result = $mutation->acceptInput(new InboundPayload(
+            $mutationClient->encryptBatch($this->encode([
                 new BossEventPacket(-1, BossEventAction::UPDATE_NAME, 'client-owned'),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         ));
         self::assertSame(InboundDisposition::REJECTED, $result->disposition);
         self::assertFalse($mutation->isClosed());
@@ -1982,26 +1877,24 @@ final class BedrockPlayChannelTest extends TestCase
             $lines[] = $line;
         });
         [$channel, $client, , $entityId] = $this->channel([], $diagnostics);
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
 
-        $wire = hex2bin('010001121200ffffffff');
+        $wire = hex2bin('010001131300ffffffff');
         self::assertNotFalse($wire);
-        self::assertFalse($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encodeFrames([
+        self::assertFalse($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encodeFrames([
                 new PacketFrame(new PacketHeader(PacketIds::ITEM_STACK_REQUEST), $wire),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         $diagnostic = implode('', $lines);
         self::assertStringContainsString('"event":"play.inventory_decode.protocol_trace"', $diagnostic);
         self::assertStringContainsString('"detail":"unsupported_action_type"', $diagnostic);
-        self::assertStringContainsString('"action_type":18', $diagnostic);
+        self::assertStringContainsString('"action_type":19', $diagnostic);
         self::assertStringContainsString('"byte_offset":3', $diagnostic);
         self::assertStringNotContainsString(bin2hex($wire), $diagnostic);
         self::assertTrue($channel->isClosed());
@@ -2010,20 +1903,18 @@ final class BedrockPlayChannelTest extends TestCase
     public function testRepeatedRadiusRequestsRemainClampedWithoutPublishingTerrain(): void
     {
         [$channel, $clientEncryptor, $clientDecryptor, $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         for ($attempt = 0; $attempt < 2; ++$attempt) {
-            self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-                $clientEncryptor->encryptEnvelope($this->encode([new RequestChunkRadiusPacket(32, 255)])),
-                Reliability::ReliableOrdered,
-                0,
+            self::assertTrue($channel->accept(new InboundPayload(
+                $clientEncryptor->encryptBatch($this->encode([new RequestChunkRadiusPacket(32, 255)])),
+                Reliability::RELIABLE,
             )));
             $outgoing = $channel->drainOutgoing();
             self::assertCount(1, $outgoing);
-            $radius = $this->decode($clientDecryptor->decryptEnvelope($outgoing[0]->payload));
+            $radius = $this->decode($clientDecryptor->decryptBatch($outgoing[0]->payload));
             self::assertInstanceOf(ChunkRadiusUpdatedPacket::class, $radius);
             self::assertSame(1, $radius->radius);
         }
@@ -2036,10 +1927,9 @@ final class BedrockPlayChannelTest extends TestCase
             ['x' => 0, 'y' => 0, 'z' => 0],
             ['x' => 0, 'y' => -1, 'z' => 0],
         ]);
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([$request])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([$request])),
+            Reliability::RELIABLE,
         )));
         self::assertTrue($channel->tick());
         $outgoing = $channel->drainOutgoing();
@@ -2048,7 +1938,7 @@ final class BedrockPlayChannelTest extends TestCase
         }
         $outgoingPayload = $outgoing[0];
         $batch = BedrockBatchCodec::decode(
-            $clientDecryptor->decryptEnvelope($outgoingPayload->payload),
+            $clientDecryptor->decryptBatch($outgoingPayload->payload),
             CompressionMode::NegotiatedZlib,
             new BatchLimits(),
             NetworkCompressionPolicy::THRESHOLD_BYTES,
@@ -2069,10 +1959,9 @@ final class BedrockPlayChannelTest extends TestCase
             new VoxelShapesPacket(),
         ], limits: $limits);
         self::assertCount(1, $channel->drainOutgoing());
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new RequestChunkRadiusPacket(1, 1)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new RequestChunkRadiusPacket(1, 1)])),
+            Reliability::RELIABLE,
         )));
         self::assertCount(1, $channel->drainOutgoing());
         self::assertTrue($channel->tick());
@@ -2088,36 +1977,32 @@ final class BedrockPlayChannelTest extends TestCase
             new ChunkRadiusUpdatedPacket(1),
         ]);
         $channel->drainOutgoing();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new RequestChunkRadiusPacket(1, 1)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new RequestChunkRadiusPacket(1, 1)])),
+            Reliability::RELIABLE,
         )));
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         self::assertTrue($channel->takeSpawnAcknowledged());
         self::assertFalse($channel->takeSpawnAcknowledged());
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([
                 $this->movementPacket(UnsignedLong::fromInt(1)),
                 new ChatPacket('untrusted-name', 'terrain is still streaming'),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
         $commands = $channel->drainCommands();
         self::assertCount(2, $commands);
         self::assertInstanceOf(MovePlayer::class, $commands[0]);
         self::assertInstanceOf(SendChat::class, $commands[1]);
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SubChunkRequestPacket(0, 0, 3, 0, [
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SubChunkRequestPacket(0, 0, 3, 0, [
                 ['x' => 0, 'y' => 0, 'z' => 0],
             ])])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
         self::assertTrue($channel->tick());
         self::assertFalse($channel->takeSpawnAcknowledged());
@@ -2133,10 +2018,9 @@ final class BedrockPlayChannelTest extends TestCase
         [$channel, $client] = $this->channel([], $diagnostics);
         $request = new SubChunkRequestPacket(0, 0, 3, 0, [['x' => 0, 'y' => 0, 'z' => 0]]);
         foreach ([false, true] as $expectedRepeated) {
-            self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-                $client->encryptEnvelope($this->encode([$request])),
-                Reliability::ReliableOrdered,
-                0,
+            self::assertTrue($channel->accept(new InboundPayload(
+                $client->encryptBatch($this->encode([$request])),
+                Reliability::RELIABLE,
             )));
             self::assertTrue($channel->tick());
             self::assertCount(1, $channel->drainOutgoing());
@@ -2155,10 +2039,9 @@ final class BedrockPlayChannelTest extends TestCase
     {
         [$channel, $client] = $this->channel();
         $offsets = array_fill(0, 65, ['x' => 0, 'y' => 0, 'z' => 0]);
-        $result = $channel->acceptInput(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SubChunkRequestPacket(0, 0, 3, 0, $offsets)])),
-            Reliability::ReliableOrdered,
-            0,
+        $result = $channel->acceptInput(new InboundPayload(
+            $client->encryptBatch($this->encode([new SubChunkRequestPacket(0, 0, 3, 0, $offsets)])),
+            Reliability::RELIABLE,
         ));
         self::assertSame(InboundDisposition::REJECTED, $result->disposition);
         self::assertFalse($channel->isClosed());
@@ -2192,23 +2075,21 @@ final class BedrockPlayChannelTest extends TestCase
             generatePerTick: 4,
             sendPerTick: 2,
         );
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new RequestChunkRadiusPacket(4, 32)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new RequestChunkRadiusPacket(4, 32)])),
+            Reliability::RELIABLE,
         )));
         $initial = $channel->drainOutgoing();
         self::assertCount(2, $initial);
-        self::assertInstanceOf(ChunkRadiusUpdatedPacket::class, $this->decode($server->decryptEnvelope($initial[0]->payload)));
-        self::assertInstanceOf(NetworkChunkPublisherUpdatePacket::class, $this->decode($server->decryptEnvelope($initial[1]->payload)));
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new RequestChunkRadiusPacket(1, 1)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertInstanceOf(ChunkRadiusUpdatedPacket::class, $this->decode($server->decryptBatch($initial[0]->payload)));
+        self::assertInstanceOf(NetworkChunkPublisherUpdatePacket::class, $this->decode($server->decryptBatch($initial[1]->payload)));
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new RequestChunkRadiusPacket(1, 1)])),
+            Reliability::RELIABLE,
         )));
         $repeat = $channel->drainOutgoing();
         self::assertCount(1, $repeat);
-        $repeatedRadius = $this->decode($server->decryptEnvelope($repeat[0]->payload));
+        $repeatedRadius = $this->decode($server->decryptBatch($repeat[0]->payload));
         self::assertInstanceOf(ChunkRadiusUpdatedPacket::class, $repeatedRadius);
         self::assertSame(4, $repeatedRadius->radius);
         self::assertFalse($channel->hasSentChunkAt(0.0, 0.0));
@@ -2222,7 +2103,7 @@ final class BedrockPlayChannelTest extends TestCase
             $outgoingThisTick = $channel->drainOutgoing();
             self::assertLessThanOrEqual(3, count($outgoingThisTick), 'At most two chunks plus the one-shot spawn status may be sent.');
             foreach ($outgoingThisTick as $outgoing) {
-                $packet = $this->decode($server->decryptEnvelope($outgoing->payload));
+                $packet = $this->decode($server->decryptBatch($outgoing->payload));
                 if ($packet instanceof LevelChunkPacket) {
                     $coordinates[$packet->chunkX . ':' . $packet->chunkZ] = true;
                 } elseif ($packet instanceof \Bedriox\Protocol\Packet\PlayStatusPacket) {
@@ -2256,11 +2137,11 @@ final class BedrockPlayChannelTest extends TestCase
             self::assertCount(1, $publisher);
             self::assertInstanceOf(
                 NetworkChunkPublisherUpdatePacket::class,
-                $this->decode($server->decryptEnvelope($publisher[0]->payload)),
+                $this->decode($server->decryptBatch($publisher[0]->payload)),
             );
             self::assertTrue($channel->worldTick());
             foreach ($channel->drainOutgoing() as $outgoing) {
-                $packet = $this->decode($server->decryptEnvelope($outgoing->payload));
+                $packet = $this->decode($server->decryptBatch($outgoing->payload));
                 self::assertInstanceOf(LevelChunkPacket::class, $packet);
                 $movedCoordinates[$packet->chunkX . ':' . $packet->chunkZ] = true;
             }
@@ -2274,7 +2155,7 @@ final class BedrockPlayChannelTest extends TestCase
             $outgoing = $channel->drainOutgoing();
             $consecutiveIdleTicks = $outgoing === [] ? $consecutiveIdleTicks + 1 : 0;
             foreach ($outgoing as $payload) {
-                $packet = $this->decode($server->decryptEnvelope($payload->payload));
+                $packet = $this->decode($server->decryptBatch($payload->payload));
                 self::assertInstanceOf(LevelChunkPacket::class, $packet);
                 $movedCoordinates[$packet->chunkX . ':' . $packet->chunkZ] = true;
             }
@@ -2315,24 +2196,19 @@ final class BedrockPlayChannelTest extends TestCase
             viewDistance: 1,
             spawnRadius: 1,
         );
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new RequestChunkRadiusPacket(1, 1)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new RequestChunkRadiusPacket(1, 1)])),
+            Reliability::RELIABLE,
         )));
-        foreach ($channel->drainOutgoing() as $outgoing) {
-            $server->decryptEnvelope($outgoing->payload);
-        }
+        $channel->drainOutgoing();
         self::assertTrue($channel->worldTick());
-        foreach ($channel->drainOutgoing() as $outgoing) {
-            $server->decryptEnvelope($outgoing->payload);
-        }
+        $channel->drainOutgoing();
 
         self::assertTrue($channel->switchWorld($destination, null, 160.0, 70.0, -80.0));
         $publisherPayloads = $channel->drainOutgoing();
         self::assertCount(1, $publisherPayloads);
         $transition = BedrockBatchCodec::decode(
-            $server->decryptEnvelope($publisherPayloads[0]->payload),
+            $server->decryptBatch($publisherPayloads[0]->payload),
             CompressionMode::NegotiatedZlib,
             new BatchLimits(),
             NetworkCompressionPolicy::THRESHOLD_BYTES,
@@ -2354,7 +2230,7 @@ final class BedrockPlayChannelTest extends TestCase
         $destinationPayloads = $channel->drainOutgoing();
         self::assertNotEmpty($destinationPayloads);
         foreach ($destinationPayloads as $outgoing) {
-            $packet = $this->decode($server->decryptEnvelope($outgoing->payload));
+            $packet = $this->decode($server->decryptBatch($outgoing->payload));
             self::assertInstanceOf(LevelChunkPacket::class, $packet);
             self::assertGreaterThanOrEqual(9, $packet->chunkX);
             self::assertLessThanOrEqual(11, $packet->chunkX);
@@ -2363,7 +2239,7 @@ final class BedrockPlayChannelTest extends TestCase
         }
         $movementPayloads = $channel->drainOutgoing();
         self::assertCount(1, $movementPayloads);
-        $move = $this->decode($server->decryptEnvelope($movementPayloads[0]->payload));
+        $move = $this->decode($server->decryptBatch($movementPayloads[0]->payload));
         self::assertInstanceOf(MovePlayerPacket::class, $move);
         self::assertSame(MovePlayerMode::TELEPORT, $move->mode);
     }
@@ -2380,12 +2256,11 @@ final class BedrockPlayChannelTest extends TestCase
         [$channel, $client] = $this->channel();
         self::assertTrue($channel->beginWorldSwitch($destination, null, 160.0, 70.0, -80.0));
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([
                 $this->movementPacket(UnsignedLong::fromInt(1), x: 1.0),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
         self::assertSame([], $channel->drainCommands());
 
@@ -2397,30 +2272,28 @@ final class BedrockPlayChannelTest extends TestCase
             }
         }
         self::assertTrue($ready);
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([
                 $this->movementPacket(
                     UnsignedLong::fromInt(2),
                     x: 2.0,
                     inputFlags: [PlayerAuthInputFlag::HandledTeleport->value],
                 ),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
         self::assertSame([], $channel->drainCommands());
 
         self::assertTrue($channel->commitWorldSwitch(90.0, 0.0));
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([
                 $this->movementPacket(
                     UnsignedLong::fromInt(3),
                     x: 3.0,
                     inputFlags: [PlayerAuthInputFlag::HandledTeleport->value],
                 ),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
         self::assertSame([], $channel->drainCommands());
         self::assertFalse($channel->isClosed());
@@ -2452,9 +2325,7 @@ final class BedrockPlayChannelTest extends TestCase
             viewDistance: 1,
             spawnRadius: 1,
         );
-        foreach ($channel->drainOutgoing() as $outgoing) {
-            $server->decryptEnvelope($outgoing->payload);
-        }
+        $channel->drainOutgoing();
 
         self::assertTrue($channel->beginWorldSwitch(
             $destination,
@@ -2477,7 +2348,7 @@ final class BedrockPlayChannelTest extends TestCase
         $outgoing = $channel->drainOutgoing();
         self::assertCount(1, $outgoing);
         $batch = BedrockBatchCodec::decode(
-            $server->decryptEnvelope($outgoing[0]->payload),
+            $server->decryptBatch($outgoing[0]->payload),
             CompressionMode::NegotiatedZlib,
             new BatchLimits(),
             NetworkCompressionPolicy::THRESHOLD_BYTES,
@@ -2505,10 +2376,9 @@ final class BedrockPlayChannelTest extends TestCase
             new ServerboundLoadingScreenPacket(ServerboundLoadingScreenPacket::START, 91),
             new ServerboundLoadingScreenPacket(ServerboundLoadingScreenPacket::END, 91),
         ] as $loadingScreen) {
-            self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-                $client->encryptEnvelope($this->encode([$loadingScreen])),
-                Reliability::ReliableOrdered,
-                0,
+            self::assertTrue($channel->accept(new InboundPayload(
+                $client->encryptBatch($this->encode([$loadingScreen])),
+                Reliability::RELIABLE,
             )));
         }
         self::assertFalse($channel->isClosed());
@@ -2537,26 +2407,23 @@ final class BedrockPlayChannelTest extends TestCase
             viewDistance: 1,
             spawnRadius: 1,
         );
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new RequestChunkRadiusPacket(1, 1)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new RequestChunkRadiusPacket(1, 1)])),
+            Reliability::RELIABLE,
         )));
-        foreach ($channel->drainOutgoing() as $outgoing) {
-            $server->decryptEnvelope($outgoing->payload);
-        }
+        $channel->drainOutgoing();
 
         self::assertTrue($channel->worldTick());
         $first = $channel->drainOutgoing();
         self::assertCount(2, $first);
-        self::assertInstanceOf(LevelChunkPacket::class, $this->decode($server->decryptEnvelope($first[0]->payload)));
-        self::assertInstanceOf(PlayStatusPacket::class, $this->decode($server->decryptEnvelope($first[1]->payload)));
+        self::assertInstanceOf(LevelChunkPacket::class, $this->decode($server->decryptBatch($first[0]->payload)));
+        self::assertInstanceOf(PlayStatusPacket::class, $this->decode($server->decryptBatch($first[1]->payload)));
 
         $world->setBlockState(-16, 63, 0, $palette->air);
         self::assertTrue($channel->worldTick());
         $second = $channel->drainOutgoing();
         self::assertCount(1, $second);
-        $sent = $this->decode($server->decryptEnvelope($second[0]->payload));
+        $sent = $this->decode($server->decryptBatch($second[0]->payload));
         self::assertInstanceOf(LevelChunkPacket::class, $sent);
         self::assertSame([-1, 0], [$sent->chunkX, $sent->chunkZ]);
         self::assertSame(
@@ -2590,14 +2457,11 @@ final class BedrockPlayChannelTest extends TestCase
             spawnRadius: 1,
             preparedChunks: $cache,
         );
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new RequestChunkRadiusPacket(1, 1)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new RequestChunkRadiusPacket(1, 1)])),
+            Reliability::RELIABLE,
         )));
-        foreach ($channel->drainOutgoing() as $outgoing) {
-            $server->decryptEnvelope($outgoing->payload);
-        }
+        $channel->drainOutgoing();
 
         self::assertTrue($channel->worldTick());
         self::assertSame([], $channel->drainOutgoing());
@@ -2605,7 +2469,7 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertTrue($channel->queuePacket(new SystemTextPacket('control-before-prepared-chunk')));
         $control = $channel->drainOutgoing();
         self::assertCount(1, $control);
-        $controlPacket = $this->decode($server->decryptEnvelope($control[0]->payload));
+        $controlPacket = $this->decode($server->decryptBatch($control[0]->payload));
         self::assertInstanceOf(SystemTextPacket::class, $controlPacket);
         self::assertSame('control-before-prepared-chunk', $controlPacket->message);
 
@@ -2616,7 +2480,7 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertLessThanOrEqual(3, count($outgoing));
         $preparedPayload = $outgoing[0] ?? null;
         self::assertInstanceOf(\Bedriox\Server\Runtime\OutgoingPlayPayload::class, $preparedPayload);
-        self::assertInstanceOf(LevelChunkPacket::class, $this->decode($server->decryptEnvelope($preparedPayload->payload)));
+        self::assertInstanceOf(LevelChunkPacket::class, $this->decode($server->decryptBatch($preparedPayload->payload)));
         self::assertSame(['entries' => 0, 'hits' => 0, 'misses' => 0], $serializer->cacheMetrics());
         self::assertGreaterThanOrEqual(1, $workers->submissions);
     }
@@ -2655,10 +2519,9 @@ final class BedrockPlayChannelTest extends TestCase
             world: $world,
             serializer: $serializer,
         );
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new RequestChunkRadiusPacket(1, 1)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new RequestChunkRadiusPacket(1, 1)])),
+            Reliability::RELIABLE,
         )));
         $channel->drainOutgoing();
 
@@ -2694,10 +2557,9 @@ final class BedrockPlayChannelTest extends TestCase
             viewDistance: 8,
             spawnRadius: 1,
         );
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new RequestChunkRadiusPacket(8, 8)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new RequestChunkRadiusPacket(8, 8)])),
+            Reliability::RELIABLE,
         )));
         $channel->drainOutgoing();
         for ($tick = 0; $tick < 20; ++$tick) {
@@ -2730,35 +2592,32 @@ final class BedrockPlayChannelTest extends TestCase
             viewDistance: 4,
             spawnRadius: 1,
         );
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new RequestChunkRadiusPacket(4, 4)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new RequestChunkRadiusPacket(4, 4)])),
+            Reliability::RELIABLE,
         )));
-        foreach ($channel->drainOutgoing() as $outgoing) {
-            $server->decryptEnvelope($outgoing->payload);
-        }
+        $channel->drainOutgoing();
 
         self::assertTrue($channel->worldTick());
         $initial = $channel->drainOutgoing();
         self::assertCount(2, $initial);
-        $initialChunk = $this->decode($server->decryptEnvelope($initial[0]->payload));
+        $initialChunk = $this->decode($server->decryptBatch($initial[0]->payload));
         self::assertInstanceOf(LevelChunkPacket::class, $initialChunk);
         self::assertSame([0, 0], [$initialChunk->chunkX, $initialChunk->chunkZ]);
-        self::assertInstanceOf(PlayStatusPacket::class, $this->decode($server->decryptEnvelope($initial[1]->payload)));
+        self::assertInstanceOf(PlayStatusPacket::class, $this->decode($server->decryptBatch($initial[1]->payload)));
         self::assertGreaterThan(0, $channel->queuedGeneratedChunkCount());
 
         self::assertTrue($channel->updateChunkView(64.0, 64.0, 0.0));
         foreach ($channel->drainOutgoing() as $outgoing) {
             self::assertInstanceOf(
                 NetworkChunkPublisherUpdatePacket::class,
-                $this->decode($server->decryptEnvelope($outgoing->payload)),
+                $this->decode($server->decryptBatch($outgoing->payload)),
             );
         }
         self::assertTrue($channel->worldTick());
         $recentered = $channel->drainOutgoing();
         self::assertCount(1, $recentered);
-        $recenteredChunk = $this->decode($server->decryptEnvelope($recentered[0]->payload));
+        $recenteredChunk = $this->decode($server->decryptBatch($recentered[0]->payload));
         self::assertInstanceOf(LevelChunkPacket::class, $recenteredChunk);
         self::assertSame([4, 0], [$recenteredChunk->chunkX, $recenteredChunk->chunkZ]);
 
@@ -2790,20 +2649,17 @@ final class BedrockPlayChannelTest extends TestCase
             spawnRadius: 1,
             prefetchRadius: 1,
         );
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new RequestChunkRadiusPacket(1, 1)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new RequestChunkRadiusPacket(1, 1)])),
+            Reliability::RELIABLE,
         )));
-        foreach ($channel->drainOutgoing() as $outgoing) {
-            $server->decryptEnvelope($outgoing->payload);
-        }
+        $channel->drainOutgoing();
 
         $visible = [];
         for ($tick = 0; $tick < 16 && $repository->count() < 25; ++$tick) {
             self::assertTrue($channel->worldTick());
             foreach ($channel->drainOutgoing() as $outgoing) {
-                $packet = $this->decode($server->decryptEnvelope($outgoing->payload));
+                $packet = $this->decode($server->decryptBatch($outgoing->payload));
                 if ($packet instanceof LevelChunkPacket) {
                     $visible[$packet->chunkX . ':' . $packet->chunkZ] = true;
                 }
@@ -2824,13 +2680,13 @@ final class BedrockPlayChannelTest extends TestCase
         foreach ($channel->drainOutgoing() as $outgoing) {
             self::assertInstanceOf(
                 NetworkChunkPublisherUpdatePacket::class,
-                $this->decode($server->decryptEnvelope($outgoing->payload)),
+                $this->decode($server->decryptBatch($outgoing->payload)),
             );
         }
         self::assertTrue($channel->worldTick());
         $promoted = [];
         foreach ($channel->drainOutgoing() as $outgoing) {
-            $packet = $this->decode($server->decryptEnvelope($outgoing->payload));
+            $packet = $this->decode($server->decryptBatch($outgoing->payload));
             self::assertInstanceOf(LevelChunkPacket::class, $packet);
             $promoted[] = [$packet->chunkX, $packet->chunkZ];
         }
@@ -2843,20 +2699,17 @@ final class BedrockPlayChannelTest extends TestCase
     public function testValidatedInventoryRequestsBecomeOrderedAuthoritativeCommands(): void
     {
         [$channel, $clientEncryptor, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new SetPlayerInventoryOptionsPacket(0, 0, false, 0, 0)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new SetPlayerInventoryOptionsPacket(0, 0, false, 0, 0)])),
+            Reliability::RELIABLE,
         )));
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([37, -5])])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new ItemStackRequestPacket([37, -5])])),
+            Reliability::RELIABLE,
         )));
         self::assertSame([], $channel->drainOutgoing());
         $commands = $channel->drainCommands();
@@ -2875,10 +2728,9 @@ final class BedrockPlayChannelTest extends TestCase
     public function testCurrentItemUseAndReleaseTransactionsBecomeAuthoritativeCommands(): void
     {
         [$channel, $clientEncryptor, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $item = InventoryItemStack::empty();
         $position = new InventoryVector3(0.0, 64.0, 0.0);
@@ -2909,10 +2761,9 @@ final class BedrockPlayChannelTest extends TestCase
             $position,
         ));
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([$use, $consume, $release])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([$use, $consume, $release])),
+            Reliability::RELIABLE,
         )));
         $commands = $channel->drainCommands();
         self::assertCount(3, $commands);
@@ -2927,10 +2778,9 @@ final class BedrockPlayChannelTest extends TestCase
     public function testLegacyPredictedSplitBecomesAnAuthoritativeBoundedTransfer(): void
     {
         [$channel, $clientEncryptor, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $grass64 = new InventoryItemStack(7, 64, 0, 1, 4, '');
         $grass32 = new InventoryItemStack(7, 32, 0, 1, 4, '');
@@ -2949,10 +2799,9 @@ final class BedrockPlayChannelTest extends TestCase
             ),
         ], new BasicInventoryTransaction(InventoryTransactionType::Normal));
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([$predicted])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([$predicted])),
+            Reliability::RELIABLE,
         )));
         $commands = $channel->drainCommands();
         self::assertCount(1, $commands);
@@ -2970,19 +2819,17 @@ final class BedrockPlayChannelTest extends TestCase
     public function testLegacyRequestedSlotCorrectionsScheduleOnlyExactAuthoritativeSlots(): void
     {
         [$channel, $clientEncryptor, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $packet = new InventoryTransactionPacket(-2, [
             new InventoryLegacySlot(FullContainerName::ARMOR, "\0"),
         ], [], new BasicInventoryTransaction(InventoryTransactionType::Normal));
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([$packet])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([$packet])),
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -2998,10 +2845,9 @@ final class BedrockPlayChannelTest extends TestCase
     public function testLegacyRequestedSlotCorrectionGroupsAreBounded(): void
     {
         [$channel, $clientEncryptor, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $packet = new InventoryTransactionPacket(
             -2,
@@ -3010,10 +2856,9 @@ final class BedrockPlayChannelTest extends TestCase
             new BasicInventoryTransaction(InventoryTransactionType::Normal),
         );
 
-        $result = $channel->acceptInput(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([$packet])),
-            Reliability::ReliableOrdered,
-            0,
+        $result = $channel->acceptInput(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([$packet])),
+            Reliability::RELIABLE,
         ));
         self::assertSame(InboundDisposition::REJECTED, $result->disposition);
         self::assertFalse($channel->isClosed());
@@ -3029,10 +2874,9 @@ final class BedrockPlayChannelTest extends TestCase
             new BlockNetworkTranslator($internal, $data->blockStateRegistry()),
         );
         [$channel, $clientEncryptor, , $entityId] = $this->channel(inventoryProjector: $projector);
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $grassCreativeId = null;
         foreach ($data->creativeInventoryRegistry()->entries() as $entry) {
@@ -3085,10 +2929,9 @@ final class BedrockPlayChannelTest extends TestCase
             ),
         ], new BasicInventoryTransaction(InventoryTransactionType::Normal));
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([$drop])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([$drop])),
+            Reliability::RELIABLE,
         )));
         $commands = $channel->drainCommands();
         self::assertCount(2, $commands);
@@ -3110,10 +2953,9 @@ final class BedrockPlayChannelTest extends TestCase
                 $diagnostics[] = $line;
             },
         ));
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $request = new ItemStackRequest(-17, [
             new DropItemStackRequestAction(
@@ -3123,10 +2965,9 @@ final class BedrockPlayChannelTest extends TestCase
             ),
         ]);
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([$request])])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new ItemStackRequestPacket([$request])])),
+            Reliability::RELIABLE,
         )), implode('', $diagnostics));
         $commands = $channel->drainCommands();
         self::assertCount(1, $commands);
@@ -3139,10 +2980,9 @@ final class BedrockPlayChannelTest extends TestCase
     public function testAnvilOptionalRecipeWithoutAResultRemainsAValidRequest(): void
     {
         [$channel, $clientEncryptor, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         self::assertTrue($channel->queuePacket(ContainerOpenPacket::blockInventory(
             7,
@@ -3154,10 +2994,9 @@ final class BedrockPlayChannelTest extends TestCase
             new CraftRecipeOptionalItemStackRequestAction(0, -1),
         ]);
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([$request])])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new ItemStackRequestPacket([$request])])),
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -3187,10 +3026,9 @@ final class BedrockPlayChannelTest extends TestCase
     public function testEnchantingSelectionRetainsTheComplexUiResponseSlots(): void
     {
         [$channel, $clientEncryptor, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         self::assertTrue($channel->queuePacket(ContainerOpenPacket::blockInventory(
             8,
@@ -3200,10 +3038,9 @@ final class BedrockPlayChannelTest extends TestCase
         $channel->drainOutgoing();
         $request = new ItemStackRequest(-399, [new CraftRecipeItemStackRequestAction(6, 1)]);
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([$request])])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new ItemStackRequestPacket([$request])])),
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -3238,10 +3075,9 @@ final class BedrockPlayChannelTest extends TestCase
     public function testTradeSelectionProjectsBothCurrentTradeSlotFamilies(): void
     {
         [$channel, $clientEncryptor, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         self::assertTrue($channel->queuePacket(new ContainerOpenPacket(
             9,
@@ -3251,12 +3087,11 @@ final class BedrockPlayChannelTest extends TestCase
         )));
         $channel->drainOutgoing();
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new ItemStackRequestPacket([
                 new ItemStackRequest(-400, [new CraftRecipeItemStackRequestAction(1, 1)]),
             ])])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -3284,10 +3119,9 @@ final class BedrockPlayChannelTest extends TestCase
     public function testTradeTwoSlotsMapToTheAuthoritativeTradeInventory(): void
     {
         [$channel, $clientEncryptor, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $request = new ItemStackRequest(-401, [new TakeItemStackRequestAction(
             1,
@@ -3295,10 +3129,9 @@ final class BedrockPlayChannelTest extends TestCase
             new ItemStackRequestSlot(new FullContainerName(FullContainerName::HOTBAR), 0, 0),
         )]);
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([$request])])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new ItemStackRequestPacket([$request])])),
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -3313,10 +3146,9 @@ final class BedrockPlayChannelTest extends TestCase
     public function testStonecutterSelectionUsesTheAuthoritativeWorkstationPath(): void
     {
         [$channel, $clientEncryptor, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         self::assertTrue($channel->queuePacket(ContainerOpenPacket::blockInventory(
             8,
@@ -3325,12 +3157,11 @@ final class BedrockPlayChannelTest extends TestCase
         )));
         $channel->drainOutgoing();
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new ItemStackRequestPacket([
                 new ItemStackRequest(-401, [new CraftRecipeItemStackRequestAction(4_203, 1)]),
             ])])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -3346,13 +3177,39 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertFalse($channel->isClosed());
     }
 
+    public function testCurrentRetailAdvisoriesDoNotMutateAuthoritativeState(): void
+    {
+        [$channel, $clientEncryptor, , $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
+        )));
+        self::assertTrue($channel->queuePacket(ContainerOpenPacket::blockInventory(
+            8,
+            ContainerType::Stonecutter,
+            new BlockPosition(1, 64, 1),
+        )));
+        $channel->drainOutgoing();
+
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([
+                new ServerboundStonecutterSetRecipePacket(8, 3),
+                new ServerboundCursorItemDragPacket(CursorItemDragState::Start),
+                new ServerboundMatchmakingCancelPacket(),
+            ])),
+            Reliability::RELIABLE,
+        )));
+
+        self::assertSame([], $channel->drainCommands());
+        self::assertFalse($channel->isClosed());
+    }
+
     public function testStorageStackRequestRetainsItsContainerNameAndDynamicIdentity(): void
     {
         [$channel, $clientEncryptor, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $request = new ItemStackRequest(-18, [new TakeItemStackRequestAction(
             1,
@@ -3360,10 +3217,9 @@ final class BedrockPlayChannelTest extends TestCase
             new ItemStackRequestSlot(new FullContainerName(FullContainerName::HOTBAR), 0, 0),
         )]);
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([$request])])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new ItemStackRequestPacket([$request])])),
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -3380,10 +3236,9 @@ final class BedrockPlayChannelTest extends TestCase
     public function testHorseEquipmentStackRequestMapsToTheLeadingCompositeSlot(): void
     {
         [$channel, $clientEncryptor, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $request = new ItemStackRequest(-19, [new TakeItemStackRequestAction(
             1,
@@ -3391,10 +3246,9 @@ final class BedrockPlayChannelTest extends TestCase
             new ItemStackRequestSlot(new FullContainerName(FullContainerName::HOTBAR), 0, 0),
         )]);
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([$request])])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new ItemStackRequestPacket([$request])])),
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -3411,10 +3265,9 @@ final class BedrockPlayChannelTest extends TestCase
     public function testLegacyHorseWindowTransferRetainsTheCompositeSlotIndex(): void
     {
         [$channel, $clientEncryptor, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $saddle = new InventoryItemStack(81, 1, 0, 23, 0, '');
         $transaction = new InventoryTransactionPacket(0, [], [
@@ -3432,10 +3285,9 @@ final class BedrockPlayChannelTest extends TestCase
             ),
         ], new BasicInventoryTransaction(InventoryTransactionType::Normal));
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([$transaction])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([$transaction])),
+            Reliability::RELIABLE,
         )));
         $commands = $channel->drainCommands();
         self::assertCount(1, $commands);
@@ -3451,21 +3303,19 @@ final class BedrockPlayChannelTest extends TestCase
     public function testEmbeddedInventoryRequestBecomesACommandAfterItsMovementFrame(): void
     {
         [$channel, $clientEncryptor, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $ordinary = $this->movementPacket(UnsignedLong::fromInt(1))->encode();
         $stackBase = substr($ordinary, 0, 32) . "\1\x48" . substr($ordinary, 33);
         $withStackRequest = substr($stackBase, 0, 59) . "\1\x0a\0\0\xff\xff\xff\xff" . substr($stackBase, 60);
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encodeFrames([new PacketFrame(
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encodeFrames([new PacketFrame(
                 new PacketHeader(PacketIds::PLAYER_AUTH_INPUT),
                 $withStackRequest,
             )])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
         self::assertSame([], $channel->drainOutgoing());
         $commands = $channel->drainCommands();
@@ -3478,29 +3328,26 @@ final class BedrockPlayChannelTest extends TestCase
     public function testEmbeddedInventoryRequestIsNotDiscardedWhenItSharesAMovementTick(): void
     {
         [$channel, $clientEncryptor, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $ordinary = $this->movementPacket(UnsignedLong::fromInt(1));
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([$ordinary])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([$ordinary])),
+            Reliability::RELIABLE,
         )));
         self::assertCount(1, $channel->drainCommands());
 
         $encoded = $ordinary->encode();
         $stackBase = substr($encoded, 0, 32) . "\1\x48" . substr($encoded, 33);
         $withStackRequest = substr($stackBase, 0, 59) . "\1\x0a\0\0\xff\xff\xff\xff" . substr($stackBase, 60);
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encodeFrames([new PacketFrame(
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encodeFrames([new PacketFrame(
                 new PacketHeader(PacketIds::PLAYER_AUTH_INPUT),
                 $withStackRequest,
             )])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -3512,20 +3359,18 @@ final class BedrockPlayChannelTest extends TestCase
     public function testTypedTakeRequestMapsOnlyBoundedMainAndCursorIntent(): void
     {
         [$channel, $clientEncryptor, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $request = new ItemStackRequest(-9, [new TakeItemStackRequestAction(
             32,
             new ItemStackRequestSlot(new FullContainerName(FullContainerName::HOTBAR), 0, 1),
             new ItemStackRequestSlot(new FullContainerName(FullContainerName::CURSOR), 0, 0),
         )]);
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([$request])])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new ItemStackRequestPacket([$request])])),
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -3547,20 +3392,18 @@ final class BedrockPlayChannelTest extends TestCase
     public function testCreativeTrashRequestBecomesAnAuthoritativeDestroyAction(): void
     {
         [$channel, $clientEncryptor, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $request = new ItemStackRequest(-21, [new DestroyItemStackRequestAction(
             12,
             new ItemStackRequestSlot(new FullContainerName(FullContainerName::HOTBAR), 3, 44),
         )]);
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([$request])])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new ItemStackRequestPacket([$request])])),
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -3578,10 +3421,9 @@ final class BedrockPlayChannelTest extends TestCase
     public function testOffhandRequestUsesInternalSlotZeroAndPreservesTheClientResponseSlot(): void
     {
         [$channel, $clientEncryptor, , $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $request = new ItemStackRequest(-11, [new TakeItemStackRequestAction(
             1,
@@ -3589,10 +3431,9 @@ final class BedrockPlayChannelTest extends TestCase
             new ItemStackRequestSlot(new FullContainerName(FullContainerName::OFFHAND), 40, 0),
         )]);
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([$request])])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new ItemStackRequestPacket([$request])])),
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -3610,10 +3451,9 @@ final class BedrockPlayChannelTest extends TestCase
     {
         foreach ([28, 32] as $wireSlot) {
             [$channel, $clientEncryptor, , $entityId] = $this->channel();
-            self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-                $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-                Reliability::ReliableOrdered,
-                0,
+            self::assertTrue($channel->accept(new InboundPayload(
+                $clientEncryptor->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+                Reliability::RELIABLE,
             )));
             $request = new ItemStackRequest(-12, [
                 new CraftRecipeItemStackRequestAction(77, 1),
@@ -3636,10 +3476,9 @@ final class BedrockPlayChannelTest extends TestCase
                 ),
             ]);
 
-            self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-                $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([$request])])),
-                Reliability::ReliableOrdered,
-                0,
+            self::assertTrue($channel->accept(new InboundPayload(
+                $clientEncryptor->encryptBatch($this->encode([new ItemStackRequestPacket([$request])])),
+                Reliability::RELIABLE,
             )));
             $commands = $channel->drainCommands();
             self::assertCount(1, $commands);
@@ -3665,10 +3504,9 @@ final class BedrockPlayChannelTest extends TestCase
             new BlockNetworkTranslator($internal, $data->blockStateRegistry()),
         );
         [$channel, $clientEncryptor, , $entityId] = $this->channel(inventoryProjector: $projector);
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $request = new ItemStackRequest(-13, [
             new CraftCreativeItemStackRequestAction(1, 1),
@@ -3680,10 +3518,9 @@ final class BedrockPlayChannelTest extends TestCase
             ),
         ]);
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([$request])])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new ItemStackRequestPacket([$request])])),
+            Reliability::RELIABLE,
         )));
         $commands = $channel->drainCommands();
         self::assertCount(1, $commands);
@@ -3706,10 +3543,9 @@ final class BedrockPlayChannelTest extends TestCase
             new BlockNetworkTranslator($internal, $data->blockStateRegistry()),
         );
         [$channel, $clientEncryptor, , $entityId] = $this->channel(inventoryProjector: $projector);
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $request = new ItemStackRequest(-13, [
             new CraftCreativeItemStackRequestAction(1, 1),
@@ -3721,10 +3557,9 @@ final class BedrockPlayChannelTest extends TestCase
             ),
         ]);
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([$request])])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new ItemStackRequestPacket([$request])])),
+            Reliability::RELIABLE,
         )));
         $commands = $channel->drainCommands();
         self::assertCount(1, $commands);
@@ -3742,16 +3577,14 @@ final class BedrockPlayChannelTest extends TestCase
             $data,
             new BlockNetworkTranslator($internal, $data->blockStateRegistry()),
         ));
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $request = new ItemStackRequest(-14, [new CraftCreativeItemStackRequestAction(0xffffffff, 1)]);
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $clientEncryptor->encryptEnvelope($this->encode([new ItemStackRequestPacket([$request])])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $clientEncryptor->encryptBatch($this->encode([new ItemStackRequestPacket([$request])])),
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -3765,20 +3598,18 @@ final class BedrockPlayChannelTest extends TestCase
     {
         foreach ([self::BLOCK_ACTION_INPUT, self::ITEM_USE_INPUT] as $hex) {
             [$channel, $clientEncryptor, , $entityId] = $this->channel();
-            self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-                $clientEncryptor->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-                Reliability::ReliableOrdered,
-                0,
+            self::assertTrue($channel->accept(new InboundPayload(
+                $clientEncryptor->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+                Reliability::RELIABLE,
             )));
             $payload = hex2bin($hex);
             self::assertIsString($payload);
-            self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-                $clientEncryptor->encryptEnvelope($this->encodeFrames([new PacketFrame(
+            self::assertTrue($channel->accept(new InboundPayload(
+                $clientEncryptor->encryptBatch($this->encodeFrames([new PacketFrame(
                     new PacketHeader(PacketIds::PLAYER_AUTH_INPUT),
                     $payload,
                 )])),
-                Reliability::ReliableOrdered,
-                0,
+                Reliability::RELIABLE,
             )));
             self::assertFalse($channel->isClosed());
             $commands = $channel->drainCommands();
@@ -3808,34 +3639,27 @@ final class BedrockPlayChannelTest extends TestCase
             spawnRadius: 1,
             fixedFlatRuntimeIds: $palette->toNetworkRuntimeIds($translator),
         );
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new RequestChunkRadiusPacket(1, 1)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new RequestChunkRadiusPacket(1, 1)])),
+            Reliability::RELIABLE,
         )));
-        foreach ($channel->drainOutgoing() as $outgoing) {
-            $server->decryptEnvelope($outgoing->payload);
-        }
+        $channel->drainOutgoing();
         for ($tick = 0; $tick < 12; ++$tick) {
             self::assertTrue($channel->worldTick());
-            foreach ($channel->drainOutgoing() as $outgoing) {
-                $server->decryptEnvelope($outgoing->payload);
-            }
+            $channel->drainOutgoing();
         }
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new BlockPickRequestPacket(
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new BlockPickRequestPacket(
                 new BlockPosition(1, 63, -2),
                 false,
                 255,
             )])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
         $pickCommands = $channel->drainCommands();
         self::assertCount(1, $pickCommands);
@@ -3846,14 +3670,13 @@ final class BedrockPlayChannelTest extends TestCase
             $pickCommands[0]->position->z,
         ]);
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new EntityPickRequestPacket(
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new EntityPickRequestPacket(
                 1234,
                 0,
                 false,
             )])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
         $entityPickCommands = $channel->drainCommands();
         self::assertCount(1, $entityPickCommands);
@@ -3867,13 +3690,12 @@ final class BedrockPlayChannelTest extends TestCase
         $sendLiteral = function (string $hex) use ($channel, $client): void {
             $payload = hex2bin($hex);
             self::assertIsString($payload);
-            self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-                $client->encryptEnvelope($this->encodeFrames([new PacketFrame(
+            self::assertTrue($channel->accept(new InboundPayload(
+                $client->encryptBatch($this->encodeFrames([new PacketFrame(
                     new PacketHeader(PacketIds::PLAYER_AUTH_INPUT),
                     $payload,
                 )])),
-                Reliability::ReliableOrdered,
-                0,
+                Reliability::RELIABLE,
             )));
         };
 
@@ -3904,10 +3726,9 @@ final class BedrockPlayChannelTest extends TestCase
             $packet = $actionType === PlayerActionType::PredictDestroyBlock
                 ? $this->mineBlockActionPacket($target, $tick)
                 : $this->blockActionPacket($target, $tick);
-            self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-                $client->encryptEnvelope($this->encode([$packet])),
-                Reliability::ReliableOrdered,
-                0,
+            self::assertTrue($channel->accept(new InboundPayload(
+                $client->encryptBatch($this->encode([$packet])),
+                Reliability::RELIABLE,
             )));
             self::assertSame([], $channel->drainOutgoing());
             $commands = $channel->drainCommands();
@@ -3931,16 +3752,15 @@ final class BedrockPlayChannelTest extends TestCase
             [PlayerActionType::StartItemUseOn, BrushAction::START],
             [PlayerActionType::StopItemUseOn, BrushAction::STOP],
         ] as [$wireAction, $brushAction]) {
-            self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-                $client->encryptEnvelope($this->encode([new PlayerActionPacket(
+            self::assertTrue($channel->accept(new InboundPayload(
+                $client->encryptBatch($this->encode([new PlayerActionPacket(
                     $entityId,
                     $wireAction,
                     new BlockPosition(1, 63, -2),
                     new BlockPosition(1, 63, -2),
                     1,
                 )])),
-                Reliability::ReliableOrdered,
-                0,
+                Reliability::RELIABLE,
             )));
             $commands = $channel->drainCommands();
             self::assertCount(1, $commands);
@@ -3957,10 +3777,9 @@ final class BedrockPlayChannelTest extends TestCase
             }
         }
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new AnimatePacket(AnimatePacket::SWING, $entityId, 0.0, 'mine')])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new AnimatePacket(AnimatePacket::SWING, $entityId, 0.0, 'mine')])),
+            Reliability::RELIABLE,
         )));
         self::assertSame([], $channel->drainOutgoing());
         self::assertSame([], $channel->drainCommands(), 'A swing must not create block-break state.');
@@ -3969,10 +3788,9 @@ final class BedrockPlayChannelTest extends TestCase
             new PlayerBlockAction(PlayerActionType::StartDestroyBlock, new BlockPosition(100, 63, 100), 1),
             new PlayerBlockAction(PlayerActionType::StartDestroyBlock, new BlockPosition(1, 63, -2), 6),
         ] as $invalidAction) {
-            self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-                $client->encryptEnvelope($this->encode([$this->blockActionPacket($invalidAction, 11 + $invalidAction->face)])),
-                Reliability::ReliableOrdered,
-                0,
+            self::assertTrue($channel->accept(new InboundPayload(
+                $client->encryptBatch($this->encode([$this->blockActionPacket($invalidAction, 11 + $invalidAction->face)])),
+                Reliability::RELIABLE,
             )));
             self::assertSame([], $channel->drainOutgoing());
             $commands = $channel->drainCommands();
@@ -4005,19 +3823,14 @@ final class BedrockPlayChannelTest extends TestCase
             fixedFlatRuntimeIds: $palette->toNetworkRuntimeIds($translator),
             inventoryProjector: BedrockInventoryPacketProjector::fromData($data, $translator),
         );
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new RequestChunkRadiusPacket(1, 1)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new RequestChunkRadiusPacket(1, 1)])),
+            Reliability::RELIABLE,
         )));
-        foreach ($channel->drainOutgoing() as $outgoing) {
-            $server->decryptEnvelope($outgoing->payload);
-        }
+        $channel->drainOutgoing();
         for ($tick = 0; $tick < 12; ++$tick) {
             self::assertTrue($channel->worldTick());
-            foreach ($channel->drainOutgoing() as $outgoing) {
-                $server->decryptEnvelope($outgoing->payload);
-            }
+            $channel->drainOutgoing();
         }
         $heldItem = new InventoryItemStack(
             $data->requiredItems()['minecraft:grass_block']['runtime_id'],
@@ -4027,17 +3840,15 @@ final class BedrockPlayChannelTest extends TestCase
             $translator->toNetwork($palette->grassBlock)->signed(),
             '',
         );
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new MobEquipmentPacket($entityId, 0, 0, 0, $heldItem)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new MobEquipmentPacket($entityId, 0, 0, 0, $heldItem)])),
+            Reliability::RELIABLE,
         )));
         $deferred = $channel->drainCommands();
         self::assertCount(0, $deferred);
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $selection = $channel->drainCommands();
         self::assertCount(1, $selection);
@@ -4061,10 +3872,9 @@ final class BedrockPlayChannelTest extends TestCase
             ItemUsePredictedResult::Success,
             ItemUseClientCooldownState::Off,
         ));
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([$invalidTarget])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([$invalidTarget])),
+            Reliability::RELIABLE,
         )));
         $invalidCommands = $channel->drainCommands();
         self::assertCount(1, $invalidCommands);
@@ -4086,10 +3896,9 @@ final class BedrockPlayChannelTest extends TestCase
             ItemUsePredictedResult::Success,
             ItemUseClientCooldownState::Off,
         ));
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([$packet])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([$packet])),
+            Reliability::RELIABLE,
         )));
 
         self::assertSame([], $channel->drainOutgoing());
@@ -4147,24 +3956,18 @@ final class BedrockPlayChannelTest extends TestCase
             spawnRadius: 1,
             fixedFlatRuntimeIds: $palette->toNetworkRuntimeIds($translator),
         );
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new RequestChunkRadiusPacket(1, 1)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new RequestChunkRadiusPacket(1, 1)])),
+            Reliability::RELIABLE,
         )));
-        foreach ($channel->drainOutgoing() as $outgoing) {
-            $server->decryptEnvelope($outgoing->payload);
-        }
+        $channel->drainOutgoing();
         for ($tick = 0; $tick < 12; ++$tick) {
             self::assertTrue($channel->worldTick());
-            foreach ($channel->drainOutgoing() as $outgoing) {
-                $server->decryptEnvelope($outgoing->payload);
-            }
+            $channel->drainOutgoing();
         }
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $position = new BlockPosition(1, 64, 0);
         $signData = new SignBlockActorData(
@@ -4173,10 +3976,9 @@ final class BedrockPlayChannelTest extends TestCase
             new SignTextData('back', -16777216, false),
         );
 
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new BlockActorDataPacket($position, $signData->encode())])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new BlockActorDataPacket($position, $signData->encode())])),
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -4208,37 +4010,30 @@ final class BedrockPlayChannelTest extends TestCase
             fixedFlatRuntimeIds: $palette->toNetworkRuntimeIds($translator),
             inventoryProjector: BedrockInventoryPacketProjector::fromData($data, $translator),
         );
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new RequestChunkRadiusPacket(1, 1)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new RequestChunkRadiusPacket(1, 1)])),
+            Reliability::RELIABLE,
         )));
-        foreach ($channel->drainOutgoing() as $outgoing) {
-            $server->decryptEnvelope($outgoing->payload);
-        }
+        $channel->drainOutgoing();
         for ($tick = 0; $tick < 12; ++$tick) {
             self::assertTrue($channel->worldTick());
-            foreach ($channel->drainOutgoing() as $outgoing) {
-                $server->decryptEnvelope($outgoing->payload);
-            }
+            $channel->drainOutgoing();
         }
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
 
         $placementHex = str_replace('010000000201027e03', '010000000001027e03', self::ITEM_USE_INPUT, $replacements);
         self::assertSame(1, $replacements);
         $payload = hex2bin($placementHex);
         self::assertIsString($payload);
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encodeFrames([new PacketFrame(
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encodeFrames([new PacketFrame(
                 new PacketHeader(PacketIds::PLAYER_AUTH_INPUT),
                 $payload,
             )])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
         $commands = $channel->drainCommands();
         self::assertCount(3, $commands);
@@ -4348,7 +4143,7 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertSame(0, $workers->submissionCount);
         $outgoing = $channel->drainOutgoing();
         self::assertCount(1, $outgoing);
-        self::assertEquals($packet, $this->decode($server->decryptEnvelope($outgoing[0]->payload)));
+        self::assertEquals($packet, $this->decode($server->decryptBatch($outgoing[0]->payload)));
         self::assertFalse($channel->isClosed());
     }
 
@@ -4381,10 +4176,9 @@ final class BedrockPlayChannelTest extends TestCase
     public function testInitializedDeathConversationAcceptsBothRetailRespawnInputs(): void
     {
         [$channel, $client, $server, $entityId] = $this->channel();
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
-            Reliability::ReliableOrdered,
-            0,
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
         )));
         $channel->drainOutgoing();
         $searching = new RespawnPacket(0.0, 64.0, 0.0, RespawnState::ServerSearching, $entityId);
@@ -4393,10 +4187,10 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertTrue($channel->queuePacket($suppressedScreen));
         $deathOutput = $channel->drainOutgoing();
         self::assertCount(2, $deathOutput);
-        self::assertEquals($searching, $this->decode($server->decryptEnvelope($deathOutput[0]->payload)));
-        self::assertEquals($suppressedScreen, $this->decode($server->decryptEnvelope($deathOutput[1]->payload)));
-        self::assertTrue($channel->accept(new ConnectedPayloadEvent(
-            $client->encryptEnvelope($this->encode([
+        self::assertEquals($searching, $this->decode($server->decryptBatch($deathOutput[0]->payload)));
+        self::assertEquals($suppressedScreen, $this->decode($server->decryptBatch($deathOutput[1]->payload)));
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([
                 new RespawnPacket(100.0, -20.0, 100.0, RespawnState::ClientReady, UnsignedLong::fromInt(0)),
                 new PlayerActionPacket(
                     $entityId,
@@ -4406,8 +4200,7 @@ final class BedrockPlayChannelTest extends TestCase
                     0,
                 ),
             ])),
-            Reliability::ReliableOrdered,
-            0,
+            Reliability::RELIABLE,
         )));
 
         $commands = $channel->drainCommands();
@@ -4418,7 +4211,7 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertTrue($channel->queuePacket($response));
         $outgoing = $channel->drainOutgoing();
         self::assertCount(1, $outgoing);
-        $frame = $this->decodeFrame($server->decryptEnvelope($outgoing[0]->payload));
+        $frame = $this->decodeFrame($server->decryptBatch($outgoing[0]->payload));
         self::assertSame(PacketIds::RESPAWN, $frame->header->packetId);
         self::assertSame($response->encode(), BedrockPacketCodec::decode(
             $frame->header->packetId,
@@ -4430,7 +4223,7 @@ final class BedrockPlayChannelTest extends TestCase
     /**
      * @param list<Packet> $initialization
      * @param null|array{air: int, bedrock: int, dirt: int, grass_block: int} $fixedFlatRuntimeIds
-     * @return array{BedrockPlayChannel, BedrockEncryptor, BedrockDecryptor, UnsignedLong}
+     * @return array{BedrockPlayChannel, PlayChannelPlaintextBoundary, PlayChannelPlaintextBoundary, UnsignedLong}
      */
     private function channel(
         array $initialization = [],
@@ -4453,14 +4246,11 @@ final class BedrockPlayChannelTest extends TestCase
         bool $traceUnsupportedPackets = true,
         int $unsupportedPacketLogLimit = 5,
     ): array {
-        $key = str_repeat("\x42", 32);
         $keys = (new OpenSslEphemeralKeyFactory(dirname(__DIR__) . '/Fixtures/openssl.cnf'))->generate();
         $data = new VerifiedClientData(1, 1, "\0\0\0\0", 0, 0, '', '{}', []);
         $ready = new LoginChannelReady(
             new AuthenticatedLogin('RealName', '00000000-0000-0000-0000-000000000001', 'real-xuid', $keys->publicKey, $data),
-            new BedrockEncryptor($key),
-            new BedrockDecryptor($key),
-            2193,
+            2225,
         );
         $entityId = UnsignedLong::fromInt(7);
 
@@ -4491,8 +4281,8 @@ final class BedrockPlayChannelTest extends TestCase
                 traceUnsupportedPackets: $traceUnsupportedPackets,
                 unsupportedPacketLogLimit: $unsupportedPacketLogLimit,
             ),
-            new BedrockEncryptor($key),
-            new BedrockDecryptor($key),
+            new PlayChannelPlaintextBoundary(),
+            new PlayChannelPlaintextBoundary(),
             $entityId,
         ];
     }
@@ -4856,5 +4646,18 @@ final class ImmediatePreparationWorkerDispatcher implements WorkerDispatcher
     public function shutdown(): void
     {
         $this->pending = [];
+    }
+}
+
+final readonly class PlayChannelPlaintextBoundary
+{
+    public function encryptBatch(string $payload): string
+    {
+        return $payload;
+    }
+
+    public function decryptBatch(string $payload): string
+    {
+        return $payload;
     }
 }

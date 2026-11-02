@@ -74,7 +74,7 @@ Composer 2 and PHP 8.4 are needed only when developing Bedriox from source. Clon
 workspace/
 |-- Bedriox/
 |-- Protocol/
-|-- RakNet/
+|-- NetherNet/
 `-- Data/
 ```
 
@@ -119,7 +119,7 @@ Search existing reports before opening a duplicate. Security vulnerabilities mus
 ## Project family
 
 - [Bedriox](https://github.com/Bedriox/Bedriox) — executable Minecraft: Bedrock Edition server
-- [RakNet](https://github.com/Bedriox/RakNet) — UDP and RakNet transport
+- [NetherNet](https://github.com/Bedriox/NetherNet) — WebRTC and NetherNet transport
 - [Protocol](https://github.com/Bedriox/Protocol) — Bedrock packet codecs and protocol behavior
 - [Data](https://github.com/Bedriox/Data) — versioned Bedrock registries and generated data
 - [Runtime](https://github.com/Bedriox/Runtime) — qualified PHP binaries and native dependencies

@@ -34,7 +34,7 @@ final class CiWorkflowValidator
             $errors[] = 'CI must expose one component-pins step.';
         }
 
-        foreach (['protocol', 'raknet', 'data'] as $component) {
+        foreach (['protocol', 'nethernet', 'data'] as $component) {
             $reference = 'ref: ${{ steps.component-pins.outputs.' . $component . '_commit }}';
             if (substr_count($workflow, $reference) !== 1) {
                 $errors[] = "CI must check out {$component} from the component-pins output.";

@@ -1,6 +1,6 @@
 # Codebase map
 
-This repository is the executable server and composition root. Code belongs here only when it owns application startup, policy, sessions, authoritative state, worlds, commands, or observability. RakNet wire mechanics belong in RakNet, Bedrock packet codecs in Protocol, and immutable versioned registries in Data.
+This repository is the executable server and composition root. Code belongs here only when it owns application startup, policy, sessions, authoritative state, worlds, commands, or observability. NetherNet signaling, ICE, SCTP, and data-channel mechanics belong in NetherNet, Bedrock packet codecs in Protocol, and immutable versioned registries in Data.
 
 ## Entry and composition
 
@@ -38,7 +38,7 @@ Composition code may connect component APIs but must not reproduce their interna
 
 `src/Simulation/` owns deterministic tick processing. Inputs enter as immutable values under `Simulation/Command/`; outputs leave under `Simulation/Event/`. `WorldSimulation` exclusively owns the player registry and is therefore the only layer allowed to mutate live players, while `FixedRateWorldLoop` schedules bounded tick work with monotonic time. `PlayerSnapshot` remains the immutable boundary consumed by runtime packet projection.
 
-Protocol positions and flags are translated before commands reach this layer. Simulation code must not depend on packet IDs, encrypted batches, RakNet sessions, or network runtime block IDs.
+Protocol positions and flags are translated before commands reach this layer. Simulation code must not depend on packet IDs, encrypted batches, NetherNet sessions, or network runtime block IDs.
 
 ## World and blocks
 
@@ -70,7 +70,7 @@ Runtime serialization and view scheduling live under `src/Runtime/` because they
 
 ## Transport adapter
 
-`src/Transport/ConnectedTransport.php` is the application-facing transport contract. `DiscoveryServerTransport` adapts RakNet without exposing application code to socket or reliability internals. `RakNetHandshakeDiagnosticReporter` maps the component's bounded pre-ready metadata into protocol-trace events and never receives packet bodies or authentication data. Transport callbacks produce bounded events; they never mutate simulation state.
+`src/Transport/ConnectedTransport.php` is the application-facing transport contract. `ProcessNetherNetServerTransport` owns an authenticated local IPC connection to a child process that runs signaling, ICE, SCTP, and data channels without exposing those mechanics to application code. Transport callbacks produce bounded session, payload, bandwidth, and ping events; they never mutate simulation state.
 
 ## Plugins and commands
 
