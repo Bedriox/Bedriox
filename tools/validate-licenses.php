@@ -60,8 +60,8 @@ $approvedProduction = [
         'license' => 'GPL-3.0-only',
     ],
     'symfony/deprecation-contracts' => [
-        'version' => 'v3.7.1',
-        'reference' => 'f3202fa1b5097b0af062dc978b32ecf63404e31d',
+        'version' => 'v3.8.1',
+        'reference' => 'feb1edf4e546af3b85c5caebe8359a20db230ca3',
         'license' => 'MIT',
     ],
     'symfony/polyfill-ctype' => [
@@ -70,8 +70,8 @@ $approvedProduction = [
         'license' => 'MIT',
     ],
     'symfony/yaml' => [
-        'version' => 'v7.4.21',
-        'reference' => '044907929c7999814378be22da34722c7a86bad4',
+        'version' => 'v7.4.23',
+        'reference' => '1e601207ffe627a2e621faa9d661f1d32dcf1cec',
         'license' => 'MIT',
     ],
 ];
