@@ -190,6 +190,18 @@ updates.notify-operators=true
 
 # Plugins and diagnostics
 plugins.maximum=64
+# Enables the explicit /timings paste command. Reports are never uploaded automatically.
+# Uploads contain bounded performance counters and optional plugin names, but no player identities,
+# chat, commands, world coordinates, inventories, packets, credentials, or complete configuration.
+# Reports are sent over HTTPS to https://timings.bedriox.com, are publicly viewable by random report ID,
+# and remain available until deleted. The service lists recent reports without server or player identity.
+timings.upload-enabled=true
+# Maximum recording duration accepted by /timings on (or /timings start), in seconds (1 through 1800).
+timings.maximum-duration-seconds=1800
+# Local compressed reports are retained in timings/ for this many days (1 through 90).
+timings.local-retention-days=14
+# Include plugin names and versions so plugin-owned workload can be attributed. Disable for anonymous labels.
+timings.include-plugin-identities=true
 logging.level=INFO
 logging.console=true
 logging.console-colors=auto

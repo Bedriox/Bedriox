@@ -68,12 +68,14 @@ use Bedriox\Server\Command\Default\SummonCommand;
 use Bedriox\Server\Command\Default\TeleportCommand;
 use Bedriox\Server\Command\Default\TellCommand;
 use Bedriox\Server\Command\Default\TimeCommand;
+use Bedriox\Server\Command\Default\TimingsCommand;
 use Bedriox\Server\Command\Default\TitleCommand;
 use Bedriox\Server\Command\Default\VersionCommand;
 use Bedriox\Server\Command\Default\WeatherCommand;
 use Bedriox\Server\Command\Default\WhitelistCommand;
 use Bedriox\Server\Observability\Memory\GarbageCollectionReport;
 use Bedriox\Server\Observability\PerformanceSnapshot;
+use Bedriox\Server\Observability\Profiling\PerformanceProfiler;
 use Bedriox\Server\Permission\PermissionStore;
 use Bedriox\Server\Plugin\Command\CommandRegistry;
 use Bedriox\Server\World\ChunkUnloadResult;
@@ -150,6 +152,7 @@ final readonly class BuiltinCommandRegistrar
         private ?Closure $locateStructure = null,
         private ?Closure $locateBiome = null,
         private ?ScoreboardManager $scoreboards = null,
+        private ?PerformanceProfiler $timings = null,
     ) {}
 
     public function register(): CommandSoftEnum
@@ -275,6 +278,9 @@ final readonly class BuiltinCommandRegistrar
         }
         if ($this->scoreboards !== null) {
             $commands[] = new ScoreboardCommand($this->scoreboards, $players);
+        }
+        if ($this->timings !== null) {
+            $commands[] = new TimingsCommand($this->timings);
         }
 
         return $commands;

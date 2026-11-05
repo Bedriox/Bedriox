@@ -2894,6 +2894,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 : 0,
         ]);
         $worldStages = $this->world->lastTickStageMicroseconds();
+        $this->performance->sampleProfile($snapshot, $worldStages);
         $this->diagnostics->record('runtime.world_stage_summary.protocol_trace', array_intersect_key(
             $worldStages,
             array_fill_keys([

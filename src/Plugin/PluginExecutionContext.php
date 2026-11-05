@@ -21,6 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Plugin;
 
 use Bedriox\Server\Observability\CrashContextPublisher;
+use Bedriox\Server\Observability\Profiling\PerformanceProfiler;
 use LogicException;
 use Throwable;
 
@@ -32,6 +33,7 @@ final class PluginExecutionContext
     public function __construct(
         private readonly int $maxDepth = 32,
         private readonly ?CrashContextPublisher $crashContext = null,
+        private readonly ?PerformanceProfiler $profiler = null,
     ) {
         if ($maxDepth < 1 || $maxDepth > 256) {
             throw new LogicException('Plugin execution context depth must be between 1 and 256.');
@@ -49,8 +51,20 @@ final class PluginExecutionContext
 
     public function leave(): void
     {
-        if (array_pop($this->stack) === null) {
+        $frame = array_pop($this->stack);
+        if ($frame === null) {
             throw new LogicException('Plugin execution context stack is empty.');
+        }
+        $endedAt = hrtime(true);
+        if ($frame->startedAtNanoseconds > 0 && is_int($endedAt) && $endedAt >= $frame->startedAtNanoseconds) {
+            $name = $frame->event ?? $frame->listener ?? $frame->operation;
+            $this->profiler?->record(
+                $frame->event === null ? 'plugin' : 'event',
+                $name,
+                $frame->plugin,
+                $endedAt - $frame->startedAtNanoseconds,
+                $endedAt - $frame->startedAtNanoseconds,
+            );
         }
         $this->publish();
     }

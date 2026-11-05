@@ -247,7 +247,29 @@ final class Bedriox
             $logger->info(sprintf('Loading world "%s" using %s generator', $config->levelName, $config->levelGenerator));
             $logger->info('Loading server data and world metadata');
             $composition = new PluginComposition();
-            $performance = new PerformanceMonitor($config->ticksPerSecond);
+            $timingsEndpoint = getenv('BEDRIOX_TIMINGS_ENDPOINT');
+            if (!is_string($timingsEndpoint) || $timingsEndpoint === '') {
+                $timingsEndpoint = 'https://timings.bedriox.com/api/v1/reports';
+            }
+            $timings = new \Bedriox\Server\Observability\Profiling\PerformanceProfiler(
+                $workingDirectory . DIRECTORY_SEPARATOR . 'timings',
+                $coreWorkers,
+                $config->timingsUploadEnabled,
+                [
+                    'view_distance' => $config->viewDistance,
+                    'simulation_distance' => $config->viewDistance,
+                    'memory_limit' => $config->memoryLimitBytes === 0 ? 'unlimited' : (string) $config->memoryLimitBytes,
+                    'memory_limit_bytes' => $config->memoryLimitBytes,
+                    'network_profile' => $config->networkSecurityProfile->value,
+                    'core_workers' => $config->workerCoreCount,
+                    'plugin_workers' => $config->pluginWorkerCount,
+                ],
+                $timingsEndpoint,
+                $config->timingsMaximumDurationSeconds,
+                $config->timingsIncludePluginIdentities,
+                $config->timingsLocalRetentionDays,
+            );
+            $performance = new PerformanceMonitor($config->ticksPerSecond, profiler: $timings);
             $stop = false;
             $permissionStore = new PermissionStore($workingDirectory . DIRECTORY_SEPARATOR . 'permissions.json');
             $data = \Bedriox\Data\BedrockDataSet::bundled();
@@ -433,6 +455,7 @@ final class Bedriox
                 },
                 gatewaySend: static fn(string $channel, string $payload): int =>
                     $composition->server?->runtime->sendGatewayPluginMessage($channel, $payload) ?? 0,
+                profiler: $timings,
             );
             $composition->host = $pluginHost;
             $definitionBridge = new PluginEntityDefinitionBridge($entityDefinitions, $pluginHost->entities());
@@ -874,6 +897,7 @@ final class Bedriox
                 latestUpdate: static fn(): ?\Bedriox\Api\Update\UpdateInfo =>
                     $composition->updates?->latestAvailable(),
                 scoreboards: $pluginHost->scoreboards('Bedriox'),
+                timings: $timings,
             ))->register();
             $startupCompositionStartedAt = hrtime(true);
             $server = (new ServerBootstrap(

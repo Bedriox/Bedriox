@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Worker;
 
+use Bedriox\Server\Observability\Profiling\TimingsUploadTaskCodec;
 use Bedriox\Server\Plugin\Scheduler\Worker\PluginAsyncTaskHandler;
 use Bedriox\Server\Update\UpdateTaskCodec;
 use Bedriox\Server\Worker\Chunk\ChunkPreparationRequestCodec;
@@ -35,6 +36,7 @@ use Bedriox\Server\Worker\Task\PrepareChunkTask;
 use Bedriox\Server\Worker\Task\PrepareWorldTask;
 use Bedriox\Server\Worker\Task\SelfTestTask;
 use Bedriox\Server\Worker\Task\SpawnWorldStorageOwnerTask;
+use Bedriox\Server\Worker\Task\UploadTimingsReportTask;
 use Bedriox\Server\Worker\World\WorldPreparationCodec;
 
 final class CoreWorkerTaskCatalog
@@ -49,6 +51,7 @@ final class CoreWorkerTaskCatalog
     public const PREPARE_WORLD = 8;
     public const CHECK_FOR_UPDATES = 9;
     public const LOCATE_GENERATED_FEATURE = 10;
+    public const UPLOAD_TIMINGS_REPORT = 11;
 
     public static function create(): WorkerTaskRegistry
     {
@@ -164,6 +167,17 @@ final class CoreWorkerTaskCatalog
             30_000,
             cancellable: true,
             retryWhenNotStarted: true,
+        ));
+        $registry->register(new WorkerTaskDefinition(
+            self::UPLOAD_TIMINGS_REPORT,
+            1,
+            'timings-upload',
+            WorkerLane::CONTROL,
+            UploadTimingsReportTask::class,
+            TimingsUploadTaskCodec::MAXIMUM_REQUEST_BYTES,
+            TimingsUploadTaskCodec::MAXIMUM_RESPONSE_BYTES,
+            15_000,
+            cancellable: false,
         ));
 
         return $registry;

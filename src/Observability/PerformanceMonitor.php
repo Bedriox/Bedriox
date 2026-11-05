@@ -26,6 +26,7 @@ use Bedriox\Server\Entity\EntityRuntimeMetrics;
 use Bedriox\Server\Entity\Navigation\EntityNavigationMetrics;
 use Bedriox\Server\Observability\Memory\GarbageCollectionReport;
 use Bedriox\Server\Observability\Memory\MemoryManagementDecision;
+use Bedriox\Server\Observability\Profiling\PerformanceProfiler;
 use Bedriox\Server\Persistence\PersistenceQueueSnapshot;
 use Bedriox\Server\Plugin\Scheduler\Worker\PluginAsyncQueueSnapshot;
 use Bedriox\Server\Runtime\ChunkStreamingSnapshot;
@@ -70,6 +71,7 @@ final class PerformanceMonitor
         private readonly int $targetTicksPerSecond = 20,
         private readonly int $maximumSamples = 1_200,
         ?int $startedAtNanoseconds = null,
+        private readonly ?PerformanceProfiler $profiler = null,
     ) {
         if ($targetTicksPerSecond < 1 || $targetTicksPerSecond > 1_000
             || $maximumSamples < 20 || $maximumSamples > 72_000) {
@@ -135,6 +137,7 @@ final class PerformanceMonitor
             $this->activeSubsystemDurations[$subsystem] ?? 0,
             $exclusive,
         );
+        $this->profiler?->record('subsystem', $subsystem, '', $elapsed, $exclusive);
         $parent = count($this->timerStack) - 1;
         if ($parent >= 0) {
             $this->timerStack[$parent]['child'] = self::saturatingAdd($this->timerStack[$parent]['child'], $elapsed);
@@ -167,6 +170,7 @@ final class PerformanceMonitor
             $this->append($this->tickCompletions, $completedAt);
             $this->append($this->subsystemDurations, $perTickSubsystems);
             $this->append($this->unclassifiedDurations, $unclassified);
+            $this->profiler?->completeTick($duration);
         }
         $this->tickStartedAtNanoseconds = null;
         $this->activeSubsystemDurations = [];
@@ -195,6 +199,7 @@ final class PerformanceMonitor
         $this->append($this->tickCompletions, $completedAt);
         $this->append($this->subsystemDurations, []);
         $this->append($this->unclassifiedDurations, $durationNanoseconds);
+        $this->profiler?->completeTick($durationNanoseconds);
         $this->completed = null;
     }
 
@@ -219,6 +224,12 @@ final class PerformanceMonitor
     public function timerImbalances(): int
     {
         return $this->timerImbalances;
+    }
+
+    /** @param array<string, int> $worldStagesMicroseconds */
+    public function sampleProfile(PerformanceSnapshot $snapshot, array $worldStagesMicroseconds): void
+    {
+        $this->profiler?->sample($snapshot, $worldStagesMicroseconds);
     }
 
     public function snapshot(

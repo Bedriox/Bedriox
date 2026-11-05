@@ -86,13 +86,14 @@ final class PluginHost
         ?Closure $gatewayRegister = null,
         ?Closure $gatewayUnregister = null,
         ?Closure $gatewaySend = null,
+        ?\Bedriox\Server\Observability\Profiling\PerformanceProfiler $profiler = null,
     ) {
         $this->ownership = new PluginOwnershipRegistry();
         $this->humans = new HumanOwnershipRegistry($this->ownership);
         $onlinePlayers ??= static fn(): array => [];
         $this->bossBars = new BossBarRegistry($this->ownership, $onlinePlayers);
         $this->actions = new PluginActionBuffer();
-        $this->execution = new PluginExecutionContext(crashContext: $crashContext);
+        $this->execution = new PluginExecutionContext(crashContext: $crashContext, profiler: $profiler);
         $this->manager = new PluginManager($this->execution, $this->ownership, function (PluginFailure $failure): void {
             $this->logger->error(sprintf(
                 'Plugin %s failed during %s (%s) and was disabled',
