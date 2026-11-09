@@ -55,6 +55,8 @@ final class ProcessNetherNetServerTransport implements ConnectedTransport
     private array $sessionEvents = [];
     /** @var list<ReceivedPayload> */
     private array $receivedPayloads = [];
+    /** @var list<PayloadAcknowledgedEvent> */
+    private array $payloadAcknowledgements = [];
     private int $receivedPayloadBytes = 0;
     private bool $closed = false;
     private string $localAddress = '';
@@ -158,6 +160,14 @@ final class ProcessNetherNetServerTransport implements ConnectedTransport
         return $events;
     }
 
+    public function drainPayloadAcknowledgements(): array
+    {
+        $events = $this->payloadAcknowledgements;
+        $this->payloadAcknowledgements = [];
+
+        return $events;
+    }
+
     public function drainReceivedPayloads(): array
     {
         $payloads = $this->receivedPayloads;
@@ -167,7 +177,7 @@ final class ProcessNetherNetServerTransport implements ConnectedTransport
         return $payloads;
     }
 
-    public function sendPayload(int $sessionId, string $payload, Reliability $reliability): void
+    public function sendPayload(int $sessionId, string $payload, Reliability $reliability, ?int $receiptId = null): void
     {
         if (!isset($this->sessionsById[$sessionId])) {
             throw new RuntimeException('Cannot send to an unknown NetherNet session.');
@@ -177,6 +187,7 @@ final class ProcessNetherNetServerTransport implements ConnectedTransport
             $sessionId,
             $payload,
             $reliability,
+            receiptId: $receiptId,
         ));
     }
 
@@ -362,6 +373,13 @@ final class ProcessNetherNetServerTransport implements ConnectedTransport
         if ($frame->kind === TransportProcessFrameKind::RECEIVED_PAYLOAD) {
             if ($frame->reliability !== null && isset($this->sessionsById[$frame->sessionId])) {
                 $this->acceptReceivedPayload($frame->sessionId, $frame->payload, $frame->reliability);
+            }
+            return;
+        }
+        if ($frame->kind === TransportProcessFrameKind::PAYLOAD_ACKNOWLEDGED) {
+            $receiptId = $frame->metadata['receipt_id'] ?? null;
+            if (is_int($receiptId) && $receiptId > 0 && isset($this->sessionsById[$frame->sessionId])) {
+                $this->payloadAcknowledgements[] = new PayloadAcknowledgedEvent($frame->sessionId, $receiptId);
             }
             return;
         }

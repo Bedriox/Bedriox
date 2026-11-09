@@ -68,6 +68,7 @@ use Bedriox\Server\Player\Persistence\PlayerPersistenceManager;
 use Bedriox\Server\Plugin\Command\CommandRegistry;
 use Bedriox\Server\Plugin\PluginActionBuffer;
 use Bedriox\Server\Plugin\PluginEntityLifecycleBridge;
+use Bedriox\Server\ResourcePack\ResourcePackCatalog;
 use Bedriox\Server\Simulation\FixedRateWorldLoop;
 use Bedriox\Server\Simulation\PluginGameplayEventBridge;
 use Bedriox\Server\Simulation\Position;
@@ -135,6 +136,7 @@ final class ServerBootstrap
         ?BedrockDataSet $data = null,
         ?BlockStateRegistry $internalStates = null,
         ?BlockCatalog $blockCatalog = null,
+        ResourcePackCatalog|Closure|null $resourcePacks = null,
     ): BootstrappedServer {
         $startupStartedAt = hrtime(true);
         $diagnostics ??= RuntimeDiagnostics::disabled();
@@ -652,6 +654,7 @@ final class ServerBootstrap
                     new SystemMonotonicClock(),
                     $authenticator,
                     $config->authenticationMode,
+                    resourcePacks: $resourcePacks ?? ResourcePackCatalog::empty(),
                 ),
                 new BedrockPlayChannelFactory(
                     $initialization,

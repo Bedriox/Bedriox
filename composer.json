@@ -40,6 +40,7 @@
         "php": "^8.4",
         "ext-curl": "*",
         "ext-leveldb": "*",
+        "ext-zip": "*",
         "bedriox/data": "0.1.0-alpha.1",
         "bedriox/protocol": "0.1.0-alpha.1",
         "bedriox/nethernet": "0.1.0-alpha.1",

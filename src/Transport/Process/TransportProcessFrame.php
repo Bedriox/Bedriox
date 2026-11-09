@@ -31,5 +31,6 @@ final readonly class TransportProcessFrame
         public string $payload = '',
         public ?Reliability $reliability = null,
         public array $metadata = [],
+        public ?int $receiptId = null,
     ) {}
 }

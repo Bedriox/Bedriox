@@ -16,6 +16,7 @@ composer.phar
 /crashes/
 /plugins/
 /plugin_data/
+/resource_packs/
 /player_data/
 /permissions.json
 /whitelist.json

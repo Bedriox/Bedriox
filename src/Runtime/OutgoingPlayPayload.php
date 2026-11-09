@@ -26,6 +26,7 @@ use InvalidArgumentException;
 final readonly class OutgoingPlayPayload
 {
     public Reliability $reliability;
+    public ?int $receiptId;
 
     public function __construct(public string $payload)
     {
@@ -33,5 +34,6 @@ final readonly class OutgoingPlayPayload
             throw new InvalidArgumentException('Outgoing play payload cannot be empty.');
         }
         $this->reliability = Reliability::RELIABLE;
+        $this->receiptId = null;
     }
 }

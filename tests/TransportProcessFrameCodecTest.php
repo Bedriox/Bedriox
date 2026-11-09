@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Tests;
 
+use Bedriox\NetherNet\Protocol\Reliability;
 use Bedriox\Server\Transport\Process\TransportProcessFrame;
 use Bedriox\Server\Transport\Process\TransportProcessFrameCodec;
 use Bedriox\Server\Transport\Process\TransportProcessFrameKind;
@@ -59,5 +60,30 @@ final class TransportProcessFrameCodecTest extends TestCase
             $frame,
             $codec->decode(substr($encoded, TransportProcessFrameCodec::PREFIX_BYTES)),
         );
+    }
+
+    public function testPayloadReceiptRoundTripsAcrossBothProcessDirections(): void
+    {
+        $codec = new TransportProcessFrameCodec();
+        $send = new TransportProcessFrame(
+            TransportProcessFrameKind::SEND_PAYLOAD,
+            42,
+            'resource-pack-chunk',
+            Reliability::RELIABLE,
+            receiptId: 73,
+        );
+        $acknowledgement = new TransportProcessFrame(
+            TransportProcessFrameKind::PAYLOAD_ACKNOWLEDGED,
+            42,
+            metadata: ['receipt_id' => 73],
+        );
+
+        foreach ([$send, $acknowledgement] as $frame) {
+            $encoded = $codec->encode($frame);
+            self::assertEquals(
+                $frame,
+                $codec->decode(substr($encoded, TransportProcessFrameCodec::PREFIX_BYTES)),
+            );
+        }
     }
 }

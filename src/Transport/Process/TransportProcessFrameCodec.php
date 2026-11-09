@@ -41,7 +41,14 @@ final class TransportProcessFrameCodec
             if ($frame->payload === '' || $frame->reliability === null) {
                 throw new RuntimeException('Transport payload frame metadata is invalid.');
             }
-            $body .= chr(self::encodeReliability($frame->reliability)) . $frame->payload;
+            $body .= chr(self::encodeReliability($frame->reliability));
+            if ($frame->kind === TransportProcessFrameKind::SEND_PAYLOAD) {
+                if ($frame->receiptId !== null && ($frame->receiptId < 1 || $frame->receiptId > 0x7fff_ffff)) {
+                    throw new RuntimeException('Transport payload receipt identifier is invalid.');
+                }
+                $body .= pack('N', $frame->receiptId ?? 0);
+            }
+            $body .= $frame->payload;
         } elseif ($frame->metadata !== [] || $frame->payload !== '') {
             try {
                 $metadata = json_encode(
@@ -78,16 +85,28 @@ final class TransportProcessFrameCodec
         $sessionId = $decoded['session'];
         if ($kind === TransportProcessFrameKind::SEND_PAYLOAD
             || $kind === TransportProcessFrameKind::RECEIVED_PAYLOAD) {
-            if ($length < 7) {
+            $minimumLength = $kind === TransportProcessFrameKind::SEND_PAYLOAD ? 11 : 7;
+            if ($length < $minimumLength) {
                 throw new RuntimeException('Transport payload frame is truncated.');
             }
             $reliability = self::decodeReliability(ord($body[5]));
-            $payload = substr($body, 6);
+            $receiptId = null;
+            $payloadOffset = 6;
+            if ($kind === TransportProcessFrameKind::SEND_PAYLOAD) {
+                /** @var array{receipt: int} $decodedReceipt */
+                $decodedReceipt = unpack('Nreceipt', substr($body, 6, 4));
+                if ($decodedReceipt['receipt'] > 0x7fff_ffff) {
+                    throw new RuntimeException('Transport payload receipt identifier is invalid.');
+                }
+                $receiptId = $decodedReceipt['receipt'] === 0 ? null : $decodedReceipt['receipt'];
+                $payloadOffset = 10;
+            }
+            $payload = substr($body, $payloadOffset);
             if ($reliability === null || $payload === '') {
                 throw new RuntimeException('Transport payload frame is invalid.');
             }
 
-            return new TransportProcessFrame($kind, $sessionId, $payload, $reliability);
+            return new TransportProcessFrame($kind, $sessionId, $payload, $reliability, receiptId: $receiptId);
         }
         if ($length === 5) {
             return new TransportProcessFrame($kind, $sessionId);

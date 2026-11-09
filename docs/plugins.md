@@ -65,6 +65,12 @@ $config->save();
 
 `saveResource()` never overwrites an existing administrator-edited file unless `replace: true` is explicit. `saveResources()` copies all admitted defaults. `config()` supports `.yml`, `.yaml`, and `.json`, dot-separated keys, typed getters, mutation, saving, and reloading. `path()` is available for plugins that need to manage another bounded format themselves. Resource paths and configuration structures are validated and kept inside the plugin's own data directory.
 
+## Resource packs
+
+`PluginContext::resourcePacks()` exposes an owner-scoped `ResourcePackManager` in direct `FULL` and `SELF_SIGNED` server modes. A plugin may register a bounded `.mcpack` or `.zip` archive at any lifecycle point. Registration validates its root manifest, resource modules, UUID, version, dependencies, size, and optional companion content key, then copies an immutable snapshot into the server cache. The returned `ResourcePackInfo` identifies the admitted snapshot. `all()` returns the current application order and `remove()` only accepts a UUID owned by the calling plugin.
+
+Configured packs remain first and plugin packs append in registration order, so later packs have higher overlay priority. Dependencies must already appear earlier in the configured stack or in the same plugin's owned stack. The stack becomes required when the server configuration or any registered definition requests it. Each new connection captures one immutable catalog; adding or removing a pack changes future login offers without altering a transfer already in progress. Disabling a plugin removes all of its packs in reverse registration order. In `GATEWAY` mode this capability is unavailable because Gateway owns the one client-facing pack negotiation.
+
 ## Gateway messaging
 
 `PluginContext::gateway()` exposes the authenticated control link only; it never exposes a socket, key, session, or transport queue. `isEnabled()` reports whether the server uses `GATEWAY` authentication and `isConnected()` reports whether at least one authenticated Gateway control link is ready. Both return `false` in `FULL` and `SELF_SIGNED` modes.
@@ -443,7 +449,7 @@ $nbt = ItemNbt::empty()
 $player->giveItem(new ItemStack('minecraft:diamond', 1, nbt: $nbt));
 ```
 
-`PluginContext::items()` registers or explicitly replaces bounded definitions for item identifiers present in the active Bedrock data set. A definition controls maximum stack size and creative visibility. Replacing an admitted vanilla definition preserves its block-placement and tool behavior. Registrations are live for authoritative inventory rules; players already online keep the creative list sent at login, while later joins receive the current list. New client-side item identifiers and textures require a resource-pack/custom-item milestone and are not invented by this API.
+`PluginContext::items()` registers or explicitly replaces bounded definitions for item identifiers present in the active Bedrock data set. A definition controls maximum stack size and creative visibility. Replacing an admitted vanilla definition preserves its block-placement and tool behavior. Registrations are live for authoritative inventory rules; players already online keep the creative list sent at login, while later joins receive the current list. Resource packs may replace textures, but new client-side item identifiers still require a dedicated custom-item contract and are not invented by this API.
 
 ```php
 use Bedriox\Api\Inventory\ItemDefinition;

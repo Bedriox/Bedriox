@@ -2,7 +2,7 @@
 
 The `Bedriox\Server\Login` layer owns server-side, pre-spawn login policy for protocol 2225. Minecraft Bedrock 1.26.60 is the pinned wire authority and 1.26.61 is a qualified same-protocol client. Wire decoding remains in Protocol and reliable delivery remains in NetherNet.
 
-The state order is fixed: network-settings request, login, client handshake, resource-pack information response, resource-pack stack response, and login ready. Both version-bearing packets must declare protocol 2225; every other value fails closed. Empty resource-pack lists are currently advertised.
+The state order is fixed: network-settings request, login, client handshake, resource-pack information response, resource-pack stack response, and login ready. Both version-bearing packets must declare protocol 2225; every other value fails closed. Each connection captures the current immutable resource-pack catalog after authentication. Pack metadata and bounded 256 KiB chunks are served only for configured UUID/version pairs requested in the proper login phase; refusal, unknown identities, duplicate chunk requests, out-of-range indexes, invalid hashes, and idle transfers fail closed.
 
 State deadlines are 5, 10, 5, 15, and 15 seconds, measured with an injected monotonic clock. Every session also has an absolute 45-second lifetime. Input packets, bytes, and pending effects are bounded. Closing clears pending inputs, outputs, derived identity state, and encryption activation effects.
 

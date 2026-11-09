@@ -29,8 +29,15 @@ final readonly class LoginLimits
         public int $maximumQueuedInputBytes = 1_048_576,
         public int $maximumPacketBytes = 1_048_576,
         public int $maximumQueuedEffects = 32,
+        public int $maximumInputsPerTick = 8,
+        public int $maximumQueuedPackChunkRequests = 512,
     ) {
-        if ($maximumQueuedPackets < 1 || $maximumQueuedInputBytes < 1 || $maximumPacketBytes < 1 || $maximumQueuedEffects < 1) {
+        if ($maximumQueuedPackets < 1
+            || $maximumQueuedInputBytes < 1
+            || $maximumPacketBytes < 1
+            || $maximumQueuedEffects < 1
+            || $maximumInputsPerTick < 1
+            || $maximumQueuedPackChunkRequests < $maximumQueuedPackets) {
             throw new InvalidArgumentException('Login limits must be positive.');
         }
     }

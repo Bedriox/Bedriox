@@ -3819,6 +3819,7 @@ final class FakeConnectedTransport implements ConnectedTransport
 {
     /** @var list<SessionOpenedEvent|SessionClosedEvent> */ public array $events = [];
     /** @var list<ReceivedPayload> */ public array $payloads = [];
+    /** @var list<\Bedriox\Server\Transport\PayloadAcknowledgedEvent> */ public array $acknowledgements = [];
     /** @var list<array{string, int, string, Reliability, int}> */ public array $sent = [];
     /** @var list<array{string, int}> */ public array $removed = [];
     public bool $throwOnClose = false;
@@ -3842,18 +3843,24 @@ final class FakeConnectedTransport implements ConnectedTransport
         $this->events = [];
         return $events;
     }
+    public function drainPayloadAcknowledgements(): array
+    {
+        $events = $this->acknowledgements;
+        $this->acknowledgements = [];
+        return $events;
+    }
     public function drainReceivedPayloads(): array
     {
         $payloads = $this->payloads;
         $this->payloads = [];
         return $payloads;
     }
-    public function sendPayload(int $sessionId, string $payload, Reliability $reliability): void
+    public function sendPayload(int $sessionId, string $payload, Reliability $reliability, ?int $receiptId = null): void
     {
         if ($this->sendFailure !== null) {
             throw $this->sendFailure;
         }
-        $this->sent[] = ['127.0.0.1', $sessionId, $payload, $reliability, 0];
+        $this->sent[] = ['127.0.0.1', $sessionId, $payload, $reliability, $receiptId ?? 0];
     }
     public function removeSession(int $sessionId): bool
     {

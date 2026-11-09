@@ -28,6 +28,7 @@ use Bedriox\Protocol\Packet\BedrockPacketCodec;
 use Bedriox\Protocol\Packet\NetworkSettingsPacket;
 use Bedriox\Protocol\Packet\PacketFrame;
 use Bedriox\Protocol\Packet\PacketHeader;
+use Bedriox\Protocol\Packet\ResourcePackChunkDataPacket;
 use Bedriox\Server\Transport\InboundPayload;
 use Bedriox\Server\Transport\NetworkCompressionPolicy;
 use SplQueue;
@@ -42,6 +43,8 @@ final class BedrockLoginChannel
     private bool $compressionNegotiated = false;
     private ?LoginChannelReady $ready = null;
     private ?string $failureDetail = null;
+    private int $nextReceiptId = 1;
+    private ?int $pendingPackReceiptId = null;
 
     public function __construct(private readonly LoginSession $session, private readonly LoginChannelLimits $limits = new LoginChannelLimits())
     {
@@ -97,6 +100,16 @@ final class BedrockLoginChannel
     public function tick(): bool
     {
         $this->session->tick();
+        return $this->consumeEffects();
+    }
+
+    public function acknowledge(int $receiptId): bool
+    {
+        if ($receiptId < 1 || $receiptId !== $this->pendingPackReceiptId) {
+            return true;
+        }
+        $this->pendingPackReceiptId = null;
+        $this->session->acknowledgePackChunk();
         return $this->consumeEffects();
     }
 
@@ -189,7 +202,18 @@ final class BedrockLoginChannel
             || strlen($envelope) > $this->limits->maximumQueuedPayloadBytes - $this->outgoingBytes) {
             return $this->fail(LoginFailureCode::EFFECT_LIMIT);
         }
-        $this->outgoing->enqueue(new OutgoingLoginPayload($envelope));
+        $receiptId = null;
+        if ($packet instanceof ResourcePackChunkDataPacket) {
+            if ($this->pendingPackReceiptId !== null) {
+                return $this->fail(LoginFailureCode::EFFECT_LIMIT);
+            }
+            $receiptId = $this->nextReceiptId++;
+            if ($this->nextReceiptId > 0x7fff_ffff) {
+                $this->nextReceiptId = 1;
+            }
+            $this->pendingPackReceiptId = $receiptId;
+        }
+        $this->outgoing->enqueue(new OutgoingLoginPayload($envelope, $receiptId));
         $this->outgoingBytes += strlen($envelope);
         if ($packet instanceof NetworkSettingsPacket) {
             $this->compressionNegotiated = true;
@@ -203,6 +227,7 @@ final class BedrockLoginChannel
         $this->outgoing = new SplQueue();
         $this->outgoingBytes = 0;
         $this->ready = null;
+        $this->pendingPackReceiptId = null;
         return false;
     }
 }

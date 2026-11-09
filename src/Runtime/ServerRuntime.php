@@ -1644,8 +1644,10 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $this->transport->poll($this->limits->maximumDatagramsPerPoll);
             $this->recordSlowRuntimeStage('transport_poll', $transportPollStartedNanoseconds);
             $events = $this->transport->drainSessionEvents();
+            $acknowledgements = $this->transport->drainPayloadAcknowledgements();
             $payloads = $this->transport->drainReceivedPayloads();
             if (count($events) > $this->limits->maximumSessionEventsPerPoll
+                || count($acknowledgements) > $this->limits->maximumPayloadsPerPoll
                 || count($payloads) > $this->limits->maximumPayloadsPerPoll) {
                 return $this->failRuntime('poll_input_limit');
             }
@@ -1659,6 +1661,16 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     ]);
                     [$quitCause, $quitReason] = self::transportQuitReason($event->reason);
                     $this->closeEndpoint($event->session, $quitCause, $quitReason);
+                }
+            }
+            foreach ($acknowledgements as $acknowledgement) {
+                $key = self::sessionKey($acknowledgement->sessionId);
+                $session = $this->sessions[$key] ?? null;
+                if ($session?->phase !== SessionPhase::LOGIN || $session->login === null) {
+                    continue;
+                }
+                if (!$session->login->acknowledge($acknowledgement->receiptId)) {
+                    $this->disconnect($key, 'login_receipt_failed');
                 }
             }
             $advertisedPlayerCount = $this->sessionCount();
@@ -4192,6 +4204,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     $session->transport->id,
                     $payload->payload,
                     $payload->reliability,
+                    $payload->receiptId,
                 );
                 $this->performance?->recordNetworkSent(strlen($payload->payload));
             } catch (Throwable $exception) {

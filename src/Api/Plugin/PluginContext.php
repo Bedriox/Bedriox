@@ -34,6 +34,8 @@ use Bedriox\Api\Inventory\ContainerManager;
 use Bedriox\Api\Inventory\ItemRegistrar;
 use Bedriox\Api\Inventory\UnavailableItemRegistrar;
 use Bedriox\Api\Plugin\Data\PluginData;
+use Bedriox\Api\ResourcePack\ResourcePackManager;
+use Bedriox\Api\ResourcePack\UnavailableResourcePackManager;
 use Bedriox\Api\Scheduler\PluginScheduler;
 use Bedriox\Api\Scheduler\UnavailablePluginScheduler;
 use Bedriox\Api\Scoreboard\ScoreboardManager;
@@ -65,6 +67,7 @@ final class PluginContext
         private readonly ?ScoreboardManager $scoreboards = null,
         private readonly UpdateService $updates = new UnavailableUpdateService(),
         private readonly ?GatewayConnection $gateway = null,
+        private readonly ResourcePackManager $resourcePacks = new UnavailableResourcePackManager(),
     ) {}
 
     public function name(): string
@@ -167,6 +170,11 @@ final class PluginContext
         return $this->gateway ?? GatewayConnection::unavailable();
     }
 
+    public function resourcePacks(): ResourcePackManager
+    {
+        return $this->resourcePacks;
+    }
+
     /** @internal Used by the server composition root to attach an owner-scoped scheduler. */
     public function withScheduler(PluginScheduler $scheduler): self
     {
@@ -190,6 +198,7 @@ final class PluginContext
             $this->scoreboards,
             $this->updates,
             $this->gateway,
+            $this->resourcePacks,
         );
     }
 
@@ -216,6 +225,7 @@ final class PluginContext
             $this->scoreboards,
             $this->updates,
             $this->gateway,
+            $this->resourcePacks,
         );
     }
 }

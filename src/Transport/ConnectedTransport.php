@@ -31,6 +31,9 @@ interface ConnectedTransport
     /** @return list<SessionOpenedEvent|SessionClosedEvent> */
     public function drainSessionEvents(): array;
 
+    /** @return list<PayloadAcknowledgedEvent> */
+    public function drainPayloadAcknowledgements(): array;
+
     /** @return list<ReceivedPayload> */
     public function drainReceivedPayloads(): array;
 
@@ -38,6 +41,7 @@ interface ConnectedTransport
         int $sessionId,
         string $payload,
         Reliability $reliability,
+        ?int $receiptId = null,
     ): void;
 
     public function removeSession(int $sessionId): bool;

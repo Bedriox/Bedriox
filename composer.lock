@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "5315b6e024ae5cf6afc1581dc879e589",
+    "content-hash": "3aa150126099c59ee17fbcd91ee994cd",
     "packages": [
         {
             "name": "bedriox/data",
@@ -60,7 +60,7 @@
             "dist": {
                 "type": "path",
                 "url": "../NetherNet",
-                "reference": "140e6952242f8717c169e9f232cdd18a73a0a835"
+                "reference": "04181f2e2ddf2a2a81b088f5a02f1b4c6d2e84d4"
             },
             "require": {
                 "ext-hash": "*",
@@ -133,7 +133,7 @@
             "dist": {
                 "type": "path",
                 "url": "../Protocol",
-                "reference": "4a5f9e69ed24693012441fbfe91328bc1c32b1f4"
+                "reference": "c2101d088d1163bfc9c88ff4965e1cb363cd9d6e"
             },
             "require": {
                 "ext-openssl": "*",
@@ -4925,7 +4925,8 @@
     "platform": {
         "php": "^8.4",
         "ext-curl": "*",
-        "ext-leveldb": "*"
+        "ext-leveldb": "*",
+        "ext-zip": "*"
     },
     "platform-dev": {},
     "plugin-api-version": "2.6.0"

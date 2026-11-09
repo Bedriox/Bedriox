@@ -27,10 +27,13 @@ final readonly class OutgoingLoginPayload
 {
     public Reliability $reliability;
 
-    public function __construct(public string $payload)
+    public function __construct(public string $payload, public ?int $receiptId = null)
     {
         if ($payload === '') {
             throw new InvalidArgumentException('Outgoing login payload cannot be empty.');
+        }
+        if ($receiptId !== null && ($receiptId < 1 || $receiptId > 0x7fff_ffff)) {
+            throw new InvalidArgumentException('Outgoing login receipt identifier is outside its range.');
         }
         $this->reliability = Reliability::RELIABLE;
     }

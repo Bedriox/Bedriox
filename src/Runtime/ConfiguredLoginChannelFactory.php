@@ -27,17 +27,27 @@ use Bedriox\Server\Login\LoginChannelLimits;
 use Bedriox\Server\Login\LoginLimits;
 use Bedriox\Server\Login\LoginSession;
 use Bedriox\Server\Login\MonotonicClock;
+use Bedriox\Server\ResourcePack\ResourcePackCatalog;
 use Bedriox\Server\Transport\SessionInfo;
+use Closure;
 
-final readonly class ConfiguredLoginChannelFactory implements LoginChannelFactory
+final class ConfiguredLoginChannelFactory implements LoginChannelFactory
 {
+    /** @var Closure(): ResourcePackCatalog */
+    private readonly Closure $resourcePacks;
+
     public function __construct(
-        private MonotonicClock $clock,
-        private LoginAuthenticator $authenticator,
-        private AuthenticationMode $mode,
-        private LoginLimits $loginLimits = new LoginLimits(),
-        private LoginChannelLimits $channelLimits = new LoginChannelLimits(),
-    ) {}
+        private readonly MonotonicClock $clock,
+        private readonly LoginAuthenticator $authenticator,
+        private readonly AuthenticationMode $mode,
+        private readonly LoginLimits $loginLimits = new LoginLimits(),
+        private readonly LoginChannelLimits $channelLimits = new LoginChannelLimits(),
+        ResourcePackCatalog|Closure $resourcePacks = new ResourcePackCatalog(),
+    ) {
+        $this->resourcePacks = $resourcePacks instanceof Closure
+            ? $resourcePacks
+            : static fn(): ResourcePackCatalog => $resourcePacks;
+    }
 
     public function create(SessionInfo $session): BedrockLoginChannel
     {
@@ -45,11 +55,17 @@ final readonly class ConfiguredLoginChannelFactory implements LoginChannelFactor
             ? $this->authenticator->forPeer($session)
             : $this->authenticator;
 
+        $resourcePacks = ($this->resourcePacks)();
+        if (!$resourcePacks instanceof ResourcePackCatalog) {
+            throw new \LogicException('Resource-pack snapshot provider returned an invalid catalog.');
+        }
+
         return new BedrockLoginChannel(new LoginSession(
             $this->clock,
             $authenticator,
             $this->mode,
             $this->loginLimits,
+            $resourcePacks,
         ), $this->channelLimits);
     }
 }

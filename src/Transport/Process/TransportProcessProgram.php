@@ -228,7 +228,10 @@ final class TransportProcessProgram
                 $this->program->packetReceived($sessionId, $payload, $reliability);
             }
 
-            public function onPacketAck(int $sessionId, int $receiptId): void {}
+            public function onPacketAck(int $sessionId, int $receiptId): void
+            {
+                $this->program->payloadAcknowledged($sessionId, $receiptId);
+            }
 
             public function onBandwidthStatsUpdate(int $bytesSentDiff, int $bytesReceivedDiff): void
             {
@@ -344,6 +347,18 @@ final class TransportProcessProgram
         ]));
     }
 
+    public function payloadAcknowledged(int $sessionId, int $receiptId): void
+    {
+        if ($receiptId < 1) {
+            return;
+        }
+        $this->queue(new TransportProcessFrame(
+            TransportProcessFrameKind::PAYLOAD_ACKNOWLEDGED,
+            $sessionId,
+            metadata: ['receipt_id' => $receiptId],
+        ));
+    }
+
     private function readCommands(): bool
     {
         if (!is_resource($this->stream)) {
@@ -367,7 +382,12 @@ final class TransportProcessProgram
                 continue;
             }
             if ($frame->kind === TransportProcessFrameKind::SEND_PAYLOAD && $frame->reliability !== null) {
-                $this->activeServer?->sendPacket($frame->sessionId, $frame->payload, $frame->reliability);
+                $this->activeServer?->sendPacket(
+                    $frame->sessionId,
+                    $frame->payload,
+                    $frame->reliability,
+                    $frame->receiptId,
+                );
                 continue;
             }
             if ($frame->kind === TransportProcessFrameKind::UPDATE_PLAYER_COUNT) {

@@ -22,6 +22,7 @@ namespace Bedriox\Server;
 
 use Bedriox\Api\Plugin\Data\PluginData;
 use Bedriox\Api\Plugin\PluginContext;
+use Bedriox\Api\ResourcePack\UnavailableResourcePackManager;
 use Bedriox\Server\Access\BanManager;
 use Bedriox\Server\Access\WhitelistManager;
 use Bedriox\Server\Command\BuiltinCommandRegistrar;
@@ -53,6 +54,7 @@ use Bedriox\Server\Plugin\OwnedEntityRegistrar;
 use Bedriox\Server\Plugin\OwnedGeneratorRegistrar;
 use Bedriox\Server\Plugin\OwnedItemRegistrar;
 use Bedriox\Server\Plugin\OwnedRecipeRegistrar;
+use Bedriox\Server\Plugin\OwnedResourcePackManager;
 use Bedriox\Server\Plugin\OwnedSourcePluginRegistrar;
 use Bedriox\Server\Plugin\PluginComposition;
 use Bedriox\Server\Plugin\PluginEntityDefinitionBridge;
@@ -63,6 +65,9 @@ use Bedriox\Server\Plugin\PluginManifest;
 use Bedriox\Server\Plugin\PluginRecipeRegistrar;
 use Bedriox\Server\Plugin\Scheduler\Worker\ManagedPluginAsyncTaskExecutor;
 use Bedriox\Server\Plugin\ServerPluginLogger;
+use Bedriox\Server\ResourcePack\ResourcePackCatalog;
+use Bedriox\Server\ResourcePack\ResourcePackCatalogLoader;
+use Bedriox\Server\ResourcePack\ResourcePackRegistry;
 use Bedriox\Server\Runtime\PersistentWorldFactory;
 use Bedriox\Server\Runtime\PortUnavailableException;
 use Bedriox\Server\Runtime\ProcessMemoryLimit;
@@ -191,6 +196,32 @@ final class Bedriox
                 null,
                 backgroundFile: $backgroundLog,
             );
+            $configuredResourcePacks = (new ResourcePackCatalogLoader())->load(
+                $workingDirectory . DIRECTORY_SEPARATOR . 'resource_packs',
+            );
+            $resourcePacks = $configuredResourcePacks;
+            if ($config->authenticationMode === AuthenticationMode::GATEWAY) {
+                if (!$configuredResourcePacks->isEmpty()) {
+                    $logger->warning(
+                        'Backend resource packs are ignored in GATEWAY mode; configure the pack stack on Gateway instead.',
+                        'ResourcePacks',
+                    );
+                }
+                $resourcePacks = ResourcePackCatalog::empty();
+            } elseif (!$resourcePacks->isEmpty()) {
+                $logger->info(sprintf(
+                    'Loaded %d resource pack%s (%s).',
+                    $resourcePacks->count(),
+                    $resourcePacks->count() === 1 ? '' : 's',
+                    $resourcePacks->required ? 'required' : 'optional',
+                ), 'ResourcePacks');
+            }
+            $resourcePackRegistry = $config->authenticationMode === AuthenticationMode::GATEWAY
+                ? null
+                : new ResourcePackRegistry(
+                    $resourcePacks,
+                    $workingDirectory . DIRECTORY_SEPARATOR . 'resource_packs' . DIRECTORY_SEPARATOR . '.cache',
+                );
             $crashHandler = new CrashHandler(
                 new CrashReporter(
                     $workingDirectory . DIRECTORY_SEPARATOR . 'crashes',
@@ -309,7 +340,13 @@ final class Bedriox
                     OwnedCommandRegistrar $commands,
                     OwnedSourcePluginRegistrar $sourcePlugins,
                     ServerPluginLogger $pluginLogger,
-                ) use ($composition, $itemCatalog, $generatorRegistry, &$itemCommandEnum): PluginContext {
+                ) use (
+                    $composition,
+                    $itemCatalog,
+                    $generatorRegistry,
+                    $resourcePackRegistry,
+                    &$itemCommandEnum,
+                ): PluginContext {
                     if ($composition->server === null || $composition->host === null) {
                         throw new \LogicException('Plugin API composition is not ready.');
                     }
@@ -392,6 +429,13 @@ final class Bedriox
                         updates: $composition->updates
                             ?? throw new \LogicException('The update capability is unavailable.'),
                         gateway: $composition->host->gateway($manifest->name),
+                        resourcePacks: $resourcePackRegistry === null
+                            ? new UnavailableResourcePackManager()
+                            : new OwnedResourcePackManager(
+                                $manifest->name,
+                                $resourcePackRegistry,
+                                $composition->host->ownership(),
+                            ),
                     );
                 },
                 maximumPlugins: $config->maximumPlugins,
@@ -925,6 +969,9 @@ final class Bedriox
                 data: $data,
                 internalStates: $internalStates,
                 blockCatalog: $blockCatalog,
+                resourcePacks: $resourcePackRegistry === null
+                    ? ResourcePackCatalog::empty()
+                    : $resourcePackRegistry->snapshot(...),
             );
             $startupCompositionReadyAt = hrtime(true);
             $diagnostics->record('runtime.startup.protocol_trace', [

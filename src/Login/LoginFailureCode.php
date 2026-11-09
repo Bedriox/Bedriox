@@ -28,6 +28,7 @@ enum LoginFailureCode: string
     case AUTHENTICATION_FAILED = 'authentication_failed';
     case ENCRYPTION_STATE = 'encryption_state';
     case INVALID_PACK_RESPONSE = 'invalid_pack_response';
+    case RESOURCE_PACK_PROBLEM = 'resource_pack_problem';
     case TIMEOUT = 'timeout';
     case INPUT_LIMIT = 'input_limit';
     case EFFECT_LIMIT = 'effect_limit';

@@ -35,4 +35,5 @@ enum TransportProcessFrameKind: int
     case SECURITY_SNAPSHOT = 11;
     case UPDATE_PLAYER_COUNT = 12;
     case UPDATE_ADVERTISEMENT = 13;
+    case PAYLOAD_ACKNOWLEDGED = 14;
 }

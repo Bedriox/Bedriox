@@ -1,5 +1,6 @@
 # Changelog
 
+- Add validated resource-pack stacks, bounded 256 KiB login transfers, immutable content snapshots, live owner-scoped plugin registration, and Gateway-owned network delivery.
 - Add bounded performance profiles, plugin workload attribution, local compressed reports, background uploads, and shareable diagnostic links through `/timings`.
 - Move the supported Bedrock client family to Minecraft 1.26.60 and 1.26.61 on protocol 2225, including current packet admission and world metadata.
 - Replace the RakNet transport with NetherNet, move WebRTC session ownership into the supervised transport process, and retain bounded admission, diagnostics, and per-session failure isolation.
