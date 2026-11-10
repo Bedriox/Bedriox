@@ -101,6 +101,8 @@ final readonly class ServerConfig
         'updates.enabled' => 'true',
         'updates.notify-operators' => 'true',
         'plugins.maximum' => '64',
+        'resource-packs.maximum-concurrent-transfers' => '16',
+        'resource-packs.maximum-transfer-bytes-per-second' => '67108864',
         'timings.upload-enabled' => 'true',
         'timings.maximum-duration-seconds' => '1800',
         'timings.local-retention-days' => '14',
@@ -190,6 +192,8 @@ final readonly class ServerConfig
         'updates.enabled' => true,
         'updates.notify-operators' => true,
         'plugins.maximum' => true,
+        'resource-packs.maximum-concurrent-transfers' => true,
+        'resource-packs.maximum-transfer-bytes-per-second' => true,
         'logging.level' => true,
         'logging.console' => true,
         'logging.console-colors' => true,
@@ -334,6 +338,8 @@ final readonly class ServerConfig
         public int $proxyTokenMaximumAgeSeconds = 15,
         public string $proxyControlKeyId = 'primary',
         public bool $proxyAllowPublicBind = false,
+        public int $resourcePackMaximumConcurrentTransfers = 16,
+        public int $resourcePackMaximumTransferBytesPerSecond = 67_108_864,
     ) {
         if (filter_var($this->bindAddress, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
             throw new InvalidArgumentException('Bind address must be a literal IPv4 address.');
@@ -347,6 +353,8 @@ final readonly class ServerConfig
         if ($this->maximumPlayers < 1 || $this->maximumPlayers > 1_024) {
             throw new InvalidArgumentException('Maximum players must be between 1 and 1024.');
         }
+        self::range($this->resourcePackMaximumConcurrentTransfers, 1, 1_024, 'Resource-pack concurrent transfers');
+        self::range($this->resourcePackMaximumTransferBytesPerSecond, 1_048_576, 1_073_741_824, 'Resource-pack transfer bytes per second');
         self::validateText($this->motd, 'MOTD', 128);
         self::validateText($this->levelName, 'Level name', 64);
         if (!in_array($this->levelGenerator, ['default', 'flat'], true)) {
@@ -704,6 +712,18 @@ final readonly class ServerConfig
             ),
             proxyControlKeyId: $values['network.proxy.control-key-id'],
             proxyAllowPublicBind: self::boolean($values['network.proxy.allow-public-bind'], 'network.proxy.allow-public-bind'),
+            resourcePackMaximumConcurrentTransfers: self::integer(
+                $values['resource-packs.maximum-concurrent-transfers'],
+                'resource-packs.maximum-concurrent-transfers',
+                1,
+                1_024,
+            ),
+            resourcePackMaximumTransferBytesPerSecond: self::integer(
+                $values['resource-packs.maximum-transfer-bytes-per-second'],
+                'resource-packs.maximum-transfer-bytes-per-second',
+                1_048_576,
+                1_073_741_824,
+            ),
         );
     }
 

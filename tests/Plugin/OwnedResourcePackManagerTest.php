@@ -86,6 +86,23 @@ final class OwnedResourcePackManagerTest extends TestCase
         $foreign->remove($info->uuid);
     }
 
+    public function testRegistrationIsRejectedAfterStartupSeal(): void
+    {
+        $ownership = new PluginOwnershipRegistry();
+        $registry = new ResourcePackRegistry(
+            ResourcePackCatalog::empty(),
+            $this->directory . DIRECTORY_SEPARATOR . 'cache',
+        );
+        $registry->seal();
+        $manager = new OwnedResourcePackManager('Example', $registry, $ownership);
+
+        $this->expectException(PluginException::class);
+        $this->expectExceptionMessage('only while plugins are starting');
+        $manager->register(new ResourcePackDefinition(
+            $this->pack('9d8f80e5-127a-4a75-a287-ed0abf775aa9', '1.0.0'),
+        ));
+    }
+
     private function pack(string $uuid, string $version): string
     {
         $path = $this->directory . DIRECTORY_SEPARATOR . $uuid . '.mcpack';

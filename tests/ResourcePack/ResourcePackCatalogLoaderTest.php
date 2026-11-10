@@ -108,7 +108,7 @@ final class ResourcePackCatalogLoaderTest extends TestCase
         $this->configuration($directory, false, ['broken.mcpack']);
 
         $this->expectException(ResourcePackException::class);
-        $this->expectExceptionMessage('manifest.json at its root');
+        $this->expectExceptionMessage('exactly one root manifest.json');
         (new ResourcePackCatalogLoader())->load($directory);
     }
 
@@ -154,6 +154,40 @@ final class ResourcePackCatalogLoaderTest extends TestCase
         $this->expectException(ResourcePackException::class);
         $this->expectExceptionMessage('exactly 32 bytes');
         (new ResourcePackCatalogLoader())->load($directory);
+    }
+
+    public function testRepairsSameSizeCorruptCachedSnapshot(): void
+    {
+        $directory = $this->temporaryDirectory();
+        $archive = $directory . DIRECTORY_SEPARATOR . 'space.mcpack';
+        $this->archive($archive, '77777777-7777-4777-8777-777777777777');
+        $this->configuration($directory, false, ['space.mcpack']);
+        $loader = new ResourcePackCatalogLoader();
+        $first = $loader->load($directory)->stack[0];
+        file_put_contents($first->snapshotPath, str_repeat('x', $first->size));
+
+        $second = $loader->load($directory)->stack[0];
+
+        self::assertSame(hash_file('sha256', $archive), hash_file('sha256', $second->snapshotPath));
+    }
+
+    public function testCacheCleanupRemovesOnlyOwnedStaleFiles(): void
+    {
+        $directory = $this->temporaryDirectory();
+        $archive = $directory . DIRECTORY_SEPARATOR . 'space.mcpack';
+        $this->archive($archive, '88888888-8888-4888-8888-888888888888');
+        $this->configuration($directory, false, ['space.mcpack']);
+        $loader = new ResourcePackCatalogLoader();
+        $catalog = $loader->load($directory);
+        $cache = $directory . DIRECTORY_SEPARATOR . '.cache';
+        file_put_contents($cache . DIRECTORY_SEPARATOR . str_repeat('a', 64) . '.mcpack', 'stale');
+        file_put_contents($cache . DIRECTORY_SEPARATOR . 'operator-note.txt', 'keep');
+
+        $cleanup = $loader->cleanCache($cache, $catalog);
+
+        self::assertSame(1, $cleanup->files);
+        self::assertFileExists($catalog->stack[0]->snapshotPath);
+        self::assertFileExists($cache . DIRECTORY_SEPARATOR . 'operator-note.txt');
     }
 
     public function testRejectsUnknownConfigurationKeys(): void

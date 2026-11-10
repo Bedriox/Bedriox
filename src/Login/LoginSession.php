@@ -42,6 +42,8 @@ use Bedriox\Protocol\Packet\ResourcePackType;
 use Bedriox\Protocol\ProtocolVersion;
 use Bedriox\Server\ResourcePack\ResourcePackArchive;
 use Bedriox\Server\ResourcePack\ResourcePackCatalog;
+use Bedriox\Server\ResourcePack\ResourcePackChunkCache;
+use Bedriox\Server\ResourcePack\ResourcePackTransferGovernor;
 use Bedriox\Server\Transport\NetworkCompressionPolicy;
 use SplQueue;
 use Throwable;
@@ -50,8 +52,9 @@ use Throwable;
 final class LoginSession
 {
     private const ABSOLUTE_TIMEOUT_NS = 60_000_000_000;
-    private const PACK_TRANSFER_TIMEOUT_NS = 600_000_000_000;
-    private const PACK_IDLE_TIMEOUT_NS = 30_000_000_000;
+    private const PACK_TRANSFER_MINIMUM_TIMEOUT_NS = 600_000_000_000;
+    private const PACK_TRANSFER_MAXIMUM_TIMEOUT_NS = 7_200_000_000_000;
+    private const PACK_IDLE_TIMEOUT_NS = 300_000_000_000;
 
     /** @var SplQueue<LoginInput> */
     private SplQueue $input;
@@ -76,6 +79,7 @@ final class LoginSession
     /** @var SplQueue<array{ResourcePackArchive, int}> */
     private SplQueue $pendingPackChunks;
     private bool $packChunkInFlight = false;
+    private readonly string $resourcePackTransferId;
 
     public function __construct(
         private readonly MonotonicClock $clock,
@@ -83,10 +87,13 @@ final class LoginSession
         private readonly AuthenticationMode $authenticationMode = AuthenticationMode::FULL,
         private readonly LoginLimits $limits = new LoginLimits(),
         private readonly ResourcePackCatalog $resourcePacks = new ResourcePackCatalog(),
+        private readonly ?ResourcePackTransferGovernor $resourcePackGovernor = null,
+        private readonly ?ResourcePackChunkCache $resourcePackChunkCache = null,
     ) {
         $this->input = new SplQueue();
         $this->effects = new SplQueue();
         $this->pendingPackChunks = new SplQueue();
+        $this->resourcePackTransferId = (string) spl_object_id($this);
         $this->lastNow = $clock->nowNanoseconds();
         $this->absoluteDeadline = $this->checkedAdd($this->lastNow, self::ABSOLUTE_TIMEOUT_NS);
         $this->stateDeadline = $this->checkedAdd($this->lastNow, 15_000_000_000);
@@ -169,6 +176,7 @@ final class LoginSession
             }
             $this->handle($input->packet);
         }
+        $this->emitNextPackChunk();
     }
 
     /** @return list<LoginEffect> */
@@ -183,6 +191,7 @@ final class LoginSession
 
     public function close(LoginFailureCode $reason = LoginFailureCode::CLOSED_BY_SERVER): void
     {
+        $this->resourcePackGovernor?->cancel($this->resourcePackTransferId);
         $this->failure ??= $reason;
         $this->state = LoginState::CLOSED;
         $this->authenticated = null;
@@ -199,7 +208,9 @@ final class LoginSession
         if ($this->state !== LoginState::WAIT_PACK_INFO_RESPONSE || !$this->packChunkInFlight) {
             return;
         }
+        $this->resourcePackGovernor?->complete($this->resourcePackTransferId);
         $this->packChunkInFlight = false;
+        $this->transitionNanoseconds(LoginState::WAIT_PACK_INFO_RESPONSE, self::PACK_IDLE_TIMEOUT_NS);
         $this->emitNextPackChunk();
     }
 
@@ -298,7 +309,10 @@ final class LoginSession
             $entries,
         ), false));
         if (!$this->resourcePacks->isEmpty()) {
-            $this->absoluteDeadline = $this->checkedAdd($this->lastNow, self::PACK_TRANSFER_TIMEOUT_NS);
+            $bytes = $this->resourcePacks->totalBytes();
+            $estimated = self::PACK_TRANSFER_MINIMUM_TIMEOUT_NS + intdiv($bytes, 524_288) * 1_000_000_000;
+            $duration = min(self::PACK_TRANSFER_MAXIMUM_TIMEOUT_NS, max(self::PACK_TRANSFER_MINIMUM_TIMEOUT_NS, $estimated));
+            $this->absoluteDeadline = $this->checkedAdd($this->lastNow, $duration);
         }
         $this->transitionNanoseconds(
             LoginState::WAIT_PACK_INFO_RESPONSE,
@@ -425,15 +439,20 @@ final class LoginSession
     {
         $pack = $this->resourcePacks->pack($packet->packId . '_' . $packet->packVersion);
         if ($pack === null || !isset($this->requestedPackMetadata[$pack->id])
-            || $packet->chunkIndex < 0 || $packet->chunkIndex >= $pack->chunkCount()
-            || isset($this->sentPackChunks[$pack->id][$packet->chunkIndex])) {
+            || $packet->chunkIndex < 0 || $packet->chunkIndex >= $pack->chunkCount()) {
             $this->close(LoginFailureCode::RESOURCE_PACK_PROBLEM);
+            return;
+        }
+        if (isset($this->sentPackChunks[$pack->id][$packet->chunkIndex])) {
+            return;
+        }
+        if ($this->pendingPackChunks->count() >= min($this->limits->maximumQueuedPackChunkRequests, max(1, $this->resourcePacks->totalChunks()))) {
+            $this->close(LoginFailureCode::INPUT_LIMIT);
             return;
         }
         $this->sentPackChunks[$pack->id][$packet->chunkIndex] = true;
         $this->pendingPackChunks->enqueue([$pack, $packet->chunkIndex]);
         $this->emitNextPackChunk();
-        $this->transitionNanoseconds(LoginState::WAIT_PACK_INFO_RESPONSE, self::PACK_IDLE_TIMEOUT_NS);
     }
 
     private function emitNextPackChunk(): void
@@ -441,23 +460,33 @@ final class LoginSession
         if ($this->packChunkInFlight || $this->pendingPackChunks->isEmpty()) {
             return;
         }
-        [$pack, $chunkIndex] = $this->pendingPackChunks->dequeue();
+        [$pack, $chunkIndex] = $this->pendingPackChunks->bottom();
+        $chunkBytes = min(ResourcePackArchive::CHUNK_BYTES, $pack->size - $chunkIndex * ResourcePackArchive::CHUNK_BYTES);
+        if ($this->resourcePackGovernor !== null
+            && !$this->resourcePackGovernor->acquire($this->resourcePackTransferId, $chunkBytes, $this->lastNow)) {
+            return;
+        }
+        $this->pendingPackChunks->dequeue();
         try {
-            $bytes = $pack->readChunk($chunkIndex);
+            $bytes = $this->resourcePackChunkCache?->read($pack, $chunkIndex) ?? $pack->readChunk($chunkIndex);
         } catch (Throwable $failure) {
+            $this->resourcePackGovernor?->complete($this->resourcePackTransferId);
             $this->failureDetail = 'resource_pack:' . $failure::class;
             $this->close(LoginFailureCode::RESOURCE_PACK_PROBLEM);
             return;
         }
         $this->packChunkInFlight = true;
-        $this->emit(new SendPacketEffect(new ResourcePackChunkDataPacket(
+        if (!$this->emit(new SendPacketEffect(new ResourcePackChunkDataPacket(
             $pack->id,
             $pack->version,
             $chunkIndex,
             $chunkIndex * ResourcePackArchive::CHUNK_BYTES,
             $bytes,
-        ), false));
-        $this->transitionNanoseconds(LoginState::WAIT_PACK_INFO_RESPONSE, self::PACK_IDLE_TIMEOUT_NS);
+        ), false))) {
+            $this->resourcePackGovernor?->complete($this->resourcePackTransferId);
+            $this->packChunkInFlight = false;
+            return;
+        }
     }
 
     private function transitionNanoseconds(LoginState $state, int $duration): void

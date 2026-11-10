@@ -47,6 +47,8 @@ use Bedriox\Server\Login\MonotonicClock;
 use Bedriox\Server\Login\SendPacketEffect;
 use Bedriox\Server\ResourcePack\ResourcePackArchive;
 use Bedriox\Server\ResourcePack\ResourcePackCatalog;
+use Bedriox\Server\ResourcePack\ResourcePackChunkCache;
+use Bedriox\Server\ResourcePack\ResourcePackTransferGovernor;
 use PHPUnit\Framework\TestCase;
 
 final class ResourcePackLoginSessionTest extends TestCase
@@ -154,7 +156,7 @@ final class ResourcePackLoginSessionTest extends TestCase
         self::assertSame(LoginFailureCode::RESOURCE_PACK_PROBLEM, $outside->failure());
     }
 
-    public function testDuplicateMetadataOrChunkRequestFailsClosed(): void
+    public function testDuplicateMetadataFailsClosedAndDuplicateChunkIsIdempotent(): void
     {
         $pack = $this->pack('duplicate');
         $metadata = $this->throughAuthentication(new ResourcePackCatalog([$pack], false));
@@ -173,7 +175,8 @@ final class ResourcePackLoginSessionTest extends TestCase
         $this->send($chunk, $chunkRequest);
         $chunk->drainEffects();
         $this->send($chunk, $chunkRequest);
-        self::assertSame(LoginFailureCode::RESOURCE_PACK_PROBLEM, $chunk->failure());
+        self::assertNull($chunk->failure());
+        self::assertSame(LoginState::WAIT_PACK_INFO_RESPONSE, $chunk->state());
     }
 
     public function testRetailChunkBurstIsBufferedAndServedInBoundedSlices(): void
@@ -212,8 +215,50 @@ final class ResourcePackLoginSessionTest extends TestCase
         self::assertNull($session->failure());
     }
 
-    private function throughAuthentication(ResourcePackCatalog $catalog): LoginSession
+    public function testOneHundredJoiningPlayersProgressFairlyThroughSharedBudget(): void
     {
+        $pack = $this->pack(str_repeat('p', ResourcePackArchive::CHUNK_BYTES));
+        $catalog = new ResourcePackCatalog([$pack], false);
+        $governor = new ResourcePackTransferGovernor(16, 1_073_741_824, 134_217_728, 1_000_000);
+        $cache = new ResourcePackChunkCache();
+        $sessions = [];
+        foreach (range(1, 100) as $_) {
+            $session = $this->throughAuthentication($catalog, $governor, $cache);
+            $session->drainEffects();
+            $this->send($session, new ResourcePackClientResponsePacket(
+                ResourcePackResponseStatus::SendPacks,
+                [$pack->wireId()],
+            ));
+            $session->drainEffects();
+            $this->send($session, new ResourcePackChunkRequestPacket($pack->id, $pack->version, 0));
+            $sessions[] = $session;
+        }
+
+        $served = 0;
+        for ($pass = 0; $pass < 100 && $served < 100; ++$pass) {
+            foreach ($sessions as $session) {
+                $session->tick();
+                $effects = $session->drainEffects();
+                if ($effects === []) {
+                    continue;
+                }
+                self::assertCount(1, $effects);
+                self::assertInstanceOf(ResourcePackChunkDataPacket::class, self::packet($effects[0]));
+                ++$served;
+                $session->acknowledgePackChunk();
+            }
+        }
+
+        self::assertSame(100, $served);
+        self::assertSame(0, $governor->snapshot()['in_flight']);
+        self::assertSame(0, $governor->snapshot()['waiting']);
+    }
+
+    private function throughAuthentication(
+        ResourcePackCatalog $catalog,
+        ?ResourcePackTransferGovernor $governor = null,
+        ?ResourcePackChunkCache $cache = null,
+    ): LoginSession {
         $clock = new ResourcePackFakeClock();
         $keys = (new OpenSslEphemeralKeyFactory(dirname(__DIR__) . '/Fixtures/openssl.cnf'))->generate();
         $authenticated = new AuthenticatedLogin(
@@ -228,6 +273,8 @@ final class ResourcePackLoginSessionTest extends TestCase
             new ResourcePackFakeAuthenticator($authenticated),
             AuthenticationMode::FULL,
             resourcePacks: $catalog,
+            resourcePackGovernor: $governor,
+            resourcePackChunkCache: $cache,
         );
         $this->send($session, new RequestNetworkSettingsPacket());
         $session->drainEffects();

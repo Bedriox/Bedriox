@@ -24,6 +24,9 @@ use InvalidArgumentException;
 
 final readonly class ResourcePackCatalog
 {
+    public const int MAXIMUM_PACKS = 32;
+    public const int MAXIMUM_TOTAL_BYTES = 2_147_483_648;
+
     /** @var list<ResourcePackArchive> */
     public array $stack;
 
@@ -33,11 +36,12 @@ final readonly class ResourcePackCatalog
     /** @param array<array-key, mixed> $stack */
     public function __construct(array $stack = [], public bool $required = false)
     {
-        if (!array_is_list($stack) || count($stack) > 32) {
+        if (!array_is_list($stack) || count($stack) > self::MAXIMUM_PACKS) {
             throw new InvalidArgumentException('Resource-pack stack exceeds 32 packs.');
         }
         $validated = [];
         $byId = [];
+        $totalBytes = 0;
         foreach ($stack as $pack) {
             if (!$pack instanceof ResourcePackArchive) {
                 throw new InvalidArgumentException('Resource-pack stack contains an invalid entry.');
@@ -46,6 +50,10 @@ final readonly class ResourcePackCatalog
             if (isset($byId[$id])) {
                 throw new InvalidArgumentException("Resource-pack UUID {$pack->id} is duplicated.");
             }
+            if ($pack->size > self::MAXIMUM_TOTAL_BYTES - $totalBytes) {
+                throw new InvalidArgumentException('Resource-pack stack exceeds the 2 GiB total limit.');
+            }
+            $totalBytes += $pack->size;
             $byId[$id] = $pack;
             $validated[] = $pack;
         }
@@ -66,6 +74,26 @@ final readonly class ResourcePackCatalog
     public function isEmpty(): bool
     {
         return $this->stack === [];
+    }
+
+    public function totalBytes(): int
+    {
+        $total = 0;
+        foreach ($this->stack as $pack) {
+            $total += $pack->size;
+        }
+
+        return $total;
+    }
+
+    public function totalChunks(): int
+    {
+        $total = 0;
+        foreach ($this->stack as $pack) {
+            $total += $pack->chunkCount();
+        }
+
+        return $total;
     }
 
     public function pack(string $id): ?ResourcePackArchive

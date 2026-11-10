@@ -29,7 +29,9 @@ final readonly class ResourcePackCatalogLoader
     private const int MAXIMUM_CONFIG_BYTES = 65_536;
     private const int MAXIMUM_MANIFEST_BYTES = 262_144;
     private const int MAXIMUM_PACK_BYTES = 536_870_912;
-    private const int MAXIMUM_TOTAL_BYTES = 2_147_483_648;
+    private const int MAXIMUM_ZIP_ENTRIES = 32_768;
+    private const int MAXIMUM_CENTRAL_DIRECTORY_BYTES = 67_108_864;
+    private const int MAXIMUM_CACHE_ENTRIES = 65_536;
 
     /** @internal Loads one bounded archive into an immutable server-owned snapshot. */
     public function loadFile(string $source, string $subPack, string $cacheDirectory): ResourcePackArchive
@@ -88,7 +90,7 @@ final readonly class ResourcePackCatalogLoader
             $path = $this->sourcePath($directory, $source);
             $pack = $this->loadArchive($path, $subPack, $cache);
             $total += $pack->size;
-            if ($total > self::MAXIMUM_TOTAL_BYTES) {
+            if ($total > ResourcePackCatalog::MAXIMUM_TOTAL_BYTES) {
                 throw new ResourcePackException('Configured resource packs exceed the 2 GiB total limit.');
             }
             $packs[] = $pack;
@@ -139,71 +141,277 @@ final readonly class ResourcePackCatalogLoader
 
     private function loadArchive(string $source, string $subPack, string $cache): ResourcePackArchive
     {
-        $size = filesize($source);
-        if ($size === false || $size < 1 || $size > self::MAXIMUM_PACK_BYTES) {
-            throw new ResourcePackException('Resource-pack archive must be between 1 byte and 512 MiB.');
-        }
-        $zip = new ZipArchive();
-        $opened = $zip->open($source, ZipArchive::RDONLY);
-        if ($opened !== true) {
-            throw new ResourcePackException("Resource-pack archive could not be opened (ZipArchive {$opened}).");
-        }
+        [$temporary, $size, $hash] = $this->copyOwnedSnapshot($source, $cache);
         try {
-            $stat = $zip->statName('manifest.json');
-            if (!is_array($stat) || $stat['size'] < 2 || $stat['size'] > self::MAXIMUM_MANIFEST_BYTES) {
-                throw new ResourcePackException('Resource-pack archive needs a bounded manifest.json at its root.');
+            $this->validateZipDirectory($temporary, $size);
+            $zip = new ZipArchive();
+            $opened = $zip->open($temporary, ZipArchive::RDONLY);
+            if ($opened !== true) {
+                throw new ResourcePackException("Resource-pack archive could not be opened (ZipArchive {$opened}).");
             }
-            $manifestJson = $zip->getFromName('manifest.json', self::MAXIMUM_MANIFEST_BYTES);
-            if (!is_string($manifestJson)) {
-                throw new ResourcePackException('Resource-pack manifest could not be read.');
+            try {
+                if ($zip->numFiles < 1 || $zip->numFiles > self::MAXIMUM_ZIP_ENTRIES) {
+                    throw new ResourcePackException('Resource-pack archive contains too many files.');
+                }
+                $manifestEntries = 0;
+                for ($index = 0; $index < $zip->numFiles; ++$index) {
+                    if ($zip->getNameIndex($index) === 'manifest.json') {
+                        ++$manifestEntries;
+                    }
+                }
+                if ($manifestEntries !== 1) {
+                    throw new ResourcePackException('Resource-pack archive must contain exactly one root manifest.json.');
+                }
+                $stat = $zip->statName('manifest.json');
+                $manifestSize = is_array($stat) ? $stat['size'] : null;
+                if (!is_int($manifestSize) || $manifestSize < 2 || $manifestSize > self::MAXIMUM_MANIFEST_BYTES) {
+                    throw new ResourcePackException('Resource-pack archive needs a bounded manifest.json at its root.');
+                }
+                $manifestJson = $zip->getFromName('manifest.json', self::MAXIMUM_MANIFEST_BYTES);
+                if (!is_string($manifestJson) || strlen($manifestJson) !== $manifestSize) {
+                    throw new ResourcePackException('Resource-pack manifest could not be read completely.');
+                }
+            } finally {
+                $zip->close();
             }
+            $manifest = $this->manifest($manifestJson);
+            $header = $manifest['header'];
+            $id = strtolower($header['uuid']);
+            $version = implode('.', $header['version']);
+            $contentKey = $this->contentKey($source . '.key');
+            $dependencies = [];
+            foreach ($manifest['dependencies'] ?? [] as $dependency) {
+                $dependencies[strtolower($dependency['uuid'])] = implode('.', $dependency['version']);
+            }
+            $snapshot = $this->publishSnapshot($temporary, $cache, $hash, $size);
+            $temporary = '';
+
+            return new ResourcePackArchive(
+                $id,
+                $version,
+                $header['name'],
+                $size,
+                $hash,
+                $contentKey,
+                $subPack,
+                $snapshot,
+                dependencies: $dependencies,
+            );
         } finally {
-            $zip->close();
-        }
-        $manifest = $this->manifest($manifestJson);
-        $header = $manifest['header'];
-        $id = strtolower($header['uuid']);
-        $version = implode('.', $header['version']);
-        $hash = hash_file('sha256', $source, true);
-        if (!is_string($hash) || strlen($hash) !== 32) {
-            throw new ResourcePackException('Resource-pack SHA-256 could not be calculated.');
-        }
-        $snapshot = $cache . DIRECTORY_SEPARATOR . bin2hex($hash) . '.mcpack';
-        if (!is_file($snapshot) || filesize($snapshot) !== $size) {
-            $temporary = $snapshot . '.partial-' . bin2hex(random_bytes(8));
-            if (!copy($source, $temporary) || !rename($temporary, $snapshot)) {
+            if ($temporary !== '' && is_file($temporary) && !is_link($temporary)) {
                 @unlink($temporary);
-                throw new ResourcePackException('Resource-pack immutable snapshot could not be published.');
             }
         }
-        $keyPath = $source . '.key';
-        $contentKey = '';
-        if (file_exists($keyPath)) {
-            if (!is_file($keyPath) || is_link($keyPath)) {
-                throw new ResourcePackException('Resource-pack content key must be a regular file.');
-            }
-            $key = file_get_contents($keyPath, false, null, 0, 35);
-            if (!is_string($key) || strlen(rtrim($key, "\r\n")) !== 32) {
-                throw new ResourcePackException('Resource-pack content key must contain exactly 32 bytes.');
-            }
-            $contentKey = rtrim($key, "\r\n");
+    }
+
+    public function cleanCache(string $cacheDirectory, ResourcePackCatalog $catalog): ResourcePackCacheCleanup
+    {
+        $this->prepareDirectory($cacheDirectory);
+        $live = [];
+        foreach ($catalog->stack as $pack) {
+            $live[bin2hex($pack->sha256) . '.mcpack'] = true;
         }
-        $dependencies = [];
-        foreach ($manifest['dependencies'] ?? [] as $dependency) {
-            $dependencies[strtolower($dependency['uuid'])] = implode('.', $dependency['version']);
+        $files = 0;
+        $bytes = 0;
+        $inspected = 0;
+        $iterator = new \FilesystemIterator($cacheDirectory, \FilesystemIterator::SKIP_DOTS);
+        foreach ($iterator as $entry) {
+            if (++$inspected > self::MAXIMUM_CACHE_ENTRIES) {
+                throw new ResourcePackException('Resource-pack cache exceeds 65536 entries.');
+            }
+            if (!$entry instanceof \SplFileInfo) {
+                continue;
+            }
+            $name = $entry->getFilename();
+            if ($entry->isLink() || !$entry->isFile()) {
+                continue;
+            }
+            $ownedSnapshot = preg_match('/\A[0-9a-f]{64}\.mcpack\z/D', $name) === 1;
+            $ownedPartial = preg_match('/\A\.incoming-[0-9a-f]{32}\.mcpack\z/D', $name) === 1;
+            if ((!$ownedSnapshot || isset($live[$name])) && !$ownedPartial) {
+                continue;
+            }
+            $size = $entry->getSize();
+            if (@unlink($entry->getPathname())) {
+                ++$files;
+                $bytes += max(0, $size);
+            }
         }
 
-        return new ResourcePackArchive(
-            $id,
-            $version,
-            $header['name'],
-            $size,
-            $hash,
-            $contentKey,
-            $subPack,
-            $snapshot,
-            dependencies: $dependencies,
+        return new ResourcePackCacheCleanup($files, $bytes);
+    }
+
+    /** @return array{string, int, string} */
+    private function copyOwnedSnapshot(string $source, string $cache): array
+    {
+        $declaredSize = filesize($source);
+        if ($declaredSize === false || $declaredSize < 1 || $declaredSize > self::MAXIMUM_PACK_BYTES) {
+            throw new ResourcePackException('Resource-pack archive must be between 1 byte and 512 MiB.');
+        }
+        $temporary = $cache . DIRECTORY_SEPARATOR . '.incoming-' . bin2hex(random_bytes(16)) . '.mcpack';
+        $input = @fopen($source, 'rb');
+        $output = @fopen($temporary, 'xb');
+        if ($input === false || $output === false) {
+            if (is_resource($input)) {
+                fclose($input);
+            }
+            if (is_resource($output)) {
+                fclose($output);
+            }
+            @unlink($temporary);
+            throw new ResourcePackException('Resource-pack immutable snapshot could not be created.');
+        }
+        $hash = hash_init('sha256');
+        $size = 0;
+        try {
+            while (!feof($input)) {
+                $chunk = fread($input, 1_048_576);
+                if (!is_string($chunk)) {
+                    throw new ResourcePackException('Resource-pack source could not be read completely.');
+                }
+                if ($chunk === '') {
+                    if (!feof($input)) {
+                        throw new ResourcePackException('Resource-pack source stopped before end of file.');
+                    }
+                    break;
+                }
+                $length = strlen($chunk);
+                if ($length > self::MAXIMUM_PACK_BYTES - $size) {
+                    throw new ResourcePackException('Resource-pack archive exceeds 512 MiB while being copied.');
+                }
+                $written = 0;
+                while ($written < $length) {
+                    $count = fwrite($output, substr($chunk, $written));
+                    if (!is_int($count) || $count < 1) {
+                        throw new ResourcePackException('Resource-pack immutable snapshot could not be written completely.');
+                    }
+                    $written += $count;
+                }
+                hash_update($hash, $chunk);
+                $size += $length;
+            }
+            if ($size < 1 || !fflush($output)) {
+                throw new ResourcePackException('Resource-pack immutable snapshot is empty or could not be flushed.');
+            }
+            if (function_exists('fsync') && !fsync($output)) {
+                throw new ResourcePackException('Resource-pack immutable snapshot could not be synchronized.');
+            }
+        } catch (\Throwable $failure) {
+            fclose($input);
+            fclose($output);
+            @unlink($temporary);
+            throw $failure;
+        }
+        fclose($input);
+        fclose($output);
+        $digest = hash_final($hash, true);
+        if (strlen($digest) !== 32 || filesize($temporary) !== $size) {
+            @unlink($temporary);
+            throw new ResourcePackException('Resource-pack immutable snapshot verification failed.');
+        }
+
+        return [$temporary, $size, $digest];
+    }
+
+    private function publishSnapshot(string $temporary, string $cache, string $hash, int $size): string
+    {
+        $snapshot = $cache . DIRECTORY_SEPARATOR . bin2hex($hash) . '.mcpack';
+        if (is_file($snapshot) && !is_link($snapshot) && filesize($snapshot) === $size) {
+            $existingHash = hash_file('sha256', $snapshot, true);
+            if (is_string($existingHash) && hash_equals($hash, $existingHash)) {
+                @unlink($temporary);
+
+                return $snapshot;
+            }
+        }
+        if (file_exists($snapshot)) {
+            if (is_link($snapshot) || !is_file($snapshot) || !@unlink($snapshot)) {
+                throw new ResourcePackException('Resource-pack cache contains an invalid snapshot target.');
+            }
+        }
+        if (!@rename($temporary, $snapshot)) {
+            throw new ResourcePackException('Resource-pack immutable snapshot could not be published.');
+        }
+
+        return $snapshot;
+    }
+
+    private function contentKey(string $keyPath): string
+    {
+        if (!file_exists($keyPath)) {
+            return '';
+        }
+        if (!is_file($keyPath) || is_link($keyPath)) {
+            throw new ResourcePackException('Resource-pack content key must be a regular file.');
+        }
+        $size = filesize($keyPath);
+        if (!is_int($size) || !in_array($size, [32, 33, 34], true)) {
+            throw new ResourcePackException('Resource-pack content key must contain exactly 32 bytes with an optional line ending.');
+        }
+        $key = file_get_contents($keyPath, false, null, 0, 35);
+        if (!is_string($key) || strlen($key) !== $size) {
+            throw new ResourcePackException('Resource-pack content key could not be read completely.');
+        }
+        if ($size === 33 && !str_ends_with($key, "\n")) {
+            throw new ResourcePackException('Resource-pack content key has an invalid trailing byte.');
+        }
+        if ($size === 34 && !str_ends_with($key, "\r\n")) {
+            throw new ResourcePackException('Resource-pack content key has an invalid trailing line ending.');
+        }
+        $contentKey = $size === 32 ? $key : substr($key, 0, 32);
+        if (strlen($contentKey) !== 32 || str_contains($contentKey, "\0")) {
+            throw new ResourcePackException('Resource-pack content key must contain exactly 32 non-NUL bytes.');
+        }
+
+        return $contentKey;
+    }
+
+    private function validateZipDirectory(string $archive, int $size): void
+    {
+        $tailBytes = max(1, min($size, 65_557));
+        $handle = @fopen($archive, 'rb');
+        if ($handle === false) {
+            throw new ResourcePackException('Resource-pack snapshot could not be inspected.');
+        }
+        try {
+            if (fseek($handle, $size - $tailBytes, SEEK_SET) !== 0) {
+                throw new ResourcePackException('Resource-pack ZIP directory could not be positioned.');
+            }
+            $tail = fread($handle, $tailBytes);
+        } finally {
+            fclose($handle);
+        }
+        if (!is_string($tail) || strlen($tail) !== $tailBytes) {
+            throw new ResourcePackException('Resource-pack ZIP directory could not be read completely.');
+        }
+        $relative = strrpos($tail, "PK\x05\x06");
+        if ($relative === false || strlen($tail) - $relative < 22) {
+            throw new ResourcePackException('Resource-pack ZIP end record is missing or truncated.');
+        }
+        $fields = unpack(
+            'vdisk/vdirectory_disk/ventries_disk/ventries/Vdirectory_bytes/Vdirectory_offset/vcomment_bytes',
+            substr($tail, $relative + 4, 18),
         );
+        if (!is_array($fields)) {
+            throw new ResourcePackException('Resource-pack ZIP end record is malformed.');
+        }
+        foreach (['disk', 'directory_disk', 'entries_disk', 'entries', 'directory_bytes', 'directory_offset', 'comment_bytes'] as $field) {
+            if (!isset($fields[$field]) || !is_int($fields[$field])) {
+                throw new ResourcePackException('Resource-pack ZIP end record contains an invalid field.');
+            }
+        }
+        $absolute = $size - $tailBytes + $relative;
+        if ($fields['disk'] !== 0 || $fields['directory_disk'] !== 0
+            || $fields['entries_disk'] !== $fields['entries']
+            || $fields['entries'] === 0xffff || $fields['directory_bytes'] === 0xffff_ffff
+            || $fields['directory_offset'] === 0xffff_ffff
+            || $fields['entries'] < 1 || $fields['entries'] > self::MAXIMUM_ZIP_ENTRIES
+            || $fields['directory_bytes'] > self::MAXIMUM_CENTRAL_DIRECTORY_BYTES
+            || $fields['directory_offset'] > $absolute
+            || $fields['directory_bytes'] > $absolute - $fields['directory_offset']
+            || $absolute + 22 + $fields['comment_bytes'] !== $size) {
+            throw new ResourcePackException('Resource-pack ZIP directory exceeds its supported bounds.');
+        }
     }
 
     /** @return array{header: array{uuid: string, version: list<int>, name: string}, dependencies?: list<array{uuid: string, version: list<int>}>} */

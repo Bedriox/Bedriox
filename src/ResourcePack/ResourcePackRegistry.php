@@ -28,6 +28,7 @@ final class ResourcePackRegistry
 {
     /** @var array<string, array{archive: ResourcePackArchive, owner: string, required: bool}> */
     private array $registered = [];
+    private bool $sealed = false;
 
     public function __construct(
         private readonly ResourcePackCatalog $configured,
@@ -37,6 +38,9 @@ final class ResourcePackRegistry
 
     public function register(string $owner, ResourcePackDefinition $definition): ResourcePackInfo
     {
+        if ($this->sealed) {
+            throw new PluginException('Resource packs may be registered only while plugins are starting.');
+        }
         if ($this->snapshot()->count() >= 32) {
             throw new PluginException('The resource-pack stack already contains 32 packs.');
         }
@@ -45,6 +49,11 @@ final class ResourcePackRegistry
             $definition->subPackName,
             $this->cacheDirectory,
         );
+        try {
+            new ResourcePackCatalog([...$this->snapshot()->stack, $archive]);
+        } catch (\InvalidArgumentException $failure) {
+            throw new PluginException($failure->getMessage(), 0, $failure);
+        }
         $key = strtolower($archive->id);
         if ($this->configured->pack($key) !== null || isset($this->registered[$key])) {
             throw new PluginException("Resource pack {$archive->id} is already registered.");
@@ -120,6 +129,16 @@ final class ResourcePackRegistry
         }
 
         return new ResourcePackCatalog($stack, $required);
+    }
+
+    public function seal(): void
+    {
+        $this->sealed = true;
+    }
+
+    public function isSealed(): bool
+    {
+        return $this->sealed;
     }
 
     private function info(ResourcePackArchive $archive, bool $required, ?string $owner): ResourcePackInfo

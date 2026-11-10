@@ -28,7 +28,10 @@ use Bedriox\Server\Login\LoginLimits;
 use Bedriox\Server\Login\LoginSession;
 use Bedriox\Server\Login\MonotonicClock;
 use Bedriox\Server\ResourcePack\ResourcePackCatalog;
+use Bedriox\Server\ResourcePack\ResourcePackChunkCache;
+use Bedriox\Server\ResourcePack\ResourcePackTransferGovernor;
 use Bedriox\Server\Transport\SessionInfo;
+use Bedriox\Server\Worker\Network\CompressionWorkerDispatcher;
 use Closure;
 
 final class ConfiguredLoginChannelFactory implements LoginChannelFactory
@@ -43,6 +46,10 @@ final class ConfiguredLoginChannelFactory implements LoginChannelFactory
         private readonly LoginLimits $loginLimits = new LoginLimits(),
         private readonly LoginChannelLimits $channelLimits = new LoginChannelLimits(),
         ResourcePackCatalog|Closure $resourcePacks = new ResourcePackCatalog(),
+        private readonly ?ResourcePackTransferGovernor $resourcePackGovernor = null,
+        private readonly ?ResourcePackChunkCache $resourcePackChunkCache = null,
+        private readonly ?CompressionWorkerDispatcher $compressionWorkers = null,
+        private readonly int $compressionTaskTypeId = 1,
     ) {
         $this->resourcePacks = $resourcePacks instanceof Closure
             ? $resourcePacks
@@ -66,6 +73,8 @@ final class ConfiguredLoginChannelFactory implements LoginChannelFactory
             $this->mode,
             $this->loginLimits,
             $resourcePacks,
-        ), $this->channelLimits);
+            $this->resourcePackGovernor,
+            $this->resourcePackChunkCache,
+        ), $this->channelLimits, $this->compressionWorkers, $this->compressionTaskTypeId);
     }
 }

@@ -22,7 +22,7 @@ namespace Bedriox\Api\ResourcePack;
 
 interface ResourcePackManager
 {
-    /** Adds a pack to the end of the stack offered to future connections. */
+    /** Adds a pack during plugin startup, before the client-facing catalog is sealed. */
     public function register(ResourcePackDefinition $definition): ResourcePackInfo;
 
     /** Removes a pack owned by this plugin from future connection offers. */

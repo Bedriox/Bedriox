@@ -196,9 +196,10 @@ final class Bedriox
                 null,
                 backgroundFile: $backgroundLog,
             );
-            $configuredResourcePacks = (new ResourcePackCatalogLoader())->load(
-                $workingDirectory . DIRECTORY_SEPARATOR . 'resource_packs',
-            );
+            $resourcePackLoader = new ResourcePackCatalogLoader();
+            $resourcePackDirectory = $workingDirectory . DIRECTORY_SEPARATOR . 'resource_packs';
+            $resourcePackCacheDirectory = $resourcePackDirectory . DIRECTORY_SEPARATOR . '.cache';
+            $configuredResourcePacks = $resourcePackLoader->load($resourcePackDirectory);
             $resourcePacks = $configuredResourcePacks;
             if ($config->authenticationMode === AuthenticationMode::GATEWAY) {
                 if (!$configuredResourcePacks->isEmpty()) {
@@ -220,7 +221,8 @@ final class Bedriox
                 ? null
                 : new ResourcePackRegistry(
                     $resourcePacks,
-                    $workingDirectory . DIRECTORY_SEPARATOR . 'resource_packs' . DIRECTORY_SEPARATOR . '.cache',
+                    $resourcePackCacheDirectory,
+                    $resourcePackLoader,
                 );
             $crashHandler = new CrashHandler(
                 new CrashReporter(
@@ -1021,7 +1023,6 @@ final class Bedriox
             if ($server->securityWarning !== null) {
                 $logger->warning($server->securityWarning);
             }
-            $logger->info(sprintf('Bedriox is listening on %s:%d', $server->localAddress, $server->localPort));
             $logger->info('Preparing spawn area in the background...');
             if (function_exists('pcntl_async_signals') && function_exists('pcntl_signal')) {
                 pcntl_async_signals(true);
@@ -1041,6 +1042,20 @@ final class Bedriox
                 } else {
                     $logger->notice('Plugin loading is disabled', 'Plugins');
                 }
+                if ($resourcePackRegistry !== null) {
+                    $resourcePackRegistry->seal();
+                    $resourcePacks = $resourcePackRegistry->snapshot();
+                }
+                $cleanup = $resourcePackLoader->cleanCache($resourcePackCacheDirectory, $resourcePacks);
+                if ($cleanup->files > 0) {
+                    $logger->info(sprintf(
+                        'Removed %d stale resource-pack cache file%s (%d bytes).',
+                        $cleanup->files,
+                        $cleanup->files === 1 ? '' : 's',
+                        $cleanup->bytes,
+                    ), 'ResourcePacks');
+                }
+                $logger->info(sprintf('Bedriox is listening on %s:%d', $server->localAddress, $server->localPort));
                 $consoleInput = new NullConsoleInput();
                 if ($config->consoleEnabled && defined('STDIN') && is_resource(STDIN)) {
                     if (PHP_OS_FAMILY === 'Windows') {

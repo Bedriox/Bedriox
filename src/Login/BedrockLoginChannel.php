@@ -24,6 +24,7 @@ use Bedriox\NetherNet\Protocol\Reliability;
 use Bedriox\Protocol\Batch\BedrockBatch;
 use Bedriox\Protocol\Batch\BedrockBatchCodec;
 use Bedriox\Protocol\Batch\CompressionMode;
+use Bedriox\Protocol\Batch\PacketBatchCodec;
 use Bedriox\Protocol\Packet\BedrockPacketCodec;
 use Bedriox\Protocol\Packet\NetworkSettingsPacket;
 use Bedriox\Protocol\Packet\PacketFrame;
@@ -31,6 +32,8 @@ use Bedriox\Protocol\Packet\PacketHeader;
 use Bedriox\Protocol\Packet\ResourcePackChunkDataPacket;
 use Bedriox\Server\Transport\InboundPayload;
 use Bedriox\Server\Transport\NetworkCompressionPolicy;
+use Bedriox\Server\Worker\Network\CompressionWorkerDispatcher;
+use Bedriox\Server\Worker\Network\OrderedOutboundCompressionQueue;
 use SplQueue;
 use Throwable;
 
@@ -45,10 +48,28 @@ final class BedrockLoginChannel
     private ?string $failureDetail = null;
     private int $nextReceiptId = 1;
     private ?int $pendingPackReceiptId = null;
+    private readonly ?OrderedOutboundCompressionQueue $resourcePackCompression;
+    private bool $pendingPackCompression = false;
 
-    public function __construct(private readonly LoginSession $session, private readonly LoginChannelLimits $limits = new LoginChannelLimits())
-    {
+    public function __construct(
+        private readonly LoginSession $session,
+        private readonly LoginChannelLimits $limits = new LoginChannelLimits(),
+        ?CompressionWorkerDispatcher $compressionWorkers = null,
+        int $compressionTaskTypeId = 1,
+    ) {
         $this->outgoing = new SplQueue();
+        $this->resourcePackCompression = $compressionWorkers === null ? null : new OrderedOutboundCompressionQueue(
+            $compressionWorkers,
+            $compressionTaskTypeId,
+            1,
+            CompressionMode::NegotiatedZlib,
+            NetworkCompressionPolicy::THRESHOLD_BYTES,
+            $this->limits->batch,
+            maximumOutstandingTasks: 1,
+            maximumOutstandingBytes: 2_097_152,
+            maximumResultBytes: $this->limits->batch->maximumInputBytes,
+            minimumOffloadBytes: 1,
+        );
     }
 
     public function __destruct()
@@ -165,6 +186,9 @@ final class BedrockLoginChannel
 
     private function consumeEffects(): bool
     {
+        if (!$this->releaseCompressedPack()) {
+            return false;
+        }
         foreach ($this->session->drainEffects() as $effect) {
             try {
                 if ($effect instanceof SendPacketEffect) {
@@ -186,7 +210,7 @@ final class BedrockLoginChannel
         if ($this->session->state() === LoginState::CLOSED) {
             return $this->fail($this->session->failure() ?? LoginFailureCode::CLOSED_BY_SERVER);
         }
-        return true;
+        return $this->releaseCompressedPack();
     }
 
     private function encode(SendPacketEffect $effect): bool
@@ -195,6 +219,21 @@ final class BedrockLoginChannel
             return $this->fail(LoginFailureCode::ENCRYPTION_STATE);
         }
         $packet = $effect->packet;
+        if ($packet instanceof ResourcePackChunkDataPacket && $this->resourcePackCompression !== null) {
+            if ($this->pendingPackCompression || $this->pendingPackReceiptId !== null) {
+                return $this->fail(LoginFailureCode::EFFECT_LIMIT);
+            }
+            $clearBatch = PacketBatchCodec::encode([
+                new PacketFrame(new PacketHeader(BedrockPacketCodec::packetId($packet)), BedrockPacketCodec::encode($packet)),
+            ], $this->limits->batch);
+            $submission = $this->resourcePackCompression->enqueue($clearBatch);
+            if (!$submission->isAccepted()) {
+                return $this->fail(LoginFailureCode::EFFECT_LIMIT);
+            }
+            $this->pendingPackCompression = true;
+
+            return $this->releaseCompressedPack();
+        }
         $envelope = BedrockBatchCodec::encode(new BedrockBatch([
             new PacketFrame(new PacketHeader(BedrockPacketCodec::packetId($packet)), BedrockPacketCodec::encode($packet)),
         ], $this->compressionNegotiated ? CompressionMode::NegotiatedZlib : CompressionMode::Uncompressed, NetworkCompressionPolicy::THRESHOLD_BYTES), $this->limits->batch);
@@ -223,11 +262,40 @@ final class BedrockLoginChannel
 
     private function fail(LoginFailureCode $code): bool
     {
+        $this->resourcePackCompression?->close();
         $this->session->close($code);
         $this->outgoing = new SplQueue();
         $this->outgoingBytes = 0;
         $this->ready = null;
         $this->pendingPackReceiptId = null;
+        $this->pendingPackCompression = false;
         return false;
+    }
+
+    private function releaseCompressedPack(): bool
+    {
+        if ($this->resourcePackCompression === null || !$this->pendingPackCompression) {
+            return true;
+        }
+        $ready = $this->resourcePackCompression->takeReady(1);
+        if ($ready === []) {
+            return true;
+        }
+        $batch = $ready[0];
+        if ($batch->payload === null || $batch->failureCode !== null
+            || $this->outgoing->count() >= $this->limits->maximumQueuedPayloads
+            || strlen($batch->payload) > $this->limits->maximumQueuedPayloadBytes - $this->outgoingBytes) {
+            return $this->fail(LoginFailureCode::EFFECT_LIMIT);
+        }
+        $receiptId = $this->nextReceiptId++;
+        if ($this->nextReceiptId > 0x7fff_ffff) {
+            $this->nextReceiptId = 1;
+        }
+        $this->pendingPackReceiptId = $receiptId;
+        $this->pendingPackCompression = false;
+        $this->outgoing->enqueue(new OutgoingLoginPayload($batch->payload, $receiptId));
+        $this->outgoingBytes += strlen($batch->payload);
+
+        return true;
     }
 }

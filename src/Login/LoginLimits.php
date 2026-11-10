@@ -30,7 +30,7 @@ final readonly class LoginLimits
         public int $maximumPacketBytes = 1_048_576,
         public int $maximumQueuedEffects = 32,
         public int $maximumInputsPerTick = 8,
-        public int $maximumQueuedPackChunkRequests = 512,
+        public int $maximumQueuedPackChunkRequests = 8_192,
     ) {
         if ($maximumQueuedPackets < 1
             || $maximumQueuedInputBytes < 1

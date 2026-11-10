@@ -190,6 +190,12 @@ updates.notify-operators=true
 
 # Plugins and diagnostics
 plugins.maximum=64
+# Maximum number of resource-pack chunks allowed in transport at once across all joining players.
+# Accepted range: 1 through 1024. The recommended default of 16 keeps gameplay traffic responsive.
+resource-packs.maximum-concurrent-transfers=16
+# Process-wide resource-pack delivery budget in bytes per second, shared fairly between joining players.
+# Accepted range: 1048576 (1 MiB/s) through 1073741824 (1 GiB/s). Default: 67108864 (64 MiB/s).
+resource-packs.maximum-transfer-bytes-per-second=67108864
 # Enables the explicit /timings paste command. Reports are never uploaded automatically.
 # Uploads contain bounded performance counters and optional plugin names, but no player identities,
 # chat, commands, world coordinates, inventories, packets, credentials, or complete configuration.

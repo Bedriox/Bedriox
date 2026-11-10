@@ -36,6 +36,8 @@ use Bedriox\Protocol\Packet\PacketFrame;
 use Bedriox\Protocol\Packet\PacketHeader;
 use Bedriox\Protocol\Packet\PlayStatusPacket;
 use Bedriox\Protocol\Packet\RequestNetworkSettingsPacket;
+use Bedriox\Protocol\Packet\ResourcePackChunkDataPacket;
+use Bedriox\Protocol\Packet\ResourcePackChunkRequestPacket;
 use Bedriox\Protocol\Packet\ResourcePackClientResponsePacket;
 use Bedriox\Protocol\Packet\ResourcePackResponseStatus;
 use Bedriox\Protocol\Packet\ResourcePacksInfoPacket;
@@ -52,8 +54,14 @@ use Bedriox\Server\Login\LoginLimits;
 use Bedriox\Server\Login\LoginSession;
 use Bedriox\Server\Login\LoginState;
 use Bedriox\Server\Login\MonotonicClock;
+use Bedriox\Server\ResourcePack\ResourcePackArchive;
+use Bedriox\Server\ResourcePack\ResourcePackCatalog;
 use Bedriox\Server\Transport\InboundPayload;
 use Bedriox\Server\Transport\NetworkCompressionPolicy;
+use Bedriox\Server\Worker\Network\CompressionWorkerDispatcher;
+use Bedriox\Server\Worker\WorkerReceipt;
+use Bedriox\Server\Worker\WorkerSubmission;
+use Closure;
 use PHPUnit\Framework\TestCase;
 
 final class BedrockLoginChannelTest extends TestCase
@@ -215,9 +223,56 @@ final class BedrockLoginChannelTest extends TestCase
         self::assertNull($weakChannel->get());
     }
 
-    /** @return array{BedrockLoginChannel, P384KeyPair, PipelineClock, LoginSession} */
-    private function channel(?LoginChannelLimits $limits = null, ?LoginLimits $sessionLimits = null): array
+    public function testResourcePackChunkUsesOrderedCompressionBoundaryAndReceipt(): void
     {
+        $path = tempnam(sys_get_temp_dir(), 'bedriox-login-channel-pack-');
+        self::assertIsString($path);
+        $bytes = random_bytes(131_072);
+        self::assertSame(strlen($bytes), file_put_contents($path, $bytes));
+        $pack = new ResourcePackArchive(
+            '418c933d-c42a-4211-ae75-d5b572fe98fd',
+            '1.0.0',
+            'Fixture',
+            strlen($bytes),
+            hash('sha256', $bytes, true),
+            '',
+            '',
+            $path,
+        );
+        try {
+            [$channel] = $this->channel(resourcePacks: new ResourcePackCatalog([$pack]), compressionWorkers: new ZeroCompressionWorkers());
+            $this->advanceThroughLogin($channel);
+            self::assertTrue($channel->accept($this->event($this->encode(new ResourcePackClientResponsePacket(
+                ResourcePackResponseStatus::SendPacks,
+                [$pack->wireId()],
+            ), CompressionMode::NegotiatedZlib))));
+            $channel->drainOutgoing();
+            self::assertTrue($channel->accept($this->event($this->encode(new ResourcePackChunkRequestPacket(
+                $pack->id,
+                $pack->version,
+                0,
+            ), CompressionMode::NegotiatedZlib))));
+
+            $outgoing = $channel->drainOutgoing();
+            self::assertCount(1, $outgoing);
+            self::assertNotNull($outgoing[0]->receiptId);
+            self::assertInstanceOf(ResourcePackChunkDataPacket::class, $this->decode(
+                $outgoing[0]->payload,
+                CompressionMode::NegotiatedZlib,
+            ));
+            self::assertTrue($channel->acknowledge($outgoing[0]->receiptId));
+        } finally {
+            unlink($path);
+        }
+    }
+
+    /** @return array{BedrockLoginChannel, P384KeyPair, PipelineClock, LoginSession} */
+    private function channel(
+        ?LoginChannelLimits $limits = null,
+        ?LoginLimits $sessionLimits = null,
+        ?ResourcePackCatalog $resourcePacks = null,
+        ?CompressionWorkerDispatcher $compressionWorkers = null,
+    ): array {
         $factory = new OpenSslEphemeralKeyFactory(dirname(__DIR__) . '/Fixtures/openssl.cnf');
         $client = $factory->generate();
         $authenticator = new PipelineAuthenticator(new AuthenticatedLogin(
@@ -228,8 +283,22 @@ final class BedrockLoginChannelTest extends TestCase
             new VerifiedClientData(1, 1, "\0\0\0\0", 0, 0, '', '{}', []),
         ));
         $clock = new PipelineClock();
-        $session = new LoginSession($clock, $authenticator, limits: $sessionLimits ?? new LoginLimits());
-        return [new BedrockLoginChannel($session, $limits ?? new LoginChannelLimits()), $client, $clock, $session];
+        $session = new LoginSession(
+            $clock,
+            $authenticator,
+            limits: $sessionLimits ?? new LoginLimits(),
+            resourcePacks: $resourcePacks ?? new ResourcePackCatalog(),
+        );
+        return [
+            new BedrockLoginChannel(
+                $session,
+                $limits ?? new LoginChannelLimits(),
+                $compressionWorkers,
+            ),
+            $client,
+            $clock,
+            $session,
+        ];
     }
 
     private function advanceThroughLogin(BedrockLoginChannel $channel): void
@@ -298,5 +367,27 @@ final readonly class PipelineAuthenticator implements LoginAuthenticator
     public function authenticate(LoginPacket $packet, AuthenticationMode $mode): AuthenticatedLogin
     {
         return $this->login;
+    }
+}
+
+final readonly class ZeroCompressionWorkers implements CompressionWorkerDispatcher
+{
+    public function workerCount(): int
+    {
+        return 0;
+    }
+
+    public function submit(
+        int $taskTypeId,
+        string $payload,
+        Closure $completion,
+        ?int $deadlineNanoseconds = null,
+    ): WorkerSubmission {
+        throw new \LogicException('Zero-worker compression must use the bounded synchronous fallback.');
+    }
+
+    public function cancel(WorkerReceipt $receipt): bool
+    {
+        return false;
     }
 }
