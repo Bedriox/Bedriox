@@ -1332,7 +1332,7 @@ final readonly class PluginGameplayEventBridge
         return $event->isCancelled() ? null : [$event->reason(), $event->quitMessage(), $event->disconnectScreenMessage()];
     }
 
-    public function allowMove(Player $player, Position $target): bool
+    public function allowMove(Player $player, Position $target, float $yaw, float $pitch): bool
     {
         if (!$this->events->hasListenersFor(PlayerMoveEvent::class)) {
             return true;
@@ -1340,7 +1340,7 @@ final readonly class PluginGameplayEventBridge
         $event = new PlayerMoveEvent(
             $this->playerView($player),
             $this->positionFor($player, $player->movement->position),
-            $this->positionFor($player, $target),
+            $this->positionFor($player, $target, $yaw, $pitch),
         );
         $this->events->dispatch($event);
 

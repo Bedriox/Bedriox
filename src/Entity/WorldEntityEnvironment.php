@@ -27,6 +27,7 @@ use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\InternalBlockStateId;
 use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkPosition;
+use Bedriox\Server\World\Collision\AxisAlignedBox;
 use Bedriox\Server\World\Collision\BlockCollisionRegistry;
 use Bedriox\Server\World\Environment\Fluid\FluidCurrent;
 use Bedriox\Server\World\Environment\Fluid\FluidCurrentResolver;
@@ -55,6 +56,9 @@ final class WorldEntityEnvironment
 
     /** @var WeakMap<AbstractLivingEntity, array{revision: int, x: float, y: float, z: float, value: bool}> */
     private WeakMap $submerged;
+
+    /** @var array<int, bool> */
+    private array $suffocatingStates = [];
 
     private bool $tickCacheActive = false;
 
@@ -463,6 +467,61 @@ final class WorldEntityEnvironment
         return $value;
     }
 
+    public function isSuffocating(AbstractLivingEntity $entity): bool
+    {
+        if ($entity->getWorldName() !== $this->world->metadata->name) {
+            return false;
+        }
+
+        return $this->isSuffocatingAt(
+            $entity->internalPosition(),
+            $entity->collisionHeight() * 0.85,
+            $entity->collisionWidth(),
+        );
+    }
+
+    /** Tests the bounded eye volume against loaded, opaque full-cube collision only. */
+    public function isSuffocatingAt(Position $position, float $eyeHeight, float $collisionWidth): bool
+    {
+        if ($this->blockProperties === null) {
+            return false;
+        }
+        $eyeY = $position->y + $eyeHeight;
+        if ($eyeY < Chunk::MIN_Y || $eyeY > Chunk::MAX_Y + 1.0) {
+            return false;
+        }
+        $halfWidth = max(0.1, $collisionWidth * 0.8) / 2.0;
+        $eyeBox = new AxisAlignedBox(
+            $position->x - $halfWidth,
+            $eyeY - 0.000_01,
+            $position->z - $halfWidth,
+            $position->x + $halfWidth,
+            $eyeY + 0.000_01,
+            $position->z + $halfWidth,
+        );
+        $maximumX = (int) floor($eyeBox->maxX - 0.000_001);
+        $maximumY = (int) floor($eyeBox->maxY - 0.000_001);
+        $maximumZ = (int) floor($eyeBox->maxZ - 0.000_001);
+        for ($x = (int) floor($eyeBox->minX); $x <= $maximumX; ++$x) {
+            for ($y = (int) floor($eyeBox->minY); $y <= $maximumY; ++$y) {
+                if ($y < Chunk::MIN_Y || $y > Chunk::MAX_Y) {
+                    continue;
+                }
+                for ($z = (int) floor($eyeBox->minZ); $z <= $maximumZ; ++$z) {
+                    $state = $this->world->loadedBlockStateAt($x, $y, $z);
+                    if ($state === null || !$this->isSuffocatingState($state)) {
+                        continue;
+                    }
+                    if ($this->shapes->find($state)?->intersectsAt($eyeBox, $x, $y, $z) === true) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
     private function isDaylight(): bool
     {
         $time = WorldTimeRules::timeOfDay($this->world->time());
@@ -482,6 +541,20 @@ final class WorldEntityEnvironment
     {
         return ($this->water !== null && $state->value === $this->water->value)
             || $this->states->state($state)->identifier() === 'minecraft:water';
+    }
+
+    private function isSuffocatingState(InternalBlockStateId $state): bool
+    {
+        if (isset($this->suffocatingStates[$state->value])) {
+            return $this->suffocatingStates[$state->value];
+        }
+        $properties = $this->blockProperties?->propertiesForState($this->states->state($state));
+        $shape = $this->shapes->find($state);
+
+        return $this->suffocatingStates[$state->value] = $properties !== null
+            && $properties->solid()
+            && $properties->translucency() === 0.0
+            && $shape?->isFullCube() === true;
     }
 
     private function blocksSkyLight(InternalBlockStateId $state): bool

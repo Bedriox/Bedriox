@@ -20,12 +20,19 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Simulation\Event;
 
+use Bedriox\Server\Player\InventoryStack;
+use Bedriox\Server\Simulation\Event\Value\BlockStateCorrection;
 use Bedriox\Server\World\Block\InternalBlockStateId;
+use Bedriox\Server\World\BlockEntity\BlockEntity;
 use Bedriox\Server\World\BlockPosition;
 
 final readonly class BlockChanged implements WorldEvent
 {
-    /** @param list<string> $recipientSessionIds */
+    /**
+     * @param list<string> $recipientSessionIds
+     * @param list<BlockStateCorrection> $additionalBlocks
+     * @param list<BlockEntity> $blockEntities
+     */
     public function __construct(
         public string $ownerSessionId,
         public BlockPosition $position,
@@ -33,7 +40,15 @@ final readonly class BlockChanged implements WorldEvent
         public array $recipientSessionIds,
         public bool $stopBreaking = false,
         public ?InternalBlockStateId $destroyedState = null,
-    ) {}
+        public array $additionalBlocks = [],
+        public array $blockEntities = [],
+        public ?int $inventorySlot = null,
+        public ?InventoryStack $heldStack = null,
+    ) {
+        if (count($additionalBlocks) > 16 || count($blockEntities) > 16) {
+            throw new \InvalidArgumentException('Block correction projections must contain at most 16 entries.');
+        }
+    }
 
     public function recipients(): array
     {

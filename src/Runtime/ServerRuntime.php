@@ -238,6 +238,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private const int MAXIMUM_PROJECTION_ENCODING_ATTEMPTS = 2;
     private const int MAXIMUM_PROJECTION_DELIVERY_ATTEMPTS = 8;
     private const int PLAY_SESSION_MAINTENANCE_INTERVAL_NANOSECONDS = 50_000_000;
+    /** Avoids coarse operating-system sleep overshoot immediately before a due simulation tick. */
+    private const int TICK_IDLE_GUARD_NANOSECONDS = 5_000_000;
     private const int CHUNK_STREAMING_BUDGET_NANOSECONDS = 8_000_000;
     private const int WORLD_AUTOSAVE_BUDGET_MICROSECONDS = 3_000;
     private const int RUNTIME_STAGE_TRACE_THRESHOLD_NANOSECONDS = 10_000_000;
@@ -1991,6 +1993,11 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                             if ($event instanceof MovementCorrected) {
                                 $this->recordMovementCorrectionTrace($event);
                                 $runtimeSession = $this->sessionsById[$event->authoritativePlayer->sessionId] ?? null;
+                                if ($event->reason === 'flight_toggle_cancelled') {
+                                    $runtimeSession?->play?->reconcileFlightState(
+                                        $event->authoritativePlayer->flying,
+                                    );
+                                }
                                 $simulation = $runtimeSession === null ? null : $this->simulationForSession($runtimeSession);
                                 $player = $simulation?->authoritativePlayer($event->authoritativePlayer->identity);
                                 if ($player !== null) {
@@ -2383,6 +2390,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                                     [],
                                     $event->postureChanged,
                                     $event->clientTick,
+                                    $event->attemptedPosition,
+                                    $event->rotationChanged,
                                 ), $authoritativeMovementPackets, $movementFrameCache, $directedCount)) {
                                     return false;
                                 }
@@ -2844,7 +2853,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     public function shouldIdleAfterPoll(): bool
     {
         return ($this->worldRuntimes?->nanosecondsUntilNextTick()
-            ?? $this->worldLoop->nanosecondsUntilNextTick()) > 0;
+            ?? $this->worldLoop->nanosecondsUntilNextTick()) > self::TICK_IDLE_GUARD_NANOSECONDS;
     }
 
     private function recordPerformanceTrace(int $nowNanoseconds): void

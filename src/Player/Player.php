@@ -164,6 +164,9 @@ final class Player
             $this->gravityEnabled,
             $this->sleepingBed !== null,
             $this->sleepingBed,
+            $this->movement->flying,
+            $this->movement->swimming,
+            $this->movement->crawling,
         );
     }
 

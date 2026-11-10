@@ -1353,6 +1353,48 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertEqualsWithDelta(64.42, $commands[0]->position->y, 0.000_01);
     }
 
+    public function testSwimmingAndCrawlingStatePersistsUntilItsStopFlag(): void
+    {
+        [$channel, $client, , $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([
+                new SetLocalPlayerAsInitializedPacket($entityId),
+                $this->movementPacket(
+                    UnsignedLong::fromInt(81),
+                    inputFlags: [
+                        PlayerAuthInputFlag::StartSwimming->value,
+                        PlayerAuthInputFlag::StartCrawling->value,
+                    ],
+                ),
+            ])),
+            Reliability::RELIABLE,
+        )));
+        $started = $channel->drainCommands();
+        self::assertCount(1, $started);
+        self::assertInstanceOf(MovePlayer::class, $started[0]);
+        self::assertTrue($started[0]->swimming);
+        self::assertTrue($started[0]->crawling);
+
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([
+                $this->movementPacket(UnsignedLong::fromInt(82)),
+                $this->movementPacket(
+                    UnsignedLong::fromInt(83),
+                    inputFlags: [
+                        PlayerAuthInputFlag::StopSwimming->value,
+                        PlayerAuthInputFlag::StopCrawling->value,
+                    ],
+                ),
+            ])),
+            Reliability::RELIABLE,
+        )));
+        $stopped = $channel->drainCommands();
+        self::assertCount(1, $stopped);
+        self::assertInstanceOf(MovePlayer::class, $stopped[0]);
+        self::assertFalse($stopped[0]->swimming);
+        self::assertFalse($stopped[0]->crawling);
+    }
+
     public function testAdjacentMovementInputsCoalesceToLatestStateWithoutLosingJumpIntent(): void
     {
         [$channel, $client, , $entityId] = $this->channel();

@@ -34,6 +34,7 @@ final readonly class MovementCorrected implements WorldEvent
         public bool $postureChanged = false,
         public ?ClientInputTick $clientTick = null,
         public ?Position $attemptedPosition = null,
+        public bool $rotationChanged = false,
     ) {}
 
     public function recipients(): array

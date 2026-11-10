@@ -541,6 +541,7 @@ use Bedriox\Server\Simulation\Event\TextDisplayActorRemoved;
 use Bedriox\Server\Simulation\Event\TextDisplayActorSpawned;
 use Bedriox\Server\Simulation\Event\TextDisplayActorUpdated;
 use Bedriox\Server\Simulation\Event\TntPrimed;
+use Bedriox\Server\Simulation\Event\Value\BlockStateCorrection;
 use Bedriox\Server\Simulation\Event\VillagerTradeCompleted;
 use Bedriox\Server\Simulation\Event\VillagerTradeOffersUpdated;
 use Bedriox\Server\Simulation\Event\WeatherChanged;
@@ -635,6 +636,7 @@ final class WorldSimulation
     private const int BLOCK_FIRE_DURATION_TICKS = 160;
     private const float FIRE_TICK_DAMAGE = 1.0;
     private const float DROWNING_DAMAGE = 2.0;
+    private const float SUFFOCATION_DAMAGE = 1.0;
     private const float LAVA_CONTACT_DAMAGE = 4.0;
     private const float VOID_DAMAGE = 10.0;
     private const int VOID_DAMAGE_DEPTH = 16;
@@ -4008,6 +4010,7 @@ final class WorldSimulation
         array_push($events, ...$this->advanceNetherTransformations());
         array_push($events, ...$this->advanceEntityEffects());
         array_push($events, ...$this->advanceEntityFire());
+        array_push($events, ...$this->advanceLivingEntitySuffocation());
         array_push($events, ...$this->advanceLivingEntityBreathing());
         array_push($events, ...$this->advanceLivingEntityFreezing());
         array_push($events, ...$this->advanceCreepers());
@@ -6417,6 +6420,45 @@ final class WorldSimulation
             $events[] = $entity->getHealth() < $healthBefore
                 ? new EntityActorDamaged($entity, $this->tick, $recipients)
                 : new EntityActorHealthChanged($entity, $this->tick, $recipients);
+        }
+
+        return $events;
+    }
+
+    /** @return list<WorldEvent> */
+    private function advanceLivingEntitySuffocation(): array
+    {
+        if ($this->entityEnvironment === null) {
+            return [];
+        }
+        $events = [];
+        $recipients = $this->players->recipients();
+        foreach ($this->entityRuntime->registry()->all() as $entity) {
+            if (!$entity instanceof AbstractLivingEntity || !$entity->isAlive()
+                || ($this->tick + $entity->getRuntimeId()) % 10 !== 0
+                || !$this->entityEnvironment->isSuffocating($entity)) {
+                continue;
+            }
+            $damageEvent = $this->pluginEvents?->entityDamage(
+                $entity,
+                ApiEntityDamageCause::SUFFOCATION,
+                self::SUFFOCATION_DAMAGE,
+            );
+            if ($this->pluginEvents !== null && $damageEvent === null) {
+                continue;
+            }
+            $result = $this->damageLivingEntity(
+                $entity,
+                $damageEvent?->damage() ?? self::SUFFOCATION_DAMAGE,
+            );
+            if ($result === null || $result->appliedDamage <= 0.0) {
+                continue;
+            }
+            if ($damageEvent !== null) {
+                $this->entityLastDamageEvents[$entity->getRuntimeId()] = $damageEvent;
+            }
+            $this->publishedEntityHealth[$entity->getRuntimeId()] = $entity->getHealth();
+            $events[] = new EntityActorDamaged($entity, $this->tick, $recipients);
         }
 
         return $events;
@@ -9215,7 +9257,11 @@ final class WorldSimulation
         $requestedFlying = $command->flying || $player->gameMode() === GameMode::SPECTATOR;
         if ($movement->flying !== $requestedFlying) {
             if ($this->pluginEvents !== null && !$this->pluginEvents->allowFlightToggle($player, $requestedFlying)) {
-                return new MovementCorrected($player->snapshot(), 'plugin_cancelled', clientTick: $command->clientTick);
+                return new MovementCorrected(
+                    $player->snapshot(),
+                    'flight_toggle_cancelled',
+                    clientTick: $command->clientTick,
+                );
             }
             $movement->flying = $requestedFlying;
         }
@@ -9325,12 +9371,25 @@ final class WorldSimulation
         }
         $sneaking = $command->sneaking ?? ($command->mode === MovementMode::CROUCHING);
         $sprinting = $command->sprinting ?? ($command->mode === MovementMode::SPRINTING);
-        $postureChanged = $movement->sneaking !== $sneaking || $movement->sprinting !== $sprinting;
+        $swimming = $command->swimming ?? $movement->swimming;
+        $crawling = $command->crawling ?? $movement->crawling;
+        $postureChanged = $movement->sneaking !== $sneaking
+            || $movement->sprinting !== $sprinting
+            || $movement->swimming !== $swimming
+            || $movement->crawling !== $crawling;
+        $rotationChanged = $movement->yaw !== $command->yaw || $movement->pitch !== $command->pitch;
         $pluginStartedNanoseconds = hrtime(true);
-        $movementAllowed = $this->pluginEvents === null || $this->pluginEvents->allowMove($player, $position);
+        $movementAllowed = $this->pluginEvents === null
+            || $this->pluginEvents->allowMove($player, $position, $command->yaw, $command->pitch);
         $this->movementPluginNanoseconds += hrtime(true) - $pluginStartedNanoseconds;
         if (!$movementAllowed) {
-            return new MovementCorrected($player->snapshot(), 'plugin_cancelled', clientTick: $command->clientTick);
+            return new MovementCorrected(
+                $player->snapshot(),
+                'plugin_cancelled',
+                postureChanged: $postureChanged,
+                clientTick: $command->clientTick,
+                rotationChanged: $rotationChanged,
+            );
         }
         $velocityX = ($position->x - $previousPosition->x) / $elapsed;
         $verticalDistance = $position->y - $previousPosition->y;
@@ -9342,6 +9401,8 @@ final class WorldSimulation
         $movement->mode = $command->mode;
         $movement->sneaking = $sneaking;
         $movement->sprinting = $sprinting;
+        $movement->swimming = $swimming;
+        $movement->crawling = $crawling;
         $movement->verticalState = $grounded ? VerticalState::GROUNDED : VerticalState::AIRBORNE;
         $movement->velocityX = $velocityX;
         $movement->verticalVelocity = $grounded || $collidedVertically ? 0.0 : $verticalDistance / $elapsed;
@@ -12480,6 +12541,10 @@ final class WorldSimulation
                 'death.attack.onFire',
                 [$player->identity->displayName],
             ),
+            $cause === DamageCause::Suffocation => new TranslatableMessage(
+                'death.attack.inWall',
+                [$player->identity->displayName],
+            ),
             $cause === DamageCause::FallingBlock => new TranslatableMessage(
                 'death.attack.anvil',
                 [$player->identity->displayName],
@@ -13864,12 +13929,33 @@ final class WorldSimulation
         if ($this->pluginEvents !== null) {
             $drops = $this->pluginEvents->blockBreak($player, $position, $identifier, $drops);
             if ($drops === null) {
+                $additionalBlocks = [];
+                if ($doorCompanionPosition !== null && $doorCompanionState !== null) {
+                    $additionalBlocks[] = new BlockStateCorrection(
+                        $doorCompanionPosition,
+                        $doorCompanionState,
+                        $this->blockWorld->blockEntityAt($doorCompanionPosition),
+                    );
+                }
+                if ($bedCompanionPosition !== null) {
+                    $additionalBlocks[] = new BlockStateCorrection(
+                        $bedCompanionPosition,
+                        $bedCompanionState,
+                        $this->blockWorld->blockEntityAt($bedCompanionPosition),
+                    );
+                }
+                $blockEntity = $this->blockWorld->blockEntityAt($position);
+
                 return new BlockChanged(
                     $command->session,
                     $position,
                     $state,
                     [$command->session],
                     $stopsActiveBreak,
+                    additionalBlocks: $additionalBlocks,
+                    blockEntities: $blockEntity === null ? [] : [$blockEntity],
+                    inventorySlot: $player->inventory->selectedHotbarSlot(),
+                    heldStack: $player->inventory->selectedStack(),
                 );
             }
         }
@@ -14313,7 +14399,25 @@ final class WorldSimulation
                 $behavior->kind,
                 $behavior->useDurationTicks,
             )) {
-            return new CommandRejected($command->session, 'plugin_cancelled');
+            $this->pluginEvents->itemUseCancelled(
+                $player,
+                $held,
+                $behavior->kind,
+                ItemUseCancellationReason::PLUGIN,
+                0,
+            );
+
+            return new ItemUseCancelled(
+                $player->sessionId,
+                $player->runtimeActorId,
+                $player->inventory->selectedHotbarSlot(),
+                $held,
+                ItemUseCancellationReason::PLUGIN,
+                $this->players->recipients(),
+                $player->movement->sneaking,
+                $player->movement->sprinting,
+                $player->movement->sequence,
+            );
         }
 
         if ($behavior->kind === ApiItemUseKind::INSTANT) {
@@ -20523,6 +20627,15 @@ final class WorldSimulation
         }
     }
 
+    private static function playerEyeHeight(Player $player): float
+    {
+        if ($player->movement->swimming || $player->movement->crawling) {
+            return 0.4;
+        }
+
+        return $player->movement->sneaking ? 1.54 : 1.62;
+    }
+
     /** @return list<WorldEvent> */
     private function advancePlayerEnvironment(): array
     {
@@ -20548,6 +20661,29 @@ final class WorldSimulation
             }
             if ($this->blockWorld === null) {
                 continue;
+            }
+            if ($this->entityEnvironment !== null
+                && $player->gameMode()->takesDamage()
+                && ($this->tick + $player->runtimeActorId) % 10 === 0
+                && $this->tick >= $player->vitals->invulnerableUntilTick
+                && $this->entityEnvironment->isSuffocatingAt(
+                    $position,
+                    self::playerEyeHeight($player),
+                    PlayerCollisionShape::WIDTH,
+                )) {
+                $suffocationDamage = $this->damage(
+                    new DamagePlayer(
+                        $player->sessionId,
+                        self::SUFFOCATION_DAMAGE,
+                        DamageCause::Suffocation,
+                    ),
+                    bypassDamageCooldown: true,
+                );
+                $events[] = $suffocationDamage;
+                array_push($events, ...$this->drainDeferredEvents());
+                if ($suffocationDamage instanceof PlayerDamaged && !$suffocationDamage->player->alive) {
+                    continue;
+                }
             }
             $headBlockY = (int) floor($position->y + 1.62);
             $feetBlockY = (int) floor($position->y + 0.1);
@@ -21095,6 +21231,9 @@ final class WorldSimulation
         DamageCause $cause,
         int $breachLevel = 0,
     ): float {
+        if ($cause === DamageCause::Suffocation) {
+            return $damage;
+        }
         $effectiveDefense = $player->inventory->defensePoints()
             * (1.0 - min(0.6, max(0, $breachLevel) * 0.15));
         $afterArmor = $cause === DamageCause::Fall || $cause === DamageCause::Void
@@ -21183,7 +21322,8 @@ final class WorldSimulation
 
     private function damageArmor(Player $player, float $baseDamage, DamageCause $cause): bool
     {
-        if ($cause === DamageCause::Fall || $cause === DamageCause::Void || $this->itemCatalog === null) {
+        if ($cause === DamageCause::Fall || $cause === DamageCause::Suffocation
+            || $cause === DamageCause::Void || $this->itemCatalog === null) {
             return false;
         }
         $defaultWear = max((int) floor($baseDamage / 4.0), 1);
@@ -24890,6 +25030,32 @@ final class WorldSimulation
             $bedHeadPosition !== null && $this->placementIntersectsPlayer($bedHeadPosition) => 'collision',
             default => null,
         };
+        $placementAdditionalBlocks = [];
+        if ($doorUpperPosition !== null && $doorUpperPrevious !== null) {
+            $placementAdditionalBlocks[] = new BlockStateCorrection(
+                $doorUpperPosition,
+                $doorUpperPrevious,
+                $this->blockWorld->blockEntityAt($doorUpperPosition),
+            );
+        }
+        if ($bedHeadPosition !== null && $bedHeadPrevious !== null) {
+            $placementAdditionalBlocks[] = new BlockStateCorrection(
+                $bedHeadPosition,
+                $bedHeadPrevious,
+                $this->blockWorld->blockEntityAt($bedHeadPosition),
+            );
+        }
+        $placementBlockEntities = [];
+        $clickedBlockEntity = $this->blockWorld->blockEntityAt($command->clickedPosition);
+        if ($clickedBlockEntity !== null) {
+            $placementBlockEntities[] = $clickedBlockEntity;
+        }
+        if (!$placedPosition->equals($command->clickedPosition)) {
+            $placedBlockEntity = $this->blockWorld->blockEntityAt($placedPosition);
+            if ($placedBlockEntity !== null) {
+                $placementBlockEntities[] = $placedBlockEntity;
+            }
+        }
         if ($command->sequence > $player->placementSequence) {
             $player->placementSequence = $command->sequence;
         }
@@ -24904,6 +25070,8 @@ final class WorldSimulation
                 $held,
                 $activeBreak['position'] ?? null,
                 $correctionReason,
+                $placementAdditionalBlocks,
+                $placementBlockEntities,
             );
         }
         if ($this->pluginEvents !== null
@@ -24920,6 +25088,8 @@ final class WorldSimulation
                 $held,
                 $activeBreak['position'] ?? null,
                 'plugin_cancelled',
+                $placementAdditionalBlocks,
+                $placementBlockEntities,
             );
         }
         try {
@@ -24977,6 +25147,8 @@ final class WorldSimulation
                 $held,
                 $activeBreak['position'] ?? null,
                 'capacity',
+                $placementAdditionalBlocks,
+                $placementBlockEntities,
             );
         }
         if ($aquaticBucketType !== null) {
@@ -25194,6 +25366,43 @@ final class WorldSimulation
             && BlockTagRegistry::contains(BlockTag::WALL, $this->blockIdentifier($state->value));
     }
 
+    /** @return list<BlockStateCorrection> */
+    private function doorCompanionCorrection(BlockPosition $position, CanonicalBlockState $state): array
+    {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null
+            || !BlockTagRegistry::contains(BlockTag::DOOR, $state->identifier())) {
+            return [];
+        }
+        $upper = $state->properties()['upper_block_bit'] ?? null;
+        if (!is_int($upper)) {
+            return [];
+        }
+        try {
+            $companionPosition = new BlockPosition($position->x, $position->y + ($upper === 1 ? -1 : 1), $position->z);
+        } catch (InvalidArgumentException) {
+            return [];
+        }
+        $companionState = $this->blockWorld->loadedBlockStateAt(
+            $companionPosition->x,
+            $companionPosition->y,
+            $companionPosition->z,
+        );
+        if ($companionState === null) {
+            return [];
+        }
+        $companion = $this->blockStateRegistry->state($companionState);
+        if ($companion->identifier() !== $state->identifier()
+            || ($companion->properties()['upper_block_bit'] ?? $upper) === $upper) {
+            return [];
+        }
+
+        return [new BlockStateCorrection(
+            $companionPosition,
+            $companionState,
+            $this->blockWorld->blockEntityAt($companionPosition),
+        )];
+    }
+
     private function useInteractiveBlock(
         Player $player,
         PlaceBlock $command,
@@ -25228,6 +25437,9 @@ final class WorldSimulation
                 $command->clickedPosition,
                 $clickedState,
                 [$player->sessionId],
+                additionalBlocks: $isDoor
+                    ? $this->doorCompanionCorrection($command->clickedPosition, $clicked)
+                    : [],
             );
         }
         if ($isDoor && !$this->doorStates->canPlayerToggle($clicked)) {
@@ -25252,6 +25464,9 @@ final class WorldSimulation
                 $command->clickedPosition,
                 $clickedState,
                 [$player->sessionId],
+                additionalBlocks: $isDoor
+                    ? $this->doorCompanionCorrection($command->clickedPosition, $clicked)
+                    : [],
             );
         }
         if ($isDoor) {
@@ -25364,6 +25579,8 @@ final class WorldSimulation
                 $command->clickedPosition,
                 $currentState,
                 [$player->sessionId],
+                inventorySlot: $player->inventory->selectedHotbarSlot(),
+                heldStack: $player->inventory->selectedStack(),
             );
         }
         $next = $this->blockStateRegistry->state($transform->state);
@@ -25391,6 +25608,8 @@ final class WorldSimulation
                 $command->clickedPosition,
                 $currentState,
                 [$player->sessionId],
+                inventorySlot: $player->inventory->selectedHotbarSlot(),
+                heldStack: $player->inventory->selectedStack(),
             );
         }
         if ($transform->dropIdentifier !== null && $this->itemEntities->remainingCapacity() === 0) {
@@ -25399,6 +25618,8 @@ final class WorldSimulation
                 $command->clickedPosition,
                 $currentState,
                 [$player->sessionId],
+                inventorySlot: $player->inventory->selectedHotbarSlot(),
+                heldStack: $player->inventory->selectedStack(),
             );
         }
         try {
@@ -25409,6 +25630,8 @@ final class WorldSimulation
                 $command->clickedPosition,
                 $currentState,
                 [$player->sessionId],
+                inventorySlot: $player->inventory->selectedHotbarSlot(),
+                heldStack: $player->inventory->selectedStack(),
             );
         }
         if ($transform->dropIdentifier !== null && $this->itemCatalog?->has($transform->dropIdentifier) === true) {
@@ -25510,7 +25733,20 @@ final class WorldSimulation
                 $nextUpper->properties(),
                 BlockStateChangeReason::INTERACTION,
             ))) {
-            return new BlockChanged($player->sessionId, $command->clickedPosition, $clickedState, [$player->sessionId]);
+            $otherPosition = $clickedIsUpper ? $lowerPosition : $upperPosition;
+            $otherState = $clickedIsUpper ? $lowerState : $upperState;
+
+            return new BlockChanged(
+                $player->sessionId,
+                $command->clickedPosition,
+                $clickedState,
+                [$player->sessionId],
+                additionalBlocks: [new BlockStateCorrection(
+                    $otherPosition,
+                    $otherState,
+                    $this->blockWorld->blockEntityAt($otherPosition),
+                )],
+            );
         }
         $this->setBlockStateAndSchedule($lowerPosition, $pair->lower);
         $this->setBlockStateAndSchedule($upperPosition, $pair->upper);
@@ -27601,10 +27837,6 @@ final class WorldSimulation
         $yaw = $command->yaw ?? $player->movement->yaw;
         $pitch = $command->pitch ?? $player->movement->pitch;
         $from = $player->movement->position;
-        $sleepEvent = $this->wakePlayer($player, PlayerBedLeaveReason::TELEPORT);
-        if ($sleepEvent !== null) {
-            $this->deferredEvents[] = $sleepEvent;
-        }
         if ($this->pluginEvents !== null) {
             $decision = $this->pluginEvents->teleport($player, $destination, $yaw, $pitch);
             if ($decision === null) {
@@ -27613,6 +27845,10 @@ final class WorldSimulation
             $destination = $decision->destination;
             $yaw = $decision->yaw;
             $pitch = $decision->pitch;
+        }
+        $sleepEvent = $this->wakePlayer($player, PlayerBedLeaveReason::TELEPORT);
+        if ($sleepEvent !== null) {
+            $this->deferredEvents[] = $sleepEvent;
         }
         $this->forceDismountPlayer($player, MountReason::TELEPORT);
         $this->deferItemUseCancellation($player, ItemUseCancellationReason::TELEPORT);

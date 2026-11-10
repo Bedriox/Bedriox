@@ -34,6 +34,8 @@ final class PlayerMovement
     public MovementMode $mode = MovementMode::STOPPED;
     public bool $sneaking = false;
     public bool $sprinting = false;
+    public bool $swimming = false;
+    public bool $crawling = false;
     public int $sequence = -1;
     public float $velocityX = 0.0;
     public float $verticalVelocity = 0.0;

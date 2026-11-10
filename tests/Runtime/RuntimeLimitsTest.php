@@ -28,7 +28,7 @@ final class RuntimeLimitsTest extends TestCase
 {
     public function testDefaultTransportPollBudgetBoundsBurstWork(): void
     {
-        self::assertSame(64, new RuntimeLimits()->maximumDatagramsPerPoll);
+        self::assertSame(24, new RuntimeLimits()->maximumDatagramsPerPoll);
     }
 
     public function testLargeSpawnRadiusUsesStreamingCapacityInsteadOfWholeViewCapacity(): void

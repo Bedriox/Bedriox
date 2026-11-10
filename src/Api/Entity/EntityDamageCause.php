@@ -32,6 +32,7 @@ enum EntityDamageCause: string
     case EXPLOSION = 'explosion';
     case FALL = 'fall';
     case FALLING_BLOCK = 'falling_block';
+    case SUFFOCATION = 'suffocation';
     case FREEZING = 'freezing';
     case DROWNING = 'drowning';
     case THORNS = 'thorns';

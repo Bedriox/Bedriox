@@ -73,6 +73,18 @@ final readonly class BlockCollisionShape
         return $this->boxes === [];
     }
 
+    /** A suffocating block must occupy its entire local cell, not merely have collision. */
+    public function isFullCube(): bool
+    {
+        if (count($this->boxes) !== 1) {
+            return false;
+        }
+        $box = $this->boxes[0];
+
+        return $box->minX === 0.0 && $box->minY === 0.0 && $box->minZ === 0.0
+            && $box->maxX === 1.0 && $box->maxY === 1.0 && $box->maxZ === 1.0;
+    }
+
     public function intersectsAt(AxisAlignedBox $area, int $x, int $y, int $z): bool
     {
         foreach ($this->boxes as $box) {

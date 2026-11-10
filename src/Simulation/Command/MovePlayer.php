@@ -51,6 +51,8 @@ final readonly class MovePlayer implements WorldCommand
         public ?int $predictedVehicleActorId = null,
         public bool $paddlingLeft = false,
         public bool $paddlingRight = false,
+        public ?bool $swimming = null,
+        public ?bool $crawling = null,
     ) {}
 
     public function sessionId(): string

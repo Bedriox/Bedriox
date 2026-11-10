@@ -69,6 +69,8 @@ use Bedriox\Server\Plugin\Command\CommandRegistry;
 use Bedriox\Server\Plugin\PluginActionBuffer;
 use Bedriox\Server\Plugin\PluginEntityLifecycleBridge;
 use Bedriox\Server\ResourcePack\ResourcePackCatalog;
+use Bedriox\Server\ResourcePack\ResourcePackChunkCache;
+use Bedriox\Server\ResourcePack\ResourcePackTransferGovernor;
 use Bedriox\Server\Simulation\FixedRateWorldLoop;
 use Bedriox\Server\Simulation\PluginGameplayEventBridge;
 use Bedriox\Server\Simulation\Position;
@@ -298,6 +300,12 @@ final class ServerBootstrap
         $compressionWorkers = $workers !== null && $workersAvailable
             ? new CachingCompressionWorkerDispatcher(new ManagedCompressionWorkerDispatcher($workers))
             : null;
+        $resourcePackGovernor = new ResourcePackTransferGovernor(
+            $config->resourcePackMaximumConcurrentTransfers,
+            $config->resourcePackMaximumTransferBytesPerSecond,
+            startedNanoseconds: hrtime(true),
+        );
+        $resourcePackChunkCache = new ResourcePackChunkCache();
         $preparedPlayBatches = $compressionWorkers === null ? null : new PreparedPlayBatchCache(
             maximumBytes: min(
                 33_554_432,
@@ -377,7 +385,7 @@ final class ServerBootstrap
             if ($entityPersistenceStore !== null) {
                 $world->enableEntityPersistence($entityPersistenceStore, $entityDefinitions);
             }
-            $worldLoop = new FixedRateWorldLoop($world, new SystemSimulationClock(), maximumTicksPerPoll: 1);
+            $worldLoop = new FixedRateWorldLoop($world, new SystemSimulationClock(), maximumTicksPerPoll: 3);
 
             $composeManagedDimension = function (ApiWorld $handle, OpenedWorld $opened) use (
                 $workers,
@@ -499,7 +507,7 @@ final class ServerBootstrap
                     $handle,
                     $opened,
                     $simulation,
-                    new FixedRateWorldLoop($simulation, new SystemSimulationClock(), maximumTicksPerPoll: 1),
+                    new FixedRateWorldLoop($simulation, new SystemSimulationClock(), maximumTicksPerPoll: 3),
                     $worldPreparedChunks,
                 );
                 $completedAt = hrtime(true);
@@ -655,6 +663,10 @@ final class ServerBootstrap
                     $authenticator,
                     $config->authenticationMode,
                     resourcePacks: $resourcePacks ?? ResourcePackCatalog::empty(),
+                    resourcePackGovernor: $resourcePackGovernor,
+                    resourcePackChunkCache: $resourcePackChunkCache,
+                    compressionWorkers: $compressionWorkers,
+                    compressionTaskTypeId: CoreWorkerTaskCatalog::COMPRESS_BATCH,
                 ),
                 new BedrockPlayChannelFactory(
                     $initialization,

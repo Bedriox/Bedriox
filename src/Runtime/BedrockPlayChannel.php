@@ -210,6 +210,8 @@ final class BedrockPlayChannel
     private ?UpdateAbilitiesPacket $authoritativeAbilities = null;
     private bool $sneaking = false;
     private bool $sprinting = false;
+    private bool $swimming = false;
+    private bool $crawling = false;
     /** @var list<Packet|ReusablePlayPacket> */
     private array $deferredInitializationPackets = [];
     private bool $bootstrapSent = false;
@@ -2156,6 +2158,16 @@ final class BedrockPlayChannel
                     || $packet->hasInput(PlayerAuthInputFlag::Sprinting)) {
                     $this->sprinting = true;
                 }
+                if ($packet->hasInput(PlayerAuthInputFlag::StopSwimming)) {
+                    $this->swimming = false;
+                } elseif ($packet->hasInput(PlayerAuthInputFlag::StartSwimming)) {
+                    $this->swimming = true;
+                }
+                if ($packet->hasInput(PlayerAuthInputFlag::StopCrawling)) {
+                    $this->crawling = false;
+                } elseif ($packet->hasInput(PlayerAuthInputFlag::StartCrawling)) {
+                    $this->crawling = true;
+                }
                 $magnitude = hypot($packet->moveX, $packet->moveZ);
                 $mode = match (true) {
                     $this->sneaking => MovementMode::CROUCHING,
@@ -2202,6 +2214,8 @@ final class BedrockPlayChannel
                     $packet->predictedVehicleActorId,
                     $packet->hasInput(PlayerAuthInputFlag::PaddlingLeft),
                     $packet->hasInput(PlayerAuthInputFlag::PaddlingRight),
+                    $this->swimming,
+                    $this->crawling,
                 ));
                 if ($packet->hasInput(PlayerAuthInputFlag::MissedSwing)) {
                     $this->commands->enqueue($this->commandFactory->swingArm(
@@ -2318,6 +2332,8 @@ final class BedrockPlayChannel
                 $command->predictedVehicleActorId,
                 $command->paddlingLeft,
                 $command->paddlingRight,
+                $command->swimming,
+                $command->crawling,
             );
         }
         $this->commands->offsetSet($index, $command);
@@ -3336,6 +3352,15 @@ final class BedrockPlayChannel
         if ($flying === null) {
             return $this->queueAuthoritativeAbilities();
         }
+        $allowed = $flying && $this->authoritativeAbilities !== null
+            && self::abilitiesEnable($this->authoritativeAbilities, Ability::MayFly);
+        $this->lastRequestedFlyingState = $allowed;
+
+        return $this->queueAuthoritativeAbilities($allowed);
+    }
+
+    public function reconcileFlightState(bool $flying): bool
+    {
         $allowed = $flying && $this->authoritativeAbilities !== null
             && self::abilitiesEnable($this->authoritativeAbilities, Ability::MayFly);
         $this->lastRequestedFlyingState = $allowed;

@@ -32,6 +32,7 @@ enum DamageCause: string
     case Drowning = 'drowning';
     case Fire = 'fire';
     case Explosion = 'explosion';
+    case Suffocation = 'suffocation';
     case Thorns = 'thorns';
     case Void = 'void';
 }

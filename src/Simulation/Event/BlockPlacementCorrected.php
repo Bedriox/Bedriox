@@ -21,11 +21,17 @@ declare(strict_types=1);
 namespace Bedriox\Server\Simulation\Event;
 
 use Bedriox\Server\Player\InventoryStack;
+use Bedriox\Server\Simulation\Event\Value\BlockStateCorrection;
 use Bedriox\Server\World\Block\InternalBlockStateId;
+use Bedriox\Server\World\BlockEntity\BlockEntity;
 use Bedriox\Server\World\BlockPosition;
 
 final readonly class BlockPlacementCorrected implements WorldEvent
 {
+    /**
+     * @param list<BlockStateCorrection> $additionalBlocks
+     * @param list<BlockEntity> $blockEntities
+     */
     public function __construct(
         public string $ownerSessionId,
         public BlockPosition $clickedPosition,
@@ -36,7 +42,13 @@ final readonly class BlockPlacementCorrected implements WorldEvent
         public ?InventoryStack $heldStack,
         public ?BlockPosition $stoppedBreakingPosition = null,
         public string $reason = 'unspecified',
-    ) {}
+        public array $additionalBlocks = [],
+        public array $blockEntities = [],
+    ) {
+        if (count($additionalBlocks) > 16 || count($blockEntities) > 16) {
+            throw new \InvalidArgumentException('Block correction projections must contain at most 16 entries.');
+        }
+    }
 
     public function recipients(): array
     {

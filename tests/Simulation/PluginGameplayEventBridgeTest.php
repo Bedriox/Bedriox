@@ -29,6 +29,7 @@ use Bedriox\Api\Entity\Value\LeashDetachReason;
 use Bedriox\Api\Event\Block\BlockBreakEvent;
 use Bedriox\Api\Event\Block\BlockBrokenEvent;
 use Bedriox\Api\Event\Block\BlockPlaceEvent;
+use Bedriox\Api\Event\Block\BlockStateChangeEvent;
 use Bedriox\Api\Event\Entity\EntityEffectAddedEvent;
 use Bedriox\Api\Event\Entity\EntityEffectAddEvent;
 use Bedriox\Api\Event\Entity\EntityInteractedEvent;
@@ -50,8 +51,10 @@ use Bedriox\Api\Event\Player\PlayerDamageEvent;
 use Bedriox\Api\Event\Player\PlayerDeathEvent;
 use Bedriox\Api\Event\Player\PlayerEquipmentChangedEvent;
 use Bedriox\Api\Event\Player\PlayerEquipmentChangeEvent;
+use Bedriox\Api\Event\Player\PlayerFlightToggleEvent;
 use Bedriox\Api\Event\Player\PlayerFoodLevelChangedEvent;
 use Bedriox\Api\Event\Player\PlayerFoodLevelChangeEvent;
+use Bedriox\Api\Event\Player\PlayerItemUseEvent;
 use Bedriox\Api\Event\Player\PlayerJoinEvent;
 use Bedriox\Api\Event\Player\PlayerKickCause;
 use Bedriox\Api\Event\Player\PlayerKickEvent;
@@ -78,6 +81,8 @@ use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Data\BedrockDataSet;
+use Bedriox\Data\BlockPropertyRegistry;
+use Bedriox\Data\CanonicalBlockState;
 use Bedriox\Server\Entity\EntityUuid;
 use Bedriox\Server\Entity\Vanilla\LlamaEntity;
 use Bedriox\Server\Entity\Vanilla\SheepEntity;
@@ -102,11 +107,13 @@ use Bedriox\Server\Simulation\Event\ChatBroadcast;
 use Bedriox\Server\Simulation\Event\CommandRejected;
 use Bedriox\Server\Simulation\Event\HeldItemChanged;
 use Bedriox\Server\Simulation\Event\InventoryStackRequestProcessed;
+use Bedriox\Server\Simulation\Event\ItemUseCancelled;
 use Bedriox\Server\Simulation\Event\MovementCorrected;
 use Bedriox\Server\Simulation\Event\PlayerDamaged;
 use Bedriox\Server\Simulation\Event\PlayerDied;
 use Bedriox\Server\Simulation\Event\PlayerHealed;
 use Bedriox\Server\Simulation\Event\PlayerRespawned;
+use Bedriox\Server\Simulation\ItemUseCancellationReason;
 use Bedriox\Server\Simulation\MovementMode;
 use Bedriox\Server\Simulation\PluginGameplayEventBridge;
 use Bedriox\Server\Simulation\Position;
@@ -117,7 +124,9 @@ use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\BlockPosition;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\ChunkRepository;
+use Bedriox\Server\World\Collision\BlockCollisionRegistry;
 use Bedriox\Server\World\FlatWorldGenerator;
+use Bedriox\Server\World\Generation\GenerationBlockPalette;
 use Bedriox\Server\World\World;
 use Bedriox\Server\World\WorldMetadata;
 use PHPUnit\Framework\TestCase;
@@ -670,10 +679,128 @@ final class PluginGameplayEventBridgeTest extends TestCase
         self::assertSame(0, $postEvents);
     }
 
+    public function testCancelledBreakCannotBeFollowedByMovementThroughTheAuthoritativeBlock(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $dispatcher->register('Example', BlockBreakEvent::class, static function (BlockBreakEvent $event): void {
+            $event->cancel();
+        });
+        [$simulation, $factory, $world, $palette] = self::simulation($bridge, collisions: true);
+        self::retainOriginCollisionTerrain($world);
+        $world->setBlockState(1, 64, 0, $palette->grassBlock);
+        $simulation->enqueue($factory->join('one', 'identity-one', 'One'));
+        $simulation->tick();
+        $position = new BlockPosition(1, 64, 0);
+
+        $simulation->enqueue($factory->breakBlock('one', 1, BlockBreakAction::Start, $position, 1));
+        $simulation->tick();
+        $simulation->enqueue($factory->breakBlock('one', 2, BlockBreakAction::Complete, $position, 1));
+        $breakEvent = $simulation->tick()->events[0];
+        self::assertInstanceOf(BlockChanged::class, $breakEvent);
+
+        $simulation->enqueue($factory->move(
+            'one',
+            1,
+            1.0,
+            64.0,
+            0.0,
+            0.0,
+            0.0,
+            MovementMode::WALKING,
+            deltaX: 1.0,
+        ));
+        $movement = $simulation->tick()->events[0];
+
+        if (!$movement instanceof MovementCorrected) {
+            self::fail('Cancelled movement must produce an authoritative correction.');
+        }
+        self::assertSame('terrain_collision', $movement->reason);
+        self::assertLessThan(1.0, $movement->authoritativePlayer->position->x);
+        self::assertSame($palette->grassBlock->value, $world->blockStateAt(1, 64, 0)->value);
+    }
+
+    public function testCancelledDoorBreakCorrectsBothAuthoritativeHalves(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $dispatcher->register('Example', BlockBreakEvent::class, static function (BlockBreakEvent $event): void {
+            $event->cancel();
+        });
+        [$simulation, $factory, $world, , $registry] = self::simulation($bridge);
+        $lower = new BlockPosition(1, 64, 0);
+        $upper = new BlockPosition(1, 65, 0);
+        $lowerState = $registry->internalId(CanonicalBlockState::from('minecraft:wooden_door', [
+            'door_hinge_bit' => 0,
+            'minecraft:cardinal_direction' => 'south',
+            'open_bit' => 0,
+            'upper_block_bit' => 0,
+        ]));
+        $upperState = $registry->internalId(CanonicalBlockState::from('minecraft:wooden_door', [
+            'door_hinge_bit' => 0,
+            'minecraft:cardinal_direction' => 'south',
+            'open_bit' => 0,
+            'upper_block_bit' => 1,
+        ]));
+        $world->setBlockState(1, 64, 0, $lowerState);
+        $world->setBlockState(1, 65, 0, $upperState);
+        $simulation->enqueue($factory->join('one', 'identity-one', 'One'));
+        $simulation->tick();
+
+        $simulation->enqueue($factory->breakBlock('one', 1, BlockBreakAction::Start, $lower, 1));
+        $simulation->tick();
+        $simulation->enqueue($factory->breakBlock('one', 2, BlockBreakAction::Complete, $lower, 1));
+        $correction = $simulation->tick()->events[0];
+
+        self::assertInstanceOf(BlockChanged::class, $correction);
+        self::assertCount(1, $correction->additionalBlocks);
+        self::assertTrue($correction->additionalBlocks[0]->position->equals($upper));
+        self::assertSame($upperState->value, $correction->additionalBlocks[0]->state->value);
+        self::assertSame($lowerState->value, $world->blockStateAt(1, 64, 0)->value);
+        self::assertSame($upperState->value, $world->blockStateAt(1, 65, 0)->value);
+    }
+
+    public function testCancelledDoorStateChangeCorrectsBothAuthoritativeHalves(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $dispatcher->register('Example', BlockStateChangeEvent::class, static function (BlockStateChangeEvent $event): void {
+            $event->cancel();
+        });
+        [$simulation, $factory, $world, , $registry] = self::simulation($bridge);
+        $lower = new BlockPosition(1, 64, 0);
+        $upper = new BlockPosition(1, 65, 0);
+        $lowerState = $registry->internalId(CanonicalBlockState::from('minecraft:wooden_door', [
+            'door_hinge_bit' => 0,
+            'minecraft:cardinal_direction' => 'south',
+            'open_bit' => 0,
+            'upper_block_bit' => 0,
+        ]));
+        $upperState = $registry->internalId(CanonicalBlockState::from('minecraft:wooden_door', [
+            'door_hinge_bit' => 0,
+            'minecraft:cardinal_direction' => 'south',
+            'open_bit' => 0,
+            'upper_block_bit' => 1,
+        ]));
+        $world->setBlockState(1, 64, 0, $lowerState);
+        $world->setBlockState(1, 65, 0, $upperState);
+        $simulation->enqueue($factory->join('one', 'identity-one', 'One'));
+        $simulation->tick();
+
+        $simulation->enqueue($factory->placeBlock('one', 1, $lower, 1, 0, 0, 0.5, 0.5, 0.5));
+        $correction = $simulation->tick()->events[0];
+
+        self::assertInstanceOf(BlockChanged::class, $correction);
+        self::assertCount(1, $correction->additionalBlocks);
+        self::assertTrue($correction->additionalBlocks[0]->position->equals($upper));
+        self::assertSame($upperState->value, $correction->additionalBlocks[0]->state->value);
+        self::assertSame($lowerState->value, $world->blockStateAt(1, 64, 0)->value);
+        self::assertSame($upperState->value, $world->blockStateAt(1, 65, 0)->value);
+    }
+
     public function testCancelledMovementReturnsAnAuthoritativeCorrection(): void
     {
         [$dispatcher, $bridge] = self::bridge();
-        $dispatcher->register('Example', PlayerMoveEvent::class, static function (PlayerMoveEvent $event): void {
+        $requestedOrientation = null;
+        $dispatcher->register('Example', PlayerMoveEvent::class, static function (PlayerMoveEvent $event) use (&$requestedOrientation): void {
+            $requestedOrientation = [$event->to->yaw, $event->to->pitch];
             $event->cancel();
         });
         [$simulation, $factory, $world] = self::simulation($bridge);
@@ -681,13 +808,89 @@ final class PluginGameplayEventBridgeTest extends TestCase
         $simulation->enqueue($factory->join('one', 'identity-one', 'One'));
         $simulation->tick();
 
-        $simulation->enqueue($factory->move('one', 1, 0.1, 64.0, 0.0, 0.0, 0.0, MovementMode::WALKING));
+        $simulation->enqueue($factory->move(
+            'one',
+            1,
+            0.1,
+            64.0,
+            0.0,
+            75.0,
+            -20.0,
+            MovementMode::CROUCHING,
+            sneaking: true,
+            swimming: true,
+            crawling: true,
+        ));
         $event = $simulation->tick()->events[0];
 
         self::assertInstanceOf(MovementCorrected::class, $event);
         self::assertSame('plugin_cancelled', $event->reason);
+        self::assertSame([75.0, -20.0], $requestedOrientation);
         self::assertSame(0.0, $event->authoritativePlayer->position->x);
+        self::assertSame(0.0, $event->authoritativePlayer->yaw);
+        self::assertSame(0.0, $event->authoritativePlayer->pitch);
+        self::assertFalse($event->authoritativePlayer->sneaking);
+        self::assertFalse($event->authoritativePlayer->swimming);
+        self::assertFalse($event->authoritativePlayer->crawling);
+        self::assertTrue($event->postureChanged);
+        self::assertTrue($event->rotationChanged);
         self::assertSame(1, $event->authoritativePlayer->movementSequence);
+    }
+
+    public function testCancelledFlightToggleKeepsTheAuthoritativeFlightState(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $dispatcher->register('Example', PlayerFlightToggleEvent::class, static function (PlayerFlightToggleEvent $event): void {
+            $event->cancel();
+        });
+        [$simulation, $factory] = self::simulation($bridge);
+        $simulation->enqueue($factory->join('one', 'identity-one', 'One'));
+        $simulation->tick();
+        $simulation->enqueue($factory->changeGameMode('one', \Bedriox\Api\Player\GameMode::CREATIVE));
+        $simulation->tick();
+
+        $simulation->enqueue($factory->move(
+            'one',
+            1,
+            0.0,
+            64.0,
+            0.0,
+            0.0,
+            0.0,
+            MovementMode::STOPPED,
+            flying: true,
+        ));
+        $event = $simulation->tick()->events[0];
+
+        self::assertInstanceOf(MovementCorrected::class, $event);
+        self::assertSame('flight_toggle_cancelled', $event->reason);
+        self::assertFalse($event->authoritativePlayer->flying);
+    }
+
+    public function testCancelledInitialItemUseReturnsAnAuthoritativeUseAndSlotCorrection(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $dispatcher->register('Example', PlayerItemUseEvent::class, static function (PlayerItemUseEvent $event): void {
+            $event->cancel();
+        });
+        [$simulation, $factory] = self::simulation($bridge);
+        $simulation->enqueue($factory->join('one', 'identity-one', 'One'));
+        $simulation->tick();
+        $player = $simulation->authoritativePlayer('identity-one');
+        self::assertNotNull($player);
+        $player->vitals->setNutrition(10.0, 2.0, 0.0);
+        self::assertTrue($simulation->enqueueGiveItem('identity-one', 'minecraft:apple', 2));
+        $simulation->tick();
+
+        $simulation->enqueue($factory->useItem('one', 0));
+        $event = $simulation->tick()->events[0];
+
+        self::assertInstanceOf(ItemUseCancelled::class, $event);
+        self::assertSame(ItemUseCancellationReason::PLUGIN, $event->reason);
+        self::assertSame(0, $event->hotbarSlot);
+        self::assertNotNull($event->stack);
+        self::assertSame('minecraft:apple', $event->stack->identifier);
+        self::assertSame(2, $event->stack->count);
     }
 
     public function testTeleportCanBeChangedOrCancelledAndPublishesCommittedState(): void
@@ -734,6 +937,27 @@ final class PluginGameplayEventBridgeTest extends TestCase
         self::assertSame(0.0, $simulation->snapshot()->players[0]->position->x);
     }
 
+    public function testCancelledTeleportDoesNotWakeThePlayer(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $dispatcher->register('Example', PlayerTeleportEvent::class, static function (PlayerTeleportEvent $event): void {
+            $event->cancel();
+        });
+        [$simulation, $factory] = self::simulation($bridge);
+        $simulation->enqueue($factory->join('one', 'identity-one', 'One'));
+        $simulation->tick();
+        $player = $simulation->authoritativePlayer('identity-one');
+        self::assertNotNull($player);
+        self::assertTrue($player->startSleeping(new BlockPosition(0, 63, 0)));
+
+        $simulation->enqueue($factory->teleport('one', 2.0, 70.0, 3.0));
+        $cancelled = $simulation->tick()->events[0];
+
+        self::assertInstanceOf(CommandRejected::class, $cancelled);
+        self::assertSame('plugin_cancelled', $cancelled->reason);
+        self::assertTrue($player->isSleeping());
+    }
+
     public function testCancelledPlacementRepairsThePredictedBlockAndPreservesInventory(): void
     {
         [$dispatcher, $bridge] = self::bridge();
@@ -763,6 +987,47 @@ final class PluginGameplayEventBridgeTest extends TestCase
         self::assertSame('plugin_cancelled', $event->reason);
         self::assertSame($palette->air->value, $world->blockStateAt(1, 64, 0)->value);
         self::assertSame(64, $event->heldStack?->count);
+    }
+
+    public function testCancelledBedPlacementCorrectsThePredictedHeadAndFoot(): void
+    {
+        [$dispatcher, $bridge] = self::bridge();
+        $dispatcher->register('Example', BlockPlaceEvent::class, static function (BlockPlaceEvent $event): void {
+            $event->cancel();
+        });
+        [$simulation, $factory, $world, $palette] = self::simulation($bridge, blockProperties: true);
+        $simulation->enqueue($factory->join('one', 'identity-one', 'One'));
+        $simulation->tick();
+        self::assertTrue($simulation->enqueueGiveItem('identity-one', 'minecraft:bed', 1));
+        $simulation->tick();
+
+        $simulation->enqueue($factory->placeBlock(
+            'one',
+            1,
+            new BlockPosition(1, 63, 0),
+            1,
+            0,
+            0,
+            0.5,
+            1.0,
+            0.5,
+        ));
+        $correction = $simulation->tick()->events[0];
+
+        self::assertInstanceOf(BlockPlacementCorrected::class, $correction);
+        self::assertSame('plugin_cancelled', $correction->reason);
+        self::assertCount(1, $correction->additionalBlocks);
+        self::assertSame($palette->air->value, $correction->placedState->value);
+        self::assertSame($palette->air->value, $correction->additionalBlocks[0]->state->value);
+        self::assertSame($palette->air->value, $world->blockStateAt(1, 64, 0)->value);
+        self::assertSame(
+            $palette->air->value,
+            $world->blockStateAt(
+                $correction->additionalBlocks[0]->position->x,
+                $correction->additionalBlocks[0]->position->y,
+                $correction->additionalBlocks[0]->position->z,
+            )->value,
+        );
     }
 
     public function testCancelledInventorySelectionReturnsTheCurrentAuthoritativeSlot(): void
@@ -1437,11 +1702,15 @@ final class PluginGameplayEventBridgeTest extends TestCase
         );
     }
 
-    /** @return array{WorldSimulation, SimulationCommandFactory, World, FixedFlatBlockPalette} */
-    private static function simulation(PluginGameplayEventBridge $bridge): array
-    {
+    /** @return array{WorldSimulation, SimulationCommandFactory, World, FixedFlatBlockPalette, BlockStateRegistry} */
+    private static function simulation(
+        PluginGameplayEventBridge $bridge,
+        bool $collisions = false,
+        bool $blockProperties = false,
+    ): array {
         $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
         $palette = FixedFlatBlockPalette::fromRegistry($registry);
+        $generation = GenerationBlockPalette::fromRegistry($registry);
         $world = new World(
             new WorldMetadata('plugin-events', 0),
             new FlatWorldGenerator($palette),
@@ -1454,6 +1723,40 @@ final class PluginGameplayEventBridgeTest extends TestCase
             creative: $data->creativeInventoryRegistry(),
             blockItems: $data->blockItemMappingRegistry(),
         );
+        $physicalProperties = null;
+        if ($blockProperties) {
+            $grass = $registry->state($palette->grassBlock);
+            $physicalProperties = BlockPropertyRegistry::fromJson((string) json_encode([
+                'schema' => 1,
+                'states' => [[
+                    'blockState' => [
+                        'identifier' => $grass->identifier(),
+                        'properties' => $grass->properties(),
+                    ],
+                    'burnOdds' => 0,
+                    'canContainLiquidSource' => false,
+                    'collisionShape' => [[0, 0, 0, 1, 1, 1]],
+                    'explosionResistance' => 1,
+                    'flameOdds' => 0,
+                    'friction' => 0.6,
+                    'hardness' => 1,
+                    'isSolid' => true,
+                    'lightDampening' => 15,
+                    'lightEmission' => 0,
+                    'liquidClipShape' => [0, 0, 0, 1, 1, 1],
+                    'liquidReactionOnTouch' => 'none',
+                    'mapColor' => '#000000ff',
+                    'outlineShape' => [0, 0, 0, 1, 1, 1],
+                    'requiresCorrectToolForDrops' => false,
+                    'thickness' => 1,
+                    'tintMethod' => 'none',
+                    'translationKey' => 'tile.grass.name',
+                    'translucency' => 0,
+                    'uiShape' => [0, 0, 0, 1, 1, 1],
+                    'visualShape' => [0, 0, 0, 1, 1, 1],
+                ]],
+            ], JSON_THROW_ON_ERROR), $data->blockStateRegistry());
+        }
 
         return [
             new WorldSimulation(
@@ -1461,11 +1764,16 @@ final class PluginGameplayEventBridgeTest extends TestCase
                 blockPalette: $palette,
                 itemCatalog: $items,
                 blockStateRegistry: $registry,
+                blockCollisionRegistry: $collisions
+                    ? BlockCollisionRegistry::forGenerationPalette($registry, $generation)
+                    : null,
+                blockProperties: $physicalProperties,
                 pluginEvents: $bridge,
             ),
             new SimulationCommandFactory(),
             $world,
             $palette,
+            $registry,
         ];
     }
 

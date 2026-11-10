@@ -255,6 +255,7 @@ use Bedriox\Server\Simulation\Event\WorldEvent;
 use Bedriox\Server\Simulation\Event\WorldTimeChanged;
 use Bedriox\Server\Simulation\PlayerSnapshot;
 use Bedriox\Server\Simulation\VerticalState;
+use Bedriox\Server\World\BlockEntity\BlockEntity;
 use Bedriox\Server\World\Storage\LevelDb\PersistentBlockEntityCodec;
 use WeakMap;
 
@@ -1057,10 +1058,18 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             $event->sprinting,
         );
 
-        return array_map(
+        $packets = array_map(
             static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $metadata),
             $event->recipientSessionIds,
         );
+        array_push($packets, ...$this->inventorySlotCorrection(
+            $event->ownerSessionId,
+            InventoryContainerId::INVENTORY,
+            $event->hotbarSlot,
+            $event->stack,
+        ));
+
+        return $packets;
     }
 
     /** @return list<DirectedPacket> */
@@ -1539,8 +1548,9 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
     private function movementCorrection(MovementCorrected $event, array $recipients): array
     {
         $player = $event->authoritativePlayer;
+        $packets = [];
         if ($event->clientTick !== null) {
-            $packet = new CorrectPlayerMovePredictionPacket(
+            $prediction = new CorrectPlayerMovePredictionPacket(
                 PredictionType::Player,
                 $player->position->x,
                 PlayerPositionProjection::feetToWireY($player->position->y),
@@ -1554,15 +1564,47 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
                 $player->verticalState === VerticalState::GROUNDED,
                 new UnsignedLong($event->clientTick->high, $event->clientTick->low),
             );
+            foreach ($recipients as $recipient) {
+                $packets[] = new DirectedPacket($recipient, $prediction);
+            }
+            if ($event->rotationChanged) {
+                $rotation = new MovePlayerPacket(
+                    UnsignedLong::fromInt($player->runtimeActorId),
+                    $player->position->x,
+                    PlayerPositionProjection::feetToWireY($player->position->y),
+                    $player->position->z,
+                    $player->pitch,
+                    $player->yaw,
+                    $player->headYaw,
+                    MovePlayerMode::TELEPORT,
+                    $player->verticalState === VerticalState::GROUNDED,
+                    UnsignedLong::fromInt(0),
+                    UnsignedLong::fromInt(max(0, $player->movementSequence)),
+                );
+                foreach ($recipients as $recipient) {
+                    $packets[] = new DirectedPacket($recipient, $rotation);
+                }
+            }
+            if ($event->postureChanged) {
+                $flags = array_values(array_filter(
+                    $this->playerMetadata($player),
+                    static fn(ActorMetadata $entry): bool => PlayerActorMetadata::isFlags($entry),
+                ));
+                $posture = new SetActorDataPacket(
+                    UnsignedLong::fromInt($player->runtimeActorId),
+                    UnsignedLong::fromInt(max(0, $player->movementSequence)),
+                    $flags,
+                );
+                foreach ($recipients as $recipient) {
+                    $packets[] = new DirectedPacket($recipient, $posture);
+                }
+            }
 
-            return array_map(
-                static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
-                $recipients,
-            );
+            return $packets;
         }
 
         if ($event->reason !== 'plugin_teleport') {
-            return [];
+            return $packets;
         }
 
         $packet = new MovePlayerPacket(
@@ -2323,6 +2365,25 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
                 [UpdateBlockFlag::Network, UpdateBlockFlag::Priority],
                 0,
             ));
+            foreach ($event->additionalBlocks as $correction) {
+                $packets[] = new DirectedPacket($recipient, $this->updateBlock(
+                    $correction->position,
+                    $correction->state,
+                ));
+                if ($correction->blockEntity !== null) {
+                    $packets[] = new DirectedPacket($recipient, $this->blockEntityPacket($correction->blockEntity));
+                }
+            }
+            foreach ($event->blockEntities as $blockEntity) {
+                $packets[] = new DirectedPacket($recipient, $this->blockEntityPacket($blockEntity));
+            }
+            if ($event->inventorySlot !== null) {
+                $packets[] = new DirectedPacket($recipient, new InventorySlotPacket(
+                    0,
+                    $event->inventorySlot,
+                    $this->requireInventoryProjector()->toProtocol($event->heldStack),
+                ));
+            }
         }
 
         return $packets;
@@ -2331,14 +2392,19 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
     /** @return list<DirectedPacket> */
     private function blockEntityChanged(BlockEntityChanged $event): array
     {
-        $packet = new BlockActorDataPacket(
-            self::protocolBlockPosition($event->blockEntity->position),
-            $this->blockEntities->encodeNetworkEntity($event->blockEntity),
-        );
+        $packet = $this->blockEntityPacket($event->blockEntity);
 
         return array_map(
             static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $packet),
             $event->recipientSessionIds,
+        );
+    }
+
+    private function blockEntityPacket(BlockEntity $blockEntity): BlockActorDataPacket
+    {
+        return new BlockActorDataPacket(
+            self::protocolBlockPosition($blockEntity->position),
+            $this->blockEntities->encodeNetworkEntity($blockEntity),
         );
     }
 
@@ -2407,6 +2473,24 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             $event->ownerSessionId,
             $this->updateBlock($event->placedPosition, $event->placedState),
         );
+        foreach ($event->additionalBlocks as $correction) {
+            $packets[] = new DirectedPacket(
+                $event->ownerSessionId,
+                $this->updateBlock($correction->position, $correction->state),
+            );
+            if ($correction->blockEntity !== null) {
+                $packets[] = new DirectedPacket(
+                    $event->ownerSessionId,
+                    $this->blockEntityPacket($correction->blockEntity),
+                );
+            }
+        }
+        foreach ($event->blockEntities as $blockEntity) {
+            $packets[] = new DirectedPacket(
+                $event->ownerSessionId,
+                $this->blockEntityPacket($blockEntity),
+            );
+        }
         $packets[] = new DirectedPacket($event->ownerSessionId, new InventorySlotPacket(
             0,
             $event->inventorySlot,

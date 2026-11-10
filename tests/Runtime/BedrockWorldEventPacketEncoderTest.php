@@ -54,6 +54,7 @@ use Bedriox\Protocol\Packet\ActorMetadata;
 use Bedriox\Protocol\Packet\AddPlayerPacket;
 use Bedriox\Protocol\Packet\AnimatePacket;
 use Bedriox\Protocol\Packet\BedrockPacketCodec;
+use Bedriox\Protocol\Packet\BlockActorDataPacket;
 use Bedriox\Protocol\Packet\ChatPacket;
 use Bedriox\Protocol\Packet\ContainerOpenPacket;
 use Bedriox\Protocol\Packet\ContainerType;
@@ -141,6 +142,7 @@ use Bedriox\Server\Simulation\Event\PlayerKnockedBack;
 use Bedriox\Server\Simulation\Event\PlayerMotionChanged;
 use Bedriox\Server\Simulation\Event\PlayerMoved;
 use Bedriox\Server\Simulation\Event\SystemMessageSent;
+use Bedriox\Server\Simulation\Event\Value\BlockStateCorrection;
 use Bedriox\Server\Simulation\Event\WeatherChanged;
 use Bedriox\Server\Simulation\ItemUseCancellationReason;
 use Bedriox\Server\Simulation\MovementMode;
@@ -152,6 +154,7 @@ use Bedriox\Server\Transport\SessionInfo;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
+use Bedriox\Server\World\BlockEntity\SignBlockEntity;
 use Bedriox\Server\World\BlockPosition;
 use PHPUnit\Framework\TestCase;
 use ReflectionProperty;
@@ -527,12 +530,15 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
             ['owner', 'peer'],
             movementSequence: 12,
         ), []);
-        self::assertCount(2, $cancelled);
+        self::assertCount(4, $cancelled);
         $cancelledMetadata = $cancelled[0]->packet;
         self::assertInstanceOf(SetActorDataPacket::class, $cancelledMetadata);
         $cancelledFlags = $cancelledMetadata->metadata[0]->value;
         self::assertIsInt($cancelledFlags);
         self::assertSame(0, $cancelledFlags & ActorFlag::UsingItem->mask());
+        self::assertInstanceOf(InventorySlotPacket::class, $cancelled[2]->packet);
+        self::assertInstanceOf(InventorySlotPacket::class, $cancelled[3]->packet);
+        self::assertSame(0, $cancelled[3]->packet->slot);
 
         $main = array_fill(0, 36, null);
         $main[0] = new InventoryStack('minecraft:apple', 1, 8);
@@ -793,13 +799,21 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
             $palette->air,
             0,
             new InventoryStack('minecraft:grass_block', 64, 1, $palette->grassBlock),
+            reason: 'plugin_cancelled',
+            additionalBlocks: [new BlockStateCorrection(
+                new BlockPosition(1, 65, 0),
+                $palette->air,
+                SignBlockEntity::empty(new BlockPosition(1, 65, 0)),
+            )],
         ), []);
-        self::assertCount(3, $corrected);
+        self::assertCount(5, $corrected);
         self::assertInstanceOf(UpdateBlockPacket::class, $corrected[0]->packet);
         self::assertInstanceOf(UpdateBlockPacket::class, $corrected[1]->packet);
-        self::assertInstanceOf(InventorySlotPacket::class, $corrected[2]->packet);
+        self::assertInstanceOf(UpdateBlockPacket::class, $corrected[2]->packet);
+        self::assertInstanceOf(BlockActorDataPacket::class, $corrected[3]->packet);
+        self::assertInstanceOf(InventorySlotPacket::class, $corrected[4]->packet);
         self::assertNotSame($corrected[0]->packet->encode(), $corrected[1]->packet->encode());
-        self::assertSame(64, $corrected[2]->packet->item->count);
+        self::assertSame(64, $corrected[4]->packet->item->count);
 
         $minecartCorrection = $encoder->encode(new BlockPlacementCorrected(
             'one',
@@ -1702,6 +1716,41 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         self::assertSame(0.0, $packets[0]->packet->deltaY);
         self::assertSame(0.0, $packets[0]->packet->deltaZ);
         self::assertTrue($packets[0]->packet->onGround);
+    }
+
+    public function testCancelledMovementAlsoResetsPredictedRotationAndPosture(): void
+    {
+        $player = new PlayerSnapshot(
+            'session',
+            '00000000-0000-0000-0000-000000000001',
+            'Player',
+            new Position(1.0, 64.0, 2.0),
+            35.0,
+            -10.0,
+            MovementMode::STOPPED,
+            6,
+            VerticalState::GROUNDED,
+            0.0,
+            7,
+        );
+
+        $packets = (new BedrockWorldEventPacketEncoder())->encode(
+            new MovementCorrected(
+                $player,
+                'plugin_cancelled',
+                postureChanged: true,
+                clientTick: ClientInputTick::fromInt(9),
+                rotationChanged: true,
+            ),
+            [],
+        );
+
+        self::assertCount(3, $packets);
+        self::assertInstanceOf(CorrectPlayerMovePredictionPacket::class, $packets[0]->packet);
+        self::assertInstanceOf(MovePlayerPacket::class, $packets[1]->packet);
+        self::assertSame(35.0, $packets[1]->packet->yaw);
+        self::assertSame(-10.0, $packets[1]->packet->pitch);
+        self::assertInstanceOf(SetActorDataPacket::class, $packets[2]->packet);
     }
 
     public function testTerrainCorrectionResetsOwnerAndPublishesResolvedPositionToPeers(): void

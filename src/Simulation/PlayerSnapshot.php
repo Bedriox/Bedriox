@@ -73,5 +73,8 @@ final readonly class PlayerSnapshot
         public bool $gravityEnabled = true,
         public bool $sleeping = false,
         public ?BlockPosition $sleepingBed = null,
+        public bool $flying = false,
+        public bool $swimming = false,
+        public bool $crawling = false,
     ) {}
 }
