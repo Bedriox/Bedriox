@@ -40,6 +40,8 @@ use Bedriox\Api\Entity\VanillaEntityType;
 use Bedriox\Api\Event\Player\PlayerKickCause;
 use Bedriox\Api\Event\Player\PlayerQuitCause;
 use Bedriox\Api\Event\World\WeatherChangeCause;
+use Bedriox\Api\Form\Form;
+use Bedriox\Api\Form\FormSendMode;
 use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Inventory\ItemStack as ApiItemStack;
 use Bedriox\Api\Player\ExperienceChangeCause;
@@ -115,6 +117,8 @@ use Bedriox\Server\Plugin\Command\CommandRegistry;
 use Bedriox\Server\Plugin\Command\ServerPlayerCommandSender;
 use Bedriox\Server\Plugin\Display\DisplayChange;
 use Bedriox\Server\Plugin\Display\DisplayRegistry;
+use Bedriox\Server\Plugin\Form\FormRegistry;
+use Bedriox\Server\Plugin\Form\FormResponseDisposition;
 use Bedriox\Server\Plugin\PluginActionBuffer;
 use Bedriox\Server\Plugin\Scoreboard\ScoreboardRegistry;
 use Bedriox\Server\Runtime\BossBar\ActorBackedBossBarDelivery;
@@ -273,6 +277,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private readonly InboundMetrics $inboundMetrics;
     private readonly PlayerActorVisibilityRegistry $actorVisibility;
     private readonly PlayerConnectionDirectory $playerConnections;
+    private ?FormRegistry $formRegistry = null;
     private ?Throwable $failure = null;
     private ?string $involvedSessionId = null;
     /** @var array<string, array{int, int}> address => last report epoch and suppressed count */
@@ -525,6 +530,15 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 $this->scoreboardProjector->requestReplay($identity);
             }
         }
+    }
+
+    /** Installs the plugin-owned form lifecycle before plugins begin receiving players. */
+    public function setFormRegistry(FormRegistry $registry): void
+    {
+        if ($this->formRegistry !== null && $this->formRegistry !== $registry) {
+            throw new \LogicException('The server runtime form registry is already installed.');
+        }
+        $this->formRegistry = $registry;
     }
 
     /** Registers a bounded namespaced Gateway-to-backend plugin message handler. */
@@ -1753,6 +1767,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 $pluginTiming = $this->performance?->startSubsystem(PerformanceSubsystem::PLUGINS);
                 try {
                     ++$this->serverTick;
+                    if (($this->serverTick % 20) === 0) {
+                        $this->formRegistry?->expire(hrtime(true));
+                    }
                     ($this->simulationTickBoundary)?->__invoke($this->serverTick);
                 } finally {
                     $pluginTiming?->end();
@@ -3774,6 +3791,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     $this->diagnostics->record('play.skin_change_rejected');
                 }
             }
+            if (!$this->dispatchFormResponses($key, $session)) {
+                return;
+            }
             if (!$this->dispatchPlayerCommands($session)) {
                 $this->diagnostics->record('play.player_command_output_dropped');
             }
@@ -3859,6 +3879,47 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     return false;
                 }
             }
+        }
+        return true;
+    }
+
+    private function dispatchFormResponses(string $key, RuntimeSession $session): bool
+    {
+        $play = $session->play;
+        $forms = $this->formRegistry;
+        if ($play === null || $forms === null) {
+            $play?->drainFormResponses();
+            return true;
+        }
+        $player = $this->simulationForSession($session)?->pluginPlayer($play->login()->identity);
+        if ($player === null) {
+            $play->drainFormResponses();
+            return true;
+        }
+        $player = $this->playerConnections->attach($player);
+        foreach ($play->drainFormResponses() as $response) {
+            $disposition = $forms->respond(
+                $play->login()->identity,
+                $session->id,
+                $response,
+                $player,
+            );
+            if ($disposition !== FormResponseDisposition::SEMANTIC_VIOLATION) {
+                continue;
+            }
+            $now = hrtime(true);
+            if (!$session->protocolViolations->recordSoftViolation($now)) {
+                continue;
+            }
+            $result = new InboundResult(
+                InboundDisposition::PROTOCOL_VIOLATION,
+                InboundOrigin::PACKET_HANDLE,
+                'repeated_invalid_form_response',
+                \Bedriox\Protocol\Packet\PacketIds::MODAL_FORM_RESPONSE,
+            );
+            $this->inboundMetrics->record($result);
+            $this->disconnectForInboundFailure($key, $session, $result);
+            return false;
         }
         return true;
     }
@@ -4115,9 +4176,16 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                         $enabled,
                     ) ?? false,
                 ),
+                sendForm: fn(Form $form, FormSendMode $mode) => $this->formRegistry?->send($identity, $session->id, $form, $mode),
+                closeForms: fn(): bool => $this->formRegistry?->closeAll($identity, $session->id) ?? false,
                 skin: self::apiSkin($ready->login->clientData),
             );
             $connectionCompleted = hrtime(true);
+            $this->formRegistry?->connect(
+                $identity,
+                $session->id,
+                fn(Packet $packet, bool $immediate): bool => $this->sendPlayerPacket($key, $session, $packet, $immediate),
+            );
             $this->logJoining($session, $ready->login->displayName);
             $this->flush($key, $session);
             $completed = hrtime(true);
@@ -4646,6 +4714,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         $identity = $session->bootstrap?->identity->uuid ?? $session->play?->login()->identity;
         if ($identity !== null) {
             $this->playerConnections->disconnect($identity, $session->id);
+            $this->formRegistry?->disconnect($identity, $session->id);
             $this->scoreboardRegistry?->removePlayer($identity);
             $this->scoreboardProjector?->forgetPlayer($identity);
             unset($this->scoreboardActorIds[strtolower($identity)]);

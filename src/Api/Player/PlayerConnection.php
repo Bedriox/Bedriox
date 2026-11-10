@@ -21,6 +21,9 @@ declare(strict_types=1);
 namespace Bedriox\Api\Player;
 
 use Bedriox\Api\Event\Player\PlayerKickCause;
+use Bedriox\Api\Form\Form;
+use Bedriox\Api\Form\FormHandle;
+use Bedriox\Api\Form\FormSendMode;
 use Bedriox\Protocol\Packet\Packet;
 use Closure;
 
@@ -32,6 +35,8 @@ final readonly class PlayerConnection
      * @param Closure(Packet, bool): bool  $sendPacket
      * @param Closure(string, ?string, ?string, PlayerKickCause, ?string): bool $kick
      * @param Closure(): bool                         $swingArm
+     * @param null|Closure(Form, FormSendMode): ?FormHandle $sendForm
+     * @param null|Closure(): bool                    $closeForms
      * @internal The server owns connection construction; plugins receive it from Player::connection().
      */
     public function __construct(
@@ -39,6 +44,8 @@ final readonly class PlayerConnection
         private Closure $sendPacket,
         private ?Closure $kick = null,
         private ?Closure $swingArm = null,
+        private ?Closure $sendForm = null,
+        private ?Closure $closeForms = null,
     ) {}
 
     public static function disconnected(): self
@@ -47,6 +54,8 @@ final readonly class PlayerConnection
             static fn(): bool => false,
             static fn(Packet $packet, bool $immediate): bool => false,
             static fn(string $reason, ?string $quitMessage, ?string $screenMessage, PlayerKickCause $cause, ?string $actor): bool => false,
+            static fn(): bool => false,
+            static fn(Form $form, FormSendMode $mode): ?FormHandle => null,
             static fn(): bool => false,
         );
     }
@@ -74,5 +83,15 @@ final readonly class PlayerConnection
     public function swingArm(): bool
     {
         return $this->swingArm !== null && ($this->swingArm)();
+    }
+
+    public function sendForm(Form $form, FormSendMode $mode = FormSendMode::QUEUE): ?FormHandle
+    {
+        return $this->sendForm === null ? null : ($this->sendForm)($form, $mode);
+    }
+
+    public function closeForms(): bool
+    {
+        return $this->closeForms !== null && ($this->closeForms)();
     }
 }

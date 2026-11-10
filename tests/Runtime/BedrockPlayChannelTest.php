@@ -93,6 +93,8 @@ use Bedriox\Protocol\Packet\LevelChunkPacket;
 use Bedriox\Protocol\Packet\MineBlockItemStackRequestAction;
 use Bedriox\Protocol\Packet\MobArmorEquipmentPacket;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
+use Bedriox\Protocol\Packet\ModalFormRequestPacket;
+use Bedriox\Protocol\Packet\ModalFormResponsePacket;
 use Bedriox\Protocol\Packet\MovementPredictionSyncPacket;
 use Bedriox\Protocol\Packet\MovePlayerMode;
 use Bedriox\Protocol\Packet\MovePlayerPacket;
@@ -379,6 +381,34 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertSame('session', $commands[0]->session);
         self::assertSame('literal', $commands[0]->message);
         self::assertFalse($channel->isClosed());
+    }
+
+    public function testFormResponseIsQueuedButClientboundRequestFromClientFailsClosed(): void
+    {
+        [$channel, $client, , $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
+        )));
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new ModalFormResponsePacket(41, '0', null)])),
+            Reliability::RELIABLE,
+        )));
+        $responses = $channel->drainFormResponses();
+        self::assertCount(1, $responses);
+        self::assertSame(41, $responses[0]->formId);
+
+        [$wrongDirection, $client, , $entityId] = $this->channel();
+        self::assertTrue($wrongDirection->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
+        )));
+        $result = $wrongDirection->acceptInput(new InboundPayload(
+            $client->encryptBatch($this->encode([new ModalFormRequestPacket(7, '{"type":"form"}')])),
+            Reliability::RELIABLE,
+        ));
+        self::assertSame(InboundDisposition::PROTOCOL_VIOLATION, $result->disposition);
+        self::assertTrue($wrongDirection->isClosed());
     }
 
     public function testWrongReliabilityFailsClosedWhileWrongEntityAddsOneSemanticStrike(): void

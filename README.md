@@ -64,7 +64,7 @@ Bedriox is continuing toward broader vanilla coverage, richer entities and NPCs,
 
 Discover plugins for your server through the [Bedriox Marketplace](https://marketplace.bedriox.com). Plugin developers can also submit their work to the Marketplace so server owners can find and install it.
 
-Bedriox loads validated PHAR plugins. [PluginTools](https://github.com/Bedriox/PluginTools) adds source-plugin loading for development and packages finished plugins into PHAR files. Start with the [plugin documentation](docs/plugins.md) or the [ExamplePlugin](https://github.com/Bedriox/ExamplePlugin).
+Bedriox loads validated PHAR plugins. [PluginTools](https://github.com/Bedriox/PluginTools) adds source-plugin loading for development and packages finished plugins into PHAR files. Start with the [plugin documentation](docs/plugins.md), the [forms guide](docs/forms.md), or the [ExamplePlugin](https://github.com/Bedriox/ExamplePlugin).
 
 ## Source development
 

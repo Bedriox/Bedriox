@@ -87,6 +87,7 @@ use Bedriox\Protocol\Packet\MapInfoRequestPacket;
 use Bedriox\Protocol\Packet\MineBlockItemStackRequestAction;
 use Bedriox\Protocol\Packet\MobArmorEquipmentPacket;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
+use Bedriox\Protocol\Packet\ModalFormResponsePacket;
 use Bedriox\Protocol\Packet\MovementPredictionSyncPacket;
 use Bedriox\Protocol\Packet\MovePlayerMode;
 use Bedriox\Protocol\Packet\MovePlayerPacket;
@@ -190,6 +191,9 @@ final class BedrockPlayChannel
 
     /** @var SplQueue<CommandRequestPacket> */
     private SplQueue $playerCommands;
+
+    /** @var SplQueue<ModalFormResponsePacket> */
+    private SplQueue $formResponses;
 
     /** @var SplQueue<Packet|ReusablePlayPacket> */
     private SplQueue $pendingBootstrapPackets;
@@ -329,6 +333,7 @@ final class BedrockPlayChannel
         $this->outgoing = new SplQueue();
         $this->commands = new SplQueue();
         $this->playerCommands = new SplQueue();
+        $this->formResponses = new SplQueue();
         $this->pendingBootstrapPackets = new SplQueue();
         $this->pendingStreamingResponses = new SplQueue();
         $this->generatedChunks = new SplQueue();
@@ -532,6 +537,14 @@ final class BedrockPlayChannel
                 $this->recordInputDisposition($ignored);
                 $result = $result->merge($ignored);
                 continue;
+            }
+            if ($packetId === PacketIds::MODAL_FORM_REQUEST) {
+                return $this->fatalInput(
+                    InboundDisposition::PROTOCOL_VIOLATION,
+                    InboundOrigin::PACKET_HANDLE,
+                    'clientbound_packet_received',
+                    $packetId,
+                );
             }
 
             $decodeStartedNanoseconds = hrtime(true);
@@ -1081,6 +1094,16 @@ final class BedrockPlayChannel
         return $values;
     }
 
+    /** @return list<ModalFormResponsePacket> */
+    public function drainFormResponses(): array
+    {
+        $values = [];
+        while (!$this->formResponses->isEmpty()) {
+            $values[] = $this->formResponses->dequeue();
+        }
+        return $values;
+    }
+
     /** @return list<PlayerSkinPacket> */
     public function drainSkinChanges(): array
     {
@@ -1483,6 +1506,7 @@ final class BedrockPlayChannel
         $this->deferredCompressionBytes = 0;
         $this->commands = new SplQueue();
         $this->playerCommands = new SplQueue();
+        $this->formResponses = new SplQueue();
         $this->pendingBootstrapPackets = new SplQueue();
         $this->pendingStreamingResponses = new SplQueue();
         $this->generatedChunks = new SplQueue();
@@ -1541,6 +1565,13 @@ final class BedrockPlayChannel
 
     private function handle(Packet $packet): bool
     {
+        if ($packet instanceof ModalFormResponsePacket) {
+            if (!$this->initialized || $this->formResponses->count() >= 16) {
+                return false;
+            }
+            $this->formResponses->enqueue($packet);
+            return true;
+        }
         if ($packet instanceof BossEventPacket) {
             // Retail clients acknowledge membership in an actor-backed boss encounter
             // and may query its presentation state. These messages are advisory: the

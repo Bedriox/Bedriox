@@ -985,6 +985,11 @@ final class Bedriox
             $composition->server = $server;
             $server->runtime->setDisplayRegistry($pluginHost->displays());
             $server->runtime->setScoreboardRegistry($pluginHost->scoreboardRegistry());
+            $server->runtime->setFormRegistry(new \Bedriox\Server\Plugin\Form\FormRegistry(
+                $pluginHost->manager(),
+                $pluginHost->execution(),
+                $pluginHost->ownership(),
+            ));
             $updates = new UpdateManager(
                 self::VERSION,
                 $config->updatesEnabled,

@@ -357,6 +357,12 @@ final class PluginHost
         return $this->ownership;
     }
 
+    /** @internal Used to attribute callbacks owned by plugin-created runtime resources. */
+    public function execution(): PluginExecutionContext
+    {
+        return $this->execution;
+    }
+
     private function dataFolder(string $plugin): string
     {
         if (!is_dir($this->pluginDataDirectory)

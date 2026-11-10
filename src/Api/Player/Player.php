@@ -29,6 +29,9 @@ use Bedriox\Api\Entity\Value\EmoteId;
 use Bedriox\Api\Entity\Value\Motion;
 use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\Event\Player\PlayerKickCause;
+use Bedriox\Api\Form\Form;
+use Bedriox\Api\Form\FormHandle;
+use Bedriox\Api\Form\FormSendMode;
 use Bedriox\Api\Inventory\ArmorInventory;
 use Bedriox\Api\Inventory\Container;
 use Bedriox\Api\Inventory\Inventory;
@@ -448,5 +451,15 @@ final readonly class Player
     public function sendToast(string $title, string $body): bool
     {
         return $this->connection()->sendPacket(new ToastRequestPacket($title, $body));
+    }
+
+    public function sendForm(Form $form, FormSendMode $mode = FormSendMode::QUEUE): ?FormHandle
+    {
+        return $this->connection()->sendForm($form, $mode);
+    }
+
+    public function closeForms(): bool
+    {
+        return $this->connection()->closeForms();
     }
 }

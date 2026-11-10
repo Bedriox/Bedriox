@@ -30,6 +30,9 @@ use Bedriox\Api\Entity\Value\EmoteId;
 use Bedriox\Api\Entity\Value\Motion;
 use Bedriox\Api\Entity\Value\MountSeat;
 use Bedriox\Api\Event\Player\PlayerKickCause;
+use Bedriox\Api\Form\Form;
+use Bedriox\Api\Form\FormHandle;
+use Bedriox\Api\Form\FormSendMode;
 use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Inventory\ItemStack;
 use Bedriox\Api\Inventory\PlayerInventoryActions;
@@ -45,7 +48,7 @@ use LogicException;
 
 /**
  * @internal Binds immutable public player handles to the current runtime session without exposing it.
- * @phpstan-type Connection array{session: string, connected: Closure(): bool, send: Closure(Packet, bool): bool, kick: Closure(string, ?string, ?string, PlayerKickCause, ?string): bool, swing: Closure(): bool, teleport: Closure(Position): bool, gameMode: Closure(GameMode): bool, give: Closure(ItemStack): bool, slot: Closure(int, ?ItemStack): bool, contents: Closure(list<ItemStack|null>): bool, remove: Closure(ItemStack): bool, select: Closure(int): bool, equipment: Closure(EquipmentSlot, ?ItemStack): bool, armor: Closure(array<string, ItemStack|null>): bool, damage: Closure(float): bool, maximumStackSize: Closure(ItemStack): int, effectAdd: Closure(EffectInstance, EffectCause): bool, effectRemove: Closure(EffectType, EffectCause): bool, effectClear: Closure(EffectCause): bool, experience: Closure(int, ExperienceChangeCause): bool, vehicle: Closure(): ?Entity, mount: Closure(Entity, MountSeat): bool, dismount: Closure(): bool, motion: Closure(Motion): bool, emote: Closure(EmoteId): bool, rotation: Closure(float, float): bool, nameTag: Closure(string): bool, nameTagVisible: Closure(bool): bool, immobile: Closure(bool): bool, invisible: Closure(bool): bool, scale: Closure(float): bool, gravity: Closure(bool): bool}
+ * @phpstan-type Connection array{session: string, connected: Closure(): bool, send: Closure(Packet, bool): bool, kick: Closure(string, ?string, ?string, PlayerKickCause, ?string): bool, swing: Closure(): bool, form: Closure(Form, FormSendMode): ?FormHandle, closeForms: Closure(): bool, teleport: Closure(Position): bool, gameMode: Closure(GameMode): bool, give: Closure(ItemStack): bool, slot: Closure(int, ?ItemStack): bool, contents: Closure(list<ItemStack|null>): bool, remove: Closure(ItemStack): bool, select: Closure(int): bool, equipment: Closure(EquipmentSlot, ?ItemStack): bool, armor: Closure(array<string, ItemStack|null>): bool, damage: Closure(float): bool, maximumStackSize: Closure(ItemStack): int, effectAdd: Closure(EffectInstance, EffectCause): bool, effectRemove: Closure(EffectType, EffectCause): bool, effectClear: Closure(EffectCause): bool, experience: Closure(int, ExperienceChangeCause): bool, vehicle: Closure(): ?Entity, mount: Closure(Entity, MountSeat): bool, dismount: Closure(): bool, motion: Closure(Motion): bool, emote: Closure(EmoteId): bool, rotation: Closure(float, float): bool, nameTag: Closure(string): bool, nameTagVisible: Closure(bool): bool, immobile: Closure(bool): bool, invisible: Closure(bool): bool, scale: Closure(float): bool, gravity: Closure(bool): bool}
  */
 final class PlayerConnectionDirectory
 {
@@ -106,6 +109,8 @@ final class PlayerConnectionDirectory
         ?Closure $setInvisible = null,
         ?Closure $setScale = null,
         ?Closure $setGravityEnabled = null,
+        ?Closure $sendForm = null,
+        ?Closure $closeForms = null,
         ?Skin $skin = null,
     ): void {
         /** @var Closure(list<ItemStack|null>): bool $contents */
@@ -119,6 +124,8 @@ final class PlayerConnectionDirectory
             'send' => $send,
             'kick' => $kick ?? static fn(string $reason, ?string $quitMessage, ?string $screenMessage, PlayerKickCause $cause, ?string $actor): bool => false,
             'swing' => $swingArm ?? static fn(): bool => false,
+            'form' => $sendForm ?? static fn(Form $form, FormSendMode $mode): ?FormHandle => null,
+            'closeForms' => $closeForms ?? static fn(): bool => false,
             'teleport' => $teleport ?? static fn(Position $position): bool => false,
             'gameMode' => $setGameMode ?? static fn(GameMode $gameMode): bool => false,
             'give' => $giveItem ?? static fn(ItemStack $stack): bool => false,
@@ -175,6 +182,11 @@ final class PlayerConnectionDirectory
                 && ($this->connections[$key]['kick'])($reason, $quitMessage, $screenMessage, $cause, $actor),
             fn(): bool => $session !== null && ($this->connections[$key]['session'] ?? null) === $session
                 && ($this->connections[$key]['swing'])(),
+            fn(Form $form, FormSendMode $mode): ?FormHandle => $session !== null && ($this->connections[$key]['session'] ?? null) === $session
+                ? ($this->connections[$key]['form'])($form, $mode)
+                : null,
+            fn(): bool => $session !== null && ($this->connections[$key]['session'] ?? null) === $session
+                && ($this->connections[$key]['closeForms'])(),
         );
     }
 
