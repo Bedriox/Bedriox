@@ -121,6 +121,39 @@ final class FormRegistryTest extends TestCase
         self::assertSame(FormState::SENT, $second->state());
     }
 
+    public function testFormSpecificLimitIsAppliedBeforeJsonDecoding(): void
+    {
+        $selected = [];
+        $registry = self::registry();
+        $registry->connect('identity', 'session', static fn($packet, bool $immediate): bool => true);
+        $handle = $registry->send('identity', 'session', self::form('limited', $selected));
+        self::assertNotNull($handle);
+
+        $response = new ModalFormResponsePacket($handle->id, str_repeat(' ', 16) . '0', null);
+        self::assertSame(
+            FormResponseDisposition::SEMANTIC_VIOLATION,
+            $registry->respond('identity', 'session', $response, self::player()),
+        );
+        self::assertSame(FormState::INVALID, $handle->state());
+        self::assertSame([], $selected);
+    }
+
+    public function testUnknownFormPayloadIsNotDecoded(): void
+    {
+        $registry = self::registry();
+        $registry->connect('identity', 'session', static fn($packet, bool $immediate): bool => true);
+
+        self::assertSame(
+            FormResponseDisposition::IGNORED_STALE,
+            $registry->respond(
+                'identity',
+                'session',
+                new ModalFormResponsePacket(123, str_repeat('[', ModalFormResponsePacket::MAXIMUM_RESPONSE_BYTES), null),
+                self::player(),
+            ),
+        );
+    }
+
     public function testConflictingResponseFieldsAreRejectedAndConsumedOnce(): void
     {
         $selected = [];

@@ -57,7 +57,7 @@ final class PermissionStore
         if (isset($grants[$permission]) || isset($grants['*'])) {
             return true;
         }
-        $parts = explode('.', $permission);
+        $parts = explode('.', $permission, 129);
         while (count($parts) > 1) {
             array_pop($parts);
             if (isset($grants[implode('.', $parts) . '.*'])) {

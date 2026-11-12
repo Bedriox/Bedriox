@@ -34,7 +34,7 @@ final readonly class BoundedFullTokenParser
         if (strlen($compact) > $this->limits->maximumTokenBytes) {
             throw new AuthenticationException('FULL token exceeds its byte limit.');
         }
-        $segments = explode('.', $compact);
+        $segments = explode('.', $compact, 4);
         if (count($segments) !== 3 || in_array('', $segments, true)) {
             throw new AuthenticationException('FULL token is not a compact JWS.');
         }

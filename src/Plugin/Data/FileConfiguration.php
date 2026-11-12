@@ -226,7 +226,7 @@ final class FileConfiguration implements Configuration
         if ($key === '' || strlen($key) > 512 || str_contains($key, "\0")) {
             throw new PluginDataException('Configuration key is invalid.');
         }
-        $segments = explode('.', $key);
+        $segments = explode('.', $key, 513);
         foreach ($segments as $segment) {
             if ($segment === '' || strlen($segment) > 128) {
                 throw new PluginDataException('Configuration key is invalid.');

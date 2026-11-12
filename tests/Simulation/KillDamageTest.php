@@ -73,6 +73,10 @@ final class KillDamageTest extends TestCase
             $spawn->entity->getRuntimeId(),
             $spawn->entity->getUniqueId(),
         ));
+        self::assertTrue($world->enqueueKillEntity(
+            $spawn->entity->getRuntimeId(),
+            $spawn->entity->getUniqueId(),
+        ));
         $events = $world->tick()->events;
 
         self::assertCount(1, array_filter($events, static fn(object $event): bool => $event instanceof EntityActorDamaged));

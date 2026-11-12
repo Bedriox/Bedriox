@@ -576,7 +576,7 @@ final class LevelDbWorldProvider implements WritableWorldProvider, EntityPersist
     /** @return list<int> */
     private static function gameVersionParts(): array
     {
-        $parts = explode('.', ProtocolVersion::GAME_VERSION);
+        $parts = explode('.', ProtocolVersion::GAME_VERSION, 4);
         if (count($parts) !== 3) {
             throw new \LogicException('Bedrock game version must contain three numeric components.');
         }

@@ -706,7 +706,7 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertNotEmpty($channel->drainCommands());
     }
 
-    public function testRetailEatingActorEventIsAcceptedAsPresentationOnly(): void
+    public function testRetailEatingActorEventIsSilentlyAcceptedAsPresentationOnly(): void
     {
         $lines = [];
         $diagnostics = new RuntimeDiagnostics(static function (string $line) use (&$lines): void {
@@ -730,10 +730,27 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertFalse($channel->isClosed());
         self::assertSame([], $channel->drainOutgoing());
         self::assertSame([], $channel->drainCommands());
-        self::assertStringContainsString(
-            '"event":"play.actor_event_advisory.protocol_trace"',
-            implode('', $lines),
-        );
+        self::assertStringNotContainsString('actor_event_advisory', implode('', $lines));
+    }
+
+    public function testActorEventCannotSpoofAnotherRuntimeActor(): void
+    {
+        [$channel, $client, , $entityId] = $this->channel();
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SetLocalPlayerAsInitializedPacket($entityId)])),
+            Reliability::RELIABLE,
+        )));
+
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([
+                new ActorEventPacket(UnsignedLong::fromInt(99), ActorEventType::EatingItem, 1),
+            ])),
+            Reliability::RELIABLE,
+        )));
+
+        self::assertFalse($channel->isClosed());
+        self::assertSame([], $channel->drainOutgoing());
+        self::assertSame([], $channel->drainCommands());
     }
 
     public function testEncryptedMovementPredictionSyncDoesNotTreatReportedActorAsAuthority(): void

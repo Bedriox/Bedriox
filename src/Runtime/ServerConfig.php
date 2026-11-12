@@ -666,7 +666,7 @@ final readonly class ServerConfig
                 120_000,
             ),
             netherNetAdvertisedAddresses: array_values(array_filter(
-                array_map(trim(...), explode(',', $values['network.nethernet.advertised-addresses'])),
+                array_map(trim(...), explode(',', $values['network.nethernet.advertised-addresses'], 257)),
                 static fn(string $address): bool => $address !== '',
             )),
             movementSecurityEnabled: self::boolean($values['security.movement.enabled'], 'security.movement.enabled'),
@@ -703,7 +703,7 @@ final readonly class ServerConfig
             proxyIssuer: $values['network.proxy.issuer'],
             proxyAudience: $values['network.proxy.audience'],
             proxySecretFile: $values['network.proxy.secret-file'],
-            proxyTrustedCidrs: array_values(array_filter(array_map(trim(...), explode(',', $values['network.proxy.trusted-cidrs'])), static fn(string $cidr): bool => $cidr !== '')),
+            proxyTrustedCidrs: array_values(array_filter(array_map(trim(...), explode(',', $values['network.proxy.trusted-cidrs'], 257)), static fn(string $cidr): bool => $cidr !== '')),
             proxyTokenMaximumAgeSeconds: self::integer(
                 $values['network.proxy.token-max-age-seconds'],
                 'network.proxy.token-max-age-seconds',

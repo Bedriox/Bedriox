@@ -96,4 +96,17 @@ final class RuntimeDiagnosticsTest extends TestCase
         self::assertCount(1, $lines);
         self::assertStringContainsString('runtime.performance_summary.protocol_trace', $lines[0]);
     }
+
+    public function testDisabledDiagnosticsSkipRecordAndSecurityFormatting(): void
+    {
+        $calls = 0;
+        $diagnostics = new RuntimeDiagnostics(static function (string $line) use (&$calls): void {
+            ++$calls;
+        }, enabled: false);
+
+        $diagnostics->record('play.protocol_trace', ['packet_id' => 27]);
+        $diagnostics->securityRejection('packet', 'rate_limited');
+
+        self::assertSame(0, $calls);
+    }
 }

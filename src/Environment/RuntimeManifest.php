@@ -128,7 +128,7 @@ final readonly class RuntimeManifest
             || str_starts_with($path, '/') || str_contains($path, '\\')) {
             return false;
         }
-        foreach (explode('/', $path) as $component) {
+        foreach (explode('/', $path, 241) as $component) {
             if ($component === '' || $component === '.' || $component === '..') {
                 return false;
             }

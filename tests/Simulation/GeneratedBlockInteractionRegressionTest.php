@@ -106,7 +106,8 @@ final class GeneratedBlockInteractionRegressionTest extends TestCase
         self::assertCount(1, array_filter($itemAttack, static fn(object $event): bool => $event instanceof ItemEntitySpawned));
         $teardown = array_values(array_filter(
             $itemAttack,
-            static fn(object $event): bool => $event instanceof BlockChanged,
+            static fn(object $event): bool => $event instanceof BlockChanged
+                && $event->position->equals($position),
         ));
         self::assertCount(1, $teardown);
         self::assertSame($flat->air->value, $teardown[0]->state->value);
@@ -124,6 +125,7 @@ final class GeneratedBlockInteractionRegressionTest extends TestCase
         $restored = array_values(array_filter(
             $restoration,
             static fn(object $event): bool => $event instanceof BlockChanged
+                && $event->position->equals($position)
                 && $event->blockEntities !== [],
         ));
         self::assertCount(1, $restored);
@@ -190,7 +192,11 @@ final class GeneratedBlockInteractionRegressionTest extends TestCase
             1,
         )));
         $events = $simulation->tick()->events;
-        $changed = array_values(array_filter($events, static fn($event): bool => $event instanceof BlockChanged));
+        $changed = array_values(array_filter(
+            $events,
+            static fn(object $event): bool => $event instanceof BlockChanged
+                && $event->position->equals($position),
+        ));
 
         self::assertCount(1, $changed);
         self::assertSame($flat->air->value, $changed[0]->state->value);
@@ -287,8 +293,16 @@ final class GeneratedBlockInteractionRegressionTest extends TestCase
             1,
         )));
         $events = $simulation->tick()->events;
-        $changed = array_values(array_filter($events, static fn($event): bool => $event instanceof BlockChanged));
-        $drops = array_values(array_filter($events, static fn($event): bool => $event instanceof ItemEntitySpawned));
+        $changed = array_values(array_filter(
+            $events,
+            static fn(object $event): bool => $event instanceof BlockChanged
+                && $event->position->equals($position),
+        ));
+        $drops = array_values(array_filter(
+            $events,
+            static fn(object $event): bool => $event instanceof ItemEntitySpawned
+                && $event->entity->stack->identifier === 'minecraft:crafting_table',
+        ));
 
         self::assertCount(1, $changed);
         self::assertSame($flat->air->value, $changed[0]->state->value);
@@ -419,7 +433,10 @@ final class GeneratedBlockInteractionRegressionTest extends TestCase
             $events = $simulation->tick()->events;
             $changed = array_values(array_filter(
                 $events,
-                static fn(object $event): bool => $event instanceof BlockChanged,
+                static fn(object $event): bool => $event instanceof BlockChanged
+                    && $event->position->x === 1
+                    && ($event->position->y === 64 || $event->position->y === 65)
+                    && $event->position->z === 0,
             ));
             $drops = array_values(array_filter(
                 $events,

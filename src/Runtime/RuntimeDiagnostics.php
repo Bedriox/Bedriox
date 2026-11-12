@@ -36,18 +36,22 @@ final readonly class RuntimeDiagnostics
         private Closure $writer,
         private bool $protocolTrace = true,
         ?Closure $securityWriter = null,
+        private bool $enabled = true,
     ) {
         $this->securityWriter = $securityWriter ?? static function (string $line): void {};
     }
 
     public static function disabled(): self
     {
-        return new self(static function (string $line): void {});
+        return new self(static function (string $line): void {}, false, enabled: false);
     }
 
     /** @param array<string, bool|int|string|null> $fields */
     public function record(string $event, array $fields = []): void
     {
+        if (!$this->enabled) {
+            return;
+        }
         if (!$this->protocolTrace && str_ends_with($event, '.protocol_trace')) {
             return;
         }
@@ -80,6 +84,9 @@ final readonly class RuntimeDiagnostics
         ?int $remotePort = null,
         int $count = 1,
     ): void {
+        if (!$this->enabled) {
+            return;
+        }
         if (preg_match('/\A[a-z][a-z0-9_]{0,31}\z/D', $category) !== 1
             || preg_match('/\A[a-z][a-z0-9_]{0,31}\z/D', $reason) !== 1
             || $count < 1) {

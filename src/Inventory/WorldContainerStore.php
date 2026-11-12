@@ -342,6 +342,8 @@ final class WorldContainerStore
             BlockEntityType::Shelf => false,
             BlockEntityType::MobSpawner => false,
             BlockEntityType::TrialSpawner => false,
+            BlockEntityType::ItemFrame => false,
+            BlockEntityType::GlowItemFrame => false,
         };
     }
 

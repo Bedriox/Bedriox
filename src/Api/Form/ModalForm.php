@@ -25,8 +25,9 @@ use Bedriox\Api\Player\Player;
 use Closure;
 use InvalidArgumentException;
 
-final class ModalForm implements Form
+final class ModalForm implements BoundedFormResponse, Form
 {
+    private const int ABSOLUTE_MAXIMUM_RESPONSE_BYTES = 32_768;
     /** @var list<FormComponent> */ private array $components = [];
     private ?Closure $submit = null;
     private ?Closure $closed = null;
@@ -80,6 +81,29 @@ final class ModalForm implements Form
         } if ($this->submit !== null) {
             ($this->submit)($player, new ModalFormResponse($values));
         }
+    }
+
+    public function maximumResponseBytes(): int
+    {
+        $bytes = 2;
+        foreach ($this->components as $component) {
+            $type = $component->definition()['type'] ?? null;
+            if ($type === 'input' || !is_string($type)) {
+                return self::ABSOLUTE_MAXIMUM_RESPONSE_BYTES;
+            }
+            $bytes += 1 + match ($type) {
+                'toggle' => 5,
+                'slider' => 64,
+                'dropdown', 'step_slider' => 16,
+                'divider', 'header', 'label' => 4,
+                default => self::ABSOLUTE_MAXIMUM_RESPONSE_BYTES,
+            };
+            if ($bytes >= self::ABSOLUTE_MAXIMUM_RESPONSE_BYTES) {
+                return self::ABSOLUTE_MAXIMUM_RESPONSE_BYTES;
+            }
+        }
+
+        return max(16, $bytes);
     }
     public function cancel(Player $player, FormCancelReason $reason): void
     {

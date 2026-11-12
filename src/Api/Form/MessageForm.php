@@ -24,8 +24,9 @@ use Bedriox\Api\Player\Player;
 use Closure;
 use InvalidArgumentException;
 
-final class MessageForm implements Form
+final class MessageForm implements BoundedFormResponse, Form
 {
+    private const int MAXIMUM_RESPONSE_BYTES = 5;
     private ?FormButton $first = null;
     private ?FormButton $second = null;
     private ?Closure $submit = null;
@@ -74,6 +75,11 @@ final class MessageForm implements Form
         if ($this->submit !== null) {
             ($this->submit)($player, $response ? $this->first : $this->second);
         }
+    }
+
+    public function maximumResponseBytes(): int
+    {
+        return self::MAXIMUM_RESPONSE_BYTES;
     }
     public function cancel(Player $player, FormCancelReason $reason): void
     {

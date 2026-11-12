@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, development]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   quality:
-    timeout-minutes: 5
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -55,6 +55,24 @@ jobs:
       - run: composer install --no-interaction --prefer-dist --no-progress --ignore-platform-req=ext-leveldb --ignore-platform-req=ext-webrtc
         working-directory: Bedriox
       - run: composer check:ci
+        working-directory: Bedriox
+      - name: Run focused development security regressions
+        if: github.event_name == 'push' && github.ref == 'refs/heads/development'
+        run: >-
+          vendor/bin/phpunit
+          tests/Api/FormApiTest.php
+          tests/Authentication
+          tests/Login
+          tests/Plugin/FormRegistryTest.php
+          tests/Runtime/BedrockPlayChannelTest.php
+          tests/Runtime/RuntimeDiagnosticsTest.php
+          tests/Simulation/KillDamageTest.php
+          tests/Simulation/PlayerLifecycleTest.php
+          tests/Tools/BoundedSplitValidatorTest.php
+        working-directory: Bedriox
+      - name: Run full test suite
+        if: github.event_name != 'push' || github.ref != 'refs/heads/development'
+        run: composer test
         working-directory: Bedriox
       - run: php bin/bedriox --version
         working-directory: Bedriox

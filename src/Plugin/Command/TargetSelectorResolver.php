@@ -156,7 +156,7 @@ final readonly class TargetSelectorResolver
         if ($input === '') {
             return [];
         }
-        $parts = explode(',', $input);
+        $parts = explode(',', $input, self::MAXIMUM_FILTERS + 1);
         if (count($parts) > self::MAXIMUM_FILTERS) {
             throw new CommandBindingException('The target selector contains too many filters.');
         }

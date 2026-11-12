@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Plugin\Form;
 
+use Bedriox\Api\Form\BoundedFormResponse;
 use Bedriox\Api\Form\Form;
 use Bedriox\Api\Form\FormCancelReason;
 use Bedriox\Api\Form\FormHandle;
@@ -128,6 +129,10 @@ final class FormRegistry
                 $this->invoke($pending, fn() => $pending->form->cancel($player, $reason));
                 $session->complete($pending, FormState::CANCELLED, $this->forget(...));
                 return FormResponseDisposition::HANDLED;
+            }
+            if ($pending->form instanceof BoundedFormResponse
+                && strlen($packet->responseJson ?? '') > $pending->form->maximumResponseBytes()) {
+                throw new \InvalidArgumentException('Form response exceeds the active form limit.');
             }
             $value = json_decode($packet->responseJson ?? '', true, 2, JSON_THROW_ON_ERROR);
             $this->invoke($pending, fn() => $pending->form->submit($player, $value));

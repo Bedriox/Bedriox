@@ -51,7 +51,7 @@ final readonly class SemanticVersion
             (int) $matches[1],
             (int) $matches[2],
             (int) $matches[3],
-            isset($matches[4]) ? explode('.', $matches[4]) : [],
+            isset($matches[4]) ? explode('.', $matches[4], 65) : [],
         );
     }
 

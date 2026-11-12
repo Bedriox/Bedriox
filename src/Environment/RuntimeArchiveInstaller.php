@@ -529,7 +529,7 @@ final class RuntimeArchiveInstaller
             throw new RuntimeException('The runtime archive contains an unsafe path.');
         }
         $path = $directory ? rtrim($raw, '/') : $raw;
-        $segments = explode('/', $path);
+        $segments = explode('/', $path, self::MAX_PATH_BYTES + 1);
         if ($segments[0] !== 'bin') {
             throw new RuntimeException('Every runtime archive entry must be rooted under bin/.');
         }
@@ -558,7 +558,7 @@ final class RuntimeArchiveInstaller
     private function ensureDirectory(string $stage, string $path): void
     {
         $current = $stage;
-        foreach (explode('/', $path) as $segment) {
+        foreach (explode('/', $path, self::MAX_PATH_BYTES + 1) as $segment) {
             $current .= DIRECTORY_SEPARATOR . $segment;
             if (is_dir($current) && !is_link($current)) {
                 continue;

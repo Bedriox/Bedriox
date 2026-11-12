@@ -32,6 +32,9 @@ final class CiWorkflowValidatorTest extends TestCase
         $workflow = file_get_contents(dirname(__DIR__, 2) . '/.github/workflows/ci.yml');
         self::assertIsString($workflow);
         self::assertSame([], CiWorkflowValidator::validate($workflow));
+        self::assertStringContainsString('branches: [main, development]', $workflow);
+        self::assertStringContainsString('Run focused development security regressions', $workflow);
+        self::assertStringContainsString('Run full test suite', $workflow);
     }
 
     public function testLiteralComponentRefAndMissingDerivedRefAreRejected(): void

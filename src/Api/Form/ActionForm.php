@@ -25,8 +25,9 @@ use Closure;
 use InvalidArgumentException;
 use JsonException;
 
-final class ActionForm implements Form
+final class ActionForm implements BoundedFormResponse, Form
 {
+    private const int MAXIMUM_RESPONSE_BYTES = 16;
     /** @var list<FormButton> */
     private array $buttons = [];
     private string $body = '';
@@ -80,6 +81,11 @@ final class ActionForm implements Form
         if ($this->submit !== null) {
             ($this->submit)($player, $this->buttons[$response]);
         }
+    }
+
+    public function maximumResponseBytes(): int
+    {
+        return self::MAXIMUM_RESPONSE_BYTES;
     }
     public function cancel(Player $player, FormCancelReason $reason): void
     {

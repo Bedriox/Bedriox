@@ -193,7 +193,7 @@ final class SnifferEntity extends LandBreedableAnimalEntity implements Exclusive
         if ($encoded === '') {
             return;
         }
-        $entries = explode(';', $encoded);
+        $entries = explode(';', $encoded, self::MAXIMUM_REMEMBERED_DIG_SITES + 1);
         if (count($entries) > self::MAXIMUM_REMEMBERED_DIG_SITES) {
             throw new InvalidArgumentException('Persisted sniffer dig-site memory is malformed.');
         }
@@ -201,7 +201,7 @@ final class SnifferEntity extends LandBreedableAnimalEntity implements Exclusive
             if (preg_match('/^-?\d+,-?\d+,-?\d+$/D', $entry) !== 1 || isset($this->rememberedDigSites[$entry])) {
                 throw new InvalidArgumentException('Persisted sniffer dig-site memory is malformed.');
             }
-            [$x, $y, $z] = array_map(static fn(string $value): int => (int) $value, explode(',', $entry));
+            [$x, $y, $z] = array_map(static fn(string $value): int => (int) $value, explode(',', $entry, 4));
             $key = self::digSiteKey($x, $y, $z);
             if ($key !== $entry) {
                 throw new InvalidArgumentException('Persisted sniffer dig-site memory is malformed.');

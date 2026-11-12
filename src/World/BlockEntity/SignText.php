@@ -63,7 +63,7 @@ final readonly class SignText
         if (preg_match('//u', $blob) !== 1 || strlen($blob) > self::MAXIMUM_TEXT_BYTES + self::LINE_COUNT - 1) {
             throw new InvalidArgumentException('Sign text blob is invalid or exceeds its size limit.');
         }
-        $lines = explode("\n", $blob);
+        $lines = explode("\n", $blob, self::LINE_COUNT + 1);
         if (count($lines) > self::LINE_COUNT) {
             throw new InvalidArgumentException('Sign text blob cannot contain more than four lines.');
         }

@@ -154,7 +154,7 @@ final class FilePluginData implements PluginData
 
     private function destination(string $name): string
     {
-        $segments = explode('/', $name);
+        $segments = explode('/', $name, self::MAXIMUM_RESOURCE_NAME_BYTES + 1);
         $cursor = $this->directory;
         foreach (array_slice($segments, 0, -1) as $segment) {
             $cursor .= DIRECTORY_SEPARATOR . $segment;
@@ -173,7 +173,7 @@ final class FilePluginData implements PluginData
             || str_starts_with($name, '/') || preg_match('/^[A-Za-z]:\//', $name) === 1) {
             throw new PluginDataException('Plugin data path is invalid.');
         }
-        foreach (explode('/', $name) as $segment) {
+        foreach (explode('/', $name, self::MAXIMUM_RESOURCE_NAME_BYTES + 1) as $segment) {
             if ($segment === '' || $segment === '.' || $segment === '..') {
                 throw new PluginDataException('Plugin data path is invalid.');
             }

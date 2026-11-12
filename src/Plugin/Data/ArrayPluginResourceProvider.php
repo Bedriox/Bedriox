@@ -44,7 +44,7 @@ final readonly class ArrayPluginResourceProvider implements PluginResourceProvid
                 || str_contains($name, "\0") || str_contains($name, '\\') || str_starts_with($name, '/')) {
                 throw new PluginDataException('Plugin resource catalog contains an invalid entry.');
             }
-            foreach (explode('/', $name) as $segment) {
+            foreach (explode('/', $name, 513) as $segment) {
                 if ($segment === '' || $segment === '.' || $segment === '..') {
                     throw new PluginDataException('Plugin resource catalog contains an unsafe path.');
                 }

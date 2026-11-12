@@ -87,6 +87,23 @@ final class FormApiTest extends TestCase
         self::assertSame('Mars', $response->getString('world'));
     }
 
+    public function testBuiltInFormsPublishNarrowResponseLimits(): void
+    {
+        self::assertSame(16, new ActionForm('Action')->maximumResponseBytes());
+        self::assertSame(5, new MessageForm('Message')->maximumResponseBytes());
+        self::assertSame(
+            73,
+            (new ModalForm('Settings'))
+                ->add(new Toggle('alerts', 'Alerts'))
+                ->add(new Slider('volume', 'Volume', 0.0, 10.0))
+                ->maximumResponseBytes(),
+        );
+        self::assertSame(
+            32_768,
+            (new ModalForm('Profile'))->add(new TextField('name', 'Name'))->maximumResponseBytes(),
+        );
+    }
+
     private static function player(): Player
     {
         return new Player('Player', '00000000-0000-0000-0000-000000000001', new Position(0.0, 64.0, 0.0), 0.0, 0.0, false, false, new Inventory(array_fill(0, 36, null), 0));

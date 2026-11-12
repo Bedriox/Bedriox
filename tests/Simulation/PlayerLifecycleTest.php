@@ -29,6 +29,7 @@ use Bedriox\Server\Player\PlayerInventoryStackState;
 use Bedriox\Server\Player\PlayerInventoryState;
 use Bedriox\Server\Simulation\DamageCause;
 use Bedriox\Server\Simulation\Event\CommandRejected;
+use Bedriox\Server\Simulation\Event\ItemEntitySpawned;
 use Bedriox\Server\Simulation\Event\MovementCorrected;
 use Bedriox\Server\Simulation\Event\PlayerDamaged;
 use Bedriox\Server\Simulation\Event\PlayerDied;
@@ -73,10 +74,13 @@ final class PlayerLifecycleTest extends TestCase
         )));
         $world->tick();
         self::assertTrue($world->enqueue($factory->damage('session', 20.0)));
+        self::assertTrue($world->enqueue($factory->damage('session', 20.0)));
 
-        $world->tick();
+        $events = $world->tick()->events;
 
         self::assertSame(1, $items->count());
+        self::assertCount(1, array_filter($events, static fn(object $event): bool => $event instanceof PlayerDied));
+        self::assertCount(1, array_filter($events, static fn(object $event): bool => $event instanceof ItemEntitySpawned));
         self::assertSame('minecraft:grass_block', $items->all()[0]->stack->identifier);
         self::assertSame(3, $items->all()[0]->stack->count);
 

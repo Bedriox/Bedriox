@@ -640,6 +640,7 @@ final class BedrockPlayChannel
     private function spoofsSessionActor(Packet $packet): bool
     {
         if ($packet instanceof AnimatePacket
+            || $packet instanceof ActorEventPacket
             || $packet instanceof EmotePacket
             || $packet instanceof EmoteListPacket
             || $packet instanceof MobEquipmentPacket
@@ -1893,12 +1894,6 @@ final class BedrockPlayChannel
             return $packet->runtimeEntityId->equals($this->runtimeEntityId);
         }
         if ($packet instanceof ActorEventPacket) {
-            $this->diagnostics->record('play.actor_event_advisory.protocol_trace', [
-                'initialized' => $this->initialized,
-                'self_actor' => $packet->runtimeEntityId->equals($this->runtimeEntityId),
-                'actor_event' => $packet->event->name,
-            ]);
-
             // Retail sends eating presentation here. Authoritative use, nutrition, and animation remain server-owned.
             return true;
         }
