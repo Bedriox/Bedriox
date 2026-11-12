@@ -38,6 +38,7 @@ use Bedriox\Server\World\BlockEntity\BlockEntityType;
 use Bedriox\Server\World\BlockEntity\ContainerBlockEntity;
 use Bedriox\Server\World\BlockEntity\ContainerInventory;
 use Bedriox\Server\World\BlockEntity\ContainerItemStack;
+use Bedriox\Server\World\BlockEntity\ItemFrameBlockEntity;
 use Bedriox\Server\World\BlockEntity\MobSpawnerBlockEntity;
 use Bedriox\Server\World\BlockEntity\ShelfBlockEntity;
 use Bedriox\Server\World\BlockEntity\SignBlockEntity;
@@ -295,6 +296,16 @@ final readonly class PersistentBlockEntityCodec
 
             return $root;
         }
+        if ($entity instanceof ItemFrameBlockEntity) {
+            if ($entity->item !== null) {
+                $root['Item'] = LittleEndianNbtTag::compound($this->encodeItem(0, $entity->item));
+            }
+            $root['ItemRotation'] = new LittleEndianNbtTag(LittleEndianNbtTag::FLOAT, (float) ($entity->rotation * 45));
+            $root['ItemDropChance'] = new LittleEndianNbtTag(LittleEndianNbtTag::FLOAT, $entity->dropChance);
+            $root['Fixed'] = LittleEndianNbtTag::byte($entity->fixed ? 1 : 0);
+
+            return $root;
+        }
         if ($entity instanceof ShelfBlockEntity) {
             $items = [];
             foreach ($entity->inventory->slots() as $slot => $stack) {
@@ -404,6 +415,17 @@ final readonly class PersistentBlockEntityCodec
 
             return $root;
         }
+        if ($entity instanceof ItemFrameBlockEntity) {
+            $root['isMovable'] = LittleEndianNbtTag::byte(1);
+            if ($entity->item !== null) {
+                $root['Item'] = LittleEndianNbtTag::compound($this->encodeItem(0, $entity->item));
+            }
+            $root['ItemRotation'] = new LittleEndianNbtTag(LittleEndianNbtTag::FLOAT, (float) ($entity->rotation * 45));
+            $root['ItemDropChance'] = new LittleEndianNbtTag(LittleEndianNbtTag::FLOAT, $entity->dropChance);
+            $root['Fixed'] = LittleEndianNbtTag::byte($entity->fixed ? 1 : 0);
+
+            return $root;
+        }
         if ($entity instanceof ShelfBlockEntity) {
             $items = [];
             foreach ($entity->inventory->slots() as $slot => $stack) {
@@ -490,6 +512,27 @@ final readonly class PersistentBlockEntityCodec
                 isset($root['IsWaxed'])
                     && self::integer($root['IsWaxed'], LittleEndianNbtTag::BYTE, 'IsWaxed') !== 0,
                 hanging: $type === BlockEntityType::HangingSign,
+            );
+        }
+        if ($type === BlockEntityType::ItemFrame || $type === BlockEntityType::GlowItemFrame) {
+            $item = null;
+            if (isset($root['Item'])) {
+                [, $item] = $this->decodeItem(self::compound($root['Item'], 'Item'), 1);
+            }
+            $rotationDegrees = isset($root['ItemRotation'])
+                ? self::floating($root['ItemRotation'], 'ItemRotation')
+                : 0.0;
+            $dropChance = isset($root['ItemDropChance'])
+                ? self::floating($root['ItemDropChance'], 'ItemDropChance')
+                : 1.0;
+
+            return new ItemFrameBlockEntity(
+                $position,
+                $item,
+                ((int) round($rotationDegrees / 45.0)) & 7,
+                $dropChance,
+                isset($root['Fixed']) && self::integer($root['Fixed'], LittleEndianNbtTag::BYTE, 'Fixed') !== 0,
+                $type === BlockEntityType::GlowItemFrame,
             );
         }
         if ($type === BlockEntityType::Shelf) {
@@ -939,6 +982,15 @@ final readonly class PersistentBlockEntityCodec
     private static function string(LittleEndianNbtTag $tag, string $name): string
     {
         if ($tag->type !== LittleEndianNbtTag::STRING || !is_string($tag->value)) {
+            throw new InvalidArgumentException("Block-entity NBT tag '$name' has the wrong type.");
+        }
+
+        return $tag->value;
+    }
+
+    private static function floating(LittleEndianNbtTag $tag, string $name): float
+    {
+        if ($tag->type !== LittleEndianNbtTag::FLOAT || !is_float($tag->value) || !is_finite($tag->value)) {
             throw new InvalidArgumentException("Block-entity NBT tag '$name' has the wrong type.");
         }
 

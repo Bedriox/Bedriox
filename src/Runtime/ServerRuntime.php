@@ -2936,6 +2936,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         $this->diagnostics->record('runtime.world_stage_summary.protocol_trace', array_intersect_key(
             $worldStages,
             array_fill_keys([
+                'maps_us',
                 'commands_us',
                 'movement_us',
                 'movement_collision_us',
@@ -7014,7 +7015,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             }
             $ownerPackets = $encoder->heldItemOwnerPackets($event);
             $equipment = $encoder->heldItemEquipmentPacket($event);
-            $projectionCount = count($ownerPackets) + count($event->recipientSessionIds);
+            $projectionCount = count($ownerPackets) + 1 + count($event->recipientSessionIds);
             $remainingBudget = $this->limits->maximumDirectedPacketsPerPoll - $directedCount;
             if ($projectionCount > $remainingBudget) {
                 return $this->containEventFailure($event, 'runtime.directed_packet_limit_exceeded', [
@@ -7041,6 +7042,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 );
             }
             $entry = ['frame' => $frameCache[$equipment], 'packet' => $equipment];
+            $packetsBySession[$event->ownerSessionId][] = $entry;
             foreach ($event->recipientSessionIds as $recipient) {
                 $packetsBySession[$recipient][] = $entry;
             }

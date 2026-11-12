@@ -129,6 +129,7 @@ final class ItemCatalog
             $mappedBlockState = $creativeBlockStates[$identifier] ?? null;
             $mappedBlockState ??= self::signBlockState($identifier);
             $mappedBlockState ??= self::doorBlockState($identifier);
+            $mappedBlockState ??= self::itemFrameBlockState($identifier);
             $armor = VanillaArmorDefinitions::definition($identifier) ?? $existing?->armor;
             $maximumDurability = VanillaItemDurability::maximum($identifier) ?? $existing?->maximumDurability;
             $types[$identifier] = new ItemType(
@@ -195,6 +196,19 @@ final class ItemCatalog
             'minecraft:cardinal_direction' => 'south',
             'open_bit' => 0,
             'upper_block_bit' => 0,
+        ]);
+    }
+
+    private static function itemFrameBlockState(string $identifier): ?CanonicalBlockState
+    {
+        if (!in_array($identifier, ['minecraft:frame', 'minecraft:glow_frame'], true)) {
+            return null;
+        }
+
+        return CanonicalBlockState::from($identifier, [
+            'facing_direction' => 0,
+            'item_frame_map_bit' => 0,
+            'item_frame_photo_bit' => 0,
         ]);
     }
 

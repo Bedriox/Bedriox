@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\World;
 
+use Bedriox\Api\Map\MapManager;
 use Bedriox\Api\Player\Player;
 use Bedriox\Api\World\Particle\Particle;
 use Closure;
@@ -34,6 +35,7 @@ final readonly class WorldActions
      * @param Closure(World, Position, Particle, list<Player>|null): void $spawnParticle
      * @param Closure(World): WeatherState                              $getWeather
      * @param Closure(World, WeatherState): bool                        $setWeather
+     * @param Closure(World): MapManager|null                           $getMaps
      */
     public function __construct(
         private Closure $getBlock,
@@ -41,6 +43,7 @@ final readonly class WorldActions
         private Closure $spawnParticle,
         private ?Closure $getWeather = null,
         private ?Closure $setWeather = null,
+        private ?Closure $getMaps = null,
     ) {}
 
     public static function unavailable(): self
@@ -86,5 +89,15 @@ final readonly class WorldActions
         }
 
         return $action($world, $weather);
+    }
+
+    public function getMaps(World $world): MapManager
+    {
+        $action = $this->getMaps;
+        if ($action === null) {
+            throw new LogicException('This world handle does not provide map storage.');
+        }
+
+        return $action($world);
     }
 }

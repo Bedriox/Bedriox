@@ -1938,11 +1938,7 @@ final class PlayerInventory
 
     private static function canStack(InventoryStack $left, InventoryStack $right): bool
     {
-        return $left->identifier === $right->identifier
-            && $left->damage === $right->damage
-            && $left->auxValue === $right->auxValue
-            && ($left->nbt?->toBinary() ?? '') === ($right->nbt?->toBinary() ?? '')
-            && $left->placedBlockState?->value === $right->placedBlockState?->value;
+        return $left->isStackableWith($right);
     }
 
     private static function restoreStack(

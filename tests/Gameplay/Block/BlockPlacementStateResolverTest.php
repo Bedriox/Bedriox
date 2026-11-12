@@ -148,4 +148,22 @@ final class BlockPlacementStateResolverTest extends TestCase
         self::assertSame(4, $placed->properties()['facing_direction']);
         self::assertSame(0, $placed->properties()['button_pressed_bit']);
     }
+
+    public function testItemFrameFacesAwayFromItsSupportOnEveryFace(): void
+    {
+        $registry = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $resolver = new BlockPlacementStateResolver($registry);
+        $base = CanonicalBlockState::from('minecraft:frame', [
+            'facing_direction' => 0,
+            'item_frame_map_bit' => 1,
+            'item_frame_photo_bit' => 1,
+        ]);
+
+        foreach (range(0, 5) as $face) {
+            $placed = $registry->state($resolver->resolve($base, $face));
+            self::assertSame($face, $placed->properties()['facing_direction']);
+            self::assertSame(0, $placed->properties()['item_frame_map_bit']);
+            self::assertSame(0, $placed->properties()['item_frame_photo_bit']);
+        }
+    }
 }

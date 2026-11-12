@@ -250,7 +250,7 @@ final class ServerBootstrap
             ?? $this->ephemeralWorld($config, $internalStates);
         $startupWorldOpenedAt = hrtime(true);
         $flatWorld = $openedWorld->world;
-        $runtimeWorldActions = new RuntimeWorldActions($internalStates, $pluginActions);
+        $runtimeWorldActions = new RuntimeWorldActions($internalStates, $blockProperties, $pluginActions);
         $worldActions = $runtimeWorldActions->actions();
         $defaultWorldId = WorldRuntimeManager::canonicalId($config->levelName);
         $defaultWorldHandles = [];

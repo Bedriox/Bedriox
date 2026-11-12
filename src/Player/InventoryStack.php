@@ -97,4 +97,35 @@ final readonly class InventoryStack
             $this->auxValue,
         );
     }
+
+    /** Compares authoritative item identity without count or session-local stack network ID. */
+    public function isStackableWith(self $other): bool
+    {
+        return $this->identifier === $other->identifier
+            && $this->damage === $other->damage
+            && $this->auxValue === $other->auxValue
+            && $this->placedBlockState?->value === $other->placedBlockState?->value
+            && self::sameItemNbt($this->identifier, $this->nbt, $other->nbt);
+    }
+
+    private static function sameItemNbt(string $identifier, ?ItemNbt $left, ?ItemNbt $right): bool
+    {
+        $left ??= ItemNbt::empty();
+        $right ??= ItemNbt::empty();
+        if ($identifier === 'minecraft:filled_map') {
+            $leftMapId = $left->tag('map_uuid');
+            $rightMapId = $right->tag('map_uuid');
+            if ($leftMapId === null || $rightMapId === null
+                || $leftMapId->type() !== $rightMapId->type()
+                || $leftMapId->value() !== $rightMapId->value()) {
+                return false;
+            }
+            foreach (['map_display_players', 'map_name_index'] as $derivedTag) {
+                $left = $left->withoutTag($derivedTag);
+                $right = $right->withoutTag($derivedTag);
+            }
+        }
+
+        return $left->equals($right);
+    }
 }

@@ -21,6 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Tests\Player;
 
 use Bedriox\Api\Inventory\ItemNbt;
+use Bedriox\Api\Nbt\Tag;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Packet\FullContainerName;
 use Bedriox\Server\Gameplay\Item\ItemCatalog;
@@ -911,6 +912,35 @@ final class PlayerInventoryTest extends TestCase
             1,
             auxValue: PlayerInventoryStackState::MAX_AUX_VALUE + 1,
         );
+    }
+
+    public function testFilledMapDerivedTagsDoNotChangeAuthoritativeItemIdentity(): void
+    {
+        $authoritative = new InventoryStack(
+            'minecraft:filled_map',
+            1,
+            1,
+            nbt: ItemNbt::empty()
+                ->withTag('map_uuid', Tag::long(42))
+                ->withTag('map_name_index', Tag::int(42))
+                ->withTag('map_display_players', Tag::byte(1)),
+        );
+        $client = new InventoryStack(
+            'minecraft:filled_map',
+            1,
+            2,
+            nbt: ItemNbt::empty()->withTag('map_display_players', Tag::byte(0))
+                ->withTag('map_uuid', Tag::long(42)),
+        );
+        $differentMap = new InventoryStack(
+            'minecraft:filled_map',
+            1,
+            3,
+            nbt: ItemNbt::empty()->withTag('map_uuid', Tag::long(43)),
+        );
+
+        self::assertTrue($authoritative->isStackableWith($client));
+        self::assertFalse($authoritative->isStackableWith($differentMap));
     }
 
     public function testPersistentInventoryStackRejectsAuxOutsideItsBoundedRange(): void

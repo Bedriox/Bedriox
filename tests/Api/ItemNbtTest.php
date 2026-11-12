@@ -46,6 +46,15 @@ final class ItemNbtTest extends TestCase
         self::assertTrue($data->equals(ItemNbt::fromBinary($data->toBinary())));
     }
 
+    public function testCompoundTagOrderDoesNotChangeSemanticIdentity(): void
+    {
+        $left = ItemNbt::empty()->withTag('first', Tag::int(1))->withTag('second', Tag::string('two'));
+        $right = ItemNbt::empty()->withTag('second', Tag::string('two'))->withTag('first', Tag::int(1));
+
+        self::assertNotSame($left->toBinary(), $right->toBinary());
+        self::assertTrue($left->equals($right));
+    }
+
     public function testOversizedAndMalformedItemNbtAreRejected(): void
     {
         try {

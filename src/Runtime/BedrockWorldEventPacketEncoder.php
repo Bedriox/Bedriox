@@ -2362,7 +2362,7 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             $packets[] = new DirectedPacket($recipient, new UpdateBlockPacket(
                 new ProtocolBlockPosition($event->position->x, $event->position->y, $event->position->z),
                 $this->chunks->networkRuntimeId($event->state),
-                [UpdateBlockFlag::Network, UpdateBlockFlag::Priority],
+                [UpdateBlockFlag::Neighbors, UpdateBlockFlag::Network, UpdateBlockFlag::Priority],
                 0,
             ));
             foreach ($event->additionalBlocks as $correction) {
@@ -2508,6 +2508,8 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             $this->heldItemOwnerPackets($event),
         );
         $equipment = $this->heldItemEquipmentPacket($event);
+
+        $packets[] = new DirectedPacket($event->ownerSessionId, $equipment);
 
         array_push($packets, ...array_map(
             static fn(string $recipient): DirectedPacket => new DirectedPacket($recipient, $equipment),
@@ -3900,7 +3902,7 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
         return new UpdateBlockPacket(
             new ProtocolBlockPosition($position->x, $position->y, $position->z),
             $this->chunks->networkRuntimeId($state),
-            [UpdateBlockFlag::Network, UpdateBlockFlag::Priority],
+            [UpdateBlockFlag::Neighbors, UpdateBlockFlag::Network, UpdateBlockFlag::Priority],
             0,
         );
     }

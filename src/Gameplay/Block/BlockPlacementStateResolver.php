@@ -59,6 +59,13 @@ final readonly class BlockPlacementStateResolver
             && $itemState->identifier() === 'minecraft:barrel') {
             $properties['facing_direction'] = self::oppositeHorizontalFace($context->playerYaw);
         }
+        if (array_key_exists('facing_direction', $properties)
+            && in_array($itemState->identifier(), ['minecraft:frame', 'minecraft:glow_frame'], true)) {
+            // Item frames face away from the supporting block, exactly matching the clicked face.
+            $properties['facing_direction'] = $context->clickedFace;
+            $properties['item_frame_map_bit'] = 0;
+            $properties['item_frame_photo_bit'] = 0;
+        }
         if (array_key_exists('weirdo_direction', $properties)
             && array_key_exists('upside_down_bit', $properties)) {
             $properties['weirdo_direction'] = self::stairDirection($context->playerYaw);

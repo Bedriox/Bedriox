@@ -40,13 +40,16 @@ enum BlockEntityType: string
     case Shelf = 'minecraft:shelf';
     case MobSpawner = 'minecraft:mob_spawner';
     case TrialSpawner = 'minecraft:trial_spawner';
+    case ItemFrame = 'minecraft:item_frame';
+    case GlowItemFrame = 'minecraft:glow_item_frame';
 
     public function ownsPersistentInventory(): bool
     {
         return $this !== self::Bed && $this !== self::EnderChest && $this !== self::Cauldron
             && $this !== self::BrushableBlock && $this !== self::Sign
             && $this !== self::HangingSign && $this !== self::Shelf
-            && $this !== self::MobSpawner && $this !== self::TrialSpawner;
+            && $this !== self::MobSpawner && $this !== self::TrialSpawner
+            && $this !== self::ItemFrame && $this !== self::GlowItemFrame;
     }
 
     public function isStorageContainer(): bool

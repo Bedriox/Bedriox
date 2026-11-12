@@ -64,7 +64,12 @@ final readonly class ItemNbt
 
     public function equals(self $other): bool
     {
-        return $this->binary === $other->binary;
+        if ($this->binary === $other->binary) {
+            return true;
+        }
+        $codec = new LittleEndianNbtCodec();
+
+        return $codec->decodeRootCompound($this->binary) == $codec->decodeRootCompound($other->binary);
     }
 
     public function withTag(string $name, Tag $tag): self

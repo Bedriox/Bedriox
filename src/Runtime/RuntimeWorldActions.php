@@ -29,6 +29,8 @@ use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Api\World\WeatherState;
 use Bedriox\Api\World\World;
 use Bedriox\Api\World\WorldActions;
+use Bedriox\Data\BlockPropertyRegistry;
+use Bedriox\Server\Map\RuntimeMapManager;
 use Bedriox\Server\Plugin\PluginActionBuffer;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\BlockPosition;
@@ -43,6 +45,7 @@ final class RuntimeWorldActions
 
     public function __construct(
         private readonly BlockStateRegistry $states,
+        private readonly ?BlockPropertyRegistry $properties = null,
         private readonly ?PluginActionBuffer $pluginActions = null,
     ) {}
 
@@ -63,6 +66,21 @@ final class RuntimeWorldActions
             },
             fn(World $world): WeatherState => $this->weatherRuntime($world)->opened->world->weather()->weather,
             fn(World $world, WeatherState $weather): bool => $this->setWeather($world, $weather),
+            fn(World $world): RuntimeMapManager => $this->maps($world),
+        );
+    }
+
+    private function maps(World $world): RuntimeMapManager
+    {
+        $runtime = $this->runtime($world);
+        $properties = $this->properties
+            ?? throw new LogicException('This runtime does not provide block map-color data.');
+
+        return new RuntimeMapManager(
+            $world,
+            $runtime,
+            $this->states,
+            $properties,
         );
     }
 

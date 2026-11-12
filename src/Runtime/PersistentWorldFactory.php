@@ -25,6 +25,7 @@ use Bedriox\Api\World\WorldCreationOptions;
 use Bedriox\Api\World\WorldDifficulty;
 use Bedriox\Data\BedrockDataSet;
 use Bedriox\Data\PersistentBlockStateRegistry;
+use Bedriox\Server\Map\MapRegistry;
 use Bedriox\Server\Persistence\World\ProcessWorldProvider;
 use Bedriox\Server\Persistence\World\ProcessWorldProviderFactory;
 use Bedriox\Server\Worker\WorkerDispatcher;
@@ -219,6 +220,7 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
                 $internalStates,
                 $configuredSpawn,
                 $prepared,
+                $worldPath,
             ),
             fn(WorldPreparationResult $prepared): ProcessWorldProvider => $providers->beginCreate(
                 $worldPath,
@@ -258,6 +260,8 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
                 $ready,
                 $internalStates,
                 null,
+                null,
+                $worldPath,
             ),
         );
     }
@@ -340,7 +344,7 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
         }
 
         try {
-            return $this->compose($config, $provider, $internalStates, $configuredSpawn);
+            return $this->compose($config, $provider, $internalStates, $configuredSpawn, null, $worldPath);
         } catch (Throwable $failure) {
             $provider->close();
             throw $failure;
@@ -353,7 +357,10 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
         BlockStateRegistry $internalStates,
         ?SpawnPosition $configuredSpawn,
         ?WorldPreparationResult $prepared = null,
+        ?string $worldPath = null,
     ): OpenedWorld {
+        $maps = new MapRegistry(($worldPath ?? $this->worldsPath . DIRECTORY_SEPARATOR . '.ephemeral')
+            . DIRECTORY_SEPARATOR . 'bedriox' . DIRECTORY_SEPARATOR . 'maps');
         $overworld = $this->composeDimension(
             $config,
             $provider,
@@ -361,6 +368,7 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
             DimensionType::OVERWORLD,
             $configuredSpawn,
             $prepared,
+            $maps,
         );
         $nether = $this->composeDimension(
             $config,
@@ -368,6 +376,8 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
             $internalStates,
             DimensionType::NETHER,
             null,
+            null,
+            $maps,
         );
         $end = $this->composeDimension(
             $config,
@@ -375,6 +385,8 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
             $internalStates,
             DimensionType::END,
             null,
+            null,
+            $maps,
         );
 
         return new OpenedWorld($overworld->world, $overworld->data, [$nether, $end]);
@@ -387,6 +399,7 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
         DimensionType $dimension,
         ?SpawnPosition $configuredSpawn,
         ?WorldPreparationResult $prepared = null,
+        ?MapRegistry $maps = null,
     ): OpenedWorld {
         $stored = $provider->worldData();
         $dimensionData = $stored->dimension($dimension);
@@ -450,6 +463,7 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
             chunkUnloads: new ChunkUnloadManager(self::unloadGraceNanoseconds($config)),
             generatorOptions: $generatorOptions->canonicalJson(),
             dimension: $dimension,
+            maps: $maps,
         );
         $effectiveData = new WorldData(
             $stored->metadata,

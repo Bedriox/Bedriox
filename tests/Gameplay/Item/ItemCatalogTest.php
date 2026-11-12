@@ -173,6 +173,16 @@ final class ItemCatalogTest extends TestCase
             'minecraft:stonecutter_block',
             $items->type('minecraft:stonecutter')->placedBlockState?->identifier(),
         );
+        foreach (['minecraft:frame', 'minecraft:glow_frame'] as $identifier) {
+            $frame = $items->type($identifier)->placedBlockState;
+            self::assertNotNull($frame, $identifier);
+            self::assertSame($identifier, $frame->identifier(), $identifier);
+            self::assertSame([
+                'facing_direction' => 0,
+                'item_frame_map_bit' => 0,
+                'item_frame_photo_bit' => 0,
+            ], $frame->properties(), $identifier);
+        }
     }
 
     public function testEveryVanillaDoorItemHasAValidPlaceableBlockState(): void

@@ -26,6 +26,7 @@ use Bedriox\Server\Entity\Persistence\EntityPersistenceConflictException;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceManager;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
 use Bedriox\Server\Entity\Persistence\TransientEntityPersistenceStore;
+use Bedriox\Server\Map\MapRegistry;
 use Bedriox\Server\Persistence\PersistenceQueueSnapshot;
 use Bedriox\Server\Persistence\PersistenceQueueStatusProvider;
 use Bedriox\Server\Persistence\PersistenceSubmission;
@@ -98,6 +99,7 @@ final class World
         ?ChunkUnloadManager $chunkUnloads = null,
         ?string $generatorOptions = null,
         private readonly DimensionType $dimension = DimensionType::OVERWORLD,
+        private readonly ?MapRegistry $maps = null,
     ) {
         $this->asyncChunks = $asyncChunks;
         $this->chunkUnloads = $chunkUnloads ?? new ChunkUnloadManager();
@@ -126,6 +128,11 @@ final class World
     public function dimension(): DimensionType
     {
         return $this->dimension;
+    }
+
+    public function maps(): ?MapRegistry
+    {
+        return $this->maps;
     }
 
     /** Enables worker generation before the world begins serving chunks. */
@@ -528,6 +535,7 @@ final class World
             }
             $this->chunks->replace($chunk->withBlockState($localX, $y, $localZ, $state));
             ++$this->blockRevision;
+            $this->maps?->invalidateTerrainColumn($this->dimension, $x, $z);
         }
 
         return $previous;
@@ -940,6 +948,9 @@ final class World
 
         $failure = null;
         try {
+            if ($save) {
+                $this->maps?->flush();
+            }
             if ($save && $this->provider instanceof WritableWorldProvider) {
                 $this->flush($saveMetadata);
             }

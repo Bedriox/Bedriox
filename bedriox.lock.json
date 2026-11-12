@@ -16,12 +16,12 @@
         "nethernet": {
             "package": "bedriox/nethernet",
             "version": "0.1.0-alpha.1",
-            "commit": "140e6952242f8717c169e9f232cdd18a73a0a835"
+            "commit": "04181f2e2ddf2a2a81b088f5a02f1b4c6d2e84d4"
         },
         "protocol": {
             "package": "bedriox/protocol",
             "version": "0.1.0-alpha.1",
-            "commit": "4a5f9e69ed24693012441fbfe91328bc1c32b1f4"
+            "commit": "93454de895cb1ad70443358a287f25bdc8a4c340"
         },
         "data": {
             "package": "bedriox/data",

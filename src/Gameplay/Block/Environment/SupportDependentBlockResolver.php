@@ -39,6 +39,8 @@ final readonly class SupportDependentBlockResolver
             return new BlockSupportOffset(0, -1, 0);
         }
         if (BlockTagRegistry::contains(BlockTag::BUTTON, $identifier)
+            || $identifier === 'minecraft:frame'
+            || $identifier === 'minecraft:glow_frame'
             || str_ends_with($identifier, '_wall_sign')
             || $identifier === 'minecraft:wall_sign') {
             return self::oppositeFace($this->facingDirection($properties));

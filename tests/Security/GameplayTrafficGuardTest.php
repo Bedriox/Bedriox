@@ -77,6 +77,17 @@ final class GameplayTrafficGuardTest extends TestCase
         self::assertSame('packet_budget', $guard->diagnosticSnapshot()['decision']);
     }
 
+    public function testRetailMapWallBurstHasAnIndependentBoundedBudget(): void
+    {
+        $guard = new GameplayTrafficGuard(startedNanoseconds: 0);
+
+        self::assertTrue($guard->admitPacketBatch(400, 0, 0, 400));
+        self::assertTrue($guard->admitPacketBatch(112, 0, 0, 112));
+        self::assertFalse($guard->admitPacketBatch(1, 0, 0, 1));
+        self::assertSame('map_request_budget', $guard->diagnosticSnapshot()['decision']);
+        self::assertSame(300, $guard->diagnosticSnapshot()['packet_budget']);
+    }
+
     public function testDelayedMovementCreditIsBoundedAndReported(): void
     {
         $guard = new GameplayTrafficGuard(startedNanoseconds: 0);

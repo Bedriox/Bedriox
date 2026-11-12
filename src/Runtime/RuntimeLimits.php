@@ -31,7 +31,7 @@ final readonly class RuntimeLimits
         public int $maximumPayloadsPerPoll = 4_096,
         public int $maximumOutgoingPayloadsPerSession = 512,
         public int $maximumOutgoingBytesPerSession = 8_388_608,
-        public int $maximumPacketsPerPayload = 256,
+        public int $maximumPacketsPerPayload = 512,
         public int $maximumCommandsPerPayload = 64,
         public int $maximumChunkRadius = 1,
         public int $preloadedChunkRadius = 1,

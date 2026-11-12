@@ -835,14 +835,15 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         );
 
         $equipment = $encoder->encode(new HeldItemChanged('one', 41, 0, $remaining, ['two', 'three']), []);
-        self::assertCount(2, $equipment);
-        self::assertSame('two', $equipment[0]->sessionId);
+        self::assertCount(3, $equipment);
+        self::assertSame('one', $equipment[0]->sessionId);
         self::assertInstanceOf(MobEquipmentPacket::class, $equipment[0]->packet);
         self::assertSame(63, $equipment[0]->packet->item->count);
-        self::assertSame('three', $equipment[1]->sessionId);
+        self::assertSame('two', $equipment[1]->sessionId);
+        self::assertSame('three', $equipment[2]->sessionId);
         self::assertSame(
             $equipment[0]->packet,
-            $equipment[1]->packet,
+            $equipment[2]->packet,
             'Identical peer equipment projection must reuse one immutable packet for shared compression.',
         );
 
@@ -855,8 +856,8 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
             ['two'],
             ownerSlotCorrection: true,
         ), []);
-        self::assertCount(3, $correctedTool);
-        self::assertSame(['one', 'one', 'two'], array_map(
+        self::assertCount(4, $correctedTool);
+        self::assertSame(['one', 'one', 'one', 'two'], array_map(
             static fn($packet): string => $packet->sessionId,
             $correctedTool,
         ));
@@ -865,6 +866,7 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         self::assertInstanceOf(InventorySlotPacket::class, $correctedTool[1]->packet);
         self::assertSame(9, $correctedTool[1]->packet->item->stackNetworkId);
         self::assertInstanceOf(MobEquipmentPacket::class, $correctedTool[2]->packet);
+        self::assertSame($correctedTool[2]->packet, $correctedTool[3]->packet);
     }
 
     public function testInventoryRequestProjectsSuccessAndPeerEquipmentFromAuthoritativeState(): void

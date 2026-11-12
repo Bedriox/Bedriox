@@ -31,6 +31,7 @@ use Bedriox\Api\Inventory\EquipmentSlot;
 use Bedriox\Api\Player\ExperienceChangeCause;
 use Bedriox\Api\Player\ExperienceSnapshot;
 use Bedriox\Api\Player\GameMode;
+use Bedriox\Api\World\BlockFace;
 use Bedriox\Api\World\Particle\Particle;
 use Bedriox\Server\Player\InventoryContainer;
 use Bedriox\Server\Player\InventoryResponseMode;
@@ -63,6 +64,7 @@ use Bedriox\Server\Simulation\Command\PerformEmote;
 use Bedriox\Server\Simulation\Command\PickBlock;
 use Bedriox\Server\Simulation\Command\PickEntity;
 use Bedriox\Server\Simulation\Command\PlaceBlock;
+use Bedriox\Server\Simulation\Command\PlacePluginItemFrame;
 use Bedriox\Server\Simulation\Command\ReleaseItem;
 use Bedriox\Server\Simulation\Command\RemovePlayerEffect;
 use Bedriox\Server\Simulation\Command\RemovePluginInventoryStack;
@@ -337,6 +339,23 @@ final readonly class SimulationCommandFactory
         }
 
         return new SetPluginBlock($plugin, $position, $identifier);
+    }
+
+    public function pluginItemFrame(
+        string $plugin,
+        BlockPosition $position,
+        BlockFace $facing,
+        int $mapId,
+        bool $glowing,
+    ): PlacePluginItemFrame {
+        $this->assertOpaqueId($plugin, 64, 'plugin');
+        if ($mapId < 1 || abs($position->x) > $this->limits->maximumCoordinate
+            || abs($position->z) > $this->limits->maximumCoordinate
+            || $position->y < -64 || $position->y > 319) {
+            throw new CommandValidationException('Plugin item-frame placement is invalid.');
+        }
+
+        return new PlacePluginItemFrame($plugin, $position, $facing, $mapId, $glowing);
     }
 
     /** @param list<string>|null $targetIdentities */

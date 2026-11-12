@@ -21,6 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Runtime;
 
 use Bedriox\Api\Entity\EntityInteractionType;
+use Bedriox\Api\Nbt\TagType;
 use Bedriox\NetherNet\Protocol\Reliability;
 use Bedriox\Protocol\Batch\BatchLimits;
 use Bedriox\Protocol\Batch\BedrockBatch;
@@ -69,7 +70,9 @@ use Bedriox\Protocol\Packet\EntityPickRequestPacket;
 use Bedriox\Protocol\Packet\FullContainerName;
 use Bedriox\Protocol\Packet\InteractPacket;
 use Bedriox\Protocol\Packet\InventoryContainerId;
+use Bedriox\Protocol\Packet\InventoryContentPacket;
 use Bedriox\Protocol\Packet\InventoryItemStack;
+use Bedriox\Protocol\Packet\InventorySlotPacket;
 use Bedriox\Protocol\Packet\InventorySourceFlag;
 use Bedriox\Protocol\Packet\InventorySourceType;
 use Bedriox\Protocol\Packet\InventoryTransactionPacket;
@@ -163,6 +166,7 @@ use Bedriox\Server\Worker\Chunk\PreparedChunkAvailability;
 use Bedriox\Server\Worker\Chunk\PreparedChunkCache;
 use Bedriox\Server\Worker\Network\CompressionWorkerDispatcher;
 use Bedriox\Server\Worker\Network\OrderedOutboundCompressionQueue;
+use Bedriox\Server\World\BlockEntity\ItemFrameBlockEntity;
 use Bedriox\Server\World\BlockEntity\SignText;
 use Bedriox\Server\World\BlockPosition as WorldBlockPosition;
 use Bedriox\Server\World\Chunk;
@@ -282,6 +286,17 @@ final class BedrockPlayChannel
     private int $traceInboundDecodeNanoseconds = 0;
     private int $traceInboundHandleNanoseconds = 0;
     private int $traceWindowStartedNanoseconds;
+    /** @var array<int, int> Map ID to the newest revision accepted by this client queue. */
+    private array $requestedMapIds = [];
+    /** @var array<int, true> */
+    private array $pendingMapIds = [];
+    private int $mapUpdateTicks = 0;
+    private int $mapUpdateCursor = 0;
+    /** @var array<int, true> */
+    private array $authorizedMapIds = [];
+    private ?int $heldMapId = null;
+    /** @var array<string, int> Chunk key to the block-entity revision already indexed for this session. */
+    private array $mapAuthorizationScannedChunks = [];
 
     /** @var SplQueue<string> */
     private SplQueue $deferredCompressionBatches;
@@ -462,7 +477,11 @@ final class BedrockPlayChannel
             $this->traceInboundBatchNanoseconds += $nextStageNanoseconds - $stageCompletedNanoseconds;
         } catch (Throwable $error) {
             $this->traceInboundBatchNanoseconds += hrtime(true) - $stageCompletedNanoseconds;
-            $this->diagnose('failed decoding play batch: ' . $error::class);
+            $this->diagnose(sprintf(
+                'failed decoding play batch: %s (%s)',
+                $error::class,
+                self::safeExceptionDetail($error),
+            ));
 
             return $this->fatalInput(
                 InboundDisposition::PROTOCOL_VIOLATION,
@@ -471,19 +490,19 @@ final class BedrockPlayChannel
                 exception: $error,
             );
         }
-        if (count($batch->packets) > $this->limits->maximumCommandsPerPayload) {
-            return $this->fatalInput(
-                InboundDisposition::PROTOCOL_VIOLATION,
-                InboundOrigin::ADMISSION,
-                'command_limit',
-            );
-        }
         $packetCount = count($batch->packets);
         $movementPackets = 0;
+        $mapRequestPackets = 0;
         foreach ($batch->packets as $frame) {
             $movementPackets += (int) ($frame->header->packetId === PacketIds::PLAYER_AUTH_INPUT);
+            $mapRequestPackets += (int) ($frame->header->packetId === PacketIds::MAP_INFO_REQUEST);
         }
-        if (!$this->trafficGuard->admitPacketBatch($packetCount, $movementPackets, $receivedNanoseconds)) {
+        if (!$this->trafficGuard->admitPacketBatch(
+            $packetCount,
+            $movementPackets,
+            $receivedNanoseconds,
+            $mapRequestPackets,
+        )) {
             $this->diagnostics->record(
                 'play.security_rate_limited',
                 $this->trafficLimitContext(
@@ -926,6 +945,7 @@ final class BedrockPlayChannel
 
     private function recordQueuedPacket(Packet $packet): void
     {
+        $this->recordMapAuthorizations($packet);
         if ($packet instanceof UpdateAbilitiesPacket) {
             $this->authoritativeAbilities = $packet;
             if (!self::abilitiesEnable($packet, Ability::MayFly)
@@ -962,6 +982,93 @@ final class BedrockPlayChannel
         }
     }
 
+    private function recordMapAuthorizations(Packet $packet): void
+    {
+        $items = match (true) {
+            $packet instanceof InventoryContentPacket => $packet->items,
+            $packet instanceof InventorySlotPacket => [$packet->item],
+            $packet instanceof MobEquipmentPacket && $packet->runtimeEntityId->equals($this->runtimeEntityId) => [$packet->item],
+            default => [],
+        };
+        foreach ($items as $item) {
+            $id = $this->authorizeProtocolMapItem($item);
+            if ($packet instanceof MobEquipmentPacket
+                && $packet->runtimeEntityId->equals($this->runtimeEntityId)) {
+                $this->heldMapId = $id;
+                if ($id !== null) {
+                    $this->queueOwnedMap($id);
+                }
+            }
+        }
+    }
+
+    /** Makes a selected server-owned map render without depending on client request timing. */
+    private function queueOwnedMap(int $id): void
+    {
+        $maps = $this->flatWorld?->maps();
+        if ($maps === null || !$maps->isKnownId($id)
+            || (!isset($this->requestedMapIds[$id]) && count($this->requestedMapIds) >= 1_024)
+            || !$maps->request($this->sessionId, $id)) {
+            return;
+        }
+        $this->requestedMapIds[$id] ??= 0;
+        $this->pendingMapIds[$id] = true;
+    }
+
+    private function authorizeProtocolMapItem(InventoryItemStack $item): ?int
+    {
+        if ($this->inventoryProjector === null || count($this->authorizedMapIds) >= 1_024) {
+            return null;
+        }
+        try {
+            $stack = $this->inventoryProjector->fromProtocol($item);
+        } catch (Throwable) {
+            return null;
+        }
+        if ($stack->identifier !== 'minecraft:filled_map') {
+            return null;
+        }
+        $tag = $stack->nbt?->tag('map_uuid');
+        $id = $tag?->type() === TagType::LONG ? $tag->value() : null;
+        if (is_int($id) && $id > 0) {
+            $this->authorizedMapIds[$id] = true;
+
+            return $id;
+        }
+
+        return null;
+    }
+
+    private function isMapAuthorized(int $id): bool
+    {
+        if (isset($this->authorizedMapIds[$id])) {
+            return true;
+        }
+        foreach ($this->retainedChunks as $chunkPosition) {
+            $key = $chunkPosition->key();
+            $chunk = $this->flatWorld?->loadedChunk($chunkPosition);
+            if ($chunk === null) {
+                continue;
+            }
+            if (($this->mapAuthorizationScannedChunks[$key] ?? -1) === $chunk->revision) {
+                continue;
+            }
+            $this->mapAuthorizationScannedChunks[$key] = $chunk->revision;
+            foreach ($chunk->blockEntityCollection()->all() as $entity) {
+                if (!$entity instanceof ItemFrameBlockEntity || $entity->item?->identifier !== 'minecraft:filled_map') {
+                    continue;
+                }
+                $tag = $entity->item->nbt?->tag('map_uuid');
+                $mapId = $tag?->type() === TagType::LONG ? $tag->value() : null;
+                if (is_int($mapId) && $mapId > 0 && count($this->authorizedMapIds) < 1_024) {
+                    $this->authorizedMapIds[$mapId] = true;
+                }
+            }
+        }
+
+        return isset($this->authorizedMapIds[$id]);
+    }
+
     /** Encodes a bounded amount of deferred world bootstrap and request-driven terrain work. */
     public function tick(): bool
     {
@@ -973,6 +1080,9 @@ final class BedrockPlayChannel
             return false;
         }
         if (!$this->flushPendingChunkPublisherUpdate()) {
+            return false;
+        }
+        if (!$this->queuePendingMaps()) {
             return false;
         }
         if ($this->pendingChunkPublisherUpdate !== null) {
@@ -1017,6 +1127,60 @@ final class BedrockPlayChannel
             $queue->dequeue();
         }
         $this->updateSpawnAcknowledged();
+
+        return true;
+    }
+
+    /** Streams immutable map revisions gradually so map walls cannot monopolize one session poll. */
+    private function queuePendingMaps(): bool
+    {
+        $maps = $this->flatWorld?->maps();
+        if (!$this->initialized || $maps === null || $this->requestedMapIds === []) {
+            return true;
+        }
+        if (++$this->mapUpdateTicks >= 5) {
+            $this->mapUpdateTicks = 0;
+            $ids = array_keys($this->requestedMapIds);
+            $count = count($ids);
+            for ($checked = 0; $checked < min(16, $count); ++$checked) {
+                if ($this->mapUpdateCursor >= $count) {
+                    $this->mapUpdateCursor = 0;
+                }
+                $id = $ids[$this->mapUpdateCursor++];
+                $revision = $maps->revision($id);
+                if ($revision !== null && $revision !== $this->requestedMapIds[$id]) {
+                    $this->pendingMapIds[$id] = true;
+                }
+            }
+        }
+
+        $sent = 0;
+        $bytes = 0;
+        $pendingIds = array_keys($this->pendingMapIds);
+        if ($this->heldMapId !== null && isset($this->pendingMapIds[$this->heldMapId])) {
+            $pendingIds = array_values(array_unique([$this->heldMapId, ...$pendingIds]));
+        }
+        foreach ($pendingIds as $id) {
+            if ($sent >= 2 || ($sent > 0 && $bytes >= 262_144)) {
+                break;
+            }
+            $projection = $maps->projection($id, $this->requestedMapIds[$id] ?? 0);
+            if ($projection === null) {
+                unset($this->pendingMapIds[$id]);
+                continue;
+            }
+            if (!$this->queuePreparedAuthoritativePacketFrames(
+                [$projection->frame],
+                $projection->compressedBatch,
+                [$projection->packet],
+            )) {
+                return !$this->closed;
+            }
+            $this->requestedMapIds[$id] = $projection->revision;
+            unset($this->pendingMapIds[$id]);
+            $bytes += $projection->networkBytes();
+            ++$sent;
+        }
 
         return true;
     }
@@ -1407,6 +1571,7 @@ final class BedrockPlayChannel
         }
 
         $sourceWorld = $this->flatWorld;
+        $sourceWorld?->maps()?->releaseSession($this->sessionId);
         if ($sourceWorld !== null) {
             $this->cancelPendingChunkRequests();
             foreach ($this->retainedChunks as $position) {
@@ -1414,6 +1579,12 @@ final class BedrockPlayChannel
             }
         }
         $this->flatWorld = $transition->world;
+        $this->requestedMapIds = [];
+        $this->pendingMapIds = [];
+        $this->mapUpdateCursor = 0;
+        $this->authorizedMapIds = [];
+        $this->heldMapId = null;
+        $this->mapAuthorizationScannedChunks = [];
         $this->preparedChunks = $transition->preparedChunks;
         $this->chunkView = $transition->view;
         $this->retainedChunks = $transition->adoptRetained();
@@ -1510,6 +1681,12 @@ final class BedrockPlayChannel
         $this->pendingBootstrapPackets = new SplQueue();
         $this->pendingStreamingResponses = new SplQueue();
         $this->generatedChunks = new SplQueue();
+        $this->flatWorld?->maps()?->releaseSession($this->sessionId);
+        $this->requestedMapIds = [];
+        $this->pendingMapIds = [];
+        $this->authorizedMapIds = [];
+        $this->heldMapId = null;
+        $this->mapAuthorizationScannedChunks = [];
         $this->outgoingBytes = 0;
         $this->deferredInitializationPackets = [];
         $this->trackedSubChunkRequests = [];
@@ -1738,6 +1915,13 @@ final class BedrockPlayChannel
                 || $packet->inventorySlot !== $packet->hotbarSlot
                 || $packet->windowId !== InventoryContainerId::INVENTORY) {
                 return false;
+            }
+            // The client equipment packet is the earliest authoritative signal of which of many
+            // requested maps is in first person. Prioritize that map without raising the map bandwidth budget.
+            $heldMapId = $this->authorizeProtocolMapItem($packet->item);
+            if ($heldMapId !== null) {
+                $this->heldMapId = $heldMapId;
+                $this->queueOwnedMap($heldMapId);
             }
             if (!$this->initialized) {
                 $this->pendingHotbarSlot = $packet->hotbarSlot;
@@ -2302,8 +2486,24 @@ final class BedrockPlayChannel
             return $this->initialized;
         }
         if ($packet instanceof MapInfoRequestPacket) {
-            // Map rendering is supplied only for server-owned map IDs; unknown requests are harmless.
-            return $this->initialized;
+            $maps = $this->flatWorld?->maps();
+            if ($maps === null || !$maps->isKnownId($packet->uniqueMapId)) {
+                return true;
+            }
+            if (!$this->isMapAuthorized($packet->uniqueMapId)) {
+                return true;
+            }
+            if (!isset($this->requestedMapIds[$packet->uniqueMapId])
+                && count($this->requestedMapIds) >= 1_024) {
+                return true;
+            }
+            if (!$maps->request($this->sessionId, $packet->uniqueMapId, $packet->pixels)) {
+                return true;
+            }
+            $this->requestedMapIds[$packet->uniqueMapId] ??= 0;
+            $this->pendingMapIds[$packet->uniqueMapId] = true;
+
+            return true;
         }
         if ($packet instanceof ChatPacket) {
             if (!$this->initialized || $this->commands->count() >= $this->limits->maximumCommandsPerPayload) {
@@ -2533,11 +2733,7 @@ final class BedrockPlayChannel
         \Bedriox\Server\Player\InventoryStack $left,
         \Bedriox\Server\Player\InventoryStack $right,
     ): bool {
-        return $left->identifier === $right->identifier
-            && $left->damage === $right->damage
-            && $left->auxValue === $right->auxValue
-            && ($left->nbt?->toBinary() ?? '') === ($right->nbt?->toBinary() ?? '')
-            && $left->placedBlockState?->value === $right->placedBlockState?->value;
+        return $left->isStackableWith($right);
     }
 
     /** @return array{list<InventoryStackRequestAction>, ?string} */
@@ -3518,6 +3714,17 @@ final class BedrockPlayChannel
     private function diagnose(string $message): void
     {
         $this->diagnostics->record('play.protocol_trace', ['detail' => $message]);
+    }
+
+    private static function safeExceptionDetail(\Throwable $error): string
+    {
+        $detail = preg_replace('/[^A-Za-z0-9 .,:;_()\/\\-]/', '?', $error->getMessage()) ?? '';
+        $detail = trim($detail);
+        if ($detail === '') {
+            return 'no detail';
+        }
+
+        return substr($detail, 0, 160);
     }
 
     /** @return array<string, int|string|bool> */

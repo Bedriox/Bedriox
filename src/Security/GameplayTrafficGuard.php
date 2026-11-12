@@ -30,6 +30,7 @@ final class GameplayTrafficGuard
     private float $envelopeTokens;
     private float $byteTokens;
     private float $packetTokens;
+    private float $mapRequestTokens;
     private int $delayedMovementTokens = 0;
     private int $lastRefillNanoseconds;
     private int $lastObservationGapNanoseconds = 0;
@@ -46,10 +47,13 @@ final class GameplayTrafficGuard
         private readonly int $packetsPerSecond = 1_200,
         private readonly int $packetBurst = 300,
         int $startedNanoseconds = 0,
+        private readonly int $mapRequestsPerSecond = 1_024,
+        private readonly int $mapRequestBurst = 512,
     ) {
         $this->envelopeTokens = $this->envelopeBurst;
         $this->byteTokens = $this->byteBurst;
         $this->packetTokens = $this->packetBurst;
+        $this->mapRequestTokens = $this->mapRequestBurst;
         $this->lastRefillNanoseconds = $startedNanoseconds;
     }
 
@@ -84,15 +88,20 @@ final class GameplayTrafficGuard
      * Admits a decoded batch while allowing only delayed movement packets to
      * consume bounded credit earned during an observed processing stall.
      */
-    public function admitPacketBatch(int $packets, int $movementPackets, int $nowNanoseconds): bool
-    {
-        if ($packets < 1 || $movementPackets < 0 || $movementPackets > $packets
+    public function admitPacketBatch(
+        int $packets,
+        int $movementPackets,
+        int $nowNanoseconds,
+        int $mapRequests = 0,
+    ): bool {
+        if ($packets < 1 || $movementPackets < 0 || $mapRequests < 0
+            || $movementPackets + $mapRequests > $packets
             || $nowNanoseconds < $this->lastRefillNanoseconds) {
             $this->lastDecision = 'invalid_packet_batch';
             return false;
         }
         $this->refill($nowNanoseconds);
-        $ordinaryPackets = $packets - $movementPackets;
+        $ordinaryPackets = $packets - $movementPackets - $mapRequests;
         $delayedMovement = min($this->delayedMovementTokens, $movementPackets);
         $ordinaryMovement = $movementPackets - $delayedMovement;
         $ordinaryTotal = $ordinaryPackets + $ordinaryMovement;
@@ -100,7 +109,12 @@ final class GameplayTrafficGuard
             $this->lastDecision = 'packet_budget';
             return false;
         }
+        if ($this->mapRequestTokens < $mapRequests) {
+            $this->lastDecision = 'map_request_budget';
+            return false;
+        }
         $this->packetTokens -= $ordinaryTotal;
+        $this->mapRequestTokens -= $mapRequests;
         $this->delayedMovementTokens -= $delayedMovement;
         $this->lastDecision = 'admitted';
 
@@ -109,7 +123,7 @@ final class GameplayTrafficGuard
 
     /**
      * @return array{decision: string, envelope_budget: int, byte_budget: int, packet_budget: int,
-     *     delayed_movement_budget: int, observation_gap_ms: int}
+     *     map_request_budget: int, delayed_movement_budget: int, observation_gap_ms: int}
      */
     public function diagnosticSnapshot(): array
     {
@@ -118,6 +132,7 @@ final class GameplayTrafficGuard
             'envelope_budget' => max(0, (int) floor($this->envelopeTokens)),
             'byte_budget' => max(0, (int) floor($this->byteTokens)),
             'packet_budget' => max(0, (int) floor($this->packetTokens)),
+            'map_request_budget' => max(0, (int) floor($this->mapRequestTokens)),
             'delayed_movement_budget' => $this->delayedMovementTokens,
             'observation_gap_ms' => min(60_000, intdiv($this->lastObservationGapNanoseconds, 1_000_000)),
         ];
@@ -134,6 +149,10 @@ final class GameplayTrafficGuard
         $this->envelopeTokens = min($this->envelopeBurst, $this->envelopeTokens + $seconds * $this->envelopesPerSecond);
         $this->byteTokens = min($this->byteBurst, $this->byteTokens + $seconds * $this->bytesPerSecond);
         $this->packetTokens = min($this->packetBurst, $this->packetTokens + $seconds * $this->packetsPerSecond);
+        $this->mapRequestTokens = min(
+            $this->mapRequestBurst,
+            $this->mapRequestTokens + $seconds * $this->mapRequestsPerSecond,
+        );
         if ($elapsedNanoseconds >= self::DELAYED_INPUT_THRESHOLD_NANOSECONDS) {
             $earned = intdiv($elapsedNanoseconds, self::MOVEMENT_INTERVAL_NANOSECONDS);
             $this->delayedMovementTokens = min(

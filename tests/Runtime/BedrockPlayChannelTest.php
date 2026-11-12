@@ -90,6 +90,7 @@ use Bedriox\Protocol\Packet\ItemUseOnEntityInventoryTransaction;
 use Bedriox\Protocol\Packet\ItemUsePredictedResult;
 use Bedriox\Protocol\Packet\ItemUseTriggerType;
 use Bedriox\Protocol\Packet\LevelChunkPacket;
+use Bedriox\Protocol\Packet\MapInfoRequestPacket;
 use Bedriox\Protocol\Packet\MineBlockItemStackRequestAction;
 use Bedriox\Protocol\Packet\MobArmorEquipmentPacket;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
@@ -1847,6 +1848,22 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertStringContainsString('"reason":"batch_decode_failed"', $lines[1]);
         self::assertStringContainsString('"exception":', $lines[1]);
         self::assertStringNotContainsString('untrusted-secret-payload', implode('', $lines));
+    }
+
+    public function testRetailMapWallRequestBurstIsNotMisclassifiedAsCommands(): void
+    {
+        [$channel, $client] = $this->channel();
+        $packet = new MapInfoRequestPacket(99_999);
+        $frame = new PacketFrame(
+            new PacketHeader(PacketIds::MAP_INFO_REQUEST),
+            BedrockPacketCodec::encode($packet),
+        );
+
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encodeFrames(array_fill(0, 400, $frame))),
+            Reliability::RELIABLE,
+        )));
+        self::assertFalse($channel->isClosed());
     }
 
     public function testMalformedTypedPacketsFailButUnknownPacketsAreIgnored(): void

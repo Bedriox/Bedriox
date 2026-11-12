@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Api\World;
 
+use Bedriox\Api\Map\MapManager;
 use Bedriox\Api\Player\Player;
 use Bedriox\Api\World\Particle\Particle;
 use Closure;
@@ -120,6 +121,11 @@ final readonly class World
     public function setWeather(WeatherState $weather): bool
     {
         return ($this->actions ?? WorldActions::unavailable())->setWeather($this, $weather);
+    }
+
+    public function getMaps(): MapManager
+    {
+        return ($this->actions ?? WorldActions::unavailable())->getMaps($this);
     }
 
     /**

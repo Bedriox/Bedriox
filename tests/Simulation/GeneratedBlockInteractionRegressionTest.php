@@ -38,6 +38,8 @@ use Bedriox\Server\Simulation\SimulationCommandFactory;
 use Bedriox\Server\Simulation\WorldSimulation;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
+use Bedriox\Server\World\BlockEntity\ContainerItemStack;
+use Bedriox\Server\World\BlockEntity\ItemFrameBlockEntity;
 use Bedriox\Server\World\BlockPosition;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\ChunkRepository;
@@ -50,6 +52,101 @@ use PHPUnit\Framework\TestCase;
 
 final class GeneratedBlockInteractionRegressionTest extends TestCase
 {
+    public function testFrameAttackRemovesItsItemBeforeASecondGestureBreaksTheFrame(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $states = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $flat = FixedFlatBlockPalette::fromRegistry($states);
+        $catalog = BlockCatalog::vanilla($states, $data->blockItemMappingRegistry());
+        $items = ItemCatalog::vanilla(
+            $data->itemNetworkRegistry(),
+            $catalog,
+            $data->creativeInventoryRegistry(),
+            $data->blockItemMappingRegistry(),
+        );
+        $position = new BlockPosition(1, 64, 0);
+        $frameState = $states->internalId(CanonicalBlockState::from('minecraft:frame', [
+            'facing_direction' => 3,
+            'item_frame_map_bit' => 0,
+            'item_frame_photo_bit' => 0,
+        ]));
+        $blocks = new World(
+            new WorldMetadata('item-frame-attack-regression', 0),
+            new FlatWorldGenerator($flat),
+            new ChunkRepository(4),
+        );
+        $blocks->setBlockState($position->x, $position->y, $position->z, $frameState);
+        $blocks->setBlockEntity(new ItemFrameBlockEntity(
+            $position,
+            new ContainerItemStack('minecraft:diamond', 1),
+        ));
+        $simulation = new WorldSimulation(
+            blockWorld: $blocks,
+            blockPalette: $flat,
+            itemCatalog: $items,
+            blockCatalog: $catalog,
+            blockStateRegistry: $states,
+        );
+        $commands = new SimulationCommandFactory();
+        self::assertTrue($simulation->enqueue($commands->join('player', 'identity', 'Player')));
+        $simulation->tick();
+
+        self::assertTrue($simulation->enqueue($commands->breakBlock(
+            'player',
+            1,
+            BlockBreakAction::Start,
+            $position,
+            1,
+        )));
+        $itemAttack = $simulation->tick()->events;
+        $frame = $blocks->blockEntityAt($position);
+        self::assertInstanceOf(ItemFrameBlockEntity::class, $frame);
+        self::assertNull($frame->item);
+        self::assertSame($frameState->value, $blocks->blockStateAt(1, 64, 0)->value);
+        self::assertCount(1, array_filter($itemAttack, static fn(object $event): bool => $event instanceof ItemEntitySpawned));
+        $teardown = array_values(array_filter(
+            $itemAttack,
+            static fn(object $event): bool => $event instanceof BlockChanged,
+        ));
+        self::assertCount(1, $teardown);
+        self::assertSame($flat->air->value, $teardown[0]->state->value);
+        self::assertSame([], $teardown[0]->blockEntities);
+
+        self::assertTrue($simulation->enqueue($commands->breakBlock(
+            'player',
+            2,
+            BlockBreakAction::Complete,
+            $position,
+            1,
+        )));
+        $restoration = $simulation->tick()->events;
+        self::assertInstanceOf(ItemFrameBlockEntity::class, $blocks->blockEntityAt($position));
+        $restored = array_values(array_filter(
+            $restoration,
+            static fn(object $event): bool => $event instanceof BlockChanged
+                && $event->blockEntities !== [],
+        ));
+        self::assertCount(1, $restored);
+        self::assertSame($frameState->value, $restored[0]->state->value);
+        self::assertInstanceOf(ItemFrameBlockEntity::class, $restored[0]->blockEntities[0]);
+        self::assertNull($restored[0]->blockEntities[0]->item);
+
+        self::assertTrue($simulation->enqueue($commands->breakBlock(
+            'player',
+            3,
+            BlockBreakAction::Start,
+            $position,
+            1,
+        )));
+        $broken = $simulation->tick()->events;
+
+        self::assertSame($flat->air->value, $blocks->blockStateAt(1, 64, 0)->value);
+        self::assertNull($blocks->blockEntityAt($position));
+        $drops = array_values(array_filter($broken, static fn(object $event): bool => $event instanceof ItemEntitySpawned));
+        self::assertCount(1, $drops);
+        self::assertSame('minecraft:frame', $drops[0]->entity->stack->identifier);
+    }
+
     public function testGeneratedVegetationBreakUsesItsRegisteredGameplayDefinition(): void
     {
         $states = new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());

@@ -76,6 +76,10 @@ final readonly class BlockEntityRegistry
             'minecraft:mob_spawner' => BlockEntityType::MobSpawner,
             'TrialSpawner' => BlockEntityType::TrialSpawner,
             'minecraft:trial_spawner' => BlockEntityType::TrialSpawner,
+            'ItemFrame' => BlockEntityType::ItemFrame,
+            'minecraft:item_frame' => BlockEntityType::ItemFrame,
+            'GlowItemFrame' => BlockEntityType::GlowItemFrame,
+            'minecraft:glow_item_frame' => BlockEntityType::GlowItemFrame,
         ];
         $this->saveIds = [
             BlockEntityType::Bed->value => 'Bed',
@@ -95,6 +99,8 @@ final readonly class BlockEntityRegistry
             BlockEntityType::Shelf->value => 'Shelf',
             BlockEntityType::MobSpawner->value => 'MobSpawner',
             BlockEntityType::TrialSpawner->value => 'TrialSpawner',
+            BlockEntityType::ItemFrame->value => 'ItemFrame',
+            BlockEntityType::GlowItemFrame->value => 'GlowItemFrame',
         ];
     }
 
@@ -125,6 +131,8 @@ final readonly class BlockEntityRegistry
             BlockEntityType::Shelf => ShelfBlockEntity::empty($position),
             BlockEntityType::MobSpawner => MobSpawnerBlockEntity::create($position),
             BlockEntityType::TrialSpawner => TrialSpawnerBlockEntity::create($position),
+            BlockEntityType::ItemFrame => new ItemFrameBlockEntity($position),
+            BlockEntityType::GlowItemFrame => new ItemFrameBlockEntity($position, glowing: true),
             BlockEntityType::Chest, BlockEntityType::Barrel, BlockEntityType::ShulkerBox =>
                 ContainerBlockEntity::empty($type, $position),
             BlockEntityType::EnderChest => new SimpleBlockEntity($type, $position),

@@ -419,6 +419,7 @@ use Bedriox\Server\Simulation\Command\PerformEmote;
 use Bedriox\Server\Simulation\Command\PickBlock;
 use Bedriox\Server\Simulation\Command\PickEntity;
 use Bedriox\Server\Simulation\Command\PlaceBlock;
+use Bedriox\Server\Simulation\Command\PlacePluginItemFrame;
 use Bedriox\Server\Simulation\Command\ReleaseItem;
 use Bedriox\Server\Simulation\Command\RemovePlayerEffect;
 use Bedriox\Server\Simulation\Command\RemovePluginInventoryStack;
@@ -558,6 +559,7 @@ use Bedriox\Server\World\BlockEntity\BedBlockEntity;
 use Bedriox\Server\World\BlockEntity\BlockEntityType;
 use Bedriox\Server\World\BlockEntity\ContainerBlockEntity;
 use Bedriox\Server\World\BlockEntity\ContainerItemStack;
+use Bedriox\Server\World\BlockEntity\ItemFrameBlockEntity;
 use Bedriox\Server\World\BlockEntity\MobSpawnerBlockEntity;
 use Bedriox\Server\World\BlockEntity\ShelfBlockEntity;
 use Bedriox\Server\World\BlockEntity\SignBlockEntity;
@@ -913,6 +915,17 @@ final class WorldSimulation
     private array $deferredEvents = [];
 
     /**
+     * Client projections which must be published in the following simulation tick.
+     *
+     * Unlike deferredEvents, this queue deliberately crosses a network batch boundary.
+     * It is used when Bedrock must observe one client-side lifecycle transition before
+     * receiving the authoritative replacement projection.
+     *
+     * @var list<WorldEvent>
+     */
+    private array $nextTickEvents = [];
+
+    /**
      * Read-only authoritative corrections reserved outside the saturated gameplay queue.
      *
      * @var array<string, array<string, WorldEvent>> session key => semantic correction key => event
@@ -1037,6 +1050,9 @@ final class WorldSimulation
 
     /** @var array<string, array{position: BlockPosition, state: int, sequence: int, face: int, lastParticleTick: int, lastSwingTick: int}> */
     private array $breakingBlocks = [];
+
+    /** @var array<string, BlockPosition> Prevents one retail destroy gesture from removing both a frame item and its frame. */
+    private array $itemFrameItemRemovals = [];
 
     /** @var array<string, array{position: BlockPosition, sequence: int, face: int, startedAtTick: int, nextStageTick: int, stack: InventoryStack}> */
     private array $brushingBlocks = [];
@@ -1994,11 +2010,25 @@ final class WorldSimulation
         $this->particlesThisTick = 0;
         $this->particlesByPluginThisTick = [];
         $this->blockWorld?->advanceTime();
-        $events = $this->drainAdmissionReconciliationEvents($this->limits->maximumCommandsPerTick);
+        $mapStartedNanoseconds = hrtime(true);
+        if ($this->dimension === DimensionType::OVERWORLD) {
+            // One map registry is shared by every dimension in this named world. The overworld
+            // simulation is its single cadence owner, preventing three updates per server tick.
+            $this->blockWorld?->maps()?->tick();
+        }
+        $mapNanoseconds = hrtime(true) - $mapStartedNanoseconds;
+        $events = $this->drainNextTickEvents();
+        array_push(
+            $events,
+            ...$this->drainAdmissionReconciliationEvents($this->limits->maximumCommandsPerTick),
+        );
         [$processed, $lifecycleEvents] = $this->processLifecycleCommands($this->limits->maximumCommandsPerTick);
         array_push($events, ...$lifecycleEvents);
         $stageCompletedNanoseconds = hrtime(true);
-        $stages = ['lifecycle' => $stageCompletedNanoseconds - $stageStartedNanoseconds];
+        $stages = [
+            'maps' => $mapNanoseconds,
+            'lifecycle' => $stageCompletedNanoseconds - $stageStartedNanoseconds - $mapNanoseconds,
+        ];
 
         $remaining = $this->limits->maximumCommandsPerTick - $processed;
         $reservedMovements = min(count($this->movements), $remaining);
@@ -8310,6 +8340,16 @@ final class WorldSimulation
         return $this->enqueue($this->validator->pluginBlock($plugin, $position, $identifier));
     }
 
+    public function enqueuePluginItemFrame(
+        string $plugin,
+        BlockPosition $position,
+        \Bedriox\Api\World\BlockFace $facing,
+        int $mapId,
+        bool $glowing,
+    ): bool {
+        return $this->enqueue($this->validator->pluginItemFrame($plugin, $position, $facing, $mapId, $glowing));
+    }
+
     /** @param list<string>|null $targetIdentities */
     public function enqueuePluginParticle(
         string $plugin,
@@ -8502,6 +8542,7 @@ final class WorldSimulation
             $command instanceof SendPluginMessage => $this->pluginMessage($command),
             $command instanceof TeleportPlayer => $this->pluginTeleport($command),
             $command instanceof SetPluginBlock => $this->pluginBlock($command),
+            $command instanceof PlacePluginItemFrame => $this->pluginItemFrame($command),
             $command instanceof SpawnPluginParticle => $this->pluginParticle($command),
             $command instanceof SetPluginInventorySlot => $this->pluginInventorySlot($command),
             $command instanceof SetPluginInventoryContents => $this->pluginInventoryContents($command),
@@ -12796,6 +12837,33 @@ final class WorldSimulation
         return $events;
     }
 
+    /** @return list<WorldEvent> */
+    private function drainNextTickEvents(): array
+    {
+        $events = $this->nextTickEvents;
+        $this->nextTickEvents = [];
+        if ($this->blockWorld === null) {
+            return $events;
+        }
+
+        return array_values(array_filter($events, function (WorldEvent $event): bool {
+            if (!$event instanceof BlockChanged || count($event->blockEntities) !== 1
+                || !$event->blockEntities[0] instanceof ItemFrameBlockEntity) {
+                return true;
+            }
+            $projected = $event->blockEntities[0];
+            $authoritative = $this->blockWorld->blockEntityAt($event->position);
+
+            return $authoritative instanceof ItemFrameBlockEntity
+                && $authoritative->revision === $projected->revision
+                && $this->blockWorld->blockStateAt(
+                    $event->position->x,
+                    $event->position->y,
+                    $event->position->z,
+                )->value === $event->state->value;
+        }));
+    }
+
     private function reserveAdmissionReconciliation(string $sessionKey, string $key, WorldEvent $event): void
     {
         $pending = $this->admissionReconciliationEvents[$sessionKey] ?? [];
@@ -12975,7 +13043,12 @@ final class WorldSimulation
     {
         $key = self::sessionKey($command->session);
         $this->deferBrushReset($key);
-        unset($this->breakingBlocks[$key], $this->brushingBlocks[$key], $this->pendingRespawns[$key]);
+        unset(
+            $this->breakingBlocks[$key],
+            $this->itemFrameItemRemovals[$key],
+            $this->brushingBlocks[$key],
+            $this->pendingRespawns[$key],
+        );
         $this->portalContacts->forget($command->session);
         $player = $this->players->player($command->session);
         if ($player === null) {
@@ -13256,6 +13329,13 @@ final class WorldSimulation
                     $command->plugin,
                     $command->position,
                     $command->identifier,
+                ),
+                $command instanceof PlacePluginItemFrame => $this->validator->pluginItemFrame(
+                    $command->plugin,
+                    $command->position,
+                    $command->facing,
+                    $command->mapId,
+                    $command->glowing,
                 ),
                 $command instanceof SpawnPluginParticle => $this->validator->pluginParticle(
                     $command->plugin,
@@ -13751,6 +13831,7 @@ final class WorldSimulation
                 return new CommandRejected($command->session, 'block_break_not_active');
             }
             unset($this->breakingBlocks[$key]);
+            unset($this->itemFrameItemRemovals[$key]);
 
             return new BlockBreakStopped($command->session, $active['position'], $this->players->recipients());
         }
@@ -13762,12 +13843,37 @@ final class WorldSimulation
         $blockType = $this->blockCatalog !== null && $this->blockStateRegistry !== null
             ? $this->blockCatalog->findTypeForInternalId($state, $this->blockStateRegistry)
             : null;
-        if ($this->blockCatalog !== null && $this->blockStateRegistry !== null && $blockType === null) {
+        $itemFrame = $this->blockWorld->blockEntityAt($position);
+        if ($this->blockCatalog !== null && $this->blockStateRegistry !== null
+            && $blockType === null && !$itemFrame instanceof ItemFrameBlockEntity) {
             unset($this->breakingBlocks[$key]);
 
             return new BlockChanged($command->session, $position, $state, [$command->session], true);
         }
-        if ($command->action === BlockBreakAction::Start) {
+        if ($itemFrame instanceof ItemFrameBlockEntity) {
+            if ($itemFrame->fixed && !$player->gameMode()->instantlyBreaksBlocks()) {
+                return new BlockChanged($command->session, $position, $state, [$command->session], true);
+            }
+            if (!$itemFrame->fixed && $itemFrame->item !== null) {
+                unset($this->breakingBlocks[$key]);
+                if ($command->action === BlockBreakAction::Start) {
+                    $this->itemFrameItemRemovals[$key] = $position;
+                }
+
+                return $this->removeItemFrameItem($player, $position, $state, $itemFrame);
+            }
+            if ($command->action === BlockBreakAction::Complete
+                && ($this->itemFrameItemRemovals[$key] ?? null)?->equals($position) === true) {
+                unset($this->itemFrameItemRemovals[$key], $this->breakingBlocks[$key]);
+
+                return new BlockChanged($command->session, $position, $state, [$command->session], true);
+            }
+        }
+        $instantItemFrameBreak = $itemFrame instanceof ItemFrameBlockEntity
+            && $itemFrame->item === null
+            && $command->action === BlockBreakAction::Start;
+        if ($command->action === BlockBreakAction::Start && !$instantItemFrameBreak) {
+            unset($this->itemFrameItemRemovals[$key]);
             if (!$this->playerCanBreakBlock($player, $state, $blockType)) {
                 return new CommandRejected($command->session, 'block_not_breakable');
             }
@@ -13895,10 +14001,11 @@ final class WorldSimulation
         }
         $heldType = $this->heldItemType($player);
         $survivalBreak = $player->gameMode() === GameMode::SURVIVAL
-            && $blockType !== null && $this->itemCatalog !== null;
+            && ($blockType !== null || $itemFrame instanceof ItemFrameBlockEntity)
+            && $this->itemCatalog !== null;
         $heldEnchantments = $this->heldEnchantments($player);
         $silkTouch = ($heldEnchantments[VanillaEnchantments::SILK_TOUCH] ?? 0) > 0;
-        $resolvedDrops = $survivalBreak
+        $resolvedDrops = $survivalBreak && $blockType !== null
             ? BlockDropRules::drops(
                 $blockType,
                 $heldType,
@@ -13919,6 +14026,12 @@ final class WorldSimulation
             ),
             $resolvedDrops,
         );
+        if ($survivalBreak && $itemFrame instanceof ItemFrameBlockEntity) {
+            $drops = [new ApiItemStack(
+                $itemFrame->isGlowing() ? 'minecraft:glow_frame' : 'minecraft:frame',
+                1,
+            )];
+        }
         if ($survivalBreak && $identifier === 'minecraft:bed') {
             $drops = [new ApiItemStack(
                 'minecraft:bed',
@@ -14051,37 +14164,39 @@ final class WorldSimulation
         }
         $this->closeContainersAt($position, ApiInventoryCloseReason::BLOCK_REMOVED);
         $this->removeStorageBlockEntity($position, $storageEntity);
+        $this->blockWorld->removeBlockEntity($position);
         if ($identifier === 'minecraft:bed') {
-            $this->blockWorld->removeBlockEntity($position);
             if ($bedCompanionPosition !== null) {
                 $this->blockWorld->removeBlockEntity($bedCompanionPosition);
             }
         }
         $this->refreshPlayerGroundStates();
         if ($survivalBreak) {
-            $experience = BlockDropRules::experience($blockType, $heldType, $this->dropRandom, $silkTouch);
-            if ($experience > 0) {
-                array_push(
-                    $this->deferredEvents,
-                    ...$this->spawnExperienceOrbs(
-                        $experience,
-                        new Position($position->x + 0.5, $position->y + 0.5, $position->z + 0.5),
-                    ),
-                );
-            }
-            if (BlockDropRules::breakEffect($blockType, $silkTouch) === BlockBreakEffect::SpawnSilverfish) {
-                $this->spawnEntity(new EntitySpawnRequest(
-                    VanillaEntityType::SILVERFISH,
-                    SpawnCause::BLOCK_PHYSICS,
-                    $this->worldId,
-                    new Position($position->x + 0.5, $position->y, $position->z + 0.5),
-                ));
+            if ($blockType !== null) {
+                $experience = BlockDropRules::experience($blockType, $heldType, $this->dropRandom, $silkTouch);
+                if ($experience > 0) {
+                    array_push(
+                        $this->deferredEvents,
+                        ...$this->spawnExperienceOrbs(
+                            $experience,
+                            new Position($position->x + 0.5, $position->y + 0.5, $position->z + 0.5),
+                        ),
+                    );
+                }
+                if (BlockDropRules::breakEffect($blockType, $silkTouch) === BlockBreakEffect::SpawnSilverfish) {
+                    $this->spawnEntity(new EntitySpawnRequest(
+                        VanillaEntityType::SILVERFISH,
+                        SpawnCause::BLOCK_PHYSICS,
+                        $this->worldId,
+                        new Position($position->x + 0.5, $position->y, $position->z + 0.5),
+                    ));
+                }
             }
             $itemCatalog = $this->itemCatalog;
             $blockStateRegistry = $this->blockStateRegistry;
             foreach ($drops as $drop) {
                 $type = $itemCatalog->type($drop->identifier);
-                $placed = $type->placedBlockState === null
+                $placed = $type->placedBlockState === null || $blockStateRegistry === null
                     ? null
                     : $blockStateRegistry->internalId($type->placedBlockState);
                 $entity = $this->itemEntities->spawn(
@@ -14100,7 +14215,9 @@ final class WorldSimulation
                 );
                 $this->deferredEvents[] = new ItemEntitySpawned($entity, $this->players->recipients());
             }
-            $this->damageHeldTool($player, $heldType);
+            if ($blockType !== null) {
+                $this->damageHeldTool($player, $heldType);
+            }
         }
         foreach ($storageDrops as $storageDrop) {
             $entity = $this->itemEntities->spawn(
@@ -24072,21 +24189,13 @@ final class WorldSimulation
     {
         return ($left === null && $right === null)
             || ($left !== null && $right !== null
-                && $left->identifier === $right->identifier
                 && $left->count === $right->count
-                && $left->damage === $right->damage
-                && $left->auxValue === $right->auxValue
-                && $left->placedBlockState?->value === $right->placedBlockState?->value
-                && ($left->nbt?->toBinary() ?? '') === ($right->nbt?->toBinary() ?? ''));
+                && $left->isStackableWith($right));
     }
 
     private static function sameInventoryStackType(InventoryStack $left, InventoryStack $right): bool
     {
-        return $left->identifier === $right->identifier
-            && $left->damage === $right->damage
-            && $left->auxValue === $right->auxValue
-            && $left->placedBlockState?->value === $right->placedBlockState?->value
-            && ($left->nbt?->toBinary() ?? '') === ($right->nbt?->toBinary() ?? '');
+        return $left->isStackableWith($right);
     }
 
     /** @return list<InventorySlotReference> */
@@ -24218,6 +24327,207 @@ final class WorldSimulation
         return str_ends_with($identifier, '_shelf')
             && !str_ends_with($identifier, 'bookshelf')
             && $identifier !== 'minecraft:shelf_mushroom';
+    }
+
+    private static function isItemFrameIdentifier(string $identifier): bool
+    {
+        return $identifier === 'minecraft:frame' || $identifier === 'minecraft:glow_frame';
+    }
+
+    private function removeItemFrameItem(
+        Player $player,
+        BlockPosition $position,
+        InternalBlockStateId $state,
+        ItemFrameBlockEntity $frame,
+    ): WorldEvent {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null
+            || $this->blockPalette === null || $frame->item === null) {
+            return new BlockChanged($player->sessionId, $position, $state, [$player->sessionId], true);
+        }
+        $shouldDrop = !$player->gameMode()->instantlyBreaksBlocks()
+            && $this->dropRandom->integer(1, 1_000_000) <= (int) floor($frame->dropChance * 1_000_000);
+        if ($shouldDrop && $this->itemEntities->remainingCapacity() < 1) {
+            return new BlockChanged($player->sessionId, $position, $state, [$player->sessionId], true);
+        }
+
+        $canonical = $this->blockStateRegistry->state($state);
+        $properties = $canonical->properties();
+        $properties['item_frame_map_bit'] = 0;
+        $replacement = $this->blockStateRegistry->internalId(CanonicalBlockState::from(
+            $canonical->identifier(),
+            $properties,
+        ));
+        try {
+            if ($replacement->value !== $state->value) {
+                $this->setBlockStateAndSchedule($position, $replacement);
+            }
+        } catch (OverflowException) {
+            return new BlockChanged($player->sessionId, $position, $state, [$player->sessionId], true);
+        }
+
+        $empty = new ItemFrameBlockEntity(
+            $position,
+            dropChance: $frame->dropChance,
+            fixed: $frame->fixed,
+            glowing: $frame->isGlowing(),
+            revision: $frame->revision + 1,
+        );
+        $this->blockWorld->setBlockEntity($empty);
+        if ($shouldDrop) {
+            $entity = $this->itemEntities->spawn(
+                $this->inventoryStackFromContainerItem($frame->item),
+                new Position($position->x + 0.5, $position->y + 0.5, $position->z + 0.5),
+                new ItemEntityMotion(0.0, 0.1, 0.0),
+                10,
+            );
+            $this->deferredEvents[] = new ItemEntitySpawned($entity, $this->players->recipients());
+        }
+        $swing = $this->armSwingEvent($player, ArmSwingSource::Mining);
+        if ($swing !== null) {
+            $this->deferredEvents[] = $swing;
+        }
+
+        // Retail Bedrock retains an item-frame actor's mounted-item render when the frame
+        // state and its empty actor data arrive in the same network batch. Tear down only
+        // the client projection now, then restore the authoritative empty frame in the next
+        // tick. The world never contains air, so interactions and persistence remain correct.
+        $this->nextTickEvents[] = new BlockChanged(
+            $player->sessionId,
+            $position,
+            $replacement,
+            $this->players->recipients(),
+            true,
+            blockEntities: [$empty],
+        );
+
+        return new BlockChanged(
+            $player->sessionId,
+            $position,
+            $this->blockPalette->air,
+            $this->players->recipients(),
+            true,
+        );
+    }
+
+    private function useItemFrame(
+        Player $player,
+        PlaceBlock $command,
+        InternalBlockStateId $clickedState,
+        ?InventoryStack $held,
+    ): WorldEvent {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null) {
+            return new CommandRejected($player->sessionId, 'block_world_unavailable');
+        }
+        $adjacent = self::adjacentBlock($command->clickedPosition, $command->face) ?? $command->clickedPosition;
+        $adjacentState = $this->blockWorld->blockStateAt($adjacent->x, $adjacent->y, $adjacent->z);
+        $stored = $this->blockWorld->blockEntityAt($command->clickedPosition);
+        if (!$stored instanceof ItemFrameBlockEntity || $command->sequence <= $player->placementSequence
+            || $command->hotbarSlot !== $player->inventory->selectedHotbarSlot()) {
+            return new BlockPlacementCorrected(
+                $player->sessionId,
+                $command->clickedPosition,
+                $clickedState,
+                $adjacent,
+                $adjacentState,
+                $player->inventory->selectedHotbarSlot(),
+                $held,
+                null,
+                'item_frame_rejected',
+            );
+        }
+        $player->placementSequence = $command->sequence;
+        $remaining = $held;
+        if ($stored->item === null) {
+            if ($held === null) {
+                return new BlockPlacementCorrected(
+                    $player->sessionId,
+                    $command->clickedPosition,
+                    $clickedState,
+                    $adjacent,
+                    $adjacentState,
+                    $player->inventory->selectedHotbarSlot(),
+                    null,
+                    null,
+                    'item_frame_empty',
+                    blockEntities: [$stored],
+                );
+            }
+            $updated = new ItemFrameBlockEntity(
+                $stored->position,
+                new ContainerItemStack($held->identifier, 1, $held->damage, $held->nbt, $held->auxValue),
+                dropChance: $stored->dropChance,
+                fixed: $stored->fixed,
+                glowing: $stored->isGlowing(),
+                revision: $stored->revision + 1,
+            );
+            if ($player->gameMode()->consumesItems()) {
+                $remaining = $player->inventory->decrementSelectedOne();
+            }
+        } else {
+            $updated = new ItemFrameBlockEntity(
+                $stored->position,
+                $stored->item,
+                ($stored->rotation + 1) & 7,
+                $stored->dropChance,
+                $stored->fixed,
+                $stored->isGlowing(),
+                $stored->revision + 1,
+            );
+        }
+        $canonical = $this->blockStateRegistry->state($clickedState);
+        $properties = $canonical->properties();
+        if (array_key_exists('item_frame_map_bit', $properties)) {
+            $properties['item_frame_map_bit'] = $updated->item?->identifier === 'minecraft:filled_map' ? 1 : 0;
+            try {
+                $replacement = $this->blockStateRegistry->internalId(CanonicalBlockState::from(
+                    $canonical->identifier(),
+                    $properties,
+                ));
+                if ($replacement->value !== $clickedState->value) {
+                    $this->setBlockStateAndSchedule($command->clickedPosition, $replacement);
+                    $this->deferredEvents[] = new BlockChanged(
+                        $player->sessionId,
+                        $command->clickedPosition,
+                        $replacement,
+                        $this->players->recipients(),
+                        false,
+                        $clickedState,
+                    );
+                }
+            } catch (InvalidArgumentException|OverflowException) {
+                return new CommandRejected($player->sessionId, 'item_frame_state');
+            }
+        }
+        $this->blockWorld->setBlockEntity($updated);
+        $player->markDirty();
+        $this->deferredEvents[] = new BlockEntityChanged($updated, $this->players->recipients());
+        if ($remaining !== $held) {
+            $this->deferredEvents[] = new HeldItemChanged(
+                $player->sessionId,
+                $player->runtimeActorId,
+                $player->inventory->selectedHotbarSlot(),
+                $remaining,
+                $this->players->recipients($player->sessionId),
+                ownerSlotCorrection: false,
+            );
+        }
+
+        return new BlockPlacementCorrected(
+            $player->sessionId,
+            $command->clickedPosition,
+            $this->blockWorld->blockStateAt(
+                $command->clickedPosition->x,
+                $command->clickedPosition->y,
+                $command->clickedPosition->z,
+            ),
+            $adjacent,
+            $adjacentState,
+            $player->inventory->selectedHotbarSlot(),
+            $remaining,
+            null,
+            'item_frame_updated',
+            blockEntities: [$updated],
+        );
     }
 
     private function useShelf(
@@ -24687,6 +24997,11 @@ final class WorldSimulation
             && !$player->movement->sneaking
             && $this->blockIsReachable($player->snapshot(), $command->clickedPosition)) {
             return $this->useShelf($player, $command, $clickedState, $held);
+        }
+        if (self::isItemFrameIdentifier($clickedIdentifier)
+            && !$player->movement->sneaking
+            && $this->blockIsReachable($player->snapshot(), $command->clickedPosition)) {
+            return $this->useItemFrame($player, $command, $clickedState, $held);
         }
         if (self::isSignIdentifier($clickedIdentifier)
             && !$player->movement->sneaking
@@ -25191,6 +25506,14 @@ final class WorldSimulation
             $shelf = ShelfBlockEntity::empty($placedPosition);
             $this->blockWorld->setBlockEntity($shelf);
             $this->deferredEvents[] = new BlockEntityChanged($shelf, $this->players->recipients());
+        }
+        if (self::isItemFrameIdentifier($placedIdentifier)) {
+            $frame = new ItemFrameBlockEntity(
+                $placedPosition,
+                glowing: $placedIdentifier === 'minecraft:glow_frame',
+            );
+            $this->blockWorld->setBlockEntity($frame);
+            $this->deferredEvents[] = new BlockEntityChanged($frame, $this->players->recipients());
         }
         if ($this->blockStateRegistry !== null
             && BlockTagRegistry::contains(
@@ -27907,6 +28230,59 @@ final class WorldSimulation
             return new CommandRejected($command->sessionId(), 'block_capacity');
         }
         $this->refreshPlayerGroundStates();
+
+        return new BlockChanged(
+            $command->sessionId(),
+            $command->position,
+            $state,
+            $this->players->recipients(),
+            false,
+        );
+    }
+
+    private function pluginItemFrame(PlacePluginItemFrame $command): WorldEvent
+    {
+        if ($this->blockWorld === null || $this->blockStateRegistry === null
+            || $this->blockPalette === null || $this->blockWorld->maps()?->get($command->mapId) === null) {
+            return new CommandRejected($command->sessionId(), 'item_frame_unavailable');
+        }
+        $identifier = $command->glowing ? 'minecraft:glow_frame' : 'minecraft:frame';
+        $properties = [
+            'facing_direction' => match ($command->facing) {
+                \Bedriox\Api\World\BlockFace::DOWN => 0,
+                \Bedriox\Api\World\BlockFace::UP => 1,
+                \Bedriox\Api\World\BlockFace::NORTH => 2,
+                \Bedriox\Api\World\BlockFace::SOUTH => 3,
+                \Bedriox\Api\World\BlockFace::WEST => 4,
+                \Bedriox\Api\World\BlockFace::EAST => 5,
+            },
+            'item_frame_map_bit' => 1,
+            'item_frame_photo_bit' => 0,
+        ];
+        try {
+            $state = $this->blockStateRegistry->internalId(\Bedriox\Data\CanonicalBlockState::from(
+                $identifier,
+                $properties,
+            ));
+            $this->setBlockStateAndSchedule($command->position, $state);
+            $item = new \Bedriox\Api\Inventory\ItemStack(
+                'minecraft:filled_map',
+                1,
+                nbt: \Bedriox\Api\Inventory\ItemNbt::empty()
+                    ->withTag('map_uuid', \Bedriox\Api\Nbt\Tag::long($command->mapId))
+                    ->withTag('map_display_players', \Bedriox\Api\Nbt\Tag::byte(0)),
+                auxValue: 6,
+            );
+            $entity = new ItemFrameBlockEntity(
+                $command->position,
+                new ContainerItemStack($item->identifier, 1, $item->damage, $item->nbt, $item->auxValue),
+                glowing: $command->glowing,
+            );
+            $this->blockWorld->setBlockEntity($entity);
+        } catch (\InvalidArgumentException|OverflowException) {
+            return new CommandRejected($command->sessionId(), 'item_frame_rejected');
+        }
+        $this->deferredEvents[] = new BlockEntityChanged($entity, $this->players->recipients());
 
         return new BlockChanged(
             $command->sessionId(),
