@@ -83,6 +83,8 @@ use Bedriox\Protocol\Packet\PacketHeader;
 use Bedriox\Protocol\Packet\PacketIds;
 use Bedriox\Protocol\Packet\PlayerAbilities;
 use Bedriox\Protocol\Packet\PlayerAuthInputPacket;
+use Bedriox\Protocol\Packet\PlayerListAddPacket;
+use Bedriox\Protocol\Packet\PlayerListRemovePacket;
 use Bedriox\Protocol\Packet\PlayerPermission;
 use Bedriox\Protocol\Packet\PlayerPositionProjection;
 use Bedriox\Protocol\Packet\PlayerSkin as ProtocolPlayerSkin;
@@ -876,6 +878,11 @@ final class ServerRuntimeTest extends TestCase
                 $packets,
                 static fn(Packet $packet): bool => str_contains($packet::class, 'Dimension'),
             )), 'Same-dimension transfer must not emit a loading-screen dimension packet.');
+            self::assertSame([], array_values(array_filter(
+                $packets,
+                static fn(Packet $packet): bool => $packet instanceof PlayerListAddPacket
+                    || $packet instanceof PlayerListRemovePacket,
+            )), 'World transfer must not change the server-wide pause-menu roster.');
         } finally {
             $runtime->close();
         }

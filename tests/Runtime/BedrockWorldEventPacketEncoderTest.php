@@ -53,7 +53,6 @@ use Bedriox\Protocol\Packet\ActorFlag;
 use Bedriox\Protocol\Packet\ActorMetadata;
 use Bedriox\Protocol\Packet\AddPlayerPacket;
 use Bedriox\Protocol\Packet\AnimatePacket;
-use Bedriox\Protocol\Packet\BedrockPacketCodec;
 use Bedriox\Protocol\Packet\BlockActorDataPacket;
 use Bedriox\Protocol\Packet\ChatPacket;
 use Bedriox\Protocol\Packet\ContainerOpenPacket;
@@ -84,8 +83,6 @@ use Bedriox\Protocol\Packet\MoveActorAbsolutePacket;
 use Bedriox\Protocol\Packet\MovePlayerMode;
 use Bedriox\Protocol\Packet\MovePlayerPacket;
 use Bedriox\Protocol\Packet\PlayerEnchantOptionsPacket;
-use Bedriox\Protocol\Packet\PlayerListAddPacket;
-use Bedriox\Protocol\Packet\PlayerListRemovePacket;
 use Bedriox\Protocol\Packet\PlayerSkinPacket;
 use Bedriox\Protocol\Packet\PredictionType;
 use Bedriox\Protocol\Packet\RemoveActorPacket;
@@ -1329,7 +1326,7 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         self::assertSame($expectedPayload, $packets[0]->packet->encode());
     }
 
-    public function testDisconnectRemovesOnlyTheAuthenticatedIdentity(): void
+    public function testDisconnectLeavesRosterProjectionToTheServerRuntime(): void
     {
         $packets = (new BedrockWorldEventPacketEncoder())->encode(new PlayerDisconnected(
             'gone',
@@ -1337,10 +1334,7 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
             7,
             ['remaining'],
         ), []);
-        self::assertCount(1, $packets);
-        self::assertSame('remaining', $packets[0]->sessionId);
-        self::assertInstanceOf(PlayerListRemovePacket::class, $packets[0]->packet);
-        self::assertSame(['00000000-0000-0000-0000-000000000001'], $packets[0]->packet->uuids);
+        self::assertSame([], $packets);
     }
 
     public function testDisconnectBroadcastsTheFinalQuitMessageOncePerRecipient(): void
@@ -1353,14 +1347,14 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
             quitMessage: 'Player left the game',
         ), []);
 
-        self::assertCount(4, $packets);
-        self::assertSame(['one', 'two', 'one', 'two'], array_column($packets, 'sessionId'));
-        self::assertInstanceOf(SystemTextPacket::class, $packets[2]->packet);
-        self::assertSame('Player left the game', $packets[2]->packet->message);
-        self::assertInstanceOf(SystemTextPacket::class, $packets[3]->packet);
+        self::assertCount(2, $packets);
+        self::assertSame(['one', 'two'], array_column($packets, 'sessionId'));
+        self::assertInstanceOf(SystemTextPacket::class, $packets[0]->packet);
+        self::assertSame('Player left the game', $packets[0]->packet->message);
+        self::assertInstanceOf(SystemTextPacket::class, $packets[1]->packet);
     }
 
-    public function testJoinProjectsPlayerListMembershipInBothDirections(): void
+    public function testJoinLeavesRosterProjectionToTheServerRuntime(): void
     {
         $joined = $this->authenticatedSession(
             'joined',
@@ -1384,18 +1378,9 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
             ['joined' => $joined, 'existing' => $existing],
         );
 
-        self::assertCount(3, $packets);
-        self::assertSame(
-            ['existing', 'joined', 'joined'],
-            array_map(static fn($value): string => $value->sessionId, $packets),
-        );
-        self::assertInstanceOf(PlayerListAddPacket::class, $packets[0]->packet);
-        self::assertSame(7, $packets[0]->packet->entries[0]->uniqueEntityId);
-        self::assertSame(BuildPlatform::Unknown, $packets[0]->packet->entries[0]->buildPlatform);
-        self::assertInstanceOf(PlayerListAddPacket::class, $packets[1]->packet);
-        self::assertSame(9, $packets[1]->packet->entries[0]->uniqueEntityId);
-        self::assertSame(BuildPlatform::Unknown, $packets[1]->packet->entries[0]->buildPlatform);
-        self::assertInstanceOf(SetActorDataPacket::class, $packets[2]->packet);
+        self::assertCount(1, $packets);
+        self::assertSame('joined', $packets[0]->sessionId);
+        self::assertInstanceOf(SetActorDataPacket::class, $packets[0]->packet);
     }
 
     public function testJoinAnnouncementIsProjectedAfterPlayerInitialization(): void
@@ -1428,7 +1413,7 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
         self::assertInstanceOf(SystemTextPacket::class, $raw[1]->packet);
     }
 
-    public function testJoinSplitsAFullHundredPlayerSkinSnapshotIntoBoundedPackets(): void
+    public function testJoinPacketCountIsIndependentOfExistingWorldPopulation(): void
     {
         $joined = $this->authenticatedSession(
             'joined',
@@ -1463,21 +1448,9 @@ final class BedrockWorldEventPacketEncoderTest extends TestCase
             $sessions,
         );
 
-        self::assertGreaterThan(1, count($packets));
-        $entryCount = 0;
-        $environmentPackets = 0;
-        foreach ($packets as $directed) {
-            self::assertSame('joined', $directed->sessionId);
-            if ($directed->packet instanceof SetActorDataPacket) {
-                ++$environmentPackets;
-                continue;
-            }
-            self::assertInstanceOf(PlayerListAddPacket::class, $directed->packet);
-            $entryCount += count($directed->packet->entries);
-            self::assertLessThanOrEqual(1_000_000, strlen(BedrockPacketCodec::encode($directed->packet)));
-        }
-        self::assertSame(100, $entryCount);
-        self::assertSame(1, $environmentPackets);
+        self::assertCount(1, $packets);
+        self::assertSame('joined', $packets[0]->sessionId);
+        self::assertInstanceOf(SetActorDataPacket::class, $packets[0]->packet);
     }
 
     public function testActorVisibilityTransitionsDoNotDuplicatePlayerListMembership(): void

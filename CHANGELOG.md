@@ -1,6 +1,7 @@
 # Changelog
 
 - Harden client input handling with bounded form responses, packet-aware limits, quiet disabled diagnostics, and repeat-safe death processing.
+- Keep the pause-menu player roster server-wide and revisioned, preserve it across world transfers, reconcile skin changes globally, and remove departed identities exactly once.
 - Add validated resource-pack stacks, fair process-wide 256 KiB login transfers, verified immutable snapshots, startup-scoped plugin registration, stale-cache reclamation, worker compression, and Gateway-owned network delivery.
 - Add bounded performance profiles, plugin workload attribution, local compressed reports, background uploads, and shareable diagnostic links through `/timings`.
 - Move the supported Bedrock client family to Minecraft 1.26.60 and 1.26.61 on protocol 2225, including current packet admission and world metadata.

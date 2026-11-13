@@ -127,6 +127,7 @@ use Bedriox\Server\Runtime\Input\InboundMetrics;
 use Bedriox\Server\Runtime\Input\InboundMetricsSnapshot;
 use Bedriox\Server\Runtime\Input\InboundOrigin;
 use Bedriox\Server\Runtime\Input\InboundResult;
+use Bedriox\Server\Runtime\PlayerRoster\OnlinePlayerRoster;
 use Bedriox\Server\Runtime\Scoreboard\ScoreboardRuntimeProjector;
 use Bedriox\Server\Security\ProtocolViolationTracker;
 use Bedriox\Server\Simulation\Event\AreaEffectCloudRemoved;
@@ -183,6 +184,7 @@ use Bedriox\Server\Simulation\Event\ProjectileSpawned;
 use Bedriox\Server\Simulation\Event\RespawnAcknowledged;
 use Bedriox\Server\Simulation\Event\WorldEvent;
 use Bedriox\Server\Simulation\FixedRateWorldLoop;
+use Bedriox\Server\Simulation\PlayerSnapshot;
 use Bedriox\Server\Simulation\PluginGameplayEventBridge;
 use Bedriox\Server\Simulation\Position;
 use Bedriox\Server\Simulation\SimulationClock;
@@ -239,6 +241,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private const int MAXIMUM_PENDING_CHAT_BROADCASTS = 4_096;
     private const int MAXIMUM_PENDING_PROJECTION_RETRIES = 4_096;
     private const int PROJECTION_RETRIES_PER_TICK = 16;
+    private const int PLAYER_ROSTER_RECONCILIATIONS_PER_POLL = 64;
+    private const int PLAYER_ROSTER_ENTRIES_PER_BATCH = 4;
     private const int MAXIMUM_PROJECTION_ENCODING_ATTEMPTS = 2;
     private const int MAXIMUM_PROJECTION_DELIVERY_ATTEMPTS = 8;
     private const int PLAY_SESSION_MAINTENANCE_INTERVAL_NANOSECONDS = 50_000_000;
@@ -269,6 +273,15 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     /** @var array<string, list<string>> Runtime session ID => bounded server-authored skin echoes. */
     private array $expectedSkinEchoes = [];
 
+    /** @var array<string, true> Runtime session IDs awaiting desired-state roster reconciliation. */
+    private array $pendingPlayerRosterReconciliations = [];
+
+    /**
+     * @var array<string, array<string, array{revision: int, packet: PlayerSkinPacket}>>
+     * Runtime session ID => canonical player UUID => latest ordered skin update.
+     */
+    private array $pendingPlayerRosterSkinUpdates = [];
+
     private bool $closed = false;
     private int $nextRuntimeEntityId = 1;
     private int $serverTick = 0;
@@ -276,6 +289,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private readonly RuntimeDiagnostics $diagnostics;
     private readonly InboundMetrics $inboundMetrics;
     private readonly PlayerActorVisibilityRegistry $actorVisibility;
+    private readonly OnlinePlayerRoster $playerRoster;
     private readonly PlayerConnectionDirectory $playerConnections;
     private ?FormRegistry $formRegistry = null;
     private ?Throwable $failure = null;
@@ -485,6 +499,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         $this->diagnostics = $diagnostics ?? RuntimeDiagnostics::disabled();
         $this->inboundMetrics = new InboundMetrics();
         $this->actorVisibility = new PlayerActorVisibilityRegistry($this->limits->maximumSessions);
+        $this->playerRoster = new OnlinePlayerRoster(min($this->limits->maximumSessions, $this->maximumPlayers));
         $this->actorBackedBossBars = new ActorBackedBossBarDelivery();
         $this->packetFrameCache = new WeakMap();
         $this->pendingActorVisibilityPairs = new SplQueue();
@@ -510,6 +525,143 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
 
         return array_map($this->playerConnections->attach(...), $players);
+    }
+
+    private function admitPlayerRoster(PlayerSnapshot $player): bool
+    {
+        $session = $this->sessionById($player->sessionId);
+        if ($session?->play === null || $session->phase !== SessionPhase::SPAWNED) {
+            return $this->failRuntime('player_roster_admission_missing_session');
+        }
+        try {
+            $revision = $this->playerRoster->admit(
+                $session->id,
+                $this->playerRosterEntry($player, $session),
+            );
+            // The production play bootstrap sends the local player's own entry before admission.
+            $this->playerRoster->acknowledgeOwner($session->id, $player->identity, $revision);
+        } catch (Throwable $exception) {
+            return $this->failRuntime('player_roster_admission_failed', $exception);
+        }
+
+        $this->scheduleAllPlayerRosterReconciliations();
+
+        return true;
+    }
+
+    private function removePlayerRoster(PlayerDisconnected $event): bool
+    {
+        try {
+            if (!$this->playerRoster->remove($event->sessionId, $event->identity)) {
+                return true;
+            }
+        } catch (Throwable $exception) {
+            return $this->failRuntime('player_roster_departure_failed', $exception);
+        }
+
+        $identity = strtolower($event->identity);
+        foreach ($this->pendingPlayerRosterSkinUpdates as $sessionId => $updates) {
+            unset($updates[$identity]);
+            if ($updates === []) {
+                unset($this->pendingPlayerRosterSkinUpdates[$sessionId]);
+            } else {
+                $this->pendingPlayerRosterSkinUpdates[$sessionId] = $updates;
+            }
+        }
+        $this->scheduleAllPlayerRosterReconciliations();
+
+        return true;
+    }
+
+    private function playerRosterEntry(PlayerSnapshot $player, RuntimeSession $session): PlayerListAddEntry
+    {
+        $login = $session->play?->login();
+        if ($login === null || $session->playerSkin === null) {
+            throw new \LogicException('An admitted roster player must own authenticated play state and a skin.');
+        }
+        $apiSkin = $this->playerConnections->skin($player->identity);
+
+        return new PlayerListAddEntry(
+            $player->identity,
+            $player->runtimeActorId,
+            $player->displayName,
+            $login->xuid,
+            '',
+            BuildPlatform::Unknown,
+            $session->playerSkin,
+            colorArgb: 0xffffffff,
+            trustedSkin: $apiSkin !== null && $apiSkin->trusted,
+        );
+    }
+
+    private function scheduleAllPlayerRosterReconciliations(): void
+    {
+        foreach ($this->playerRoster->viewerSessionIds() as $sessionId) {
+            $this->pendingPlayerRosterReconciliations[$sessionId] = true;
+        }
+    }
+
+    private function drainPlayerRosterReconciliations(): void
+    {
+        $processed = 0;
+        while ($processed < self::PLAYER_ROSTER_RECONCILIATIONS_PER_POLL
+            && ($sessionId = array_key_first($this->pendingPlayerRosterReconciliations)) !== null) {
+            unset($this->pendingPlayerRosterReconciliations[$sessionId]);
+            if (!$this->reconcilePlayerRosterForSession($sessionId)) {
+                $this->pendingPlayerRosterReconciliations[$sessionId] = true;
+                break;
+            }
+            ++$processed;
+        }
+    }
+
+    private function reconcilePlayerRosterForSession(string $sessionId): bool
+    {
+        $session = $this->sessionById($sessionId);
+        if ($session?->play === null || $session->phase !== SessionPhase::SPAWNED) {
+            $this->playerRoster->forgetViewer($sessionId);
+            unset($this->pendingPlayerRosterSkinUpdates[$sessionId]);
+
+            return true;
+        }
+
+        $plan = $this->playerRoster->plan($sessionId);
+        foreach (array_chunk($plan['removals'], self::PLAYER_ROSTER_ENTRIES_PER_BATCH) as $identities) {
+            $packets = array_map(
+                static fn(string $identity): PlayerListRemovePacket => new PlayerListRemovePacket([$identity]),
+                $identities,
+            );
+            if (!$session->play->queuePackets($packets)) {
+                return false;
+            }
+            $this->playerRoster->acknowledgeRemovals($sessionId, $identities);
+        }
+
+        foreach (array_chunk($plan['additions'], self::PLAYER_ROSTER_ENTRIES_PER_BATCH) as $additions) {
+            $packets = [];
+            foreach ($additions as $addition) {
+                $packets[] = new PlayerListAddPacket([$addition['entry']]);
+                $skinUpdate = $this->pendingPlayerRosterSkinUpdates[$sessionId][$addition['identity']] ?? null;
+                if ($skinUpdate !== null && $skinUpdate['revision'] === $addition['revision']) {
+                    $packets[] = $skinUpdate['packet'];
+                }
+            }
+            if (!$session->play->queuePackets($packets)) {
+                return false;
+            }
+            $this->playerRoster->acknowledgeAdditions($sessionId, $additions);
+            foreach ($additions as $addition) {
+                $skinUpdate = $this->pendingPlayerRosterSkinUpdates[$sessionId][$addition['identity']] ?? null;
+                if ($skinUpdate !== null && $skinUpdate['revision'] === $addition['revision']) {
+                    unset($this->pendingPlayerRosterSkinUpdates[$sessionId][$addition['identity']]);
+                }
+            }
+        }
+        if (($this->pendingPlayerRosterSkinUpdates[$sessionId] ?? []) === []) {
+            unset($this->pendingPlayerRosterSkinUpdates[$sessionId]);
+        }
+
+        return true;
     }
 
     /** Installs the plugin-owned scoreboard state after runtime and plugin-host composition. */
@@ -1132,21 +1284,6 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
         $departure = $source->simulation->detachPlayerForTransfer($session->id);
         if ($departure === null) {
-            $this->processingWorldId = null;
-
-            return false;
-        }
-        if ($departure->previousPeers !== [] && !$session->play?->queuePacket(new PlayerListRemovePacket(array_map(
-            static fn(\Bedriox\Server\Simulation\PlayerSnapshot $peer): string => $peer->identity,
-            $departure->previousPeers,
-        )))) {
-            $source->simulation->attachTransferredPlayer(
-                $departure->player,
-                $transfer->sourceWorldId,
-                $transfer->from,
-                $transfer->fromYaw,
-                $transfer->fromPitch,
-            );
             $this->processingWorldId = null;
 
             return false;
@@ -2171,6 +2308,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                             }
                             if ($event instanceof PlayerJoined) {
                                 $this->actorVisibility->upsert($event->player);
+                                if (!$this->admitPlayerRoster($event->player)) {
+                                    return false;
+                                }
                                 if (!$this->dispatchWorldEvent($event, $directedCount)) {
                                     return false;
                                 }
@@ -2554,6 +2694,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                                 );
                             }
                             if ($event instanceof PlayerDisconnected) {
+                                if (!$this->removePlayerRoster($event)) {
+                                    return false;
+                                }
                                 foreach ($this->actorVisibility->remove($event->sessionId) as $visibilityEvent) {
                                     if (!$this->dispatchWorldEvent($visibilityEvent, $directedCount)) {
                                         return false;
@@ -2814,6 +2957,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 }
             }
             $this->processingWorldId = null;
+            $this->drainPlayerRosterReconciliations();
             if ($completedTicks > 0 && !$this->flushScoreboards()) {
                 return false;
             }
@@ -4729,11 +4873,14 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 $actor,
             );
         }
+        $this->playerRoster->forgetViewer($session->id);
         unset(
             $this->sessions[$key],
             $this->sessionEndpoints[$session->id],
             $this->sessionsById[$session->id],
             $this->expectedSkinEchoes[$session->id],
+            $this->pendingPlayerRosterReconciliations[$session->id],
+            $this->pendingPlayerRosterSkinUpdates[$session->id],
             $this->deliveredOnlinePlayerCommandRevisions[$key],
             $this->lastPeerMovementBroadcastTicks[$session->id],
             $this->peerMovementBroadcastPhaseSeeds[$session->id],
@@ -7745,31 +7892,31 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             trustedSkin: $accepted->trusted,
         )]);
         $ownerNeedsCorrection = self::skinFingerprint($accepted) !== self::skinFingerprint($requested);
-        $updatedPeers = 0;
-        foreach ($this->sessionsById as $candidate) {
-            if ($candidate->play === null || $candidate->phase !== SessionPhase::SPAWNED
-                || $this->simulationForSession($candidate) !== $simulation) {
-                continue;
-            }
-            if ($candidate->id === $session->id) {
-                // The owning client has already applied its selected appearance. Echoing an unchanged
-                // PlayerSkin packet can make current retail clients restore their previous local skin.
-                if (!$ownerNeedsCorrection) {
-                    continue;
-                }
-                if (!$candidate->play->queuePacket($outgoing)) {
-                    continue;
-                }
-                $this->expectSkinEcho($session->id, $accepted);
+        try {
+            $revision = $this->playerRoster->replace($session->id, $listUpdate->entries[0]);
+            $this->playerRoster->acknowledgeOwner($session->id, $identity, $revision);
+        } catch (Throwable $exception) {
+            $this->diagnostics->record('play.skin_roster_update_failed', ['exception' => $exception::class]);
 
+            return false;
+        }
+        $updatedPeers = 0;
+        foreach ($this->playerRoster->viewerSessionIds() as $viewerSessionId) {
+            if ($viewerSessionId === $session->id) {
                 continue;
             }
-            if (!$candidate->play->queuePacket($listUpdate)) {
-                continue;
+            $this->pendingPlayerRosterSkinUpdates[$viewerSessionId][strtolower($identity)] = [
+                'revision' => $revision,
+                'packet' => $outgoing,
+            ];
+            $this->pendingPlayerRosterReconciliations[$viewerSessionId] = true;
+            ++$updatedPeers;
+        }
+        if ($ownerNeedsCorrection) {
+            if (!$session->play->queuePacket($outgoing)) {
+                return false;
             }
-            if ($candidate->play->queuePacket($outgoing)) {
-                ++$updatedPeers;
-            }
+            $this->expectSkinEcho($session->id, $accepted);
         }
         $this->diagnostics->record('play.skin_change_applied.protocol_trace', [
             'persona' => $accepted->persona,

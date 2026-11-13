@@ -257,7 +257,6 @@ use Bedriox\Server\Simulation\PlayerSnapshot;
 use Bedriox\Server\Simulation\VerticalState;
 use Bedriox\Server\World\BlockEntity\BlockEntity;
 use Bedriox\Server\World\Storage\LevelDb\PersistentBlockEntityCodec;
-use WeakMap;
 
 /** Stateless current-Bedrock projection of authoritative simulation events. */
 final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder, EntityMovementPacketEncoder, HeldItemPacketEncoder, PlayerMovementPacketEncoder, WorldEventPacketEncoder
@@ -268,9 +267,6 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
 
     private readonly BedrockLivingActorProjector $livingActors;
 
-    /** @var WeakMap<PlayerSkin, PlayerListAddPacket> */
-    private readonly WeakMap $playerListPackets;
-
     public function __construct(
         private readonly ?BedrockChunkPacketSerializer $chunks = null,
         private readonly ?BedrockInventoryPacketProjector $inventory = null,
@@ -279,7 +275,6 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
     ) {
         $this->blockEntities = $blockEntities ?? new PersistentBlockEntityCodec();
         $this->livingActors = $livingActors ?? new BedrockLivingActorProjector();
-        $this->playerListPackets = new WeakMap();
     }
 
     public function encode(WorldEvent $event, array $sessions): array
@@ -288,7 +283,7 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
             $event instanceof EntityExplosionPresented => $this->explosion($event, $sessions),
             $event instanceof TntPrimed => $this->tntPrimed($event, $sessions),
             $event instanceof ParticleSpawned => $this->particle($event, $sessions),
-            $event instanceof PlayerJoined => $this->joined($event, $sessions),
+            $event instanceof PlayerJoined => $this->joined($event),
             $event instanceof WeatherChanged => $this->weatherChanged($event),
             $event instanceof EnderDragonBossBarChanged => array_map(
                 static fn(string $recipient): DirectedPacket => new DirectedPacket(
@@ -1398,35 +1393,10 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
         );
     }
 
-    /**
-     * @param array<string, RuntimeSession> $sessions
-     * @return list<DirectedPacket>
-     */
-    private function joined(PlayerJoined $event, array $sessions): array
+    /** @return list<DirectedPacket> */
+    private function joined(PlayerJoined $event): array
     {
-        $joined = $sessions[$event->player->sessionId] ?? null;
-        if (!$joined instanceof RuntimeSession || $joined->play === null) {
-            return [];
-        }
         $packets = [];
-        $joinedEntry = $this->playerListPacket($event->player, $joined);
-        foreach ($event->recipientSessionIds as $recipient) {
-            // The joining client already received its own list entry in the bootstrap.
-            if ($recipient === $event->player->sessionId) {
-                continue;
-            }
-            $packets[] = new DirectedPacket($recipient, $joinedEntry);
-        }
-        foreach ($event->existingPeers as $peer) {
-            $session = $sessions[$peer->sessionId] ?? null;
-            if (!$session instanceof RuntimeSession || $session->play === null) {
-                continue;
-            }
-            $packets[] = new DirectedPacket(
-                $event->player->sessionId,
-                $this->playerListPacket($peer, $session),
-            );
-        }
         $environmentMetadata = array_values(array_filter(
             $this->playerMetadata($event->player),
             static fn(ActorMetadata $entry): bool => PlayerActorMetadata::isFlags($entry)
@@ -1631,9 +1601,6 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
     private function disconnected(PlayerDisconnected $event): array
     {
         $packets = [];
-        foreach ($event->recipientSessionIds as $recipient) {
-            $packets[] = new DirectedPacket($recipient, new PlayerListRemovePacket([$event->identity]));
-        }
         if ($event->quitMessage !== null) {
             $message = $event->quitMessage instanceof TranslatableMessage
                 ? new TranslatedTextPacket($event->quitMessage->key, $event->quitMessage->parameters)
@@ -1644,39 +1611,6 @@ final class BedrockWorldEventPacketEncoder implements ChatBroadcastPacketEncoder
         }
 
         return $packets;
-    }
-
-    private function listEntry(PlayerSnapshot $player, RuntimeSession $session): PlayerListAddEntry
-    {
-        $login = $session->play?->login();
-        if ($login === null) {
-            throw new \LogicException('A visible player must own authenticated play state.');
-        }
-
-        return new PlayerListAddEntry(
-            $player->identity,
-            $player->runtimeActorId,
-            $player->displayName,
-            $login->xuid,
-            '',
-            BuildPlatform::Unknown,
-            $session->playerSkin ?? PlayerSkin::fromVerifiedClientData($login->clientData),
-            colorArgb: 0xffffffff,
-            trustedSkin: false,
-        );
-    }
-
-    private function playerListPacket(PlayerSnapshot $player, RuntimeSession $session): PlayerListAddPacket
-    {
-        $skin = $session->playerSkin;
-        if ($skin === null) {
-            return new PlayerListAddPacket([$this->listEntry($player, $session)]);
-        }
-        if (!isset($this->playerListPackets[$skin])) {
-            $this->playerListPackets[$skin] = new PlayerListAddPacket([$this->listEntry($player, $session)]);
-        }
-
-        return $this->playerListPackets[$skin];
     }
 
     private function addPlayer(PlayerSnapshot $player): AddPlayerPacket
