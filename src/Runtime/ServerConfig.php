@@ -532,10 +532,13 @@ final readonly class ServerConfig
         [$maximumSignalingConnections, $maximumNegotiations, $maximumNegotiationsPerAddress, $maximumRemoteCandidates]
             = self::netherNetLimits($networkProfile, $values);
 
+        $pluginsEnabled = self::boolean($values['enable-plugins'], 'enable-plugins');
+        $maximumPlugins = self::integer($values['plugins.maximum'], 'plugins.maximum', 0, 256);
         $workerAllocation = WorkerAllocation::resolve(
             $values['workers.core-count'],
             $values['workers.plugin-count'],
         );
+        $pluginWorkerCount = !$pluginsEnabled || $maximumPlugins === 0 ? 0 : $workerAllocation->pluginWorkers;
 
         return new self(
             bindAddress: $values['server-ip'],
@@ -569,11 +572,11 @@ final readonly class ServerConfig
             ),
             ticksPerSecond: self::integer($values['runtime.ticks-per-second'], 'runtime.ticks-per-second', 1, 100),
             workerCoreCount: $workerAllocation->coreWorkers,
-            pluginWorkerCount: $workerAllocation->pluginWorkers,
+            pluginWorkerCount: $pluginWorkerCount,
             consoleEnabled: self::boolean($values['enable-console'], 'enable-console'),
-            pluginsEnabled: self::boolean($values['enable-plugins'], 'enable-plugins'),
+            pluginsEnabled: $pluginsEnabled,
             whitelistEnabled: self::boolean($values['white-list'], 'white-list'),
-            maximumPlugins: self::integer($values['plugins.maximum'], 'plugins.maximum', 0, 256),
+            maximumPlugins: $maximumPlugins,
             timingsUploadEnabled: self::boolean($values['timings.upload-enabled'], 'timings.upload-enabled'),
             timingsMaximumDurationSeconds: self::integer(
                 $values['timings.maximum-duration-seconds'],

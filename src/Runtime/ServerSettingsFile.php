@@ -91,6 +91,7 @@ workers.core-count=auto
 # Number of workers shared fairly by asynchronous plugin tasks. Auto allocates independent plugin
 # capacity while reserving CPU for the main tick, networking, storage and Bedriox core workers.
 # Use auto for most servers, 0 to disable plugin async execution, or an integer from 1 through 32.
+# The effective count is 0 when plugins are disabled or plugins.maximum is 0.
 workers.plugin-count=auto
 
 # Chunk orchestration

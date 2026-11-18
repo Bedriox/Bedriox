@@ -305,6 +305,33 @@ final class ServerConfigTest extends TestCase
         }
     }
 
+    public function testPluginWorkersAreNotAllocatedWhenPluginsCannotRun(): void
+    {
+        $properties = tempnam(sys_get_temp_dir(), 'bedriox-properties-');
+        $settings = tempnam(sys_get_temp_dir(), 'bedriox-settings-');
+        self::assertIsString($properties);
+        self::assertIsString($settings);
+        try {
+            file_put_contents($properties, "enable-plugins=true\n");
+            file_put_contents($settings, "workers.plugin-count=3\n");
+            $enabled = ServerConfig::fromConfigurationFiles($properties, $settings, []);
+            self::assertSame(3, $enabled->pluginWorkerCount);
+
+            file_put_contents($properties, "enable-plugins=false\n");
+            file_put_contents($settings, "workers.plugin-count=3\n");
+            $disabled = ServerConfig::fromConfigurationFiles($properties, $settings, []);
+            self::assertSame(0, $disabled->pluginWorkerCount);
+            self::assertSame($enabled->workerCoreCount, $disabled->workerCoreCount);
+
+            file_put_contents($properties, "enable-plugins=true\n");
+            file_put_contents($settings, "workers.plugin-count=3\nplugins.maximum=0\n");
+            self::assertSame(0, ServerConfig::fromConfigurationFiles($properties, $settings, [])->pluginWorkerCount);
+        } finally {
+            @unlink($properties);
+            @unlink($settings);
+        }
+    }
+
     public function testWorldSeedUsesFullSignedRangeAndBlankMeansRandom(): void
     {
         self::assertSame(PHP_INT_MAX, ServerConfig::fromArguments([
