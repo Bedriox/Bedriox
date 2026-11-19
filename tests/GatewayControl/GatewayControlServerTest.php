@@ -29,6 +29,8 @@ use Bedriox\Protocol\GatewayControl\ControlHandshakeToken;
 use Bedriox\Protocol\GatewayControl\ControlMessageType;
 use Bedriox\Server\GatewayControl\GatewayControlConfig;
 use Bedriox\Server\GatewayControl\GatewayControlServer;
+use Bedriox\Server\GatewayControl\GatewayControlTelemetry;
+use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 
@@ -65,7 +67,24 @@ final class GatewayControlServerTest extends TestCase
             0,
             ControlHandshakeToken::issue($authentication, self::SECRET),
         ));
-        $readyBytes = $server->accept('127.0.0.1:40000', $authenticate, self::NOW, 3, 20)[0];
+        $telemetrySamples = 0;
+        $telemetryProvider = static function () use (&$telemetrySamples): GatewayControlTelemetry {
+            ++$telemetrySamples;
+            return new GatewayControlTelemetry(
+                ticksPerSecond: 19.8,
+                millisecondsPerTick: 42.5,
+                memoryUsedBytes: 268_435_456,
+                memoryLimitBytes: 536_870_912,
+                memoryPressure: 'elevated',
+                chunkQueueDepth: 47,
+                pendingLogins: 2,
+                workerSaturation: 0.75,
+                ready: true,
+                sampledAtMilliseconds: 2_000_000_000_000,
+            );
+        };
+        $readyBytes = $server->accept('127.0.0.1:40000', $authenticate, self::NOW, 3, 20, $telemetryProvider)[0];
+        self::assertSame(0, $telemetrySamples);
         $key = ControlHandshakeToken::deriveSessionKey(self::SECRET, $authentication);
         $fromServer = new ControlFrameCipher($key, 'server-to-gateway');
         $fromGateway = new ControlFrameCipher($key, 'gateway-to-server');
@@ -80,14 +99,42 @@ final class GatewayControlServerTest extends TestCase
             '{}',
         ));
         $healthBytes = ControlFrameCodec::encode($health);
-        $responseBytes = $server->accept('127.0.0.1:40000', $healthBytes, self::NOW, 3, 20)[0];
+        $responseBytes = $server->accept(
+            '127.0.0.1:40000',
+            $healthBytes,
+            self::NOW,
+            3,
+            20,
+            $telemetryProvider,
+        )[0];
+        self::assertSame(1, $telemetrySamples);
         $response = $fromServer->open(ControlFrameCodec::decode($responseBytes));
         self::assertSame(ControlMessageType::HealthResponse, $response->type);
         self::assertSame(1, $response->sequence);
-        self::assertSame(['status' => 'healthy', 'players' => 3, 'max_players' => 20], json_decode($response->payload, true));
+        self::assertSame([
+            'status' => 'healthy',
+            'players' => 3,
+            'max_players' => 20,
+            'ready' => true,
+            'tps' => 19.8,
+            'mspt' => 42.5,
+            'memory_used_bytes' => 268_435_456,
+            'memory_limit_bytes' => 536_870_912,
+            'memory_pressure' => 'elevated',
+            'chunk_queue' => 47,
+            'pending_logins' => 2,
+            'worker_saturation' => 0.75,
+            'sampled_at_ms' => 2_000_000_000_000,
+        ], json_decode($response->payload, true));
 
         $this->expectException(RuntimeException::class);
         $server->accept('127.0.0.1:40000', $healthBytes, self::NOW, 3, 20);
+    }
+
+    public function testTelemetryRejectsValuesOutsideWireBounds(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        new GatewayControlTelemetry(workerSaturation: 1.01);
     }
 
     public function testRejectsExpiredMismatchedAndReplayedHelloWithoutFallback(): void

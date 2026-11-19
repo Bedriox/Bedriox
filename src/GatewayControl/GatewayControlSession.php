@@ -63,7 +63,14 @@ final class GatewayControlSession
     }
 
     /** @return list<string> */
-    public function accept(string $bytes, int $now, int $onlinePlayers, int $maximumPlayers, bool &$draining): array
+    public function accept(
+        string $bytes,
+        int $now,
+        int $onlinePlayers,
+        int $maximumPlayers,
+        bool &$draining,
+        ?Closure $telemetryProvider = null,
+    ): array
     {
         if ($this->closed) {
             throw new RuntimeException('Gateway control session is closed.');
@@ -82,7 +89,7 @@ final class GatewayControlSession
             $opened = $this->inboundCipher->open($frame);
             ++$this->inboundSequence;
 
-            return $this->acceptReadyMessage($opened, $onlinePlayers, $maximumPlayers, $draining);
+            return $this->acceptReadyMessage($opened, $onlinePlayers, $maximumPlayers, $draining, $telemetryProvider);
         } catch (Throwable $exception) {
             $this->closed = true;
             throw new RuntimeException('Gateway control message was rejected.', previous: $exception);
@@ -178,13 +185,24 @@ final class GatewayControlSession
     }
 
     /** @return list<string> */
-    private function acceptReadyMessage(ControlFrame $frame, int $onlinePlayers, int $maximumPlayers, bool &$draining): array
+    private function acceptReadyMessage(
+        ControlFrame $frame,
+        int $onlinePlayers,
+        int $maximumPlayers,
+        bool &$draining,
+        ?Closure $telemetryProvider,
+    ): array
     {
         if ($frame->type === ControlMessageType::HealthRequest) {
+            $telemetry = $telemetryProvider?->__invoke();
+            if ($telemetry !== null && !$telemetry instanceof GatewayControlTelemetry) {
+                throw new RuntimeException('Gateway control telemetry provider returned an invalid value.');
+            }
             return [$this->encrypted(ControlMessageType::HealthResponse, self::json([
                 'status' => $draining ? 'draining' : 'healthy',
                 'players' => $onlinePlayers,
                 'max_players' => $maximumPlayers,
+                ...($telemetry?->payload() ?? []),
             ]), $frame->requestId)];
         }
         if ($frame->type === ControlMessageType::DrainRequest) {
@@ -262,7 +280,7 @@ final class GatewayControlSession
         return ControlFrameCodec::encode($this->outboundCipher->seal($frame));
     }
 
-    /** @param array<string, int|string> $value */
+    /** @param array<string, bool|float|int|string> $value */
     private static function json(array $value): string
     {
         $json = json_encode($value, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);

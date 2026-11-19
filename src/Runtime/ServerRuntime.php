@@ -97,6 +97,7 @@ use Bedriox\Server\Gameplay\Item\ItemCatalog;
 use Bedriox\Server\Gameplay\Potion\AreaEffectCloud;
 use Bedriox\Server\Gameplay\Projectile\Projectile;
 use Bedriox\Server\GatewayControl\GatewayControlServer;
+use Bedriox\Server\GatewayControl\GatewayControlTelemetry;
 use Bedriox\Server\Login\LoginFailureCode;
 use Bedriox\Server\Observability\CrashContextPublisher;
 use Bedriox\Server\Observability\CrashPlayer;
@@ -4055,6 +4056,35 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         $this->pendingReceivedPayloadTotalBytes = max(0, $this->pendingReceivedPayloadTotalBytes);
     }
 
+    private function gatewayControlTelemetry(): GatewayControlTelemetry
+    {
+        $performance = $this->performance?->snapshot(
+            onlinePlayers: $this->sessionCount(),
+            maximumPlayers: $this->maximumPlayers,
+            loadedChunks: $this->loadedChunkCount(),
+            dirtyChunks: $this->dirtyChunkCount(),
+        );
+        $memory = $this->lastMemoryDecision?->snapshot;
+        $chunks = $this->chunkStreamingSnapshot();
+        $chunkQueueDepth = min(1_000_000_000, $chunks->visiblePending
+            + $chunks->prefetchPending
+            + $chunks->generationQueued
+            + $chunks->deliveryQueued
+            + $chunks->outgoingQueued);
+
+        return new GatewayControlTelemetry(
+            ticksPerSecond: $performance?->currentTps,
+            millisecondsPerTick: $performance?->currentMspt,
+            memoryUsedBytes: $memory?->allocatedBytes ?? $performance?->memoryBytes,
+            memoryLimitBytes: $memory?->limitBytes ?? $performance?->configuredMemoryLimitBytes,
+            memoryPressure: strtolower(($this->memoryManager?->pressure() ?? MemoryPressure::NORMAL)->name),
+            chunkQueueDepth: $chunkQueueDepth,
+            pendingLogins: min(1_000_000_000, count($this->unclassifiedSessions)),
+            ready: !$this->closed && $this->gatewayControl?->draining() !== true,
+            sampledAtMilliseconds: (int) floor(microtime(true) * 1_000),
+        );
+    }
+
     private function accept(ReceivedPayload $payload): void
     {
         $key = self::sessionKey($payload->sessionId);
@@ -4073,6 +4103,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                         time(),
                         $this->sessionCount(),
                         $this->maximumPlayers,
+                        $this->gatewayControlTelemetry(...),
                     );
                     $this->controlEndpoints[$key] = $unclassified;
                     $this->sendControlFrames($unclassified, $frames);
@@ -4108,6 +4139,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     time(),
                     $this->sessionCount(),
                     $this->maximumPlayers,
+                    $this->gatewayControlTelemetry(...),
                 ) ?? [];
                 $this->sendControlFrames($controlInfo, $frames);
                 if (!$connectedBefore && $this->gatewayConnected()) {

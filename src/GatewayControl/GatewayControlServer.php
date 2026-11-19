@@ -51,7 +51,14 @@ final class GatewayControlServer
     }
 
     /** @return list<string> */
-    public function openAndAccept(string $endpoint, string $payload, int $now, int $onlinePlayers, int $maximumPlayers): array
+    public function openAndAccept(
+        string $endpoint,
+        string $payload,
+        int $now,
+        int $onlinePlayers,
+        int $maximumPlayers,
+        ?Closure $telemetryProvider = null,
+    ): array
     {
         if (isset($this->sessions[$endpoint]) || count($this->sessions) >= $this->config->maximumSessions) {
             throw new InvalidArgumentException('Gateway control session capacity is exhausted.');
@@ -80,7 +87,7 @@ final class GatewayControlServer
         );
         $this->sessions[$endpoint] = $session;
         try {
-            return $session->accept($payload, $now, $onlinePlayers, $maximumPlayers, $this->draining);
+            return $session->accept($payload, $now, $onlinePlayers, $maximumPlayers, $this->draining, $telemetryProvider);
         } catch (Throwable $exception) {
             unset($this->sessions[$endpoint]);
             throw $exception;
@@ -88,14 +95,21 @@ final class GatewayControlServer
     }
 
     /** @return list<string> */
-    public function accept(string $endpoint, string $payload, int $now, int $onlinePlayers, int $maximumPlayers): array
+    public function accept(
+        string $endpoint,
+        string $payload,
+        int $now,
+        int $onlinePlayers,
+        int $maximumPlayers,
+        ?Closure $telemetryProvider = null,
+    ): array
     {
         $session = $this->sessions[$endpoint] ?? null;
         if ($session === null) {
             throw new InvalidArgumentException('Gateway control session is not open.');
         }
         try {
-            return $session->accept($payload, $now, $onlinePlayers, $maximumPlayers, $this->draining);
+            return $session->accept($payload, $now, $onlinePlayers, $maximumPlayers, $this->draining, $telemetryProvider);
         } catch (Throwable $exception) {
             unset($this->sessions[$endpoint]);
             throw $exception;
