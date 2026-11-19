@@ -43,6 +43,7 @@ final class WorldRuntimeManager
     /** @var array<string, int> */
     private array $loadGenerations = [];
     private int $pollCursor = 0;
+    private int $chunkUnloadCursor = 0;
 
     public function __construct(
         private readonly string $defaultWorldId,
@@ -136,24 +137,39 @@ final class WorldRuntimeManager
     public function processChunkUnloads(int $maximumChunks, int $timeBudgetMicroseconds): ChunkUnloadResult
     {
         $dimensions = $this->loadedDimensions();
+        $dimensionCount = count($dimensions);
+        if ($dimensionCount === 0) {
+            return new ChunkUnloadResult(0, 0, 0, false, 0);
+        }
+
         $remainingChunks = max(1, $maximumChunks);
-        $remainingMicroseconds = max(1, $timeBudgetMicroseconds);
+        $timeBudgetMicroseconds = max(1, $timeBudgetMicroseconds);
+        $startedNanoseconds = hrtime(true);
         $totals = [0, 0, 0];
         $saturated = false;
-        $remainingQueued = 0;
-        $remainingDimensions = count($dimensions);
-        foreach ($dimensions as $runtime) {
+        $start = $this->chunkUnloadCursor % $dimensionCount;
+        $this->chunkUnloadCursor = ($start + 1) % $dimensionCount;
+        for ($offset = 0; $offset < $dimensionCount; ++$offset) {
+            $elapsedMicroseconds = intdiv(hrtime(true) - $startedNanoseconds, 1_000);
+            if ($remainingChunks === 0 || ($offset > 0 && $elapsedMicroseconds >= $timeBudgetMicroseconds)) {
+                break;
+            }
+            $remainingDimensions = $dimensionCount - $offset;
             $chunkBudget = max(1, intdiv($remainingChunks, max(1, $remainingDimensions)));
-            $timeBudget = max(1, intdiv($remainingMicroseconds, max(1, $remainingDimensions)));
+            $timeBudget = max(1, intdiv(
+                max(1, $timeBudgetMicroseconds - $elapsedMicroseconds),
+                max(1, $remainingDimensions),
+            ));
+            $runtime = $dimensions[($start + $offset) % $dimensionCount];
             $result = $runtime->opened->world->processChunkUnloads($chunkBudget, $timeBudget);
             $totals[0] += $result->examined;
             $totals[1] += $result->evicted;
             $totals[2] += $result->saveSubmissions;
-            $saturated = $saturated || $result->persistenceSaturated;
-            $remainingQueued += $result->remainingQueued;
-            $remainingChunks = max(0, $remainingChunks - $chunkBudget);
-            $remainingMicroseconds = max(0, $remainingMicroseconds - $timeBudget);
-            --$remainingDimensions;
+            $saturated = $result->persistenceSaturated;
+            $remainingChunks = max(0, $remainingChunks - $result->examined);
+            if ($saturated) {
+                break;
+            }
         }
 
         return new ChunkUnloadResult(
@@ -161,7 +177,7 @@ final class WorldRuntimeManager
             $totals[1],
             $totals[2],
             $saturated,
-            $remainingQueued,
+            $this->pendingChunkUnloadCount(),
         );
     }
 
@@ -386,7 +402,9 @@ final class WorldRuntimeManager
                 $beforeGlobalTick();
             }
             foreach ($ticks as $key => $_) {
-                $ticks[$key][] = $runtimes[$key]->simulation->tick();
+                $runtime = $runtimes[$key];
+                $ticks[$key][] = $runtime->simulation->tick();
+                $runtime->updateCacheResidency();
             }
         });
         $this->pollCursor = ($start + 1) % $count;
@@ -402,6 +420,15 @@ final class WorldRuntimeManager
     public function runtimeForPollKey(string $key): ?ManagedWorldRuntime
     {
         return $this->dimensionRuntimesByPollKey()[$key] ?? null;
+    }
+
+    /** @return list<WorldRuntimeSnapshot> */
+    public function runtimeSnapshots(): array
+    {
+        return array_map(
+            static fn(ManagedWorldRuntime $runtime): WorldRuntimeSnapshot => $runtime->runtimeSnapshot(),
+            $this->loadedDimensions(),
+        );
     }
 
     public function closeAll(): void

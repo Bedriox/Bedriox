@@ -35,8 +35,11 @@ use Bedriox\Server\Tests\World\InMemoryWorldProvider;
 use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkPosition;
 use Bedriox\Server\World\ChunkRepository;
+use Bedriox\Server\World\Provider\ChunkSaveData;
+use Bedriox\Server\World\Provider\LoadedChunkData;
 use Bedriox\Server\World\Provider\WorldData;
 use Bedriox\Server\World\Provider\WorldProvider;
+use Bedriox\Server\World\Provider\WritableWorldProvider;
 use Bedriox\Server\World\SpawnPosition;
 use Bedriox\Server\World\World;
 use Bedriox\Server\World\WorldGenerator;
@@ -341,6 +344,61 @@ final class WorldRuntimeManagerTest extends TestCase
         self::assertSame(0, $manager->pendingChunkUnloadCount());
     }
 
+    public function testChunkUnloadMaintenanceDoesNotMultiplyAnOverrunAcrossDimensions(): void
+    {
+        $provider = new DelayedRuntimeManagerWritableProvider(10_000);
+        $overworld = self::runtime(new PublicWorld('world', 1), provider: $provider);
+        $nether = self::runtime(
+            new PublicWorld('world', 1, dimensionType: DimensionType::NETHER),
+            dimension: DimensionType::NETHER,
+            provider: $provider,
+        );
+        $end = self::runtime(
+            new PublicWorld('world', 1, dimensionType: DimensionType::END),
+            dimension: DimensionType::END,
+            provider: $provider,
+        );
+        $manager = new WorldRuntimeManager('world', new WorldStorageRuntime([$overworld, $nether, $end]));
+        foreach ([$overworld, $nether, $end] as $index => $runtime) {
+            $position = new ChunkPosition($index, 0);
+            $runtime->opened->world->retainChunk($position);
+            $runtime->opened->world->releaseChunk($position, true);
+        }
+
+        $first = $manager->processChunkUnloads(3, 500);
+        self::assertSame(1, $first->examined);
+        self::assertSame(1, $first->evicted);
+        self::assertSame(2, $first->remainingQueued);
+        self::assertSame([DimensionType::OVERWORLD], $provider->savedDimensions);
+
+        $second = $manager->processChunkUnloads(3, 500);
+        self::assertSame(1, $second->examined);
+        self::assertSame(1, $second->evicted);
+        self::assertSame(1, $second->remainingQueued);
+        self::assertSame([DimensionType::OVERWORLD, DimensionType::NETHER], $provider->savedDimensions);
+    }
+
+    public function testChunkUnloadMaintenanceReleasesOneChunkPerPass(): void
+    {
+        $runtime = self::runtime(new PublicWorld('world', 1));
+        $manager = new WorldRuntimeManager('world', new WorldStorageRuntime([$runtime]));
+        for ($index = 0; $index < 10; ++$index) {
+            $position = new ChunkPosition($index, 0);
+            $runtime->opened->world->retainChunk($position);
+            $runtime->opened->world->releaseChunk($position, true);
+        }
+
+        $first = $manager->processChunkUnloads(96, 100_000);
+        self::assertSame(1, $first->examined);
+        self::assertSame(1, $first->evicted);
+        self::assertSame(9, $first->remainingQueued);
+
+        $second = $manager->processChunkUnloads(96, 100_000);
+        self::assertSame(1, $second->examined);
+        self::assertSame(1, $second->evicted);
+        self::assertSame(8, $second->remainingQueued);
+    }
+
     private static function runtime(
         PublicWorld $handle,
         ?RuntimeManagerClock $clock = null,
@@ -437,5 +495,57 @@ final class RuntimeManagerPersistenceProvider implements WorldProvider, Persiste
     public function persistenceQueueSnapshot(): PersistenceQueueSnapshot
     {
         return $this->snapshot;
+    }
+}
+
+final class DelayedRuntimeManagerWritableProvider implements WritableWorldProvider
+{
+    /** @var list<DimensionType> */
+    public array $savedDimensions = [];
+    private bool $closed = false;
+
+    public function __construct(private readonly int $saveDelayMicroseconds) {}
+
+    public function worldData(): WorldData
+    {
+        if ($this->closed) {
+            throw new LogicException('Provider is closed.');
+        }
+
+        return new WorldData(new WorldMetadata('world', 0), 'test', new SpawnPosition(0, 64, 0));
+    }
+
+    public function loadChunk(
+        ChunkPosition $position,
+        DimensionType $dimension = DimensionType::OVERWORLD,
+    ): ?LoadedChunkData {
+        if ($this->closed) {
+            throw new LogicException('Provider is closed.');
+        }
+
+        return null;
+    }
+
+    public function saveWorldData(WorldData $worldData): void
+    {
+        if ($this->closed) {
+            throw new LogicException('Provider is closed.');
+        }
+    }
+
+    public function saveChunk(
+        ChunkSaveData $chunkData,
+        DimensionType $dimension = DimensionType::OVERWORLD,
+    ): void {
+        if ($this->closed) {
+            throw new LogicException('Provider is closed.');
+        }
+        usleep($this->saveDelayMicroseconds);
+        $this->savedDimensions[] = $dimension;
+    }
+
+    public function close(): void
+    {
+        $this->closed = true;
     }
 }

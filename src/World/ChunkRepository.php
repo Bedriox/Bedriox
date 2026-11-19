@@ -28,16 +28,16 @@ use UnexpectedValueException;
 /** Bounded process-local LRU cache. Retained chunks cannot be evicted while a player uses them. */
 final class ChunkRepository
 {
-    /** @var array<string, Chunk> */
+    /** @var array<int, Chunk> */
     private array $chunks = [];
 
-    /** @var array<string, int> */
+    /** @var array<int, int> */
     private array $lastAccess = [];
 
-    /** @var array<string, int> */
+    /** @var array<int, int> */
     private array $retainCounts = [];
 
-    /** @var array<string, int> Monotonic order in which cached chunks first became dirty. */
+    /** @var array<int, int> Monotonic order in which cached chunks first became dirty. */
     private array $dirtySince = [];
 
     private int $accessSequence = 0;
@@ -72,7 +72,7 @@ final class ChunkRepository
      */
     public function get(ChunkPosition $position, callable $loader, ?callable $saver = null): Chunk
     {
-        $key = $position->key();
+        $key = $position->mapKey();
         $cached = $this->chunks[$key] ?? null;
         if ($cached instanceof Chunk) {
             ++$this->hits;
@@ -108,7 +108,7 @@ final class ChunkRepository
     public function retain(ChunkPosition $position, callable $loader, ?callable $saver = null): Chunk
     {
         $chunk = $this->get($position, $loader, $saver);
-        $key = $position->key();
+        $key = $position->mapKey();
         $this->retainCounts[$key] = ($this->retainCounts[$key] ?? 0) + 1;
 
         return $chunk;
@@ -116,7 +116,7 @@ final class ChunkRepository
 
     public function release(ChunkPosition $position): void
     {
-        $key = $position->key();
+        $key = $position->mapKey();
         $count = $this->retainCounts[$key] ?? 0;
         if ($count < 1) {
             throw new InvalidArgumentException('Cannot release a chunk that is not retained.');
@@ -131,18 +131,18 @@ final class ChunkRepository
 
     public function contains(ChunkPosition $position): bool
     {
-        return isset($this->chunks[$position->key()]);
+        return isset($this->chunks[$position->mapKey()]);
     }
 
     public function isRetained(ChunkPosition $position): bool
     {
-        return ($this->retainCounts[$position->key()] ?? 0) > 0;
+        return ($this->retainCounts[$position->mapKey()] ?? 0) > 0;
     }
 
     /** Returns the currently loaded immutable snapshot without changing its LRU position. */
     public function loaded(ChunkPosition $position): ?Chunk
     {
-        return $this->chunks[$position->key()] ?? null;
+        return $this->chunks[$position->mapKey()] ?? null;
     }
 
     /** @return list<Chunk> Immutable snapshots currently admitted by the bounded cache. */
@@ -182,7 +182,7 @@ final class ChunkRepository
      */
     public function evictIfCleanAndUnretained(ChunkPosition $position): bool
     {
-        $key = $position->key();
+        $key = $position->mapKey();
         $chunk = $this->chunks[$key] ?? null;
         if (!$chunk instanceof Chunk || $chunk->isDirty() || ($this->retainCounts[$key] ?? 0) > 0) {
             return false;
@@ -197,7 +197,7 @@ final class ChunkRepository
     /** Replaces an already generated chunk without changing its retention ownership. */
     public function replace(Chunk $chunk): void
     {
-        $key = $chunk->position->key();
+        $key = $chunk->position->mapKey();
         if (!isset($this->chunks[$key])) {
             throw new InvalidArgumentException('Cannot replace a chunk which has not been generated.');
         }
@@ -221,7 +221,7 @@ final class ChunkRepository
         }
 
         $keys = array_keys($this->dirtySince);
-        usort($keys, fn(string $left, string $right): int => $this->dirtySince[$left] <=> $this->dirtySince[$right]);
+        usort($keys, fn(int $left, int $right): int => $this->dirtySince[$left] <=> $this->dirtySince[$right]);
         $saved = 0;
         foreach ($keys as $key) {
             if ($saved >= $maximumChunks) {
@@ -238,7 +238,7 @@ final class ChunkRepository
     /** Saves and acknowledges exactly the currently loaded revision for one coordinate. */
     public function save(ChunkPosition $position, callable $saver): bool
     {
-        return $this->saveKey($position->key(), $saver);
+        return $this->saveKey($position->mapKey(), $saver);
     }
 
     /** @param callable(Chunk): void $saver */
@@ -262,7 +262,7 @@ final class ChunkRepository
     }
 
     /**
-     * @param array<string, int> $pendingRevisions Newest revision already queued or in flight per chunk key.
+     * @param array<int, int> $pendingRevisions Newest revision already queued or in flight per chunk key.
      *
      * @return list<Chunk> Immutable oldest-dirty snapshots suitable for bounded persistence submission.
      */
@@ -273,7 +273,7 @@ final class ChunkRepository
         }
 
         $keys = array_keys($this->dirtySince);
-        usort($keys, fn(string $left, string $right): int => $this->dirtySince[$left] <=> $this->dirtySince[$right]);
+        usort($keys, fn(int $left, int $right): int => $this->dirtySince[$left] <=> $this->dirtySince[$right]);
         $snapshots = [];
         foreach ($keys as $key) {
             $chunk = $this->chunks[$key] ?? null;
@@ -294,7 +294,7 @@ final class ChunkRepository
     /** Applies an exact durable completion without allowing an older revision to clean newer state. */
     public function acknowledgePersisted(ChunkPosition $position, int $revision): bool
     {
-        $key = $position->key();
+        $key = $position->mapKey();
         $current = $this->chunks[$key] ?? null;
         if (!$current instanceof Chunk) {
             throw new InvalidArgumentException('Cannot acknowledge a chunk which is not loaded.');
@@ -347,12 +347,12 @@ final class ChunkRepository
         $this->evictions = 0;
     }
 
-    private function touch(string $key): void
+    private function touch(int $key): void
     {
         $this->lastAccess[$key] = ++$this->accessSequence;
     }
 
-    private function leastRecentlyUsedEvictionCandidate(bool $cleanOnly = false): string
+    private function leastRecentlyUsedEvictionCandidate(bool $cleanOnly = false): int
     {
         $candidate = null;
         $oldestAccess = PHP_INT_MAX;
@@ -374,7 +374,7 @@ final class ChunkRepository
     }
 
     /** @param null|callable(Chunk): void $saver */
-    private function saveForEviction(string $key, ?callable $saver): void
+    private function saveForEviction(int $key, ?callable $saver): void
     {
         $chunk = $this->chunks[$key];
         if (!$chunk->isDirty()) {
@@ -390,7 +390,7 @@ final class ChunkRepository
     }
 
     /** @param callable(Chunk): void $saver */
-    private function saveKey(string $key, callable $saver): bool
+    private function saveKey(int $key, callable $saver): bool
     {
         $snapshot = $this->chunks[$key] ?? null;
         if (!$snapshot instanceof Chunk || !$snapshot->isDirty()) {
@@ -413,7 +413,7 @@ final class ChunkRepository
         return true;
     }
 
-    private function trackDirtyState(string $key, Chunk $chunk): void
+    private function trackDirtyState(int $key, Chunk $chunk): void
     {
         if (!$chunk->isDirty()) {
             unset($this->dirtySince[$key]);
@@ -423,7 +423,7 @@ final class ChunkRepository
         $this->dirtySince[$key] ??= ++$this->dirtySequence;
     }
 
-    private function remove(string $key): void
+    private function remove(int $key): void
     {
         unset($this->chunks[$key], $this->lastAccess[$key], $this->retainCounts[$key], $this->dirtySince[$key]);
         ++$this->evictions;

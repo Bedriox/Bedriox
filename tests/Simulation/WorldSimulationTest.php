@@ -3308,7 +3308,16 @@ final class WorldSimulationTest extends TestCase
             self::assertTrue($world->enqueue($factory->chat("session-$i", 1, "message-$i")));
             self::assertTrue($world->enqueue($factory->disconnect("session-$i")));
         }
-        $events = $world->tick()->events;
+        $events = [];
+        $disconnectTicks = 0;
+        while ($world->queuedLifecycleCommands() > 0) {
+            $tick = $world->tick();
+            ++$disconnectTicks;
+            self::assertLessThanOrEqual(4, $tick->processedCommands);
+            self::assertLessThanOrEqual(4, count($tick->events));
+            array_push($events, ...$tick->events);
+        }
+        self::assertSame(25, $disconnectTicks);
         self::assertCount(100, $events);
         foreach ($events as $event) {
             self::assertInstanceOf(PlayerDisconnected::class, $event);

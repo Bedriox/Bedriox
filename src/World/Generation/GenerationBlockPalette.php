@@ -46,8 +46,7 @@ final readonly class GenerationBlockPalette
     /** @var array<int, int> */
     private array $indicesByState;
 
-    /** @var array<string, InternalBlockStateId> */
-    private array $statesByCanonicalKey;
+    private BlockStateRegistry $registry;
 
     /** @var array<int, string> */
     private array $fastBytesByState;
@@ -57,12 +56,13 @@ final readonly class GenerationBlockPalette
     /**
      * @param array<string, InternalBlockStateId> $statesByIdentifier
      * @param array<string, array<string, InternalBlockStateId>> $pillarStatesByIdentifier
-     * @param array<string, InternalBlockStateId>                $statesByCanonicalKey
+     * @param list<InternalBlockStateId>                         $registeredStates
      */
     private function __construct(
+        BlockStateRegistry $registry,
         array $statesByIdentifier,
         array $pillarStatesByIdentifier,
-        array $statesByCanonicalKey,
+        array $registeredStates,
     ) {
         $states = [];
         $seen = [];
@@ -79,7 +79,7 @@ final readonly class GenerationBlockPalette
             }
         }
         $this->generationStates = $states;
-        foreach ($statesByCanonicalKey as $state) {
+        foreach ($registeredStates as $state) {
             if (!isset($seen[$state->value])) {
                 $states[] = $state;
                 $seen[$state->value] = true;
@@ -92,11 +92,11 @@ final readonly class GenerationBlockPalette
         foreach ($states as $index => $state) {
             $indices[$state->value] = $index;
         }
+        $this->registry = $registry;
         $this->statesByIdentifier = $statesByIdentifier;
         $this->pillarStatesByIdentifier = $pillarStatesByIdentifier;
         $this->states = $states;
         $this->indicesByState = $indices;
-        $this->statesByCanonicalKey = $statesByCanonicalKey;
         $fastBytesByState = [];
         foreach (array_slice($states, 0, 256) as $index => $state) {
             $fastBytesByState[$state->value] = chr($index);
@@ -219,12 +219,12 @@ final readonly class GenerationBlockPalette
             }
         }
 
-        $canonicalStates = [];
+        $registeredStates = [];
         foreach ($registry->states() as $state) {
-            $canonicalStates[$state->canonicalKey()] = $registry->internalId($state);
+            $registeredStates[] = $registry->internalId($state);
         }
 
-        return $cache[$registry] = new self($resolved, $pillarStates, $canonicalStates);
+        return $cache[$registry] = new self($registry, $resolved, $pillarStates, $registeredStates);
     }
 
     public function state(string $identifier, ?BlockAxis $axis = null): InternalBlockStateId
@@ -246,8 +246,7 @@ final readonly class GenerationBlockPalette
 
     public function canonical(CanonicalBlockState $state): InternalBlockStateId
     {
-        return $this->statesByCanonicalKey[$state->canonicalKey()]
-            ?? throw new InvalidArgumentException('Canonical block state is outside the generation palette.');
+        return $this->registry->internalId($state);
     }
 
     /** @return list<InternalBlockStateId> */

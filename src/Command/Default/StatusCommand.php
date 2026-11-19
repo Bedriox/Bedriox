@@ -81,7 +81,8 @@ final readonly class StatusCommand implements BuiltinCommand
         self::send($sender, TextFormat::GREEN, sprintf('TPS: %.2f current, %.2f average', $status->currentTps, $status->averageTps));
         self::send($sender, TextFormat::AQUA, sprintf('MSPT: %.2f current, %.2f average', $status->currentMspt, $status->averageMspt));
         self::send($sender, TextFormat::YELLOW, sprintf(
-            'Memory: %s current, %s limit, %s peak',
+            'Memory: %s runtime reported, %s main, %s limit, %s main peak',
+            self::bytes(max($status->reportedRuntimeMemoryBytes, $status->memoryBytes)),
             self::bytes($status->memoryBytes),
             $status->configuredMemoryLimitBytes === 0 ? 'unlimited' : self::bytes($status->configuredMemoryLimitBytes),
             self::bytes($status->peakMemoryBytes),
@@ -140,12 +141,14 @@ final readonly class StatusCommand implements BuiltinCommand
 
         self::section($sender, 'Memory');
         self::send($sender, TextFormat::YELLOW, sprintf(
-            'Server memory: %s current, %s limit, %s peak',
+            'Reported runtime memory: %s total, %s main, %s main limit, %s main peak',
+            self::bytes(max($status->reportedRuntimeMemoryBytes, $status->memoryBytes)),
             self::bytes($status->memoryBytes),
             $status->configuredMemoryLimitBytes === 0 ? 'unlimited' : self::bytes($status->configuredMemoryLimitBytes),
             self::bytes($status->peakMemoryBytes),
         ));
-        self::send($sender, TextFormat::GRAY, 'Worker memory is reported per pool below.');
+        self::send($sender, TextFormat::GRAY, 'Runtime total includes the main process and worker pools that have reported memory.');
+        self::send($sender, TextFormat::GRAY, 'Tracked transport and world-storage services: ' . self::bytes($status->trackedServiceMemoryBytes));
         if ($status->memoryManagement !== null) {
             self::send($sender, TextFormat::YELLOW, sprintf(
                 'Memory pressure: %s (%.1f%% allocated)',
@@ -184,6 +187,19 @@ final readonly class StatusCommand implements BuiltinCommand
             $status->onlinePlayers,
             $status->entityCount,
         ));
+        foreach ($status->worlds as $world) {
+            self::send($sender, TextFormat::GRAY, sprintf(
+                '%s@%s: %d players, %d chunks (%d dirty, %d generating), %s prepared%s',
+                $world->worldId,
+                $world->dimension->value,
+                $world->players,
+                $world->loadedChunks,
+                $world->dirtyChunks,
+                $world->generatingChunks,
+                self::bytes($world->preparedCacheBytes + $world->preparedCachePendingBytes),
+                $world->cacheHibernating ? ', cache hibernating' : '',
+            ));
+        }
         if ($status->chunkCache !== null) {
             self::send($sender, TextFormat::AQUA, sprintf(
                 'Chunk cache: %d/%d loaded, %d retained (%d references)',

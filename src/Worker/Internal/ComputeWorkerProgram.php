@@ -25,7 +25,13 @@ use Bedriox\Server\Worker\Protocol\WorkerFrame;
 use Bedriox\Server\Worker\Protocol\WorkerFrameCodec;
 use Bedriox\Server\Worker\Protocol\WorkerFrameDecoder;
 use Bedriox\Server\Worker\Protocol\WorkerFrameKind;
+use Bedriox\Server\Worker\Runtime\WorkerBlockStateCatalog;
+use Bedriox\Server\Worker\Task\GenerateChunkTask;
+use Bedriox\Server\Worker\Task\LocateGeneratedFeatureTask;
+use Bedriox\Server\Worker\Task\PrepareChunkTask;
+use Bedriox\Server\Worker\Task\PrepareWorldTask;
 use Bedriox\Server\Worker\WorkerIdentity;
+use Bedriox\Server\Worker\WorkerTaskHandler;
 use Throwable;
 
 final class ComputeWorkerProgram
@@ -64,6 +70,7 @@ final class ComputeWorkerProgram
 
         /** @var array<class-string<\Bedriox\Server\Worker\WorkerTaskHandler>, \Bedriox\Server\Worker\WorkerTaskHandler> $handlers */
         $handlers = [];
+        $blockStates = new WorkerBlockStateCatalog();
         while (($frame = self::readFrame($decoder, $stream)) !== null) {
             if (!hash_equals($epoch, $frame->epoch)) {
                 return 66;
@@ -81,7 +88,10 @@ final class ComputeWorkerProgram
                 continue;
             }
             try {
-                $handler = $handlers[$definition->handlerClass] ??= new ($definition->handlerClass)();
+                $handler = $handlers[$definition->handlerClass] ??= self::handler(
+                    $definition->handlerClass,
+                    $blockStates,
+                );
                 $result = $handler->execute($frame->payload);
                 if (strlen($result) > $definition->maximumResultBytes) {
                     self::failure($codec, $frame, 'oversized-result', $stream);
@@ -102,6 +112,18 @@ final class ComputeWorkerProgram
         }
 
         return 0;
+    }
+
+    /** @param class-string<WorkerTaskHandler> $class */
+    private static function handler(string $class, WorkerBlockStateCatalog $blockStates): WorkerTaskHandler
+    {
+        return match ($class) {
+            GenerateChunkTask::class => new GenerateChunkTask(catalog: $blockStates),
+            LocateGeneratedFeatureTask::class => new LocateGeneratedFeatureTask($blockStates),
+            PrepareChunkTask::class => new PrepareChunkTask($blockStates),
+            PrepareWorldTask::class => new PrepareWorldTask($blockStates),
+            default => new $class(),
+        };
     }
 
     /** @param resource $stream */

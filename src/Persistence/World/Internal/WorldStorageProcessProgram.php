@@ -36,6 +36,7 @@ use Bedriox\Server\Persistence\World\WorldStorageStartupCodec;
 use Bedriox\Server\Worker\Chunk\ChunkTransferCodec;
 use Bedriox\Server\Worker\Protocol\WorkerFrame;
 use Bedriox\Server\Worker\Protocol\WorkerFrameCodec;
+use Bedriox\Server\Worker\Protocol\WorkerFrameDecoder;
 use Bedriox\Server\Worker\Protocol\WorkerFrameKind;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\ChunkPosition;
@@ -52,6 +53,211 @@ use Throwable;
 final class WorldStorageProcessProgram
 {
     public const int SCHEMA_VERSION = 3;
+
+    /** Runs one catalog-sharing service with an isolated connection and provider per named world. */
+    public static function runPool(string $applicationVersion, string $controlEndpoint, string $controlTokenHex): int
+    {
+        $controlToken = hex2bin($controlTokenHex);
+        if ($applicationVersion === '' || strlen($applicationVersion) > 128
+            || !is_string($controlToken) || strlen($controlToken) !== 32) {
+            return 64;
+        }
+        $control = @stream_socket_client($controlEndpoint, $errorCode, $errorMessage, 5, STREAM_CLIENT_CONNECT);
+        if (!is_resource($control)) {
+            return 69;
+        }
+        $listener = @stream_socket_server(
+            'tcp://127.0.0.1:0',
+            $errorCode,
+            $errorMessage,
+            STREAM_SERVER_BIND | STREAM_SERVER_LISTEN,
+        );
+        if (!is_resource($listener)) {
+            return 69;
+        }
+        $name = stream_socket_get_name($listener, false);
+        if (!is_string($name) || $name === '') {
+            return 69;
+        }
+        $clientToken = random_bytes(32);
+        // Do not advertise the service until its immutable catalogs are resident.
+        // Otherwise the first world can exhaust its own startup allowance while
+        // this process is still performing boot-scoped initialization.
+        $data = BedrockDataSet::bundled();
+        $states = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $persistentStates = $data->persistentBlockStateRegistry();
+        unset($data);
+        gc_collect_cycles();
+        gc_mem_caches();
+        self::write($control, $controlToken . json_encode([
+            'endpoint' => 'tcp://' . $name,
+            'token' => bin2hex($clientToken),
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES) . "\n");
+        stream_set_blocking($control, false);
+        stream_set_blocking($listener, false);
+        $codec = new WorkerFrameCodec();
+        $chunks = new ChunkTransferCodec();
+        $worldData = new WorldDataIpcCodec();
+        $entities = EntityPersistenceCodec::vanilla();
+        $entityTransfers = new EntityOwnershipTransferCodec($entities);
+        $entityTransferResults = new EntityOwnershipTransferResultCodec($entities);
+        /** @var array<int, array{stream: resource, auth: string, decoder: WorkerFrameDecoder, provider: ?WritableWorldProvider, epoch: ?string}> $clients */
+        $clients = [];
+        try {
+            while (!feof($control)) {
+                while (($client = @stream_socket_accept($listener, 0)) !== false) {
+                    stream_set_blocking($client, false);
+                    $clients[(int) $client] = [
+                        'stream' => $client,
+                        'auth' => '',
+                        'decoder' => new WorkerFrameDecoder($codec, 33_619_968),
+                        'provider' => null,
+                        'epoch' => null,
+                    ];
+                }
+
+                $read = [$control, $listener];
+                foreach ($clients as $client) {
+                    $read[] = $client['stream'];
+                }
+                $write = [];
+                $except = [];
+                @stream_select($read, $write, $except, 0, 10_000);
+                if (in_array($control, $read, true)) {
+                    $probe = @fread($control, 1);
+                    if ($probe === '' && feof($control)) {
+                        break;
+                    }
+                }
+                foreach (array_keys($clients) as $id) {
+                    $client = &$clients[$id];
+                    $stream = $client['stream'];
+                    if (in_array($stream, $read, true)) {
+                        $bytes = @fread($stream, 1_048_576);
+                        if ($bytes === false || ($bytes === '' && feof($stream))) {
+                            self::closePooledClient($client);
+                            unset($clients[$id]);
+                            unset($client);
+                            continue;
+                        }
+                        if ($bytes !== '') {
+                            if (strlen($client['auth']) < 32) {
+                                $needed = 32 - strlen($client['auth']);
+                                $client['auth'] .= substr($bytes, 0, $needed);
+                                $bytes = substr($bytes, $needed);
+                                if (strlen($client['auth']) === 32 && !hash_equals($clientToken, $client['auth'])) {
+                                    self::closePooledClient($client);
+                                    unset($clients[$id]);
+                                    unset($client);
+                                    continue;
+                                }
+                            }
+                            if ($bytes !== '') {
+                                try {
+                                    $client['decoder']->append($bytes);
+                                } catch (Throwable) {
+                                    self::closePooledClient($client);
+                                    unset($clients[$id]);
+                                    unset($client);
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                    if (strlen($client['auth']) !== 32) {
+                        unset($client);
+                        continue;
+                    }
+                    try {
+                        $frames = $client['decoder']->drain(1);
+                    } catch (Throwable) {
+                        self::closePooledClient($client);
+                        unset($clients[$id]);
+                        unset($client);
+                        continue;
+                    }
+                    if ($frames === []) {
+                        unset($client);
+                        continue;
+                    }
+                    $frame = $frames[0];
+                    if (!$client['provider'] instanceof WritableWorldProvider) {
+                        $nonce = $frame->metadata['nonce'] ?? null;
+                        if ($frame->kind !== WorkerFrameKind::HELLO || !is_string($nonce)
+                            || strlen($nonce) !== 32
+                            || $frame->metadata !== self::identity($applicationVersion, $nonce)) {
+                            self::closePooledClient($client);
+                            unset($clients[$id]);
+                            unset($client);
+                            continue;
+                        }
+                        try {
+                            $startup = (new WorldStorageStartupCodec())->decode($frame->payload);
+                            $provider = self::openProvider($startup, $states, $persistentStates);
+                            $client['provider'] = $provider;
+                            $client['epoch'] = $frame->epoch;
+                            self::write($stream, $codec->encode(new WorkerFrame(
+                                WorkerFrameKind::READY,
+                                $frame->epoch,
+                                metadata: self::identity($applicationVersion, $nonce),
+                                payload: (new WorldDataIpcCodec())->encode($provider->worldData()),
+                            )));
+                        } catch (Throwable $error) {
+                            self::write($stream, $codec->encode(new WorkerFrame(
+                                WorkerFrameKind::FAILURE,
+                                $frame->epoch,
+                                metadata: self::failureMetadata($error),
+                            )));
+                            self::closePooledClient($client);
+                            unset($clients[$id]);
+                        }
+                        unset($client);
+                        continue;
+                    }
+                    $epoch = $client['epoch'];
+                    if (!is_string($epoch) || !hash_equals($epoch, $frame->epoch)) {
+                        self::closePooledClient($client);
+                        unset($clients[$id]);
+                        unset($client);
+                        continue;
+                    }
+                    $shutdown = $frame->kind === WorkerFrameKind::SHUTDOWN;
+                    try {
+                        self::write($stream, self::handleFrame(
+                            $codec,
+                            $epoch,
+                            $client['provider'],
+                            $states,
+                            $frame,
+                            $chunks,
+                            $worldData,
+                            $entities,
+                            $entityTransfers,
+                            $entityTransferResults,
+                        ));
+                    } catch (Throwable) {
+                        self::closePooledClient($client);
+                        unset($clients[$id]);
+                        unset($client);
+                        continue;
+                    }
+                    if ($shutdown) {
+                        self::closePooledClient($client, false);
+                        unset($clients[$id]);
+                    }
+                    unset($client);
+                }
+            }
+        } finally {
+            foreach ($clients as $client) {
+                self::closePooledClient($client);
+            }
+            @fclose($listener);
+            @fclose($control);
+        }
+
+        return 0;
+    }
 
     public static function run(
         string $epochHex,
@@ -93,6 +299,12 @@ final class WorldStorageProcessProgram
             if (!$provider instanceof WritableWorldProvider) {
                 throw new \RuntimeException('World storage provider factory returned an invalid owner.');
             }
+            // The provider and transfer codec retain the two admitted registries they need.
+            // Do not keep the aggregate data set and its network registry alive for the
+            // lifetime of every named-world storage process.
+            unset($data, $persistentStates);
+            gc_collect_cycles();
+            gc_mem_caches();
             self::write($connection, $codec->encode(new WorkerFrame(
                 WorkerFrameKind::READY,
                 $epoch,
@@ -164,65 +376,107 @@ final class WorldStorageProcessProgram
             if (!hash_equals($epoch, $frame->epoch)) {
                 throw new \RuntimeException('World storage epoch changed.');
             }
+            self::write($connection, self::handleFrame(
+                $codec,
+                $epoch,
+                $provider,
+                $states,
+                $frame,
+                $chunks,
+                $worldData,
+                $entities,
+                $entityTransfers,
+                $entityTransferResults,
+            ));
             if ($frame->kind === WorkerFrameKind::SHUTDOWN) {
-                $provider->close();
-                self::write($connection, $codec->encode(new WorkerFrame(WorkerFrameKind::RESULT, $epoch)));
-
                 return;
             }
-            $operation = WorldStorageOperation::tryFrom($frame->taskTypeId);
-            if ($frame->kind !== WorkerFrameKind::SUBMIT || $operation === null
-                || $frame->schemaVersion !== self::SCHEMA_VERSION) {
-                throw new \RuntimeException('World storage request is invalid.');
-            }
+        }
+    }
+
+    private static function handleFrame(
+        WorkerFrameCodec $codec,
+        string $epoch,
+        WritableWorldProvider $provider,
+        BlockStateRegistry $states,
+        WorkerFrame $frame,
+        ChunkTransferCodec $chunks,
+        WorldDataIpcCodec $worldData,
+        EntityPersistenceCodec $entities,
+        EntityOwnershipTransferCodec $entityTransfers,
+        EntityOwnershipTransferResultCodec $entityTransferResults,
+    ): string {
+        if ($frame->kind === WorkerFrameKind::SHUTDOWN) {
+            $provider->close();
+
+            return $codec->encode(new WorkerFrame(WorkerFrameKind::RESULT, $epoch));
+        }
+        $operation = WorldStorageOperation::tryFrom($frame->taskTypeId);
+        if ($frame->kind !== WorkerFrameKind::SUBMIT || $operation === null
+            || $frame->schemaVersion !== self::SCHEMA_VERSION) {
+            throw new \RuntimeException('World storage request is invalid.');
+        }
+        try {
+            [$metadata, $payload] = match ($operation) {
+                WorldStorageOperation::LOAD_CHUNK => self::loadChunk(
+                    $provider,
+                    $frame->payload,
+                    $chunks,
+                    $entities,
+                    $states,
+                ),
+                WorldStorageOperation::SAVE_CHUNK => self::saveChunk($provider, $frame->payload, $chunks, $states),
+                WorldStorageOperation::SAVE_WORLD_DATA => self::saveWorldData($provider, $frame->payload, $worldData),
+                WorldStorageOperation::LOAD_ENTITY_CHUNK => self::loadEntityChunk($provider, $frame->payload, $entities),
+                WorldStorageOperation::SAVE_ENTITY_CHUNK => self::saveEntityChunk($provider, $frame->payload, $entities),
+                WorldStorageOperation::TRANSFER_ENTITY_OWNERSHIP => self::transferEntityOwnership(
+                    $provider,
+                    $frame->payload,
+                    $entityTransfers,
+                    $entityTransferResults,
+                ),
+                WorldStorageOperation::LOAD_TRANSIENT_ENTITIES => self::loadTransientEntities(
+                    $provider,
+                    $frame->payload,
+                ),
+                WorldStorageOperation::SAVE_TRANSIENT_ENTITIES => self::saveTransientEntities(
+                    $provider,
+                    $frame->payload,
+                ),
+            };
+            $metadata['memory_bytes'] = memory_get_usage(true);
+
+            return $codec->encode(new WorkerFrame(
+                WorkerFrameKind::RESULT,
+                $epoch,
+                $frame->taskId,
+                $operation->value,
+                self::SCHEMA_VERSION,
+                metadata: $metadata,
+                payload: $payload,
+            ));
+        } catch (Throwable $error) {
+            return $codec->encode(new WorkerFrame(
+                WorkerFrameKind::FAILURE,
+                $epoch,
+                $frame->taskId,
+                $operation->value,
+                self::SCHEMA_VERSION,
+                metadata: self::failureMetadata($error) + ['memory_bytes' => memory_get_usage(true)],
+            ));
+        }
+    }
+
+    /** @param array{stream: resource, auth: string, decoder: WorkerFrameDecoder, provider: ?WritableWorldProvider, epoch: ?string} $client */
+    private static function closePooledClient(array $client, bool $closeProvider = true): void
+    {
+        if ($closeProvider && $client['provider'] instanceof WritableWorldProvider) {
             try {
-                [$metadata, $payload] = match ($operation) {
-                    WorldStorageOperation::LOAD_CHUNK => self::loadChunk(
-                        $provider,
-                        $frame->payload,
-                        $chunks,
-                        $entities,
-                        $states,
-                    ),
-                    WorldStorageOperation::SAVE_CHUNK => self::saveChunk($provider, $frame->payload, $chunks, $states),
-                    WorldStorageOperation::SAVE_WORLD_DATA => self::saveWorldData($provider, $frame->payload, $worldData),
-                    WorldStorageOperation::LOAD_ENTITY_CHUNK => self::loadEntityChunk($provider, $frame->payload, $entities),
-                    WorldStorageOperation::SAVE_ENTITY_CHUNK => self::saveEntityChunk($provider, $frame->payload, $entities),
-                    WorldStorageOperation::TRANSFER_ENTITY_OWNERSHIP => self::transferEntityOwnership(
-                        $provider,
-                        $frame->payload,
-                        $entityTransfers,
-                        $entityTransferResults,
-                    ),
-                    WorldStorageOperation::LOAD_TRANSIENT_ENTITIES => self::loadTransientEntities(
-                        $provider,
-                        $frame->payload,
-                    ),
-                    WorldStorageOperation::SAVE_TRANSIENT_ENTITIES => self::saveTransientEntities(
-                        $provider,
-                        $frame->payload,
-                    ),
-                };
-                self::write($connection, $codec->encode(new WorkerFrame(
-                    WorkerFrameKind::RESULT,
-                    $epoch,
-                    $frame->taskId,
-                    $operation->value,
-                    self::SCHEMA_VERSION,
-                    metadata: $metadata,
-                    payload: $payload,
-                )));
-            } catch (Throwable $error) {
-                self::write($connection, $codec->encode(new WorkerFrame(
-                    WorkerFrameKind::FAILURE,
-                    $epoch,
-                    $frame->taskId,
-                    $operation->value,
-                    self::SCHEMA_VERSION,
-                    metadata: self::failureMetadata($error),
-                )));
+                $client['provider']->close();
+            } catch (Throwable) {
             }
         }
+        @fclose($client['stream']);
     }
 
     /** @return array{array<string, bool|int|string|null>, string} */

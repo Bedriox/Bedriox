@@ -46,12 +46,12 @@ $approvedProduction = [
     ],
     'bedriox/protocol' => [
         'version' => '0.1.0-alpha.1',
-        'reference' => '50a554565a5e6ea14f9af063fe2252fecad1c61d',
+        'reference' => 'c05a5e56be6cd3add229ac61eb20ffb40a0a7396',
         'license' => 'GPL-3.0-only',
     ],
     'bedriox/data' => [
         'version' => '0.1.0-alpha.1',
-        'reference' => '3a563d9c266f254b8f6ada2bafb9e5702e78b227',
+        'reference' => '1915491f039bae73c9c738d30fbbd0c5d32de159',
         'license' => 'GPL-3.0-only',
     ],
     'bedriox/nethernet' => [

@@ -23,8 +23,6 @@ namespace Bedriox\Server\Runtime;
 use Bedriox\Api\Player\GameMode;
 use Bedriox\Api\World\DimensionType;
 use Bedriox\Data\BedrockDataSet;
-use Bedriox\Protocol\Packet\AvailableActorIdentifiersPacket;
-use Bedriox\Protocol\Packet\BiomeDefinitionListPacket;
 use Bedriox\Protocol\Packet\BlockPropertyData;
 use Bedriox\Protocol\Packet\ChunkRadiusUpdatedPacket;
 use Bedriox\Protocol\Packet\CraftingDataPacket;
@@ -32,7 +30,6 @@ use Bedriox\Protocol\Packet\DimensionId;
 use Bedriox\Protocol\Packet\GameRulesChangedPacket;
 use Bedriox\Protocol\Packet\InventoryContainerId;
 use Bedriox\Protocol\Packet\InventoryContentPacket;
-use Bedriox\Protocol\Packet\ItemRegistryPacket;
 use Bedriox\Protocol\Packet\JigsawStructureDataPacket;
 use Bedriox\Protocol\Packet\MobEquipmentPacket;
 use Bedriox\Protocol\Packet\PlayerAttribute;
@@ -46,7 +43,6 @@ use Bedriox\Protocol\Packet\SetDifficultyPacket;
 use Bedriox\Protocol\Packet\SetSpawnPositionPacket;
 use Bedriox\Protocol\Packet\SetTimePacket;
 use Bedriox\Protocol\Packet\StartGamePacket;
-use Bedriox\Protocol\Packet\TrimDataPacket;
 use Bedriox\Protocol\Packet\UpdateAdventureSettingsPacket;
 use Bedriox\Protocol\Packet\UpdateAttributesPacket;
 use Bedriox\Protocol\Packet\VoxelShapesPacket;
@@ -63,18 +59,13 @@ use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Block\FixedFlatBlockPalette;
 use Bedriox\Server\World\Provider\WorldData;
 use Bedriox\Server\World\SpawnPosition;
+use Bedriox\Server\World\WorldGeneratorFactory;
 use Bedriox\Server\World\WorldTimeRules;
 use Closure;
 
 /** Builds the complete bounded current-Bedrock fixed-flat initialization sequence. */
 final class BedrockPlayInitializationFactory implements PlayInitializationFactory
 {
-    /**
-     * @var list<array{name: string, id: int, temperature: float, downfall: float, foliage_snow: float,
-     *     depth: float, scale: float, map_water_argb: int, rain: bool, tags: list<string>}>
-     */
-    private array $biomeDefinitions;
-
     private BlockNetworkTranslator $blockNetworkTranslator;
 
     private BlockStateRegistry $internalBlockStates;
@@ -102,7 +93,7 @@ final class BedrockPlayInitializationFactory implements PlayInitializationFactor
     private ReusablePlayPacket $trimDataPacket;
 
     public function __construct(
-        private BedrockDataSet $data,
+        BedrockDataSet $data,
         private RuntimeLimits $limits = new RuntimeLimits(),
         private string $levelName = 'Bedriox Flat World',
         private SpawnPosition $spawn = new SpawnPosition(0, 64, 0),
@@ -116,13 +107,15 @@ final class BedrockPlayInitializationFactory implements PlayInitializationFactor
         ?CraftingCatalog $craftingCatalog = null,
         ?callable $worldTimeProvider = null,
         private DimensionType $dimension = DimensionType::OVERWORLD,
+        ?BedrockPlayInitializationResources $resources = null,
     ) {
         if ($this->difficulty < 0 || $this->difficulty > 3) {
             throw new \InvalidArgumentException('Difficulty must be a Bedrock value between 0 and 3.');
         }
-        if (!in_array($this->generatorName, ['default', 'flat'], true)) {
-            throw new \InvalidArgumentException('Play initialization received an unsupported world generator.');
-        }
+        // Generation was already admitted by the owning registry when the world was opened.
+        // Re-validate only the identifier shape here; play projection must not maintain a
+        // second, narrower generator allow-list that rejects valid built-in or plugin worlds.
+        WorldGeneratorFactory::canonicalIdentifier($this->generatorName);
         if ($this->rewindHistorySize < 1 || $this->rewindHistorySize > 1_200) {
             throw new \InvalidArgumentException('Movement rewind history size must be between 1 and 1200 ticks.');
         }
@@ -138,45 +131,18 @@ final class BedrockPlayInitializationFactory implements PlayInitializationFactor
 
             return $time;
         };
-        $this->biomeDefinitions = $data->biomeDefinitions();
-        $networkBlockStates = $data->blockStateRegistry();
-        $this->internalBlockStates = new BlockStateRegistry($networkBlockStates->states());
-        $this->blockNetworkTranslator = new BlockNetworkTranslator($this->internalBlockStates, $networkBlockStates);
-        $this->fixedFlatBlockPalette = FixedFlatBlockPalette::fromRegistry($this->internalBlockStates);
-        $this->itemCatalog = $itemCatalog ?? ItemCatalog::vanilla(
-            $data->itemNetworkRegistry(),
-            creative: $data->creativeInventoryRegistry(),
-            blockItems: $data->blockItemMappingRegistry(),
-        );
-        $this->inventoryProjector = BedrockInventoryPacketProjector::fromData(
-            $data,
-            $this->blockNetworkTranslator,
-            $this->itemCatalog,
-        );
-        $this->craftingCatalog = $craftingCatalog ?? CraftingCatalog::fromData(
-            $data,
-            $this->itemCatalog,
-            $this->internalBlockStates,
-            $this->inventoryProjector,
-        );
-        $blockProperties = [];
-        foreach ($data->dataDrivenBlockProperties() as $identifier => $littleEndianNbt) {
-            $blockProperties[] = BlockPropertyData::fromLittleEndianNbt($identifier, $littleEndianNbt);
-        }
-        $this->blockProperties = $blockProperties;
-        $this->itemRegistryPacket = new ReusablePlayPacket(
-            'initialization.item_registry',
-            ItemRegistryPacket::fromRequiredItems($this->data->requiredItems()),
-        );
-        $this->biomeDefinitionsPacket = new ReusablePlayPacket(
-            'initialization.biome_definitions',
-            BiomeDefinitionListPacket::fromDefinitions($this->biomeDefinitions),
-        );
-        $this->actorIdentifiersPacket = new ReusablePlayPacket(
-            'initialization.actor_identifiers',
-            new AvailableActorIdentifiersPacket($this->data->entityIdentifiersNetworkNbt()),
-        );
-        $this->trimDataPacket = new ReusablePlayPacket('initialization.trim_data', new TrimDataPacket());
+        $resources ??= BedrockPlayInitializationResources::fromData($data, $itemCatalog, $craftingCatalog);
+        $this->internalBlockStates = $resources->internalBlockStates;
+        $this->blockNetworkTranslator = $resources->blockNetworkTranslator;
+        $this->fixedFlatBlockPalette = $resources->fixedFlatBlockPalette;
+        $this->itemCatalog = $resources->itemCatalog;
+        $this->inventoryProjector = $resources->inventoryProjector;
+        $this->craftingCatalog = $resources->craftingCatalog;
+        $this->blockProperties = $resources->blockProperties;
+        $this->itemRegistryPacket = $resources->itemRegistryPacket;
+        $this->biomeDefinitionsPacket = $resources->biomeDefinitionsPacket;
+        $this->actorIdentifiersPacket = $resources->actorIdentifiersPacket;
+        $this->trimDataPacket = $resources->trimDataPacket;
     }
 
     public static function forWorld(
@@ -189,6 +155,7 @@ final class BedrockPlayInitializationFactory implements PlayInitializationFactor
         ?CraftingCatalog $craftingCatalog = null,
         ?callable $worldTimeProvider = null,
         DimensionType $dimension = DimensionType::OVERWORLD,
+        ?BedrockPlayInitializationResources $resources = null,
     ): self {
         return new self(
             $data,
@@ -205,6 +172,7 @@ final class BedrockPlayInitializationFactory implements PlayInitializationFactor
             $craftingCatalog,
             $worldTimeProvider,
             $dimension,
+            $resources,
         );
     }
 

@@ -59,6 +59,7 @@ final class RuntimeWorldManager implements WorldManager
      * @param Closure(World, WorldCreationOptions): (WorldStorageRuntime|PendingWorldStorageRuntime) $createRuntime
      * @param Closure(World): (WorldStorageRuntime|PendingWorldStorageRuntime)                       $loadRuntime
      * @param null|Closure(Event): Event                                                            $dispatchEvent
+     * @param null|Closure(WorldOperationType, string, Throwable): void                              $reportFailure
      */
     public function __construct(
         private readonly WorldRuntimeManager $runtimes,
@@ -66,6 +67,7 @@ final class RuntimeWorldManager implements WorldManager
         private readonly Closure $createRuntime,
         private readonly Closure $loadRuntime,
         private readonly ?Closure $dispatchEvent = null,
+        private readonly ?Closure $reportFailure = null,
     ) {
         foreach ($runtimes->loaded() as $runtime) {
             $this->states[$runtime->handle->id()] = WorldLifecycleState::LOADED;
@@ -381,16 +383,24 @@ final class RuntimeWorldManager implements WorldManager
         Throwable $error,
         ?World $world = null,
     ): WorldOperationResult {
+        ($this->reportFailure)?->__invoke($type, $id, $error);
+        $normalizedMessage = strtolower($error->getMessage());
         $code = match (true) {
-            str_contains(strtolower($error->getMessage()), 'default world') => WorldOperationFailureCode::DEFAULT_WORLD,
-            str_contains(strtolower($error->getMessage()), 'occupied') => WorldOperationFailureCode::OCCUPIED,
-            str_contains(strtolower($error->getMessage()), 'in progress') => WorldOperationFailureCode::BUSY,
-            str_contains(strtolower($error->getMessage()), 'not exist'),
-            str_contains(strtolower($error->getMessage()), 'not found') => WorldOperationFailureCode::NOT_FOUND,
-            str_contains(strtolower($error->getMessage()), 'already exist'),
-            str_contains(strtolower($error->getMessage()), 'already loaded') => WorldOperationFailureCode::ALREADY_EXISTS,
-            str_contains(strtolower($error->getMessage()), 'capacity') => WorldOperationFailureCode::CAPACITY,
-            $error instanceof LogicException => WorldOperationFailureCode::STALE_HANDLE,
+            str_contains($normalizedMessage, 'default world') => WorldOperationFailureCode::DEFAULT_WORLD,
+            str_contains($normalizedMessage, 'occupied') => WorldOperationFailureCode::OCCUPIED,
+            str_contains($normalizedMessage, 'in progress') => WorldOperationFailureCode::BUSY,
+            str_contains($normalizedMessage, 'not exist'),
+            str_contains($normalizedMessage, 'not found') => WorldOperationFailureCode::NOT_FOUND,
+            str_contains($normalizedMessage, 'already exist'),
+            str_contains($normalizedMessage, 'already loaded') => WorldOperationFailureCode::ALREADY_EXISTS,
+            str_contains($normalizedMessage, 'capacity') => WorldOperationFailureCode::CAPACITY,
+            $error instanceof LogicException && (
+                str_contains($normalizedMessage, 'earlier load generation')
+                || str_contains($normalizedMessage, 'reservation is no longer active')
+                || str_contains($normalizedMessage, 'different identity or generation')
+                || str_contains($normalizedMessage, 'non-canonical dimension handle')
+                || str_contains($normalizedMessage, 'reference is no longer current')
+            ) => WorldOperationFailureCode::STALE_HANDLE,
             default => WorldOperationFailureCode::STORAGE,
         };
 

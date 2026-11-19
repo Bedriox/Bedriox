@@ -133,7 +133,7 @@
             "dist": {
                 "type": "path",
                 "url": "../Protocol",
-                "reference": "50a554565a5e6ea14f9af063fe2252fecad1c61d"
+                "reference": "c05a5e56be6cd3add229ac61eb20ffb40a0a7396"
             },
             "require": {
                 "ext-openssl": "*",

@@ -37,6 +37,7 @@ final class ProcessWorldProviderFactory implements WorldProviderFactory
     private ?WorkerDispatcher $processLauncher = null;
     private int $processLauncherTaskType = 0;
     private readonly EntityPersistenceCodec $entityPersistenceCodec;
+    private ?WorldStorageProcessPool $pool = null;
 
     /** @param null|Closure(): int $clock */
     public function __construct(
@@ -73,6 +74,7 @@ final class ProcessWorldProviderFactory implements WorldProviderFactory
             $this->requestTimeoutMilliseconds,
             $this->entryPoint,
             entityPersistenceCodec: $this->entityPersistenceCodec,
+            pool: $this->pool(),
         );
     }
 
@@ -90,6 +92,7 @@ final class ProcessWorldProviderFactory implements WorldProviderFactory
             $this->processLauncher,
             $this->processLauncherTaskType,
             $this->entityPersistenceCodec,
+            $this->pool(),
         );
     }
 
@@ -108,6 +111,7 @@ final class ProcessWorldProviderFactory implements WorldProviderFactory
             $this->requestTimeoutMilliseconds,
             $this->entryPoint,
             entityPersistenceCodec: $this->entityPersistenceCodec,
+            pool: $this->pool(),
         );
     }
 
@@ -126,6 +130,20 @@ final class ProcessWorldProviderFactory implements WorldProviderFactory
             $this->processLauncher,
             $this->processLauncherTaskType,
             $this->entityPersistenceCodec,
+            $this->pool(),
+        );
+    }
+
+    private function pool(): ?WorldStorageProcessPool
+    {
+        if ($this->entryPoint !== null) {
+            return null;
+        }
+
+        return $this->pool ??= new WorldStorageProcessPool(
+            $this->applicationVersion,
+            dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . 'bootstrap' . DIRECTORY_SEPARATOR . 'bedriox-io.php',
+            $this->requestTimeoutMilliseconds,
         );
     }
 }

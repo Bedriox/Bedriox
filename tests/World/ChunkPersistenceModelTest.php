@@ -107,6 +107,14 @@ final class ChunkPersistenceModelTest extends TestCase
             static fn(): Chunk => new Chunk(new ChunkPosition(0, 0), $air, [], dirtyFlags: 1 << 4),
             static fn(): BiomeStorage => BiomeStorage::fromPaletteIndices([Biome::plains()], str_repeat("\x01", 4096)),
             static fn(): SubChunkBlockStorage => SubChunkBlockStorage::fromPaletteIndices([$air], str_repeat("\x01", 4096)),
+            static fn(): BiomeStorage => BiomeStorage::fromPackedPaletteIndices(
+                [Biome::plains(), Biome::desert(), Biome::forest()],
+                str_repeat("\xff", 1_024),
+            ),
+            static fn(): SubChunkBlockStorage => SubChunkBlockStorage::fromPackedPaletteIndices(
+                [$air, new InternalBlockStateId(1), new InternalBlockStateId(2)],
+                str_repeat("\xff", 1_024),
+            ),
         ];
         foreach ($invalid as $factory) {
             try {

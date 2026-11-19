@@ -40,5 +40,6 @@ final readonly class WorkerPoolSnapshot
         public int $readyBytes = 0,
         public int $brokerMemoryBytes = 0,
         public int $workerMemoryBytes = 0,
+        public int $runningWorkers = 0,
     ) {}
 }

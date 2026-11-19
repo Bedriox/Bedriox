@@ -75,6 +75,32 @@ final class PerformanceMonitorTest extends TestCase
         self::assertSame($inbound, $snapshot->inbound);
     }
 
+    public function testMinimumTpsMeasuresAFullSecondInsteadOfOneSchedulerInterval(): void
+    {
+        $monitor = new PerformanceMonitor(maximumSamples: 40, startedAtNanoseconds: 0);
+        $completedAt = 0;
+        for ($tick = 0; $tick <= 20; ++$tick) {
+            $completedAt += $tick === 10 ? 100_000_000 : 50_000_000;
+            $monitor->recordTick(5_000_000, $completedAt);
+        }
+
+        $snapshot = $monitor->snapshot(nowNanoseconds: $completedAt);
+
+        self::assertEqualsWithDelta(19.0476, $snapshot->minimumTps, 0.0001);
+    }
+
+    public function testCatchUpTicksReceiveOrderedCompletionTimes(): void
+    {
+        $monitor = new PerformanceMonitor(maximumSamples: 20, startedAtNanoseconds: 0);
+        $monitor->beginTick(0);
+        $monitor->completeTicks(3, 60_000_000);
+
+        $snapshot = $monitor->snapshot(nowNanoseconds: 60_000_000);
+
+        self::assertSame(20.0, $snapshot->currentTps);
+        self::assertSame(20.0, $snapshot->minimumTps);
+    }
+
     public function testNestedSubsystemSpansRecordExclusiveTimeAndUnclassifiedRemainder(): void
     {
         $monitor = new PerformanceMonitor(startedAtNanoseconds: 0);

@@ -20,11 +20,10 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Worker\Task;
 
-use Bedriox\Data\BedrockDataSet;
+use Bedriox\Server\Worker\Runtime\WorkerBlockStateCatalog;
 use Bedriox\Server\Worker\WorkerTaskHandler;
 use Bedriox\Server\Worker\World\WorldPreparationCodec;
 use Bedriox\Server\Worker\World\WorldPreparationResult;
-use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Generator\GeneratorContext;
 use Bedriox\Server\World\Generator\PluginWorldGeneratorAdapter;
 use Bedriox\Server\World\WorldGeneratorFactory;
@@ -33,13 +32,13 @@ use RuntimeException;
 /** Constructs a generator and calculates its default spawn outside the server tick. */
 final class PrepareWorldTask implements WorkerTaskHandler
 {
-    private ?BlockStateRegistry $states = null;
+    public function __construct(private readonly WorkerBlockStateCatalog $catalog = new WorkerBlockStateCatalog()) {}
 
     public function execute(string $payload): string
     {
         $codec = new WorldPreparationCodec();
         $request = $codec->decodeRequest($payload);
-        $states = $this->states ??= new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $states = $this->catalog->internalStates();
         $generator = $request->workerSource === null
             ? WorldGeneratorFactory::create(
                 $request->generator,

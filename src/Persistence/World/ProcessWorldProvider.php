@@ -35,6 +35,8 @@ use Bedriox\Server\Entity\Persistence\EntityPersistenceConflictException;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceLimits;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
 use Bedriox\Server\Entity\Persistence\TransientEntityPersistenceStore;
+use Bedriox\Server\Observability\Memory\RuntimeMemoryStatusProvider;
+use Bedriox\Server\Observability\Memory\SharedRuntimeMemoryStatusProvider;
 use Bedriox\Server\Persistence\OrderedPersistenceQueue;
 use Bedriox\Server\Persistence\PersistenceEnqueueResult;
 use Bedriox\Server\Persistence\PersistenceQueueSnapshot;
@@ -68,7 +70,7 @@ use Bedriox\Server\World\Provider\WorldData;
 use RuntimeException;
 use Throwable;
 
-final class ProcessWorldProvider implements AsynchronousWorldProvider, AsynchronousWorldDataProvider, AsynchronousEntityPersistenceStore, TransientEntityPersistenceStore, PersistenceQueueStatusProvider
+final class ProcessWorldProvider implements AsynchronousWorldProvider, AsynchronousWorldDataProvider, AsynchronousEntityPersistenceStore, TransientEntityPersistenceStore, PersistenceQueueStatusProvider, RuntimeMemoryStatusProvider, SharedRuntimeMemoryStatusProvider
 {
     private const int MAXIMUM_PRELOADED_ENTITY_CHUNKS = 2_048;
     private const int MAXIMUM_QUEUED_ENTITY_TRANSFERS = 256;
@@ -134,6 +136,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
     private array $entityWriteFailureDetails = [];
     private bool $closed = false;
     private bool $ownerConfirmedClosed = false;
+    private int $reportedMemoryBytes = 0;
     private WorldData $data;
     private int $worldDataRevision = 0;
     /** @var array<string, int> */
@@ -150,6 +153,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
         private readonly ?WorkerDispatcher $processLauncher = null,
         private readonly int $processLauncherTaskType = 0,
         ?EntityPersistenceCodec $entityPersistenceCodec = null,
+        private readonly ?WorldStorageProcessPool $pool = null,
     ) {
         if ($applicationVersion === '' || strlen($applicationVersion) > 128
             || $requestTimeoutMilliseconds < 100 || $requestTimeoutMilliseconds > 300_000) {
@@ -194,6 +198,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
         ?WorkerDispatcher $processLauncher = null,
         int $processLauncherTaskType = 0,
         ?EntityPersistenceCodec $entityPersistenceCodec = null,
+        ?WorldStorageProcessPool $pool = null,
     ): self {
         $provider = self::beginStart(
             $applicationVersion,
@@ -204,12 +209,25 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
             $processLauncher,
             $processLauncherTaskType,
             $entityPersistenceCodec,
+            $pool,
         );
         while (!$provider->pollStartup()) {
             usleep(1_000);
         }
 
         return $provider;
+    }
+
+    public function reportedMemoryBytes(): int
+    {
+        return $this->reportedMemoryBytes;
+    }
+
+    public function runtimeMemoryOwnerId(): string
+    {
+        return $this->pool === null
+            ? 'world-process:' . bin2hex($this->epoch)
+            : 'world-pool:' . spl_object_id($this->pool);
     }
 
     /**
@@ -225,6 +243,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
         ?WorkerDispatcher $processLauncher = null,
         int $processLauncherTaskType = 0,
         ?EntityPersistenceCodec $entityPersistenceCodec = null,
+        ?WorldStorageProcessPool $pool = null,
     ): self {
         $provider = new self(
             $applicationVersion,
@@ -235,6 +254,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
             $processLauncher,
             $processLauncherTaskType,
             $entityPersistenceCodec,
+            $pool,
         );
         $provider->beginLaunch();
 
@@ -1037,6 +1057,20 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
         if (!is_file($this->entryPoint)) {
             throw new WorldStorageException('World storage process entry point is unavailable.');
         }
+        if ($this->pool !== null) {
+            $this->connection = $this->pool->connect();
+            $this->startupNonce = bin2hex(random_bytes(16));
+            $this->startupOutgoing = $this->frames->encode(new WorkerFrame(
+                WorkerFrameKind::HELLO,
+                $this->epoch,
+                metadata: WorldStorageProcessProgram::identity($this->applicationVersion, $this->startupNonce),
+                payload: (new WorldStorageStartupCodec())->encode($this->startup),
+            ));
+            $this->startupDeadlineNanoseconds = hrtime(true)
+                + max(5_000, $this->requestTimeoutMilliseconds) * 1_000_000;
+
+            return;
+        }
         $listener = @stream_socket_server('tcp://127.0.0.1:0', $errorCode, $errorMessage, STREAM_SERVER_BIND | STREAM_SERVER_LISTEN);
         if (!is_resource($listener)) {
             throw new WorldStorageException('World storage IPC listener could not be created.');
@@ -1116,6 +1150,15 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
 
     private function assertStartupProcessRunning(): void
     {
+        if ($this->pool !== null) {
+            if (!$this->pool->isRunning()) {
+                $detail = $this->pool->failureDetail();
+                throw $this->failOwner('World storage pool exited during startup.'
+                    . ($detail === '' ? '' : ' ' . $detail));
+            }
+
+            return;
+        }
         if ($this->externallyLaunched) {
             if ($this->externalLaunchFailure !== null) {
                 throw $this->failOwner('World storage process launch failed: ' . $this->externalLaunchFailure);
@@ -1346,6 +1389,7 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
             throw $this->failOwner('World storage asynchronous response framing failed.', $error);
         }
         foreach ($frames as $frame) {
+            $this->observeRuntimeMemory($frame);
             if ($this->asyncEntityTransfer instanceof EntityOwnershipTransfer) {
                 $transfer = $this->asyncEntityTransfer;
                 if (!hash_equals($this->epoch, $frame->epoch)
@@ -1659,7 +1703,9 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
 
     private function assertOpen(): void
     {
-        $processUnavailable = !$this->externallyLaunched && !is_resource($this->process);
+        $processUnavailable = $this->pool === null
+            && !$this->externallyLaunched
+            && !is_resource($this->process);
         if (!$this->startupReady || $this->closed || $processUnavailable || !is_resource($this->connection)) {
             throw new WorldProviderClosedException('World provider is closed.');
         }
@@ -1706,7 +1752,21 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
         }
         $body = $this->readExact($this->connection, $lengths['headerLength'] + $lengths['payloadLength']);
 
-        return $body === null ? null : $this->frames->decode($header . $body);
+        if ($body === null) {
+            return null;
+        }
+        $frame = $this->frames->decode($header . $body);
+        $this->observeRuntimeMemory($frame);
+
+        return $frame;
+    }
+
+    private function observeRuntimeMemory(WorkerFrame $frame): void
+    {
+        $memoryBytes = $frame->metadata['memory_bytes'] ?? null;
+        if (is_int($memoryBytes) && $memoryBytes >= 0) {
+            $this->reportedMemoryBytes = $memoryBytes;
+        }
     }
 
     /** @param resource $stream */
@@ -1756,7 +1816,12 @@ final class ProcessWorldProvider implements AsynchronousWorldProvider, Asynchron
                     ? 'World storage owner rejected stale entity persistence: ' . $metadata['detail']
                     : 'World storage owner reported a stale entity persistence operation.',
             ),
-            'unsupported_world_format' => new UnsupportedWorldFormatException('World storage owner reported an unsupported format.'),
+            'unsupported_world_format' => new UnsupportedWorldFormatException(
+                'World storage owner reported an unsupported format.'
+                . (is_string($metadata['detail'] ?? null) && $metadata['detail'] !== ''
+                    ? ' ' . $metadata['detail']
+                    : ''),
+            ),
             'provider_closed' => new WorldProviderClosedException('World storage owner is closed.'),
             default => new WorldStorageException('World storage owner reported an I/O failure.'),
         };

@@ -563,6 +563,67 @@ final class EntityPersistenceManager
             $this->store->saveEntityChunk($snapshot, $this->dimension);
             $this->acknowledge($state, $snapshot);
         }
+
+        return $this->releaseChunk($key, $state);
+    }
+
+    /**
+     * Attempts a non-blocking durable release when the store supports asynchronous persistence.
+     *
+     * Null means that an ownership transfer or exact chunk snapshot remains queued. The caller
+     * must retain terrain and retry after a later completion poll.
+     */
+    public function tryUnloadChunk(ChunkPosition $chunk): ?int
+    {
+        if (!$this->store instanceof AsynchronousEntityPersistenceStore) {
+            return $this->unloadChunk($chunk);
+        }
+        $this->collectOwnershipTransferCompletions(4);
+        $this->collectEntityChunkSaveCompletions(4);
+        $key = $chunk->key();
+        if (isset($this->pendingChunkSaves[$key]) || isset($this->pendingOwnershipTransferChunks[$key])) {
+            return null;
+        }
+        if (isset($this->corruptChunks[$key])) {
+            unset($this->corruptChunks[$key]);
+
+            return 0;
+        }
+        $state = $this->chunks[$key] ?? null;
+        if ($state === null) {
+            return 0;
+        }
+        foreach (array_keys($state->records) as $uuid) {
+            if (isset($this->runtimeStates[$uuid])) {
+                $this->synchronizeEntity($uuid);
+            }
+        }
+        if (isset($this->pendingOwnershipTransferChunks[$key]) || $this->chunkHasUnsettledOwnership($state)) {
+            return null;
+        }
+        if ($state->dirty) {
+            $snapshot = $this->snapshot($state);
+            $submission = $this->store->enqueueEntityChunkSave($snapshot, $this->dimension);
+            if ($submission->status === PersistenceSubmission::SATURATED) {
+                return null;
+            }
+            if ($submission->status === PersistenceSubmission::STALE) {
+                throw new LogicException('Entity unload snapshot was stale without matching manager state.');
+            }
+            $this->pendingChunkSaves[$key] = new PendingEntityChunkSave(
+                $snapshot,
+                $state->mutationRevision,
+                $this->captureSnapshotRuntimeBaselines($snapshot),
+            );
+
+            return null;
+        }
+
+        return $this->releaseChunk($key, $state);
+    }
+
+    private function releaseChunk(string $key, ManagedEntityChunkState $state): int
+    {
         unset($this->autosavePending[$key]);
 
         $removed = 0;

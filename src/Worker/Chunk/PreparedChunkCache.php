@@ -21,6 +21,7 @@ declare(strict_types=1);
 namespace Bedriox\Server\Worker\Chunk;
 
 use Bedriox\Api\World\DimensionType;
+use Bedriox\Server\Observability\Memory\DisposableByteCache;
 use Bedriox\Server\Worker\WorkerDispatcher;
 use Bedriox\Server\Worker\WorkerReceipt;
 use Bedriox\Server\Worker\WorkerResult;
@@ -31,16 +32,16 @@ use InvalidArgumentException;
 use WeakMap;
 
 /** Shared, bounded LRU of revision-specific compressed LevelChunk envelopes. */
-final class PreparedChunkCache
+final class PreparedChunkCache implements DisposableByteCache
 {
     private const int MAXIMUM_FAILURES_BEFORE_FALLBACK = 3;
     private const int MAXIMUM_RESULT_BYTES = 1_048_576;
 
     /** @var array<string, array{chunk: PreparedChunk, lastAccess: int}> */
     private array $entries = [];
-    /** @var array<string, array{receipt: WorkerReceipt, bytes: int, position: string}> */
+    /** @var array<string, array{receipt: WorkerReceipt, bytes: int, position: int}> */
     private array $pending = [];
-    /** @var array<string, string> position key => current complete cache key */
+    /** @var array<int, string> position key => current complete cache key */
     private array $currentKeys = [];
     /** @var array<string, int> */
     private array $failedAttempts = [];
@@ -91,7 +92,7 @@ final class PreparedChunkCache
             return new PreparedChunkLookup(PreparedChunkAvailability::SYNCHRONOUS_FALLBACK);
         }
 
-        $positionKey = $chunk->position->key();
+        $positionKey = $chunk->position->mapKey();
         $cacheKey = $this->cacheKey($chunk, $protocolVersion);
         $this->makeCurrent($positionKey, $cacheKey);
         $entry = $this->entries[$cacheKey] ?? null;
@@ -188,7 +189,7 @@ final class PreparedChunkCache
         return !$this->closed
             && $prepared->protocolVersion === $protocolVersion
             && $prepared->revision === $chunk->revision
-            && $prepared->position->key() === $chunk->position->key()
+            && $prepared->position->mapKey() === $chunk->position->mapKey()
             && hash_equals($prepared->cacheKey, $this->cacheKey($chunk, $protocolVersion));
     }
 
@@ -198,7 +199,7 @@ final class PreparedChunkCache
         if ($this->closed || !$this->isValidBatch($compressedBatch)) {
             throw new InvalidArgumentException('Synchronous chunk projection is invalid.');
         }
-        $positionKey = $chunk->position->key();
+        $positionKey = $chunk->position->mapKey();
         $cacheKey = $this->cacheKey($chunk, $protocolVersion);
         $this->makeCurrent($positionKey, $cacheKey);
         $existing = $this->entries[$cacheKey]['chunk'] ?? null;
@@ -248,6 +249,24 @@ final class PreparedChunkCache
             $this->invalidations,
             $this->failures,
         );
+    }
+
+    public function retainedBytes(): int
+    {
+        return $this->entryBytes;
+    }
+
+    public function trimToBytes(int $targetBytes): int
+    {
+        if ($targetBytes < 0) {
+            throw new InvalidArgumentException('Prepared chunk cache target cannot be negative.');
+        }
+        $before = $this->entryBytes;
+        while ($this->entries !== [] && $this->entryBytes > $targetBytes) {
+            $this->evictOldest();
+        }
+
+        return $before - $this->entryBytes;
     }
 
     /**
@@ -319,7 +338,7 @@ final class PreparedChunkCache
         ]));
     }
 
-    private function makeCurrent(string $positionKey, string $cacheKey): void
+    private function makeCurrent(int $positionKey, string $cacheKey): void
     {
         $previous = $this->currentKeys[$positionKey] ?? null;
         if ($previous === null || hash_equals($previous, $cacheKey)) {
@@ -361,17 +380,21 @@ final class PreparedChunkCache
     {
         while ($this->entries !== [] && (count($this->entries) >= $this->maximumEntries
             || $incomingBytes > $this->maximumBytes - $this->entryBytes)) {
-            $candidate = null;
-            $oldest = PHP_INT_MAX;
-            foreach ($this->entries as $key => $entry) {
-                if ($entry['lastAccess'] < $oldest) {
-                    $candidate = $key;
-                    $oldest = $entry['lastAccess'];
-                }
+            $this->evictOldest();
+        }
+    }
+
+    private function evictOldest(): void
+    {
+        $candidate = null;
+        $oldest = PHP_INT_MAX;
+        foreach ($this->entries as $key => $entry) {
+            if ($entry['lastAccess'] < $oldest) {
+                $candidate = $key;
+                $oldest = $entry['lastAccess'];
             }
-            if ($candidate === null) {
-                break;
-            }
+        }
+        if ($candidate !== null) {
             $removed = $this->entries[$candidate]['chunk'];
             $this->entryBytes -= $removed->bytes();
             unset($this->entries[$candidate]);

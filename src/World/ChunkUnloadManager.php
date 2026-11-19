@@ -27,7 +27,7 @@ use OverflowException;
 /** Monotonic grace-period queue for chunks which no longer have an active owner. */
 final class ChunkUnloadManager
 {
-    /** @var array<string, array{position: ChunkPosition, eligibleAt: int}> */
+    /** @var array<int, array{position: ChunkPosition, eligibleAt: int}> */
     private array $queued = [];
 
     private readonly Closure $clock;
@@ -50,7 +50,7 @@ final class ChunkUnloadManager
     /** Queues one coordinate once. A later retain must cancel it explicitly. */
     public function queue(ChunkPosition $position): bool
     {
-        $key = $position->key();
+        $key = $position->mapKey();
         if (isset($this->queued[$key])) {
             return false;
         }
@@ -74,7 +74,7 @@ final class ChunkUnloadManager
      */
     public function queueImmediately(ChunkPosition $position): bool
     {
-        $key = $position->key();
+        $key = $position->mapKey();
         if (isset($this->queued[$key])) {
             $this->queued[$key]['eligibleAt'] = $this->now();
 
@@ -90,7 +90,7 @@ final class ChunkUnloadManager
 
     public function cancel(ChunkPosition $position): bool
     {
-        $key = $position->key();
+        $key = $position->mapKey();
         if (!isset($this->queued[$key])) {
             return false;
         }
@@ -101,13 +101,13 @@ final class ChunkUnloadManager
 
     public function contains(ChunkPosition $position): bool
     {
-        return isset($this->queued[$position->key()]);
+        return isset($this->queued[$position->mapKey()]);
     }
 
     /** Moves deferred work behind older candidates without extending its grace deadline. */
     public function defer(ChunkPosition $position): bool
     {
-        $key = $position->key();
+        $key = $position->mapKey();
         $entry = $this->queued[$key] ?? null;
         if ($entry === null) {
             return false;

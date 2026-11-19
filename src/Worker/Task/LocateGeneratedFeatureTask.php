@@ -20,11 +20,10 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Worker\Task;
 
-use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Worker\Location\GeneratedFeatureSearchCodec;
 use Bedriox\Server\Worker\Location\GeneratedFeatureSearchMode;
+use Bedriox\Server\Worker\Runtime\WorkerBlockStateCatalog;
 use Bedriox\Server\Worker\WorkerTaskHandler;
-use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Generation\Structure\Location\GeneratedBiomeLocator;
 use Bedriox\Server\World\Generation\Structure\Location\GeneratedStructureLocator;
 use Bedriox\Server\World\Generation\Structure\Location\LocatedFeature;
@@ -33,7 +32,6 @@ final class LocateGeneratedFeatureTask implements WorkerTaskHandler
 {
     private const int MAXIMUM_CACHED_SEEDS = 8;
 
-    private ?BlockStateRegistry $states = null;
     /** @var array<int, GeneratedBiomeLocator> */
     private array $biomeLocators = [];
     /** @var array<int, GeneratedStructureLocator> */
@@ -41,11 +39,13 @@ final class LocateGeneratedFeatureTask implements WorkerTaskHandler
     /** @var list<int> */
     private array $seedOrder = [];
 
+    public function __construct(private readonly WorkerBlockStateCatalog $catalog = new WorkerBlockStateCatalog()) {}
+
     public function execute(string $payload): string
     {
         $codec = new GeneratedFeatureSearchCodec();
         $request = $codec->decodeRequest($payload);
-        $states = $this->states ??= new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $states = $this->catalog->internalStates();
         if ($request->mode === GeneratedFeatureSearchMode::BIOME) {
             $locator = $this->biomeLocators[$request->seed] ??= new GeneratedBiomeLocator($request->seed, $states);
             $this->remember($request->seed);

@@ -346,7 +346,12 @@ final class PersistentWorldFactory implements ConfiguredWorldFactory
         try {
             return $this->compose($config, $provider, $internalStates, $configuredSpawn, null, $worldPath);
         } catch (Throwable $failure) {
-            $provider->close();
+            try {
+                $provider->close();
+            } catch (Throwable) {
+                // Preserve the composition failure; cleanup failures must not mask
+                // the condition that prevented the world from opening.
+            }
             throw $failure;
         }
     }

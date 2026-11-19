@@ -190,6 +190,7 @@ final class TransportProcessProgram
             'negotiation_flood_blocks' => $snapshot->negotiationFloodBlocks,
             'session_limit_rejections' => $snapshot->sessionLimitRejections,
             'blocked_peer_rejections' => $snapshot->blockedPeerRejections,
+            'memory_bytes' => memory_get_usage(true),
         ]));
     }
 

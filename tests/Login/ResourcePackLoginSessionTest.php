@@ -252,6 +252,9 @@ final class ResourcePackLoginSessionTest extends TestCase
         self::assertSame(100, $served);
         self::assertSame(0, $governor->snapshot()['in_flight']);
         self::assertSame(0, $governor->snapshot()['waiting']);
+        self::assertGreaterThan(0, $cache->retainedBytes());
+        self::assertSame($cache->retainedBytes(), $cache->trim());
+        self::assertSame(0, $cache->retainedBytes());
     }
 
     private function throughAuthentication(

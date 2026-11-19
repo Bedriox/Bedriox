@@ -23,7 +23,9 @@ namespace Bedriox\Server\Runtime;
 use Bedriox\Api\ServerPerformance;
 use Bedriox\Api\World\World as ApiWorld;
 use Bedriox\Api\World\WorldCreationOptions;
+use Bedriox\Api\World\WorldOperationType;
 use Bedriox\Data\BedrockDataSet;
+use Bedriox\Protocol\Batch\BatchLimits;
 use Bedriox\Protocol\Identity\ClientDataJwtVerifier;
 use Bedriox\Protocol\ProtocolVersion;
 use Bedriox\Protocol\Security\EphemeralKeyFactory;
@@ -59,6 +61,7 @@ use Bedriox\Server\Observability\Memory\GarbageCollector;
 use Bedriox\Server\Observability\Memory\MemoryManager;
 use Bedriox\Server\Observability\Memory\PhpGarbageCollectorBackend;
 use Bedriox\Server\Observability\Memory\PhpMemoryUsageProvider;
+use Bedriox\Server\Observability\Memory\RuntimeCacheBudget;
 use Bedriox\Server\Observability\PerformanceMonitor;
 use Bedriox\Server\Observability\PlayerLifecycleLogger;
 use Bedriox\Server\Permission\PermissionStore;
@@ -174,6 +177,7 @@ final class ServerBootstrap
                 criticalUnloadBudget: min(1_024, $config->chunkUnloadPerTick * 4),
             )
             : null;
+        $runtimeCacheBudget = RuntimeCacheBudget::fromMemoryLimit($config->memoryLimitBytes);
         $controlSessionReserve = $config->authenticationMode === AuthenticationMode::GATEWAY ? 16 : 0;
         $runtimeLimits = new RuntimeLimits(
             maximumSessions: $config->maximumPlayers + $controlSessionReserve,
@@ -244,6 +248,15 @@ final class ServerBootstrap
             GenerationBlockPalette::fromRegistry($internalStates),
             $data->voxelShapeRegistry(),
         );
+        $initializationResources = BedrockPlayInitializationResources::fromData(
+            $data,
+            $itemCatalog,
+            $craftingCatalog,
+            $internalStates,
+            $blockTranslator,
+            $flatPalette,
+            $inventoryProjector,
+        );
         $chunkProjectionRegistryHash = ChunkProjectionIdentity::registryHash($data, $networkStates);
         $startupCatalogsReadyAt = hrtime(true);
         $openedWorld = $this->worldFactory?->open($config, $data)
@@ -312,6 +325,15 @@ final class ServerBootstrap
                 max(8_388_608, intdiv($config->memoryLimitBytes === 0 ? 536_870_912 : $config->memoryLimitBytes, 16)),
             ),
         );
+        $initializationResources->warm();
+        if ($preparedPlayBatches !== null) {
+            $batchLimits = new BatchLimits(maximumPackets: $runtimeLimits->maximumPacketsPerPayload);
+            $preparedPlayBatches->preparePacket(
+                $initializationResources->craftingDataPacket(),
+                ProtocolVersion::CURRENT,
+                $batchLimits,
+            );
+        }
         $preparedChunks = $workers !== null && $workersAvailable
             ? new PreparedChunkCache(
                 $workers,
@@ -340,6 +362,7 @@ final class ServerBootstrap
                 $craftingCatalog,
                 $flatWorld->time(...),
                 $flatWorld->dimension(),
+                $initializationResources,
             );
             $spawn = $flatWorld->spawn();
             $playerStore = $this->playerDataStore
@@ -413,6 +436,10 @@ final class ServerBootstrap
                 $blockProperties,
                 $entityTypes,
                 $chunkProjectionRegistryHash,
+                $initialization,
+                $initializationResources,
+                $data,
+                $runtimeLimits,
             ): ManagedWorldRuntime {
                 $startedAt = hrtime(true);
                 $internalWorld = $opened->world;
@@ -502,6 +529,18 @@ final class ServerBootstrap
                     $simulation->enableEntityPersistence($entityStore, $entityDefinitions);
                 }
                 $entityPersistenceAt = hrtime(true);
+                $worldInitialization = $initialization instanceof BedrockPlayInitializationFactory
+                    ? BedrockPlayInitializationFactory::forWorld(
+                        $data,
+                        $runtimeLimits,
+                        $opened->data,
+                        $config->movementRewindHistorySize,
+                        $config->defaultGamemode,
+                        worldTimeProvider: $internalWorld->time(...),
+                        dimension: $internalWorld->dimension(),
+                        resources: $initializationResources,
+                    )
+                    : $initialization;
 
                 $runtime = new ManagedWorldRuntime(
                     $handle,
@@ -509,6 +548,7 @@ final class ServerBootstrap
                     $simulation,
                     new FixedRateWorldLoop($simulation, new SystemSimulationClock(), maximumTicksPerPoll: 3),
                     $worldPreparedChunks,
+                    $worldInitialization,
                 );
                 $completedAt = hrtime(true);
                 $diagnostics->record('runtime.world_composition.protocol_trace', [
@@ -550,6 +590,7 @@ final class ServerBootstrap
                         $world,
                         $worldLoop,
                         $preparedChunks,
+                        $initialization,
                     )
                     : $composeManagedDimension($dimensionHandle, $dimensionOpened);
             }
@@ -610,6 +651,14 @@ final class ServerBootstrap
                     );
                 },
                 $pluginEvents === null ? null : $pluginEvents->dispatch(...),
+                static function (WorldOperationType $type, string $worldId, \Throwable $error) use ($diagnostics): void {
+                    $diagnostics->record('world.lifecycle_operation_failed', [
+                        'operation' => $type->value,
+                        'world_id' => $worldId,
+                        'exception' => $error::class,
+                        'detail' => mb_substr($error->getMessage(), 0, 512),
+                    ]);
+                },
             );
             $chunkSerializer = new BedrockChunkPacketSerializer(
                 $blockTranslator,
@@ -656,6 +705,43 @@ final class ServerBootstrap
                 $transportConfig,
             );
             $startupTransportReadyAt = hrtime(true);
+            $playChannels = new BedrockPlayChannelFactory(
+                $initialization,
+                limits: $runtimeLimits,
+                diagnostics: $diagnostics,
+                world: $flatWorld,
+                chunkSerializer: $chunkSerializer,
+                viewDistance: $config->viewDistance,
+                spawnRadius: $config->spawnRadius,
+                chunksGeneratePerTick: $config->chunksGeneratePerTick,
+                chunksSendPerTick: $config->chunksSendPerTick,
+                chunkPrefetchRadius: $config->chunkLoadingPrefetchRadius,
+                chunkGenerationQueueSize: $config->chunkGenerationQueueSize,
+                inventoryProjector: $inventoryProjector,
+                commandRegistry: $commandRegistry,
+                permissionStore: $permissionStore,
+                compressionWorkers: $compressionWorkers,
+                compressionTaskTypeId: CoreWorkerTaskCatalog::COMPRESS_BATCH,
+                preparedChunks: $preparedChunks,
+                preparedPlayBatches: $preparedPlayBatches,
+                traceUnsupportedPackets: $config->traceUnsupportedPackets,
+                unsupportedPacketLogLimit: $config->unsupportedPacketLogLimit,
+                worldBinding: static function (\Bedriox\Server\Player\PlayerBootstrap $bootstrap) use (
+                    $worldRuntimes,
+                    $initialization,
+                ): ?array {
+                    $runtime = $worldRuntimes->get($bootstrap->worldName, $bootstrap->dimension);
+                    if ($runtime === null) {
+                        return null;
+                    }
+                    return [
+                        'initialization' => $runtime->initialization ?? $initialization,
+                        'world' => $runtime->opened->world,
+                        'preparedChunks' => $runtime->preparedChunks,
+                    ];
+                },
+            );
+            $playChannels->warmUp();
             $runtime = new ServerRuntime(
                 $discovery,
                 new ConfiguredLoginChannelFactory(
@@ -668,64 +754,7 @@ final class ServerBootstrap
                     compressionWorkers: $compressionWorkers,
                     compressionTaskTypeId: CoreWorkerTaskCatalog::COMPRESS_BATCH,
                 ),
-                new BedrockPlayChannelFactory(
-                    $initialization,
-                    limits: $runtimeLimits,
-                    diagnostics: $diagnostics,
-                    world: $flatWorld,
-                    chunkSerializer: $chunkSerializer,
-                    viewDistance: $config->viewDistance,
-                    spawnRadius: $config->spawnRadius,
-                    chunksGeneratePerTick: $config->chunksGeneratePerTick,
-                    chunksSendPerTick: $config->chunksSendPerTick,
-                    chunkPrefetchRadius: $config->chunkLoadingPrefetchRadius,
-                    chunkGenerationQueueSize: $config->chunkGenerationQueueSize,
-                    inventoryProjector: $inventoryProjector,
-                    commandRegistry: $commandRegistry,
-                    permissionStore: $permissionStore,
-                    compressionWorkers: $compressionWorkers,
-                    compressionTaskTypeId: CoreWorkerTaskCatalog::COMPRESS_BATCH,
-                    preparedChunks: $preparedChunks,
-                    preparedPlayBatches: $preparedPlayBatches,
-                    traceUnsupportedPackets: $config->traceUnsupportedPackets,
-                    unsupportedPacketLogLimit: $config->unsupportedPacketLogLimit,
-                    worldBinding: static function (\Bedriox\Server\Player\PlayerBootstrap $bootstrap) use (
-                        $worldRuntimes,
-                        $initialization,
-                        $flatWorld,
-                        $data,
-                        $runtimeLimits,
-                        $config,
-                        $itemCatalog,
-                        $craftingCatalog,
-                    ): ?array {
-                        $runtime = $worldRuntimes->get($bootstrap->worldName, $bootstrap->dimension);
-                        if ($runtime === null) {
-                            return null;
-                        }
-                        $worldInitialization = $runtime->opened->world === $flatWorld
-                            ? $initialization
-                            : ($initialization instanceof BedrockPlayInitializationFactory
-                            ? BedrockPlayInitializationFactory::forWorld(
-                                $data,
-                                $runtimeLimits,
-                                $runtime->opened->data,
-                                $config->movementRewindHistorySize,
-                                $config->defaultGamemode,
-                                $itemCatalog,
-                                $craftingCatalog,
-                                $runtime->opened->world->time(...),
-                                $runtime->opened->world->dimension(),
-                            )
-                            : $initialization);
-
-                        return [
-                            'initialization' => $worldInitialization,
-                            'world' => $runtime->opened->world,
-                            'preparedChunks' => $runtime->preparedChunks,
-                        ];
-                    },
-                ),
+                $playChannels,
                 $world,
                 $worldLoop,
                 new BedrockWorldEventPacketEncoder($chunkSerializer, $inventoryProjector),
@@ -769,6 +798,9 @@ final class ServerBootstrap
                     $config->proxyControlKeyId,
                 )),
                 maximumPlayers: $config->maximumPlayers,
+                preparedPlayBatches: $preparedPlayBatches,
+                resourcePackChunks: $resourcePackChunkCache,
+                runtimeCacheBudget: $runtimeCacheBudget,
             );
         } catch (Throwable $exception) {
             $discovery?->close();

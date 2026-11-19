@@ -261,7 +261,6 @@ final class AsyncNavigationCoordinator
                 $this->paths[$runtimeId] = ['target' => $target, 'points' => $path->points, 'index' => 1];
                 ++$this->completed;
             },
-            hrtime(true) + 100_000_000,
         );
         ++$this->submissionsThisTick;
         if (!$submission->isAccepted()) {

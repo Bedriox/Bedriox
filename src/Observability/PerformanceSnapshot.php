@@ -30,6 +30,7 @@ use Bedriox\Server\Persistence\PersistenceQueueSnapshot;
 use Bedriox\Server\Plugin\Scheduler\Worker\PluginAsyncQueueSnapshot;
 use Bedriox\Server\Runtime\ChunkStreamingSnapshot;
 use Bedriox\Server\Runtime\Input\InboundMetricsSnapshot;
+use Bedriox\Server\Runtime\WorldRuntimeSnapshot;
 use Bedriox\Server\Worker\Chunk\PreparedChunkCacheSnapshot;
 use Bedriox\Server\Worker\WorkerPoolSnapshot;
 use Bedriox\Server\World\ChunkRepositorySnapshot;
@@ -91,5 +92,9 @@ final readonly class PerformanceSnapshot
         public ?PluginAsyncQueueSnapshot $pluginAsyncQueue = null,
         public ?InboundMetricsSnapshot $inbound = null,
         public ?ServerSecuritySnapshot $transportSecurity = null,
+        public int $reportedRuntimeMemoryBytes = 0,
+        /** @var list<WorldRuntimeSnapshot> */
+        public array $worlds = [],
+        public int $trackedServiceMemoryBytes = 0,
     ) {}
 }

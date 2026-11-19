@@ -81,7 +81,6 @@ use Bedriox\Api\TranslatableMessage;
 use Bedriox\Api\World\DimensionType;
 use Bedriox\Api\World\Position as ApiPosition;
 use Bedriox\Data\BedrockDataSet;
-use Bedriox\Data\BlockPropertyRegistry;
 use Bedriox\Data\CanonicalBlockState;
 use Bedriox\Server\Entity\EntityUuid;
 use Bedriox\Server\Entity\Vanilla\LlamaEntity;
@@ -1723,40 +1722,7 @@ final class PluginGameplayEventBridgeTest extends TestCase
             creative: $data->creativeInventoryRegistry(),
             blockItems: $data->blockItemMappingRegistry(),
         );
-        $physicalProperties = null;
-        if ($blockProperties) {
-            $grass = $registry->state($palette->grassBlock);
-            $physicalProperties = BlockPropertyRegistry::fromJson((string) json_encode([
-                'schema' => 1,
-                'states' => [[
-                    'blockState' => [
-                        'identifier' => $grass->identifier(),
-                        'properties' => $grass->properties(),
-                    ],
-                    'burnOdds' => 0,
-                    'canContainLiquidSource' => false,
-                    'collisionShape' => [[0, 0, 0, 1, 1, 1]],
-                    'explosionResistance' => 1,
-                    'flameOdds' => 0,
-                    'friction' => 0.6,
-                    'hardness' => 1,
-                    'isSolid' => true,
-                    'lightDampening' => 15,
-                    'lightEmission' => 0,
-                    'liquidClipShape' => [0, 0, 0, 1, 1, 1],
-                    'liquidReactionOnTouch' => 'none',
-                    'mapColor' => '#000000ff',
-                    'outlineShape' => [0, 0, 0, 1, 1, 1],
-                    'requiresCorrectToolForDrops' => false,
-                    'thickness' => 1,
-                    'tintMethod' => 'none',
-                    'translationKey' => 'tile.grass.name',
-                    'translucency' => 0,
-                    'uiShape' => [0, 0, 0, 1, 1, 1],
-                    'visualShape' => [0, 0, 0, 1, 1, 1],
-                ]],
-            ], JSON_THROW_ON_ERROR), $data->blockStateRegistry());
-        }
+        $physicalProperties = $blockProperties ? $data->blockPropertyRegistry() : null;
 
         return [
             new WorldSimulation(

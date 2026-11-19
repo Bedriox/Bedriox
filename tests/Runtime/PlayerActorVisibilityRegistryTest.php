@@ -114,6 +114,38 @@ final class PlayerActorVisibilityRegistryTest extends TestCase
         self::assertSame([], $registry->viewersOf('actor'));
     }
 
+    public function testReusedHandleDoesNotInheritTheDepartedPlayersVisibility(): void
+    {
+        $registry = new PlayerActorVisibilityRegistry(2);
+        $registry->upsert($this->player('actor', 1, 0.0));
+        $registry->upsert($this->player('viewer', 2, 0.0));
+        $registry->reconcileActor('actor', static fn(): bool => true);
+
+        $registry->remove('viewer');
+        $registry->upsert($this->player('replacement', 3, 0.0));
+
+        self::assertSame([], $registry->viewersOf('actor'));
+        self::assertSame([], $registry->visibleRecipients('actor', ['replacement']));
+        $registry->reconcileViewer('replacement', static fn(): bool => true);
+        self::assertSame(['replacement'], $registry->viewersOf('actor'));
+    }
+
+    public function testDenseOneHundredFiftyPlayerVisibilityRemainsExact(): void
+    {
+        $registry = new PlayerActorVisibilityRegistry(150);
+        for ($index = 1; $index <= 150; ++$index) {
+            $registry->upsert($this->player('session-' . $index, $index, (float) $index));
+        }
+        foreach ($registry->sessionIds() as $actorSessionId) {
+            self::assertCount(149, $registry->reconcileActor($actorSessionId, static fn(): bool => true));
+        }
+
+        self::assertCount(149, $registry->viewersOf('session-1'));
+        self::assertCount(149, $registry->viewersOf('session-150'));
+        self::assertCount(149, $registry->remove('session-75'));
+        self::assertCount(148, $registry->viewersOf('session-1'));
+    }
+
     public function testRespawnRefreshReintroducesOnlyRetainedViewers(): void
     {
         $registry = new PlayerActorVisibilityRegistry(3);

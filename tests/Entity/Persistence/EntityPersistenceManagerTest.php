@@ -797,6 +797,72 @@ final class EntityPersistenceManagerTest extends TestCase
         self::assertSame(-12.0, $restored->getPitch());
     }
 
+    public function testAsynchronousChunkUnloadDefersWithoutDrainingPendingSave(): void
+    {
+        $chunk = new ChunkPosition(0, 0);
+        $store = new TestAsynchronousEntityPersistenceStore();
+        $store->completeSavesOnPoll = false;
+        $store->snapshots[$chunk->key()] = new EntityChunkSnapshot('world', $chunk, 1, [
+            self::record(self::COW_UUID, $chunk, new Position(1.5, 64.0, 1.5), revision: 3),
+        ]);
+        $registry = new EntityRegistry();
+        $manager = new EntityPersistenceManager(
+            'world',
+            $registry,
+            EntityDefinitionRegistry::baseline(),
+            $store,
+        );
+        $manager->activateChunk($chunk);
+        $cow = $registry->getByUniqueId(self::COW_UUID);
+        self::assertInstanceOf(CowEntity::class, $cow);
+        $registry->move($cow->getRuntimeId(), 'world', new Position(2.5, 64.0, 1.5), 0.0, 0.0);
+
+        self::assertNull($manager->tryUnloadChunk($chunk));
+        self::assertCount(1, $store->queuedSaves);
+        self::assertSame(0, $store->saveDrainCalls);
+        self::assertTrue($manager->isChunkActivated($chunk));
+        self::assertNull($manager->tryUnloadChunk($chunk));
+        self::assertSame(0, $store->saveDrainCalls);
+
+        $store->completeSavesOnPoll = true;
+        self::assertSame(1, $manager->tryUnloadChunk($chunk));
+        self::assertFalse($manager->isChunkActivated($chunk));
+        self::assertSame(0, $store->saveDrainCalls);
+    }
+
+    public function testAsynchronousChunkUnloadDefersWithoutDrainingOwnershipTransfer(): void
+    {
+        $source = new ChunkPosition(0, 0);
+        $destination = new ChunkPosition(1, 0);
+        $store = new TestAsynchronousEntityPersistenceStore();
+        $store->completeTransfersOnPoll = false;
+        $store->snapshots[$source->key()] = new EntityChunkSnapshot('world', $source, 1, [
+            self::record(self::COW_UUID, $source, new Position(15.5, 64.0, 1.5), revision: 3),
+        ]);
+        $registry = new EntityRegistry();
+        $manager = new EntityPersistenceManager(
+            'world',
+            $registry,
+            EntityDefinitionRegistry::baseline(),
+            $store,
+        );
+        $manager->activateChunk($source);
+        $cow = $registry->getByUniqueId(self::COW_UUID);
+        self::assertInstanceOf(CowEntity::class, $cow);
+        $registry->move($cow->getRuntimeId(), 'world', new Position(16.5, 64.0, 1.5), 0.0, 0.0);
+
+        self::assertNull($manager->tryUnloadChunk($source));
+        self::assertCount(1, $store->queuedTransfers);
+        self::assertSame(0, $store->transferDrainCalls);
+        self::assertTrue($manager->isChunkActivated($source));
+
+        $store->completeTransfersOnPoll = true;
+        self::assertSame(0, $manager->tryUnloadChunk($source));
+        self::assertFalse($manager->isChunkActivated($source));
+        self::assertTrue($manager->isChunkActivated($destination));
+        self::assertSame(0, $store->transferDrainCalls);
+    }
+
     private static function record(
         string $uuid,
         ChunkPosition $chunk,
@@ -894,6 +960,14 @@ final class TestAsynchronousEntityPersistenceStore implements AsynchronousEntity
     /** @var list<EntityChunkSnapshot> */
     public array $queuedSaves = [];
 
+    public bool $completeSavesOnPoll = true;
+
+    public bool $completeTransfersOnPoll = true;
+
+    public int $saveDrainCalls = 0;
+
+    public int $transferDrainCalls = 0;
+
     private int $nextSaveId = 1;
 
     public function loadEntityChunk(ChunkPosition $position, DimensionType $dimension = DimensionType::OVERWORLD): ?EntityChunkSnapshot
@@ -961,11 +1035,13 @@ final class TestAsynchronousEntityPersistenceStore implements AsynchronousEntity
 
     public function pollEntityChunkSaves(int $maximumCompletions = 256, ?DimensionType $dimension = null): array
     {
-        return $this->completeSaves($maximumCompletions);
+        return $this->completeSavesOnPoll ? $this->completeSaves($maximumCompletions) : [];
     }
 
     public function drainEntityChunkSaves(int $timeoutMilliseconds, ?DimensionType $dimension = null): array
     {
+        ++$this->saveDrainCalls;
+
         return $this->completeSaves(count($this->queuedSaves));
     }
 
@@ -983,11 +1059,13 @@ final class TestAsynchronousEntityPersistenceStore implements AsynchronousEntity
 
     public function pollEntityOwnershipTransfers(int $maximumCompletions = 256, ?DimensionType $dimension = null): array
     {
-        return $this->complete($maximumCompletions);
+        return $this->completeTransfersOnPoll ? $this->complete($maximumCompletions) : [];
     }
 
     public function drainEntityOwnershipTransfers(int $timeoutMilliseconds, ?DimensionType $dimension = null): array
     {
+        ++$this->transferDrainCalls;
+
         return $this->complete(count($this->queuedTransfers));
     }
 

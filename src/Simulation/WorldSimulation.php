@@ -602,6 +602,8 @@ use SplQueue;
 
 final class WorldSimulation
 {
+    /** Bounds expensive player snapshots and relationship teardown during mass disconnects. */
+    private const int MAXIMUM_DISCONNECTS_PER_TICK = 4;
     private const int SPAWNER_DISCOVERY_CHUNKS_PER_TICK = 2;
     private const int SPAWNERS_PER_TICK = 64;
     private const int ORDINARY_SPAWNER_TICK_INTERVAL = 20;
@@ -2022,7 +2024,10 @@ final class WorldSimulation
             $events,
             ...$this->drainAdmissionReconciliationEvents($this->limits->maximumCommandsPerTick),
         );
-        [$processed, $lifecycleEvents] = $this->processLifecycleCommands($this->limits->maximumCommandsPerTick);
+        [$processed, $lifecycleEvents] = $this->processLifecycleCommands(min(
+            self::MAXIMUM_DISCONNECTS_PER_TICK,
+            $this->limits->maximumCommandsPerTick,
+        ));
         array_push($events, ...$lifecycleEvents);
         $stageCompletedNanoseconds = hrtime(true);
         $stages = [
@@ -13100,7 +13105,6 @@ final class WorldSimulation
             $this->deliveredEntityActorsBySession[$player->sessionId],
             $this->runtimeAudienceAuthoritySessions[$player->sessionId],
         );
-
         return new PlayerDisconnected(
             $player->sessionId,
             $player->identity->uuid,

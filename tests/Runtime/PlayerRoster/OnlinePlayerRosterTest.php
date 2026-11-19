@@ -123,6 +123,84 @@ final class OnlinePlayerRosterTest extends TestCase
         $roster->admit('second-session', self::entry(strtoupper($entry->uuid), 2, 'Duplicate', 'skin-duplicate'));
     }
 
+    public function testDepartedViewerHandleIsReusedWithoutInheritingDeliveryState(): void
+    {
+        $roster = new OnlinePlayerRoster(2);
+        $first = self::entry('00000000-0000-0000-0000-000000000001', 1, 'First', 'skin-first');
+        $second = self::entry('00000000-0000-0000-0000-000000000002', 2, 'Second', 'skin-second');
+        $firstRevision = $roster->admit('first-session', $first);
+        $roster->acknowledgeOwner('first-session', $first->uuid, $firstRevision);
+        $secondRevision = $roster->admit('second-session', $second);
+        $roster->acknowledgeOwner('second-session', $second->uuid, $secondRevision);
+        foreach (['first-session', 'second-session'] as $sessionId) {
+            $plan = $roster->plan($sessionId);
+            $roster->acknowledgeAdditions($sessionId, $plan['additions']);
+        }
+
+        self::assertTrue($roster->remove('second-session', $second->uuid));
+        $roster->forgetViewer('second-session');
+        $departure = $roster->plan('first-session');
+        self::assertSame([$second->uuid], $departure['removals']);
+        $roster->acknowledgeRemovals('first-session', $departure['removals']);
+
+        $third = self::entry('00000000-0000-0000-0000-000000000003', 3, 'Third', 'skin-third');
+        $thirdRevision = $roster->admit('third-session', $third);
+        $roster->acknowledgeOwner('third-session', $third->uuid, $thirdRevision);
+
+        $thirdPlan = $roster->plan('third-session');
+        self::assertSame([$first->uuid], array_column($thirdPlan['additions'], 'identity'));
+        self::assertSame([], $thirdPlan['removals']);
+        self::assertSame([$third->uuid], array_column($roster->plan('first-session')['additions'], 'identity'));
+    }
+
+    public function testIdentityReadmittedBeforeRemovalAcknowledgementBecomesAnUpdate(): void
+    {
+        $roster = new OnlinePlayerRoster(2);
+        $first = self::entry('00000000-0000-0000-0000-000000000001', 1, 'First', 'skin-first');
+        $returning = self::entry('00000000-0000-0000-0000-000000000002', 2, 'Returning', 'skin-old');
+        $firstRevision = $roster->admit('first-session', $first);
+        $roster->acknowledgeOwner('first-session', $first->uuid, $firstRevision);
+        $returningRevision = $roster->admit('old-session', $returning);
+        $roster->acknowledgeOwner('old-session', $returning->uuid, $returningRevision);
+        foreach (['first-session', 'old-session'] as $sessionId) {
+            $plan = $roster->plan($sessionId);
+            $roster->acknowledgeAdditions($sessionId, $plan['additions']);
+        }
+
+        self::assertTrue($roster->remove('old-session', $returning->uuid));
+        $roster->forgetViewer('old-session');
+        $replacement = self::entry($returning->uuid, 3, 'Returning', 'skin-new');
+        $replacementRevision = $roster->admit('new-session', $replacement);
+        $roster->acknowledgeOwner('new-session', $replacement->uuid, $replacementRevision);
+
+        $plan = $roster->plan('first-session');
+        self::assertSame([], $plan['removals']);
+        self::assertSame([$returning->uuid], array_column($plan['additions'], 'identity'));
+        self::assertSame('skin-new', $plan['additions'][0]['entry']->skin->skinId);
+    }
+
+    public function testPartiallyAcknowledgedPlanRetainsOnlyUndeliveredEntries(): void
+    {
+        $roster = new OnlinePlayerRoster(3);
+        $entries = [
+            'first-session' => self::entry('00000000-0000-0000-0000-000000000001', 1, 'First', 'skin-first'),
+            'second-session' => self::entry('00000000-0000-0000-0000-000000000002', 2, 'Second', 'skin-second'),
+            'third-session' => self::entry('00000000-0000-0000-0000-000000000003', 3, 'Third', 'skin-third'),
+        ];
+        foreach ($entries as $sessionId => $entry) {
+            $revision = $roster->admit($sessionId, $entry);
+            $roster->acknowledgeOwner($sessionId, $entry->uuid, $revision);
+        }
+
+        $plan = $roster->plan('first-session');
+        self::assertCount(2, $plan['additions']);
+        $roster->acknowledgeAdditions('first-session', [$plan['additions'][0]]);
+
+        $remaining = $roster->plan('first-session');
+        self::assertSame([$plan['additions'][1]['identity']], array_column($remaining['additions'], 'identity'));
+        self::assertSame([], $remaining['removals']);
+    }
+
     public function testOneHundredFiftyPlayersRemainExactThroughTransferSkinAndDepartureChurn(): void
     {
         $roster = new OnlinePlayerRoster(150);

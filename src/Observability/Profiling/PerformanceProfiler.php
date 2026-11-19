@@ -207,7 +207,7 @@ final class PerformanceProfiler
             'second' => $second,
             'tps' => $snapshot->currentTps,
             'mspt' => $snapshot->currentMspt,
-            'memory_bytes' => $snapshot->memoryBytes,
+            'memory_bytes' => max($snapshot->reportedRuntimeMemoryBytes, $snapshot->memoryBytes),
             'players' => $snapshot->onlinePlayers,
             'entities' => $snapshot->entityCount,
             'loaded_chunks' => $snapshot->loadedChunks,
@@ -547,7 +547,7 @@ final class PerformanceProfiler
         $garbageCollection = $snapshot->garbageCollection;
         $memoryManagement = $snapshot->memoryManagement;
         $memory = [
-            'used_bytes' => $snapshot->memoryBytes,
+            'used_bytes' => max($snapshot->reportedRuntimeMemoryBytes, $snapshot->memoryBytes),
             'peak_bytes' => $snapshot->peakMemoryBytes,
             'limit_bytes' => $snapshot->configuredMemoryLimitBytes,
             'garbage_collections' => $snapshot->garbageCollectorRuns,

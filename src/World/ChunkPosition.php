@@ -37,4 +37,10 @@ final readonly class ChunkPosition
     {
         return $this->x . ':' . $this->z;
     }
+
+    /** Collision-free 64-bit key for process-local PHP maps. */
+    public function mapKey(): int
+    {
+        return ($this->x << 32) | ($this->z & 0xffff_ffff);
+    }
 }

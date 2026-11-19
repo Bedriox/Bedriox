@@ -27,6 +27,8 @@ use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Chunk;
 use Bedriox\Server\World\ChunkFinalizationState;
 use Bedriox\Server\World\ChunkPosition;
+use Bedriox\Server\World\PackedPaletteIndices;
+use Bedriox\Server\World\PackedPaletteWords;
 use Bedriox\Server\World\Storage\LevelDb\PersistentBlockEntityCodec;
 use Bedriox\Server\World\SubChunk;
 use Bedriox\Server\World\SubChunkBlockStorage;
@@ -35,7 +37,7 @@ use Bedriox\Server\World\SubChunkBlockStorage;
 final class ChunkTransferCodec
 {
     public const int MAXIMUM_ENCODED_BYTES = 16_777_216;
-    private const string MAGIC = "BXCT\x00\x02";
+    private const string MAGIC = "BXCT\x00\x03";
     private const int CHECKSUM_BYTES = 32;
     private const int MAXIMUM_STATE_BYTES = 65_535;
 
@@ -59,7 +61,7 @@ final class ChunkTransferCodec
                 foreach ($palette as $internalId) {
                     $body .= self::encodeState($states->state($internalId));
                 }
-                $body .= $storage->paletteIndices();
+                $body .= $storage->packedPaletteIndices();
                 self::guardBody($body);
             }
         }
@@ -72,7 +74,7 @@ final class ChunkTransferCodec
             foreach ($storage->palette() as $biome) {
                 $paletteBody .= self::encodeString($biome->identifier);
             }
-            $indices = $storage->paletteIndices();
+            $indices = $storage->packedPaletteIndices();
             if ($previousPaletteBody !== null
                 && $paletteBody === $previousPaletteBody
                 && $indices === $previousIndices) {
@@ -172,9 +174,11 @@ final class ChunkTransferCodec
                 for ($paletteIndex = 0; $paletteIndex < $paletteCount; ++$paletteIndex) {
                     $palette[] = new Biome($reader->boundedString(128));
                 }
-                $previousBiomeStorage = BiomeStorage::fromPaletteIndices(
+                $previousBiomeStorage = BiomeStorage::fromPackedPaletteIndices(
                     $palette,
-                    $reader->bytes(BiomeStorage::BIOME_COUNT),
+                    $reader->bytes(PackedPaletteIndices::bytesFor(
+                        PackedPaletteWords::bitsForPaletteSize($paletteCount),
+                    )),
                 );
                 $biomeStorages[$sectionY] = $previousBiomeStorage;
             }
@@ -218,7 +222,12 @@ final class ChunkTransferCodec
             $palette[] = $states->internalId(self::decodeState($reader));
         }
 
-        return SubChunkBlockStorage::fromPaletteIndices($palette, $reader->bytes(SubChunkBlockStorage::BLOCK_COUNT));
+        return SubChunkBlockStorage::fromPackedPaletteIndices(
+            $palette,
+            $reader->bytes(PackedPaletteIndices::bytesFor(
+                PackedPaletteWords::bitsForPaletteSize($paletteCount),
+            )),
+        );
     }
 
     private static function encodeState(CanonicalBlockState $state): string

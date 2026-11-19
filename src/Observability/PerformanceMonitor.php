@@ -31,6 +31,7 @@ use Bedriox\Server\Persistence\PersistenceQueueSnapshot;
 use Bedriox\Server\Plugin\Scheduler\Worker\PluginAsyncQueueSnapshot;
 use Bedriox\Server\Runtime\ChunkStreamingSnapshot;
 use Bedriox\Server\Runtime\Input\InboundMetricsSnapshot;
+use Bedriox\Server\Runtime\WorldRuntimeSnapshot;
 use Bedriox\Server\Worker\Chunk\PreparedChunkCacheSnapshot;
 use Bedriox\Server\Worker\WorkerPoolSnapshot;
 use Bedriox\Server\World\ChunkRepositorySnapshot;
@@ -167,7 +168,8 @@ final class PerformanceMonitor
         }
         for ($index = 0; $index < $tickCount; ++$index) {
             $this->append($this->tickDurations, $duration);
-            $this->append($this->tickCompletions, $completedAt);
+            $completion = $completedAt - (($tickCount - $index - 1) * $duration);
+            $this->append($this->tickCompletions, $completion);
             $this->append($this->subsystemDurations, $perTickSubsystems);
             $this->append($this->unclassifiedDurations, $unclassified);
             $this->profiler?->completeTick($duration);
@@ -232,6 +234,7 @@ final class PerformanceMonitor
         $this->profiler?->sample($snapshot, $worldStagesMicroseconds);
     }
 
+    /** @param list<WorldRuntimeSnapshot> $worlds */
     public function snapshot(
         int $onlinePlayers = 0,
         int $maximumPlayers = 0,
@@ -267,6 +270,8 @@ final class PerformanceMonitor
         ?PluginAsyncQueueSnapshot $pluginAsyncQueue = null,
         ?InboundMetricsSnapshot $inbound = null,
         ?ServerSecuritySnapshot $transportSecurity = null,
+        array $worlds = [],
+        int $trackedServiceMemoryBytes = 0,
     ): PerformanceSnapshot {
         if ($onlinePlayers < 0 || $maximumPlayers < 0 || $onlinePlayers > $maximumPlayers
             || $loadedChunks < 0 || $dirtyChunks < 0 || $generatingChunks < 0
@@ -278,6 +283,13 @@ final class PerformanceMonitor
         }
         $uptimeNanoseconds = max(0, ($nowNanoseconds ?? self::now()) - $this->startedAtNanoseconds);
         $metrics = $this->completed ??= $this->calculateCompletedMetrics($nowNanoseconds ?? self::now());
+        $mainMemoryBytes = memory_get_usage(true);
+        $reportedRuntimeMemoryBytes = $mainMemoryBytes + $trackedServiceMemoryBytes;
+        foreach ([$coreWorkers, $pluginWorkers] as $workers) {
+            if ($workers !== null) {
+                $reportedRuntimeMemoryBytes += $workers->brokerMemoryBytes + $workers->workerMemoryBytes;
+            }
+        }
 
         return new PerformanceSnapshot(
             (int) floor($uptimeNanoseconds / 1_000_000_000),
@@ -292,7 +304,7 @@ final class PerformanceMonitor
             $metrics->samples,
             self::milliseconds(self::average($this->pollDurations)),
             self::milliseconds(self::percentile($this->pollDurations, 0.95)),
-            memory_get_usage(true),
+            $mainMemoryBytes,
             memory_get_peak_usage(true),
             $onlinePlayers,
             $maximumPlayers,
@@ -332,6 +344,9 @@ final class PerformanceMonitor
             $pluginAsyncQueue,
             $inbound,
             $transportSecurity,
+            $reportedRuntimeMemoryBytes,
+            $worlds,
+            $trackedServiceMemoryBytes,
         );
     }
 
@@ -475,15 +490,18 @@ final class PerformanceMonitor
         if (count($completions) < 2) {
             return $completions === [] ? 0.0 : (float) $this->targetTicksPerSecond;
         }
-        $slowestInterval = 0;
-        for ($index = 1, $count = count($completions); $index < $count; ++$index) {
-            $slowestInterval = max($slowestInterval, $completions[$index] - $completions[$index - 1]);
-        }
-        if ($slowestInterval <= 0) {
-            return (float) $this->targetTicksPerSecond;
+        $count = count($completions);
+        $windowIntervals = min($this->targetTicksPerSecond, $count - 1);
+        $minimum = (float) $this->targetTicksPerSecond;
+        for ($end = $windowIntervals; $end < $count; ++$end) {
+            $elapsed = $completions[$end] - $completions[$end - $windowIntervals];
+            if ($elapsed <= 0) {
+                continue;
+            }
+            $minimum = min($minimum, ($windowIntervals * 1_000_000_000) / $elapsed);
         }
 
-        return min((float) $this->targetTicksPerSecond, 1_000_000_000 / $slowestInterval);
+        return min((float) $this->targetTicksPerSecond, $minimum);
     }
 
     private static function saturatingAdd(int $left, int $right): int

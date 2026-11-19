@@ -247,7 +247,7 @@ final class BedrockPlayChannel
     private bool $worldSwitchCenterQueued = false;
     private bool $worldSwitchCenterDrained = false;
     private int $worldSwitchGateTicks = 0;
-    private ?string $worldSwitchCenterKey = null;
+    private ?int $worldSwitchCenterKey = null;
     private ?MovePlayerPacket $pendingWorldSwitchMovement = null;
     private bool $progressiveWorldSwitchPublisher = false;
     private int $publishedWorldSwitchRadius = 0;
@@ -257,13 +257,13 @@ final class BedrockPlayChannel
     /** @var array<string, true> Chunk keys whose sent visibility changed since the last projection pass. */
     private array $chunkVisibilityChanges = [];
     private ?ChunkViewManager $chunkView = null;
-    /** @var array<string, ChunkPosition> */
+    /** @var array<int, ChunkPosition> */
     private array $retainedChunks = [];
-    /** @var array<string, true> */
+    /** @var array<int, true> */
     private array $queuedChunkKeys = [];
-    /** @var array<string, ChunkPosition> */
+    /** @var array<int, ChunkPosition> */
     private array $pendingChunkRequests = [];
-    /** @var array<string, true> */
+    /** @var array<int, true> */
     private array $sentSpawnChunks = [];
     private readonly AuthenticatedLogin $login;
     private readonly BatchLimits $batchLimits;
@@ -295,7 +295,7 @@ final class BedrockPlayChannel
     /** @var array<int, true> */
     private array $authorizedMapIds = [];
     private ?int $heldMapId = null;
-    /** @var array<string, int> Chunk key to the block-entity revision already indexed for this session. */
+    /** @var array<int, int> Chunk key to the block-entity revision already indexed for this session. */
     private array $mapAuthorizationScannedChunks = [];
 
     /** @var SplQueue<string> */
@@ -305,10 +305,10 @@ final class BedrockPlayChannel
     private SplQueue $skinChanges;
     private int $deferredCompressionBytes = 0;
 
-    /** @var array<string, true> */
+    /** @var array<string, true> Raw 64-bit request fingerprints used only for bounded duplicate diagnostics. */
     private array $trackedSubChunkRequests = [];
 
-    /** @var array<string, true> */
+    /** @var array<int, true> Collision-free packed fixed-flat section coordinates. */
     private array $servedSubChunkSections = [];
 
     /**
@@ -880,14 +880,10 @@ final class BedrockPlayChannel
             return false;
         }
         try {
-            $clearBatch = $this->preparedPlayBatches->getOrEncode(
-                $initializationPacket->key,
-                fn(): string => PacketBatchCodec::encode([
-                    new PacketFrame(
-                        new PacketHeader(BedrockPacketCodec::packetId($packet)),
-                        BedrockPacketCodec::encode($packet, $this->protocolVersion),
-                    ),
-                ], $this->batchLimits),
+            $clearBatch = $this->preparedPlayBatches->preparePacket(
+                $initializationPacket,
+                $this->protocolVersion,
+                $this->batchLimits,
             );
         } catch (Throwable $error) {
             return $this->fail('encode_failed', BedrockPacketCodec::packetId($packet), $error);
@@ -1046,7 +1042,7 @@ final class BedrockPlayChannel
             return true;
         }
         foreach ($this->retainedChunks as $chunkPosition) {
-            $key = $chunkPosition->key();
+            $key = $chunkPosition->mapKey();
             $chunk = $this->flatWorld?->loadedChunk($chunkPosition);
             if ($chunk === null) {
                 continue;
@@ -1595,14 +1591,14 @@ final class BedrockPlayChannel
         $this->chunkVisibilityChanges = [];
         $this->generatedChunks = new SplQueue();
         foreach ($transition->required() as $position) {
-            $this->queuedChunkKeys[$position->key()] = true;
+            $this->queuedChunkKeys[$position->mapKey()] = true;
             $this->generatedChunks->enqueue($position);
         }
         $center = new ChunkPosition(
             (int) floor($transition->x / 16.0),
             (int) floor($transition->z / 16.0),
         );
-        $this->worldSwitchCenterKey = $center->key();
+        $this->worldSwitchCenterKey = $center->mapKey();
         $this->pendingWorldSwitch = null;
         $this->worldSwitchReadyForCommit = false;
         $this->spawnStatusQueued = true;
@@ -1682,6 +1678,7 @@ final class BedrockPlayChannel
         $this->pendingBootstrapPackets = new SplQueue();
         $this->pendingStreamingResponses = new SplQueue();
         $this->generatedChunks = new SplQueue();
+        $this->skinChanges = new SplQueue();
         $this->flatWorld?->maps()?->releaseSession($this->sessionId);
         $this->requestedMapIds = [];
         $this->pendingMapIds = [];
@@ -1703,7 +1700,10 @@ final class BedrockPlayChannel
         $this->queuedChunkKeys = [];
         $this->pendingChunkRequests = [];
         $this->sentSpawnChunks = [];
+        $this->chunkVisibilityChanges = [];
         $this->chunkView = null;
+        $this->flatWorld = null;
+        $this->preparedChunks = null;
         $this->mainInventoryOpen = false;
         $this->mainInventoryId = 0;
         $this->storageContainerId = null;
@@ -1725,6 +1725,19 @@ final class BedrockPlayChannel
         $this->spawnAcknowledged = false;
         $this->admissionReleased = false;
         $this->preferStreamingResponse = true;
+        $this->lastMovementTick = null;
+        $this->lastRequestedFlyingState = null;
+        $this->authoritativeAbilities = null;
+        $this->traceInboundPackets = [];
+        $this->unsupportedPacketTraceCounts = [];
+        $this->traceOutboundBatches = [];
+        $this->tracePreparedChunks = 0;
+        $this->tracePreparedChunkBytes = 0;
+        $this->traceInboundEnvelopes = 0;
+        $this->traceInboundDecryptNanoseconds = 0;
+        $this->traceInboundBatchNanoseconds = 0;
+        $this->traceInboundDecodeNanoseconds = 0;
+        $this->traceInboundHandleNanoseconds = 0;
         $fields = ['reason' => $reason];
         if ($packetId !== null) {
             $fields['packet_id'] = $packetId;
@@ -2305,7 +2318,7 @@ final class BedrockPlayChannel
             if (!$this->queuePending($this->pendingStreamingResponses, $response)) {
                 return false;
             }
-            $fingerprint = hash('sha256', $packet->encode());
+            $fingerprint = hash('xxh3', $packet->encode(), true);
             $repeated = isset($this->trackedSubChunkRequests[$fingerprint]);
             if (!$repeated && count($this->trackedSubChunkRequests) < $this->limits->maximumTrackedSubChunkRequests) {
                 $this->trackedSubChunkRequests[$fingerprint] = true;
@@ -2319,7 +2332,7 @@ final class BedrockPlayChannel
                     || abs($chunkZ) > $this->limits->maximumChunkRadius || $sectionY < -4 || $sectionY > 3) {
                     continue;
                 }
-                $key = $chunkX . ':' . $sectionY . ':' . $chunkZ;
+                $key = self::fixedFlatSubChunkSectionKey($chunkX, $sectionY, $chunkZ);
                 if (!isset($this->servedSubChunkSections[$key])
                     && count($this->servedSubChunkSections) < $this->limits->maximumTrackedSubChunkSections) {
                     $this->servedSubChunkSections[$key] = true;
@@ -3522,7 +3535,7 @@ final class BedrockPlayChannel
             return false;
         }
         $chunk = new ChunkPosition((int) floor($position->x / 16.0), (int) floor($position->z / 16.0));
-        if (!isset($this->retainedChunks[$chunk->key()]) || isset($this->queuedChunkKeys[$chunk->key()])) {
+        if (!isset($this->retainedChunks[$chunk->mapKey()]) || isset($this->queuedChunkKeys[$chunk->mapKey()])) {
             return false;
         }
 
@@ -3855,6 +3868,38 @@ final class BedrockPlayChannel
             + $this->deferredCompressionBatches->count();
     }
 
+    /** Captures counts only when requested; normal packet processing pays no diagnostics allocation cost. */
+    public function residencySnapshot(): BedrockPlayChannelResidencySnapshot
+    {
+        $compressionPayloads = $this->outboundCompression?->outstandingCount() ?? 0;
+        $compressionBytes = $this->outboundCompression?->outstandingBytes() ?? 0;
+
+        return new BedrockPlayChannelResidencySnapshot(
+            queuedPayloads: $this->outgoing->count() + $this->deferredCompressionBatches->count()
+                + $compressionPayloads,
+            queuedBytes: $this->outgoingBytes + $this->deferredCompressionBytes + $compressionBytes,
+            commands: $this->commands->count(),
+            playerCommands: $this->playerCommands->count(),
+            formResponses: $this->formResponses->count(),
+            bootstrapPackets: $this->pendingBootstrapPackets->count() + count($this->deferredInitializationPackets),
+            streamingResponses: $this->pendingStreamingResponses->count(),
+            generatedChunks: $this->generatedChunks->count(),
+            retainedChunks: count($this->retainedChunks),
+            queuedChunks: count($this->queuedChunkKeys),
+            pendingChunkRequests: count($this->pendingChunkRequests),
+            visibilityChanges: count($this->chunkVisibilityChanges),
+            requestedMaps: count($this->requestedMapIds),
+            pendingMaps: count($this->pendingMapIds),
+            authorizedMaps: count($this->authorizedMapIds),
+            scannedMapChunks: count($this->mapAuthorizationScannedChunks),
+            trackedSubChunkRequests: count($this->trackedSubChunkRequests),
+            servedSubChunkSections: count($this->servedSubChunkSections),
+            skinChanges: $this->skinChanges->count(),
+            traceBuckets: count($this->traceInboundPackets) + count($this->traceOutboundBatches)
+                + count($this->unsupportedPacketTraceCounts),
+        );
+    }
+
     private function releaseCompressedBatches(): bool
     {
         if ($this->outboundCompression === null) {
@@ -3904,7 +3949,7 @@ final class BedrockPlayChannel
                 break;
             }
             $position = new ChunkPosition($coordinate['x'], $coordinate['z']);
-            $key = $position->key();
+            $key = $position->mapKey();
             if (isset($this->queuedChunkKeys[$key])) {
                 continue;
             }
@@ -3947,7 +3992,7 @@ final class BedrockPlayChannel
                 break;
             }
             $position = new ChunkPosition($coordinate['x'], $coordinate['z']);
-            $key = $position->key();
+            $key = $position->mapKey();
             if ($view->isPrepared($position->x, $position->z)) {
                 continue;
             }
@@ -3993,7 +4038,7 @@ final class BedrockPlayChannel
             && !$this->generatedChunks->isEmpty()) {
             /** @var ChunkPosition $position */
             $position = $this->generatedChunks->bottom();
-            $key = $position->key();
+            $key = $position->mapKey();
             if (!$view->contains($position->x, $position->z)) {
                 $this->generatedChunks->dequeue();
                 unset($this->queuedChunkKeys[$key]);
@@ -4246,7 +4291,7 @@ final class BedrockPlayChannel
         $view = $this->chunkView;
         while (!$this->generatedChunks->isEmpty()) {
             $position = $this->generatedChunks->dequeue();
-            unset($this->queuedChunkKeys[$position->key()]);
+            unset($this->queuedChunkKeys[$position->mapKey()]);
             if (!$view->containsRetained($position->x, $position->z)) {
                 $this->releaseChunk($position->x, $position->z);
             }
@@ -4255,15 +4300,22 @@ final class BedrockPlayChannel
 
     private function releaseChunk(int $x, int $z): void
     {
+        $position = new ChunkPosition($x, $z);
+        $key = $position->mapKey();
+        unset($this->mapAuthorizationScannedChunks[$key]);
         if ($this->flatWorld === null) {
             return;
         }
-        $position = new ChunkPosition($x, $z);
-        $key = $position->key();
         if (isset($this->retainedChunks[$key])) {
             $this->flatWorld->releaseChunk($position);
             unset($this->retainedChunks[$key]);
         }
+    }
+
+    /** Packs the admitted [-32, 32] chunk and [-4, 3] section ranges into 17 bits. */
+    private static function fixedFlatSubChunkSectionKey(int $chunkX, int $sectionY, int $chunkZ): int
+    {
+        return (($chunkX + 32) << 10) | (($chunkZ + 32) << 3) | ($sectionY + 4);
     }
 
     private function cancelPendingChunkRequests(): void

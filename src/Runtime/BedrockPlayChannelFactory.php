@@ -21,9 +21,12 @@ declare(strict_types=1);
 namespace Bedriox\Server\Runtime;
 
 use Bedriox\Api\Player\GameMode;
+use Bedriox\Protocol\Identity\VerifiedClientData;
 use Bedriox\Protocol\Packet\SetCommandsEnabledPacket;
 use Bedriox\Protocol\Packet\UpdateAbilitiesPacket;
+use Bedriox\Protocol\ProtocolVersion;
 use Bedriox\Protocol\Value\UnsignedLong;
+use Bedriox\Server\Login\AuthenticatedLogin;
 use Bedriox\Server\Login\LoginChannelReady;
 use Bedriox\Server\Permission\PermissionStore;
 use Bedriox\Server\Player\PlayerBootstrap;
@@ -36,6 +39,14 @@ use Closure;
 
 final class BedrockPlayChannelFactory implements PlayChannelFactory
 {
+    private const string WARM_UP_PUBLIC_KEY = <<<'PEM'
+-----BEGIN PUBLIC KEY-----
+MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEghVsrULO1V7ZoUStBvm7bNVE8ac/IfLe
+pU28Paqfw98DyyjLAyC/VYO0cw66ubsPjd0hOpd6+DVNTQhXbyCN+ZS5ZFtqnwwA
+Lt6DxU/qqVn/K3qn1Lnd1t9C6pxVmSFw
+-----END PUBLIC KEY-----
+PEM;
+
     /**
      * @param null|Closure(PlayerBootstrap): (?array{initialization: PlayInitializationFactory, world: World, preparedChunks: ?PreparedChunkCache}) $worldBinding
      */
@@ -63,6 +74,40 @@ final class BedrockPlayChannelFactory implements PlayChannelFactory
         private bool $traceUnsupportedPackets = true,
         private int $unsupportedPacketLogLimit = 5,
     ) {}
+
+    /** Pays one-time play projection and channel construction costs before the transport accepts players. */
+    public function warmUp(): void
+    {
+        $identityKey = openssl_pkey_get_public(self::WARM_UP_PUBLIC_KEY);
+        if ($identityKey === false) {
+            throw new \RuntimeException('Unable to create the play-channel warm-up identity.');
+        }
+        $clientData = new VerifiedClientData(
+            64,
+            64,
+            str_repeat("\0", 64 * 64 * 4),
+            0,
+            0,
+            '',
+            '{}',
+            [],
+            skinId: 'bedriox:warmup',
+            skinResourcePatchJson: '{"geometry":{"default":"geometry.humanoid.custom"}}',
+        );
+        $login = new AuthenticatedLogin(
+            'Bedriox Warmup',
+            '00000000-0000-4000-8000-000000000000',
+            '',
+            $identityKey,
+            $clientData,
+        );
+        $channel = $this->create(
+            new LoginChannelReady($login, ProtocolVersion::CURRENT),
+            'startup-warmup',
+            UnsignedLong::fromInt(1),
+        );
+        $channel->close('startup_warmup');
+    }
 
     public function create(LoginChannelReady $ready, string $sessionId, UnsignedLong $runtimeEntityId, ?PlayerBootstrap $bootstrap = null): BedrockPlayChannel
     {

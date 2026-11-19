@@ -215,6 +215,27 @@ use Throwable;
 
 final class ServerRuntimeTest extends TestCase
 {
+    public function testEmptyRuntimeUsesTheAdmissionTransportBudget(): void
+    {
+        $transport = new FakeConnectedTransport();
+        $world = new WorldSimulation();
+        $runtime = new ServerRuntime(
+            $transport,
+            new RuntimeLoginFactory(),
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $world,
+            new FixedRateWorldLoop($world, new RuntimeTestClock()),
+            new RecordingEventEncoder(),
+        );
+
+        try {
+            self::assertTrue($runtime->poll());
+            self::assertSame([2], $transport->pollBudgets);
+        } finally {
+            $runtime->close();
+        }
+    }
+
     public function testGatewayControlHelloIsRoutedBeforeBedrockLoginAllocation(): void
     {
         $transport = new FakeConnectedTransport();
@@ -645,12 +666,31 @@ final class ServerRuntimeTest extends TestCase
             $sessionEndpoints = $this->runtimeArrayProperty($runtime, 'sessionEndpoints');
             $firstEndpoint = $sessionEndpoints[$firstId] ?? null;
             self::assertIsString($firstEndpoint);
+            foreach ([
+                'itemActorViewers',
+                'projectileViewers',
+                'areaEffectCloudViewers',
+                'fallingBlockActorViewers',
+            ] as $property) {
+                $this->setRuntimeProperty($runtime, $property, ['world' => [903 => [$firstId => true]]]);
+            }
             (new \ReflectionMethod(ServerRuntime::class, 'removeRuntimeSession'))
                 ->invoke($runtime, $firstEndpoint);
-            $viewers = $this->runtimeArrayProperty($runtime, 'entityActorViewers');
-            $worldViewers = $viewers['world'] ?? null;
-            self::assertIsArray($worldViewers);
-            self::assertSame([], $worldViewers[903] ?? null, 'Disconnect must purge active session delivery state.');
+            foreach ([
+                'entityActorViewers',
+                'itemActorViewers',
+                'projectileViewers',
+                'areaEffectCloudViewers',
+                'fallingBlockActorViewers',
+            ] as $property) {
+                $worldViewers = $this->runtimeArrayProperty($runtime, $property)['world'] ?? [];
+                self::assertIsArray($worldViewers);
+                self::assertArrayNotHasKey(
+                    903,
+                    $worldViewers,
+                    'Disconnect must release empty actor delivery state.',
+                );
+            }
 
             $replacementId = $secondId;
             $replacement = $second;
@@ -777,7 +817,7 @@ final class ServerRuntimeTest extends TestCase
                 new SetLocalPlayerAsInitializedPacket(UnsignedLong::fromInt(1)),
             );
             self::assertTrue($runtime->poll());
-            $clock->advance(50_000_000);
+            $clock->advance(200_000_000);
             self::assertTrue($runtime->poll());
             $this->decodeEncryptedPackets($transport->sent, $decryptor);
             $transport->sent = [];
@@ -1447,6 +1487,105 @@ final class ServerRuntimeTest extends TestCase
         self::assertArrayHasKey(PerformanceSubsystem::NETWORK_OUTBOUND, $snapshot->averageSubsystemMilliseconds);
     }
 
+    public function testPendingPlayerPersistenceContinuesAfterAutosaveCycleBecomesInactive(): void
+    {
+        $store = new class implements \Bedriox\Server\Player\Persistence\AsynchronousPlayerDataStore {
+            /** @var list<\Bedriox\Server\Persistence\PersistenceWriteCompletion> */
+            private array $completions = [];
+            private int $nextId = 1;
+
+            public function exists(string $uuid): bool
+            {
+                return false;
+            }
+
+            public function load(string $uuid): ?PlayerBootstrap
+            {
+                return null;
+            }
+
+            public function save(PlayerBootstrap $player): void {}
+
+            public function enqueueSave(
+                PlayerBootstrap $player,
+                int $revision,
+            ): \Bedriox\Server\Persistence\PersistenceEnqueueResult {
+                $request = new \Bedriox\Server\Persistence\PersistenceWriteRequest(
+                    $this->nextId++,
+                    $this->nextId,
+                    'player:' . $player->identity->uuid,
+                    $revision,
+                    'player',
+                );
+                $this->completions[] = new \Bedriox\Server\Persistence\PersistenceWriteCompletion(
+                    $request->id,
+                    $request->key,
+                    $request->revision,
+                    true,
+                );
+
+                return new \Bedriox\Server\Persistence\PersistenceEnqueueResult(
+                    \Bedriox\Server\Persistence\PersistenceSubmission::ACCEPTED,
+                    $request,
+                );
+            }
+
+            public function pollSaves(int $maximumCompletions = 256): array
+            {
+                return array_splice($this->completions, 0, $maximumCompletions);
+            }
+
+            public function drainSaves(int $timeoutMilliseconds): array
+            {
+                return $this->pollSaves();
+            }
+
+            public function close(): void {}
+        };
+        $persistence = new PlayerPersistenceManager($store, 'world', new Position(0.0, 64.0, 0.0));
+        $world = new WorldSimulation(playerPersistence: $persistence);
+        $commands = new \Bedriox\Server\Simulation\SimulationCommandFactory();
+        self::assertTrue($world->enqueue($commands->join('session-one', 'identity-one', 'One')));
+        $world->tick();
+        self::assertTrue($world->enqueue($commands->move(
+            'session-one',
+            1,
+            1.0,
+            64.0,
+            0.0,
+            0.0,
+            0.0,
+            MovementMode::WALKING,
+        )));
+        $world->tick();
+        $players = (new \ReflectionProperty(WorldSimulation::class, 'players'))->getValue($world);
+        self::assertInstanceOf(\Bedriox\Server\Player\PlayerRegistry::class, $players);
+        $player = $players->player('session-one');
+        self::assertNotNull($player);
+        self::assertFalse($persistence->save($player));
+        self::assertSame(1, $persistence->pendingCount());
+
+        $clock = new RuntimeTestClock();
+        $runtime = new ServerRuntime(
+            new FakeConnectedTransport(),
+            new RuntimeLoginFactory(),
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $world,
+            new FixedRateWorldLoop($world, $clock),
+            new RecordingEventEncoder(),
+            playerPersistence: $persistence,
+        );
+
+        try {
+            self::assertSame([], $this->runtimeArrayProperty($runtime, 'playerAutosaveActive'));
+            $clock->advance(50_000_000);
+            self::assertTrue($runtime->poll());
+            self::assertSame(0, $persistence->pendingCount());
+        } finally {
+            $runtime->close();
+        }
+    }
+
     public function testDuplicateIdentityReceivesEncryptedReasonWithoutKickingExistingSession(): void
     {
         $data = BedrockDataSet::bundled();
@@ -1768,6 +1907,48 @@ final class ServerRuntimeTest extends TestCase
         self::assertTrue($runtime->poll());
         self::assertSame(1, $runtime->sessionCount());
         self::assertSame([], $transport->removed);
+    }
+
+    public function testTransportCloseBurstDetachesImmediatelyAndPacesTeardown(): void
+    {
+        $transport = new FakeConnectedTransport();
+        $clock = new RuntimeTestClock();
+        $world = new WorldSimulation();
+        $factory = new RuntimeLoginFactory(uniqueIdentities: true, uniqueDisplayNames: true);
+        $runtime = new ServerRuntime(
+            $transport,
+            $factory,
+            new BedrockPlayChannelFactory(new EmptyInitializationFactory()),
+            $world,
+            new FixedRateWorldLoop($world, $clock),
+            new RecordingEventEncoder(),
+            closeClock: $clock,
+        );
+        $sessions = [];
+        for ($index = 0; $index < 5; ++$index) {
+            $session = new SessionInfo(20_001 + $index, (string) (41 + $index), '127.0.0.1', 20_001 + $index);
+            $this->advanceToInitializing($runtime, $transport, $session, $factory);
+            $sessions[] = $session;
+        }
+        self::assertSame(5, $runtime->sessionCount());
+        foreach ($sessions as $session) {
+            $transport->events[] = new SessionClosedEvent($session, NetherNetDisconnectReason::PEER_DISCONNECT);
+        }
+
+        self::assertTrue($runtime->poll());
+        self::assertSame(0, $runtime->sessionCount(), 'Every closed endpoint must leave live lookup immediately.');
+        $pending = new \ReflectionProperty(ServerRuntime::class, 'pendingRuntimeSessionRemovals');
+        $queue = $pending->getValue($runtime);
+        self::assertInstanceOf(\SplQueue::class, $queue);
+        self::assertCount(4, $queue, 'Only the bounded teardown batch may run in one poll.');
+
+        self::assertTrue($runtime->poll());
+        self::assertCount(4, $queue, 'Rapid polls must not bypass the teardown cadence.');
+        foreach ([3, 2, 1, 0] as $remaining) {
+            $clock->advance(50_000_000);
+            self::assertTrue($runtime->poll());
+            self::assertCount($remaining, $queue);
+        }
     }
 
     public function testBlockRecipientFilteringPreservesDestroyedStateForParticles(): void
@@ -2222,6 +2403,13 @@ final class ServerRuntimeTest extends TestCase
         self::assertTrue($runtime->poll());
         self::assertSame(1, $runtime->sessionCount());
         self::assertCount(3, $transport->sent, 'Streaming should continue after admission.');
+
+        // Admission intentionally accepts one authenticated payload per poll so a burst cannot
+        // consume the next simulation tick. Preserve wire order while draining the remaining
+        // initialization, movement, and chat payloads.
+        for ($poll = 0; $poll < 3; ++$poll) {
+            self::assertTrue($runtime->poll());
+        }
 
         $clock->advance(50_000_000);
         self::assertTrue($runtime->poll());
@@ -3624,6 +3812,7 @@ final class ServerRuntimeTest extends TestCase
         self::assertTrue($runtime->poll());
         $this->receiveEncrypted($transport, $info, $clientEncryptor, new ResourcePackClientResponsePacket(ResourcePackResponseStatus::Completed, []));
         self::assertTrue($runtime->poll());
+        self::assertTrue($runtime->poll());
 
         return $clientEncryptor;
     }
@@ -3834,11 +4023,13 @@ final class FakeConnectedTransport implements ConnectedTransport
     public ?Throwable $sendFailure = null;
     public int $closeCalls = 0;
     public int $advertisedPlayerCount = 0;
+    /** @var list<int> */ public array $pollBudgets = [];
     /** @var array{string, int, int}|null */
     public ?array $advertisement = null;
 
     public function poll(int $maximumDatagrams): int
     {
+        $this->pollBudgets[] = $maximumDatagrams;
         if ($this->throwOnPoll) {
             throw new \RuntimeException('transport-secret');
         }

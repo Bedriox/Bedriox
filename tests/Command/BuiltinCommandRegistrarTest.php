@@ -453,7 +453,7 @@ final class BuiltinCommandRegistrarTest extends TestCase
             'Players: 2/20 online',
             'TPS: 20.00 current, 19.95 average',
             'MSPT: 2.50 current, 3.00 average',
-            'Memory: 16.0 MiB current, 500.0 MiB limit, 32.0 MiB peak',
+            'Memory: 16.0 MiB runtime reported, 16.0 MiB main, 500.0 MiB limit, 32.0 MiB main peak',
             'Network: 1.0 KiB/s receive, 2.0 KiB/s send',
             'Worlds: 1, 25 loaded chunks, 4 entities',
             '--------- End Status ---------',

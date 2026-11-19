@@ -2141,6 +2141,84 @@ final class BedrockPlayChannelTest extends TestCase
         self::assertStringNotContainsString('offsets":[', implode('', $lines));
     }
 
+    public function testSubChunkResidencyUsesCompactBoundedKeys(): void
+    {
+        [$channel, $client] = $this->channel();
+        $request = new SubChunkRequestPacket(0, 0, 3, 0, [
+            ['x' => 0, 'y' => 0, 'z' => 0],
+            ['x' => 1, 'y' => -1, 'z' => -1],
+        ]);
+
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([$request])),
+            Reliability::RELIABLE,
+        )));
+
+        $snapshot = $channel->residencySnapshot();
+        self::assertSame(1, $snapshot->trackedSubChunkRequests);
+        self::assertSame(2, $snapshot->servedSubChunkSections);
+
+        $requests = (new \ReflectionProperty(BedrockPlayChannel::class, 'trackedSubChunkRequests'))->getValue($channel);
+        $sections = (new \ReflectionProperty(BedrockPlayChannel::class, 'servedSubChunkSections'))->getValue($channel);
+        self::assertIsArray($requests);
+        self::assertIsArray($sections);
+        self::assertIsString(array_key_first($requests));
+        self::assertSame(8, strlen(array_key_first($requests)));
+        self::assertIsInt(array_key_first($sections));
+    }
+
+    public function testReleasedChunksDiscardMapAuthorizationScanState(): void
+    {
+        [$channel] = $this->channel();
+        $key = (new ChunkPosition(4, -7))->mapKey();
+        (new \ReflectionProperty(BedrockPlayChannel::class, 'mapAuthorizationScannedChunks'))
+            ->setValue($channel, [$key => 12]);
+
+        self::assertSame(1, $channel->residencySnapshot()->scannedMapChunks);
+        $release = new \ReflectionMethod(BedrockPlayChannel::class, 'releaseChunk');
+        $release->invoke($channel, 4, -7);
+        self::assertSame(0, $channel->residencySnapshot()->scannedMapChunks);
+    }
+
+    public function testCloseReleasesAllChannelResidentState(): void
+    {
+        [$channel, $client] = $this->channel([new VoxelShapesPacket()]);
+        self::assertTrue($channel->accept(new InboundPayload(
+            $client->encryptBatch($this->encode([new SubChunkRequestPacket(
+                0,
+                0,
+                3,
+                0,
+                [['x' => 0, 'y' => 0, 'z' => 0]],
+            )])),
+            Reliability::RELIABLE,
+        )));
+
+        (new \ReflectionProperty(BedrockPlayChannel::class, 'requestedMapIds'))->setValue($channel, [1 => 2]);
+        (new \ReflectionProperty(BedrockPlayChannel::class, 'pendingMapIds'))->setValue($channel, [1 => true]);
+        (new \ReflectionProperty(BedrockPlayChannel::class, 'authorizedMapIds'))->setValue($channel, [1 => true]);
+        (new \ReflectionProperty(BedrockPlayChannel::class, 'mapAuthorizationScannedChunks'))->setValue($channel, [1 => 2]);
+        (new \ReflectionProperty(BedrockPlayChannel::class, 'traceInboundPackets'))
+            ->setValue($channel, [1 => ['packets' => 1, 'bytes' => 4]]);
+        (new \ReflectionProperty(BedrockPlayChannel::class, 'unsupportedPacketTraceCounts'))->setValue($channel, [2 => 1]);
+        $deferred = (new \ReflectionProperty(BedrockPlayChannel::class, 'deferredCompressionBatches'))
+            ->getValue($channel);
+        self::assertInstanceOf(\SplQueue::class, $deferred);
+        $deferred->enqueue('resident-batch');
+        (new \ReflectionProperty(BedrockPlayChannel::class, 'deferredCompressionBytes'))
+            ->setValue($channel, strlen('resident-batch'));
+
+        $before = $channel->residencySnapshot();
+        self::assertGreaterThan(0, $before->retainedEntries());
+        self::assertGreaterThan(0, $before->queuedBytes);
+
+        $channel->close();
+
+        $after = $channel->residencySnapshot();
+        self::assertSame(0, $after->retainedEntries());
+        self::assertSame(0, $after->queuedBytes);
+    }
+
     public function testOversizedSubChunkRequestIsRejectedBeforeQueueingResponse(): void
     {
         [$channel, $client] = $this->channel();

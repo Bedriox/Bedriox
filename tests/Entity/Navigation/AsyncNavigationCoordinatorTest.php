@@ -64,6 +64,7 @@ final class AsyncNavigationCoordinatorTest extends TestCase
         self::assertSame(0, $workers->submissions);
         $navigation->advance(2, 10_000, PHP_INT_MAX);
         self::assertSame(1, $workers->submissions);
+        self::assertNull($workers->lastDeadlineNanoseconds, 'Navigation must use the catalog worker timeout.');
         $workers->complete();
 
         $waypoint = $navigation->waypoint($mob, $target, 3);
@@ -214,6 +215,7 @@ final class NavigationTestCollisionQuery implements LoadedCollisionBoxQuery
 final class NavigationTestDispatcher implements WorkerDispatcher
 {
     public int $submissions = 0;
+    public ?int $lastDeadlineNanoseconds = null;
     private string $payload = '';
     private Closure $completion;
     private WorkerReceipt $receipt;
@@ -225,6 +227,7 @@ final class NavigationTestDispatcher implements WorkerDispatcher
         ?int $deadlineNanoseconds = null,
     ): WorkerSubmission {
         ++$this->submissions;
+        $this->lastDeadlineNanoseconds = $deadlineNanoseconds;
         $this->payload = $payload;
         $this->completion = $completion;
         $this->receipt = new WorkerReceipt('navigation-test', 1, $taskTypeId, 'navigation', hrtime(true) + 1_000_000_000);

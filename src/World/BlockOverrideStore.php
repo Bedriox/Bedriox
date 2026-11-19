@@ -27,7 +27,7 @@ use OverflowException;
 /** Bounded process-local block changes grouped by chunk for deterministic regeneration. */
 final class BlockOverrideStore
 {
-    /** @var array<string, array<string, array{x: int, y: int, z: int, state: InternalBlockStateId}>> */
+    /** @var array<int, array<int, array{x: int, y: int, z: int, state: InternalBlockStateId}>> */
     private array $byChunk = [];
 
     private int $count = 0;
@@ -47,11 +47,12 @@ final class BlockOverrideStore
         InternalBlockStateId $state,
     ): void {
         $cell = self::cellKey($localX, $y, $localZ);
-        $existing = isset($this->byChunk[$chunk->key()][$cell]);
+        $chunkKey = $chunk->mapKey();
+        $existing = isset($this->byChunk[$chunkKey][$cell]);
         if (!$existing && $this->count >= $this->maximumOverrides) {
             throw new OverflowException('Block override capacity is exhausted.');
         }
-        $this->byChunk[$chunk->key()][$cell] = [
+        $this->byChunk[$chunkKey][$cell] = [
             'x' => $localX,
             'y' => $y,
             'z' => $localZ,
@@ -65,7 +66,7 @@ final class BlockOverrideStore
     /** @return list<array{x: int, y: int, z: int, state: InternalBlockStateId}> */
     public function forChunk(ChunkPosition $chunk): array
     {
-        return array_values($this->byChunk[$chunk->key()] ?? []);
+        return array_values($this->byChunk[$chunk->mapKey()] ?? []);
     }
 
     public function count(): int
@@ -73,12 +74,12 @@ final class BlockOverrideStore
         return $this->count;
     }
 
-    private static function cellKey(int $x, int $y, int $z): string
+    private static function cellKey(int $x, int $y, int $z): int
     {
         if ($x < 0 || $x >= 16 || $z < 0 || $z >= 16 || $y < Chunk::MIN_Y || $y > Chunk::MAX_Y) {
             throw new InvalidArgumentException('Block override coordinate is outside its chunk.');
         }
 
-        return $x . ':' . $y . ':' . $z;
+        return (($y - Chunk::MIN_Y) << 8) | ($z << 4) | $x;
     }
 }

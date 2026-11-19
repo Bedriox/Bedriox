@@ -100,11 +100,15 @@ use Bedriox\Server\GatewayControl\GatewayControlServer;
 use Bedriox\Server\Login\LoginFailureCode;
 use Bedriox\Server\Observability\CrashContextPublisher;
 use Bedriox\Server\Observability\CrashPlayer;
+use Bedriox\Server\Observability\Memory\DisposableByteCache;
+use Bedriox\Server\Observability\Memory\DisposableCacheAllocation;
 use Bedriox\Server\Observability\Memory\GarbageCollectionReport;
 use Bedriox\Server\Observability\Memory\GarbageCollector;
+use Bedriox\Server\Observability\Memory\IdleGarbageCollectionGate;
 use Bedriox\Server\Observability\Memory\MemoryManagementDecision;
 use Bedriox\Server\Observability\Memory\MemoryManager;
 use Bedriox\Server\Observability\Memory\MemoryPressure;
+use Bedriox\Server\Observability\Memory\RuntimeCacheBudget;
 use Bedriox\Server\Observability\PerformanceMonitor;
 use Bedriox\Server\Observability\PerformanceSubsystem;
 use Bedriox\Server\Observability\PlayerLifecycleLogger;
@@ -121,6 +125,7 @@ use Bedriox\Server\Plugin\Form\FormRegistry;
 use Bedriox\Server\Plugin\Form\FormResponseDisposition;
 use Bedriox\Server\Plugin\PluginActionBuffer;
 use Bedriox\Server\Plugin\Scoreboard\ScoreboardRegistry;
+use Bedriox\Server\ResourcePack\ResourcePackChunkCache;
 use Bedriox\Server\Runtime\BossBar\ActorBackedBossBarDelivery;
 use Bedriox\Server\Runtime\Input\InboundDisposition;
 use Bedriox\Server\Runtime\Input\InboundMetrics;
@@ -195,6 +200,7 @@ use Bedriox\Server\Simulation\WorldSimulation;
 use Bedriox\Server\Transport\ConnectedTransport;
 use Bedriox\Server\Transport\InboundPayload;
 use Bedriox\Server\Transport\NetworkCompressionPolicy;
+use Bedriox\Server\Transport\ProcessNetherNetServerTransport;
 use Bedriox\Server\Transport\ReceivedPayload;
 use Bedriox\Server\Transport\SessionInfo;
 use Bedriox\Server\Transport\SessionOpenedEvent;
@@ -237,6 +243,21 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private const int ACTOR_VISIBILITY_BUDGET_NANOSECONDS = 5_000_000;
     private const int PLAYER_ADMISSIONS_PER_TICK = 2;
     private const int PLAYER_PROMOTIONS_PER_POLL = 1;
+    private const int ADMISSION_DATAGRAMS_PER_POLL = 2;
+    private const int ADMISSION_PAYLOAD_BUDGET_NANOSECONDS = 10_000_000;
+    private const int ADMISSION_PAYLOADS_PER_POLL = 4;
+    private const int SPAWNED_PAYLOAD_BUDGET_DURING_ADMISSION_NANOSECONDS = 5_000_000;
+    private const int MAXIMUM_PENDING_PAYLOADS_PER_SESSION = 128;
+    private const int MAXIMUM_PENDING_PAYLOAD_BYTES_PER_SESSION = 4_194_304;
+    private const int MAXIMUM_PENDING_PAYLOAD_BYTES = 33_554_432;
+    private const int PLAYER_PROMOTION_POLL_BUDGET_NANOSECONDS = 5_000_000;
+    private const int PLAYER_PROMOTION_TICK_HEADROOM_NANOSECONDS = 30_000_000;
+    private const int PLAYER_POST_TICK_PROMOTION_HEADROOM_NANOSECONDS = 15_000_000;
+    private const int IDLE_GARBAGE_COLLECTION_HEADROOM_NANOSECONDS = 45_000_000;
+    /** Bounds disconnect teardown so a transport burst cannot consume an entire simulation second. */
+    private const int RUNTIME_SESSION_REMOVALS_PER_POLL = 1;
+    private const int RUNTIME_SESSION_REMOVAL_BUDGET_NANOSECONDS = 5_000_000;
+    private const int RUNTIME_SESSION_REMOVAL_INTERVAL_NANOSECONDS = 50_000_000;
     private const int CHAT_BROADCASTS_PER_TICK = 4;
     private const int MAXIMUM_PENDING_CHAT_BROADCASTS = 4_096;
     private const int MAXIMUM_PENDING_PROJECTION_RETRIES = 4_096;
@@ -306,6 +327,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private array $playerAutosaveActive = [];
     private ?MemoryManagementDecision $lastMemoryDecision = null;
     private ?GarbageCollectionReport $lastGarbageCollection = null;
+    private readonly IdleGarbageCollectionGate $idleGarbageCollection;
     private ?ChunkUnloadResult $lastChunkUnload = null;
     private int $totalChunksUnloaded = 0;
     private int $totalPreparedBytesTrimmed = 0;
@@ -359,6 +381,14 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
      * }>
      */
     private readonly SplQueue $pendingProjectionRetries;
+    /** @var array<string, PendingReceivedPayloadQueue> Runtime endpoint key => ordered payloads. */
+    private array $pendingReceivedPayloads = [];
+    /** @var array<string, int> Runtime endpoint key => retained payload bytes. */
+    private array $pendingReceivedPayloadBytes = [];
+    private int $pendingReceivedPayloadCount = 0;
+    private int $pendingReceivedPayloadTotalBytes = 0;
+    private int $pendingReceivedPayloadCursor = 0;
+    private int $pendingAdmissionPayloadCursor = 0;
     /** @var array<string, true> */
     private array $pendingProjectionRetryKeys = [];
     /** @var array<string, true> */
@@ -394,6 +424,19 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
 
     /** @var array<string, array{SessionInfo, int}> */
     private array $pendingTransportCloses = [];
+    /**
+     * @var SplQueue<array{
+     *     session: RuntimeSession,
+     *     key: string,
+     *     cause: PlayerQuitCause,
+     *     reason: string,
+     *     actor: string|null,
+     *     quit_message: string|null,
+     *     simulation_disconnect: bool
+     * }>
+     */
+    private readonly SplQueue $pendingRuntimeSessionRemovals;
+    private int $nextRuntimeSessionRemovalNanoseconds = 0;
     private readonly SimulationClock $closeClock;
 
     /** @var array<string, array<int, DroppedItemEntity>> */
@@ -484,6 +527,9 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         private readonly int $protocolStrikeDecaySeconds = 15,
         private readonly ?GatewayControlServer $gatewayControl = null,
         private readonly int $maximumPlayers = 1_024,
+        private readonly ?PreparedPlayBatchCache $preparedPlayBatches = null,
+        private readonly ?ResourcePackChunkCache $resourcePackChunks = null,
+        private readonly ?RuntimeCacheBudget $runtimeCacheBudget = null,
     ) {
         $this->defaultGameMode = $this->playerPersistence?->defaultGameMode() ?? GameMode::SURVIVAL;
         if ($this->autosaveIntervalTicks < 1 || $this->autosaveChunkBudget < 1
@@ -505,8 +551,10 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         $this->pendingActorVisibilityPairs = new SplQueue();
         $this->pendingChatBroadcasts = new SplQueue();
         $this->pendingProjectionRetries = new SplQueue();
+        $this->pendingRuntimeSessionRemovals = new SplQueue();
         $this->playerConnections = $playerConnections ?? new PlayerConnectionDirectory();
         $this->closeClock = $closeClock ?? new SystemSimulationClock();
+        $this->idleGarbageCollection = new IdleGarbageCollectionGate();
         $this->chunkStreamingGovernor = new ChunkStreamingGovernor();
         $this->commandSchemaRevision = $this->commandRegistry?->schemaRevision() ?? 0;
     }
@@ -1772,6 +1820,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         }
         $pollStarted = hrtime(true);
         $completedTicks = 0;
+        $memoryMaintenanceCompleted = false;
         $this->playerPromotionsQueued = 0;
         $this->performance?->beginTick($pollStarted);
         try {
@@ -1794,7 +1843,23 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $transportStartedNanoseconds = hrtime(true);
             $transportTiming = $this->performance?->startSubsystem(PerformanceSubsystem::TRANSPORT);
             $transportPollStartedNanoseconds = hrtime(true);
-            $this->transport->poll($this->limits->maximumDatagramsPerPoll);
+            $admissionInProgress = $this->sessions === [];
+            $spawnedSessionCount = 0;
+            foreach ($this->sessions as $session) {
+                if ($session->phase === SessionPhase::SPAWNED) {
+                    ++$spawnedSessionCount;
+                } else {
+                    $admissionInProgress = true;
+                }
+            }
+            $transportDatagramBudget = $this->limits->maximumDatagramsPerPoll;
+            if ($admissionInProgress) {
+                $transportDatagramBudget = min(
+                    $transportDatagramBudget,
+                    self::ADMISSION_DATAGRAMS_PER_POLL + min(14, intdiv($spawnedSessionCount + 7, 8)),
+                );
+            }
+            $this->transport->poll($transportDatagramBudget);
             $this->recordSlowRuntimeStage('transport_poll', $transportPollStartedNanoseconds);
             $events = $this->transport->drainSessionEvents();
             $acknowledgements = $this->transport->drainPayloadAcknowledgements();
@@ -1816,6 +1881,11 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                     $this->closeEndpoint($event->session, $quitCause, $quitReason);
                 }
             }
+            $this->drainPendingRuntimeSessionRemovals();
+            foreach ($payloads as $payload) {
+                $this->performance?->recordNetworkReceived(strlen($payload->payload));
+                $this->enqueueReceivedPayload($payload);
+            }
             foreach ($acknowledgements as $acknowledgement) {
                 $key = self::sessionKey($acknowledgement->sessionId);
                 $session = $this->sessions[$key] ?? null;
@@ -1832,15 +1902,41 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 $this->lastAdvertisedPlayerCount = $advertisedPlayerCount;
             }
             $this->expirePendingTransportCloses();
+            $promotionPhaseStartedNanoseconds = hrtime(true);
+            $promotionHasTickHeadroom = ($this->worldRuntimes?->nanosecondsUntilNextTick()
+                ?? $this->worldLoop->nanosecondsUntilNextTick()) >= self::PLAYER_PROMOTION_TICK_HEADROOM_NANOSECONDS;
+            if ($promotionHasTickHeadroom) {
+                foreach ($this->sessions as $key => $session) {
+                    $this->promoteIfReady($key, $session, $promotionPhaseStartedNanoseconds, true);
+                    if ($this->playerPromotionsQueued >= self::PLAYER_PROMOTIONS_PER_POLL) {
+                        break;
+                    }
+                }
+            }
             $payloadAcceptStartedNanoseconds = hrtime(true);
-            foreach ($payloads as $payload) {
-                $this->performance?->recordNetworkReceived(strlen($payload->payload));
-                $this->involvedSessionId = $this->sessions[self::sessionKey($payload->sessionId)]->id ?? null;
-                $this->accept($payload);
-                $this->involvedSessionId = null;
+            if ($admissionInProgress) {
+                $acceptedPayloadCount = $this->processReceivedPayloads(
+                    $payloadAcceptStartedNanoseconds,
+                    self::ADMISSION_PAYLOAD_BUDGET_NANOSECONDS,
+                    self::ADMISSION_PAYLOADS_PER_POLL,
+                    true,
+                );
+                $acceptedPayloadCount += $this->processReceivedPayloads(
+                    hrtime(true),
+                    self::SPAWNED_PAYLOAD_BUDGET_DURING_ADMISSION_NANOSECONDS,
+                    $this->limits->maximumPayloadsPerPoll - $acceptedPayloadCount,
+                    false,
+                );
+            } else {
+                $acceptedPayloadCount = $this->processReceivedPayloads(
+                    $payloadAcceptStartedNanoseconds,
+                    PHP_INT_MAX,
+                    $this->limits->maximumPayloadsPerPoll,
+                    null,
+                );
             }
             $this->recordSlowRuntimeStage('payload_accept', $payloadAcceptStartedNanoseconds, fields: [
-                'payloads' => count($payloads),
+                'payloads' => $acceptedPayloadCount,
             ]);
             $transportTiming?->end();
             $this->recordSlowRuntimeStage('transport', $transportStartedNanoseconds);
@@ -1885,7 +1981,6 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                         continue;
                     }
                     $this->flush($key, $session);
-                    $this->promoteIfReady($key, $session);
                 } elseif ($maintainPlaySessions && $session->play !== null) {
                     if (!$session->play->tick()) {
                         $this->disconnectForPlayFailure($key, $session, 'play_tick_failed');
@@ -2926,7 +3021,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                         }
                     }
                     if ($this->playerPersistence !== null
-                        && isset($this->playerAutosaveActive[$worldId])
+                        && (isset($this->playerAutosaveActive[$worldId])
+                            || $this->playerPersistence->pendingCount() > 0)
                         && $remainingPlayerAutosaveBudget > 0) {
                         $result = $activeSimulation->autosavePlayers($remainingPlayerAutosaveBudget);
                         $remainingPlayerAutosaveBudget -= min(
@@ -2936,14 +3032,18 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                         if ($result['remaining'] === 0) {
                             unset($this->playerAutosaveActive[$worldId]);
                         }
-                        $this->diagnostics->record('players.autosaved', [
-                            'saved_players' => $result['saved'],
-                            'submitted_players' => $result['submitted'],
-                            'remaining_dirty_players' => $result['remaining'],
-                        ]);
+                        if ($result['saved'] > 0 || $result['submitted'] > 0 || $result['remaining'] === 0) {
+                            $this->diagnostics->record('players.autosaved', [
+                                'saved_players' => $result['saved'],
+                                'submitted_players' => $result['submitted'],
+                                'remaining_dirty_players' => $result['remaining'],
+                            ]);
+                        }
                     }
-                    if ($this->worldRuntimes === null || $managedRuntime === $this->worldRuntimes->default()) {
+                    if (!$memoryMaintenanceCompleted
+                        && ($this->worldRuntimes === null || $managedRuntime === $this->worldRuntimes->default())) {
                         $this->runMemoryMaintenance($this->serverTick);
+                        $memoryMaintenanceCompleted = true;
                     }
                     $persistenceTiming?->end();
                     $this->recordSlowRuntimeStage('persistence', $persistenceStartedNanoseconds, $tick->number);
@@ -2957,6 +3057,18 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 }
             }
             $this->processingWorldId = null;
+            if ($completedTicks > 0
+                && $this->playerPromotionsQueued < self::PLAYER_PROMOTIONS_PER_POLL
+                && ($this->worldRuntimes?->nanosecondsUntilNextTick()
+                    ?? $this->worldLoop->nanosecondsUntilNextTick()) >= self::PLAYER_POST_TICK_PROMOTION_HEADROOM_NANOSECONDS) {
+                $promotionPhaseStartedNanoseconds = hrtime(true);
+                foreach ($this->sessions as $key => $session) {
+                    $this->promoteIfReady($key, $session, $promotionPhaseStartedNanoseconds, true);
+                    if ($this->playerPromotionsQueued >= self::PLAYER_PROMOTIONS_PER_POLL) {
+                        break;
+                    }
+                }
+            }
             $this->drainPlayerRosterReconciliations();
             if ($completedTicks > 0 && !$this->flushScoreboards()) {
                 return false;
@@ -2973,7 +3085,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $this->recordSlowRuntimeStage('poll_total', $pollStarted, fields: [
                 'ticks' => $completedTicks,
                 'transport_events' => count($events),
-                'payloads' => count($payloads),
+                'payloads' => $acceptedPayloadCount,
             ]);
 
             if ($completedTicks > 0) {
@@ -2987,6 +3099,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             } else {
                 $this->performance?->cancelTick();
             }
+
+            $this->runIdleGarbageCollection();
 
             if ($this->crashContextDirty
                 || $this->crashContextPublishedNanoseconds === 0
@@ -3009,6 +3123,31 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     public function transportSecuritySnapshot(): ?ServerSecuritySnapshot
     {
         return $this->transport->securitySnapshot();
+    }
+
+    /** Memory reported by child services not represented by the worker-pool snapshots. */
+    public function trackedServiceMemoryBytes(): int
+    {
+        $bytes = $this->transport instanceof ProcessNetherNetServerTransport
+            ? $this->transport->reportedMemoryBytes()
+            : 0;
+        $memoryOwners = [];
+        if ($this->worldRuntimes !== null) {
+            foreach ($this->worldRuntimes->loaded() as $runtime) {
+                $owner = $runtime->opened->world->providerRuntimeMemoryOwnerId();
+                if ($owner !== null && isset($memoryOwners[$owner])) {
+                    continue;
+                }
+                if ($owner !== null) {
+                    $memoryOwners[$owner] = true;
+                }
+                $bytes = self::saturatingAdd($bytes, $runtime->opened->world->providerRuntimeMemoryBytes());
+            }
+        } elseif ($this->persistentWorld !== null) {
+            $bytes = self::saturatingAdd($bytes, $this->persistentWorld->providerRuntimeMemoryBytes());
+        }
+
+        return $bytes;
     }
 
     public function shouldIdleAfterPoll(): bool
@@ -3059,7 +3198,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             'workers_us' => self::subsystemMicroseconds($subsystems, PerformanceSubsystem::WORKERS),
             'outbound_us' => self::subsystemMicroseconds($subsystems, PerformanceSubsystem::NETWORK_OUTBOUND),
             'unclassified_us' => (int) round($snapshot->averageUnclassifiedMilliseconds * 1_000),
-            'memory_bytes' => $snapshot->memoryBytes,
+            'memory_bytes' => max($snapshot->reportedRuntimeMemoryBytes, $snapshot->memoryBytes),
+            'main_memory_bytes' => $snapshot->memoryBytes,
             'loaded_chunks' => $snapshot->loadedChunks,
             'entities' => $snapshot->entityCount,
             'net_tx_bps' => (int) round($snapshot->networkSendBytesPerSecond ?? 0.0),
@@ -3492,6 +3632,18 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
     private function runMemoryMaintenance(int $tickNumber): void
     {
         $unloadBudget = $this->chunkUnloadPerTick;
+        if ($this->runtimeCacheBudget !== null && $tickNumber % 20 === 0) {
+            $cacheResult = $this->runtimeCacheBudget->enforce($this->disposableCaches());
+            $this->totalPreparedBytesTrimmed = self::saturatingAdd(
+                $this->totalPreparedBytesTrimmed,
+                $cacheResult['released'],
+            );
+            if ($cacheResult['released'] > 0) {
+                $this->diagnostics->record('runtime.cache_budget_trimmed', $cacheResult + [
+                    'budget_bytes' => $this->runtimeCacheBudget->maximumBytes,
+                ]);
+            }
+        }
         $decision = $this->memoryManager?->evaluate();
         if ($decision !== null) {
             $this->lastMemoryDecision = $decision;
@@ -3508,6 +3660,8 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 } else {
                     $trimmed = $this->preparedChunks?->trim($aggressive) ?? 0;
                 }
+                $trimmed = self::saturatingAdd($trimmed, $this->preparedPlayBatches?->trim() ?? 0);
+                $trimmed = self::saturatingAdd($trimmed, $this->resourcePackChunks?->trim() ?? 0);
                 $this->totalPreparedBytesTrimmed = self::saturatingAdd($this->totalPreparedBytesTrimmed, $trimmed);
             }
         }
@@ -3531,11 +3685,6 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         $collection = null;
         if ($forceCollection) {
             $collection = $this->garbageCollector->collectNow($decision->releaseAllocatorCaches);
-        } elseif ($this->sessions === []) {
-            // Under normal pressure, collect cyclic structures only while idle.
-            // Reference-counted values are still reclaimed immediately, and the
-            // memory-pressure path above remains authoritative when players are online.
-            $collection = $this->garbageCollector->maybeCollect();
         }
         if ($collection !== null) {
             $this->lastGarbageCollection = $collection;
@@ -3549,6 +3698,70 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 'forced' => $collection->forced,
             ]);
         }
+    }
+
+    /** Reclaims burst allocations between idle ticks instead of extending simulation work. */
+    private function runIdleGarbageCollection(): void
+    {
+        if ($this->garbageCollector === null) {
+            return;
+        }
+        $now = $this->closeClock->nowNanoseconds();
+        if ($this->sessions !== []) {
+            $this->idleGarbageCollection->shouldCollect($now, false);
+
+            return;
+        }
+        $headroom = $this->worldRuntimes?->nanosecondsUntilNextTick()
+            ?? $this->worldLoop->nanosecondsUntilNextTick();
+        if ($headroom < self::IDLE_GARBAGE_COLLECTION_HEADROOM_NANOSECONDS
+            || !$this->idleGarbageCollection->shouldCollect($now, true)) {
+            return;
+        }
+        $collection = $this->garbageCollector->collectNow(releaseAllocatorCaches: true);
+        $this->lastGarbageCollection = $collection;
+        if ($collection->durationNanoseconds >= 10_000_000) {
+            $this->diagnostics->record('runtime.garbage_collection_slow.protocol_trace', [
+                'duration_us' => intdiv($collection->durationNanoseconds, 1_000),
+                'cycles' => $collection->cyclesCollected,
+                'roots_before' => $collection->rootsBefore,
+                'roots_after' => $collection->rootsAfter,
+                'forced' => true,
+                'idle' => true,
+            ]);
+        }
+    }
+
+    /** @return list<DisposableByteCache|DisposableCacheAllocation> */
+    private function disposableCaches(): array
+    {
+        $caches = [];
+        if ($this->worldRuntimes !== null) {
+            foreach ($this->worldRuntimes->loadedDimensions() as $runtime) {
+                if ($runtime->preparedChunks !== null) {
+                    $caches[] = new DisposableCacheAllocation(
+                        $runtime->preparedChunks,
+                        $runtime->playerCount() > 0 ? 300 : ($runtime->cacheHibernating() ? 0 : 100),
+                    );
+                }
+            }
+        } elseif ($this->preparedChunks !== null) {
+            $caches[] = $this->preparedChunks;
+        }
+        if ($this->preparedPlayBatches !== null) {
+            $caches[] = new DisposableCacheAllocation($this->preparedPlayBatches, 250);
+        }
+        if ($this->resourcePackChunks !== null) {
+            $caches[] = new DisposableCacheAllocation($this->resourcePackChunks, 200);
+        }
+
+        return $caches;
+    }
+
+    /** @return list<WorldRuntimeSnapshot> */
+    public function worldRuntimeSnapshots(): array
+    {
+        return $this->worldRuntimes?->runtimeSnapshots() ?? [];
     }
 
     private function recordChunkUnloadResult(ChunkUnloadResult $result): void
@@ -3608,6 +3821,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         foreach (array_keys($this->sessions) as $key) {
             $this->removeRuntimeSession($key, PlayerQuitCause::SERVER_SHUTDOWN, 'Server shutting down');
         }
+        $this->drainPendingRuntimeSessionRemovals(PHP_INT_MAX, PHP_INT_MAX, true);
         if ($this->gatewayControl !== null) {
             foreach ($this->gatewayControl->stoppingFrames() as $key => $frame) {
                 $info = $this->controlEndpoints[$key] ?? null;
@@ -3727,6 +3941,118 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         $this->sessions[$key] = $session;
         $this->sessionEndpoints[$id] = $key;
         $this->sessionsById[$id] = $session;
+        $this->idleGarbageCollection->markActive();
+    }
+
+    private function enqueueReceivedPayload(ReceivedPayload $payload): void
+    {
+        $key = self::sessionKey($payload->sessionId);
+        if (!isset($this->sessions[$key])
+            && !isset($this->unclassifiedSessions[$key])
+            && !isset($this->controlEndpoints[$key])) {
+            return;
+        }
+        $queue = $this->pendingReceivedPayloads[$key] ??= new PendingReceivedPayloadQueue();
+        $bytes = strlen($payload->payload);
+        $sessionBytes = ($this->pendingReceivedPayloadBytes[$key] ?? 0) + $bytes;
+        if ($queue->count() >= self::MAXIMUM_PENDING_PAYLOADS_PER_SESSION
+            || $sessionBytes > self::MAXIMUM_PENDING_PAYLOAD_BYTES_PER_SESSION
+            || $this->pendingReceivedPayloadTotalBytes > self::MAXIMUM_PENDING_PAYLOAD_BYTES - $bytes) {
+            $this->clearPendingReceivedPayloads($key);
+            $this->disconnect($key, 'pending_payload_limit');
+            return;
+        }
+        $queue->enqueue($payload);
+        $this->pendingReceivedPayloadBytes[$key] = $sessionBytes;
+        ++$this->pendingReceivedPayloadCount;
+        $this->pendingReceivedPayloadTotalBytes += $bytes;
+    }
+
+    private function processReceivedPayloads(
+        int $startedNanoseconds,
+        int $budgetNanoseconds,
+        int $maximumPayloads,
+        ?bool $admissionPayloads,
+    ): int {
+        if ($maximumPayloads < 1) {
+            return 0;
+        }
+        $processed = 0;
+        while ($this->pendingReceivedPayloadCount > 0
+            && $processed < $maximumPayloads
+            && hrtime(true) - $startedNanoseconds < $budgetNanoseconds) {
+            $keys = array_keys($this->pendingReceivedPayloads);
+            if ($admissionPayloads !== null) {
+                $keys = array_values(array_filter(
+                    $keys,
+                    fn(string $key): bool => $this->isAdmissionPayloadKey($key) === $admissionPayloads,
+                ));
+            }
+            $count = count($keys);
+            if ($count === 0) {
+                break;
+            }
+            $start = ($admissionPayloads === true
+                ? $this->pendingAdmissionPayloadCursor
+                : $this->pendingReceivedPayloadCursor) % $count;
+            $progress = false;
+            for ($offset = 0; $offset < $count; ++$offset) {
+                if ($processed >= $maximumPayloads
+                    || hrtime(true) - $startedNanoseconds >= $budgetNanoseconds) {
+                    break;
+                }
+                $key = $keys[($start + $offset) % $count];
+                $queue = $this->pendingReceivedPayloads[$key] ?? null;
+                if (!$queue instanceof PendingReceivedPayloadQueue || $queue->isEmpty()) {
+                    $this->clearPendingReceivedPayloads($key);
+                    continue;
+                }
+                $payload = $queue->dequeue();
+                $bytes = strlen($payload->payload);
+                $this->pendingReceivedPayloadBytes[$key] -= $bytes;
+                --$this->pendingReceivedPayloadCount;
+                $this->pendingReceivedPayloadTotalBytes -= $bytes;
+                if ($queue->isEmpty()) {
+                    unset($this->pendingReceivedPayloads[$key], $this->pendingReceivedPayloadBytes[$key]);
+                }
+                $this->involvedSessionId = $this->sessions[$key]->id ?? null;
+                $this->accept($payload);
+                $this->involvedSessionId = null;
+                ++$processed;
+                $progress = true;
+            }
+            if ($admissionPayloads === true) {
+                ++$this->pendingAdmissionPayloadCursor;
+            } else {
+                ++$this->pendingReceivedPayloadCursor;
+            }
+            if (!$progress) {
+                break;
+            }
+        }
+
+        return $processed;
+    }
+
+    private function isAdmissionPayloadKey(string $key): bool
+    {
+        if (isset($this->unclassifiedSessions[$key]) || isset($this->controlEndpoints[$key])) {
+            return true;
+        }
+
+        return ($this->sessions[$key] ?? null)?->phase !== SessionPhase::SPAWNED;
+    }
+
+    private function clearPendingReceivedPayloads(string $key): void
+    {
+        $queue = $this->pendingReceivedPayloads[$key] ?? null;
+        if ($queue instanceof PendingReceivedPayloadQueue) {
+            $this->pendingReceivedPayloadCount -= $queue->count();
+            $this->pendingReceivedPayloadTotalBytes -= $this->pendingReceivedPayloadBytes[$key] ?? 0;
+        }
+        unset($this->pendingReceivedPayloads[$key], $this->pendingReceivedPayloadBytes[$key]);
+        $this->pendingReceivedPayloadCount = max(0, $this->pendingReceivedPayloadCount);
+        $this->pendingReceivedPayloadTotalBytes = max(0, $this->pendingReceivedPayloadTotalBytes);
     }
 
     private function accept(ReceivedPayload $payload): void
@@ -3842,7 +4168,6 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
                 return;
             }
             $this->flush($key, $session);
-            $this->promoteIfReady($key, $session);
 
             return;
         }
@@ -4069,12 +4394,18 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         return true;
     }
 
-    private function promoteIfReady(string $key, RuntimeSession $session): void
-    {
+    private function promoteIfReady(
+        string $key,
+        RuntimeSession $session,
+        int $pollStartedNanoseconds,
+        bool $hasTickHeadroom,
+    ): void {
         if ($session->phase !== SessionPhase::LOGIN || $session->login === null) {
             return;
         }
-        if ($this->playerPromotionsQueued >= self::PLAYER_PROMOTIONS_PER_POLL) {
+        if (!$hasTickHeadroom
+            || $this->playerPromotionsQueued >= self::PLAYER_PROMOTIONS_PER_POLL
+            || hrtime(true) - $pollStartedNanoseconds >= self::PLAYER_PROMOTION_POLL_BUDGET_NANOSECONDS) {
             return;
         }
         $ready = $session->login->takeReady();
@@ -4706,7 +5037,7 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         if (($this->sessions[$key]->transport ?? null) !== $info) {
             return;
         }
-        $this->removeRuntimeSession($key, $cause, $reason);
+        $this->queueRuntimeSessionRemoval($key, $cause, $reason);
     }
 
     private function kickPlayer(
@@ -4856,24 +5187,47 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
         if (!$session instanceof RuntimeSession) {
             return;
         }
-        $identity = $session->bootstrap?->identity->uuid ?? $session->play?->login()->identity;
-        if ($identity !== null) {
-            $this->playerConnections->disconnect($identity, $session->id);
-            $this->formRegistry?->disconnect($identity, $session->id);
-            $this->scoreboardRegistry?->removePlayer($identity);
-            $this->scoreboardProjector?->forgetPlayer($identity);
-            unset($this->scoreboardActorIds[strtolower($identity)]);
+        $simulationDisconnect = $session->joined || $session->phase === SessionPhase::ADMISSION_PENDING;
+        $this->detachRuntimeSession($key, $session);
+        $this->finalizeRuntimeSessionRemoval(
+            $key,
+            $session,
+            $cause,
+            $reason,
+            $actor,
+            $quitMessage,
+            $simulationDisconnect,
+        );
+    }
+
+    /** Immediately excludes a closed transport from every live-session lookup, then paces heavier teardown. */
+    private function queueRuntimeSessionRemoval(
+        string $key,
+        PlayerQuitCause $cause,
+        string $reason,
+        ?string $actor = null,
+        ?string $quitMessage = null,
+    ): void {
+        $session = $this->sessions[$key] ?? null;
+        if (!$session instanceof RuntimeSession) {
+            return;
         }
-        if ($session->joined && $session->play !== null) {
-            $this->playerLifecycleLogger?->left(
-                $session->play->login()->displayName,
-                $session->transport,
-                $cause,
-                $reason,
-                $actor,
-            );
-        }
-        $this->playerRoster->forgetViewer($session->id);
+        $simulationDisconnect = $session->joined || $session->phase === SessionPhase::ADMISSION_PENDING;
+        $this->detachRuntimeSession($key, $session);
+        $this->pendingRuntimeSessionRemovals->enqueue([
+            'session' => $session,
+            'key' => $key,
+            'cause' => $cause,
+            'reason' => $reason,
+            'actor' => $actor,
+            'quit_message' => $quitMessage,
+            'simulation_disconnect' => $simulationDisconnect,
+        ]);
+    }
+
+    private function detachRuntimeSession(string $key, RuntimeSession $session): void
+    {
+        $this->clearPendingReceivedPayloads($key);
         unset(
             $this->sessions[$key],
             $this->sessionEndpoints[$session->id],
@@ -4892,33 +5246,43 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $this->joinedLogs[$session->id],
             $this->failedJoinLogs[$session->id],
         );
-        foreach ($this->itemActorViewers as $worldId => $actors) {
-            foreach ($actors as $runtimeId => $viewers) {
-                unset($viewers[$session->id]);
-                $this->itemActorViewers[$worldId][$runtimeId] = $viewers;
-            }
-        }
-        foreach ($this->entityActorViewers as $worldId => $actors) {
-            foreach ($actors as $runtimeId => $viewers) {
-                unset($viewers[$session->id]);
-                $this->entityActorViewers[$worldId][$runtimeId] = $viewers;
-            }
-        }
-        $this->actorBackedBossBars->removeViewer($session->id);
-        foreach ($this->projectileViewers as $worldId => $actors) {
-            foreach ($actors as $runtimeId => $viewers) {
-                unset($viewers[$session->id]);
-                $this->projectileViewers[$worldId][$runtimeId] = $viewers;
-            }
-        }
-        foreach ($this->areaEffectCloudViewers as $worldId => $actors) {
-            foreach ($actors as $runtimeId => $viewers) {
-                unset($viewers[$session->id]);
-                $this->areaEffectCloudViewers[$worldId][$runtimeId] = $viewers;
-            }
-        }
         $this->crashContextDirty = true;
-        if ($session->joined || $session->phase === SessionPhase::ADMISSION_PENDING) {
+    }
+
+    private function finalizeRuntimeSessionRemoval(
+        string $key,
+        RuntimeSession $session,
+        PlayerQuitCause $cause,
+        string $reason,
+        ?string $actor,
+        ?string $quitMessage,
+        bool $simulationDisconnect,
+    ): void {
+        $identity = $session->bootstrap?->identity->uuid ?? $session->play?->login()->identity;
+        if ($identity !== null) {
+            $this->playerConnections->disconnect($identity, $session->id);
+            $this->formRegistry?->disconnect($identity, $session->id);
+            $this->scoreboardRegistry?->removePlayer($identity);
+            $this->scoreboardProjector?->forgetPlayer($identity);
+            unset($this->scoreboardActorIds[strtolower($identity)]);
+        }
+        if ($session->joined && $session->play !== null) {
+            $this->playerLifecycleLogger?->left(
+                $session->play->login()->displayName,
+                $session->transport,
+                $cause,
+                $reason,
+                $actor,
+            );
+        }
+        $this->playerRoster->forgetViewer($session->id);
+        $this->removeActorViewer($this->itemActorViewers, $session->id);
+        $this->removeActorViewer($this->entityActorViewers, $session->id);
+        $this->actorBackedBossBars->removeViewer($session->id);
+        $this->removeActorViewer($this->projectileViewers, $session->id);
+        $this->removeActorViewer($this->areaEffectCloudViewers, $session->id);
+        $this->removeActorViewer($this->fallingBlockActorViewers, $session->id);
+        if ($simulationDisconnect) {
             $simulation = $this->simulationForSession($session);
             if ($simulation !== null && !$simulation->enqueue($this->commands->disconnect(
                 $session->id,
@@ -4935,6 +5299,62 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
             $session->joined = false;
         }
         $session->close();
+    }
+
+    private function drainPendingRuntimeSessionRemovals(
+        int $maximum = self::RUNTIME_SESSION_REMOVALS_PER_POLL,
+        int $budgetNanoseconds = self::RUNTIME_SESSION_REMOVAL_BUDGET_NANOSECONDS,
+        bool $ignoreCadence = false,
+    ): void {
+        $now = $this->closeClock->nowNanoseconds();
+        if (!$ignoreCadence && $now < $this->nextRuntimeSessionRemovalNanoseconds) {
+            return;
+        }
+        $started = hrtime(true);
+        $processed = 0;
+        while ($processed < $maximum && !$this->pendingRuntimeSessionRemovals->isEmpty()) {
+            if ($processed > 0 && hrtime(true) - $started >= $budgetNanoseconds) {
+                break;
+            }
+            /** @var array{session: RuntimeSession, key: string, cause: PlayerQuitCause, reason: string, actor: string|null, quit_message: string|null, simulation_disconnect: bool} $pending */
+            $pending = $this->pendingRuntimeSessionRemovals->dequeue();
+            $this->finalizeRuntimeSessionRemoval(
+                $pending['key'],
+                $pending['session'],
+                $pending['cause'],
+                $pending['reason'],
+                $pending['actor'],
+                $pending['quit_message'],
+                $pending['simulation_disconnect'],
+            );
+            ++$processed;
+        }
+        if (!$ignoreCadence && $processed > 0) {
+            $this->nextRuntimeSessionRemovalNanoseconds = self::saturatingAdd(
+                $now,
+                self::RUNTIME_SESSION_REMOVAL_INTERVAL_NANOSECONDS,
+            );
+        }
+    }
+
+    /**
+     * @param array<string, array<int, array<string, true>>> $viewersByWorld
+     */
+    private function removeActorViewer(array &$viewersByWorld, string $sessionId): void
+    {
+        foreach ($viewersByWorld as $worldId => &$actors) {
+            foreach ($actors as $runtimeId => &$viewers) {
+                unset($viewers[$sessionId]);
+                if ($viewers === []) {
+                    unset($actors[$runtimeId]);
+                }
+            }
+            unset($viewers);
+            if ($actors === []) {
+                unset($viewersByWorld[$worldId]);
+            }
+        }
+        unset($actors);
     }
 
     private function drainShutdownLifecycle(): void
@@ -8120,3 +8540,6 @@ final class ServerRuntime implements RuntimeDriver, RuntimeFailureSource, Runtim
  * @extends SplQueue<Packet>
  */
 final class DeferredWorldPacketQueue extends SplQueue {}
+
+/** @extends SplQueue<ReceivedPayload> */
+final class PendingReceivedPayloadQueue extends SplQueue {}

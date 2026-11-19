@@ -20,10 +20,10 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Worker\Task;
 
-use Bedriox\Data\BedrockDataSet;
 use Bedriox\Server\Worker\Chunk\ChunkGenerationRequestCodec;
 use Bedriox\Server\Worker\Chunk\ChunkTransferCodec;
 use Bedriox\Server\Worker\Chunk\ChunkTransferException;
+use Bedriox\Server\Worker\Runtime\WorkerBlockStateCatalog;
 use Bedriox\Server\Worker\WorkerTaskHandler;
 use Bedriox\Server\World\Block\BlockStateRegistry;
 use Bedriox\Server\World\Generator\GeneratorContext;
@@ -37,7 +37,6 @@ final class GenerateChunkTask implements WorkerTaskHandler
 {
     private const int MAXIMUM_CACHED_GENERATORS = 8;
 
-    private ?BlockStateRegistry $states = null;
     /** @var array<string, VersionedWorldGenerator> */
     private array $generators = [];
     /** @var list<string> */
@@ -45,15 +44,17 @@ final class GenerateChunkTask implements WorkerTaskHandler
 
     private readonly GeneratorRegistry $registry;
 
-    public function __construct(?GeneratorRegistry $registry = null)
-    {
+    public function __construct(
+        ?GeneratorRegistry $registry = null,
+        private readonly WorkerBlockStateCatalog $catalog = new WorkerBlockStateCatalog(),
+    ) {
         $this->registry = $registry ?? WorldGeneratorFactory::builtIns();
     }
 
     public function execute(string $payload): string
     {
         $request = (new ChunkGenerationRequestCodec())->decode($payload);
-        $states = $this->states ??= new BlockStateRegistry(BedrockDataSet::bundled()->blockStateRegistry()->states());
+        $states = $this->catalog->internalStates();
         $generator = $request->workerSource === null
             ? $this->generator(
                 $request->generator,

@@ -66,6 +66,7 @@ final class ProcessNetherNetServerTransport implements ConnectedTransport
     /** @var array<int, int> */
     private array $pingBySessionId = [];
     private ?ServerSecuritySnapshot $securitySnapshot = null;
+    private int $reportedMemoryBytes = 0;
 
     private function __construct(
         private readonly int $maximumSessionEvents,
@@ -116,6 +117,11 @@ final class ProcessNetherNetServerTransport implements ConnectedTransport
     public function securitySnapshot(): ?ServerSecuritySnapshot
     {
         return $this->securitySnapshot;
+    }
+
+    public function reportedMemoryBytes(): int
+    {
+        return $this->reportedMemoryBytes;
     }
 
     public function poll(int $maximumDatagrams): int
@@ -400,6 +406,11 @@ final class ProcessNetherNetServerTransport implements ConnectedTransport
             return;
         }
         if ($frame->kind === TransportProcessFrameKind::SECURITY_SNAPSHOT) {
+            $memoryBytes = $frame->metadata['memory_bytes'] ?? null;
+            if (!is_int($memoryBytes) || $memoryBytes < 0) {
+                throw new RuntimeException('NetherNet memory snapshot is invalid.');
+            }
+            $this->reportedMemoryBytes = $memoryBytes;
             $values = [];
             foreach ([
                 'active_sessions',

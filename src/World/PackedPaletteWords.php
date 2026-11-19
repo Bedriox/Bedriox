@@ -88,6 +88,59 @@ final class PackedPaletteWords
         return $output;
     }
 
+    public static function packNetworkOrderFromPackedMemory(
+        string $packedMemoryIndices,
+        int $memoryBits,
+        int $networkBits,
+    ): string {
+        if (strlen($packedMemoryIndices) !== PackedPaletteIndices::bytesFor($memoryBits)
+            || !in_array($memoryBits, self::ALLOWED_BITS, true)
+            || !in_array($networkBits, self::ALLOWED_BITS, true)) {
+            throw new InvalidArgumentException('Packed memory indices or network bit width are invalid.');
+        }
+        if ($networkBits === 0) {
+            if ($memoryBits !== 0) {
+                throw new InvalidArgumentException('Non-uniform memory indices cannot use zero network bits.');
+            }
+
+            return '';
+        }
+        if ($memoryBits === 8 && $networkBits === 8) {
+            return self::packNetworkOrder($packedMemoryIndices, 8);
+        }
+
+        $entriesPerWord = intdiv(32, $networkBits);
+        $output = '';
+        $word = 0;
+        $entry = 0;
+        for ($x = 0; $x < 16; ++$x) {
+            for ($z = 0; $z < 16; ++$z) {
+                for ($y = 0; $y < 16; ++$y) {
+                    $index = PackedPaletteIndices::trustedIndexAt(
+                        $packedMemoryIndices,
+                        $memoryBits,
+                        $x + ($z * 16) + ($y * 256),
+                    );
+                    if ($index >= (1 << $networkBits)) {
+                        throw new InvalidArgumentException('Palette index does not fit the selected network word width.');
+                    }
+                    $word |= $index << ($entry * $networkBits);
+                    if (++$entry !== $entriesPerWord) {
+                        continue;
+                    }
+                    $output .= pack('V', $word & 0xffff_ffff);
+                    $word = 0;
+                    $entry = 0;
+                }
+            }
+        }
+        if ($entry !== 0) {
+            $output .= pack('V', $word & 0xffff_ffff);
+        }
+
+        return $output;
+    }
+
     public static function replaceNetworkIndex(
         string $wordArray,
         int $bits,

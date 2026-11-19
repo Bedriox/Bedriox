@@ -31,6 +31,23 @@ use UnexpectedValueException;
 
 final class ChunkRepositoryTest extends TestCase
 {
+    public function testIntegerMapKeysAreCollisionFreeAcrossSignedCoordinates(): void
+    {
+        $positions = [
+            new ChunkPosition(0, 0),
+            new ChunkPosition(0, -1),
+            new ChunkPosition(-1, 0),
+            new ChunkPosition(-1, -1),
+            new ChunkPosition(PHP_INT_MAX >> 32, PHP_INT_MAX >> 32),
+            new ChunkPosition(-(PHP_INT_MAX >> 32) - 1, -(PHP_INT_MAX >> 32) - 1),
+        ];
+
+        self::assertCount(count($positions), array_unique(array_map(
+            static fn(ChunkPosition $position): int => $position->mapKey(),
+            $positions,
+        )));
+    }
+
     public function testCachesChunksAndEvictsLeastRecentlyUsedEntry(): void
     {
         $repository = new ChunkRepository(2);
@@ -276,8 +293,8 @@ final class ChunkRepositoryTest extends TestCase
         }
 
         $snapshots = $repository->dirtySnapshots(1, [
-            $positions[0]->key() => 1,
-            $positions[1]->key() => 1,
+            $positions[0]->mapKey() => 1,
+            $positions[1]->mapKey() => 1,
         ]);
 
         self::assertCount(1, $snapshots);

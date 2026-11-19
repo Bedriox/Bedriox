@@ -61,7 +61,7 @@ final class ChunkTransferCodecTest extends TestCase
         $decoded = $codec->decode($encoded, $targetStates);
 
         self::assertSame($encoded, $codec->encode($chunk, $sourceStates));
-        self::assertLessThan(12_000, strlen($encoded), 'Repeated uniform biome sections must stay compact.');
+        self::assertLessThan(2_000, strlen($encoded), 'Packed block and biome indices must remain compact in transit.');
         self::assertStringNotContainsString('O:', $encoded);
         self::assertSame([-12, 34, 9, 7, Chunk::DIRTY_BLOCKS], [
             $decoded->position->x,

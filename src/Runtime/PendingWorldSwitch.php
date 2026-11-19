@@ -28,10 +28,10 @@ use Bedriox\Server\World\World;
 /** Holds destination terrain leases until a live session crosses its ordered output boundary. */
 final class PendingWorldSwitch
 {
-    /** @var array<string, ChunkPosition> */
+    /** @var array<int, ChunkPosition> */
     private array $retained = [];
 
-    /** @var array<string, true> */
+    /** @var array<int, true> */
     private array $projectionReady = [];
 
     /** @var list<ChunkPosition> */
@@ -84,18 +84,18 @@ final class PendingWorldSwitch
 
     public function isRetained(ChunkPosition $position): bool
     {
-        return isset($this->retained[$position->key()]);
+        return isset($this->retained[$position->mapKey()]);
     }
 
     public function retain(ChunkPosition $position): void
     {
-        $this->retained[$position->key()] = $position;
+        $this->retained[$position->mapKey()] = $position;
         $this->view->markPrepared($position->x, $position->z);
     }
 
     public function markProjectionReady(ChunkPosition $position): void
     {
-        $this->projectionReady[$position->key()] = true;
+        $this->projectionReady[$position->mapKey()] = true;
     }
 
     public function isReady(): bool
@@ -104,7 +104,7 @@ final class PendingWorldSwitch
             && count($this->projectionReady) === count($this->required);
     }
 
-    /** @return array<string, ChunkPosition> */
+    /** @return array<int, ChunkPosition> */
     public function adoptRetained(): array
     {
         $this->adopted = true;

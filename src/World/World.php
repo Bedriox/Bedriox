@@ -27,6 +27,8 @@ use Bedriox\Server\Entity\Persistence\EntityPersistenceManager;
 use Bedriox\Server\Entity\Persistence\EntityPersistenceStore;
 use Bedriox\Server\Entity\Persistence\TransientEntityPersistenceStore;
 use Bedriox\Server\Map\MapRegistry;
+use Bedriox\Server\Observability\Memory\RuntimeMemoryStatusProvider;
+use Bedriox\Server\Observability\Memory\SharedRuntimeMemoryStatusProvider;
 use Bedriox\Server\Persistence\PersistenceQueueSnapshot;
 use Bedriox\Server\Persistence\PersistenceQueueStatusProvider;
 use Bedriox\Server\Persistence\PersistenceSubmission;
@@ -51,6 +53,8 @@ use Throwable;
 
 final class World
 {
+    private const int MAXIMUM_CHUNK_UNLOAD_ACTIONS_PER_PASS = 1;
+
     private readonly BlockOverrideStore $overrides;
 
     private ?SpawnPosition $spawnOverride;
@@ -71,13 +75,13 @@ final class World
 
     private ?AsyncChunkGenerator $asyncChunks;
 
-    /** @var array<string, ChunkLoadCompletion> */
+    /** @var array<int, ChunkLoadCompletion> */
     private array $completedChunkLoads = [];
 
-    /** @var array<string, array<string, true>> chunk key => demand owner => true */
+    /** @var array<int, array<string, true>> chunk key => demand owner => true */
     private array $pendingChunkRetains = [];
 
-    /** @var array<string, int> Newest revision queued or in flight with the asynchronous provider. */
+    /** @var array<int, int> Newest revision queued or in flight with the asynchronous provider. */
     private array $pendingChunkSaveRevisions = [];
 
     private readonly ChunkUnloadManager $chunkUnloads;
@@ -222,7 +226,7 @@ final class World
         bool $pollCompletions = true,
         ?string $demandOwner = null,
     ): bool {
-        $key = $position->key();
+        $key = $position->mapKey();
         $demandOwner ??= 'bedriox:internal';
         if ($demandOwner === '' || strlen($demandOwner) > 256) {
             throw new InvalidArgumentException('Chunk demand owner must contain between 1 and 256 bytes.');
@@ -337,13 +341,13 @@ final class World
 
     public function isChunkRetainPending(ChunkPosition $position): bool
     {
-        return ($this->pendingChunkRetains[$position->key()] ?? []) !== [];
+        return ($this->pendingChunkRetains[$position->mapKey()] ?? []) !== [];
     }
 
     /** Releases one consumer's pending request without disturbing shared demand. */
     public function cancelChunkDemand(ChunkPosition $position, ?string $demandOwner = null): bool
     {
-        $key = $position->key();
+        $key = $position->mapKey();
         $demandOwner ??= 'bedriox:internal';
         if (!isset($this->pendingChunkRetains[$key][$demandOwner])) {
             return false;
@@ -383,7 +387,7 @@ final class World
         }
     }
 
-    private function clearChunkDemand(string $key, string $demandOwner): void
+    private function clearChunkDemand(int $key, string $demandOwner): void
     {
         unset($this->pendingChunkRetains[$key][$demandOwner]);
         if (($this->pendingChunkRetains[$key] ?? []) === []) {
@@ -465,7 +469,7 @@ final class World
             throw new InvalidArgumentException('A block entity batch must contain between one and sixteen entries.');
         }
 
-        /** @var array<string, ChunkPosition> $positions */
+        /** @var array<int, ChunkPosition> $positions */
         $positions = [];
         /** @var array<string, true> $entityPositions */
         $entityPositions = [];
@@ -476,10 +480,10 @@ final class World
             }
             $entityPositions[$entityKey] = true;
             $chunkPosition = self::chunkPosition($blockEntity->position->x, $blockEntity->position->z);
-            $positions[$chunkPosition->key()] = $chunkPosition;
+            $positions[$chunkPosition->mapKey()] = $chunkPosition;
         }
 
-        /** @var array<string, Chunk> $prepared */
+        /** @var array<int, Chunk> $prepared */
         $prepared = [];
         $retained = [];
         $previous = [];
@@ -490,7 +494,7 @@ final class World
             }
             foreach ($blockEntities as $blockEntity) {
                 $chunkPosition = self::chunkPosition($blockEntity->position->x, $blockEntity->position->z);
-                $key = $chunkPosition->key();
+                $key = $chunkPosition->mapKey();
                 $chunk = $prepared[$key];
                 $previous[] = $chunk->blockEntityAt($blockEntity->position);
                 $prepared[$key] = $chunk->withBlockEntity($blockEntity);
@@ -741,12 +745,15 @@ final class World
             throw new InvalidArgumentException('Chunk unload processing time budget must be between 1 and 1000000 microseconds.');
         }
         $startedNanoseconds = hrtime(true);
-        $this->pollAsynchronousCompletions();
+        $this->pollAsynchronousCompletions(4, 4);
         $elapsedMicroseconds = intdiv(hrtime(true) - $startedNanoseconds, 1_000);
         $remainingMicroseconds = max(1, $timeBudgetMicroseconds - $elapsedMicroseconds);
         $due = $elapsedMicroseconds >= $timeBudgetMicroseconds
             ? []
-            : $this->chunkUnloads->due($maximumChunks, $remainingMicroseconds);
+            : $this->chunkUnloads->due(
+                min($maximumChunks, self::MAXIMUM_CHUNK_UNLOAD_ACTIONS_PER_PASS),
+                $remainingMicroseconds,
+            );
         $examined = 0;
         $evicted = 0;
         $saveSubmissions = 0;
@@ -799,6 +806,19 @@ final class World
                 }
             }
             try {
+                $entityUnloadDeferred = $this->entityPersistence !== null
+                    && $this->entityPersistence->tryUnloadChunk($position) === null;
+            } catch (EntityPersistenceConflictException) {
+                $this->chunkUnloads->defer($position);
+
+                continue;
+            }
+            if ($entityUnloadDeferred) {
+                $this->chunkUnloads->defer($position);
+
+                continue;
+            }
+            try {
                 $evictedChunk = $this->chunks->evictIfCleanAndUnretained($position);
             } catch (EntityPersistenceConflictException) {
                 // The entity owner remains installed because the eviction observer
@@ -809,7 +829,7 @@ final class World
             }
             if ($evictedChunk) {
                 $this->chunkUnloads->cancel($position);
-                unset($this->pendingChunkSaveRevisions[$position->key()]);
+                unset($this->pendingChunkSaveRevisions[$position->mapKey()]);
                 ++$evicted;
             }
         }
@@ -1003,6 +1023,20 @@ final class World
             : null;
     }
 
+    public function providerRuntimeMemoryBytes(): int
+    {
+        return $this->provider instanceof RuntimeMemoryStatusProvider
+            ? $this->provider->reportedMemoryBytes()
+            : 0;
+    }
+
+    public function providerRuntimeMemoryOwnerId(): ?string
+    {
+        return $this->provider instanceof SharedRuntimeMemoryStatusProvider
+            ? $this->provider->runtimeMemoryOwnerId()
+            : null;
+    }
+
     private static function chunkPosition(int $x, int $z): ChunkPosition
     {
         return new ChunkPosition((int) floor($x / 16.0), (int) floor($z / 16.0));
@@ -1073,14 +1107,14 @@ final class World
             return;
         }
         foreach ($this->provider->pollChunkLoads($maximumLoads, $this->dimension) as $completion) {
-            $key = $completion->position->key();
+            $key = $completion->position->mapKey();
             if (($this->pendingChunkRetains[$key] ?? []) !== []) {
                 $this->completedChunkLoads[$key] = $completion;
             }
         }
         foreach ($this->provider->pollChunkSaves($maximumSaves, $this->dimension) as $completion) {
             $position = self::positionFromPersistenceKey($completion->key);
-            $key = $position->key();
+            $key = $position->mapKey();
             if (($this->pendingChunkSaveRevisions[$key] ?? -1) <= $completion->revision) {
                 unset($this->pendingChunkSaveRevisions[$key]);
             }
@@ -1098,7 +1132,7 @@ final class World
         if (!$this->provider instanceof AsynchronousWorldProvider) {
             throw new LogicException('This world does not have an asynchronous provider.');
         }
-        $key = $chunk->position->key();
+        $key = $chunk->position->mapKey();
         if (($this->pendingChunkSaveRevisions[$key] ?? -1) >= $chunk->revision) {
             return PersistenceSubmission::STALE;
         }

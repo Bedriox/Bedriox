@@ -67,6 +67,7 @@ use Bedriox\Server\Player\PlayerInventoryState;
 use Bedriox\Server\Plugin\OwnedItemRegistrar;
 use Bedriox\Server\Runtime\BedrockInventoryPacketProjector;
 use Bedriox\Server\Runtime\BedrockPlayInitializationFactory;
+use Bedriox\Server\Runtime\BedrockPlayInitializationResources;
 use Bedriox\Server\Runtime\ReusablePlayPacket;
 use Bedriox\Server\Runtime\RuntimeLimits;
 use Bedriox\Server\Simulation\Position;
@@ -79,6 +80,68 @@ use PHPUnit\Framework\TestCase;
 
 final class BedrockPlayInitializationFactoryTest extends TestCase
 {
+    public function testInitializationAcceptsEveryAdmittedGeneratorIdentifier(): void
+    {
+        $void = new BedrockPlayInitializationFactory(
+            BedrockDataSet::bundled(),
+            generatorName: 'void',
+        );
+        $plugin = new BedrockPlayInitializationFactory(
+            BedrockDataSet::bundled(),
+            generatorName: 'example:skylands',
+        );
+
+        self::assertInstanceOf(StartGamePacket::class, self::packets(
+            $void->create($this->login(), UnsignedLong::fromInt(7)),
+        )[2]);
+        self::assertInstanceOf(StartGamePacket::class, self::packets(
+            $plugin->create($this->login(), UnsignedLong::fromInt(8)),
+        )[2]);
+    }
+
+    public function testWorldInitializationViewsShareBootScopedCatalogs(): void
+    {
+        $data = BedrockDataSet::bundled();
+        $states = new BlockStateRegistry($data->blockStateRegistry()->states());
+        $translator = new BlockNetworkTranslator($states, $data->blockStateRegistry());
+        $items = ItemCatalog::vanilla(
+            $data->itemNetworkRegistry(),
+            creative: $data->creativeInventoryRegistry(),
+            blockItems: $data->blockItemMappingRegistry(),
+        );
+        $projector = BedrockInventoryPacketProjector::fromData($data, $translator, $items);
+        $crafting = CraftingCatalog::fromData($data, $items, $states, $projector);
+        $resources = BedrockPlayInitializationResources::fromData(
+            $data,
+            $items,
+            $crafting,
+            $states,
+            $translator,
+            inventoryProjector: $projector,
+        );
+
+        $overworld = new BedrockPlayInitializationFactory($data, resources: $resources);
+        $nether = new BedrockPlayInitializationFactory(
+            $data,
+            dimension: DimensionType::NETHER,
+            resources: $resources,
+        );
+
+        self::assertSame($states, $resources->internalBlockStates);
+        self::assertSame($translator, $resources->blockNetworkTranslator);
+        self::assertSame($items, $resources->itemCatalog);
+        self::assertSame($projector, $resources->inventoryProjector);
+        self::assertSame($crafting, $resources->craftingCatalog);
+        self::assertSame(
+            self::privateProperty($overworld, 'internalBlockStates'),
+            self::privateProperty($nether, 'internalBlockStates'),
+        );
+        self::assertSame(
+            self::privateProperty($overworld, 'inventoryProjector'),
+            self::privateProperty($nether, 'inventoryProjector'),
+        );
+    }
+
     public function testInitializationUsesTheCurrentCraftingCatalogRevision(): void
     {
         $data = BedrockDataSet::bundled();
@@ -386,5 +449,10 @@ final class BedrockPlayInitializationFactoryTest extends TestCase
             static fn($entry) => $entry instanceof ReusablePlayPacket ? $entry->packet : $entry,
             $entries,
         );
+    }
+
+    private static function privateProperty(object $target, string $property): mixed
+    {
+        return (new \ReflectionObject($target))->getProperty($property)->getValue($target);
     }
 }

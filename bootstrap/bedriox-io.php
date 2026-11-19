@@ -36,6 +36,13 @@ if (($argv[1] ?? '') === 'world') {
         $argv[5] ?? '',
     ));
 }
+if (($argv[1] ?? '') === 'world-pool') {
+    exit(WorldStorageProcessProgram::runPool(
+        $argv[2] ?? '',
+        $argv[3] ?? '',
+        $argv[4] ?? '',
+    ));
+}
 if (($argv[1] ?? '') === 'player') {
     exit(PlayerStorageProcessProgram::run(
         $argv[2] ?? '',

@@ -36,9 +36,9 @@ use Throwable;
 /** Main-process coordinator for deduplicated worker generation requests. */
 final class AsyncChunkGenerator
 {
-    /** @var array<string, WorkerReceipt> */
+    /** @var array<int, WorkerReceipt> */
     private array $pending = [];
-    /** @var array<string, true> */
+    /** @var array<int, true> */
     private array $failed = [];
 
     public function __construct(
@@ -65,13 +65,13 @@ final class AsyncChunkGenerator
 
     public function isPending(ChunkPosition $position): bool
     {
-        return isset($this->pending[$position->key()]);
+        return isset($this->pending[$position->mapKey()]);
     }
 
     /** @param Closure(Chunk): void $completion */
     public function request(ChunkPosition $position, Closure $completion): bool
     {
-        $key = $position->key();
+        $key = $position->mapKey();
         if (isset($this->pending[$key])) {
             return true;
         }
@@ -135,7 +135,7 @@ final class AsyncChunkGenerator
     /** Cancels generation when the world no longer has a consumer for this chunk. */
     public function cancel(ChunkPosition $position): bool
     {
-        $key = $position->key();
+        $key = $position->mapKey();
         $receipt = $this->pending[$key] ?? null;
         if (!$receipt instanceof WorkerReceipt) {
             return false;

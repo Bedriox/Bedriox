@@ -25,7 +25,6 @@ use Bedriox\Data\BedrockDataSet;
 use Bedriox\Protocol\Packet\ChunkSerializer;
 use Bedriox\Server\Runtime\BedrockChunkPacketSerializer;
 use Bedriox\Server\Worker\Chunk\ChunkProjectionTransferCodec;
-use Bedriox\Server\Worker\Chunk\ChunkTransferCodec;
 use Bedriox\Server\Worker\Chunk\ChunkTransferException;
 use Bedriox\Server\World\Block\BlockNetworkTranslator;
 use Bedriox\Server\World\Block\BlockStateRegistry;
@@ -42,7 +41,7 @@ use PHPUnit\Framework\TestCase;
 
 final class ChunkProjectionTransferCodecTest extends TestCase
 {
-    public function testPackedProjectionMatchesTheAuthoritativeSerializerAndShrinksWorkerInput(): void
+    public function testPackedProjectionMatchesTheAuthoritativeSerializerAndKeepsWorkerInputCompact(): void
     {
         $data = BedrockDataSet::bundled();
         $networkStates = $data->blockStateRegistry();
@@ -60,7 +59,10 @@ final class ChunkProjectionTransferCodecTest extends TestCase
             (new BedrockChunkPacketSerializer($blocks))->serialize($chunk),
             ChunkSerializer::fullColumn($column),
         );
-        self::assertLessThan(strlen((new ChunkTransferCodec())->encode($chunk, $states)) / 4, strlen($packed));
+        // ChunkTransferCodec now carries packed palettes too, so it is no longer a
+        // meaningful "unpacked" baseline. Keep a fixture-specific ceiling here to
+        // catch projection expansion without coupling two independently compact codecs.
+        self::assertLessThan(4_096, strlen($packed));
     }
 
     public function testCorruptTruncatedAndTrailingProjectionsFailClosed(): void

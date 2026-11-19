@@ -30,7 +30,12 @@ use LogicException;
 /** Owns the heavyweight services for exactly one loaded dimension runtime. */
 final class ManagedWorldRuntime
 {
+    private const int CACHE_HIBERNATION_TICKS = 1_200;
+
     private bool $closed = false;
+    private int $idleTicks = 0;
+    private bool $cacheHibernating = false;
+    private int $hibernationBytesReleased = 0;
 
     public function __construct(
         public readonly PublicWorld $handle,
@@ -38,6 +43,7 @@ final class ManagedWorldRuntime
         public readonly WorldSimulation $simulation,
         public readonly FixedRateWorldLoop $loop,
         public readonly ?PreparedChunkCache $preparedChunks = null,
+        public readonly ?PlayInitializationFactory $initialization = null,
     ) {
         if ($handle->getDimensionType() !== $opened->world->dimension()) {
             throw new LogicException('A public world handle must identify the runtime dimension it owns.');
@@ -47,6 +53,51 @@ final class ManagedWorldRuntime
     public function playerCount(): int
     {
         return count($this->simulation->snapshot()->players);
+    }
+
+    /**
+     * Drops only rebuildable projection state after one player-free minute.
+     * Simulation, time, weather, entities, chunks and provider ownership continue normally.
+     */
+    public function updateCacheResidency(): void
+    {
+        $this->assertOpen();
+        if ($this->playerCount() !== 0) {
+            $this->idleTicks = 0;
+            $this->cacheHibernating = false;
+
+            return;
+        }
+        $this->idleTicks = min(PHP_INT_MAX, $this->idleTicks + 1);
+        if (!$this->cacheHibernating && $this->idleTicks >= self::CACHE_HIBERNATION_TICKS) {
+            $this->hibernationBytesReleased += $this->preparedChunks?->trim(true) ?? 0;
+            $this->cacheHibernating = true;
+        }
+    }
+
+    public function cacheHibernating(): bool
+    {
+        return $this->cacheHibernating;
+    }
+
+    public function runtimeSnapshot(): WorldRuntimeSnapshot
+    {
+        $cache = $this->preparedChunks?->snapshot();
+
+        return new WorldRuntimeSnapshot(
+            $this->handle->id(),
+            $this->handle->getDimensionType(),
+            $this->playerCount(),
+            $this->opened->world->loadedChunkCount(),
+            $this->opened->world->dirtyChunkCount(),
+            $this->opened->world->generatingChunkCount(),
+            $cache->bytes ?? 0,
+            $cache->pendingBytes ?? 0,
+            $this->idleTicks,
+            $this->cacheHibernating,
+            $this->hibernationBytesReleased,
+            $this->opened->world->providerRuntimeMemoryBytes(),
+        );
     }
 
     /** @return list<SimulationTick> */

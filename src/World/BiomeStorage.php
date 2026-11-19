@@ -31,7 +31,10 @@ final readonly class BiomeStorage
     /** @var list<Biome> */
     private array $palette;
 
-    private string $paletteIndices;
+    /** Bit-packed x + (z * 16) + (y * 256) memory-order biome indices. */
+    private string $packedPaletteIndices;
+
+    private int $memoryBitsPerEntry;
 
     private int $networkBitsPerEntry;
 
@@ -39,12 +42,19 @@ final readonly class BiomeStorage
     private string $networkWordArray;
 
     /** @param list<mixed> $palette */
-    private function __construct(array $palette, string $paletteIndices, ?string $networkWordArray = null)
-    {
+    private function __construct(
+        array $palette,
+        ?string $paletteIndices,
+        ?string $networkWordArray = null,
+        ?string $packedPaletteIndices = null,
+    ) {
         if ($palette === [] || count($palette) > self::MAX_PALETTE_SIZE) {
             throw new InvalidArgumentException('Biome palette must contain between 1 and 256 biomes.');
         }
-        if (strlen($paletteIndices) !== self::BIOME_COUNT) {
+        if ($paletteIndices === null && $packedPaletteIndices === null && count($palette) !== 1) {
+            throw new InvalidArgumentException('Only uniform biome storage may omit palette indices.');
+        }
+        if ($paletteIndices !== null && strlen($paletteIndices) !== self::BIOME_COUNT) {
             throw new InvalidArgumentException('Biome palette indices must contain exactly 4096 bytes.');
         }
         foreach ($palette as $biome) {
@@ -53,16 +63,32 @@ final readonly class BiomeStorage
             }
         }
         $paletteSize = count($palette);
-        for ($offset = 0; $offset < self::BIOME_COUNT; ++$offset) {
-            if (ord($paletteIndices[$offset]) >= $paletteSize) {
-                throw new InvalidArgumentException('Biome storage contains an out-of-range palette index.');
+        if ($paletteIndices !== null) {
+            for ($offset = 0; $offset < self::BIOME_COUNT; ++$offset) {
+                if (ord($paletteIndices[$offset]) >= $paletteSize) {
+                    throw new InvalidArgumentException('Biome storage contains an out-of-range palette index.');
+                }
             }
         }
         $this->palette = $palette;
-        $this->paletteIndices = $paletteIndices;
+        $this->memoryBitsPerEntry = PackedPaletteWords::bitsForPaletteSize($paletteSize);
+        if ($packedPaletteIndices !== null
+            && strlen($packedPaletteIndices) !== PackedPaletteIndices::bytesFor($this->memoryBitsPerEntry)) {
+            throw new InvalidArgumentException('Packed biome indices have an invalid length.');
+        }
+        $this->packedPaletteIndices = $packedPaletteIndices ?? PackedPaletteIndices::pack(
+            $paletteIndices ?? str_repeat("\x00", self::BIOME_COUNT),
+            $this->memoryBitsPerEntry,
+        );
         $this->networkBitsPerEntry = PackedPaletteWords::bitsForPaletteSize($paletteSize, 2);
         $this->networkWordArray = $networkWordArray
-            ?? PackedPaletteWords::packNetworkOrder($paletteIndices, $this->networkBitsPerEntry);
+            ?? ($this->memoryBitsPerEntry === 0
+                ? self::uniformNetworkWordArray()
+                : PackedPaletteWords::packNetworkOrderFromPackedMemory(
+                    $this->packedPaletteIndices,
+                    $this->memoryBitsPerEntry,
+                    $this->networkBitsPerEntry,
+                ));
         $expectedWords = intdiv(
             self::BIOME_COUNT + intdiv(32, $this->networkBitsPerEntry) - 1,
             intdiv(32, $this->networkBitsPerEntry),
@@ -74,13 +100,43 @@ final readonly class BiomeStorage
 
     public static function uniform(Biome $biome): self
     {
-        return new self([$biome], str_repeat("\x00", self::BIOME_COUNT));
+        return new self([$biome], null);
+    }
+
+    /** Every uniform biome storage shares the same zero-valued packed word array. */
+    private static function uniformNetworkWordArray(): string
+    {
+        static $words = null;
+        if (!is_string($words)) {
+            $words = PackedPaletteWords::packNetworkOrder(
+                str_repeat("\x00", self::BIOME_COUNT),
+                PackedPaletteWords::bitsForPaletteSize(1, 2),
+            );
+        }
+
+        return $words;
     }
 
     /** @param list<mixed> $palette */
     public static function fromPaletteIndices(array $palette, string $paletteIndices): self
     {
         return new self($palette, $paletteIndices);
+    }
+
+    /** @param list<mixed> $palette */
+    public static function fromPackedPaletteIndices(array $palette, string $packedPaletteIndices): self
+    {
+        $bits = PackedPaletteWords::bitsForPaletteSize(count($palette));
+        if (strlen($packedPaletteIndices) !== PackedPaletteIndices::bytesFor($bits)) {
+            throw new InvalidArgumentException('Packed biome indices have an invalid length.');
+        }
+        for ($offset = 0; $offset < self::BIOME_COUNT; ++$offset) {
+            if (PackedPaletteIndices::trustedIndexAt($packedPaletteIndices, $bits, $offset) >= count($palette)) {
+                throw new InvalidArgumentException('Packed biome storage contains an out-of-range palette index.');
+            }
+        }
+
+        return new self($palette, null, packedPaletteIndices: $packedPaletteIndices);
     }
 
     /** @param list<mixed> $columns 256 biomes in x + z * 16 order. */
@@ -125,7 +181,13 @@ final readonly class BiomeStorage
 
     public function paletteIndices(): string
     {
-        return $this->paletteIndices;
+        return PackedPaletteIndices::unpack($this->packedPaletteIndices, $this->memoryBitsPerEntry);
+    }
+
+    /** @internal Canonical worker-transfer representation. */
+    public function packedPaletteIndices(): string
+    {
+        return $this->packedPaletteIndices;
     }
 
     public function networkBitsPerEntry(): int
@@ -144,13 +206,21 @@ final readonly class BiomeStorage
         self::validateLocalCoordinate($localY);
         self::validateLocalCoordinate($localZ);
 
-        return ord($this->paletteIndices[$localX + ($localZ * 16) + ($localY * 256)]);
+        return PackedPaletteIndices::trustedIndexAt(
+            $this->packedPaletteIndices,
+            $this->memoryBitsPerEntry,
+            $localX + ($localZ * 16) + ($localY * 256),
+        );
     }
 
     public function withBiome(int $localX, int $localY, int $localZ, Biome $biome): self
     {
         $offset = $this->offset($localX, $localY, $localZ);
-        if ($this->palette[ord($this->paletteIndices[$offset])]->identifier === $biome->identifier) {
+        if ($this->palette[PackedPaletteIndices::trustedIndexAt(
+            $this->packedPaletteIndices,
+            $this->memoryBitsPerEntry,
+            $offset,
+        )]->identifier === $biome->identifier) {
             return $this;
         }
 
@@ -169,10 +239,17 @@ final readonly class BiomeStorage
             $paletteIndex = count($palette);
             $palette[] = $biome;
         }
-        $indices = $this->paletteIndices;
-        $indices[$offset] = self::encodePaletteIndex($paletteIndex);
-
+        $newMemoryBits = PackedPaletteWords::bitsForPaletteSize(count($palette));
         $newBits = PackedPaletteWords::bitsForPaletteSize(count($palette), 2);
+        $indices = null;
+        $packedIndices = $this->packedPaletteIndices;
+        if ($newMemoryBits === $this->memoryBitsPerEntry && $newMemoryBits !== 0) {
+            $packedIndices = PackedPaletteIndices::replace($packedIndices, $newMemoryBits, $offset, $paletteIndex);
+        } else {
+            $indices = $this->paletteIndices();
+            $indices[$offset] = self::encodePaletteIndex($paletteIndex);
+            $packedIndices = PackedPaletteIndices::pack($indices, $newMemoryBits, validate: false);
+        }
         $words = $newBits === $this->networkBitsPerEntry
             ? PackedPaletteWords::replaceNetworkIndex(
                 $this->networkWordArray,
@@ -182,9 +259,12 @@ final readonly class BiomeStorage
                 $localZ,
                 $paletteIndex,
             )
-            : PackedPaletteWords::packNetworkOrder($indices, $newBits);
+            : PackedPaletteWords::packNetworkOrder(
+                $indices ?? PackedPaletteIndices::unpack($packedIndices, $newMemoryBits),
+                $newBits,
+            );
 
-        return new self($palette, $indices, $words);
+        return new self($palette, null, $words, $packedIndices);
     }
 
     private function offset(int $localX, int $localY, int $localZ): int

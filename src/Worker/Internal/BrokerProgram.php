@@ -47,8 +47,10 @@ final class BrokerProgram
     private string $parentOutput = '';
     private int $laneCursor = 0;
     private int $restarts = 0;
+    private int $nextScaleAttemptNanoseconds = 0;
     private bool $stopping = false;
     private readonly WorkerLaneCapacity $laneCapacity;
+    private readonly WorkerResidencyPolicy $residency;
     /** @var resource|null */
     private $parentStream = null;
 
@@ -66,6 +68,7 @@ final class BrokerProgram
             $this->queues[$lane->value] = [];
         }
         $this->laneCapacity = new WorkerLaneCapacity($configuredWorkers);
+        $this->residency = new WorkerResidencyPolicy();
     }
 
     public static function run(
@@ -106,7 +109,10 @@ final class BrokerProgram
             WorkerFrameKind::READY,
             $this->epoch,
             metadata: WorkerIdentity::current($this->applicationVersion, CoreWorkerTaskCatalog::create())
-                ->metadata((string) $hello->metadata['nonce']) + ['workers' => $this->configuredWorkers],
+                ->metadata((string) $hello->metadata['nonce']) + [
+                    'workers' => $this->configuredWorkers,
+                    'running_workers' => count($this->workers),
+                ],
         ));
 
         $lastHeartbeat = hrtime(true);
@@ -114,8 +120,10 @@ final class BrokerProgram
             $this->pollParent();
             $this->pollWorkers();
             $this->expireAndRecoverWorkers();
+            $this->growForDemand();
             $this->dispatch();
             $this->flushWorkerInputs();
+            $this->retireIdleWorkers();
             $now = hrtime(true);
             if ($now - $lastHeartbeat >= 1_000_000_000) {
                 $this->queueParent(new WorkerFrame(
@@ -126,6 +134,7 @@ final class BrokerProgram
                         'queued' => $this->queuedCount(),
                         'restarts' => $this->restarts,
                         'workers' => count($this->workers),
+                        'capacity' => $this->configuredWorkers,
                         'broker_memory_bytes' => memory_get_usage(true),
                         'worker_memory_bytes' => array_sum(array_map(
                             static fn(BrokerWorker $worker): int => $worker->memoryBytes,
@@ -183,42 +192,26 @@ final class BrokerProgram
 
     private function startWorkers(): bool
     {
-        /** @var list<array{process: resource, listener: resource, token: string}> $pending */
-        $pending = [];
-        for ($id = 0; $id < $this->configuredWorkers; ++$id) {
-            $worker = $this->launchWorker();
-            if ($worker === null) {
-                $this->closePendingWorkers($pending);
-
-                return false;
-            }
-            $pending[] = $worker;
+        // Qualify one compute process before admitting the pool. Remaining configured
+        // capacity is started only when queued work cannot be served by live workers.
+        $worker = $this->startWorker();
+        if ($worker === null) {
+            return false;
         }
-
-        foreach ($pending as $id => $workerStartup) {
-            $worker = $this->finishWorkerStartup($workerStartup);
-            if ($worker === null) {
-                $this->closePendingWorkers(array_slice($pending, $id + 1));
-
-                return false;
-            }
-            $this->workers[$id] = $worker;
-            $this->queueParent(new WorkerFrame(
-                WorkerFrameKind::HEARTBEAT,
-                $this->epoch,
-                metadata: [
-                    'phase' => 'startup',
-                    'ready_workers' => count($this->workers),
-                    'workers' => $this->configuredWorkers,
-                ],
-            ));
-            $this->flushParent();
-            $this->pollParent();
-            if ($this->stopping || feof($this->parent())) {
-                $this->closePendingWorkers(array_slice($pending, $id + 1));
-
-                return false;
-            }
+        $this->workers[0] = $worker;
+        $this->queueParent(new WorkerFrame(
+            WorkerFrameKind::HEARTBEAT,
+            $this->epoch,
+            metadata: [
+                'phase' => 'startup',
+                'ready_workers' => 1,
+                'workers' => $this->configuredWorkers,
+            ],
+        ));
+        $this->flushParent();
+        $this->pollParent();
+        if ($this->stopping || feof($this->parent())) {
+            return false;
         }
 
         return true;
@@ -304,21 +297,17 @@ final class BrokerProgram
             stream_set_blocking($pipes[0], false);
             stream_set_blocking($pipes[1], false);
 
-            return new BrokerWorker($process, $pipes[0], $pipes[1], $decoder);
+            return new BrokerWorker(
+                $process,
+                $pipes[0],
+                $pipes[1],
+                $decoder,
+                lastActiveNanoseconds: hrtime(true),
+            );
         }
         $this->closeProcess($process, $pipes[0], $pipes[1]);
 
         return null;
-    }
-
-    /** @param list<array{process: resource, listener: resource, token: string}> $pending */
-    private function closePendingWorkers(array $pending): void
-    {
-        foreach ($pending as $worker) {
-            @fclose($worker['listener']);
-            @proc_terminate($worker['process']);
-            @proc_close($worker['process']);
-        }
     }
 
     private function pollParent(): void
@@ -401,7 +390,61 @@ final class BrokerProgram
             $worker->startedAtNanoseconds = 0;
             $worker->discardResult = false;
             $worker->outgoing = $this->codec->encode($frame);
+            $worker->lastActiveNanoseconds = hrtime(true);
         }
+    }
+
+    private function growForDemand(): void
+    {
+        if ($this->stopping) {
+            return;
+        }
+        $now = hrtime(true);
+        if ($now < $this->nextScaleAttemptNanoseconds) {
+            return;
+        }
+        $desired = $this->residency->desiredWorkers(
+            $this->configuredWorkers,
+            count($this->workers),
+            $this->busyCount(),
+            $this->queuedCount(),
+        );
+        if (count($this->workers) >= $desired) {
+            return;
+        }
+        $worker = $this->startWorker();
+        if ($worker === null) {
+            $this->nextScaleAttemptNanoseconds = $now + 1_000_000_000;
+            return;
+        }
+        $this->nextScaleAttemptNanoseconds = 0;
+        $this->workers[$this->nextWorkerId()] = $worker;
+    }
+
+    private function retireIdleWorkers(): void
+    {
+        if ($this->stopping || $this->queuedCount() > 0) {
+            return;
+        }
+        $now = hrtime(true);
+        foreach ($this->workers as $id => $worker) {
+            if ($worker->task !== null || !$this->residency->idleExpired($worker->lastActiveNanoseconds, $now)) {
+                continue;
+            }
+            $this->closeWorker($worker);
+            unset($this->workers[$id]);
+        }
+    }
+
+    private function nextWorkerId(): int
+    {
+        for ($id = 0; $id < $this->configuredWorkers; ++$id) {
+            if (!isset($this->workers[$id])) {
+                return $id;
+            }
+        }
+
+        throw new \LogicException('No compute worker identifier is available within configured capacity.');
     }
 
     /** Advances non-blocking task writes without corrupting frames on partial socket writes. */
@@ -503,6 +546,7 @@ final class BrokerProgram
                 $worker->task = null;
                 $worker->startedAtNanoseconds = 0;
                 $worker->discardResult = false;
+                $worker->lastActiveNanoseconds = hrtime(true);
             }
         }
     }

@@ -32,8 +32,8 @@ final class SubChunkBlockStorage
     /** @var list<InternalBlockStateId> */
     private array $palette;
 
-    /** One unsigned byte per block, indexed as x + (z * 16) + (y * 256). */
-    private string $paletteIndices;
+    /** Bit-packed x + (z * 16) + (y * 256) memory-order palette indices. */
+    private string $packedPaletteIndices;
 
     private int $networkBitsPerEntry;
 
@@ -43,14 +43,18 @@ final class SubChunkBlockStorage
     /** @param list<mixed> $palette */
     private function __construct(
         array $palette,
-        string $paletteIndices,
+        ?string $paletteIndices,
         ?string $networkWordArray = null,
         bool $validateIndices = true,
+        ?string $packedPaletteIndices = null,
     ) {
         if ($palette === [] || count($palette) > self::MAX_PALETTE_SIZE) {
             throw new InvalidArgumentException('Block-storage palette must contain between 1 and 256 states.');
         }
-        if (strlen($paletteIndices) !== self::BLOCK_COUNT) {
+        if ($paletteIndices === null && $packedPaletteIndices === null && count($palette) !== 1) {
+            throw new InvalidArgumentException('Only uniform block storage may omit palette indices.');
+        }
+        if ($paletteIndices !== null && strlen($paletteIndices) !== self::BLOCK_COUNT) {
             throw new InvalidArgumentException('Block-storage palette indices must contain exactly 4096 bytes.');
         }
         foreach ($palette as $state) {
@@ -59,7 +63,7 @@ final class SubChunkBlockStorage
             }
         }
         $paletteSize = count($palette);
-        if ($validateIndices) {
+        if ($validateIndices && $paletteIndices !== null) {
             for ($offset = 0; $offset < self::BLOCK_COUNT; ++$offset) {
                 if (ord($paletteIndices[$offset]) >= $paletteSize) {
                     throw new InvalidArgumentException('Block storage contains an out-of-range palette index.');
@@ -67,8 +71,16 @@ final class SubChunkBlockStorage
             }
         }
         $this->palette = $palette;
-        $this->paletteIndices = $paletteIndices;
         $this->networkBitsPerEntry = PackedPaletteWords::bitsForPaletteSize($paletteSize);
+        if ($packedPaletteIndices !== null
+            && strlen($packedPaletteIndices) !== PackedPaletteIndices::bytesFor($this->networkBitsPerEntry)) {
+            throw new InvalidArgumentException('Packed block-storage indices have an invalid length.');
+        }
+        $this->packedPaletteIndices = $packedPaletteIndices ?? PackedPaletteIndices::pack(
+            $paletteIndices ?? str_repeat("\x00", self::BLOCK_COUNT),
+            $this->networkBitsPerEntry,
+            $validateIndices,
+        );
         $this->networkWordArray = $networkWordArray;
         $expectedWords = $this->networkBitsPerEntry === 0 ? 0 : intdiv(
             self::BLOCK_COUNT + intdiv(32, $this->networkBitsPerEntry) - 1,
@@ -81,7 +93,7 @@ final class SubChunkBlockStorage
 
     public static function uniform(InternalBlockStateId $state): self
     {
-        return new self([$state], str_repeat("\x00", self::BLOCK_COUNT));
+        return new self([$state], null);
     }
 
     /** @param list<mixed> $layers */
@@ -123,6 +135,27 @@ final class SubChunkBlockStorage
         return new self($palette, $paletteIndices, validateIndices: false);
     }
 
+    /** @param list<mixed> $palette */
+    public static function fromPackedPaletteIndices(array $palette, string $packedPaletteIndices): self
+    {
+        $bits = PackedPaletteWords::bitsForPaletteSize(count($palette));
+        if (strlen($packedPaletteIndices) !== PackedPaletteIndices::bytesFor($bits)) {
+            throw new InvalidArgumentException('Packed block-storage indices have an invalid length.');
+        }
+        for ($offset = 0; $offset < self::BLOCK_COUNT; ++$offset) {
+            if (PackedPaletteIndices::trustedIndexAt($packedPaletteIndices, $bits, $offset) >= count($palette)) {
+                throw new InvalidArgumentException('Packed block storage contains an out-of-range palette index.');
+            }
+        }
+
+        return new self(
+            $palette,
+            null,
+            validateIndices: false,
+            packedPaletteIndices: $packedPaletteIndices,
+        );
+    }
+
     public function blockStateAt(int $localX, int $localY, int $localZ): InternalBlockStateId
     {
         return $this->palette[$this->paletteIndexAt($localX, $localY, $localZ)];
@@ -136,7 +169,13 @@ final class SubChunkBlockStorage
 
     public function paletteIndices(): string
     {
-        return $this->paletteIndices;
+        return PackedPaletteIndices::unpack($this->packedPaletteIndices, $this->networkBitsPerEntry);
+    }
+
+    /** @internal Canonical worker-transfer representation. */
+    public function packedPaletteIndices(): string
+    {
+        return $this->packedPaletteIndices;
     }
 
     public function networkBitsPerEntry(): int
@@ -146,8 +185,9 @@ final class SubChunkBlockStorage
 
     public function networkWordArray(): string
     {
-        return $this->networkWordArray ??= PackedPaletteWords::packNetworkOrder(
-            $this->paletteIndices,
+        return $this->networkWordArray ??= PackedPaletteWords::packNetworkOrderFromPackedMemory(
+            $this->packedPaletteIndices,
+            $this->networkBitsPerEntry,
             $this->networkBitsPerEntry,
         );
     }
@@ -158,7 +198,11 @@ final class SubChunkBlockStorage
         self::validateLocalCoordinate($localY);
         self::validateLocalCoordinate($localZ);
 
-        return ord($this->paletteIndices[$localX + ($localZ * SubChunk::EDGE_LENGTH) + ($localY * 256)]);
+        return PackedPaletteIndices::trustedIndexAt(
+            $this->packedPaletteIndices,
+            $this->networkBitsPerEntry,
+            $localX + ($localZ * SubChunk::EDGE_LENGTH) + ($localY * 256),
+        );
     }
 
     public function withBlockState(
@@ -171,7 +215,11 @@ final class SubChunkBlockStorage
         self::validateLocalCoordinate($localY);
         self::validateLocalCoordinate($localZ);
         $offset = $localX + ($localZ * SubChunk::EDGE_LENGTH) + ($localY * 256);
-        if ($this->palette[ord($this->paletteIndices[$offset])]->value === $state->value) {
+        if ($this->palette[PackedPaletteIndices::trustedIndexAt(
+            $this->packedPaletteIndices,
+            $this->networkBitsPerEntry,
+            $offset,
+        )]->value === $state->value) {
             return $this;
         }
 
@@ -190,22 +238,35 @@ final class SubChunkBlockStorage
             $paletteIndex = count($palette);
             $palette[] = $state;
         }
-        $indices = $this->paletteIndices;
-        $indices[$offset] = self::encodePaletteIndex($paletteIndex);
-
         $newBits = PackedPaletteWords::bitsForPaletteSize(count($palette));
+        $indices = null;
+        $packedIndices = $this->packedPaletteIndices;
+        if ($newBits === $this->networkBitsPerEntry && $newBits !== 0) {
+            $packedIndices = PackedPaletteIndices::replace($packedIndices, $newBits, $offset, $paletteIndex);
+        } else {
+            $indices = $this->paletteIndices();
+            $indices[$offset] = self::encodePaletteIndex($paletteIndex);
+            $packedIndices = PackedPaletteIndices::pack($indices, $newBits, validate: false);
+        }
         $words = $newBits === $this->networkBitsPerEntry && $newBits !== 0
+            && $this->networkWordArray !== null
             ? PackedPaletteWords::replaceNetworkIndex(
-                $this->networkWordArray(),
+                $this->networkWordArray,
                 $newBits,
                 $localX,
                 $localY,
                 $localZ,
                 $paletteIndex,
             )
-            : PackedPaletteWords::packNetworkOrder($indices, $newBits);
+            : null;
 
-        return new self($palette, $indices, $words);
+        return new self(
+            $palette,
+            null,
+            $words,
+            validateIndices: false,
+            packedPaletteIndices: $packedIndices,
+        );
     }
 
     private static function validateLocalCoordinate(int $coordinate): void

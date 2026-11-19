@@ -20,8 +20,10 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\ResourcePack;
 
+use Bedriox\Server\Observability\Memory\DisposableByteCache;
+
 /** Bounded process-wide cache which prevents duplicate disk reads during join bursts. */
-final class ResourcePackChunkCache
+final class ResourcePackChunkCache implements DisposableByteCache
 {
     /** @var array<string, array{bytes: string, used: int}> */
     private array $entries = [];
@@ -55,20 +57,48 @@ final class ResourcePackChunkCache
         return $bytes;
     }
 
+    public function retainedBytes(): int
+    {
+        return $this->retainedBytes;
+    }
+
+    /** Releases cached transfer chunks; archives remain authoritative on disk. */
+    public function trim(): int
+    {
+        return $this->trimToBytes(0);
+    }
+
+    public function trimToBytes(int $targetBytes): int
+    {
+        if ($targetBytes < 0) {
+            throw new \InvalidArgumentException('Resource-pack cache target cannot be negative.');
+        }
+        $before = $this->retainedBytes;
+        while ($this->entries !== [] && $this->retainedBytes > $targetBytes) {
+            $this->evictOldest();
+        }
+
+        return $before - $this->retainedBytes;
+    }
+
     private function evict(): void
     {
         while (count($this->entries) > $this->maximumEntries || $this->retainedBytes > $this->maximumBytes) {
-            $oldestKey = null;
-            $oldestUse = PHP_INT_MAX;
-            foreach ($this->entries as $key => $entry) {
-                if ($entry['used'] < $oldestUse) {
-                    $oldestKey = $key;
-                    $oldestUse = $entry['used'];
-                }
+            $this->evictOldest();
+        }
+    }
+
+    private function evictOldest(): void
+    {
+        $oldestKey = null;
+        $oldestUse = PHP_INT_MAX;
+        foreach ($this->entries as $key => $entry) {
+            if ($entry['used'] < $oldestUse) {
+                $oldestKey = $key;
+                $oldestUse = $entry['used'];
             }
-            if ($oldestKey === null) {
-                return;
-            }
+        }
+        if ($oldestKey !== null) {
             $this->retainedBytes -= strlen($this->entries[$oldestKey]['bytes']);
             unset($this->entries[$oldestKey]);
         }

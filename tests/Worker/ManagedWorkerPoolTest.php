@@ -91,13 +91,21 @@ final class ManagedWorkerPoolTest extends TestCase
         try {
             self::assertTrue($pool->snapshot()->available, $pool->diagnostic());
             self::assertSame(8, $pool->snapshot()->workerCount);
-            $submission = $pool->submit(CoreWorkerTaskCatalog::SELF_TEST, 'automatic-workers');
-            self::assertTrue($submission->isAccepted());
+            self::assertSame(1, $pool->snapshot()->runningWorkers);
+            for ($id = 0; $id < 8; ++$id) {
+                $submission = $pool->submit(CoreWorkerTaskCatalog::SELF_TEST, 'automatic-workers-' . $id);
+                self::assertTrue($submission->isAccepted());
+            }
 
-            $results = $this->awaitResults($pool, 1);
-            self::assertCount(1, $results, $pool->diagnostic());
-            self::assertSame(WorkerResultStatus::SUCCESS, $results[0]->status, $pool->diagnostic());
-            self::assertSame(hash('sha256', 'automatic-workers', true), $results[0]->payload);
+            $results = $this->awaitResults($pool, 8);
+            self::assertCount(8, $results, $pool->diagnostic());
+            foreach ($results as $result) {
+                self::assertSame(WorkerResultStatus::SUCCESS, $result->status, $pool->diagnostic());
+            }
+
+            usleep(1_100_000);
+            $pool->poll();
+            self::assertGreaterThan(1, $pool->snapshot()->runningWorkers, $pool->diagnostic());
         } finally {
             $pool->shutdown();
         }

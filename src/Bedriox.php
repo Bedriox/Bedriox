@@ -584,6 +584,8 @@ final class Bedriox
                         pluginAsyncQueue: $pluginAsync?->snapshot(),
                         inbound: $runtime?->inboundMetricsSnapshot(),
                         transportSecurity: $runtime?->transportSecuritySnapshot(),
+                        worlds: $runtime?->worldRuntimeSnapshots() ?? [],
+                        trackedServiceMemoryBytes: $runtime?->trackedServiceMemoryBytes() ?? 0,
                     );
                 },
                 static fn(

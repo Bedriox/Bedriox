@@ -40,5 +40,6 @@ final class BrokerWorker
         public bool $discardResult = false,
         public int $memoryBytes = 0,
         public string $outgoing = '',
+        public int $lastActiveNanoseconds = 0,
     ) {}
 }

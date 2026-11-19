@@ -59,6 +59,7 @@ final class ManagedWorkerPool
     private int $failed = 0;
     private int $restarts = 0;
     private int $busyWorkers = 0;
+    private int $runningWorkers = 0;
     private int $brokerMemoryBytes = 0;
     private int $workerMemoryBytes = 0;
     private bool $available;
@@ -231,6 +232,7 @@ final class ManagedWorkerPool
             $this->readyBytes,
             $this->brokerMemoryBytes,
             $this->workerMemoryBytes,
+            $this->runningWorkers,
         );
     }
 
@@ -333,6 +335,10 @@ final class ManagedWorkerPool
             $this->closeProcess();
             throw new RuntimeException('Managed worker broker handshake failed: ' . $diagnostic);
         }
+        $this->runningWorkers = max(0, min(
+            $this->workerCount,
+            (int) ($ready->metadata['running_workers'] ?? 1),
+        ));
         $probe = random_bytes(32);
         $definition = $this->registry->get(CoreWorkerTaskCatalog::SELF_TEST);
         if ($definition === null) {
@@ -368,6 +374,7 @@ final class ManagedWorkerPool
             $this->restarts = max($this->restarts, (int) ($frame->metadata['restarts'] ?? 0));
             $this->brokerMemoryBytes = max(0, (int) ($frame->metadata['broker_memory_bytes'] ?? 0));
             $this->workerMemoryBytes = max(0, (int) ($frame->metadata['worker_memory_bytes'] ?? 0));
+            $this->runningWorkers = max(0, min($this->workerCount, (int) ($frame->metadata['workers'] ?? 0)));
 
             return;
         }

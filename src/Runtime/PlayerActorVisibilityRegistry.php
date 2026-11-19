@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Bedriox\Server\Runtime;
 
+use Bedriox\Server\Runtime\Internal\PackedSessionSet;
 use Bedriox\Server\Simulation\Event\PlayerBecameHidden;
 use Bedriox\Server\Simulation\Event\PlayerBecameVisible;
 use Bedriox\Server\Simulation\Event\WorldEvent;
@@ -33,11 +34,22 @@ final class PlayerActorVisibilityRegistry
     /** @var array<string, PlayerSnapshot> */
     private array $players = [];
 
-    /** @var array<string, array<string, true>> viewer session => visible actor sessions */
+    /** @var array<int, string> viewer handle => packed visible actor handles */
     private array $visible = [];
 
-    /** @var array<string, array<string, true>> actor session => viewer sessions */
+    /** @var array<int, string> actor handle => packed viewer handles */
     private array $viewers = [];
+
+    /** @var array<string, int> */
+    private array $handles = [];
+
+    /** @var array<int, string> */
+    private array $sessions = [];
+
+    /** @var list<int> */
+    private array $freeHandles = [];
+
+    private int $nextHandle = 0;
 
     public function __construct(private readonly int $maximumPlayers)
     {
@@ -54,8 +66,11 @@ final class PlayerActorVisibilityRegistry
             throw new OverflowException('Actor visibility registry capacity was exceeded.');
         }
         $this->players[$player->sessionId] = $player;
-        $this->visible[$player->sessionId] ??= [];
-        $this->viewers[$player->sessionId] ??= [];
+        if ($previous === null) {
+            $handle = $this->allocateHandle($player->sessionId);
+            $this->visible[$handle] = '';
+            $this->viewers[$handle] = '';
+        }
 
         return $previous === null
             || self::chunkCoordinate($previous->position->x) !== self::chunkCoordinate($player->position->x)
@@ -111,7 +126,17 @@ final class PlayerActorVisibilityRegistry
     /** @return list<string> */
     public function viewersOf(string $actorSessionId): array
     {
-        $viewers = array_keys($this->viewers[$actorSessionId] ?? []);
+        $actor = $this->handles[$actorSessionId] ?? null;
+        if ($actor === null) {
+            return [];
+        }
+        $viewers = [];
+        foreach (PackedSessionSet::handles($this->viewers[$actor]) as $handle) {
+            $sessionId = $this->sessions[$handle] ?? null;
+            if ($sessionId !== null) {
+                $viewers[] = $sessionId;
+            }
+        }
         sort($viewers, SORT_STRING);
 
         return $viewers;
@@ -131,7 +156,9 @@ final class PlayerActorVisibilityRegistry
         $this->players[$player->sessionId] = $player;
         $events = [];
         foreach (array_values(array_unique($viewerSessionIds)) as $viewerSessionId) {
-            if (!isset($this->viewers[$player->sessionId][$viewerSessionId])) {
+            $actor = $this->handles[$player->sessionId];
+            $viewer = $this->handles[$viewerSessionId] ?? null;
+            if ($viewer === null || !PackedSessionSet::contains($this->viewers[$actor], $viewer)) {
                 continue;
             }
             $events[] = new PlayerBecameHidden($player->sessionId, $player->runtimeActorId, $viewerSessionId);
@@ -197,13 +224,14 @@ final class PlayerActorVisibilityRegistry
      */
     public function visibleRecipients(string $actorSessionId, array $recipients): array
     {
-        $viewers = $this->viewers[$actorSessionId] ?? [];
-        if ($viewers === [] || $recipients === []) {
+        $actor = $this->handles[$actorSessionId] ?? null;
+        if ($actor === null || $this->viewers[$actor] === '' || $recipients === []) {
             return [];
         }
         $visible = [];
         foreach ($recipients as $recipient) {
-            if (isset($viewers[$recipient])) {
+            $viewer = $this->handles[$recipient] ?? null;
+            if ($viewer !== null && PackedSessionSet::contains($this->viewers[$actor], $viewer)) {
                 $visible[] = $recipient;
             }
         }
@@ -222,15 +250,24 @@ final class PlayerActorVisibilityRegistry
         if ($player === null) {
             return [];
         }
+        $handle = $this->handles[$sessionId];
         $events = [];
         foreach ($this->viewersOf($sessionId) as $viewer) {
             $events[] = new PlayerBecameHidden($sessionId, $player->runtimeActorId, $viewer);
-            unset($this->visible[$viewer][$sessionId]);
+            $viewerHandle = $this->handles[$viewer];
+            PackedSessionSet::remove($this->visible[$viewerHandle], $handle);
         }
-        foreach ($this->visible[$sessionId] as $actorSessionId => $_) {
-            unset($this->viewers[$actorSessionId][$sessionId]);
+        foreach (PackedSessionSet::handles($this->visible[$handle]) as $actorHandle) {
+            PackedSessionSet::remove($this->viewers[$actorHandle], $handle);
         }
-        unset($this->players[$sessionId], $this->visible[$sessionId], $this->viewers[$sessionId]);
+        unset(
+            $this->players[$sessionId],
+            $this->handles[$sessionId],
+            $this->sessions[$handle],
+            $this->visible[$handle],
+            $this->viewers[$handle],
+        );
+        $this->freeHandles[] = $handle;
 
         return $events;
     }
@@ -238,20 +275,34 @@ final class PlayerActorVisibilityRegistry
     /** @param list<PlayerBecameVisible|PlayerBecameHidden> $events */
     private function reconcilePair(string $viewer, PlayerSnapshot $actor, bool $shouldBeVisible, array &$events): void
     {
-        $isVisible = isset($this->visible[$viewer][$actor->sessionId]);
+        $viewerHandle = $this->handles[$viewer];
+        $actorHandle = $this->handles[$actor->sessionId];
+        $isVisible = PackedSessionSet::contains($this->visible[$viewerHandle], $actorHandle);
         if ($shouldBeVisible === $isVisible) {
             return;
         }
         if ($shouldBeVisible) {
-            $this->visible[$viewer][$actor->sessionId] = true;
-            $this->viewers[$actor->sessionId][$viewer] = true;
+            PackedSessionSet::add($this->visible[$viewerHandle], $actorHandle);
+            PackedSessionSet::add($this->viewers[$actorHandle], $viewerHandle);
             $events[] = new PlayerBecameVisible($actor, $viewer);
 
             return;
         }
-        unset($this->visible[$viewer][$actor->sessionId]);
-        unset($this->viewers[$actor->sessionId][$viewer]);
+        PackedSessionSet::remove($this->visible[$viewerHandle], $actorHandle);
+        PackedSessionSet::remove($this->viewers[$actorHandle], $viewerHandle);
         $events[] = new PlayerBecameHidden($actor->sessionId, $actor->runtimeActorId, $viewer);
+    }
+
+    private function allocateHandle(string $sessionId): int
+    {
+        $handle = array_pop($this->freeHandles);
+        if ($handle === null) {
+            $handle = $this->nextHandle++;
+        }
+        $this->handles[$sessionId] = $handle;
+        $this->sessions[$handle] = $sessionId;
+
+        return $handle;
     }
 
     private static function chunkCoordinate(float $position): int

@@ -32,6 +32,7 @@ use Bedriox\Server\Persistence\PersistenceSubmission;
 use Bedriox\Server\Persistence\World\ProcessWorldProvider;
 use Bedriox\Server\Persistence\World\ProcessWorldProviderFactory;
 use Bedriox\Server\Persistence\World\WorldDataIpcCodec;
+use Bedriox\Server\Persistence\World\WorldStorageProcessPool;
 use Bedriox\Server\Persistence\World\WorldStorageStartup;
 use Bedriox\Server\Persistence\World\WorldStorageStartupCodec;
 use Bedriox\Server\Simulation\Position;
@@ -53,6 +54,7 @@ use Bedriox\Server\World\Provider\ChunkSaveData;
 use Bedriox\Server\World\Provider\DimensionWorldData;
 use Bedriox\Server\World\Provider\Exception\CorruptChunkException;
 use Bedriox\Server\World\Provider\Exception\WorldProviderClosedException;
+use Bedriox\Server\World\Provider\Exception\WorldProviderException;
 use Bedriox\Server\World\Provider\Exception\WorldStorageException;
 use Bedriox\Server\World\Provider\WorldData;
 use Bedriox\Server\World\SpawnPosition;
@@ -504,6 +506,60 @@ final class ProcessWorldProviderTest extends TestCase
             $provider->close();
             $dispatcher->shutdown();
             self::removeDirectory($directory);
+        }
+    }
+
+    public function testProductionPoolSharesCatalogsWhileWorldOwnersRemainIndependent(): void
+    {
+        if (!extension_loaded('leveldb')) {
+            self::markTestSkipped('The production world-storage pool requires the qualified LevelDB runtime.');
+        }
+        $root = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'bedriox-world-pool-' . bin2hex(random_bytes(8));
+        $firstPath = $root . DIRECTORY_SEPARATOR . 'first';
+        $secondPath = $root . DIRECTORY_SEPARATOR . 'second';
+        $pool = new WorldStorageProcessPool(
+            'test-version',
+            dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . 'bootstrap' . DIRECTORY_SEPARATOR . 'bedriox-io.php',
+        );
+        $first = null;
+        $second = null;
+        try {
+            $states = self::states();
+            $first = ProcessWorldProvider::start(
+                'test-version',
+                new WorldStorageStartup('create', $firstPath, self::worldData(), 1234),
+                $states,
+                pool: $pool,
+            );
+            $second = ProcessWorldProvider::start(
+                'test-version',
+                new WorldStorageStartup('create', $secondPath, self::worldData(), 1234),
+                $states,
+                pool: $pool,
+            );
+
+            self::assertSame($first->runtimeMemoryOwnerId(), $second->runtimeMemoryOwnerId());
+            $first->close();
+            self::assertTrue($first->ownerConfirmedClosed());
+            self::assertSame('Process Test', $second->worldData()->metadata->name);
+            self::assertTrue($pool->isRunning());
+            try {
+                ProcessWorldProvider::start(
+                    'test-version',
+                    new WorldStorageStartup('open', $root . DIRECTORY_SEPARATOR . 'missing'),
+                    $states,
+                    pool: $pool,
+                );
+                self::fail('The pool opened a missing world.');
+            } catch (WorldProviderException) {
+            }
+            self::assertTrue($pool->isRunning());
+            self::assertSame('Process Test', $second->worldData()->metadata->name);
+        } finally {
+            $first?->close();
+            $second?->close();
+            $pool->close();
+            self::removeDirectory($root);
         }
     }
 
